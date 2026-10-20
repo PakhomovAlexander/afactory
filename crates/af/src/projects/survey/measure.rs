@@ -16,11 +16,15 @@
 //! and the Survey is still recorded. Any other git failure fails the Survey.
 //!
 //! The readers and the folds are pure functions of git's bytes, the policy and the cutoff, so a
-//! Survey is byte-identical for the same head, refs, policy, cutoff and Surveyor version.
+//! complete Survey is byte-identical for the same head, refs, policy, cutoff, Surveyor and git
+//! versions and previous Survey, and the Clock counts each section's items, so one that is not
+//! complete names the item it stopped at.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use review_core::project::{
@@ -126,8 +130,26 @@ fn unreadable(detail: String) -> Failure {
     )
 }
 
+/// How many items each section's Clock charged, by section: what a Survey's stopping point
+/// names (ADR-0152 clause 1).
+#[derive(Debug, Default)]
+struct Charged(Mutex<BTreeMap<&'static str, Arc<AtomicU64>>>);
+
+impl Charged {
+    /// The one count of `section`, shared by every Clock of it.
+    fn of(&self, section: &'static str) -> Arc<AtomicU64> {
+        Arc::clone(
+            self.0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(section)
+                .or_default(),
+        )
+    }
+}
+
 /// The Survey's one deadline, from before `rev-parse` to the last section.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct Clock {
     deadline: Instant,
     slow: Duration,
@@ -137,16 +159,22 @@ pub(super) struct Clock {
     section: &'static str,
     /// The one section whose finishing step lasts past the deadline, when a fixture names one.
     slow_finish: Option<&'static str>,
+    /// Every section's count of items charged, and this section's.
+    charged: Arc<Charged>,
+    items: Arc<AtomicU64>,
 }
 
 impl Clock {
     pub(super) fn new(started: Instant, max_wall_ms: u64) -> Self {
+        let charged = Arc::new(Charged::default());
         Self {
             deadline: started + Duration::from_millis(max_wall_ms),
             slow: slow_item(),
             only: slow_section(),
             section: "",
             slow_finish: slow_finish(),
+            items: charged.of(""),
+            charged,
         }
     }
 
@@ -159,8 +187,14 @@ impl Clock {
         Self {
             slow,
             section,
-            ..*self
+            items: self.charged.of(section),
+            ..self.clone()
         }
+    }
+
+    /// How many items the Clocks of `section` charged so far: `0` for a section never started.
+    pub(super) fn charged(&self, section: &'static str) -> u64 {
+        self.charged.of(section).load(Ordering::Relaxed)
     }
 
     fn remaining(&self) -> Option<Duration> {
@@ -189,6 +223,7 @@ impl Clock {
     /// One item of a stream or of a loop over what it read: whether the deadline passed before
     /// it, where the loop stops.
     pub(super) fn item(&self) -> bool {
+        self.items.fetch_add(1, Ordering::Relaxed);
         if !self.slow.is_zero() {
             std::thread::sleep(self.slow);
         }
@@ -391,7 +426,7 @@ impl Reader<'_> {
         if names.is_empty() {
             return Ok((objects, self.clock.passed()));
         }
-        let clock = self.clock;
+        let clock = self.clock.clone();
         let stopped = self.stream("cat-file", &os(&["cat-file", "--batch"]), names, |input| {
             read_batch(input, &clock, Some(keep), |_, object| {
                 objects.push(object);
@@ -883,45 +918,57 @@ fn trailer_name(value: &str) -> &str {
     value.split_once('<').map_or(value, |(name, _)| name).trim()
 }
 
-/// The `log` format: record separator, then id, parents, committer time, author name, author
-/// email (only under `email_hash`) and the `Co-Authored-By` values, each ended by a unit
-/// separator.
+/// The `log` format, every field ended by NUL, a byte no author name, email, trailer or
+/// subject git writes can hold, and every commit ended by NUL too (`-z`): the commit ID, the
+/// parents, the committer time, the author name, the author email (only under `email_hash`),
+/// the commit ID again, the `Co-Authored-By` values, and the commit ID a third time. A commit
+/// cannot hold its own ID, so the second ID proves the fields before it were read whole and the
+/// third ends the trailers, however many there are.
 pub(super) fn log_format(policy: &Policy) -> String {
     let email = match policy.identity {
         SurveyIdentityPolicyV1::Name => "",
-        SurveyIdentityPolicyV1::EmailHash => "%ae",
+        SurveyIdentityPolicyV1::EmailHash => "%ae%x00",
     };
     format!(
-        "--format=%x1e%H%x1f%P%x1f%ct%x1f%an%x1f{email}%x1f\
-         %(trailers:key=Co-authored-by,valueonly,separator=%x1d)%x1f"
+        "--format=%H%x00%P%x00%ct%x00%an%x00{email}%H%x00\
+         %(trailers:key=Co-authored-by,valueonly,separator=%x00)%x00%H%x00"
     )
 }
 
-/// The commit a log record's six fields describe, its identity and partition derived as it is
-/// read: an email is hashed, or never asked for, and is never kept.
-fn commit_of(fields: &[Vec<u8>], policy: &Policy) -> Result<Commit, String> {
-    let [id, parents, time, name, email, trailers] = fields else {
-        return Err("a log record without its six fields".into());
-    };
+/// One log record's fields before its trailers, as git wrote them.
+struct Header<'a> {
+    id: &'a str,
+    parents: &'a [u8],
+    time: &'a [u8],
+    name: &'a [u8],
+    email: &'a [u8],
+}
+
+/// The commit a log record's fields describe, its identity derived as it is read: an email is
+/// hashed, or never asked for, and is never kept. `None` when a field is not what git writes
+/// there: the record is malformed.
+fn commit_of(header: &Header, agent_trailer: bool, policy: &Policy) -> Option<Commit> {
     let text = |field: &[u8]| String::from_utf8_lossy(field).into_owned();
-    let id = text(id);
-    if !review_core::project::is_commit_id(&id) {
-        return Err("a log record without a commit ID".into());
+    let parents = std::str::from_utf8(header.parents).ok()?;
+    if !parents
+        .split(' ')
+        .filter(|parent| !parent.is_empty())
+        .all(review_core::project::is_commit_id)
+    {
+        return None;
     }
-    let agent = any_match(&policy.agent_authors, text(name).trim())
-        || text(trailers)
-            .split('\u{1d}')
-            .map(trailer_name)
-            .filter(|value| !value.is_empty())
-            .any(|value| any_match(&policy.agent_trailers, value));
-    let (key, display_name, truncated) = identity_of(name, &text(email), policy.identity);
-    Ok(Commit {
-        id,
-        merge: text(parents).split_whitespace().count() >= 2,
-        time: text(time)
-            .trim()
-            .parse()
-            .map_err(|_| "a committer time that is not a number")?,
+    let time = std::str::from_utf8(header.time)
+        .ok()
+        .filter(|time| !time.is_empty() && time.bytes().all(|byte| byte.is_ascii_digit()))?
+        .parse()
+        .ok()?;
+    let agent = agent_trailer || any_match(&policy.agent_authors, text(header.name).trim());
+    let (key, display_name, truncated) =
+        identity_of(header.name, &text(header.email), policy.identity);
+    Some(Commit {
+        id: header.id.to_string(),
+        merge: parents.split_whitespace().count() >= 2,
+        time,
         key,
         name: display_name,
         truncated,
@@ -957,90 +1004,156 @@ fn change_of(line: &[u8], policy: &Policy) -> Result<Option<Change>, String> {
     }))
 }
 
-/// Read `log -z --numstat` in [`log_format`], one commit and one numstat line per item; `each`
-/// receives every commit read to its end and may stop the walk with a bound. A record over
-/// [`MAX_SURVEY_RECORD_BYTES`] stops it with `max_record_bytes`, and a commit touching more
-/// than `max_paths` paths with `max_paths`; the commit it stopped in is not passed on.
+/// How reading one item of the log went.
+enum Item {
+    /// An item, without its NUL.
+    Read,
+    /// The stream ended where the record needs another item.
+    End,
+    /// The log reader stopped with this.
+    Stop(Ended),
+}
+
+/// Read one NUL-ended item of the log into `item`.
+fn log_item(input: &mut dyn BufRead, item: &mut Vec<u8>) -> Item {
+    match read_record(input, 0, item) {
+        Ok(Record::Read { .. }) => Item::Read,
+        Ok(Record::End) => Item::End,
+        Ok(Record::TooLong) => Item::Stop(Ended::Bound(SurveyReasonV1::MaxRecordBytes)),
+        Err(error) => Item::Stop(Ended::Bad(error)),
+    }
+}
+
+/// Read `log -z --numstat` in [`log_format`]: each commit's NUL-ended fields, the NUL that ends
+/// it and its numstat lines, the first after a newline; `each` receives every commit read to its
+/// end and may stop the walk with a bound. A record over [`MAX_SURVEY_RECORD_BYTES`] stops it
+/// with `max_record_bytes`, a commit touching more than `max_paths` paths with `max_paths`, and
+/// a record whose fields are not what git writes there (a parent or time that is not one, the
+/// commit ID not where the format repeats it, a numstat line that does not parse) with
+/// `malformed_record`, never with an identity guessed from it; `stopped_in` then names the
+/// commit it stopped in, which is not passed on.
 pub(super) fn read_log(
     input: &mut dyn BufRead,
     clock: &Clock,
     policy: &Policy,
+    stopped_in: &mut Option<String>,
     mut each: impl FnMut(Commit) -> Result<(), SurveyReasonV1>,
 ) -> Ended {
-    const RECORD: u8 = 0x1e;
-    const UNIT: u8 = 0x1f;
+    let fields = match policy.identity {
+        SurveyIdentityPolicyV1::Name => 3,
+        SurveyIdentityPolicyV1::EmailHash => 4,
+    };
     let mut current: Option<Commit> = None;
-    let mut line = Vec::new();
+    let mut item = Vec::new();
+    let mut header: Vec<Vec<u8>> = Vec::with_capacity(4);
+    // Stop in `commit` with `ended`, naming it.
+    let mut stop = |commit: &str, ended: Ended| {
+        *stopped_in = Some(commit.to_string());
+        ended
+    };
     loop {
-        let first = match input.fill_buf() {
-            Ok([]) => None,
-            Ok(buffer) => Some(buffer[0]),
-            Err(error) => return Ended::Bad(error.to_string()),
-        };
-        match first {
-            None => {
-                return match each_commit(&mut current, &mut each) {
-                    Ok(()) => Ended::Done,
-                    Err(reason) => Ended::Bound(reason),
-                };
-            }
-            Some(RECORD) => {
-                input.consume(1);
-                if let Err(reason) = each_commit(&mut current, &mut each) {
-                    return Ended::Bound(reason);
-                }
-                if clock.item() {
-                    return Ended::Deadline;
-                }
-                let mut fields = Vec::with_capacity(6);
-                for _ in 0..6 {
-                    match read_record(input, UNIT, &mut line) {
-                        Ok(Record::Read { ended: true }) => fields.push(line.clone()),
-                        Ok(Record::TooLong) => {
-                            return Ended::Bound(SurveyReasonV1::MaxRecordBytes);
-                        }
-                        Ok(_) => return Ended::Bad("a log record ends early".into()),
-                        Err(error) => return Ended::Bad(error),
+        match log_item(input, &mut item) {
+            Item::Read => {}
+            Item::End => {
+                if let Some(commit) = current.take() {
+                    let last = commit.id.clone();
+                    if let Err(reason) = each(commit) {
+                        return stop(&last, Ended::Bound(reason));
                     }
                 }
-                match commit_of(&fields, policy) {
-                    Ok(commit) => current = Some(commit),
-                    Err(detail) => return Ended::Bad(detail),
-                }
+                return Ended::Done;
             }
-            Some(0 | b'\n') => input.consume(1),
-            Some(_) => {
-                match read_record(input, 0, &mut line) {
-                    Ok(Record::Read { .. }) => {}
-                    Ok(Record::TooLong) => return Ended::Bound(SurveyReasonV1::MaxRecordBytes),
-                    Ok(Record::End) => return Ended::Bad("a numstat line ends early".into()),
-                    Err(error) => return Ended::Bad(error),
-                }
-                if clock.item() {
-                    return Ended::Deadline;
-                }
-                let Some(commit) = current.as_mut() else {
-                    return Ended::Bad("a numstat line before its commit".into());
+            Item::Stop(ended) => {
+                return match current.as_ref() {
+                    Some(commit) => stop(&commit.id, ended),
+                    None => ended,
                 };
-                match change_of(&line, policy) {
-                    Ok(Some(_)) if commit.changes.len() as u64 >= policy.max_paths => {
-                        return Ended::Bound(SurveyReasonV1::MaxPaths);
-                    }
-                    Ok(change) => commit.changes.extend(change),
-                    Err(detail) => return Ended::Bad(detail),
-                }
             }
         }
-    }
-}
-
-fn each_commit(
-    current: &mut Option<Commit>,
-    each: &mut impl FnMut(Commit) -> Result<(), SurveyReasonV1>,
-) -> Result<(), SurveyReasonV1> {
-    match current.take() {
-        Some(commit) => each(commit),
-        None => Ok(()),
+        // The NUL that ends a commit's fields.
+        if item.is_empty() {
+            continue;
+        }
+        if item.contains(&b'\t') {
+            // A numstat line of the current commit; the first follows a newline.
+            let line = item.strip_prefix(b"\n").unwrap_or(&item);
+            if clock.item() {
+                return Ended::Deadline;
+            }
+            let Some(commit) = current.as_mut() else {
+                return Ended::Bad("a numstat line before its commit".into());
+            };
+            match change_of(line, policy) {
+                Ok(Some(_)) if commit.changes.len() as u64 >= policy.max_paths => {
+                    return stop(&commit.id, Ended::Bound(SurveyReasonV1::MaxPaths));
+                }
+                Ok(change) => commit.changes.extend(change),
+                Err(_) => {
+                    return stop(&commit.id, Ended::Bound(SurveyReasonV1::MalformedRecord));
+                }
+            }
+            continue;
+        }
+        // A commit begins with its ID.
+        let id = match std::str::from_utf8(&item) {
+            Ok(id) if review_core::project::is_commit_id(id) => id.to_string(),
+            _ => {
+                return match current.as_ref() {
+                    Some(commit) => stop(&commit.id, Ended::Bound(SurveyReasonV1::MalformedRecord)),
+                    None => Ended::Bad("a log record without a commit ID".into()),
+                };
+            }
+        };
+        if let Some(commit) = current.take() {
+            let previous = commit.id.clone();
+            if let Err(reason) = each(commit) {
+                return stop(&previous, Ended::Bound(reason));
+            }
+        }
+        if clock.item() {
+            return Ended::Deadline;
+        }
+        // The fields, then the ID again: anything else there is a field that held a NUL.
+        header.clear();
+        for _ in 0..=fields {
+            match log_item(input, &mut item) {
+                Item::Read => header.push(item.clone()),
+                Item::End => return Ended::Bad("a log record ends early".into()),
+                Item::Stop(ended) => return stop(&id, ended),
+            }
+        }
+        if header[fields] != id.as_bytes() {
+            return stop(&id, Ended::Bound(SurveyReasonV1::MalformedRecord));
+        }
+        // The `Co-Authored-By` values, up to the ID a third time.
+        let mut agent_trailer = false;
+        loop {
+            match log_item(input, &mut item) {
+                Item::Read if item == id.as_bytes() => break,
+                Item::Read => {}
+                Item::End => return Ended::Bad("a log record ends early".into()),
+                Item::Stop(ended) => return stop(&id, ended),
+            }
+            if clock.passed() {
+                return Ended::Deadline;
+            }
+            if !agent_trailer {
+                let value = String::from_utf8_lossy(&item);
+                let name = trailer_name(&value);
+                agent_trailer = !name.is_empty() && any_match(&policy.agent_trailers, name);
+            }
+        }
+        let parsed = Header {
+            id: &id,
+            parents: &header[0],
+            time: &header[1],
+            name: &header[2],
+            email: if fields == 4 { &header[3] } else { &[] },
+        };
+        match commit_of(&parsed, agent_trailer, policy) {
+            Some(commit) => current = Some(commit),
+            None => return stop(&id, Ended::Bound(SurveyReasonV1::MalformedRecord)),
+        }
     }
 }
 
@@ -1224,6 +1337,7 @@ pub(super) fn history_section(
         oldest_reached: (walk.commits < reachable)
             .then(|| walk.oldest.clone())
             .flatten(),
+        stopped_in: None,
         churn_90d: churn
             .into_iter()
             .map(|(name, (commits, added, removed))| {
@@ -1732,7 +1846,7 @@ fn each_declaration(
         .filter(|entry| readable(entry))
         .map(|entry| entry.oid.clone())
         .collect();
-    let clock = reader.clock;
+    let clock = reader.clock.clone();
     let mut position = 0;
     let mut deadline = false;
     if !names.is_empty() {
@@ -1781,8 +1895,10 @@ pub(super) struct Basis<'a> {
     pub(super) git_version: &'a str,
 }
 
-/// The seven sections, in record order.
+/// The seven sections, in record order, and the commit a record stopped the history walk in,
+/// which a `history` that reached no commit cannot hold.
 pub(super) struct Sections {
+    pub(super) stopped_in: Option<String>,
     pub(super) identity: SurveySectionV1<SurveyIdentityV1>,
     pub(super) tree: SurveySectionV1<SurveyTreeV1>,
     pub(super) history: SurveySectionV1<SurveyHistoryV1>,
@@ -1847,7 +1963,10 @@ fn declarations(
 
 /// The head commit of the checkout under the Survey's Clock: `None` when the deadline passed.
 pub(super) fn head(git: &Git, clock: &Clock) -> Result<Option<String>, Failure> {
-    let reader = Reader { git, clock: *clock };
+    let reader = Reader {
+        git,
+        clock: clock.clone(),
+    };
     reader.answer(
         "rev-parse",
         &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
@@ -1878,7 +1997,10 @@ pub(super) fn observe_refs(
     clock: &Clock,
     policy: &Policy,
 ) -> Result<Result<Observed, SurveyReasonV1>, Failure> {
-    let reader = Reader { git, clock: *clock };
+    let reader = Reader {
+        git,
+        clock: clock.clone(),
+    };
     let mut hasher = Sha256::new();
     let mut refs = Refs::default();
     let stopped = reader.stream(
@@ -1932,7 +2054,10 @@ fn take_observed(refs_digest: &str) -> Option<Refs> {
 /// The `git --version` stdout, trimmed, under the Survey's Clock: `None` when the deadline
 /// passed.
 pub(super) fn git_version(git: &Git, clock: &Clock) -> Result<Option<String>, Failure> {
-    let reader = Reader { git, clock: *clock };
+    let reader = Reader {
+        git,
+        clock: clock.clone(),
+    };
     reader.answer("--version", &["--version"])
 }
 
@@ -1967,7 +2092,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
 
     // identity: what is known already, the head's declarations, and the Tree Digest.
     let identity_reader = reader("identity");
-    let identity_clock = identity_reader.clock;
+    let identity_clock = identity_reader.clock.clone();
     let mut identity = SurveyIdentityV1 {
         project_id: basis.project_id.to_string(),
         repository_id: basis.repository_id.to_string(),
@@ -2036,7 +2161,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
         after_deadline()
     } else {
         let tree_reader = reader("tree");
-        let tree_clock = tree_reader.clock;
+        let tree_clock = tree_reader.clock.clone();
         let mut fold = TreeFold::default();
         let stopped = tree_reader.stream(
             "ls-tree",
@@ -2108,8 +2233,10 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
     // repository attached only to the object database.
     let mut walk = Walk::new(basis.cutoff, policy.max_paths);
     let mut reachable = 0;
-    // A bound that stopped the walk: `max_paths` or `max_record_bytes`.
+    // A bound that stopped the walk: `max_paths`, `max_record_bytes` or `malformed_record`,
+    // and the commit it stopped in.
     let mut walk_cut = None;
+    let mut stopped_in = None;
     let objects = match clock.remaining() {
         Some(remaining) if !halted => match git.objects_within(remaining) {
             Ok(objects) => Some(objects),
@@ -2134,7 +2261,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
                 git: objects,
                 clock: clock.section("history"),
             };
-            let history_clock = history_reader.clock;
+            let history_clock = history_reader.clock.clone();
             match history_reader.answer(
                 "rev-list",
                 &["rev-list", "--count", "--end-of-options", head, "--"],
@@ -2170,7 +2297,11 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
                             "--",
                         ]),
                         &[],
-                        |input| read_log(input, &history_clock, policy, |commit| walk.add(commit)),
+                        |input| {
+                            read_log(input, &history_clock, policy, &mut stopped_in, |commit| {
+                                walk.add(commit)
+                            })
+                        },
                     )?;
                     let mut deadline = stopped == Some(SurveyReasonV1::MaxWallMs);
                     walk_cut = stopped.filter(|reason| *reason != SurveyReasonV1::MaxWallMs);
@@ -2213,6 +2344,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
                         };
                         let mut body =
                             history_section(&walk, reachable, hot, distinct, &absent, policy);
+                        body.stopped_in = walk_cut.and(stopped_in.clone());
                         let Some(refs) = observed else {
                             return Err(Failure::new(
                                 "the survey key's ref observation was not handed to the \
@@ -2232,6 +2364,10 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
                                 (
                                     walk_cut == Some(SurveyReasonV1::MaxRecordBytes),
                                     SurveyReasonV1::MaxRecordBytes,
+                                ),
+                                (
+                                    walk_cut == Some(SurveyReasonV1::MalformedRecord),
+                                    SurveyReasonV1::MalformedRecord,
                                 ),
                                 (
                                     walk_cut == Some(SurveyReasonV1::MaxPaths),
@@ -2269,6 +2405,10 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
                     SurveyReasonV1::MaxRecordBytes,
                 ),
                 (
+                    walk_cut == Some(SurveyReasonV1::MalformedRecord),
+                    SurveyReasonV1::MalformedRecord,
+                ),
+                (
                     walk_cut == Some(SurveyReasonV1::MaxPaths),
                     SurveyReasonV1::MaxPaths,
                 ),
@@ -2287,7 +2427,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
         after_deadline()
     } else {
         let decisions_reader = reader("decisions");
-        let decisions_clock = decisions_reader.clock;
+        let decisions_clock = decisions_reader.clock.clone();
         let mut matched: Vec<&Entry> = declaring
             .iter()
             .filter(|entry| is_decision(&entry.path, policy))
@@ -2329,7 +2469,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
         after_deadline()
     } else {
         let vocabulary_reader = reader("vocabulary");
-        let vocabulary_clock = vocabulary_reader.clock;
+        let vocabulary_clock = vocabulary_reader.clock.clone();
         let file: Vec<&Entry> = declaring
             .iter()
             .filter(|entry| entry.path == policy.vocabulary)
@@ -2380,7 +2520,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
         after_deadline()
     } else {
         let checks_reader = reader("checks");
-        let checks_clock = checks_reader.clock;
+        let checks_clock = checks_reader.clock.clone();
         let mut declaring: Vec<&Entry> = declaring
             .iter()
             .filter(|entry| entry.path == CODE_POLICY || glob_matches(PIPELINES, &entry.path))
@@ -2408,6 +2548,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
     };
 
     Ok(Sections {
+        stopped_in: walk_cut.and(stopped_in),
         identity,
         tree,
         history,
@@ -2422,7 +2563,9 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
 /// tree, computed by the digest-only path of `review_source_git::digest` under what remains of
 /// the Survey's deadline (every git command of it under the lesser of its own limit and that):
 /// no blob written to any CAS, no listing buffered whole, at most the fixed manifest buffer and
-/// temporary manifest data, in the system's temporary directory and removed on every way out.
+/// temporary manifest data, in an `af-tree-digest-<pid>-*` directory of the system's temporary
+/// directory, removed on every way out and, when a killed process could not, by the crash sweep,
+/// which runs here first for the spills of processes that are gone.
 /// The reason when it did not finish: the deadline, a listing record over 64 KiB, or a ceiling.
 fn tree_digest(
     git: &Git,
@@ -2434,8 +2577,11 @@ fn tree_digest(
         return Ok(Err(SurveyTreeDigestReasonV1::Deadline));
     };
     let repo = git.repo_within(remaining);
+    let temp_parent = std::env::temp_dir();
+    // The spills of a refresh killed after it spilled, and only those whose process is gone.
+    review_sandbox::sweep_stale_tree_digests_in(&temp_parent);
     let digested =
-        review_source_git::committed_digest(&repo, head, digest_ceilings(), &std::env::temp_dir());
+        review_source_git::committed_digest(&repo, head, digest_ceilings(), &temp_parent);
     Ok(match digested {
         Ok(Ok(_)) | Err(_) if clock.passed() => Err(SurveyTreeDigestReasonV1::Deadline),
         Ok(Ok(digest)) => Ok(digest),

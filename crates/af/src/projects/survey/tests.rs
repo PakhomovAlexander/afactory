@@ -268,20 +268,43 @@ fn listings_batches_and_logs_are_read_as_they_stream() {
     ));
 
     // A merge and two commits as `log -z --numstat` prints them in the Surveyor's format.
-    let log = format!(
-        "\x1e{B}\x1f{A} {C}\x1f200\x1fAda\x1f\x1f\x1f\0\
-         \x1e{A}\x1f\x1f100\x1frenovate[bot]\x1f\x1fBob <b@example.invalid>\x1f\0\n\
-         2\t1\tsrc/lib.rs\0-\t-\tlogo.png\0\
-         \x1e{C}\x1f\x1f50\x1fAda\x1f\x1fClaude <c@example.invalid>\x1dCodex <x@example.invalid>\x1f\0\n\
-         1\t0\tREADME.md\0"
-    );
+    let log = [
+        logged(B, &format!("{A} {C}"), 200, "Ada", None, &[], &[]),
+        logged(
+            A,
+            "",
+            100,
+            "renovate[bot]",
+            None,
+            &["Bob <b@example.invalid>"],
+            &["2\t1\tsrc/lib.rs", "-\t-\tlogo.png"],
+        ),
+        logged(
+            C,
+            "",
+            50,
+            "Ada",
+            None,
+            &["Claude <c@example.invalid>", "Codex <x@example.invalid>"],
+            &["1\t0\tREADME.md"],
+        ),
+    ]
+    .concat();
     let policy = Policy::default();
     let mut commits: Vec<Commit> = Vec::new();
-    let ended = read_log(&mut log.as_bytes(), &clock(), &policy, |commit| {
-        commits.push(commit);
-        Ok(())
-    });
+    let mut stopped_in = None;
+    let ended = read_log(
+        &mut log.as_bytes(),
+        &clock(),
+        &policy,
+        &mut stopped_in,
+        |commit| {
+            commits.push(commit);
+            Ok(())
+        },
+    );
     assert_eq!(ended, Ended::Done);
+    assert_eq!(stopped_in, None);
     assert_eq!(commits.len(), 3);
     assert!(commits[0].merge && commits[0].changes.is_empty());
     assert_eq!(commits[0].name.as_deref(), Some("Ada"));
@@ -305,23 +328,228 @@ fn listings_batches_and_logs_are_read_as_they_stream() {
     );
     assert!(commits[2].agent, "a Co-Authored-By name alone");
     // A trailer is matched by its name, never by its address.
-    let address = format!("\x1e{A}\x1f\x1f1\x1fAda\x1f\x1fAda <claude@example.invalid>\x1f\0");
+    let address = logged(
+        A,
+        "",
+        1,
+        "Ada",
+        None,
+        &["Ada <claude@example.invalid>"],
+        &[],
+    );
     let mut commits = Vec::new();
-    read_log(&mut address.as_bytes(), &clock(), &policy, |commit| {
-        commits.push(commit);
-        Ok(())
-    });
+    read_log(
+        &mut address.as_bytes(),
+        &clock(),
+        &policy,
+        &mut None,
+        |commit| {
+            commits.push(commit);
+            Ok(())
+        },
+    );
     assert!(!commits[0].agent);
     let excluded = Policy {
         exclude: vec!["*.png".into()],
         ..Policy::default()
     };
     let mut commits = Vec::new();
-    read_log(&mut log.as_bytes(), &clock(), &excluded, |commit| {
-        commits.push(commit);
-        Ok(())
-    });
+    read_log(
+        &mut log.as_bytes(),
+        &clock(),
+        &excluded,
+        &mut None,
+        |commit| {
+            commits.push(commit);
+            Ok(())
+        },
+    );
     assert_eq!(commits[1].changes.len(), 1);
+}
+
+/// One commit as `log -z --numstat` prints it in [`measure::log_format`]: its fields, the email
+/// only under `email_hash`, the commit ID again, the trailers, the commit ID a third time, the
+/// NUL that ends the commit, and its numstat lines after a newline.
+fn logged(
+    id: &str,
+    parents: &str,
+    time: u64,
+    name: &str,
+    email: Option<&str>,
+    trailers: &[&str],
+    numstat: &[&str],
+) -> String {
+    let email = email.map_or(String::new(), |email| format!("{email}\0"));
+    let mut record = format!(
+        "{id}\0{parents}\0{time}\0{name}\0{email}{id}\0{}\0{id}\0\0",
+        trailers.join("\0")
+    );
+    if !numstat.is_empty() {
+        record.push('\n');
+        for line in numstat {
+            record.push_str(line);
+            record.push('\0');
+        }
+    }
+    record
+}
+
+#[test]
+fn the_log_is_split_by_nul_so_author_data_never_splits_a_record() {
+    use SurveyIdentityPolicyV1::{EmailHash, Name};
+    // A name of 256 printable bytes and then 0x1f, a byte the old format split fields at,
+    // reaches the identity whole: its `h:` key under both policies, the next commit intact.
+    let name = format!("{}\x1f", "n".repeat(256));
+    let hashed = format!("h:{}", hash16(&name));
+    for (identity, email, shown) in [
+        (Name, None, Some(hashed.clone())),
+        (EmailHash, Some("n@x.invalid"), None),
+    ] {
+        let policy = Policy {
+            identity,
+            ..Policy::default()
+        };
+        let log = [
+            logged(B, A, 200, &name, email, &[], &["1\t0\ta"]),
+            logged(A, "", 100, "Ada", email, &[], &["1\t0\tb"]),
+        ]
+        .concat();
+        let mut commits = Vec::new();
+        let mut stopped_in = None;
+        let ended = read_log(
+            &mut log.as_bytes(),
+            &clock(),
+            &policy,
+            &mut stopped_in,
+            |commit| {
+                commits.push(commit);
+                Ok(())
+            },
+        );
+        assert_eq!(ended, Ended::Done, "{identity:?}");
+        assert_eq!(commits.len(), 2, "{identity:?}");
+        assert_eq!(commits[0].key, hashed, "{identity:?}");
+        assert_eq!(commits[0].name, shown, "{identity:?}");
+        assert_eq!(commits[0].time, 200);
+        assert_eq!(commits[1].id, A);
+        assert_eq!(commits[1].changes.len(), 1);
+    }
+    // A trailer carrying 0x1f and a newline, from a message whose subject carries them too, is
+    // one trailer of one commit.
+    let log = logged(
+        A,
+        "",
+        100,
+        "Ada",
+        None,
+        &["Claude\x1f x\n y <c@example.invalid>"],
+        &["1\t0\ta"],
+    );
+    let mut commits = Vec::new();
+    let ended = read_log(
+        &mut log.as_bytes(),
+        &clock(),
+        &Policy::default(),
+        &mut None,
+        |commit| {
+            commits.push(commit);
+            Ok(())
+        },
+    );
+    assert_eq!(ended, Ended::Done);
+    assert_eq!(commits.len(), 1);
+    assert!(commits[0].agent);
+    assert_eq!(commits[0].key, measure_key(b"Ada"));
+    // The format repeats the commit ID after the fields and after the trailers, and asks for
+    // the email only under `email_hash`.
+    for (identity, fields) in [(Name, 8), (EmailHash, 9)] {
+        let format = measure::log_format(&Policy {
+            identity,
+            ..Policy::default()
+        });
+        assert_eq!(format.matches("%x00").count(), fields, "{format}");
+        assert_eq!(format.matches("%H").count(), 3, "{format}");
+        assert!(
+            !format.contains("%x1f") && !format.contains("%x1e"),
+            "{format}"
+        );
+    }
+}
+
+#[test]
+fn a_record_that_does_not_parse_stops_the_walk_at_its_commit_never_guessing_an_identity() {
+    use SurveyIdentityPolicyV1::EmailHash;
+    let first = logged(B, A, 200, "Ada", None, &[], &["1\t0\ta"]);
+    for (broken, why) in [
+        // A NUL inside the name shifts the fields: the ID is not where the format repeats it.
+        (
+            format!("{A}\0\0100\0Ev\0il\0{A}\0\0{A}\0\0"),
+            "a name holding a NUL",
+        ),
+        (
+            logged(A, "", 100, "Ada", None, &[], &["x\t0\ta"]),
+            "a numstat count that is not one",
+        ),
+        (
+            logged(A, "nope", 100, "Ada", None, &[], &[]),
+            "a parent that is not a commit",
+        ),
+        (
+            format!("{A}\0\0soon\0Ada\0{A}\0\0{A}\0\0"),
+            "a time that is not a number",
+        ),
+        (
+            format!(
+                "{}garbage\0",
+                logged(A, "", 100, "Ada", None, &[], &["1\t0\tb"])
+            ),
+            "an item that is neither a numstat line nor a commit",
+        ),
+    ] {
+        let log = format!("{first}{broken}");
+        let mut commits = Vec::new();
+        let mut stopped_in = None;
+        let ended = read_log(
+            &mut log.as_bytes(),
+            &clock(),
+            &Policy::default(),
+            &mut stopped_in,
+            |commit| {
+                commits.push(commit.id);
+                Ok(())
+            },
+        );
+        assert_eq!(
+            ended,
+            Ended::Bound(SurveyReasonV1::MalformedRecord),
+            "{why}"
+        );
+        assert_eq!(stopped_in.as_deref(), Some(A), "{why}: names the commit");
+        assert_eq!(
+            commits,
+            vec![B.to_string()],
+            "{why}: the commit before it counts"
+        );
+    }
+    // Under `email_hash` a NUL in the name would make the email field the rest of the name and
+    // the ID field the email: refused, never an identity of the wrong bytes.
+    let shifted = format!("{A}\0\0100\0Ev\0il\0e@x.invalid\0{A}\0\0{A}\0\0");
+    let mut stopped_in = None;
+    let policy = Policy {
+        identity: EmailHash,
+        ..Policy::default()
+    };
+    assert_eq!(
+        read_log(
+            &mut shifted.as_bytes(),
+            &clock(),
+            &policy,
+            &mut stopped_in,
+            |_| { panic!("no identity is guessed") }
+        ),
+        Ended::Bound(SurveyReasonV1::MalformedRecord)
+    );
+    assert_eq!(stopped_in.as_deref(), Some(A));
 }
 
 /// The 16-hex key of the exact author-name bytes, under `identity = "name"`.
@@ -351,16 +579,38 @@ fn no_record_of_a_stream_is_read_past_64_kib_and_no_commit_past_max_paths() {
         Ended::Done,
         "a record at the bound is read"
     );
-    let log = format!("\x1e{A}\x1f\x1f100\x1fAda\x1f\x1f\x1f\0\n1\t0\t{long}\0");
+    let log = logged(A, "", 100, "Ada", None, &[], &[&format!("1\t0\t{long}")]);
     let mut commits = 0;
+    let mut stopped_in = None;
     assert_eq!(
-        read_log(&mut log.as_bytes(), &clock(), &Policy::default(), |_| {
-            commits += 1;
-            Ok(())
-        }),
+        read_log(
+            &mut log.as_bytes(),
+            &clock(),
+            &Policy::default(),
+            &mut stopped_in,
+            |_| {
+                commits += 1;
+                Ok(())
+            }
+        ),
         Ended::Bound(SurveyReasonV1::MaxRecordBytes)
     );
     assert_eq!(commits, 0, "the commit it stopped in is not passed on");
+    assert_eq!(stopped_in.as_deref(), Some(A), "and is named");
+    // A field over the bound stops the walk in its commit too.
+    let log = logged(A, "", 100, &long, None, &[], &[]);
+    let mut stopped_in = None;
+    assert_eq!(
+        read_log(
+            &mut log.as_bytes(),
+            &clock(),
+            &Policy::default(),
+            &mut stopped_in,
+            |_| Ok(())
+        ),
+        Ended::Bound(SurveyReasonV1::MaxRecordBytes)
+    );
+    assert_eq!(stopped_in.as_deref(), Some(A));
 
     // A commit touching more paths than max_paths stops the walk; the walk tracks at most
     // max_paths distinct paths, and the commit that would pass it is not folded.
@@ -368,11 +618,41 @@ fn no_record_of_a_stream_is_read_past_64_kib_and_no_commit_past_max_paths() {
         max_paths: 2,
         ..Policy::default()
     };
-    let wide = format!("\x1e{A}\x1f\x1f100\x1fAda\x1f\x1f\x1f\0\n1\t0\ta\01\t0\tb\01\t0\tc\0");
+    let wide = logged(
+        A,
+        "",
+        100,
+        "Ada",
+        None,
+        &[],
+        &["1\t0\ta", "1\t0\tb", "1\t0\tc"],
+    );
+    let mut stopped_in = None;
     assert_eq!(
-        read_log(&mut wide.as_bytes(), &clock(), &few, |_| Ok(())),
+        read_log(
+            &mut wide.as_bytes(),
+            &clock(),
+            &few,
+            &mut stopped_in,
+            |_| Ok(())
+        ),
         Ended::Bound(SurveyReasonV1::MaxPaths)
     );
+    assert_eq!(stopped_in.as_deref(), Some(A));
+    // A bound the fold reaches names the commit it refused.
+    let narrow = logged(B, "", 100, "Ada", None, &[], &["1\t0\ta"]);
+    let mut stopped_in = None;
+    assert_eq!(
+        read_log(
+            &mut narrow.as_bytes(),
+            &clock(),
+            &few,
+            &mut stopped_in,
+            |_| { Err(SurveyReasonV1::MaxPaths) }
+        ),
+        Ended::Bound(SurveyReasonV1::MaxPaths)
+    );
+    assert_eq!(stopped_in.as_deref(), Some(B));
     let cutoff = 1_000 * DAY;
     let mut walk = Walk::new(cutoff, 2);
     walk.add(commit(A, cutoff, "Ada", false, &[("a", 1), ("b", 1)]))

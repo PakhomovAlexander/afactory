@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-survey:1",
   "title": "af/ProjectSurvey@1",
-  "description": "One kernel-measured description of a Project at one head (ADR-0152), recorded in the Project Store's CAS. Canonical JSON, every number decimal text, every map sorted by key; byte-identical for the same head, refs, policy, cutoff and Surveyor version. Display strings are at most 256 bytes and marked `truncated` when cut; identity strings and paths are exact. No host path, Provider ID or author email.",
+  "description": "One kernel-measured description of a Project at one head (ADR-0152), recorded in the Project Store's CAS. Canonical JSON, every number decimal text, every map sorted by key; a complete one byte-identical for the same head, refs digest, policy digest, Surveyor version, git version, cutoff and previous_survey_id, and one that is not complete names where it stopped. Display strings are at most 256 bytes and marked `truncated` when cut; identity strings and paths are exact. No host path, Provider ID or author email.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,6 +16,25 @@
     "vocabulary",
     "checks"
   ],
+  "if": {
+    "properties": {
+      "completeness": {
+        "const": "complete"
+      }
+    }
+  },
+  "then": {
+    "not": {
+      "required": [
+        "stopped"
+      ]
+    }
+  },
+  "else": {
+    "required": [
+      "stopped"
+    ]
+  },
   "properties": {
     "schema": {
       "const": "af/ProjectSurvey@1"
@@ -27,6 +46,10 @@
     "previous_survey_id": {
       "description": "The Survey before this one in the same Project Store.",
       "$ref": "#/$defs/digest"
+    },
+    "stopped": {
+      "description": "Where a Survey that is not complete stopped, so a replay of the record reproduces it; absent exactly when the Survey is complete.",
+      "$ref": "#/$defs/stop"
     },
     "identity": {
       "description": "Which Project and head, under which policy and rules.",
@@ -407,7 +430,11 @@
           "$ref": "#/$defs/decimal"
         },
         "oldest_reached": {
-          "description": "The oldest commit reached, when max_commits stopped the walk.",
+          "description": "The oldest commit reached, when the walk did not reach every reachable commit.",
+          "$ref": "#/$defs/commit"
+        },
+        "stopped_in": {
+          "description": "The commit whose log record stopped the walk unfolded: one over max_paths, a record over 64 KiB or a malformed record.",
           "$ref": "#/$defs/commit"
         },
         "churn_90d": {
@@ -1087,7 +1114,7 @@
       ]
     },
     "reason": {
-      "description": "The bound a section reached; manifest_bytes and temp_bytes are identity's alone, the fixed ceilings that stopped its Tree Digest.",
+      "description": "The bound a section reached; manifest_bytes and temp_bytes are identity's alone, the fixed ceilings that stopped its Tree Digest, and malformed_record is history's and contributors' alone, a log record that does not parse.",
       "enum": [
         "max_wall_ms",
         "max_commits",
@@ -1095,9 +1122,45 @@
         "max_entries",
         "max_file_bytes",
         "max_record_bytes",
+        "malformed_record",
         "manifest_bytes",
         "temp_bytes"
       ]
+    },
+    "stop": {
+      "description": "The section the deadline cut first, else the first section that is not complete; its reason; how many of its items the Survey's clock charged (the one that found the deadline and the section's last check included); under history the commit the walk stopped in, else the oldest one it reached; under max_file_bytes the first declaration not read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "section",
+        "reason",
+        "item"
+      ],
+      "properties": {
+        "section": {
+          "enum": [
+            "identity",
+            "tree",
+            "history",
+            "contributors",
+            "decisions",
+            "vocabulary",
+            "checks"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "item": {
+          "$ref": "#/$defs/decimal"
+        },
+        "commit": {
+          "$ref": "#/$defs/commit"
+        },
+        "path": {
+          "$ref": "#/$defs/repo_path"
+        }
+      }
     },
     "section_shape": {
       "description": "A complete section carries no reason; a partial or unavailable one names the bound it reached.",

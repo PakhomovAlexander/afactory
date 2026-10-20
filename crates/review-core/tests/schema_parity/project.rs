@@ -416,6 +416,7 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
         first_commit_unix_s: 1_700_000_000.into(),
         last_commit_unix_s: 1_791_000_000.into(),
         oldest_reached: Some(HEAD.into()),
+        stopped_in: None,
         churn_90d: BTreeMap::from([(
             "src".into(),
             SurveyChurnV1 {
@@ -541,6 +542,13 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
         schema: PROJECT_SURVEY_V1.into(),
         completeness: SurveyCompletenessV1::Partial,
         previous_survey_id: Some(digest('c')),
+        stopped: Some(SurveyStopV1 {
+            section: "history".into(),
+            reason: SurveyReasonV1::MaxCommits,
+            item: 9.into(),
+            commit: Some(HEAD.into()),
+            path: None,
+        }),
         identity: SurveySectionV1::complete(identity),
         tree: SurveySectionV1::complete(tree),
         history: SurveySectionV1::partial(SurveyReasonV1::MaxCommits, history),
@@ -549,6 +557,17 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
         vocabulary: SurveySectionV1::complete(vocabulary),
         checks: SurveySectionV1::complete(checks),
     }
+}
+
+/// `survey` naming the stopping point its sections determine, at item 7.
+fn restopped(
+    mut survey: review_core::project::ProjectSurveyV1,
+) -> review_core::project::ProjectSurveyV1 {
+    survey.stopped = survey.stopping_point().map(|mut stop| {
+        stop.item = 7.into();
+        stop
+    });
+    survey
 }
 
 /// The record, its schema and the Rust validator agree on what a Survey is.
@@ -573,6 +592,7 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
     cut.decisions = SurveySectionV1::unavailable(SurveyReasonV1::MaxWallMs);
     cut.vocabulary = SurveySectionV1::unavailable(SurveyReasonV1::MaxWallMs);
     cut.checks = SurveySectionV1::unavailable(SurveyReasonV1::MaxWallMs);
+    let cut = restopped(cut);
     cut.validate().unwrap();
     let cut_value = serde_json::to_value(&cut).unwrap();
     assert_eq!(
@@ -618,6 +638,7 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
         checks.toolchain.truncate(1);
         checks.seen = std::collections::BTreeMap::from([("toolchain".into(), 2.into())]);
     }
+    let cut_short = restopped(cut_short);
     cut_short.validate().unwrap();
     let cut_short_value = serde_json::to_value(&cut_short).unwrap();
     assert!(cut_short_value["identity"].get("tree_digest").is_none());
@@ -635,6 +656,7 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
         if let Some(identity) = stopped.identity.body.as_mut() {
             identity.tree_digest_reason = Some(reason);
         }
+        let stopped = restopped(stopped);
         stopped.validate().unwrap();
         let stopped_value = serde_json::to_value(&stopped).unwrap();
         assert_eq!(
@@ -691,6 +713,7 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
         }
         contributors.by_identity[1].key = "h:fedcba9876543210".into();
     }
+    let hashed = restopped(hashed);
     hashed.validate().unwrap();
     let hashed_value = serde_json::to_value(&hashed).unwrap();
     assert_valid(SCHEMA, &hashed_value);
@@ -858,10 +881,12 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
     if let Some(decisions) = leap_day.decisions.body.as_mut() {
         decisions.records[1].date = Some("2024-02-29".into());
     }
+    let leap_day = restopped(leap_day);
     leap_day.validate().unwrap();
     assert_valid(SCHEMA, &serde_json::to_value(&leap_day).unwrap());
     let mut record_bound = survey.clone();
     record_bound.history.reason = Some(SurveyReasonV1::MaxRecordBytes);
+    let record_bound = restopped(record_bound);
     record_bound.validate().unwrap();
     assert_valid(SCHEMA, &serde_json::to_value(&record_bound).unwrap());
     let mut unsummed = survey;
@@ -872,6 +897,190 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
         unsummed.validate().is_err(),
         "directories add up to the total"
     );
+}
+
+/// A Survey that is not complete names where it stopped, and only where its sections say.
+#[test]
+fn a_survey_that_is_not_complete_names_its_stopping_point() {
+    use review_core::project::*;
+    const SCHEMA: &str = "project-survey-v1.json";
+    let survey = full_survey();
+    let value = serde_json::to_value(&survey).unwrap();
+    assert_eq!(
+        value["stopped"],
+        json!({"section": "history", "reason": "max_commits", "item": "9", "commit": HEAD})
+    );
+
+    // A complete Survey names none; one that is not complete must.
+    let mut complete = survey.clone();
+    complete.history = SurveySectionV1::complete(complete.history.body.clone().unwrap());
+    complete.contributors = SurveySectionV1::complete(complete.contributors.body.clone().unwrap());
+    complete.completeness = SurveyCompletenessV1::Complete;
+    if let Some(history) = complete.history.body.as_mut() {
+        history.oldest_reached = None;
+        history.reachable_commits = history.commits;
+    }
+    assert!(
+        complete.validate().is_err(),
+        "a complete Survey names no stop"
+    );
+    assert_invalid(
+        SCHEMA,
+        &serde_json::to_value(&complete).unwrap(),
+        "a complete Survey names no stop",
+    );
+    complete.stopped = None;
+    complete.validate().unwrap();
+    assert_valid(SCHEMA, &serde_json::to_value(&complete).unwrap());
+    let unstopped = without(&value, "stopped");
+    assert_invalid(SCHEMA, &unstopped, "a partial Survey names its stop");
+    assert!(
+        serde_json::from_value::<ProjectSurveyV1>(unstopped)
+            .unwrap()
+            .validate()
+            .is_err(),
+        "a partial Survey names its stop"
+    );
+
+    // The deadline's section wins over an earlier bound; the commit is history's.
+    let mut deadline = survey.clone();
+    deadline.decisions = SurveySectionV1::unavailable(SurveyReasonV1::MaxWallMs);
+    deadline.vocabulary = SurveySectionV1::unavailable(SurveyReasonV1::MaxWallMs);
+    deadline.checks = SurveySectionV1::unavailable(SurveyReasonV1::MaxWallMs);
+    let stop = deadline.stopping_point().unwrap();
+    assert_eq!(
+        (stop.section.as_str(), stop.reason),
+        ("decisions", SurveyReasonV1::MaxWallMs)
+    );
+    assert_eq!(stop.commit, None);
+    assert!(
+        deadline.validate().is_err(),
+        "the stop names the deadline's section"
+    );
+    restopped(deadline).validate().unwrap();
+
+    // A malformed record names the commit history stopped in, and stops nothing but the walk.
+    let mut malformed = survey.clone();
+    malformed.history.reason = Some(SurveyReasonV1::MalformedRecord);
+    malformed.contributors.reason = Some(SurveyReasonV1::MalformedRecord);
+    let stopped_in = "4".repeat(40);
+    if let Some(history) = malformed.history.body.as_mut() {
+        history.stopped_in = Some(stopped_in.clone());
+    }
+    let malformed = restopped(malformed);
+    malformed.validate().unwrap();
+    let malformed_value = serde_json::to_value(&malformed).unwrap();
+    assert_valid(SCHEMA, &malformed_value);
+    assert_eq!(malformed_value["history"]["reason"], "malformed_record");
+    assert_eq!(
+        malformed_value["history"]["stopped_in"],
+        stopped_in.as_str()
+    );
+    assert_eq!(malformed_value["stopped"]["commit"], stopped_in.as_str());
+    let mut elsewhere = malformed.clone();
+    elsewhere.tree.completeness = SurveyCompletenessV1::Partial;
+    elsewhere.tree.reason = Some(SurveyReasonV1::MalformedRecord);
+    assert!(
+        restopped(elsewhere).validate().is_err(),
+        "malformed_record is history's and contributors' alone"
+    );
+    let mut misnamed = malformed.clone();
+    if let Some(stop) = misnamed.stopped.as_mut() {
+        stop.commit = Some(HEAD.into());
+    }
+    assert!(
+        misnamed.validate().is_err(),
+        "the stop's commit is history's"
+    );
+    let mut not_a_commit = malformed_value.clone();
+    not_a_commit["history"]["stopped_in"] = json!("HEAD");
+    assert_invalid(SCHEMA, &not_a_commit, "stopped_in is a commit ID");
+    // A history that reached no commit holds no measurement: the stop alone names the commit.
+    let mut first = malformed.clone();
+    first.history = SurveySectionV1::unavailable(SurveyReasonV1::MalformedRecord);
+    first.contributors = SurveySectionV1::unavailable(SurveyReasonV1::MalformedRecord);
+    if let Some(stop) = first.stopped.as_mut() {
+        stop.item = 1.into();
+    }
+    first.validate().unwrap();
+    assert_valid(SCHEMA, &serde_json::to_value(&first).unwrap());
+
+    // Under max_file_bytes the stop names the first declaration not read.
+    let mut unread = survey.clone();
+    unread.history = SurveySectionV1::complete(unread.history.body.clone().unwrap());
+    unread.contributors = SurveySectionV1::complete(unread.contributors.body.clone().unwrap());
+    if let Some(history) = unread.history.body.as_mut() {
+        history.oldest_reached = None;
+        history.reachable_commits = history.commits;
+    }
+    if let Some(checks) = unread.checks.body.as_mut() {
+        checks.unreadable = vec![".af/code-policy.toml".into(), ".af/pipelines/x.toml".into()];
+    }
+    unread.checks.completeness = SurveyCompletenessV1::Partial;
+    unread.checks.reason = Some(SurveyReasonV1::MaxFileBytes);
+    let unread = restopped(unread);
+    unread.validate().unwrap();
+    let unread_value = serde_json::to_value(&unread).unwrap();
+    assert_valid(SCHEMA, &unread_value);
+    assert_eq!(
+        unread_value["stopped"],
+        json!({
+            "section": "checks",
+            "reason": "max_file_bytes",
+            "item": "7",
+            "path": ".af/code-policy.toml"
+        })
+    );
+    let mut other_path = unread.clone();
+    if let Some(stop) = other_path.stopped.as_mut() {
+        stop.path = Some(".af/pipelines/x.toml".into());
+    }
+    assert!(
+        other_path.validate().is_err(),
+        "the first declaration not read"
+    );
+
+    for (broken, why) in [
+        (
+            {
+                let mut changed = value.clone();
+                changed["stopped"]["section"] = json!("activity");
+                changed
+            },
+            "the stop names a section of this version",
+        ),
+        (
+            {
+                let mut changed = value.clone();
+                changed["stopped"]["item"] = json!(9);
+                changed
+            },
+            "the item is decimal text",
+        ),
+        (
+            {
+                let mut changed = value.clone();
+                changed["stopped"]["line"] = json!("1");
+                changed
+            },
+            "the stop is closed",
+        ),
+        (
+            {
+                let mut changed = value.clone();
+                changed["stopped"]["path"] = json!("/etc/passwd");
+                changed
+            },
+            "a path is a repository path",
+        ),
+    ] {
+        assert_invalid(SCHEMA, &broken, why);
+        let typed = serde_json::from_value::<ProjectSurveyV1>(broken.clone());
+        assert!(
+            typed.is_err() || typed.unwrap().validate().is_err(),
+            "the Rust type accepted it ({why})"
+        );
+    }
 }
 
 #[test]
