@@ -592,7 +592,9 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         task_id: Some(format!("task-{index}")),
         bytes: 10,
         rule: Rule::Collection,
+        total_after: 0,
         unreadable: None,
+        deviation: None,
     };
     let report = |removals: Vec<Removal>, failures: Vec<String>, applied: bool| SweepReport {
         applied,
@@ -602,7 +604,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         total_after: 900,
         stop: Stop::NothingEvictable,
         removals,
-        held: Vec::new(),
+        left: Vec::new(),
         gate_cleanups: Vec::new(),
         registry_dropped: Vec::new(),
         failures,
@@ -637,7 +639,9 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         task_id: None,
         bytes: 4096,
         rule: Rule::Budget,
+        total_after: 0,
         unreadable: unreadable.map(str::to_string),
+        deviation: None,
     };
     let sweep = observation(&report(
         vec![
