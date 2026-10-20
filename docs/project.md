@@ -584,15 +584,16 @@ however often it runs. Surveys go only in the Storage Budget's own passes
 - every sweep's budget step may take any Survey, least recently used first among every entry,
   while af holds more than `max_bytes`, even below `keep_surveys`.
 
-Neither takes the newest complete Survey, a Survey of a Project Store whose `project.lock` a
-refresh or a plan holds, or a Survey used within the hour, so the protected Surveys may exceed
-`keep_surveys`. The Project's log, `workspaces.toml` and operator files are never reclaimed.
+Neither takes the newest complete Survey, a Survey of a Project Store whose `project.lock` cannot
+be taken now (a refresh or a plan holds it, or af cannot open it), or a Survey used within the
+hour, so the protected Surveys may exceed `keep_surveys`. The Project's log, `workspaces.toml` and operator files are never reclaimed.
 
 A collected Survey leaves a `SurveyCollected@1` tombstone in the Project Store's log, the run
 `survey-collection` ([schema](../schemas/project-survey-collected-v1.json)): its ID, head, cutoff,
 completeness and the totals of `tree` (files, bytes, lines) and `history` (commits, merges). The
 tombstone is appended before the record is deleted, and the next applied sweep deletes any record
-a tombstone names that an interruption left, with the rule `recovery`. `af project history` marks
+a tombstone names that an interruption left, with the rule `recovery`; the preview lists those
+under `recovery` too, with the bytes the applied sweep frees. `af project history` marks
 a collected Survey `collected` from its tombstone; its `--json` document lists the chain as
 before. `af project survey` exits 1 when the newest Survey was collected, saying so and naming
 `af project refresh`, and `af project show` then prints no Survey. A Survey's
@@ -601,20 +602,32 @@ before. `af project survey` exits 1 when the newest Survey was collected, saying
 A record is reached, read and deleted only through directory descriptors, the removal boundary of
 [ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md): the Project Store from `/`, then
 `cas`, `objects` and the record's two-digit prefix directory, each opened without following a
-link, and the record opened and unlinked relative to its prefix directory. A symbolic link on that
-way, or a directory on another device than the Store's, refuses the Survey: inventory measures
-nothing through it and lists it in use, and a sweep reports it as a failure with the reason, adds
-no tombstone and touches nothing outside the Store. A record the file system will not let af read
-(permission denied, an I/O error) is refused the same way and keeps its place in the log. A record
+link, and the record stated and opened relative to its prefix directory. Its deletion names the
+inode that was checked: the record is renamed into `cas/removing/<survey-id>` of the same Store,
+opened there without following a link and compared by device and inode with what was stated
+before its tombstone, and only a match is unlinked, its freed bytes those of the file deleted.
+Another file found there is moved back to its name (or left under `removing` when the name was
+taken again), nothing is deleted, and the sweep reports the Survey
+`refused (replaced during collection)`; the next sweep deletes what its name then holds. That next sweep also settles
+anything an interruption left under `removing`: back to its free name, or deleted when the name
+is taken and it is a collected Survey's record, or left and reported. A symbolic link on the way,
+or a directory on another device than the Store's, refuses the Survey: inventory measures nothing
+through it and lists it in use, and a sweep reports it as a failure with the reason, adds no
+tombstone and touches nothing outside the Store. A record the file system will not let af read
+(permission denied, an I/O error) is refused the same way and keeps its place in the log, and so
+is a record over 1 MiB, the most the Surveyor ever writes and af ever reads as a Survey: it is
+reported `refused (oversize, <bytes> bytes)` and left in place. A record within that ceiling
 whose bytes were read and are no Survey (they do not match its digest, or do not parse) is
 collected all the same, since reclaiming corrupt bytes is the budget's job: its tombstone carries
 `unreadable`, af's reason in at most 256 bytes, in place of the totals, its bytes are freed, and
 the sweep and `af project history` show it as `collected (unreadable)`.
 
-`af storage prune` without `--apply` previews the same pass: it applies the same `project.lock`
-check, so the Surveys of a Project Store a refresh or a plan holds are listed under `held` in
+`af storage prune` without `--apply` previews the same pass and decides `held` by the same
+predicate: `project.lock` opened as the applied sweep opens it and released at once. The Surveys
+of a Project Store a refresh or a plan holds, or whose lock af cannot open or lock
+(`lock unavailable: <error>`, say a lock file it may not write), are listed under `held` in
 `af/storage-prune@2` ([schema](../schemas/storage-prune-v2.json)) and `held survey …` in text,
-never as removals, exactly as the applied sweep lists them. A Task's `af/TaskStorageSweep@1`
+with the same reason, never as removals, exactly as the applied sweep lists them. A Task's `af/TaskStorageSweep@1`
 counts a Survey's removal without listing it; its kinds are unchanged.
 
 ```sh

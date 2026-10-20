@@ -4,22 +4,29 @@
 //! bytes, last used at its cutoff. The Storage Budget collects Surveys in its own passes only:
 //! the collection pass takes the Surveys of a Project beyond the newest `[storage] keep_surveys`,
 //! oldest first and idle at least `keep_days`, and the budget pass may take any Survey, oldest
-//! first, while af is over `max_bytes`. Neither takes the newest complete Survey, a Survey the
-//! Project Store's lock holds (a running refresh, a plan) or one used within the hour, and
-//! `af project refresh` collects nothing. Collection appends `SurveyCollected@1` to the Project
-//! Store's log before the record leaves the CAS; a pass that finds a tombstone whose record is
-//! still there finishes the deletion. The tombstones are a run of their own, `survey-collection`,
-//! beside the run `project` the Surveyor appends its chain to: a `SurveyRecorded@1` a tombstone
-//! names replays as collected, and `previous_survey_id` is a name, never a reachability edge.
+//! first, while af is over `max_bytes`. Neither takes the newest complete Survey, a Survey of a
+//! Project Store whose lock cannot be taken now (a running refresh, a plan, a lock file af may
+//! not open) or one used within the hour, and `af project refresh` collects nothing. Inventory,
+//! a preview and its pass decide that by one predicate, [`lock_available`]. Collection appends
+//! `SurveyCollected@1` to the Project Store's log before the record leaves the CAS; a pass that
+//! finds a tombstone whose record is still there finishes the deletion, and its preview lists it
+//! the same way. The tombstones are a run of their own, `survey-collection`, beside the run
+//! `project` the Surveyor appends its chain to: a `SurveyRecorded@1` a tombstone names replays
+//! as collected, and `previous_survey_id` is a name, never a reachability edge.
 //!
 //! A record is reached, read and deleted through directory descriptors, ADR-0144's removal
 //! boundary: the Project Store from `/`, then `cas`, `objects` and the digest-prefix directory,
-//! each opened without following a link, the object opened and unlinked relative to its prefix
-//! directory. A link anywhere on that way, or a directory on another device than the Store,
-//! refuses the Survey, which is reported and keeps its record and its place in the log. So does a
-//! record the file system will not let af read; a record whose bytes were read and are no Survey
-//! is collected with an `unreadable` tombstone, since reclaiming corrupt bytes is the budget's
-//! job.
+//! each opened without following a link. The deletion names the inode it checks: the record is
+//! renamed into `cas/removing/<survey-id>` of the same Store, opened there without following a
+//! link and compared by device and inode with what was found before the tombstone, and only a
+//! match is unlinked; another file is moved back to its name, or left under `removing` when the
+//! name is taken again, and the Survey is `refused (replaced during collection)`. The next pass
+//! finishes or reverts whatever an interruption left under `removing`. A link anywhere on the
+//! way, or a directory on another device than the Store, refuses the Survey, which is reported
+//! and keeps its record and its place in the log. So does a record the file system will not let
+//! af read, and one over [`MAX_SURVEY_BYTES`], the ceiling the Surveyor writes within, which is
+//! refused as `oversize`; a record within it whose bytes are no Survey is collected with an
+//! `unreadable` tombstone, since reclaiming corrupt bytes is the budget's job.
 //!
 //! The pattern rules of clause 14 live here too: a `[survey]` pattern is at most
 //! [`MAX_PATTERN_BYTES`] and a list at most [`MAX_PATTERNS`], and the measurement's one pattern
@@ -35,8 +42,8 @@ use std::time::{Duration, Instant};
 
 use review_core::EventType;
 use review_core::project::{
-    ProjectSurveyV1, SurveyCollectedHistoryV1, SurveyCollectedPayloadV1, SurveyCollectedTreeV1,
-    SurveyCompletenessV1, SurveyReasonV1, SurveyRecordedPayloadV1,
+    MAX_SURVEY_BYTES, ProjectSurveyV1, SurveyCollectedHistoryV1, SurveyCollectedPayloadV1,
+    SurveyCollectedTreeV1, SurveyCompletenessV1, SurveyReasonV1, SurveyRecordedPayloadV1,
 };
 use review_sandbox::Identity;
 use review_store::{Cas, EventStore, NewEvent};
@@ -50,13 +57,19 @@ pub(crate) const COLLECTION_RUN: &str = "survey-collection";
 /// The lock every writer of a Project Store holds: a refresh while it reads and records, a plan
 /// while it builds a Brief, and collection while it tombstones and deletes.
 const LOCK: &str = "project.lock";
+/// The directory of a Project Store's `cas` a record is moved into to be checked and deleted.
+const REMOVING: &str = "removing";
 const HOUR_MS: u64 = 3_600_000;
 /// Upper bound on one `[survey]` pattern.
 pub(crate) const MAX_PATTERN_BYTES: usize = 256;
 /// Upper bound on the patterns of one `[survey]` list.
 pub(crate) const MAX_PATTERNS: usize = 64;
-/// Why a held Project Store's Surveys stay.
+/// Why the Surveys of a Project Store a refresh or a plan holds stay.
 pub(crate) const HELD: &str = "a refresh or a plan holds its Project Store";
+/// Why the Surveys of a Project Store whose lock af cannot open stay, before the error.
+const LOCK_UNAVAILABLE: &str = "lock unavailable";
+/// How a Survey whose record was replaced between its identity read and its rename is refused.
+const REPLACED: &str = "refused (replaced during collection)";
 /// Why the newest complete Survey stays.
 const NEWEST_COMPLETE: &str = "the newest complete Survey of its Project";
 /// Upper bound on the reason an `unreadable` tombstone carries.
@@ -82,17 +95,185 @@ pub(crate) fn survey_of_object(object: &Path) -> Option<(PathBuf, String)> {
         .then(|| (store.to_path_buf(), survey_id))
 }
 
-/// One Survey's record, reached through directory descriptors (ADR-0144 clause 3): the Project
-/// Store from `/` and `cas`, `objects` and the digest-prefix directory below it, each opened
-/// `O_NOFOLLOW | O_DIRECTORY`, and the object stated without following it. It is read and
-/// unlinked relative to `prefix`, never through a path.
+/// A Project Store's `cas` and `objects` directories, reached through descriptors (ADR-0144
+/// clause 3): the Store from `/`, then `cas` and `objects` below it, each opened
+/// `O_NOFOLLOW | O_DIRECTORY` and on the Store's device.
+struct CasDirectories {
+    cas: OwnedFd,
+    objects: OwnedFd,
+    /// The device of the Project Store.
+    device: u64,
+}
+
+fn device_of(descriptor: &OwnedFd) -> Result<u64, String> {
+    Identity::of_descriptor(descriptor)
+        .map(|identity| identity.device)
+        .map_err(|error| format!("inspecting its CAS: {error}"))
+}
+
+fn open_cas(store: &Path) -> Result<CasDirectories, String> {
+    let relative = store
+        .strip_prefix("/")
+        .map_err(|_| "its Project Store is not named by an absolute path".to_string())?;
+    let root = review_sandbox::open_anchor(Path::new("/"))
+        .map_err(|error| format!("opening `/`: {error}"))?;
+    let directory = review_sandbox::open_beneath(&root, relative)
+        .map_err(|error| format!("its Project Store cannot be reached without a link: {error}"))?;
+    let cas = review_sandbox::open_beneath(&directory, Path::new("cas"))
+        .map_err(|error| format!("its CAS objects directory is refused: {error}"))?;
+    let objects = review_sandbox::open_beneath(&cas, Path::new("objects"))
+        .map_err(|error| format!("its CAS objects directory is refused: {error}"))?;
+    let device = device_of(&directory)?;
+    if device_of(&cas)? != device || device_of(&objects)? != device {
+        return Err("its CAS objects directory resolves outside its Project Store".into());
+    }
+    Ok(CasDirectories {
+        cas,
+        objects,
+        device,
+    })
+}
+
+/// The hex of a Survey's ID split into its prefix directory and its object's name.
+fn split(survey_id: &str) -> Result<(&str, &str), String> {
+    survey_id
+        .strip_prefix("sha256:")
+        .filter(|_| review_core::is_digest(survey_id))
+        .map(|hex| hex.split_at(2))
+        .ok_or_else(|| format!("`{survey_id}` names no CAS object"))
+}
+
+/// The prefix directory `name` of `objects`, opened without following a link and on `device`;
+/// `None` when there is none.
+fn open_prefix(objects: &OwnedFd, name: &str, device: u64) -> Result<Option<OwnedFd>, String> {
+    let prefix = match review_sandbox::open_beneath(objects, Path::new(name)) {
+        Ok(prefix) => prefix,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("its CAS prefix directory is refused: {error}")),
+    };
+    if device_of(&prefix)? != device {
+        return Err(format!(
+            "its CAS prefix directory `{name}` resolves outside its Project Store"
+        ));
+    }
+    Ok(Some(prefix))
+}
+
+/// Allocated bytes a `stat` reports.
+#[allow(clippy::unnecessary_cast)]
+fn allocated(stat: &nix::sys::stat::FileStat) -> u64 {
+    (stat.st_blocks as u64).saturating_mul(512)
+}
+
+fn kind_of(stat: &nix::sys::stat::FileStat) -> nix::sys::stat::SFlag {
+    use nix::sys::stat::SFlag;
+    SFlag::from_bits_truncate(stat.st_mode as nix::libc::mode_t) & SFlag::S_IFMT
+}
+
+/// What `name` of `directory` is, not following it; `None` when there is nothing.
+fn stat_at(directory: &OwnedFd, name: &str) -> Result<Option<nix::sys::stat::FileStat>, String> {
+    use nix::fcntl::AtFlags;
+    match nix::sys::stat::fstatat(directory, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(stat) => Ok(Some(stat)),
+        Err(nix::errno::Errno::ENOENT) => Ok(None),
+        Err(errno) => Err(format!("inspecting its record: {errno}")),
+    }
+}
+
+/// Open `name` of `directory` to read, never following a link and never waiting on a pipe.
+fn open_file(directory: &OwnedFd, name: &str) -> std::io::Result<std::fs::File> {
+    use nix::fcntl::{OFlag, openat};
+    openat(
+        directory,
+        name,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        nix::sys::stat::Mode::empty(),
+    )
+    .map(std::fs::File::from)
+    .map_err(std::io::Error::from)
+}
+
+/// At most one byte more than a Survey can hold of `file`.
+fn read_bounded(file: std::fs::File) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.take(MAX_SURVEY_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Rename `from` of `from_directory` to `to` of `to_directory`, never over a name that is taken.
+fn rename_free(
+    from_directory: &OwnedFd,
+    from: &str,
+    to_directory: &OwnedFd,
+    to: &str,
+) -> Result<(), rustix::io::Errno> {
+    rustix::fs::renameat_with(
+        from_directory,
+        from,
+        to_directory,
+        to,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+}
+
+/// `cas/removing` of a Store, created when absent without following a link, opened
+/// `O_NOFOLLOW | O_DIRECTORY` and on the Store's device; `None` when it is absent and `create`
+/// is off.
+fn open_removing(cas: &CasDirectories, create: bool) -> Result<Option<OwnedFd>, String> {
+    if create {
+        match nix::sys::stat::mkdirat(
+            &cas.cas,
+            REMOVING,
+            nix::sys::stat::Mode::from_bits_truncate(0o700),
+        ) {
+            Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
+            Err(errno) => return Err(format!("creating `cas/{REMOVING}`: {errno}")),
+        }
+    }
+    let removing = match review_sandbox::open_beneath(&cas.cas, Path::new(REMOVING)) {
+        Ok(removing) => removing,
+        Err(error) if !create && error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "its CAS `{REMOVING}` directory is refused: {error}"
+            ));
+        }
+    };
+    if device_of(&removing)? != cas.device {
+        return Err(format!(
+            "its CAS `{REMOVING}` directory resolves outside its Project Store"
+        ));
+    }
+    Ok(Some(removing))
+}
+
+/// Where in a removal a test may act.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// After the identity was read and the tombstone appended, before the rename.
+    BeforeRename,
+    /// After a replaced record was found under `removing`, before it is moved back.
+    BeforeMoveBack,
+}
+
+/// One Survey's record, reached through directory descriptors (ADR-0144 clause 3) and stated
+/// without following it: the identity its deletion is checked against. It is read and renamed
+/// relative to its prefix directory, never through a path.
 struct Record {
+    cas: CasDirectories,
     /// The digest-prefix directory.
     prefix: OwnedFd,
     /// The object's name in it.
     name: String,
+    /// The Survey whose record it is.
+    survey_id: String,
+    /// Its path, for a debug build's fixture.
+    object: PathBuf,
     /// The object as it was stated.
     identity: Identity,
+    /// Its length as it was stated.
+    size: u64,
     /// Allocated bytes of the object.
     bytes: u64,
 }
@@ -102,107 +283,290 @@ struct Record {
 /// object, a directory on another device than the Store's, or an object that is no regular file
 /// is the error: the record is never reached through it.
 fn locate(store: &Path, survey_id: &str) -> Result<Option<Record>, String> {
-    use nix::fcntl::AtFlags;
-    use nix::sys::stat::{SFlag, fstatat};
-    let hex = survey_id
-        .strip_prefix("sha256:")
-        .filter(|_| review_core::is_digest(survey_id))
-        .ok_or_else(|| format!("`{survey_id}` names no CAS object"))?;
-    let (prefix_name, name) = hex.split_at(2);
-    let relative = store
-        .strip_prefix("/")
-        .map_err(|_| "its Project Store is not named by an absolute path".to_string())?;
-    let root = review_sandbox::open_anchor(Path::new("/"))
-        .map_err(|error| format!("opening `/`: {error}"))?;
-    let directory = review_sandbox::open_beneath(&root, relative)
-        .map_err(|error| format!("its Project Store cannot be reached without a link: {error}"))?;
-    let objects = review_sandbox::open_beneath(&directory, Path::new("cas/objects"))
-        .map_err(|error| format!("its CAS objects directory is refused: {error}"))?;
-    let prefix = match review_sandbox::open_beneath(&objects, Path::new(prefix_name)) {
-        Ok(prefix) => prefix,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("its CAS prefix directory is refused: {error}")),
+    use nix::sys::stat::SFlag;
+    let (prefix_name, name) = split(survey_id)?;
+    let cas = open_cas(store)?;
+    let Some(prefix) = open_prefix(&cas.objects, prefix_name, cas.device)? else {
+        return Ok(None);
     };
-    let device = |descriptor: &OwnedFd| {
-        Identity::of_descriptor(descriptor)
-            .map(|identity| identity.device)
-            .map_err(|error| format!("inspecting its CAS: {error}"))
+    let Some(stat) = stat_at(&prefix, name)? else {
+        return Ok(None);
     };
-    let store_device = device(&directory)?;
-    if device(&objects)? != store_device || device(&prefix)? != store_device {
-        return Err(format!(
-            "its CAS prefix directory `{prefix_name}` resolves outside its Project Store"
-        ));
+    match kind_of(&stat) {
+        SFlag::S_IFREG => {}
+        SFlag::S_IFLNK => {
+            return Err(
+                "its record is a symbolic link; af never reads or removes through one".into(),
+            );
+        }
+        _ => return Err("its record is not a regular file".into()),
     }
-    let stat = match fstatat(&prefix, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-        Ok(stat) => stat,
-        Err(nix::errno::Errno::ENOENT) => return Ok(None),
-        Err(errno) => return Err(format!("inspecting its record: {errno}")),
-    };
-    let kind = SFlag::from_bits_truncate(stat.st_mode as nix::libc::mode_t) & SFlag::S_IFMT;
-    if kind == SFlag::S_IFLNK {
-        return Err("its record is a symbolic link; af never reads or removes through one".into());
-    }
-    if kind != SFlag::S_IFREG {
-        return Err("its record is not a regular file".into());
-    }
-    #[allow(clippy::unnecessary_cast)]
-    let bytes = (stat.st_blocks as u64).saturating_mul(512);
     Ok(Some(Record {
+        cas,
         prefix,
         name: name.to_string(),
+        survey_id: survey_id.to_string(),
+        object: object_path(store, survey_id),
         identity: Identity::of_stat(&stat),
-        bytes,
+        size: u64::try_from(stat.st_size).unwrap_or(0),
+        bytes: allocated(&stat),
     }))
 }
 
+/// How a record of `size` bytes is refused: more than a Survey can hold.
+fn oversize(size: u64) -> String {
+    format!(
+        "refused (oversize, {size} bytes): its record holds more than the {MAX_SURVEY_BYTES} \
+         bytes a Survey can hold, so it is left and adds no tombstone"
+    )
+}
+
+/// A debug build's fixture may replace a record between its identity read and its rename, as
+/// another process could: `AF_TEST_SURVEY_REPLACE_BEFORE_RENAME=<directory>` moves the record
+/// into that directory and puts a byte-identical copy, another inode, at its name. Release
+/// binaries never read it.
+fn replace_before_rename(object: &Path) {
+    #[cfg(debug_assertions)]
+    if let Some(aside) = std::env::var_os("AF_TEST_SURVEY_REPLACE_BEFORE_RENAME") {
+        let (Ok(bytes), Some(name)) = (std::fs::read(object), object.file_name()) else {
+            return;
+        };
+        if std::fs::rename(object, Path::new(&aside).join(name)).is_ok() {
+            let _ = std::fs::write(object, bytes);
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = object;
+}
+
 impl Record {
+    /// How it is refused when its stated length is over what a Survey can hold.
+    fn oversize(&self) -> Option<String> {
+        (self.size > MAX_SURVEY_BYTES).then(|| oversize(self.size))
+    }
+
     /// The record's bytes, read from the object opened relative to its prefix directory without
-    /// following a link, the same file [`locate`] stated; at most one byte beyond the largest
-    /// record a Survey can be.
+    /// following a link, the same file [`locate`] stated; at most one byte beyond
+    /// [`MAX_SURVEY_BYTES`].
     fn read(&self) -> std::io::Result<Vec<u8>> {
-        use nix::fcntl::{OFlag, openat};
-        let descriptor = openat(
-            &self.prefix,
-            self.name.as_str(),
-            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            nix::sys::stat::Mode::empty(),
-        )?;
-        let file = std::fs::File::from(descriptor);
+        let file = open_file(&self.prefix, &self.name)?;
         if Identity::of_descriptor(&file)? != self.identity {
             return Err(std::io::Error::other(
                 "the record changed since it was found",
             ));
         }
-        let mut bytes = Vec::new();
-        file.take(largest_record().saturating_add(1))
-            .read_to_end(&mut bytes)?;
-        Ok(bytes)
+        read_bounded(file)
     }
 
-    /// Unlink the object relative to its prefix directory, only while its name still holds the
-    /// file [`locate`] stated. Returns its allocated bytes.
-    fn unlink(self) -> Result<u64, String> {
-        use nix::fcntl::AtFlags;
+    /// Delete the record [`locate`] stated, and nothing else: it is renamed into
+    /// `cas/removing/<survey-id>`, opened there without following a link and `fstat`ed, and
+    /// unlinked only when that is the device and inode that was stated. Returns the allocated
+    /// bytes of the file it deleted. Another file is moved back to its name, or left under
+    /// `removing` when the name is taken again, and the deletion is [`REPLACED`].
+    fn remove(self) -> Result<u64, String> {
+        let object = self.object.clone();
+        self.remove_with(|step| {
+            if step == Step::BeforeRename {
+                replace_before_rename(&object);
+            }
+        })
+    }
+
+    fn remove_with(self, mut hook: impl FnMut(Step)) -> Result<u64, String> {
         use nix::unistd::{UnlinkatFlags, unlinkat};
-        let now = nix::sys::stat::fstatat(
-            &self.prefix,
-            self.name.as_str(),
-            AtFlags::AT_SYMLINK_NOFOLLOW,
-        )
-        .map_err(|errno| format!("inspecting its record: {errno}"))?;
-        if Identity::of_stat(&now) != self.identity {
-            return Err("its record changed since it was found, so it is left".into());
+        let removing = open_removing(&self.cas, true)?.ok_or("no `cas/removing`")?;
+        let moved = self.survey_id.as_str();
+        hook(Step::BeforeRename);
+        match rename_free(&self.prefix, &self.name, &removing, moved) {
+            Ok(()) => {}
+            // Gone since it was found: nothing of it is left to delete.
+            Err(rustix::io::Errno::NOENT) => return Ok(0),
+            Err(rustix::io::Errno::EXIST) => {
+                return Err(format!(
+                    "an earlier collection left `cas/{REMOVING}/{moved}`, so its record is left \
+                     until the next pass settles that"
+                ));
+            }
+            Err(errno) => return Err(format!("moving its record aside: {errno}")),
         }
-        unlinkat(&self.prefix, self.name.as_str(), UnlinkatFlags::NoRemoveDir)
-            .map_err(|errno| format!("deleting its record: {errno}"))?;
-        Ok(self.bytes)
+        let found = open_file(&removing, moved)
+            .and_then(|file| nix::sys::stat::fstat(&file).map_err(std::io::Error::from));
+        if let Ok(stat) = &found
+            && Identity::of_stat(stat) == self.identity
+        {
+            unlinkat(&removing, moved, UnlinkatFlags::NoRemoveDir).map_err(|errno| {
+                format!(
+                    "deleting its record from `cas/{REMOVING}`: {errno}; the next pass finishes it"
+                )
+            })?;
+            return Ok(allocated(stat));
+        }
+        hook(Step::BeforeMoveBack);
+        match rename_free(&removing, moved, &self.prefix, &self.name) {
+            Ok(()) => Err(format!(
+                "{REPLACED}: another file took its record's name since it was found, so that \
+                 file is put back and nothing is deleted"
+            )),
+            Err(errno) => Err(format!(
+                "{REPLACED}: another file took its record's name since it was found, and the \
+                 name is taken again ({errno}), so what was moved is left under \
+                 `cas/{REMOVING}/{moved}`"
+            )),
+        }
     }
 }
 
-/// The most bytes a Survey's record can hold: the ceiling of `max_survey_bytes`.
-fn largest_record() -> u64 {
-    Policy::default().max_survey_bytes
+/// What a pass does with one file an earlier collection left under `cas/removing`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Leftover {
+    /// Its name in the CAS is free: it goes back there, and the Survey's tombstone, when there
+    /// is one, then deletes it as any record a tombstone names.
+    Revert {
+        survey_id: String,
+        identity: Identity,
+        bytes: u64,
+    },
+    /// Its name is taken again, a tombstone names its Survey and its bytes are that Survey's
+    /// record: it is deleted.
+    Finish {
+        survey_id: String,
+        identity: Identity,
+        bytes: u64,
+    },
+    /// Anything else: left where it is, and said.
+    Leave { name: String, why: String },
+}
+
+/// The files under `cas/removing` of a Store, by name, and what a pass does with each. Reads
+/// only.
+fn leftovers(cas: &CasDirectories, collected: &BTreeSet<String>) -> Result<Vec<Leftover>, String> {
+    let Some(removing) = open_removing(cas, false)? else {
+        return Ok(Vec::new());
+    };
+    let mut names: Vec<String> = Vec::new();
+    let listing = rustix::fs::Dir::read_from(&removing)
+        .map_err(|errno| format!("listing `cas/{REMOVING}`: {errno}"))?;
+    for entry in listing {
+        let entry = entry.map_err(|errno| format!("listing `cas/{REMOVING}`: {errno}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name != "." && name != ".." {
+            names.push(name);
+        }
+    }
+    names.sort();
+    let mut judged = Vec::new();
+    for name in names {
+        let leave = |why: &str| Leftover::Leave {
+            name: name.clone(),
+            why: why.to_string(),
+        };
+        let Ok((prefix_name, rest)) = split(&name) else {
+            judged.push(leave("it names no Survey, so it is not af's"));
+            continue;
+        };
+        let stat = match stat_at(&removing, &name) {
+            Ok(Some(stat)) if kind_of(&stat) == nix::sys::stat::SFlag::S_IFREG => stat,
+            Ok(Some(_)) => {
+                judged.push(leave("it is not a regular file"));
+                continue;
+            }
+            Ok(None) => continue,
+            Err(why) => {
+                judged.push(leave(&why));
+                continue;
+            }
+        };
+        let (identity, bytes) = (Identity::of_stat(&stat), allocated(&stat));
+        let taken = open_prefix(&cas.objects, prefix_name, cas.device).and_then(|prefix| {
+            prefix.map_or(Ok(false), |prefix| {
+                stat_at(&prefix, rest).map(|found| found.is_some())
+            })
+        });
+        let taken = match taken {
+            Ok(taken) => taken,
+            Err(why) => {
+                judged.push(leave(&why));
+                continue;
+            }
+        };
+        if !taken {
+            judged.push(Leftover::Revert {
+                survey_id: name.clone(),
+                identity,
+                bytes,
+            });
+            continue;
+        }
+        let its_record = collected.contains(&name)
+            && open_file(&removing, &name)
+                .and_then(|file| {
+                    if Identity::of_descriptor(&file)? != identity {
+                        return Ok(false);
+                    }
+                    Ok(review_store::canonical::blob_content_id(&read_bounded(file)?) == name)
+                })
+                .unwrap_or(false);
+        judged.push(if its_record {
+            Leftover::Finish {
+                survey_id: name.clone(),
+                identity,
+                bytes,
+            }
+        } else {
+            leave("its name in the CAS is taken again and it is no collected Survey's record")
+        });
+    }
+    Ok(judged)
+}
+
+/// Settle one [`Leftover`] under the Store's lock: move it back or delete it, only while
+/// `cas/removing` still holds the file that was judged. Returns the bytes a deletion freed.
+fn settle(cas: &CasDirectories, leftover: &Leftover) -> Result<u64, String> {
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+    let (survey_id, identity) = match leftover {
+        Leftover::Revert {
+            survey_id,
+            identity,
+            ..
+        }
+        | Leftover::Finish {
+            survey_id,
+            identity,
+            ..
+        } => (survey_id.as_str(), *identity),
+        Leftover::Leave { why, .. } => return Err(why.clone()),
+    };
+    let removing = open_removing(cas, false)?.ok_or("its `cas/removing` is gone")?;
+    let file = open_file(&removing, survey_id)
+        .map_err(|error| format!("opening it under `cas/{REMOVING}`: {error}"))?;
+    let stat = nix::sys::stat::fstat(&file).map_err(|errno| format!("inspecting it: {errno}"))?;
+    if Identity::of_stat(&stat) != identity {
+        return Err("it changed since it was found".into());
+    }
+    if matches!(leftover, Leftover::Finish { .. }) {
+        unlinkat(&removing, survey_id, UnlinkatFlags::NoRemoveDir)
+            .map_err(|errno| format!("deleting it: {errno}"))?;
+        return Ok(allocated(&stat));
+    }
+    let (prefix_name, rest) = split(survey_id)?;
+    let prefix = match open_prefix(&cas.objects, prefix_name, cas.device)? {
+        Some(prefix) => prefix,
+        None => {
+            match nix::sys::stat::mkdirat(
+                &cas.objects,
+                prefix_name,
+                nix::sys::stat::Mode::from_bits_truncate(0o755),
+            ) {
+                Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
+                Err(errno) => return Err(format!("creating its prefix directory: {errno}")),
+            }
+            open_prefix(&cas.objects, prefix_name, cas.device)?
+                .ok_or("its prefix directory is gone")?
+        }
+    };
+    rename_free(&removing, survey_id, &prefix, rest)
+        .map_err(|errno| format!("moving it back to its name: {errno}"))?;
+    Ok(0)
 }
 
 /// `text` cut at a character boundary to what an `unreadable` tombstone holds.
@@ -214,8 +578,9 @@ fn bounded(text: String) -> String {
     text[..end].to_string()
 }
 
-/// What a Survey's record says for its tombstone: the totals of `tree` and `history`, or, when
-/// its bytes are no Survey, why, in af's own words, never the bytes themselves.
+/// What a Survey's record of at most [`MAX_SURVEY_BYTES`] says for its tombstone: the totals of
+/// `tree` and `history`, or, when its bytes are no Survey, why, in af's own words, never the
+/// bytes themselves.
 fn totals(
     survey_id: &str,
     bytes: &[u8],
@@ -226,12 +591,6 @@ fn totals(
     ),
     String,
 > {
-    if bytes.len() as u64 > largest_record() {
-        return Err(bounded(format!(
-            "its record holds more than {} bytes, more than any Survey",
-            largest_record()
-        )));
-    }
     if review_store::canonical::blob_content_id(bytes) != survey_id {
         return Err("its bytes do not match its digest".into());
     }
@@ -308,8 +667,29 @@ fn cutoff_ms(recorded: &SurveyRecordedPayloadV1) -> u64 {
     recorded.cutoff_unix_s.get().saturating_mul(1000)
 }
 
-fn lock_held(store: &Path) -> bool {
-    crate::storage::lock_held(&store.join(LOCK))
+/// The lock of the Project Store at `store`, taken without waiting and opened with the flags
+/// every holder opens it with. The error is why it cannot be taken now: [`HELD`] while a refresh
+/// or a plan holds it, `lock unavailable: <error>` while af cannot open or lock the file.
+fn take_lock(store: &Path) -> Result<nix::fcntl::Flock<std::fs::File>, String> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(store.join(LOCK))
+        .map_err(|error| format!("{LOCK_UNAVAILABLE}: {error}"))?;
+    nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock).map_err(
+        |(_, errno)| match errno {
+            nix::errno::Errno::EWOULDBLOCK => HELD.to_string(),
+            other => format!("{LOCK_UNAVAILABLE}: {other}"),
+        },
+    )
+}
+
+/// The one predicate by which inventory, a preview and an applied pass decide that the Surveys
+/// of the Project Store at `store` are held: its lock taken as an applied pass takes it, and
+/// released at once. The error is the reason each of them gives.
+pub(crate) fn lock_available(store: &Path) -> Result<(), String> {
+    take_lock(store).map(drop)
 }
 
 /// One Survey as the machine budget sees it.
@@ -328,25 +708,23 @@ pub(crate) struct Inventoried {
 /// The Surveys whose records the Project Store at `store` still holds, oldest first: a Survey
 /// a tombstone names is among them only while an interrupted collection left its bytes. A
 /// record that cannot be reached without a link is listed in use, with nothing measured through
-/// the link. Reads only.
+/// the link, and so is one over [`MAX_SURVEY_BYTES`]. Writes nothing but the lock file every
+/// holder of the Store creates.
 pub(crate) fn inventory(store: &Path) -> Result<Vec<Inventoried>, String> {
-    let events = EventStore::open_read_only(store.join("events.sqlite"))
-        .map_err(|error| error.to_string())?;
-    let log = Log::fold(&events.replay(RUN_ID).map_err(|error| error.to_string())?)?;
-    let collected = collected_ids(&events)?;
-    let held = lock_held(store);
+    let (log, collected) = read_only(store)?;
+    let held = lock_available(store).err();
     let protected = newest_complete(&log);
     let mut surveys = Vec::new();
     for recorded in oldest_first(&log) {
         let (bytes, refused) = match locate(store, &recorded.survey_id) {
             Ok(None) => continue,
-            Ok(Some(record)) => (record.bytes, None),
+            Ok(Some(record)) => (record.bytes, record.oversize()),
             Err(reason) => (0, Some(format!("its record is left: {reason}"))),
         };
         let in_use = if refused.is_some() {
             refused
-        } else if held {
-            Some(HELD.to_string())
+        } else if held.is_some() {
+            held.clone()
         } else if !collected.contains(&recorded.survey_id)
             && protected == Some(recorded.survey_id.as_str())
         {
@@ -390,18 +768,12 @@ fn beyond_limit<'a>(
         .collect()
 }
 
-/// The Project Store at `store`, held for collection without waiting; `None` while a refresh or
-/// a plan holds it, so it is left for the next pass.
-fn hold(store: &Path) -> Result<Option<ProjectStore>, String> {
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(store.join(LOCK))
-        .map_err(|error| format!("opening its lock: {error}"))?;
-    let Ok(lock) = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
-    else {
-        return Ok(None);
+/// The Project Store at `store`, held for collection without waiting: `Ok(Err(reason))` while
+/// its lock cannot be taken now ([`lock_available`]'s reason), so it is left for the next pass.
+fn hold(store: &Path) -> Result<Result<ProjectStore, String>, String> {
+    let lock = match take_lock(store) {
+        Ok(lock) => lock,
+        Err(reason) => return Ok(Err(reason)),
     };
     let cas = Cas::open_existing(store.join("cas")).map_err(|error| error.to_string())?;
     let events =
@@ -410,7 +782,7 @@ fn hold(store: &Path) -> Result<Option<ProjectStore>, String> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or("a Project Store is named by its hex")?;
-    Ok(Some(ProjectStore {
+    Ok(Ok(ProjectStore {
         directory: store.to_path_buf(),
         project_id: format!("sha256:{name}"),
         cas,
@@ -443,13 +815,23 @@ pub(crate) struct Taken {
     pub(crate) unreadable: Option<String>,
 }
 
+/// One Survey a collection chose and left because its Project Store's lock cannot be taken now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Held {
+    /// The CAS object of its record.
+    pub(crate) object: PathBuf,
+    /// The allocated bytes its record holds.
+    pub(crate) bytes: u64,
+    /// Why: [`HELD`], or `lock unavailable: <error>`.
+    pub(crate) reason: String,
+}
+
 /// What a collection did, or would do, with the Surveys it chose in one Project Store.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Pass {
     pub(crate) taken: Vec<Taken>,
-    /// Chosen and left because a refresh or a plan holds the Store: each record's object and
-    /// its bytes. Nothing was written.
-    pub(crate) held: Vec<(PathBuf, u64)>,
+    /// Chosen and left because the Store's lock cannot be taken now. Nothing was written.
+    pub(crate) held: Vec<Held>,
     /// Chosen and refused: each record's object and why. Its Survey keeps its record, and the
     /// log gains no tombstone for it, unless the reason says one was recorded.
     pub(crate) refused: Vec<(PathBuf, String)>,
@@ -457,24 +839,36 @@ pub(crate) struct Pass {
 
 /// Take one Survey of the Project Store at `directory`: its record found through descriptors and
 /// read for its tombstone, then, when `store` holds the Store (an applied pass), the tombstone
-/// appended and the record unlinked. A record that cannot be reached without a link, or that the
-/// file system will not let af read, refuses the Survey with nothing written; one whose bytes are
-/// no Survey, or that is gone from the CAS, is collected with `unreadable`.
+/// appended and the record deleted by [`Record::remove`]. A record that cannot be reached
+/// without a link, that the file system will not let af read or that holds more than
+/// [`MAX_SURVEY_BYTES`] refuses the Survey with nothing written; one within the ceiling whose
+/// bytes are no Survey, or that is gone from the CAS, is collected with `unreadable`. The error
+/// says how the Survey was refused, beginning `refused`.
 fn take(
     directory: &Path,
     store: Option<&mut ProjectStore>,
     recorded: &SurveyRecordedPayloadV1,
 ) -> Result<Taken, String> {
     let survey_id = recorded.survey_id.as_str();
-    let record = locate(directory, survey_id)?;
+    let record = locate(directory, survey_id).map_err(|why| format!("refused: {why}"))?;
     let read = match &record {
         None => Err("its record is not in the CAS".to_string()),
-        Some(record) => match record.read() {
-            Ok(bytes) => totals(survey_id, &bytes),
-            Err(error) => {
-                return Err(format!("its record cannot be read, so it is kept: {error}"));
+        Some(record) => {
+            if let Some(why) = record.oversize() {
+                return Err(why);
             }
-        },
+            match record.read() {
+                Ok(bytes) if bytes.len() as u64 > MAX_SURVEY_BYTES => {
+                    return Err(oversize(bytes.len() as u64));
+                }
+                Ok(bytes) => totals(survey_id, &bytes),
+                Err(error) => {
+                    return Err(format!(
+                        "refused: its record cannot be read, so it is kept: {error}"
+                    ));
+                }
+            }
+        }
     };
     let bytes = record.as_ref().map_or(0, |record| record.bytes);
     let (tree, history, unreadable) = match read {
@@ -499,10 +893,12 @@ fn take(
         unreadable: unreadable.clone(),
         collected_unix_ms: crate::storage::now_unix_ms().into(),
     };
-    tombstone.validate()?;
+    tombstone
+        .validate()
+        .map_err(|why| format!("refused: {why}"))?;
     let event = NewEvent::new(
         EventType::SurveyCollectedV1,
-        serde_json::to_value(&tombstone).map_err(|error| error.to_string())?,
+        serde_json::to_value(&tombstone).map_err(|error| format!("refused: {error}"))?,
     )
     .at(review_core::task::collection::collected_time(
         crate::storage::now_unix_ms(),
@@ -510,11 +906,14 @@ fn take(
     store
         .events
         .append(COLLECTION_RUN, &store.cas, event)
-        .map_err(|error| format!("recording SurveyCollected@1: {error}"))?;
+        .map_err(|error| format!("refused: recording SurveyCollected@1: {error}"))?;
     let bytes = match record {
         Some(_) if stop_after_tombstones() => 0,
-        Some(record) => record.unlink().map_err(|error| {
-            format!("{error}; its tombstone is recorded, and the next pass deletes it")
+        Some(record) => record.remove().map_err(|error| {
+            format!(
+                "{}; its tombstone is recorded, and the next pass deletes its record",
+                refusal(error)
+            )
         })?,
         None => 0,
     };
@@ -523,6 +922,15 @@ fn take(
         bytes,
         unreadable,
     })
+}
+
+/// A [`Record::remove`] error as a refusal: [`REPLACED`] already says so.
+fn refusal(error: String) -> String {
+    if error.starts_with(REPLACED) {
+        error
+    } else {
+        format!("refused: {error}")
+    }
 }
 
 /// [`take`] each of `chosen`, one at a time: a refused Survey is reported and the rest go on.
@@ -537,7 +945,7 @@ fn take_each(
             Ok(taken) => pass.taken.push(taken),
             Err(why) => pass.refused.push((
                 object_path(directory, &recorded.survey_id),
-                format!("Survey {} is refused: {why}", recorded.survey_id),
+                format!("Survey {} is {why}", recorded.survey_id),
             )),
         }
     }
@@ -549,11 +957,19 @@ fn read_held(store: &ProjectStore) -> Result<(Log, BTreeSet<String>), String> {
     Ok((store.log()?, collected_ids(&store.events)?))
 }
 
+/// The log and tombstones of the Project Store at `store`, read-only.
+fn read_only(store: &Path) -> Result<(Log, BTreeSet<String>), String> {
+    let events = EventStore::open_read_only(store.join("events.sqlite"))
+        .map_err(|error| error.to_string())?;
+    let log = Log::fold(&events.replay(RUN_ID).map_err(|error| error.to_string())?)?;
+    Ok((log, collected_ids(&events)?))
+}
+
 /// The collection pass in the Project Store at `store`: the Surveys [`beyond_limit`] chooses from
 /// a read-only look, previewed when `apply` is off, otherwise chosen again and taken under the
-/// Store's lock, which is taken only when the look chose any. Preview and pass apply the same
-/// lock check: while a refresh or a plan holds the Store, every Survey the look chose is listed
-/// held and nothing else is done.
+/// Store's lock, which is taken only when the look chose any. Preview and pass decide by
+/// [`lock_available`]: while the lock cannot be taken, every Survey the look chose is listed held
+/// with the same reason and nothing else is done.
 pub(crate) fn collect_beyond_limit(
     store: &Path,
     keep_surveys: usize,
@@ -562,10 +978,7 @@ pub(crate) fn collect_beyond_limit(
     apply: bool,
 ) -> Result<Pass, String> {
     let chosen: Vec<SurveyRecordedPayloadV1> = {
-        let events = EventStore::open_read_only(store.join("events.sqlite"))
-            .map_err(|error| error.to_string())?;
-        let log = Log::fold(&events.replay(RUN_ID).map_err(|error| error.to_string())?)?;
-        let collected = collected_ids(&events)?;
+        let (log, collected) = read_only(store)?;
         beyond_limit(&log, &collected, keep_surveys, idle_ms, now_ms)
             .into_iter()
             .cloned()
@@ -574,27 +987,29 @@ pub(crate) fn collect_beyond_limit(
     if chosen.is_empty() {
         return Ok(Pass::default());
     }
-    let all_held = || Pass {
+    let all_held = |reason: String| Pass {
         held: chosen
             .iter()
-            .map(|recorded| {
-                let bytes = locate(store, &recorded.survey_id)
+            .map(|recorded| Held {
+                object: object_path(store, &recorded.survey_id),
+                bytes: locate(store, &recorded.survey_id)
                     .ok()
                     .flatten()
-                    .map_or(0, |record| record.bytes);
-                (object_path(store, &recorded.survey_id), bytes)
+                    .map_or(0, |record| record.bytes),
+                reason: reason.clone(),
             })
             .collect(),
         ..Pass::default()
     };
     if !apply {
-        if lock_held(store) {
-            return Ok(all_held());
+        if let Err(reason) = lock_available(store) {
+            return Ok(all_held(reason));
         }
         return Ok(take_each(store, None, &chosen.iter().collect::<Vec<_>>()));
     }
-    let Some(mut held) = hold(store)? else {
-        return Ok(all_held());
+    let mut held = match hold(store)? {
+        Ok(held) => held,
+        Err(reason) => return Ok(all_held(reason)),
     };
     let (log, collected) = read_held(&held)?;
     let chosen = beyond_limit(&log, &collected, keep_surveys, idle_ms, now_ms);
@@ -602,29 +1017,28 @@ pub(crate) fn collect_beyond_limit(
 }
 
 /// The budget's eviction of one Survey, or its preview when `apply` is off: under the Store's
-/// lock, its protection read again (a newer complete Survey may have been recorded since
-/// inventory, this one may have become the newest complete one), then [`take`]n. A Survey
-/// already tombstoned has its record deleted.
+/// lock, or after [`lock_available`] for a preview, its protection read again (a newer complete
+/// Survey may have been recorded since inventory, this one may have become the newest complete
+/// one), then [`take`]n. A Survey already tombstoned has its record deleted.
 pub(crate) fn collect_one(store: &Path, survey_id: &str, apply: bool) -> Result<Taken, String> {
-    if !apply {
-        let events = EventStore::open_read_only(store.join("events.sqlite"))
-            .map_err(|error| error.to_string())?;
-        let log = Log::fold(&events.replay(RUN_ID).map_err(|error| error.to_string())?)?;
-        let recorded = log
-            .chain()
-            .into_iter()
-            .find(|recorded| recorded.survey_id == survey_id)
-            .cloned()
-            .ok_or_else(|| format!("its Project Store records no Survey {survey_id}"))?;
-        return take(store, None, &recorded);
-    }
-    let Some(mut held) = hold(store)? else {
-        return Err(format!("{HELD} now; the next pass tries again"));
+    let unavailable = |reason: String| format!("{reason} now; the next pass tries again");
+    let mut held = None;
+    let (log, collected) = if apply {
+        let holding = hold(store)?.map_err(unavailable)?;
+        let read = read_held(&holding)?;
+        held = Some(holding);
+        read
+    } else {
+        lock_available(store).map_err(unavailable)?;
+        read_only(store)?
     };
-    let (log, collected) = read_held(&held)?;
     if collected.contains(survey_id) {
-        let bytes = match locate(store, survey_id)? {
-            Some(record) => record.unlink()?,
+        let refused = |why: String| format!("Survey {survey_id} is {why}");
+        let bytes = match locate(store, survey_id)
+            .map_err(|why| refused(format!("refused: {why}")))?
+        {
+            Some(record) if apply => record.remove().map_err(|error| refused(refusal(error)))?,
+            Some(record) => record.bytes,
             None => 0,
         };
         return Ok(Taken {
@@ -644,48 +1058,189 @@ pub(crate) fn collect_one(store: &Path, survey_id: &str, apply: bool) -> Result<
         .find(|recorded| recorded.survey_id == survey_id)
         .cloned()
         .ok_or_else(|| format!("its Project Store records no Survey {survey_id}"))?;
-    take(store, Some(&mut held), &recorded)
+    take(store, held.as_mut(), &recorded).map_err(|why| format!("Survey {survey_id} is {why}"))
 }
 
-/// Finish what an interrupted collection left: the records of tombstoned Surveys still in the
-/// CAS of the Project Store at `store` are deleted through descriptors, and one that cannot be
-/// reached without a link is refused. A Store a refresh or a plan holds is left for the next
-/// pass.
-pub(crate) fn finish_collected(store: &Path) -> Result<Pass, String> {
-    let left: Vec<String> = {
+/// What finishing an interrupted collection in a Project Store would do, read without its lock:
+/// the files under `cas/removing`, and, in the order the tombstones were appended, every
+/// collected Survey whose record the CAS still holds, or will hold again once its leftover is
+/// moved back, with that record's bytes.
+struct Unfinished {
+    leftovers: Vec<Leftover>,
+    records: Vec<(String, u64)>,
+}
+
+impl Unfinished {
+    fn look(store: &Path, order: &[String], collected: &BTreeSet<String>) -> Result<Self, String> {
+        let leftovers = leftovers(&open_cas(store)?, collected)?;
+        let mut records = Vec::new();
+        let mut seen = BTreeSet::new();
+        for survey_id in order {
+            if !seen.insert(survey_id) {
+                continue;
+            }
+            let reverted = leftovers.iter().find_map(|leftover| match leftover {
+                Leftover::Revert {
+                    survey_id: moved,
+                    bytes,
+                    ..
+                } if moved == survey_id => Some(*bytes),
+                _ => None,
+            });
+            match (locate(store, survey_id), reverted) {
+                (Ok(Some(record)), _) => records.push((survey_id.clone(), record.bytes)),
+                (Ok(None), Some(bytes)) => records.push((survey_id.clone(), bytes)),
+                (Ok(None), None) => {}
+                // Said by the pass that tries it.
+                (Err(_), _) => records.push((survey_id.clone(), 0)),
+            }
+        }
+        Ok(Self { leftovers, records })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.leftovers.is_empty() && self.records.is_empty()
+    }
+
+    /// Every record it would delete, listed held for `reason`.
+    fn held(&self, store: &Path, reason: &str) -> Pass {
+        Pass {
+            held: self
+                .leftovers
+                .iter()
+                .filter_map(|leftover| match leftover {
+                    Leftover::Finish {
+                        survey_id, bytes, ..
+                    } => Some((survey_id.clone(), *bytes)),
+                    _ => None,
+                })
+                .chain(self.records.iter().cloned())
+                .map(|(survey_id, bytes)| Held {
+                    object: object_path(store, &survey_id),
+                    bytes,
+                    reason: reason.to_string(),
+                })
+                .collect(),
+            ..Pass::default()
+        }
+    }
+}
+
+/// How a leftover under `cas/removing` that stays is said.
+fn left_under_removing(store: &Path, name: &str, why: &str) -> (PathBuf, String) {
+    (
+        store.join("cas").join(REMOVING).join(name),
+        format!("what an earlier collection left under `cas/{REMOVING}/{name}` is left: {why}"),
+    )
+}
+
+/// How a collected Survey's record that stays is said.
+fn record_left(store: &Path, survey_id: &str, why: &str) -> (PathBuf, String) {
+    (
+        object_path(store, survey_id),
+        format!("the record of collected Survey {survey_id} is left: {why}"),
+    )
+}
+
+/// Finish what an interrupted collection left in the Project Store at `store`, or, when `apply`
+/// is off, say what that would do, entry for entry and with the same bytes. Each file under
+/// `cas/removing` goes back to its name when the name is free, is deleted when the name is taken
+/// again and it is a collected Survey's record, and is otherwise left and reported; then the
+/// record of every tombstoned Survey still in the CAS is deleted by [`Record::remove`]. While
+/// the Store's lock cannot be taken ([`lock_available`]), each record it would delete is listed
+/// held with the reason, by preview and pass alike, and nothing is done.
+pub(crate) fn finish_collected(store: &Path, apply: bool) -> Result<Pass, String> {
+    let (order, collected) = {
         let events = EventStore::open_read_only(store.join("events.sqlite"))
             .map_err(|error| error.to_string())?;
-        // In the order the tombstones were appended.
-        tombstones(&events)?
+        let order: Vec<String> = tombstones(&events)?
             .into_iter()
             .map(|tombstone| tombstone.survey_id)
-            .filter(|survey_id| !matches!(locate(store, survey_id), Ok(None)))
-            .collect()
+            .collect();
+        let collected: BTreeSet<String> = order.iter().cloned().collect();
+        (order, collected)
     };
-    if left.is_empty() || lock_held(store) {
+    let look = Unfinished::look(store, &order, &collected)?;
+    if look.is_empty() {
         return Ok(Pass::default());
     }
-    let Some(held) = hold(store)? else {
-        return Ok(Pass::default());
+    if !apply {
+        if let Err(reason) = lock_available(store) {
+            return Ok(look.held(store, &reason));
+        }
+        let mut pass = Pass::default();
+        for leftover in &look.leftovers {
+            match leftover {
+                Leftover::Finish {
+                    survey_id, bytes, ..
+                } => pass.taken.push(Taken {
+                    object: object_path(store, survey_id),
+                    bytes: *bytes,
+                    unreadable: None,
+                }),
+                Leftover::Leave { name, why } => {
+                    pass.refused.push(left_under_removing(store, name, why));
+                }
+                Leftover::Revert { .. } => {}
+            }
+        }
+        for (survey_id, bytes) in &look.records {
+            match locate(store, survey_id) {
+                Err(why) => pass
+                    .refused
+                    .push(record_left(store, survey_id, &refusal(why))),
+                Ok(_) => pass.taken.push(Taken {
+                    object: object_path(store, survey_id),
+                    bytes: *bytes,
+                    unreadable: None,
+                }),
+            }
+        }
+        return Ok(pass);
+    }
+    let held = match hold(store)? {
+        Ok(held) => held,
+        Err(reason) => return Ok(look.held(store, &reason)),
     };
-    let collected = collected_ids(&held.events)?;
+    let order: Vec<String> = tombstones(&held.events)?
+        .into_iter()
+        .map(|tombstone| tombstone.survey_id)
+        .collect();
+    let collected: BTreeSet<String> = order.iter().cloned().collect();
+    let cas = open_cas(store)?;
     let mut pass = Pass::default();
-    for survey_id in left
-        .iter()
-        .filter(|survey_id| collected.contains(*survey_id))
-    {
-        let object = object_path(store, survey_id);
-        match locate(store, survey_id).and_then(|record| record.map(Record::unlink).transpose()) {
-            Ok(None) => {}
-            Ok(Some(bytes)) => pass.taken.push(Taken {
-                object,
+    for leftover in leftovers(&cas, &collected)? {
+        match (&leftover, settle(&cas, &leftover)) {
+            (Leftover::Leave { name, why }, _) => {
+                pass.refused.push(left_under_removing(store, name, why));
+            }
+            (Leftover::Finish { survey_id, .. }, Ok(bytes)) => pass.taken.push(Taken {
+                object: object_path(store, survey_id),
                 bytes,
                 unreadable: None,
             }),
-            Err(why) => pass.refused.push((
-                object,
-                format!("the record of collected Survey {survey_id} is left: {why}"),
-            )),
+            (Leftover::Revert { .. }, Ok(_)) => {}
+            (Leftover::Finish { survey_id, .. } | Leftover::Revert { survey_id, .. }, Err(why)) => {
+                pass.refused
+                    .push(left_under_removing(store, survey_id, &why))
+            }
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for survey_id in &order {
+        if !seen.insert(survey_id) {
+            continue;
+        }
+        match locate(store, survey_id).and_then(|record| record.map(Record::remove).transpose()) {
+            Ok(None) => {}
+            Ok(Some(bytes)) => pass.taken.push(Taken {
+                object: object_path(store, survey_id),
+                bytes,
+                unreadable: None,
+            }),
+            Err(why) => pass
+                .refused
+                .push(record_left(store, survey_id, &refusal(why))),
         }
     }
     Ok(pass)
@@ -1431,21 +1986,181 @@ mod tests {
         assert!(error.contains("objects directory is refused"), "{error}");
     }
 
+    /// What `cas/removing` of a Store holds, by name.
+    fn under_removing(store: &Path) -> Vec<String> {
+        match std::fs::read_dir(store.join("cas/removing")) {
+            Ok(entries) => entries
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     #[test]
-    fn an_unlink_takes_only_the_file_that_was_found() {
-        let (_root, store, survey_id) = store_with(b"one");
+    fn a_removal_deletes_the_inode_it_found_and_reports_its_bytes() {
+        use std::os::unix::fs::MetadataExt;
+        let (_root, store, survey_id) = store_with(&vec![b'x'; 10_000]);
         let object = object_path(&store, &survey_id);
         let record = locate(&store, &survey_id).unwrap().unwrap();
-        // Another file took the name since.
-        std::fs::remove_file(&object).unwrap();
-        std::fs::write(&object, b"another").unwrap();
-        let error = record.unlink().unwrap_err();
-        assert!(error.contains("changed since"), "{error}");
-        assert!(object.is_file());
-        let record = locate(&store, &survey_id).unwrap().unwrap();
-        let bytes = record.bytes;
-        assert_eq!(record.unlink().unwrap(), bytes);
+        let allocated = std::fs::metadata(&object).unwrap().blocks() * 512;
+        assert_eq!(record.remove().unwrap(), allocated);
         assert!(!object.exists());
+        assert!(under_removing(&store).is_empty());
+    }
+
+    #[test]
+    fn a_record_replaced_before_its_rename_is_put_back_and_nothing_is_deleted() {
+        let (root, store, survey_id) = store_with(b"one");
+        let object = object_path(&store, &survey_id);
+        let aside = root.path().join("aside");
+        let record = locate(&store, &survey_id).unwrap().unwrap();
+        // Between the identity read and the rename the record moves away and a byte-identical
+        // copy, another inode, takes its name.
+        let error = record
+            .remove_with(|step| {
+                if step == Step::BeforeRename {
+                    std::fs::rename(&object, &aside).unwrap();
+                    std::fs::write(&object, b"one").unwrap();
+                }
+            })
+            .unwrap_err();
+        assert!(error.starts_with(REPLACED), "{error}");
+        assert!(error.contains("put back"), "{error}");
+        assert_eq!(std::fs::read(&object).unwrap(), b"one", "the copy is back");
+        assert_eq!(
+            std::fs::read(&aside).unwrap(),
+            b"one",
+            "the original is untouched"
+        );
+        assert!(under_removing(&store).is_empty());
+        // Found again, the copy is what its name holds, and it goes.
+        let record = locate(&store, &survey_id).unwrap().unwrap();
+        assert!(record.remove().unwrap() > 0);
+        assert!(!object.exists());
+        assert!(aside.is_file());
+    }
+
+    #[test]
+    fn a_replaced_record_whose_name_is_taken_again_is_left_under_removing() {
+        let (root, store, survey_id) = store_with(b"one");
+        let object = object_path(&store, &survey_id);
+        let aside = root.path().join("aside");
+        let record = locate(&store, &survey_id).unwrap().unwrap();
+        let error = record
+            .remove_with(|step| match step {
+                Step::BeforeRename => {
+                    std::fs::rename(&object, &aside).unwrap();
+                    std::fs::write(&object, b"two").unwrap();
+                }
+                Step::BeforeMoveBack => std::fs::write(&object, b"three").unwrap(),
+            })
+            .unwrap_err();
+        assert!(error.starts_with(REPLACED), "{error}");
+        assert!(error.contains("left under `cas/removing/"), "{error}");
+        assert_eq!(std::fs::read(&object).unwrap(), b"three");
+        assert_eq!(std::fs::read(&aside).unwrap(), b"one");
+        assert_eq!(under_removing(&store), vec![survey_id.clone()]);
+        assert_eq!(
+            std::fs::read(store.join("cas/removing").join(&survey_id)).unwrap(),
+            b"two"
+        );
+        // A leftover whose name is taken and whose bytes are no record of a collected Survey
+        // stays; so does one of a Survey no tombstone names.
+        let cas = open_cas(&store).unwrap();
+        let collected = BTreeSet::from([survey_id.clone()]);
+        assert!(matches!(
+            leftovers(&cas, &collected).unwrap()[..],
+            [Leftover::Leave { .. }]
+        ));
+    }
+
+    #[test]
+    fn leftovers_under_removing_are_reverted_or_finished() {
+        let (_root, store, survey_id) = store_with(b"one");
+        let object = object_path(&store, &survey_id);
+        let cas = open_cas(&store).unwrap();
+        let removing = open_removing(&cas, true).unwrap().unwrap();
+        drop(removing);
+        let moved = store.join("cas/removing").join(&survey_id);
+        let collected = BTreeSet::from([survey_id.clone()]);
+        // Interrupted after the rename: the name is free, so the record goes back.
+        std::fs::rename(&object, &moved).unwrap();
+        let judged = leftovers(&cas, &collected).unwrap();
+        assert!(
+            matches!(&judged[..], [Leftover::Revert { survey_id: id, .. }] if *id == survey_id),
+            "{judged:?}"
+        );
+        assert_eq!(settle(&cas, &judged[0]).unwrap(), 0);
+        assert_eq!(std::fs::read(&object).unwrap(), b"one");
+        assert!(under_removing(&store).is_empty());
+        // The name was taken again by a copy, and a tombstone names the Survey: the leftover,
+        // its record's bytes, is deleted with its bytes reported.
+        std::fs::copy(&object, &moved).unwrap();
+        let judged = leftovers(&cas, &collected).unwrap();
+        assert!(
+            matches!(&judged[..], [Leftover::Finish { .. }]),
+            "{judged:?}"
+        );
+        assert!(settle(&cas, &judged[0]).unwrap() > 0);
+        assert!(under_removing(&store).is_empty());
+        assert!(object.is_file(), "what holds its name is not touched");
+        // Without a tombstone it stays.
+        std::fs::copy(&object, &moved).unwrap();
+        let judged = leftovers(&cas, &BTreeSet::new()).unwrap();
+        assert!(
+            matches!(&judged[..], [Leftover::Leave { .. }]),
+            "{judged:?}"
+        );
+        assert!(settle(&cas, &judged[0]).is_err());
+        assert!(moved.is_file());
+        // Nothing af's: left.
+        std::fs::write(store.join("cas/removing/notes"), b"mine").unwrap();
+        let judged = leftovers(&cas, &collected).unwrap();
+        assert!(
+            judged.iter().any(
+                |leftover| matches!(leftover, Leftover::Leave { name, .. } if name == "notes")
+            )
+        );
+    }
+
+    #[test]
+    fn writer_reader_and_collector_share_one_ceiling() {
+        assert_eq!(MAX_SURVEY_BYTES, 1_048_576);
+        assert_eq!(Policy::default().max_survey_bytes, MAX_SURVEY_BYTES);
+    }
+
+    #[test]
+    fn a_record_over_the_ceiling_is_oversize_and_read_at_most_one_byte_beyond() {
+        let ceiling = MAX_SURVEY_BYTES as usize;
+        let (_root, store, survey_id) = store_with(&vec![b' '; ceiling]);
+        let record = locate(&store, &survey_id).unwrap().unwrap();
+        assert_eq!(record.oversize(), None);
+        assert_eq!(record.read().unwrap().len(), ceiling);
+        let (_root, store, survey_id) = store_with(&vec![b' '; 2 * ceiling]);
+        let record = locate(&store, &survey_id).unwrap().unwrap();
+        let why = record.oversize().unwrap();
+        assert!(
+            why.starts_with(&format!("refused (oversize, {} bytes)", 2 * ceiling)),
+            "{why}"
+        );
+        assert_eq!(record.read().unwrap().len(), ceiling + 1);
+    }
+
+    #[test]
+    fn the_lock_predicate_names_why_a_store_is_held() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_root, store, _) = store_with(b"one");
+        assert_eq!(lock_available(&store), Ok(()));
+        let lock = take_lock(&store).unwrap();
+        assert_eq!(lock_available(&store), Err(HELD.to_string()));
+        drop(lock);
+        let path = store.join(LOCK);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        if std::fs::OpenOptions::new().write(true).open(&path).is_err() {
+            let reason = lock_available(&store).unwrap_err();
+            assert!(reason.starts_with("lock unavailable: "), "{reason}");
+            assert_eq!(hold(&store).unwrap().err(), Some(reason));
+        }
     }
 
     #[test]
@@ -1460,9 +2175,6 @@ mod tests {
         assert!(!error.contains('`'), "{error}: no content of the record");
         let error = totals(&digest(b"{}"), b"{ }").unwrap_err();
         assert_eq!(error, "its bytes do not match its digest");
-        let huge = vec![b' '; largest_record() as usize + 1];
-        let error = totals(&digest(&huge), &huge).unwrap_err();
-        assert!(error.contains("more than any Survey"), "{error}");
         let long = "é".repeat(200);
         let cut = bounded(long);
         assert!(cut.len() <= MAX_UNREADABLE_BYTES && cut.chars().all(|c| c == 'é'));

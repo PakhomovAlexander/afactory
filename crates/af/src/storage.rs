@@ -944,14 +944,20 @@ pub(crate) fn sweep(
             });
         }
         report.failures.extend(left);
-        finish_collected_surveys(roots, &mut report);
     }
+    // Surveys an interrupted collection left: finished when applied, and listed by a preview
+    // exactly as the applied pass lists them (ADR-0152 clause 13).
+    finish_collected_surveys(roots, &mut report, apply);
     match drop_gone_registrations(roots, apply) {
         Ok(dropped) => report.registry_dropped = dropped,
         Err(error) => report.failures.push(error),
     }
     let mut stock = inventory(roots, Detail::Stores);
     report.total_before = report.total_before.saturating_add(stock.total());
+    if !apply {
+        // The applied pass deletes them before it measures: out of the preview's count too.
+        without_recovered_surveys(&mut stock, &report.removals);
+    }
     // What could not be measured is said with the result: a total that fits the budget is only
     // as complete as the inventory behind it.
     report.failures.extend(
@@ -2345,17 +2351,7 @@ fn collect_surveys(
                     });
                     taken.insert(collected.object);
                 }
-                for (object, bytes) in pass.held {
-                    report.held.push(Held {
-                        kind: Kind::Survey,
-                        path: object,
-                        bytes,
-                        reason: format!(
-                            "{}; the next pass tries again",
-                            crate::projects::survey::collect::HELD
-                        ),
-                    });
-                }
+                held_surveys(report, pass.held);
                 for (object, why) in pass.refused {
                     report
                         .failures
@@ -2409,10 +2405,53 @@ fn held_line(held: &Held) -> String {
     )
 }
 
+/// The Surveys a collection chose and left because their Project Store's lock cannot be taken
+/// now, each with the reason preview and pass share.
+fn held_surveys(report: &mut SweepReport, held: Vec<crate::projects::survey::collect::Held>) {
+    for held in held {
+        report.held.push(Held {
+            kind: Kind::Survey,
+            path: held.object,
+            bytes: held.bytes,
+            reason: format!("{}; the next pass tries again", held.reason),
+        });
+    }
+}
+
+/// A preview's inventory without what its recovery would delete first: the entry of each such
+/// Survey, or, for a record an interruption left under `cas/removing`, its bytes out of its
+/// Project Store's entry.
+fn without_recovered_surveys(stock: &mut Inventory, removals: &[Removal]) {
+    for removal in removals
+        .iter()
+        .filter(|removal| removal.kind == Kind::Survey && removal.rule == Rule::Recovery)
+    {
+        let before = stock.entries.len();
+        stock
+            .entries
+            .retain(|entry| !(entry.kind == Kind::Survey && entry.path == removal.path));
+        if stock.entries.len() < before {
+            continue;
+        }
+        let Some((project, _)) = crate::projects::survey::collect::survey_of_object(&removal.path)
+        else {
+            continue;
+        };
+        if let Some(entry) = stock
+            .entries
+            .iter_mut()
+            .find(|entry| entry.kind == Kind::ProjectStore && entry.path == project)
+        {
+            entry.bytes = entry.bytes.saturating_sub(removal.bytes);
+        }
+    }
+}
+
 /// Finish the Survey collections an interruption left between a tombstone and its deletion, in
 /// every registered Project Store reached without a link: counted and reported like a claim's
-/// recovery.
-fn finish_collected_surveys(roots: &Roots, report: &mut SweepReport) {
+/// recovery. A preview lists what the applied pass would finish, entry for entry, and counts
+/// nothing: its inventory still holds those bytes.
+fn finish_collected_surveys(roots: &Roots, report: &mut SweepReport, apply: bool) {
     let Ok(registered) = registry::read(&roots.registry) else {
         return;
     };
@@ -2423,10 +2462,12 @@ fn finish_collected_surveys(roots: &Roots, report: &mut SweepReport) {
         if plain_path(Path::new("/"), &entry.path).is_err() {
             continue;
         }
-        match crate::projects::survey::collect::finish_collected(&entry.path) {
+        match crate::projects::survey::collect::finish_collected(&entry.path, apply) {
             Ok(pass) => {
                 for finished in pass.taken {
-                    report.total_before = report.total_before.saturating_add(finished.bytes);
+                    if apply {
+                        report.total_before = report.total_before.saturating_add(finished.bytes);
+                    }
                     report.removals.push(Removal {
                         kind: Kind::Survey,
                         path: finished.object,
@@ -2436,6 +2477,7 @@ fn finish_collected_surveys(roots: &Roots, report: &mut SweepReport) {
                         unreadable: None,
                     });
                 }
+                held_surveys(report, pass.held);
                 for (object, why) in pass.refused {
                     report
                         .failures

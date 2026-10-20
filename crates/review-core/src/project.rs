@@ -1565,6 +1565,12 @@ mod tests {
     }
 }
 
+/// The most bytes one Survey's record can hold: the ceiling of `[survey] max_survey_bytes`
+/// (1 MiB, docs/design/project.md §3.4). The Surveyor never writes a longer record, af never
+/// reads one back as a Survey, and collection refuses one as `oversize` rather than taking it
+/// for corrupt (ADR-0152 clause 13).
+pub const MAX_SURVEY_BYTES: u64 = 1_048_576;
+
 /// The totals of a collected Survey's `tree` its tombstone keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
