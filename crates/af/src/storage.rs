@@ -588,8 +588,15 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
             }
         }
     }
-    for path in projects.into_iter().filter(|path| has_store(path)) {
-        project_store(&mut inventory, &path);
+    // The Surveys of at most so many Project Stores are read, in path order (the Store
+    // discovery ceiling); every Project Store is measured all the same.
+    let discovery = crate::projects::survey::collect::Discovery::current();
+    for (index, path) in projects
+        .into_iter()
+        .filter(|path| has_store(path))
+        .enumerate()
+    {
+        project_store(&mut inventory, &path, index < discovery.stores, discovery);
     }
     for path in campaigns.into_iter().filter(|path| has_store(path)) {
         match written_by_another_release(&path) {
@@ -741,11 +748,17 @@ fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
 }
 
 /// A Project Store (ADR-0151): its own log and CAS, `workspaces.toml` and the Task files and
-/// bindings of the Workspaces `af project workspace new` made. The Task Stores below it are
+/// bindings of the Workspaces `af project workspace new` made. Its Surveys are read with it
+/// unless `surveys` is off, past the Store discovery ceiling, which is then reported. The Task Stores below it are
 /// registered and counted on their own, so they are left out of its bytes. It is never evicted:
 /// it indexes the Project's Workspaces, and one another release wrote is kept while it still
 /// holds a Workspace directory, whose Task Store this release may well read.
-fn project_store(inventory: &mut Inventory, path: &Path) {
+fn project_store(
+    inventory: &mut Inventory,
+    path: &Path,
+    surveys: bool,
+    discovery: crate::projects::survey::collect::Discovery,
+) {
     let workspace_stores: Vec<PathBuf> = real_directories(&path.join("workspaces"))
         .into_iter()
         .map(|workspace| workspace.join("state"))
@@ -778,7 +791,14 @@ fn project_store(inventory: &mut Inventory, path: &Path) {
                     .fold(0, u64::saturating_add);
                 entry.bytes = entry.bytes.saturating_sub(below);
             }
-            surveys_into(inventory, path);
+            if surveys {
+                surveys_into(inventory, path);
+            } else {
+                inventory.problems.push(Problem {
+                    path: path.to_path_buf(),
+                    reason: discovery.beyond_stores(),
+                });
+            }
         }
         Err(reason) => inventory.problems.push(Problem {
             path: path.to_path_buf(),

@@ -152,7 +152,7 @@ checkout; and "workstream" as a second entity — the Workspace's label *is* the
 name, and the owner's `workstreams/<name>/` directories are Workspaces made by hand.
 
 **Survey**:
-One immutable, kernel-measured description of a Project at one exact head, `af/ProjectSurvey@1`
+One immutable, kernel-measured description of a Project at one exact head, `af/ProjectSurvey@2`
 in its Project Store: identity, tree, history, contributors, decisions, vocabulary and checks,
 every number decimal text, each section bounded by the `[survey]` policy and marked complete,
 partial or unavailable with the bound it reached. A model never writes one, it never holds an

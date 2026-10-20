@@ -18,32 +18,32 @@
   "properties": {
     "survey_id": {
       "description": "The CAS digest the collected record had.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "head": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/commit"
     },
     "cutoff_unix_s": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
     },
     "completeness": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/completeness"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/completeness"
     },
     "refs_digest": {
       "description": "The record's `identity.refs_digest`.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "policy_digest": {
       "description": "The record's `identity.policy_digest`.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "surveyor_version": {
       "description": "The record's `identity.surveyor_version`.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
     },
     "previous_survey_id": {
       "description": "The record's `previous_survey_id`, when it names one.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "tree": {
       "type": "object",
@@ -55,13 +55,13 @@
       ],
       "properties": {
         "files": {
-          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
         },
         "bytes": {
-          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
         },
         "lines": {
-          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
         }
       }
     },
@@ -74,16 +74,16 @@
       ],
       "properties": {
         "commits": {
-          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
         },
         "merges": {
-          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
         }
       }
     },
     "unreadable": {
       "description": "Why the record's bytes are no Survey (they do not match its digest, or do not parse): af's own sentence, never the record's content, a path or an email.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/text"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/text"
     },
     "collected_unix_ms": {
       "$ref": "urn:af:schema:project-registered:1#/$defs/unix_ms"

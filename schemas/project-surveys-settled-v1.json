@@ -17,7 +17,7 @@
       "type": "array",
       "uniqueItems": true,
       "items": {
-        "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+        "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
       }
     }
   }

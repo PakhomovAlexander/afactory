@@ -55,3 +55,13 @@
   and `$XDG_STATE_HOME/af/stores.toml` is version 2: a version-1 file is refused until it is
   deleted, and Stores register again as commands use them
   ([ADR-0151](docs/adr/0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)).
+- PJ1b close-out: this branch did not have it yet, so it is added here. Every `*-moved` step of
+  `af project workspace remove --delete-worktree` checks its original path: stopped after
+  `entry-moved` (or `checkout-moved`), a directory found at the entry's (or checkout's) original
+  path is a replacement that stops the removal, the recorded directory staying in its container,
+  nothing deleted and the Workspace registered, reported as `a new administrative entry appeared
+  at <path> since this removal moved the recorded one; clear it or move the recorded entry back,
+  then run the command again`; cleared or moved back, the same command finishes
+  (`a_directory_at_the_original_path_after_any_moved_step_stops_the_removal`,
+  [ADR-0151](docs/adr/0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+  clause 5).

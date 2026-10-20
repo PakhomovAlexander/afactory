@@ -32,11 +32,11 @@ use serde_json::{Value, json};
 
 const SCHEMAS: [&str; 182] = [
     "project-registered-v1.json",
-    "project-survey-v1.json",
+    "project-survey-v2.json",
     "project-survey-recorded-v1.json",
     "project-survey-failed-v1.json",
     "project-survey-pending-v1.json",
-    "project-history-v1.json",
+    "project-history-v2.json",
     "project-workspace-registered-v1.json",
     "project-workspace-removed-v1.json",
     "project-v1.json",

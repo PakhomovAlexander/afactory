@@ -7,7 +7,7 @@
 //! never in a record. The identities are derived by the `af` binary; these types fix their
 //! spelling and refuse anything that could carry a host path.
 //!
-//! A Survey (ADR-0152) is `af/ProjectSurvey@1`, one kernel-measured description of the Project at
+//! A Survey (ADR-0152) is `af/ProjectSurvey@2`, one kernel-measured description of the Project at
 //! one head, kept in the Project Store's CAS; `SurveyRecorded@1` and `SurveyFailed@1` record in
 //! the log that one was taken or could not be. Every number is decimal text, and neither the
 //! record nor an event holds a host path, a Provider ID or an email.
@@ -176,7 +176,42 @@ impl WorkspaceRemovedPayloadV1 {
 // Surveys (ADR-0152)
 
 /// The record type of a Survey: one kernel-measured description of a Project at one head.
-pub const PROJECT_SURVEY_V1: &str = "af/ProjectSurvey@1";
+/// Version 2 is the first that holds `stopped_record` in `history` and `contributors`.
+pub const PROJECT_SURVEY_V2: &str = "af/ProjectSurvey@2";
+
+/// The superseded record type: what an earlier build wrote before `stopped_record`. Refused by
+/// type (ADR-0145): never read, never migrated.
+pub const PROJECT_SURVEY_V1_SUPERSEDED: &str = "af/ProjectSurvey@1";
+
+/// How a record of the superseded type is refused.
+pub const SUPERSEDED_SURVEY: &str =
+    "af/ProjectSurvey@1 is a superseded version of the Survey record; another af release wrote it";
+
+/// The `schema` of a Survey record, deserialized only as [`PROJECT_SURVEY_V2`]: the superseded
+/// `@1` label is refused by type with [`SUPERSEDED_SURVEY`], before any other field is read as a
+/// field of this version.
+fn survey_schema<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    use serde::de::Error as _;
+    let schema = String::deserialize(deserializer)?;
+    match schema.as_str() {
+        PROJECT_SURVEY_V2 => Ok(schema),
+        PROJECT_SURVEY_V1_SUPERSEDED => Err(D::Error::custom(SUPERSEDED_SURVEY)),
+        _ => Err(D::Error::custom(format!(
+            "a Survey's schema is {PROJECT_SURVEY_V2}"
+        ))),
+    }
+}
+
+/// Whether `bytes` are a record of the superseded type: only its `schema` label is read, never
+/// a field of it, so it is recognised to be refused and is never decoded.
+pub fn is_superseded_survey(bytes: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    struct Label {
+        schema: String,
+    }
+    serde_json::from_slice::<Label>(bytes)
+        .is_ok_and(|label| label.schema == PROJECT_SURVEY_V1_SUPERSEDED)
+}
 
 /// How many release tags a Survey lists, newest first.
 pub const SURVEY_RELEASE_TAGS: usize = 5;
@@ -924,11 +959,13 @@ pub struct SurveyStopV1 {
     pub path: Option<String>,
 }
 
-/// `af/ProjectSurvey@1`: one immutable, kernel-measured description of a Project at one head.
-/// Canonical JSON; every number a decimal string; no host path, Provider ID or email.
+/// `af/ProjectSurvey@2`: one immutable, kernel-measured description of a Project at one head.
+/// Canonical JSON; every number a decimal string; no host path, Provider ID or email. The
+/// superseded `af/ProjectSurvey@1` is refused by type ([`SUPERSEDED_SURVEY`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProjectSurveyV1 {
+pub struct ProjectSurveyV2 {
+    #[serde(deserialize_with = "survey_schema")]
     pub schema: String,
     pub completeness: SurveyCompletenessV1,
     /// The Survey before this one in the same Project Store.
@@ -978,7 +1015,7 @@ fn is_top_level(name: &str) -> bool {
     name == "." || (crate::path::is_valid_repo_path(name) && !name.contains('/'))
 }
 
-impl ProjectSurveyV1 {
+impl ProjectSurveyV2 {
     /// The completeness of each section, in record order.
     pub fn sections(&self) -> [(&'static str, SurveyCompletenessV1, Option<SurveyReasonV1>); 7] {
         [
@@ -1091,8 +1128,8 @@ impl ProjectSurveyV1 {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != PROJECT_SURVEY_V1 {
-            return Err(format!("a Survey's schema is {PROJECT_SURVEY_V1}"));
+        if self.schema != PROJECT_SURVEY_V2 {
+            return Err(format!("a Survey's schema is {PROJECT_SURVEY_V2}"));
         }
         if self
             .previous_survey_id

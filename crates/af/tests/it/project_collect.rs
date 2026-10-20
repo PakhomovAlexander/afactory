@@ -518,7 +518,7 @@ fn an_explicit_collection_beyond_keep_surveys_tombstones_and_frees_the_bytes() {
     }
     assert!(lines[4].ends_with("(4 files, 3 commits)"), "{}", lines[4]);
     let listed = machine.json(&repo, &[], &["project", "history", "--json"]);
-    schemas::valid(&schemas::validator("project-history-v1.json"), &listed);
+    schemas::valid(&schemas::validator("project-history-v2.json"), &listed);
     assert_eq!(listed["surveys"].as_array().unwrap().len(), 5);
     // The newest Survey is uncollected, so `af project survey` shows it.
     let newest = machine.json(&repo, &[], &["project", "survey", "--json"]);
@@ -2563,6 +2563,7 @@ fn a_failed_settlement_sync_deletes_nothing_and_the_next_sweep_retries() {
     assert!(
         outcome.starts_with("failed: ")
             && outcome.contains("syncing `settled.json`")
+            && outcome.contains("the earlier record is put back and synced")
             && outcome.contains("its record is put back and nothing is deleted"),
         "{outcome}"
     );
@@ -2769,4 +2770,342 @@ fn af_storage_counts_an_abandoned_claim_as_the_preview_does() {
     assert_eq!(planned.len(), 1, "{previewed}");
     assert_eq!(planned[0]["bytes"], entries[0]["bytes"]);
     assert_eq!(planned[0]["total_after"], 0);
+}
+
+/// A settlement whose install sync fails and whose put-back's sync fails too (the debug
+/// build's `AF_TEST_SURVEY_FAIL_SETTLED_SYNC=2`) reports both failures and leaves the Survey an
+/// `unverified settlement`: nothing is deleted, its tombstone stays, and the next sweep, which
+/// reads a consistent `settled.json`, deletes the record as `recovery` and settles it.
+#[test]
+fn a_settlement_whose_rollback_sync_fails_too_is_left_unverified_and_deletes_nothing() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..2)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let oldest = &surveys[0];
+    let settled = machine.store().join("settled.json");
+    let pruned = prune(
+        &machine,
+        &repo,
+        &[
+            ("AF_STORAGE__KEEP_SURVEYS", "1"),
+            ("AF_TEST_SURVEY_FAIL_SETTLED_SYNC", "2"),
+        ],
+    );
+    let removals = removals_of(&pruned, "survey");
+    assert_eq!(removals.len(), 1, "{pruned}");
+    let outcome = removals[0]["outcome"].as_str().unwrap();
+    assert!(
+        outcome.starts_with("failed: ")
+            && outcome.contains("syncing `settled.json`: an injected failure")
+            && outcome.contains("syncing the put-back: an injected failure")
+            && outcome.contains("the Survey is left unverified settlement")
+            && outcome.contains("its record is put back and nothing is deleted"),
+        "{outcome}"
+    );
+    assert_eq!(removals[0]["bytes"], 0, "nothing freed");
+    assert!(machine.held(oldest), "the record is not deleted");
+    assert_eq!(machine.collected(), [oldest.clone()], "its tombstone stays");
+
+    let retried = prune(&machine, &repo, &[]);
+    assert_eq!(
+        removed(&retried, "recovery"),
+        [path_of(&machine, oldest)],
+        "{retried}"
+    );
+    assert!(!machine.held(oldest));
+    let record: Value = serde_json::from_slice(&std::fs::read(&settled).unwrap()).unwrap();
+    assert_eq!(record["survey_ids"], serde_json::json!([oldest]));
+    assert_consistent(&machine);
+}
+
+/// The device and inode of `path`, not following it.
+fn identity_of(path: &Path) -> (String, String) {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path).unwrap();
+    (metadata.dev().to_string(), metadata.ino().to_string())
+}
+
+/// A retry never discards a pending object's identity (ADR-0152 clause 2): a refresh that
+/// stopped after its record's bytes and their identity leaves the entry naming the object; a
+/// retry of the same bytes whose CAS write fails (the debug build's `AF_TEST_SURVEY_FAIL_PUT`)
+/// keeps that entry byte for byte, so it still names the first object, and collection reclaims
+/// that object and then clears the entry.
+#[test]
+fn a_retry_whose_put_fails_keeps_the_first_objects_identity_for_collection() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let kept = refresh(&machine, &repo, &at(0), true);
+    let (survey_id, entry) = stopped_refresh(&machine, &repo, &at(60));
+    let object = machine.object(&survey_id);
+    let first = std::fs::read(&entry).unwrap();
+    let named: Value = serde_json::from_slice(&first).unwrap();
+    let (device, inode) = identity_of(&object);
+    assert_eq!(
+        (
+            named["object"]["device"].as_str(),
+            named["object"]["inode"].as_str()
+        ),
+        (Some(device.as_str()), Some(inode.as_str()))
+    );
+
+    let (_, stderr) = machine.expect(
+        &repo,
+        &[
+            ("AF_TEST_SURVEY_CUTOFF_UNIX_S", &at(60)),
+            ("AF_TEST_SURVEY_FAIL_PUT", "1"),
+        ],
+        &["project", "refresh", "--force"],
+        1,
+    );
+    assert!(stderr.contains("AF_TEST_SURVEY_FAIL_PUT"), "{stderr}");
+    assert_eq!(
+        std::fs::read(&entry).unwrap(),
+        first,
+        "the entry still names the first object"
+    );
+    assert!(!machine.recorded().contains(&survey_id));
+
+    let previewed = preview(&machine, &repo, &[]);
+    let planned = removals_of(&previewed, "survey");
+    assert_eq!(planned.len(), 2, "{previewed}");
+    assert_eq!(planned[0]["path"], path_of(&machine, &survey_id).as_str());
+    assert_eq!(planned[0]["rule"], "recovery");
+    assert_eq!(planned[1]["path"], entry.to_str().unwrap());
+    let applied = prune(&machine, &repo, &[]);
+    assert_eq!(removals_of(&applied, "survey"), planned, "entry for entry");
+    assert!(!object.exists() && !entry.exists());
+    assert!(machine.held(&kept));
+    assert!(machine.collected().is_empty());
+}
+
+/// A pending entry is cleared only once no file with its inode remains (ADR-0152 clause 13):
+/// the object truncated in place, grown in place and then moved into a pass's container at its
+/// new length is still the entry's inode, so the applied sweep keeps the entry, its outcome
+/// `kept: object changed, still present`, and lists the object `foreign`; once the operator
+/// deletes it, the next apply clears the entry.
+#[test]
+fn a_pending_entry_stays_while_its_changed_object_is_present_and_goes_once_it_is_deleted() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let kept = refresh(&machine, &repo, &at(0), true);
+    let (survey_id, entry) = stopped_refresh(&machine, &repo, &at(60));
+    let object = machine.object(&survey_id);
+    std::fs::set_permissions(&object, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let length = std::fs::metadata(&object).unwrap().len();
+    let container = machine
+        .store()
+        .join("cas/removing")
+        .join("0123456789abcdef0123456789abcdef");
+    let moved = container.join(&survey_id);
+    let resize = |at: &Path, to: u64| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(at)
+            .unwrap()
+            .set_len(to)
+            .unwrap();
+    };
+    for (case, at) in [
+        ("truncated", object.clone()),
+        ("grown", object.clone()),
+        ("moved", moved.clone()),
+    ] {
+        match case {
+            "truncated" => resize(&object, length / 2),
+            "grown" => resize(&object, length + 7),
+            _ => {
+                std::fs::create_dir_all(&container).unwrap();
+                std::fs::rename(&object, &moved).unwrap();
+            }
+        }
+        let applied = prune(&machine, &repo, &[]);
+        let foreign: Vec<String> = left(&applied, "foreign")
+            .iter()
+            .map(|left| left["path"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(foreign, [at.to_str().unwrap()], "{case}: {applied}");
+        let clear: Vec<Value> = removals_of(&applied, "survey")
+            .into_iter()
+            .filter(|removal| removal["path"] == entry.to_str().unwrap())
+            .collect();
+        assert_eq!(clear.len(), 1, "{case}: {applied}");
+        let outcome = clear[0]["outcome"].as_str().unwrap();
+        assert!(
+            outcome.starts_with("failed: ")
+                && outcome.contains("kept: object changed, still present"),
+            "{case}: {outcome}"
+        );
+        assert!(
+            entry.is_file() && at.is_file(),
+            "{case}: nothing is removed"
+        );
+    }
+
+    // The operator deletes it: no file with its inode is left, so the next apply clears the
+    // entry, and the dead pass's container, empty now, goes with it.
+    std::fs::remove_file(&moved).unwrap();
+    let applied = prune(&machine, &repo, &[]);
+    assert!(
+        removals_of(&applied, "survey")
+            .iter()
+            .any(|removal| removal["path"] == entry.to_str().unwrap()
+                && removal.get("outcome").is_none()),
+        "{applied}"
+    );
+    assert!(!entry.exists() && !container.exists());
+    assert!(machine.held(&kept));
+    assert!(machine.collected().is_empty());
+}
+
+/// The `reason` of every problem `af storage --json` reports under `env`, by path.
+fn storage_problems(machine: &Machine, repo: &Path, env: &[(&str, &str)]) -> Vec<(String, String)> {
+    let shown = machine.json(repo, env, &["storage", "--json"]);
+    schemas::valid(&schemas::validator("storage-v3.json"), &shown);
+    shown["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|problem| {
+            (
+                problem["path"].as_str().unwrap().to_string(),
+                problem["reason"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// A Project Store whose log one of the row ceilings stops (a debug build lowers it, as it may
+/// only be lowered): `af storage` reports the Store with that ceiling's name and lists none of
+/// its Surveys, which are kept, and the applied sweep plans none of them, even under a budget
+/// that wants every byte.
+fn a_ceiling_keeps_the_stores_surveys(variable: &str, value: &str, ceiling: &str) {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..2)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let env = [(variable, value)];
+    let problems = storage_problems(&machine, &repo, &env);
+    let store = machine.store();
+    assert!(
+        problems
+            .iter()
+            .any(|(path, reason)| path == store.to_str().unwrap()
+                && reason.contains("its log is beyond a Store discovery ceiling")
+                && reason.contains(ceiling)),
+        "{problems:?}"
+    );
+    let shown = machine.json(&repo, &env, &["storage", "--json"]);
+    let entries: Vec<&Value> = shown["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "survey")
+        .collect();
+    assert!(entries.is_empty(), "{entries:?}");
+    let squeeze = [(variable, value), ("AF_STORAGE__MAX_BYTES", "1")];
+    let applied = machine.json(&repo, &squeeze, &["storage", "prune", "--apply", "--json"]);
+    assert!(removals_of(&applied, "survey").is_empty(), "{applied}");
+    for survey_id in &surveys {
+        assert!(machine.held(survey_id), "{survey_id} is kept");
+    }
+    // Within the ceilings again, the Store is read as before.
+    assert!(
+        storage_problems(&machine, &repo, &[])
+            .iter()
+            .all(|(path, _)| path != store.to_str().unwrap())
+    );
+    assert_eq!(survey_entries(&machine, &repo).1.len(), 2);
+}
+
+/// The Store discovery ceiling of rows per Store (100,000, design note §3.3), lowered to two.
+#[test]
+fn a_project_store_log_beyond_the_row_ceiling_keeps_its_surveys() {
+    a_ceiling_keeps_the_stores_surveys("AF_TEST_SURVEY_DISCOVERY_ROWS", "2", "max_rows");
+}
+
+/// The Store discovery ceiling of bytes per row (1 MiB), lowered below one event's.
+#[test]
+fn a_project_store_row_beyond_the_row_bytes_ceiling_keeps_its_surveys() {
+    a_ceiling_keeps_the_stores_surveys("AF_TEST_SURVEY_DISCOVERY_ROW_BYTES", "64", "max_row_bytes");
+}
+
+/// The Store discovery ceiling of buffered bytes over a Store's rows (16 MiB), lowered below
+/// what its events hold together while each row fits.
+#[test]
+fn a_project_store_log_beyond_the_buffered_bytes_ceiling_keeps_its_surveys() {
+    a_ceiling_keeps_the_stores_surveys(
+        "AF_TEST_SURVEY_DISCOVERY_BUFFERED_BYTES",
+        "1200",
+        "max_buffered_bytes",
+    );
+}
+
+/// The Store discovery ceiling of Project Stores whose Surveys the inventory reads (1,000),
+/// lowered to one: of two Project Stores, in path order, the first's Surveys are listed and the
+/// second is reported with the ceiling, still measured as a Project Store, its Surveys kept.
+#[test]
+fn project_stores_beyond_the_store_discovery_ceiling_are_reported_and_their_surveys_kept() {
+    let machine = Machine::new();
+    let first = repository(&machine, "");
+    refresh(&machine, &first, &at(0), true);
+    let second = machine.root().join("collect-second");
+    std::fs::create_dir_all(&second).unwrap();
+    git(&second, &["init", "-q", "-b", "main"]);
+    write(&second, "README.md", "another history\n");
+    git(&second, &["add", "-A"]);
+    git(&second, &["commit", "-q", "-m", "Another root"]);
+    machine.expect(
+        &second,
+        &[("AF_TEST_SURVEY_CUTOFF_UNIX_S", &at(0))],
+        &["project", "refresh", "--force"],
+        0,
+    );
+    let mut stores: Vec<PathBuf> = std::fs::read_dir(machine.root().join("state/af/project"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    stores.sort();
+    assert_eq!(stores.len(), 2);
+
+    let env = [("AF_TEST_SURVEY_DISCOVERY_STORES", "1")];
+    let shown = machine.json(&first, &env, &["storage", "--json"]);
+    schemas::valid(&schemas::validator("storage-v3.json"), &shown);
+    let problems: Vec<&Value> = shown["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|problem| problem["reason"].as_str().unwrap().contains("max_stores"))
+        .collect();
+    assert_eq!(problems.len(), 1, "{shown}");
+    assert_eq!(problems[0]["path"], stores[1].to_str().unwrap());
+    assert!(
+        problems[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("the inventory reads the Surveys of at most 1 Project Stores"),
+        "{shown}"
+    );
+    let entries = shown["entries"].as_array().unwrap();
+    let in_store = |store: &Path, kind: &str| {
+        entries
+            .iter()
+            .filter(|entry| {
+                entry["kind"] == kind
+                    && Path::new(entry["path"].as_str().unwrap()).starts_with(store)
+            })
+            .count()
+    };
+    assert_eq!(in_store(&stores[0], "survey"), 1, "{shown}");
+    assert_eq!(in_store(&stores[1], "survey"), 0, "{shown}");
+    assert_eq!(
+        in_store(&stores[1], "project_store"),
+        1,
+        "still measured: {shown}"
+    );
+    let (_, all) = survey_entries(&machine, &first);
+    assert_eq!(all.len(), 2, "both listed within the ceiling");
 }

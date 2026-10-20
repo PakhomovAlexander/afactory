@@ -73,3 +73,24 @@
   cells and `*a` thirty times then `b` no longer hangs; a `[survey]` pattern is at most 256 bytes
   and a list at most 64 patterns, and the Surveyor checks its deadline before each pattern it
   matches ([ADR-0152](docs/adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md)).
+- PJ2c close-out, collection: a pending entry whose event never committed is cleared only once no
+  file with its inode remains at its Survey's CAS name or in a pass's container, whatever its
+  length; an object truncated or grown in place, or moved so, keeps the entry (`failed: … kept:
+  object changed, still present`) and is listed `foreign` until it is gone
+  (`a_pending_entry_stays_while_its_changed_object_is_present_and_goes_once_it_is_deleted`).
+  When the directory sync after `settled.json` is installed fails, the put-back is synced too
+  before the pass goes on, and when that fails as well both failures are reported and the
+  Survey is left `unverified settlement`, its record not deleted until a later sweep reads a
+  consistent `settled.json` (`a_settlement_whose_rollback_sync_fails_too_is_left_unverified_and_deletes_nothing`).
+  Where the inventory walks Stores it holds to the Store discovery ceilings: the Surveys of at most
+  1,000 Project Stores, and each Store's log read through one cursor of at most 100,000 rows, 1 MiB
+  per row and 16 MiB over all rows; a Store past one is reported naming the ceiling and its
+  Surveys are kept, one fixture per ceiling
+  (`project_stores_beyond_the_store_discovery_ceiling_are_reported_and_their_surveys_kept`,
+  `a_project_store_log_beyond_the_row_ceiling_keeps_its_surveys`,
+  `a_project_store_row_beyond_the_row_bytes_ceiling_keeps_its_surveys`,
+  `a_project_store_log_beyond_the_buffered_bytes_ceiling_keeps_its_surveys`). The 64 MiB
+  per-Store activity CAS-read budget is out of scope here: it bounds the `activity` section, which
+  does not exist yet and belongs to PJ5
+  ([ADR-0152](docs/adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  15).

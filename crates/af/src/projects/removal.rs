@@ -1049,6 +1049,10 @@ enum Fail {
     /// What it holds now does not prove it is this removal's to claim or delete: it stays where
     /// it is and the step stays where it was, for the reason given.
     Kept(String),
+    /// It is in its container, moved there and not yet judged or deleted, and another directory
+    /// appeared at its original `path` since: a replacement that stops the removal. It stays in
+    /// its container, at `kept`, and nothing is deleted.
+    Appeared { path: PathBuf, kept: PathBuf },
     /// Anything else, whole.
     Other(String),
 }
@@ -1079,6 +1083,12 @@ impl Fail {
                 "the directory {}, which this removal made to receive {noun}, was replaced \
                  since, so it is kept and nothing more is moved",
                 container.display()
+            ),
+            Fail::Appeared { path, kept } => format!(
+                "{noun} is kept at {}, where this removal moved it: a new directory appeared at \
+                 {} since this removal moved {noun}",
+                kept.display(),
+                path.display()
             ),
             Fail::Kept(message) | Fail::Other(message) => message.clone(),
         }
@@ -1385,6 +1395,16 @@ impl Removal<'_> {
                 let stop = self.failed_check();
                 self.abandon(reason, stop)
             }
+            // It stays in its container; nothing is deleted and the record stays as it is.
+            Fail::Appeared { path, kept } => format!(
+                "the worktree {} is kept at {}, where this removal moved it, and the Workspace \
+                 stays registered: a new directory appeared at {} since this removal moved the \
+                 recorded worktree; clear it or move the recorded worktree back, then run the \
+                 command again",
+                path.display(),
+                kept.display(),
+                path.display()
+            ),
             Fail::Foreign { .. } | Fail::ContainerReplaced { .. } | Fail::Other(_) => {
                 let reason = fail.describe("the worktree", self.path());
                 let deleted = self.claim(Which::Checkout).step >= Step::Deleted;
@@ -1484,6 +1504,18 @@ impl Removal<'_> {
             }
             // Left where it is, and the Workspace stays registered until an operator clears it.
             Err(Fail::Kept(reason)) => return Err(self.entry_refusal(&reason)),
+            // Left in its container, nothing deleted, the record as it is.
+            Err(Fail::Appeared { path, kept }) => {
+                return Err(format!(
+                    "{}, but its administrative entry is kept at {}, where this removal moved \
+                     it, and the Workspace stays registered: a new administrative entry \
+                     appeared at {} since this removal moved the recorded one; clear it or move \
+                     the recorded entry back, then run the command again",
+                    self.prefix(),
+                    kept.display(),
+                    path.display()
+                ));
+            }
             Err(fail) => return Err(self.entry_failure(&fail, &claim.path)),
         }
         self.remove_container(which, Step::Done)
@@ -1772,6 +1804,24 @@ impl Removal<'_> {
                     }
                     match identity_at(&container, &name)? {
                         Some(found) if found == identity => {
+                            // Moved and not yet judged or deleted: its original path must still
+                            // be free. A directory there now, after an earlier run's move or
+                            // this one's, is a replacement (a new administrative entry, or a
+                            // new checkout) that stops the removal: this one stays in its
+                            // container and nothing is deleted.
+                            if claim.step == Step::Contained {
+                                let now = if moved_now {
+                                    identity_at(&parent, &name)?
+                                } else {
+                                    at_path
+                                };
+                                if now.is_some() {
+                                    return Err(Fail::Appeared {
+                                        path: claim.path.clone(),
+                                        kept: container_path.join(&name),
+                                    });
+                                }
+                            }
                             // An entry found there is read there before it is deleted; the
                             // checkout is judged there (`checkout`).
                             if matches!(which, Which::Entry(_))

@@ -366,8 +366,8 @@ fn project_survey_refresh_and_history_describe_the_surveyor() {
     }
     let project = project.split_whitespace().collect::<Vec<_>>().join(" ");
     for needle in [
-        "af/ProjectSurvey@1",
-        "af/project-history@1",
+        "af/ProjectSurvey@2",
+        "af/project-history@2",
         "`af onboard --apply` and on `af project refresh`",
         "never stores an author email",
         "survey key (head, refs, policy digest, Surveyor version) is unchanged",
@@ -394,7 +394,7 @@ fn project_survey_refresh_and_history_describe_the_surveyor() {
     assert!(survey.contains("--json"), "{survey}");
     assert!(survey.contains("af project refresh"), "{survey}");
     let history = out(&af(&["project", "history", "--help"]));
-    assert!(history.contains("af/project-history@1"), "{history}");
+    assert!(history.contains("af/project-history@2"), "{history}");
 
     let dir = tempfile::tempdir().unwrap();
     let man = af(&["self", "man", dir.path().to_str().unwrap()]);

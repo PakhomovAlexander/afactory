@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use review_core::project::WorkspaceOriginV1;
+use review_core::project::{SurveyRecordedPayloadV1, WorkspaceOriginV1};
 use review_source_git::{Capture, Manifest, Snapshot};
 use review_store::{Cas, EventStore};
 use serde_json::{Value, json};
@@ -26,7 +26,7 @@ pub(crate) fn run(command: ProjectCommand) -> Result<i32, String> {
         ProjectCommand::Workspaces { json } => workspaces(json),
         ProjectCommand::Survey { json } => survey(json),
         ProjectCommand::Refresh { json, force } => refresh(json, force),
-        ProjectCommand::History { json } => history(json),
+        ProjectCommand::History { json } => super::survey::history(json),
         ProjectCommand::Workspace { command } => match command {
             WorkspaceCommand::New {
                 label,
@@ -231,6 +231,20 @@ fn show(json_output: bool) -> Result<i32, String> {
     );
     println!();
     print_workspaces(&log, &paths, &checkout.toplevel);
+    // A newest Survey whose record is of a superseded version is said, never read.
+    if log.failure_since_newest_survey().is_none()
+        && let Some(newest) = log.newest_survey()
+        && store.collected(newest)?.is_none()
+        && store.superseded(newest)
+    {
+        println!();
+        println!(
+            "The newest Survey {} is {}; `af project refresh` records one",
+            newest.survey_id,
+            super::survey::SUPERSEDED_LINE
+        );
+        return Ok(0);
+    }
     let newest = super::survey::newest(&store, &log)?;
     match (log.failure_since_newest_survey(), newest) {
         (Some(failed), _) => {
@@ -281,10 +295,10 @@ fn survey(json_output: bool) -> Result<i32, String> {
 }
 
 fn refresh(json_output: bool, force: bool) -> Result<i32, String> {
-    let (checkout, store) = open_here()?;
-    // Released while the head is measured; the Surveyor opens the Store again to record.
-    drop(store);
-    let (word, recorded) = match super::survey::refresh(&checkout, force)? {
+    let checkout = require_checkout(Path::new("."))?;
+    // The Surveyor registers the checkout itself, its lock taken within the Survey's deadline,
+    // and releases the Store while the head is measured.
+    let (word, recorded) = match super::survey::refresh(&checkout, force, true)? {
         super::survey::Refreshed::Recorded(recorded) => ("recorded".to_string(), recorded),
         super::survey::Refreshed::Unchanged(recorded) => {
             (super::survey::unchanged_line(&recorded.event), recorded)
@@ -304,23 +318,36 @@ fn refresh(json_output: bool, force: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-fn history(json_output: bool) -> Result<i32, String> {
+/// `af project history` once `projects::survey::history` verified the chain: every Survey
+/// newest first (`af/project-history@2`), one whose record is of a superseded version
+/// (`superseded`) with its ID, when it was recorded and `unreadable: superseded version`, and
+/// none of its event's unverified fields.
+pub(crate) fn history(json_output: bool, superseded: &BTreeSet<String>) -> Result<i32, String> {
     let (_, store) = open_here()?;
     let log = store.log()?;
     let chain = log.chain();
+    let unreadable = |recorded: &SurveyRecordedPayloadV1| superseded.contains(&recorded.survey_id);
     if json_output {
         print_json(&json!({
-            "schema": "af/project-history@1",
+            "schema": "af/project-history@2",
             "project_id": store.project_id,
             "surveys": chain
                 .iter()
-                .map(|recorded| json!({
-                    "survey_id": recorded.survey_id,
-                    "recorded_unix_ms": recorded.recorded_unix_ms.get().to_string(),
-                    "head": recorded.head,
-                    "cutoff_unix_s": recorded.cutoff_unix_s.get().to_string(),
-                    "completeness": recorded.completeness.as_str(),
-                }))
+                .map(|recorded| if unreadable(recorded) {
+                    json!({
+                        "survey_id": recorded.survey_id,
+                        "recorded_unix_ms": recorded.recorded_unix_ms.get().to_string(),
+                        "unreadable": "superseded version",
+                    })
+                } else {
+                    json!({
+                        "survey_id": recorded.survey_id,
+                        "recorded_unix_ms": recorded.recorded_unix_ms.get().to_string(),
+                        "head": recorded.head,
+                        "cutoff_unix_s": recorded.cutoff_unix_s.get().to_string(),
+                        "completeness": recorded.completeness.as_str(),
+                    })
+                })
                 .collect::<Vec<_>>(),
         }))?;
         return Ok(0);
@@ -331,6 +358,15 @@ fn history(json_output: bool) -> Result<i32, String> {
         if chain.len() == 1 { "" } else { "s" }
     );
     for recorded in chain {
+        if unreadable(recorded) {
+            println!(
+                "{}  {}  {}",
+                recorded.survey_id,
+                time(recorded.recorded_unix_ms.get()),
+                super::survey::SUPERSEDED_LINE
+            );
+            continue;
+        }
         println!(
             "{}  {}  head {}  cutoff {}  {}",
             recorded.survey_id,
