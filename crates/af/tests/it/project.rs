@@ -2177,6 +2177,12 @@ fn an_undo_keeps_a_destination_another_writer_wrote_into_or_replaced() {
             "echo theirs > \"$target/sentinel.txt\"",
             "it holds `sentinel.txt`, which this add did not write",
         ),
+        // Another writer's empty directory: an entry of every kind keeps the destination.
+        (
+            "directory",
+            "mkdir \"$target/sentinel\"",
+            "it holds `sentinel`, which this add did not write",
+        ),
         // The directory this command made, moved away and replaced by another, empty one.
         (
             "replaced",
@@ -2213,6 +2219,14 @@ fn an_undo_keeps_a_destination_another_writer_wrote_into_or_replaced() {
             assert_eq!(
                 std::fs::read_to_string(worktree.join("sentinel.txt")).unwrap(),
                 "theirs\n"
+            );
+        } else if case == "directory" {
+            assert_eq!(
+                std::fs::read_dir(worktree.join("sentinel"))
+                    .unwrap()
+                    .count(),
+                0,
+                "{case}"
             );
         } else {
             assert!(
@@ -2358,47 +2372,121 @@ fn an_undo_removes_only_the_parents_this_command_created() {
     assert!(!ours.exists());
 }
 
-/// The one entry under `<repo>/.git/worktrees` that `--delete-worktree` renamed from `name`.
-fn renamed_entry(repo: &Path, name: &str) -> PathBuf {
-    let renamed: Vec<String> = administrative_entries(repo)
+#[test]
+fn an_undo_leaves_a_parent_recreated_at_the_same_path_and_reports_it() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    let parent = machine.root().join("fresh");
+    let worktree = parent.join("spike");
+    let bin = machine.root().join("bin");
+    // The add removes the parent this command created and recreates it, empty, at the same path.
+    // The replacement exists before the original goes, so it cannot reuse its inode.
+    worktree_add_git(
+        &bin,
+        &repo,
+        "parent=$(dirname \"$target\")\n  mkdir \"$parent.new\" && rm -rf \"$parent\" && mv \
+         \"$parent.new\" \"$parent\"",
+        "exit 128",
+    );
+    let output = af_with_fake_git(
+        &machine,
+        &repo,
+        &bin,
+        &[
+            "project",
+            "workspace",
+            "new",
+            "spike",
+            "--path",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let (stdout, stderr) = text(&output);
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "left behind: the directory {}, kept because it was replaced since this add created it",
+            parent.display()
+        )),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains(&format!("removed the directory {}", parent.display())),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("nothing was left behind"), "{stderr}");
+    assert!(
+        stderr.contains("deleted the branch refs/heads/af/spike"),
+        "{stderr}"
+    );
+    assert!(parent.is_dir(), "the replacement was removed");
+    assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
+    assert!(administrative_entries(&repo).is_empty());
+}
+
+/// Whether `name` is the container a removal of the entry `entry` moves it into:
+/// `<entry>.af-removing-<pid>-<16 lowercase hex digits>`; its pid, when it is.
+fn container_pid(name: &str, entry: &str) -> Option<String> {
+    let rest = name.strip_prefix(&format!("{entry}.af-removing-"))?;
+    let (pid, random) = rest.split_once('-')?;
+    (!pid.is_empty()
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && random.len() == 16
+        && random
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then(|| pid.to_string())
+}
+
+/// The one container under `<repo>/.git/worktrees` that `--delete-worktree` moved the entry
+/// `name` into.
+fn removal_container(repo: &Path, name: &str) -> PathBuf {
+    let containers: Vec<String> = administrative_entries(repo)
         .into_iter()
-        .filter(|entry| {
-            entry
-                .strip_prefix(&format!("{name}.af-removing-"))
-                .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()))
-        })
+        .filter(|entry| container_pid(entry, name).is_some())
         .collect();
-    assert_eq!(renamed.len(), 1, "{:?}", administrative_entries(repo));
-    repo.join(".git/worktrees").join(&renamed[0])
+    assert_eq!(containers.len(), 1, "{:?}", administrative_entries(repo));
+    repo.join(".git/worktrees").join(&containers[0])
+}
+
+/// A directory inside `entry` that cannot be emptied: the entry moves whole into its container,
+/// and its deletion then fails. `writable` undoes it, wherever the entry is.
+fn hold(entry: &Path, writable: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let held = entry.join("held");
+    if !writable {
+        std::fs::create_dir(&held).unwrap();
+        std::fs::write(held.join("file"), "held\n").unwrap();
+    }
+    let mode = if writable { 0o755 } else { 0o555 };
+    std::fs::set_permissions(&held, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
 #[test]
-fn a_failed_entry_deletion_names_the_renamed_entry_and_a_rerun_finishes_it() {
-    use std::os::unix::fs::PermissionsExt;
+fn a_failed_entry_deletion_names_the_entry_in_its_container_and_a_rerun_finishes_it() {
     let machine = Machine::new();
     let repo = repository(&machine.root());
-    let mode = |path: &Path, mode: u32| {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
-    };
     for label in ["spike", "bare"] {
         machine.expect(&repo, &["project", "workspace", "new", label], 0);
         let worktree = machine.root().join(format!("fixture-wt-{label}"));
-        let entry = repo
-            .join(".git/worktrees")
-            .join(format!("fixture-wt-{label}"));
+        let name = format!("fixture-wt-{label}");
+        let entry = repo.join(".git/worktrees").join(&name);
         let remove = ["project", "workspace", "remove", label, "--delete-worktree"];
 
-        // `worktrees/` stays writable, so the rename succeeds; the entry is read-only, so the
-        // deletion after it fails, and the message names where the entry now is.
-        mode(&entry, 0o555);
+        // `worktrees/` stays writable, so the entry moves into the container the removal made;
+        // a directory in it cannot be emptied, so the deletion after the move fails, and the
+        // message names where the entry now is.
+        hold(&entry, false);
         let partial = machine.af(&repo, &remove);
         let (_, stderr) = text(&partial);
         assert_eq!(partial.status.code(), Some(1), "{label}: {stderr}");
-        let renamed = renamed_entry(&repo, &format!("fixture-wt-{label}"));
+        let container = removal_container(&repo, &name);
+        let moved = container.join(&name);
         let message = format!(
             "its administrative entry remains at {}: Permission denied (os error 13); fix it and \
              run the command again",
-            renamed.display()
+            moved.display()
         );
         assert!(
             stderr.contains(&format!(
@@ -2415,7 +2503,8 @@ fn a_failed_entry_deletion_names_the_renamed_entry_and_a_rerun_finishes_it() {
         let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
         assert!(labels(&listed).contains(&label.to_string()), "{listed}");
 
-        // A rerun before the fix fails the same way and still unregisters nothing.
+        // A rerun before the fix recognises the container, fails the same way and still
+        // unregisters nothing.
         let again = machine.af(&repo, &remove);
         let (_, stderr) = text(&again);
         assert_eq!(again.status.code(), Some(1), "{label}: {stderr}");
@@ -2429,11 +2518,18 @@ fn a_failed_entry_deletion_names_the_renamed_entry_and_a_rerun_finishes_it() {
         let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
         assert!(labels(&listed).contains(&label.to_string()), "{listed}");
 
-        // Once fixed, the rerun finds the renamed entry by its `gitdir`, or, when a deletion got
-        // as far as removing that `gitdir`, by the name recorded at the first run.
-        mode(&renamed, 0o755);
+        // Once fixed, the rerun finds the entry in its container by its `gitdir`, or, when a
+        // deletion got as far as removing that `gitdir`, by the name recorded at the first run.
+        // The failed deletion removed entries in directory order, so each case sets its own.
+        hold(&moved, true);
         if label == "bare" {
-            std::fs::remove_file(renamed.join("gitdir")).unwrap();
+            let _ = std::fs::remove_file(moved.join("gitdir"));
+        } else {
+            std::fs::write(
+                moved.join("gitdir"),
+                format!("{}\n", worktree.join(".git").display()),
+            )
+            .unwrap();
         }
         let finished = machine.expect(&repo, &remove, 0);
         assert!(
@@ -2441,7 +2537,7 @@ fn a_failed_entry_deletion_names_the_renamed_entry_and_a_rerun_finishes_it() {
                 "the worktree {} was already gone; removed its administrative entry {}; its \
                  branch is kept",
                 worktree.display(),
-                renamed.display()
+                moved.display()
             )),
             "{label}: {finished}"
         );
@@ -2449,6 +2545,86 @@ fn a_failed_entry_deletion_names_the_renamed_entry_and_a_rerun_finishes_it() {
         let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
         assert_eq!(labels(&listed), ["fixture"], "{label}");
     }
+}
+
+#[test]
+fn a_removal_never_takes_the_predictable_name_and_a_rerun_recognises_its_leftover_container() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "workspace", "new", "spike"], 0);
+    let worktree = machine.root().join("fixture-wt-spike");
+    let name = "fixture-wt-spike";
+    let entry = repo.join(".git/worktrees").join(name);
+    let remove = [
+        "project",
+        "workspace",
+        "remove",
+        "spike",
+        "--delete-worktree",
+    ];
+    // While the removal compares the index, another makes an empty directory at the name the
+    // removal of an earlier round renamed onto, `<name>.af-removing-<pid>`, with af's pid (the
+    // parent of the git it runs). A rename onto an empty directory replaces it.
+    let pid_file = machine.root().join("af-pid");
+    let bin = machine.root().join("bin");
+    hooked_git(
+        &bin,
+        &repo,
+        &format!(
+            "case \" $* \" in *\" diff-index \"*) mkdir -p '{entry}.af-removing-'$PPID; echo \
+             $PPID > '{pid}';; esac",
+            entry = entry.display(),
+            pid = pid_file.display()
+        ),
+        ":",
+        ":",
+    );
+    hold(&entry, false);
+    let partial = af_with_fake_git(&machine, &repo, &bin, &remove);
+    let (_, stderr) = text(&partial);
+    assert_eq!(partial.status.code(), Some(1), "{stderr}");
+    let pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .to_string();
+    let predictable = repo
+        .join(".git/worktrees")
+        .join(format!("{name}.af-removing-{pid}"));
+    // The removal ran with that pid, and its container is another directory beside the old name.
+    let container = removal_container(&repo, name);
+    assert_eq!(
+        container_pid(&container.file_name().unwrap().to_string_lossy(), name).as_deref(),
+        Some(pid.as_str())
+    );
+    assert!(
+        stderr.contains(&format!(
+            "removed the worktree {}; its administrative entry remains at {}",
+            worktree.display(),
+            container.join(name).display()
+        )),
+        "{stderr}"
+    );
+    assert!(predictable.is_dir(), "the predictable name was taken");
+    assert_eq!(std::fs::read_dir(&predictable).unwrap().count(), 0);
+
+    // The leftover container is this removal's: the rerun finishes it and leaves the other alone.
+    hold(&container.join(name), true);
+    let finished = machine.expect(&repo, &remove, 0);
+    assert!(
+        finished.contains(&format!(
+            "the worktree {} was already gone; removed its administrative entry {}",
+            worktree.display(),
+            container.join(name).display()
+        )),
+        "{finished}"
+    );
+    assert_eq!(
+        administrative_entries(&repo),
+        [format!("{name}.af-removing-{pid}")]
+    );
+    assert_eq!(std::fs::read_dir(&predictable).unwrap().count(), 0);
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    assert_eq!(labels(&listed), ["fixture"]);
 }
 
 #[test]

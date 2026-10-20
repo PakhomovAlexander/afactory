@@ -1,7 +1,8 @@
 # ADR-0151: Give a repository one Project identity and register its checkouts as Workspaces
 
 **Status:** accepted (2026-10-19); clauses 4, 5 and 8 amended (2026-10-20) by PJ1b, clause 5
-again (2026-10-20) by its second round, and clauses 3 and 5 by its third. Package PJ1 of the
+again (2026-10-20) by its second round, clauses 3 and 5 by its third, and clause 5 by its
+fifth. Package PJ1 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery makes only a local
 branch and worktree), [ADR-0032](0032-generate-review-authority-with-af-onboard.md),
@@ -115,15 +116,24 @@ directories.
    identity (device and inode), and `git worktree add` then adds into that empty directory; a
    path that appears between the checks and the add is a refusal with nothing of it deleted. The
    missing directories above it are created one at a time from the deepest existing ancestor,
-   and only those this command's own `create_dir` made are recorded, never one another process
-   made meanwhile; the undo removes only those, deepest first, each only while it is empty.
-   Second, directory identity and path membership never prove ownership of bytes: the undo
-   deletes the destination only when its identity is unchanged, every entry inside it equals the
-   captured manifest in path, kind, mode and content (the complete-entry comparison of
-   delivery's rollback, `manifest_is_subset`), besides `<path>/.git`, which is absent or a file
-   naming an entry this add owns (one whose `gitdir` names `<path>/.git`), and the index this add
-   wrote is unchanged: absent or empty, as `git worktree add --no-checkout` leaves it, or the
-   commit's tree through delivery's cached-index comparison. When `.git` names another entry the
+   and only those this command's own `create_dir` made are recorded, each with its identity
+   (device and inode) at creation, never one another process made meanwhile; the undo removes
+   only those, deepest first, each only while it is still that directory, its identity
+   unchanged, and empty. A directory at the same path that is not that one, removed and
+   recreated by anyone, is left and reported as
+   `the directory <path>, kept because it was replaced since this add created it`, and a recorded
+   one that is not empty as `the directory <path>, kept because it is not empty`.
+   Second, directory identity and path membership never prove ownership of bytes, and an entry
+   of any kind can be another writer's: the undo deletes the destination only when its identity
+   is unchanged, every entry inside it, directories as well as files and links, is `<path>/.git`,
+   which is absent or a file naming an entry this add owns (one whose `gitdir` names
+   `<path>/.git`), a path of the captured manifest equal in kind, mode and content (the
+   complete-entry comparison of delivery's rollback, `manifest_is_subset`), or a directory above
+   such a path, or at or above a submodule path the add leaves as an empty directory, that holds
+   nothing else; any other entry, an empty directory included, keeps the destination and is the
+   path the report names. The index this add wrote must also be unchanged: absent or empty, as
+   `git worktree add --no-checkout` leaves it, or the commit's tree through delivery's
+   cached-index comparison. When `.git` names another entry the
    directory is kept, this add's entries still go, and the report says
    `the directory <path>, kept because its .git names <entry>, not an entry of this add; delete it once no add uses it`.
    When any other comparison fails the worktree is kept whole, its directory, this add's entries
@@ -183,20 +193,30 @@ directories.
    removed by deleting its directory and then that worktree's own administrative entry, nothing
    else; its branch is kept. Before anything is deleted the entry's path is recorded as the
    Workspace's `removing_entry` in `workspaces.toml`; `workspaces.toml` stays version 1, since no
-   release has written it (ADR-0145). The entry is renamed to `<name>.af-removing-<pid>` beside
-   itself before it is deleted, so it goes whole or stays whole, and an error names where it
-   remains. When the rename fails once the directory is gone, the command fails with
+   release has written it (ADR-0145). Before it is deleted the entry is renamed into a container
+   this process created exclusively beside it: `mkdir` of
+   `<name>.af-removing-<pid>-<16 random hex digits>`, which fails when that path exists and is
+   then tried with new randomness, so the rename's destination lies inside a directory only this
+   process owns, and no leftover of an earlier process, whatever its PID, and no directory at the
+   predictable `<name>.af-removing-<pid>` is ever replaced. The deletion then removes the
+   container with the entry in it, so the entry goes whole or stays whole, and an error names
+   where it remains. When the container cannot be made or the rename fails once the directory is
+   gone, the command fails with
 
    `removed the worktree <path>; its administrative entry <common dir>/worktrees/<name> remains: <os error>; fix it and run the command again`
 
-   and when the deletion after the rename fails, never naming the original path, with
+   (with `; so does the empty directory <container> made to receive it` before `; fix it` when
+   that empty container could not be removed either, the rerun removing it), and when the
+   deletion after the rename fails, never naming the original path, with
 
-   `removed the worktree <path>; its administrative entry remains at <common dir>/worktrees/<name>.af-removing-<pid>: <os error>; fix it and run the command again`
+   `removed the worktree <path>; its administrative entry remains at <common dir>/worktrees/<name>.af-removing-<pid>-<hex>/<name>: <os error>; fix it and run the command again`
 
    and the Workspace stays registered. A rerun whose registered checkout path no longer exists
-   removes each entry whose `gitdir` names `<path>/.git`, renamed or not, and the
-   `<name>.af-removing-*` entry whose `gitdir` is gone while `<name>` is the recorded entry's
-   (refusing a locked one), and only then unregisters and reports both; without such an entry it
+   removes each entry whose `gitdir` names `<path>/.git`, at its own path or inside such a
+   container, and the container `<name>.af-removing-<pid>-<hex>` whose entry's `gitdir` is gone
+   while `<name>` is the recorded entry's (refusing a locked one), and only then unregisters and
+   reports both; a name of any other form, the predictable `<name>.af-removing-<pid>` included,
+   is never taken for this removal's; without such an entry it
    unregisters and says the checkout is already gone. A `gitdir` that cannot be read (permission,
    or bytes that name no path) is never "no entry": it may name the checkout, so the rerun
    refuses with that file and the read error, changes nothing and does not unregister. A
@@ -276,17 +296,25 @@ directories.
   after every `af project` command and `af task plan --workspace`. It refuses
   `--delete-worktree` of a worktree whose files equal `HEAD` while its index holds a staged
   modification, or an unmerged entry, with nothing deleted; keeps and reports the destination of
-  a failed add that a fake `git` wrote a sentinel into, replaced, or changed a tracked path of,
-  and the whole worktree, entry and branch with it, of one that staged a change into the new
-  index; keeps a missing parent another process created before the add while removing the one
-  the command created; names the renamed entry `<name>.af-removing-<pid>` when a read-only entry
-  cannot be deleted and finishes it on the rerun, also once its `gitdir` is gone; and refuses,
+  a failed add that a fake `git` wrote a sentinel file or an empty `sentinel/` directory into,
+  replaced, or changed a tracked path of, and the whole worktree, entry and branch with it, of
+  one that staged a change into the new index; keeps a missing parent another process created
+  before the add while removing the one the command created, and leaves and reports a created
+  parent a fake `git` removed and recreated; names the entry inside its container
+  `<name>.af-removing-<pid>-<hex>` when it cannot be emptied and finishes it on the rerun, also
+  once its `gitdir` is gone; leaves untouched an empty directory at the predictable
+  `<name>.af-removing-<pid>` of the removing process and recognises the leftover container on
+  the rerun; and refuses,
   still registered, a rerun that meets an unreadable `gitdir`, finishing once it is readable.
   Unit tests undo every kind of
   step in reverse order, including a partial worktree whose entry a stopped add left locked,
   delete only the entry whose `gitdir` names the path, report a locked and an unlocked entry
   without one with their exact recovery lines, keep and report a branch that moved, and never
-  prune; test which administrative entries belong to an add; give the stated automatic
+  prune; keep a destination holding an empty directory, a directory inside a submodule's or one
+  where the manifest has a file, while the directories above the manifest's paths pass; remove
+  an ancestor only while its identity is unchanged; know a removal's container by its name, pid
+  and randomness and never take the predictable name; test which administrative entries belong
+  to an add; give the stated automatic
   label for `repo.v2`, a name with spaces, a Unicode name, a leading-punctuation name, a 200-byte
   name and a collision with an explicit label, none over 128 bytes; refuse a version-1
   `stores.toml` with its recovery and write version 2, keeping every entry and kind; and find no

@@ -300,21 +300,117 @@ fn the_workspaces_file_refuses_another_version_unknown_keys_and_relative_paths()
 }
 
 #[test]
-fn an_entry_renamed_for_removal_is_known_by_its_name_and_pid() {
-    for (entry, name) in [
-        ("/repo/.git/worktrees/wt.af-removing-4242", Some("wt")),
-        ("/repo/.git/worktrees/wt.v2.af-removing-1", Some("wt.v2")),
+fn a_removal_container_is_known_by_its_name_pid_and_randomness() {
+    for (container, name) in [
+        (
+            "/repo/.git/worktrees/wt.af-removing-4242-0123456789abcdef",
+            Some("wt"),
+        ),
+        (
+            "/repo/.git/worktrees/wt.v2.af-removing-1-ffffffffffffffff",
+            Some("wt.v2"),
+        ),
         ("/repo/.git/worktrees/wt", None),
+        // The predictable name of an earlier round is no container: another may own it.
+        ("/repo/.git/worktrees/wt.af-removing-4242", None),
         ("/repo/.git/worktrees/wt.af-removing-", None),
-        ("/repo/.git/worktrees/wt.af-removing-12x", None),
-        ("/repo/.git/worktrees/.af-removing-12", None),
+        (
+            "/repo/.git/worktrees/wt.af-removing-12x-0123456789abcdef",
+            None,
+        ),
+        (
+            "/repo/.git/worktrees/wt.af-removing--0123456789abcdef",
+            None,
+        ),
+        (
+            "/repo/.git/worktrees/wt.af-removing-12-0123456789abcde",
+            None,
+        ),
+        (
+            "/repo/.git/worktrees/wt.af-removing-12-0123456789ABCDEF",
+            None,
+        ),
+        (
+            "/repo/.git/worktrees/.af-removing-12-0123456789abcdef",
+            None,
+        ),
     ] {
         assert_eq!(
-            commands::renamed_name(Path::new(entry)),
+            commands::contained_name(Path::new(container)),
             name.map(str::as_bytes),
-            "{entry}"
+            "{container}"
         );
     }
+}
+
+#[test]
+fn a_removal_moves_the_entry_into_its_own_container_and_never_onto_the_predictable_name() {
+    let root = tempfile::tempdir().unwrap();
+    let administrative = std::fs::canonicalize(root.path()).unwrap();
+    let entry = administrative.join("wt");
+    std::fs::create_dir(&entry).unwrap();
+    std::fs::write(entry.join("gitdir"), "/work/wt/.git\n").unwrap();
+    // The name the removal of an earlier round renamed onto, made by another: a rename of a
+    // directory replaces an empty one, so a removal that took that name would destroy it.
+    let predictable = administrative.join(format!("wt.af-removing-{}", std::process::id()));
+    std::fs::create_dir(&predictable).unwrap();
+    let before = commands::identity(&std::fs::symlink_metadata(&predictable).unwrap());
+    assert!(commands::remove_entry(&entry).is_ok());
+    assert!(!entry.exists());
+    assert_eq!(
+        commands::identity(&std::fs::symlink_metadata(&predictable).unwrap()),
+        before
+    );
+    assert_eq!(std::fs::read_dir(&predictable).unwrap().count(), 0);
+    let names: Vec<_> = std::fs::read_dir(&administrative)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, [predictable.file_name().unwrap()]);
+}
+
+#[test]
+fn a_failed_deletion_names_the_entry_inside_its_container() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let administrative = std::fs::canonicalize(root.path()).unwrap();
+    let entry = administrative.join("wt");
+    // A read-only directory inside the entry: the entry moves, its contents cannot all go.
+    std::fs::create_dir_all(entry.join("held")).unwrap();
+    std::fs::write(entry.join("held/file"), "kept\n").unwrap();
+    let mode = |path: &Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    mode(&entry.join("held"), 0o555);
+    let remains = commands::remove_entry(&entry).err().unwrap().describe();
+    let containers: Vec<_> = std::fs::read_dir(&administrative)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(containers.len(), 1, "{containers:?}");
+    let container = &containers[0];
+    assert_eq!(
+        commands::contained_name(container),
+        Some(b"wt".as_slice()),
+        "{container:?}"
+    );
+    let name = container
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        name.starts_with(&format!("wt.af-removing-{}-", std::process::id())),
+        "{name}"
+    );
+    assert!(
+        remains.starts_with(&format!(
+            "its administrative entry remains at {}: ",
+            container.join("wt").display()
+        )),
+        "{remains}"
+    );
+    mode(&container.join("wt/held"), 0o755);
 }
 
 #[test]
@@ -453,6 +549,18 @@ fn adding(
         before,
         commit: commit.to_string(),
         manifest: review_source_git::Manifest::default(),
+        submodules: Vec::new(),
+    }
+}
+
+/// What `workspace new` records of a directory above the worktree it made at `path`: the identity
+/// that directory has now, or none when it does not exist.
+fn ancestor(path: PathBuf) -> commands::Ancestor {
+    commands::Ancestor {
+        identity: std::fs::symlink_metadata(&path)
+            .map(|metadata| commands::identity(&metadata))
+            .unwrap_or_default(),
+        path,
     }
 }
 
@@ -505,7 +613,10 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
                 reference: reference.clone(),
                 commit: commit.clone(),
             },
-            Made::Ancestors(vec![root.join("deep"), root.join("deep/er")]),
+            Made::Ancestors(vec![
+                ancestor(root.join("deep")),
+                ancestor(root.join("deep/er")),
+            ]),
             Made::Worktree(adding(&worktree, &administrative, BTreeSet::new(), &commit)),
             Made::Registration(id.clone()),
         ],
@@ -540,8 +651,8 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
             &git,
             &mut store,
             vec![Made::Ancestors(vec![
-                root.join("absent"),
-                root.join("absent/below"),
+                ancestor(root.join("absent")),
+                ancestor(root.join("absent/below")),
             ])],
         ),
         "nothing was created"
@@ -730,4 +841,93 @@ fn undo_deletes_only_an_entry_whose_gitdir_names_the_path_and_reports_a_locked_o
     assert!(administrative.join("wt/locked").is_file());
     assert!(administrative.join("other/locked").is_file());
     assert!(administrative.join("stale").is_dir(), "the undo pruned");
+}
+
+#[test]
+fn foreign_content_keeps_a_destination_holding_any_entry_it_did_not_write() {
+    let root = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(root.path()).unwrap();
+    let written = root.join("written");
+    std::fs::create_dir_all(written.join("src/deep")).unwrap();
+    std::fs::write(written.join("README.md"), "one\n").unwrap();
+    std::fs::write(written.join("src/deep/lib.rs"), "two\n").unwrap();
+    let manifest = review_source_git::scan_tree(&written).unwrap();
+    let submodules = [PathBuf::from("vendor/module")];
+    std::fs::create_dir_all(written.join("vendor/module")).unwrap();
+    std::fs::write(written.join(".git"), "gitdir: elsewhere\n").unwrap();
+    // The directories above the manifest's paths and a submodule's own are what this add wrote.
+    assert_eq!(
+        commands::foreign_content(&written, &manifest, &submodules),
+        None
+    );
+    // A partial materialization, a directory made before its file, is still only this add's.
+    std::fs::remove_file(written.join("src/deep/lib.rs")).unwrap();
+    assert_eq!(
+        commands::foreign_content(&written, &manifest, &submodules),
+        None
+    );
+    for (entry, reason) in [
+        (
+            "sentinel",
+            "it holds `sentinel`, which this add did not write",
+        ),
+        (
+            "src/empty",
+            "it holds `src/empty`, which this add did not write",
+        ),
+        (
+            "vendor/module/inner",
+            "it holds `vendor/module/inner`, which this add did not write",
+        ),
+        ("README.md", "`README.md` differs from what this add wrote"),
+    ] {
+        let path = written.join(entry);
+        let was_file = path.is_file();
+        if was_file {
+            std::fs::remove_file(&path).unwrap();
+        }
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(
+            commands::foreign_content(&written, &manifest, &submodules).as_deref(),
+            Some(reason),
+            "{entry}"
+        );
+        std::fs::remove_dir(&path).unwrap();
+        if was_file {
+            std::fs::write(&path, "one\n").unwrap();
+        }
+    }
+    assert_eq!(
+        commands::foreign_content(&written, &manifest, &submodules),
+        None
+    );
+}
+
+#[test]
+fn undo_removes_an_ancestor_only_while_it_is_still_the_directory_it_created() {
+    use commands::Made;
+    let root = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(root.path()).unwrap();
+    let (git, _) = committed_repository(&root);
+    let mut store = ProjectStore::open_unrecorded(&root.join("state"), &project_id(ROOTS)).unwrap();
+    let high = root.join("high");
+    let low = high.join("low");
+    std::fs::create_dir_all(&low).unwrap();
+    let recorded = vec![ancestor(high.clone()), ancestor(low.clone())];
+    // Removed and recreated by another: the same path, another directory. The replacement is made
+    // before the original goes, so the two cannot share an inode.
+    std::fs::create_dir(root.join("replacement")).unwrap();
+    std::fs::remove_dir(&low).unwrap();
+    std::fs::rename(root.join("replacement"), &low).unwrap();
+    let report = commands::undo(&git, &mut store, vec![Made::Ancestors(recorded)]);
+    assert_eq!(
+        report,
+        format!(
+            "left behind: the directory {}, kept because it was replaced since this add created \
+             it; the directory {}, kept because it is not empty",
+            low.display(),
+            high.display()
+        )
+    );
+    assert!(low.is_dir());
 }
