@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-survey-pending:2",
+  "title": "af/survey-pending@2",
+  "description": "One Survey the Surveyor is publishing (ADR-0158 clause 2): a machine-local file beside the Project Store's lock, `pending-surveys/<64 hex>.json`, never in the repository or the log. Written under the lock before any byte of the record is; given the identity of the staged object `pending-surveys/<64 hex>.object` once the record's bytes are durable there, and before that object takes its CAS name; and removed once SurveyRecorded@1 committed. One that outlives its refresh names a record no event references. Version 2 adds the object's birth time and the staging: `af/survey-pending@1` is a superseded version, refused. Canonical JSON, every number decimal text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "survey_id",
+    "bytes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/survey-pending@2"
+    },
+    "survey_id": {
+      "description": "The Survey: the CAS digest of its record's canonical bytes.",
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
+    },
+    "bytes": {
+      "description": "The length of the record's canonical bytes, 1 to 1048576.",
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,6}$"
+    },
+    "object": {
+      "description": "The staged object that holds the bytes, stated without following a link once they were durable, before it took its CAS name: its device, inode and birth time in nanoseconds since the Unix epoch, which a rename keeps and a file created later at a reused inode does not share.",
+      "$ref": "#/$defs/object"
+    }
+  },
+  "$defs": {
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "device",
+        "inode",
+        "born_unix_ns"
+      ],
+      "properties": {
+        "device": {
+          "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
+        },
+        "inode": {
+          "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
+        },
+        "born_unix_ns": {
+          "description": "Its birth time, nanoseconds since the Unix epoch; never zero.",
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,19}$"
+        }
+      }
+    }
+  }
+}

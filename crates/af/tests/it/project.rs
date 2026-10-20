@@ -1,4 +1,4 @@
-//! ADR-0151 end to end: one Project per repository, its Workspaces, and `af project`.
+//! ADR-0157 end to end: one Project per repository, its Workspaces, and `af project`.
 //!
 //! Two worktrees of one repository register one Project with two Workspaces, and `af project
 //! show` answers the same from either; a shallow clone is refused with the way out; a repository
@@ -25,7 +25,7 @@
 //! step's action so a checkout already claimed stays in its container; a replaced checkout, foreign content in a container and a
 //! directory merely named like a container are kept and reported. A git that outlives its deadline fails the command and
 //! leaves no child. The first `af task plan --workspace <checkout>` finds the checkout it
-//! registers. No command writes inside a checkout, the Surveyor's (ADR-0152) included, and the
+//! registers. No command writes inside a checkout, the Surveyor's (ADR-0158) included, and the
 //! help answers in under 50 ms.
 //!
 //! Every test runs with its own `XDG_STATE_HOME`, so the Projects it registers are its own.
@@ -1498,7 +1498,7 @@ fn administrative_entries(repo: &Path) -> Vec<String> {
 }
 
 /// What the undo says of a locked entry without a `gitdir` that it leaves where it is, the
-/// recovery line of ADR-0151 word for word.
+/// recovery line of ADR-0157 word for word.
 fn locked_left_behind(repo: &Path, name: &str) -> String {
     format!(
         "{}: a locked entry without a gitdir, created during this add and possibly another add's; delete that directory once no add is running (git worktree prune keeps a locked entry)",
@@ -2028,7 +2028,7 @@ fn no_project_command_and_no_workspace_plan_writes_inside_the_checkout() {
         &["project", "show", "--json"],
         &["project", "workspaces"],
         &["project", "workspaces", "--json"],
-        // The Surveyor (ADR-0152): a Survey, an unchanged second one, and every view of them.
+        // The Surveyor (ADR-0158): a Survey, an unchanged second one, and every view of them.
         &["project", "refresh"],
         &["project", "refresh", "--json"],
         &["project", "survey"],
@@ -2715,11 +2715,17 @@ fn removals_of(machine: &Machine, repo: &Path, workspace_id: &str) -> usize {
         .count()
 }
 
-/// `<device>:<inode>` of `path`, as a removal record holds it.
+/// `<device>:<inode>:<birth time in nanoseconds>` of `path`, as a removal record holds it.
 fn recorded_identity(path: &Path) -> String {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::symlink_metadata(path).unwrap();
-    format!("{}:{}", metadata.dev(), metadata.ino())
+    let born = metadata
+        .created()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("{}:{}:{born}", metadata.dev(), metadata.ino())
 }
 
 /// The names in `directory` that start with `prefix`, sorted.
@@ -2778,9 +2784,23 @@ fn an_interrupted_removal_is_recorded_by_identity_and_a_rerun_finishes_it_unregi
             "deleting",
             "inspected",
         ),
+        // The checkout unlinked, its deletion not yet recorded.
+        (
+            "checkout-unlinked",
+            "removed the worktree",
+            "deleting",
+            "inspected",
+        ),
         // After the checkout's deletion and before the entry's move.
         (
             "checkout-deleted",
+            "was already gone; removed its administrative entry",
+            "deleted",
+            "inspected",
+        ),
+        // Its container removed, that not yet recorded.
+        (
+            "checkout-rmdir",
             "was already gone; removed its administrative entry",
             "deleted",
             "inspected",
@@ -2815,8 +2835,29 @@ fn an_interrupted_removal_is_recorded_by_identity_and_a_rerun_finishes_it_unregi
             "done",
             "deleting",
         ),
+        // Part way through the entry's deletion: its `gitdir` among what is gone.
+        (
+            "entry-partial",
+            "was already gone; removed its administrative entry",
+            "done",
+            "deleting",
+        ),
+        // The entry unlinked, its deletion not yet recorded.
+        (
+            "entry-unlinked",
+            "was already gone; removed its administrative entry",
+            "done",
+            "deleting",
+        ),
         (
             "entry-deleted",
+            "was already gone; removed its administrative entry",
+            "done",
+            "deleted",
+        ),
+        // Its container removed, that not yet recorded.
+        (
+            "entry-rmdir",
             "was already gone; removed its administrative entry",
             "done",
             "deleted",
@@ -2881,6 +2922,41 @@ fn an_interrupted_removal_is_recorded_by_identity_and_a_rerun_finishes_it_unregi
                 entry.join("gitdir").is_file(),
                 "{point}: the entry is not moved yet"
             );
+        }
+        // Where the crash left the entry: part deleted in its container, its `gitdir` gone
+        // with the files before it in name order; then gone from its container; then its
+        // container gone too.
+        let containers: Vec<PathBuf> = administrative_entries(&repo)
+            .into_iter()
+            .filter(|left| container_pid(left, &name).is_some())
+            .map(|container| repo.join(".git/worktrees").join(container))
+            .collect();
+        match point {
+            "entry-partial" => {
+                let [container] = containers.as_slice() else {
+                    panic!("{point}: {containers:?}");
+                };
+                let held = container.join(&name);
+                assert!(held.is_dir(), "{point}: part of it is left");
+                assert!(!held.join("gitdir").exists(), "{point}: its gitdir is gone");
+                assert!(!entry.exists(), "{point}");
+            }
+            "entry-unlinked" => {
+                let [container] = containers.as_slice() else {
+                    panic!("{point}: {containers:?}");
+                };
+                assert!(!container.join(&name).exists(), "{point}: it is unlinked");
+                assert!(!entry.exists(), "{point}");
+            }
+            "entry-rmdir" => {
+                assert!(containers.is_empty(), "{point}: {containers:?}");
+                assert!(!entry.exists(), "{point}");
+            }
+            "checkout-unlinked" | "checkout-rmdir" => {
+                assert!(!worktree.exists(), "{point}");
+                assert!(entry.join("gitdir").is_file(), "{point}");
+            }
+            _ => {}
         }
         let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
         assert!(labels(&listed).contains(&label), "{point}: {listed}");
@@ -3881,8 +3957,21 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
                 .output()
                 .unwrap()
         };
-        let checkout_check = checkout_step.map(|step| format!("checkout-check-{step}"));
-        let entry_check = format!("entry-check-{entry_step}");
+        // The checkout's rerun checks its entry while the checkout is live; once its deletion is
+        // recorded nothing of it is left to claim, so its rerun only removes its container.
+        let checkout_check = checkout_step
+            .filter(|step| *step != "deleted")
+            .map(|step| format!("checkout-check-{step}"));
+        // The entry's own rerun checks it while it is there to read: never once it is recorded
+        // deleted or done.
+        let entry_check = (!matches!(entry_step, "deleted" | "done"))
+            .then(|| format!("entry-check-{entry_step}"));
+        let checks = |trace: &Path| -> Vec<String> {
+            traced(trace)
+                .into_iter()
+                .filter(|line| line.contains("-check-"))
+                .collect()
+        };
 
         // While its entry, wherever it is, is locked, a step's rerun checks first and then
         // touches nothing: the failed precondition leaves the record exactly as it was.
@@ -3903,15 +3992,29 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
             let (_, stderr) = text(&refused);
             assert_eq!(refused.status.code(), Some(1), "{point}: {stderr}");
             assert!(stderr.contains("is locked"), "{point}: {stderr}");
-            let expected = vec![
-                checkout_check
+            let expected = vec![checkout_check.clone().unwrap_or_else(|| {
+                entry_check
                     .clone()
-                    .unwrap_or_else(|| entry_check.clone()),
-            ];
-            assert_eq!(traced(&trace), expected, "{point}: {stderr}");
+                    .expect("an entry that is there is checked")
+            })];
+            assert_eq!(checks(&trace), expected, "{point}: {stderr}");
+            if checkout_check.is_some() {
+                assert_eq!(traced(&trace), expected, "{point}: {stderr}");
+            }
             assert_eq!(checkout_place(&machine, &name), checkout_before, "{point}");
             assert!(locked_at.join("locked").is_file(), "{point}");
-            assert_eq!(std::fs::read(&record).unwrap(), recorded, "{point}");
+            if checkout_step == Some("deleted") {
+                // Not live: its rerun finished the checkout, its container removed, before the
+                // entry's check refused; the entry's claim is as it was.
+                let held = std::fs::read_to_string(&record).unwrap();
+                assert!(
+                    held.contains("step = \"done\"") && held.contains("step = \"inspected\""),
+                    "{point}: {held}"
+                );
+            } else {
+                assert_eq!(std::fs::read(&record).unwrap(), recorded, "{point}");
+            }
+            let recorded = std::fs::read(&record).unwrap();
             std::fs::remove_file(locked_at.join("locked")).unwrap();
 
             // The recorded entry moved aside and another directory at its path, unlocked and
@@ -3923,7 +4026,34 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
             std::fs::copy(aside.join("gitdir"), entry.join("gitdir")).unwrap();
             let trace = machine.root().join(format!("trace-{label}-replaced"));
             let refused = rerun(&trace);
-            let (_, stderr) = text(&refused);
+            let (stdout, stderr) = text(&refused);
+            if entry_step == "deleting" {
+                // Its deletion recorded, the entry is in neither place the record names: its
+                // deletion finished as far as this removal can know, so no check reads what
+                // holds its path now, which is kept and reported, and the removal finishes.
+                assert_eq!(refused.status.code(), Some(0), "{point}: {stderr}");
+                assert!(
+                    stdout.contains(&format!(
+                        "kept {}: it is not the administrative entry this removal inspected",
+                        entry.display()
+                    )),
+                    "{point}: {stdout}"
+                );
+                assert!(
+                    !traced(&trace)
+                        .iter()
+                        .any(|line| line.starts_with("entry-check-")),
+                    "{point}: {:?}",
+                    traced(&trace)
+                );
+                assert!(entry.join("gitdir").is_file() && aside.join("gitdir").is_file());
+                assert!(!record.exists(), "{point}");
+                let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+                assert!(!labels(&listed).contains(&label), "{point}: {listed}");
+                std::fs::remove_dir_all(&entry).unwrap();
+                std::fs::remove_dir_all(&aside).unwrap();
+                continue;
+            }
             assert_eq!(refused.status.code(), Some(1), "{point}: {stderr}");
             assert!(
                 stderr.contains(&format!(
@@ -3933,7 +4063,7 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
                 )),
                 "{point}: {stderr}"
             );
-            assert_eq!(traced(&trace), expected, "{point}: {stderr}");
+            assert_eq!(checks(&trace), expected, "{point}: {stderr}");
             assert_eq!(checkout_place(&machine, &name), checkout_before, "{point}");
             assert!(entry.join("gitdir").is_file() && aside.join("gitdir").is_file());
             assert_eq!(std::fs::read(&record).unwrap(), recorded, "{point}");
@@ -3958,7 +4088,7 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
             text(&finished).1
         );
         let lines = traced(&trace);
-        for (which, check) in [("checkout", checkout_check), ("entry", Some(entry_check))] {
+        for (which, check) in [("checkout", checkout_check), ("entry", entry_check)] {
             let of: Vec<&String> = lines
                 .iter()
                 .filter(|line| line.starts_with(&format!("{which}-")))
@@ -3967,7 +4097,10 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
                 Some(check) => {
                     assert_eq!(of.first().copied(), Some(&check), "{point}: {lines:?}");
                 }
-                None => assert!(of.is_empty(), "{point}: {lines:?}"),
+                None => assert!(
+                    !of.iter().any(|line| line.contains("-check-")),
+                    "{point}: {lines:?}"
+                ),
             }
         }
         // The checkout's whole rerun precedes its entry's.
@@ -3980,7 +4113,122 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
     }
 }
 
-/// Every `*-moved` step checks its original path (ADR-0151 clause 5): stopped right after the
+/// A rerun's entry check follows the step it holds (ADR-0157 clause 5): stopped as a crash would
+/// once the entry is unlinked, or part way through its deletion with its `gitdir` gone, while a
+/// new directory another worktree's add made holds the entry's path, the rerun finds the
+/// recorded entry in neither place it can be (and keeps and reports the new one), or what is
+/// left of it in its container without the `gitdir` its own deletion removed (and finishes it
+/// there), and so finishes and unregisters the Workspace once, never stopping at a check of
+/// what is no longer there.
+#[test]
+fn a_rerun_after_the_entrys_unlink_or_part_of_its_deletion_finishes_beside_a_new_entry() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    for (index, point) in ["entry-unlinked", "entry-partial"].into_iter().enumerate() {
+        let label = format!("gone{index}");
+        let created = machine.json(&repo, &["project", "workspace", "new", &label, "--json"]);
+        let id = workspace(&created, &label)["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let name = format!("fixture-wt-{label}");
+        let entry = repo.join(".git/worktrees").join(&name);
+        let remove = [
+            "project",
+            "workspace",
+            "remove",
+            label.as_str(),
+            "--delete-worktree",
+        ];
+        let stopped = af_stopped_at(&machine, &repo, point, &remove);
+        assert_eq!(
+            stopped.status.code(),
+            Some(86),
+            "{point}: {}",
+            text(&stopped).1
+        );
+        // Another add of the same basename made a new entry at the path since.
+        std::fs::create_dir(&entry).unwrap();
+        std::fs::write(entry.join("gitdir"), "/elsewhere/fixture-wt/.git\n").unwrap();
+        let finished = machine.expect(&repo, &remove, 0);
+        assert!(
+            finished.contains(&format!("removed Workspace {label}")),
+            "{point}: {finished}"
+        );
+        // Gone from both places, the recorded entry is not what holds its path: that is kept
+        // and said. Part deleted in its container, it is finished there, and the path is not
+        // its to judge.
+        assert_eq!(
+            finished.contains(&format!(
+                "kept {}: it is not the administrative entry this removal inspected",
+                entry.display()
+            )),
+            point == "entry-unlinked",
+            "{point}: {finished}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(entry.join("gitdir")).unwrap(),
+            "/elsewhere/fixture-wt/.git\n",
+            "{point}: the new entry is left as it was"
+        );
+        assert!(
+            !administrative_entries(&repo)
+                .iter()
+                .any(|left| container_pid(left, &name).is_some()),
+            "{point}: no container is left"
+        );
+        assert!(!removal_record(&machine, &repo, &id).exists(), "{point}");
+        assert_eq!(removals_of(&machine, &repo, &id), 1, "{point}");
+        let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+        assert!(!labels(&listed).contains(&label), "{point}: {listed}");
+        std::fs::remove_dir_all(&entry).unwrap();
+    }
+}
+
+/// A removal records only an identity that carries a birth time (ADR-0157 clause 5): on a file
+/// system that reports none, `--delete-worktree` is refused at inspection with one sentence
+/// naming the file system, nothing changed and no record written; without that condition the
+/// same command removes the worktree.
+#[cfg(debug_assertions)]
+#[test]
+fn a_file_system_without_birth_time_refuses_a_removal_and_changes_nothing() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let created = machine.json(&repo, &["project", "workspace", "new", "nobirth", "--json"]);
+    let id = workspace(&created, "nobirth")["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let worktree = machine.root().join("fixture-wt-nobirth");
+    let remove = [
+        "project",
+        "workspace",
+        "remove",
+        "nobirth",
+        "--delete-worktree",
+    ];
+    let refused = crate::common::af()
+        .current_dir(&repo)
+        .env("XDG_STATE_HOME", machine.state_home())
+        .env("AF_SELF_OFFLINE", "1")
+        .env("NO_COLOR", "1")
+        .env("AF_TEST_NO_BIRTH_TIME", "1")
+        .args(remove)
+        .output()
+        .unwrap();
+    let (_, stderr) = text(&refused);
+    assert_eq!(refused.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("reports no birth time"), "{stderr}");
+    assert!(stderr.contains("nothing was changed"), "{stderr}");
+    assert!(worktree.join(".git").is_file(), "the worktree stays");
+    assert!(!removal_record(&machine, &repo, &id).exists(), "no record");
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    assert!(labels(&listed).contains(&"nobirth".to_string()));
+    machine.expect(&repo, &remove, 0);
+    assert!(!worktree.exists());
+}
+
+/// Every `*-moved` step checks its original path (ADR-0157 clause 5): stopped right after the
 /// checkout or its administrative entry moved into its container, a directory found at the
 /// original path on the rerun is a replacement that stops the removal. The recorded directory
 /// stays in its container, nothing is deleted, the record stays byte for byte and the Workspace

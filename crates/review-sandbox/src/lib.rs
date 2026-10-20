@@ -55,10 +55,10 @@ pub use check_runtime::{CONTAINER_CHECK_RUNTIME, CheckRuntime};
 pub use container::{Availability, ContainerProvider};
 #[cfg(unix)]
 pub use removal::{
-    AbandonedClaim, ClaimSize, Identity, PartlyRemoved, REMOVAL_MAX_DEPTH, Unmeasured,
-    abandoned_claims, deeper_than_removal_walk, finish_abandoned_claims, open_anchor, open_beneath,
-    partial, partly_removed, remove_beneath, remove_beneath_measured, remove_tree_at,
-    remove_tree_measured_at,
+    AbandonedClaim, ClaimSize, Identity, PartlyRemoved, REMOVAL_MAX_DEPTH, Stated, Unmeasured,
+    abandoned_claims, born_at, born_of_descriptor, deeper_than_removal_walk,
+    finish_abandoned_claims, is_incomplete, open_anchor, open_beneath, partial, partly_removed,
+    remove_beneath, remove_beneath_measured, remove_tree_at, remove_tree_measured_at,
 };
 pub use seal::{MutationSet, SealedSandbox};
 pub use stale::{

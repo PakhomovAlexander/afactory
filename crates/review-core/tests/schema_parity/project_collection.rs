@@ -1,17 +1,18 @@
-//! Survey collection (ADR-0152 clause 13): `SurveyCollected@1`, the tombstone a collected
+//! Survey collection (ADR-0158 clause 13): `SurveyCollected@1`, the tombstone a collected
 //! Survey leaves in its Project Store's log and that binds every identity field of its record,
 //! against its own schema, inside `run-event-v1.json` and through the Rust validator alike; and
 //! `af/TaskStorageSweep@1`, whose kind set Survey collection leaves unchanged, so a Survey's
-//! removal is counted and never listed; and `af/ProjectSurveysSettled@1`, the machine-local
-//! record collection keeps beside a Project Store's lock, against its schema and its typed
-//! contract alike. The pending-publication entry collection reads is the writer's
-//! `af/survey-pending@1` (ADR-0152 clause 2), whose parity lives with the Survey's.
+//! removal is counted and never listed; and `af/ProjectSurveysSettled@2`, the machine-local
+//! record of each collection's selected object and of the settled Surveys that collection keeps
+//! beside a Project Store's lock, against its schema and its typed contract alike. The
+//! pending-publication entry collection reads is the writer's `af/survey-pending@2` (ADR-0158
+//! clause 2), whose parity lives with the Survey's.
 
 use super::{assert_invalid, assert_valid};
 use review_core::EventType;
 use review_core::event::validate_event_payload;
 use review_core::project::{
-    PROJECT_SURVEYS_SETTLED_V1, ProjectSurveysSettledV1, SurveyCollectedHistoryV1,
+    PROJECT_SURVEYS_SETTLED_V2, ProjectSurveysSettledV2, SurveyCollectedHistoryV1,
     SurveyCollectedPayloadV1, SurveyCollectedTreeV1, SurveyCompletenessV1,
 };
 use serde_json::{Value, json};
@@ -222,26 +223,39 @@ fn the_sweep_record_counts_a_survey_and_has_no_survey_kind() {
     assert!(validate_event_payload(EventType::TaskTransitionV5, &transition).is_err());
 }
 
-/// The settled record lists collected Survey IDs by digest, each once; anything else is
-/// refused by its schema and its typed contract alike.
+/// The settled record lists collected Survey IDs by digest, each once, and each collection's
+/// selected object with its device, inode, birth time and length; anything else, the
+/// superseded `@1` included, is refused by its schema and its typed contract alike.
 #[test]
 fn the_settled_record_is_closed_and_lists_each_survey_once() {
-    const SETTLED: &str = "project-surveys-settled-v1.json";
-    let settled = ProjectSurveysSettledV1 {
-        schema: PROJECT_SURVEYS_SETTLED_V1.into(),
+    const SETTLED: &str = "project-surveys-settled-v2.json";
+    let selection = json!({
+        "survey_id": format!("sha256:{}", "c".repeat(64)),
+        "object": {"device": "16777232", "inode": "99", "born_unix_ns": "1792000000000000001"},
+        "bytes": "4595",
+    });
+    let settled = ProjectSurveysSettledV2 {
+        schema: PROJECT_SURVEYS_SETTLED_V2.into(),
         survey_ids: vec![
             format!("sha256:{}", "a".repeat(64)),
             format!("sha256:{}", "b".repeat(64)),
         ],
+        selected: vec![serde_json::from_value(selection.clone()).unwrap()],
     };
     settled.validate().unwrap();
     let value = serde_json::to_value(&settled).unwrap();
+    assert_eq!(value["selected"], json!([selection.clone()]));
     assert_valid(SETTLED, &value);
     assert_valid(SETTLED, &with(&value, "survey_ids", json!([])));
+    assert_valid(SETTLED, &without(&value, "selected"));
     let twice = json!([
         format!("sha256:{}", "a".repeat(64)),
         format!("sha256:{}", "a".repeat(64))
     ]);
+    let mut no_birth = selection.clone();
+    no_birth["object"] = json!({"device": "1", "inode": "2"});
+    let mut no_length = selection.clone();
+    no_length.as_object_mut().unwrap().remove("bytes");
     for (broken, why) in [
         (with(&value, "survey_ids", twice), "each Survey once"),
         (
@@ -249,19 +263,33 @@ fn the_settled_record_is_closed_and_lists_each_survey_once() {
             "Surveys are named by digest",
         ),
         (
-            with(&value, "schema", json!("af/ProjectSurveysSettled@2")),
+            with(&value, "schema", json!("af/ProjectSurveysSettled@1")),
+            "the superseded version is refused",
+        ),
+        (
+            with(&value, "schema", json!("af/ProjectSurveysSettled@3")),
             "another version is refused",
         ),
         (
             with(&value, "path", json!("/home/me/.local/state")),
             "no field holds a path",
         ),
+        (
+            with(&value, "selected", json!([no_birth])),
+            "a selection carries its birth time",
+        ),
+        (
+            with(&value, "selected", json!([no_length])),
+            "a selection carries its length",
+        ),
     ] {
         assert_invalid(SETTLED, &broken, why);
-        let typed = serde_json::from_value::<ProjectSurveysSettledV1>(broken.clone());
+        let typed = serde_json::from_value::<ProjectSurveysSettledV2>(broken.clone());
         assert!(
             typed.is_err() || typed.unwrap().validate().is_err(),
             "the typed contract accepted it ({why})"
         );
     }
+    let schemas = super::workspace_root().join("schemas");
+    assert!(!schemas.join("project-surveys-settled-v1.json").exists());
 }

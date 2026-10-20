@@ -72,7 +72,7 @@
   canonical encoded spelling, so a match costs at most (pattern length + 1) × (path length + 1)
   cells and `*a` thirty times then `b` no longer hangs; a `[survey]` pattern is at most 256 bytes
   and a list at most 64 patterns, and the Surveyor checks its deadline before each pattern it
-  matches ([ADR-0152](docs/adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md)).
+  matches ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md)).
 - PJ2c close-out, collection: a pending entry whose event never committed is cleared only once no
   file with its inode remains at its Survey's CAS name or in a pass's container, whatever its
   length; an object truncated or grown in place, or moved so, keeps the entry (`failed: … kept:
@@ -92,5 +92,26 @@
   `a_project_store_log_beyond_the_buffered_bytes_ceiling_keeps_its_surveys`). The 64 MiB
   per-Store activity CAS-read budget is out of scope here: it bounds the `activity` section, which
   does not exist yet and belongs to PJ5
-  ([ADR-0152](docs/adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
   15).
+- Second close-out, collection: before its tombstone a collection records the object it selects,
+  its device, inode, birth time and length, in `settled.json`, now `af/ProjectSurveysSettled@2`
+  (`selected`, `schemas/project-surveys-settled-v2.json`; `@1` is refused naming its recovery),
+  and recovery follows that identity, never a hash: a byte-identical copy put at the name after a
+  crash that followed the tombstone, another inode or the same one born later, is `foreign` sweep
+  after sweep (`a_byte_identical_replacement_after_a_tombstone_survives_two_sweeps_as_foreign`,
+  `a_record_replaced_before_its_rename_is_refused_and_its_copy_stays_foreign`). Objects the writer
+  staged are reclaimed under `recovery` before their entries
+  (`a_survey_stopped_before_its_cas_name_leaves_staged_bytes_a_later_prune_reclaims`), and a file
+  system that reports no birth time refuses collection and deletes nothing
+  (`a_file_system_without_birth_time_refuses_collection_and_deletes_nothing`). Every byte count
+  of `af storage` and `af storage prune` is the allocated bytes of regular files, directories and
+  links counting nothing, so the numbers agree on ext4 and APFS. The prune's running total
+  reconciles a claim that grew since inventory, what its removal measured at its start taking the
+  place of the inventoried bytes before what left is subtracted (inventoried at 10 MiB, grown to
+  20 MiB, 8 MiB freed: 12 MiB retained, `a_grown_claims_partial_deletion_reports_the_bytes_it_retains`),
+  and reports the total and `stop` `unknown` when what a partial deletion left cannot be measured
+  (`a_partial_deletion_whose_remainder_cannot_be_walked_reports_the_total_unknown`), so its
+  document is now `af/storage-prune@3` (`schemas/storage-prune-v3.json`) and `@2` is refused
+  ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  13).

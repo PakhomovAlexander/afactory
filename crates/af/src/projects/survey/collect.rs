@@ -1,4 +1,4 @@
-//! Survey collection (ADR-0152 clause 13) and the bounded patterns of clause 14.
+//! Survey collection (ADR-0158 clause 13) and the bounded patterns of clause 14.
 //!
 //! Every Survey is an entry of kind `survey` of the machine budget (ADR-0144 clause 4): its CAS
 //! bytes, last used at its cutoff. The Storage Budget collects Surveys in its own passes only:
@@ -79,12 +79,14 @@ use std::time::{Duration, Instant};
 
 use review_core::EventType;
 use review_core::project::{
-    MAX_SURVEY_BYTES, MAX_SURVEYS_SETTLED_BYTES, PROJECT_SURVEYS_SETTLED_V1, ProjectSurveyV2,
-    ProjectSurveysSettledV1, SURVEY_PENDING_V1, SurveyCollectedHistoryV1, SurveyCollectedPayloadV1,
-    SurveyCollectedTreeV1, SurveyCompletenessV1, SurveyPendingV1, SurveyReasonV1,
-    SurveyRecordedPayloadV1,
+    MAX_SURVEY_BYTES, MAX_SURVEYS_SETTLED_BYTES, PROJECT_SURVEYS_SETTLED_V1_SUPERSEDED,
+    PROJECT_SURVEYS_SETTLED_V2, ProjectSurveyV2, ProjectSurveysSettledV2,
+    SUPERSEDED_SURVEYS_SETTLED, SurveyCollectedHistoryV1, SurveyCollectedPayloadV1,
+    SurveyCollectedTreeV1, SurveyCompletenessV1, SurveyPendingV2, SurveyReasonV1,
+    SurveyRecordedPayloadV1, SurveySelectedV2,
 };
-use review_sandbox::Identity;
+use review_sandbox::removal::Kind;
+use review_sandbox::{Identity, Stated};
 use review_store::{Cas, EventStore, NewEvent};
 
 use super::super::{Git, Log, ProjectStore, RUN_ID};
@@ -93,7 +95,7 @@ use super::policy::Policy;
 
 /// The run of a Project Store's log that holds its Surveys' tombstones.
 pub(crate) const COLLECTION_RUN: &str = "survey-collection";
-/// The Store discovery ceilings (design note §3.3, ADR-0152 clause 13): where the inventory
+/// The Store discovery ceilings (design note §3.3, ADR-0158 clause 13): where the inventory
 /// walks Stores, it reads the Surveys of at most `stores` Project Stores, in path order, and
 /// each Store's log through one cursor of at most `rows` rows of at most `row_bytes` bytes each
 /// and `buffered_bytes` over all of them; beyond a ceiling the Store's Surveys are not read,
@@ -165,7 +167,7 @@ const REMOVING: &str = "removing";
 /// (`af/ProjectSurveysSettled@1`).
 pub(crate) const SETTLED: &str = "settled.json";
 /// The directory, beside the lock, of the pending-publication entries the Surveyor's writer
-/// keeps (`af/survey-pending@1`, ADR-0152 clause 2), one `<64 hex>.json` per Survey.
+/// keeps (`af/survey-pending@1`, ADR-0158 clause 2), one `<64 hex>.json` per Survey.
 pub(crate) const PENDING: &str = super::pending::DIRECTORY;
 /// Upper bound on one pending-publication entry collection reads: its Survey ID, two decimal
 /// identities and a length fit many times over.
@@ -285,26 +287,26 @@ fn open_prefix(objects: &OwnedFd, name: &str, device: u64) -> Result<Option<Owne
     Ok(Some(prefix))
 }
 
-/// Allocated bytes a `stat` reports.
-#[allow(clippy::unnecessary_cast)]
-fn allocated(stat: &nix::sys::stat::FileStat) -> u64 {
-    (stat.st_blocks as u64).saturating_mul(512)
-}
-
 fn kind_of(stat: &nix::sys::stat::FileStat) -> nix::sys::stat::SFlag {
     use nix::sys::stat::SFlag;
     SFlag::from_bits_truncate(stat.st_mode as nix::libc::mode_t) & SFlag::S_IFMT
 }
 
-/// What `name` of `directory` is, not following it; `None` when there is nothing. The name is
-/// taken raw, so one that is not UTF-8 is stated as it is.
-fn stat_at(directory: &OwnedFd, name: &OsStr) -> Result<Option<nix::sys::stat::FileStat>, String> {
-    use nix::fcntl::AtFlags;
-    match nix::sys::stat::fstatat(directory, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-        Ok(stat) => Ok(Some(stat)),
-        Err(nix::errno::Errno::ENOENT) => Ok(None),
-        Err(errno) => Err(format!("inspecting its record: {errno}")),
-    }
+/// What `name` of `directory` is, not following it, with its born identity (its device, inode
+/// and birth time, `review_sandbox::born_at`); `None` when there is nothing. The name is taken
+/// raw, so one that is not UTF-8 is stated as it is.
+fn stat_at(directory: &OwnedFd, name: &OsStr) -> Result<Option<Stated>, String> {
+    review_sandbox::born_at(directory, name)
+        .map_err(|error| format!("inspecting its record: {error}"))
+}
+
+/// The born identity of `stated`, `shown` as what `directory` holds: refused, with one sentence
+/// naming the file system, where that file system reports no birth time, since nothing could
+/// then tell the file from one created later at a reused inode.
+fn complete(stated: &Stated, shown: &str, directory: &OwnedFd) -> Result<Identity, String> {
+    stated
+        .complete(shown, directory)
+        .map_err(|error| error.to_string())
 }
 
 /// Open `name` of `directory` to read, never following a link and never waiting on a pipe.
@@ -408,33 +410,119 @@ fn read_regular(directory: &OwnedFd, name: &str, max: u64) -> Result<Option<Vec<
     Ok(Some(bytes))
 }
 
-/// The collected Surveys whose own records have left the CAS, as the Store's `settled.json`
-/// (`af/ProjectSurveysSettled@1`) says; none when there is no such file. A file at a settled
-/// Survey's CAS name is foreign, whatever its bytes.
-fn read_settled(cas: &CasDirectories) -> Result<BTreeSet<String>, String> {
+/// What the Store's `settled.json` (`af/ProjectSurveysSettled@2`) says: the collected Surveys
+/// whose own records have left the CAS, and, per collected Survey, the object its collection
+/// selected before its tombstone, by identity and length.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Settled {
+    survey_ids: BTreeSet<String>,
+    selected: BTreeMap<String, (Identity, u64)>,
+}
+
+impl Settled {
+    /// Whether `identity`, `size` bytes long, is the object the collection of `survey_id`
+    /// selected: the one inode recovery may delete as its record.
+    fn selects(&self, survey_id: &str, identity: Identity, size: u64) -> bool {
+        self.selected.get(survey_id) == Some(&(identity, size))
+    }
+}
+
+/// What the Store's `settled.json` says; nothing when there is no such file. A file at a settled
+/// Survey's CAS name is foreign, whatever its bytes, and so is any file at a collected Survey's
+/// name, or in a dead pass's container, that is not the object its collection selected. A
+/// record another release wrote is refused by its label, naming the recovery.
+fn read_settled(cas: &CasDirectories) -> Result<Settled, String> {
     let Some(bytes) = read_regular(&cas.store, SETTLED, MAX_SURVEYS_SETTLED_BYTES)? else {
-        return Ok(BTreeSet::new());
+        return Ok(Settled::default());
     };
-    let record: ProjectSurveysSettledV1 = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("`{SETTLED}` is no {PROJECT_SURVEYS_SETTLED_V1}: {error}"))?;
+    if review_core::project::schema_label(&bytes).as_deref()
+        == Some(PROJECT_SURVEYS_SETTLED_V1_SUPERSEDED)
+    {
+        return Err(format!(
+            "`{SETTLED}` is refused: {SUPERSEDED_SURVEYS_SETTLED}; delete it, and since no \
+             collection's selection is then recorded, nothing at a collected Survey's name is \
+             deleted"
+        ));
+    }
+    let record: ProjectSurveysSettledV2 = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("`{SETTLED}` is no {PROJECT_SURVEYS_SETTLED_V2}: {error}"))?;
     record
         .validate()
         .map_err(|why| format!("`{SETTLED}`: {why}"))?;
-    Ok(record.survey_ids.into_iter().collect())
+    Ok(Settled {
+        survey_ids: record.survey_ids.into_iter().collect(),
+        selected: record
+            .selected
+            .into_iter()
+            .map(|selected| {
+                (
+                    selected.survey_id,
+                    (
+                        super::pending::identity_of(&selected.object),
+                        selected.bytes.get(),
+                    ),
+                )
+            })
+            .collect(),
+    })
 }
 
 /// Record, under the Store's lock its caller holds, that the record of the collected Survey
-/// `survey_id` has left its CAS name: `settled.json` rewritten whole, through a fresh temporary
-/// file created exclusively beside it and renamed over it, so a reader sees the old record or
-/// the new one, never part of one, and the Store's directory synced so the rename is durable.
-/// Any failure is the error, and the caller then unlinks nothing: a sync that fails after the
-/// rename puts the earlier record back (removes the new one, when there was none) and syncs that
-/// too before it returns, so the Survey stays unsettled and the next sweep tries again; when
-/// the put-back or its sync fails as well, both failures are the error and the Survey is left
-/// [`UNVERIFIED_SETTLEMENT`]: its record is not deleted, and only a later sweep that reads a
-/// consistent `settled.json` decides what holds its name.
+/// `survey_id` has left its CAS name: `settled.json` rewritten whole,
+/// through a fresh temporary file created exclusively beside it and renamed over it, so a reader
+/// sees the old record or the new one, never part of one, and the Store's directory synced so
+/// the rename is durable. Any failure is the error, and the caller then unlinks nothing: a sync
+/// that fails after the rename puts the earlier record back (removes the new one, when there was
+/// none) and syncs that too before it returns, so the Survey stays unsettled and the next sweep
+/// tries again; when the put-back or its sync fails as well, both failures are the error and the
+/// Survey is left [`UNVERIFIED_SETTLEMENT`]: its record is not deleted, and only a later sweep
+/// that reads a consistent `settled.json` decides what holds its name.
 fn record_settled(cas: &CasDirectories, survey_id: &str) -> Result<(), String> {
     record_settled_with(cas, survey_id, sync_store)
+}
+
+/// Record, under the Store's lock its caller holds and before the tombstone of `survey_id` is
+/// appended, the object its collection selected at its CAS name, `identity` and `size` bytes
+/// long: the only inode recovery deletes as its record from then on. Written as
+/// [`record_settled`] writes; a failure, its sync's included (the earlier record is put back),
+/// is the error, and the caller then appends no tombstone.
+fn record_selected(
+    cas: &CasDirectories,
+    survey_id: &str,
+    identity: Identity,
+    size: u64,
+) -> Result<(), String> {
+    // A settlement's injected sync failure is a settlement's alone: the selection syncs as is.
+    record_selected_with(cas, survey_id, identity, size, |cas, _| {
+        nix::unistd::fsync(&cas.store).map_err(|errno| errno.to_string())
+    })
+}
+
+fn record_selected_with(
+    cas: &CasDirectories,
+    survey_id: &str,
+    identity: Identity,
+    size: u64,
+    sync: impl Fn(&CasDirectories, SyncOf) -> Result<(), String>,
+) -> Result<(), String> {
+    let changed = |settled: &mut Settled| {
+        settled
+            .selected
+            .insert(survey_id.to_string(), (identity, size))
+            != Some((identity, size))
+    };
+    update_settled(cas, changed, sync).map_err(|failure| match failure {
+        Update::Failed(why) => format!("recording its selection: {why}"),
+        Update::PutBack(why) => format!(
+            "syncing `{SETTLED}`: {why}; the earlier record is put back and synced, so no \
+             tombstone is appended and the next pass tries again"
+        ),
+        Update::Unverified(why, again) => format!(
+            "syncing `{SETTLED}`: {why}; putting the earlier record back failed too ({again}), \
+             so no tombstone is appended, and a later pass reads `{SETTLED}` again before it \
+             collects the Survey"
+        ),
+    })
 }
 
 /// What a Survey whose settlement could neither be made durable nor durably undone is left as.
@@ -470,32 +558,14 @@ fn record_settled_with(
     survey_id: &str,
     sync: impl Fn(&CasDirectories, SyncOf) -> Result<(), String>,
 ) -> Result<(), String> {
-    let before = read_settled(cas)?;
-    let mut settled = before.clone();
-    if !settled.insert(survey_id.to_string()) {
-        return Ok(());
-    }
-    write_settled(cas, settled)?;
-    let Err(why) = sync(cas, SyncOf::Install) else {
-        return Ok(());
-    };
-    // The new record is in place but not durable: the earlier one goes back, durably, so no
-    // reader takes the Survey for settled while its record is still at its name.
-    let restored = if before.is_empty() {
-        nix::unistd::unlinkat(&cas.store, SETTLED, nix::unistd::UnlinkatFlags::NoRemoveDir)
-            .map_err(|errno| format!("removing the new record: {errno}"))
-    } else {
-        write_settled(cas, before)
-    }
-    .and_then(|()| {
-        sync(cas, SyncOf::Rollback).map_err(|again| format!("syncing the put-back: {again}"))
-    });
-    Err(match restored {
-        Ok(()) => format!(
+    let changed = |settled: &mut Settled| settled.survey_ids.insert(survey_id.to_string());
+    update_settled(cas, changed, sync).map_err(|failure| match failure {
+        Update::Failed(why) => why,
+        Update::PutBack(why) => format!(
             "syncing `{SETTLED}`: {why}; the earlier record is put back and synced, so the Survey \
              stays unsettled and the next pass tries again"
         ),
-        Err(again) => format!(
+        Update::Unverified(why, again) => format!(
             "syncing `{SETTLED}`: {why}; putting the earlier record back failed too ({again}), \
              so the Survey is left {UNVERIFIED_SETTLEMENT}: its record is not deleted, and a \
              later pass reads `{SETTLED}` again before anything at its name is"
@@ -503,13 +573,72 @@ fn record_settled_with(
     })
 }
 
+/// How an update of `settled.json` failed.
+enum Update {
+    /// Before or at its install: nothing changed.
+    Failed(String),
+    /// Its install's sync, after which the earlier record was put back and synced.
+    PutBack(String),
+    /// Its install's sync, and the put-back or its sync too.
+    Unverified(String, String),
+}
+
+/// Apply `change` to `settled.json` and install the result durably, unless it changed nothing:
+/// the new record written through a fresh temporary file renamed over the old one, then the
+/// Store's directory synced; a sync that fails puts the earlier record back (removes the new one,
+/// when there was none) and syncs that too.
+fn update_settled(
+    cas: &CasDirectories,
+    change: impl FnOnce(&mut Settled) -> bool,
+    sync: impl Fn(&CasDirectories, SyncOf) -> Result<(), String>,
+) -> Result<(), Update> {
+    let before = read_settled(cas).map_err(Update::Failed)?;
+    let mut settled = before.clone();
+    if !change(&mut settled) {
+        return Ok(());
+    }
+    write_settled(cas, &settled).map_err(Update::Failed)?;
+    let Err(why) = sync(cas, SyncOf::Install) else {
+        return Ok(());
+    };
+    // The new record is in place but not durable: the earlier one goes back, durably, so no
+    // reader takes the Survey for settled, or the object for selected, on a record that may
+    // not survive.
+    let restored = if before == Settled::default() {
+        nix::unistd::unlinkat(&cas.store, SETTLED, nix::unistd::UnlinkatFlags::NoRemoveDir)
+            .map_err(|errno| format!("removing the new record: {errno}"))
+    } else {
+        write_settled(cas, &before)
+    }
+    .and_then(|()| {
+        sync(cas, SyncOf::Rollback).map_err(|again| format!("syncing the put-back: {again}"))
+    });
+    Err(match restored {
+        Ok(()) => Update::PutBack(why),
+        Err(again) => Update::Unverified(why, again),
+    })
+}
+
 /// Replace `settled.json` with `settled`, through a temporary file synced and renamed over it.
-fn write_settled(cas: &CasDirectories, settled: BTreeSet<String>) -> Result<(), String> {
+fn write_settled(cas: &CasDirectories, settled: &Settled) -> Result<(), String> {
     use nix::fcntl::{OFlag, openat};
     use std::io::Write;
-    let record = ProjectSurveysSettledV1 {
-        schema: PROJECT_SURVEYS_SETTLED_V1.into(),
-        survey_ids: settled.into_iter().collect(),
+    let record = ProjectSurveysSettledV2 {
+        schema: PROJECT_SURVEYS_SETTLED_V2.into(),
+        survey_ids: settled.survey_ids.iter().cloned().collect(),
+        selected: settled
+            .selected
+            .iter()
+            .map(|(survey_id, &(identity, size))| {
+                super::pending::object_of(identity)
+                    .map(|object| SurveySelectedV2 {
+                        survey_id: survey_id.clone(),
+                        object,
+                        bytes: size.into(),
+                    })
+                    .ok_or("a selection carries its object's birth time")
+            })
+            .collect::<Result<_, _>>()?,
     };
     record.validate()?;
     let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
@@ -573,6 +702,9 @@ enum Checked {
     /// The check found the inode, but what must precede its unlink failed: nothing was
     /// unlinked.
     Unready(String),
+    /// What holds the name has no birth time to compare, its file system reporting none:
+    /// nothing was unlinked.
+    Incomplete(String),
 }
 
 impl Container {
@@ -602,31 +734,36 @@ impl Container {
         format!("cas/{REMOVING}/{}/{}", self.name, entry.to_string_lossy())
     }
 
-    /// Unlink `entry` only while it is `identity`: stated with `fstatat` relative to the
-    /// container's own descriptor, without following it, immediately before `unlinkat` relative
-    /// to the same descriptor, and only once `ready` succeeded after that check (a collected
-    /// Survey's settlement is recorded there, once the inode off its name is known to be its
-    /// record). Returns the allocated bytes of that inode.
+    /// Unlink `entry` only while it is `identity`, its device, inode and birth time: stated
+    /// with `fstatat` relative to the container's own descriptor, without following it,
+    /// immediately before `unlinkat` relative to the same descriptor, and only once `ready`
+    /// succeeded after that check (a collected Survey's settlement is recorded there, once the
+    /// inode off its name is known to be its record). A file born later at a reused inode is
+    /// another file. Returns the allocated bytes of that inode.
     fn unlink_checked(
         &self,
         entry: &OsStr,
         identity: Identity,
         ready: impl FnOnce() -> Result<(), String>,
     ) -> Result<u64, Checked> {
-        use nix::sys::stat::SFlag;
         use nix::unistd::{UnlinkatFlags, unlinkat};
-        let stat = match stat_at(&self.directory, entry) {
-            Ok(Some(stat)) => stat,
+        let stated = match stat_at(&self.directory, entry) {
+            Ok(Some(stated)) => stated,
             Ok(None) => return Err(Checked::Gone),
             Err(why) => return Err(Checked::Failed(why)),
         };
-        if kind_of(&stat) != SFlag::S_IFREG || Identity::of_stat(&stat) != identity {
+        if stated.kind != Kind::File {
+            return Err(Checked::Replaced);
+        }
+        if complete(&stated, &self.label(entry), &self.directory).map_err(Checked::Incomplete)?
+            != identity
+        {
             return Err(Checked::Replaced);
         }
         ready().map_err(Checked::Unready)?;
         unlinkat(&self.directory, entry, UnlinkatFlags::NoRemoveDir)
             .map_err(|errno| Checked::Failed(errno.to_string()))?;
-        Ok(allocated(&stat))
+        Ok(stated.allocated)
     }
 
     /// Set aside `entry`, which the check found replaced: back to `name` of `directory` when that
@@ -699,33 +836,38 @@ struct Record {
 /// object, a directory on another device than the Store's, or an object that is no regular file
 /// is the error: the record is never reached through it.
 fn locate(store: &Path, survey_id: &str) -> Result<Option<Record>, String> {
-    use nix::sys::stat::SFlag;
     let (prefix_name, name) = split(survey_id)?;
     let cas = open_cas(store)?;
     let Some(prefix) = open_prefix(&cas.objects, prefix_name, cas.device)? else {
         return Ok(None);
     };
-    let Some(stat) = stat_at(&prefix, OsStr::new(name))? else {
+    let Some(stated) = stat_at(&prefix, OsStr::new(name))? else {
         return Ok(None);
     };
-    match kind_of(&stat) {
-        SFlag::S_IFREG => {}
-        SFlag::S_IFLNK => {
+    match stated.kind {
+        Kind::File => {}
+        Kind::Symlink => {
             return Err(
                 "its record is a symbolic link; af never reads or removes through one".into(),
             );
         }
         _ => return Err("its record is not a regular file".into()),
     }
+    let object = object_path(store, survey_id);
+    let identity = complete(
+        &stated,
+        &format!("its record {}", object.display()),
+        &prefix,
+    )?;
     Ok(Some(Record {
         cas,
         prefix,
         name: name.to_string(),
         survey_id: survey_id.to_string(),
-        object: object_path(store, survey_id),
-        identity: Identity::of_stat(&stat),
-        size: u64::try_from(stat.st_size).unwrap_or(0),
-        bytes: allocated(&stat),
+        object,
+        identity,
+        size: stated.size,
+        bytes: stated.allocated,
     }))
 }
 
@@ -767,7 +909,7 @@ impl Record {
     /// [`MAX_SURVEY_BYTES`].
     fn read(&self) -> std::io::Result<Vec<u8>> {
         let file = open_file(&self.prefix, &self.name)?;
-        if Identity::of_descriptor(&file)? != self.identity {
+        if review_sandbox::born_of_descriptor(&file)?.identity != self.identity {
             return Err(std::io::Error::other(
                 "the record changed since it was found",
             ));
@@ -842,6 +984,14 @@ impl Record {
             Ok(bytes) => Ok(bytes),
             Err(Checked::Unready(why)) => Err(format!(
                 "recording that its record left the CAS: {why}; {}",
+                if rename_free(&container.directory, entry, &self.prefix, name).is_ok() {
+                    "its record is put back and nothing is deleted"
+                } else {
+                    "its record stays in its pass's container for the next pass"
+                }
+            )),
+            Err(Checked::Incomplete(why)) => Err(format!(
+                "{why}; {}",
                 if rename_free(&container.directory, entry, &self.prefix, name).is_ok() {
                     "its record is put back and nothing is deleted"
                 } else {
@@ -979,6 +1129,15 @@ pub(crate) enum Job {
         survey_id: String,
         identity: Identity,
     },
+    /// Delete the object the writer staged for a Survey in its `pending-surveys`, stated as
+    /// `identity` and `length`: bytes a crash left before or after the entry named them, never
+    /// at their CAS name.
+    Staged {
+        store: PathBuf,
+        survey_id: String,
+        identity: Identity,
+        length: u64,
+    },
 }
 
 impl Job {
@@ -991,7 +1150,8 @@ impl Job {
             | Job::Container { store, .. }
             | Job::Unrecorded { store, .. }
             | Job::MovedUnrecorded { store, .. }
-            | Job::Publication { store, .. } => store,
+            | Job::Publication { store, .. }
+            | Job::Staged { store, .. } => store,
         }
     }
 }
@@ -1097,7 +1257,11 @@ struct Found {
     container: Option<OsString>,
     name: OsString,
     kind: FoundKind,
+    /// Its device, inode and birth time; no birth time where its file system reports none, so
+    /// it equals no identity af recorded.
     identity: Identity,
+    /// Its allocated bytes as the Storage Budget counts them: a regular file's, nothing for a
+    /// directory or anything else.
     bytes: u64,
     /// Its length.
     size: u64,
@@ -1135,20 +1299,19 @@ fn found(
     container: Option<&OsStr>,
     name: OsString,
 ) -> Result<Option<Found>, String> {
-    use nix::sys::stat::SFlag;
-    let Some(stat) = stat_at(directory, &name)? else {
+    let Some(stated) = stat_at(directory, &name)? else {
         return Ok(None);
     };
     Ok(Some(Found {
         container: container.map(OsStr::to_os_string),
-        kind: match kind_of(&stat) {
-            SFlag::S_IFREG => FoundKind::File,
-            SFlag::S_IFDIR => FoundKind::Directory,
-            _ => FoundKind::Other,
+        kind: match stated.kind {
+            Kind::File => FoundKind::File,
+            Kind::Directory => FoundKind::Directory,
+            Kind::Symlink | Kind::Other => FoundKind::Other,
         },
-        identity: Identity::of_stat(&stat),
-        bytes: allocated(&stat),
-        size: u64::try_from(stat.st_size).unwrap_or(0),
+        identity: stated.identity,
+        bytes: stated.counted(),
+        size: stated.size,
         name,
     }))
 }
@@ -1220,16 +1383,18 @@ fn walk_removing(cas: &CasDirectories) -> Result<(Vec<Found>, Vec<PassContainer>
 }
 
 /// Judge what [`walk_removing`] found, with raw names and nothing read: a regular file in a pass
-/// container named by a tombstoned Survey is that Survey's record, moved; one named by a Survey
-/// whose pending-publication entry describes it (`pending`: its device, inode and length) is
+/// container named by a tombstoned Survey is that Survey's record, moved, only while it is the
+/// object its collection selected (`selected`: its device, inode, birth time and length); one
+/// named by a Survey whose pending-publication entry describes it (`pending`, the same way) is
 /// that entry's object, moved by a recovery that died before its unlink; everything else is
-/// left. The container's own name is checked as the file's is: a name of either that is not
-/// UTF-8 is `unreadable name`, and a container whose name is no pass ID holds only `foreign`
-/// files, whatever they are named.
+/// left, a byte-identical copy at another inode included. The container's own name is checked
+/// as the file's is: a name of either that is not UTF-8 is `unreadable name`, and a container
+/// whose name is no pass ID holds only `foreign` files, whatever they are named.
 fn judge_leftovers(
     store: &Path,
     found: Vec<Found>,
     collected: &BTreeSet<String>,
+    selected: &BTreeMap<String, (Identity, u64)>,
     pending: &BTreeMap<String, (Identity, u64)>,
 ) -> (BTreeMap<String, Moved>, Vec<Left>) {
     let mut moved = BTreeMap::new();
@@ -1294,13 +1459,20 @@ fn judge_leftovers(
             leave(LeftReason::Foreign, "it names no Survey, so it is not af's");
             continue;
         }
-        let described = pending
-            .get(name)
-            .is_some_and(|&(identity, size)| file.identity == identity && file.size == size);
-        if !collected.contains(name) && !described {
+        let is = |object: Option<&(Identity, u64)>| {
+            object.is_some_and(|&(identity, size)| file.identity == identity && file.size == size)
+        };
+        let chosen = collected.contains(name) && is(selected.get(name));
+        let described = is(pending.get(name));
+        if !chosen && !described {
             leave(
                 LeftReason::Foreign,
-                "no tombstone names its Survey and no pending-publication entry describes it",
+                if collected.contains(name) {
+                    "it is not the object the collection of its Survey selected (another inode, \
+                     birth time or length), so it is not that Survey's record"
+                } else {
+                    "no tombstone names its Survey and no pending-publication entry describes it"
+                },
             );
             continue;
         }
@@ -1318,7 +1490,7 @@ fn judge_leftovers(
                 identity: file.identity,
                 bytes: file.bytes,
                 size: file.size,
-                pending: !collected.contains(name),
+                pending: !chosen,
             },
         );
     }
@@ -1369,9 +1541,13 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
         ..Look::default()
     };
     let cas = open_cas(store);
-    // The collected Surveys whose records have left the CAS. One that cannot be read settles
-    // every collected Survey: a file at such a name is then left, never deleted as a record.
-    let settled = match cas.as_ref().map_err(String::clone).and_then(read_settled) {
+    // The collected Surveys whose records have left the CAS, and the object each collection
+    // selected. One that cannot be read settles every collected Survey and selects nothing: a
+    // file at such a name is then left, never deleted as a record.
+    let Settled {
+        survey_ids: settled,
+        selected,
+    } = match cas.as_ref().map_err(String::clone).and_then(read_settled) {
         Ok(settled) => settled,
         Err(why) => {
             look.refused.push((
@@ -1381,7 +1557,10 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
                      file at a collected Survey's name is deleted: {why}"
                 ),
             ));
-            collected.clone()
+            Settled {
+                survey_ids: collected.clone(),
+                selected: BTreeMap::new(),
+            }
         }
     };
     let walked = cas.as_ref().map_err(String::clone).and_then(walk_removing);
@@ -1408,9 +1587,9 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
         .iter()
         .map(|recorded| recorded.survey_id.as_str())
         .collect();
-    let (entries, publications) = match &cas {
+    let (entries, publications, staged) = match &cas {
         Ok(cas) => pending_entries(store, cas, &mut look),
-        Err(_) => (Vec::new(), BTreeSet::new()),
+        Err(_) => (Vec::new(), BTreeSet::new(), Vec::new()),
     };
     let unrecorded: BTreeMap<String, (Identity, u64)> = entries
         .iter()
@@ -1419,12 +1598,14 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
             described(&pending.entry).map(|object| (pending.survey_id.clone(), object))
         })
         .collect();
-    let (moved, left) = judge_leftovers(store, found, &collected, &unrecorded);
+    let (moved, left) = judge_leftovers(store, found, &collected, &selected, &unrecorded);
     look.left.extend(left);
     // What each collected Survey left, in the order the tombstones were appended: its record
-    // moved into a dead pass's container, which is its bytes, or its record at its name. A file
-    // at its name is its record only while none was moved and its bytes are the record's; any
-    // other is somebody else's, durably: listed `foreign`, never the Survey's, never deleted.
+    // moved into a dead pass's container, or its record at its name, each only while it is the
+    // object its collection selected before the tombstone (its device, inode, birth time and
+    // length) and, at its name, its bytes are the record's. Any other file is somebody else's,
+    // durably, even when its bytes hash to the Survey's ID: listed `foreign`, never the
+    // Survey's, never deleted.
     let mut not_records = BTreeSet::new();
     let mut seen = BTreeSet::new();
     for survey_id in &order {
@@ -1475,6 +1656,17 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
                 look.left.push(foreign(
                     record.bytes,
                     "took it after its record left the CAS".into(),
+                ));
+            }
+            // Not the object its collection selected, or none was selected (its record was
+            // gone when it was collected): another inode, whatever its bytes.
+            Ok(Some(record)) if !selected_matches(&selected, survey_id, &record) => {
+                not_records.insert(survey_id.clone());
+                look.left.push(foreign(
+                    record.bytes,
+                    "is not the object the collection of that Survey selected (another inode, \
+                     birth time or length)"
+                        .into(),
                 ));
             }
             Ok(Some(record)) => match record.is_the_record() {
@@ -1557,7 +1749,7 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
     }
     // Every uncollected Survey once, its record read and its event verified against it here and
     // nowhere else; what the inventory and the plan know of it is what this read verified.
-    pending_publications(store, entries, &recorded, &mut look);
+    pending_publications(store, entries, staged, &recorded, &mut look);
     let verified: Vec<(&SurveyRecordedPayloadV1, Verified)> = chain
         .iter()
         .filter(|recorded| !collected.contains(&recorded.survey_id))
@@ -1653,35 +1845,43 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
 const PENDING_USE: &str =
     "pending: its SurveyRecorded@1 never committed, so recovery reclaims it through its entry";
 
-/// The object a pending-publication entry describes, once the writer wrote it: its device and
-/// inode, and the length of the record's bytes.
-fn described(entry: &SurveyPendingV1) -> Option<(Identity, u64)> {
-    entry.object.map(|object| {
-        (
-            Identity {
-                device: object.device.get(),
-                inode: object.inode.get(),
-            },
-            entry.bytes.get(),
-        )
-    })
+/// Whether `record`, at a collected Survey's CAS name, is the object the collection of
+/// `survey_id` selected before its tombstone: its device, inode, birth time and length.
+fn selected_matches(
+    selected: &BTreeMap<String, (Identity, u64)>,
+    survey_id: &str,
+    record: &Record,
+) -> bool {
+    selected.get(survey_id) == Some(&(record.identity, record.size))
+}
+
+/// The object a pending-publication entry describes, once the writer staged it: its device,
+/// inode and birth time, and the length of the record's bytes.
+fn described(entry: &SurveyPendingV2) -> Option<(Identity, u64)> {
+    entry
+        .object
+        .map(|object| (super::pending::identity_of(&object), entry.bytes.get()))
 }
 
 /// A pending-publication entry `name` of `directory`, stated as `identity`: read without
 /// following a link, from the inode stated, within [`MAX_PENDING_BYTES`], valid as the writer's
-/// `af/survey-pending@1` and naming the Survey its file name names. Returns it with when it was
-/// last written, in Unix milliseconds.
+/// `af/survey-pending@2` (a superseded `@1` refused by its label) and naming the Survey its file
+/// name names. Returns it with when it was last written, in Unix milliseconds.
 fn read_publication(
     directory: &OwnedFd,
     name: &str,
     survey_id: &str,
     identity: Identity,
-) -> Result<(SurveyPendingV1, u64), String> {
+) -> Result<(SurveyPendingV2, u64), String> {
     let file = open_file(directory, name).map_err(|error| error.to_string())?;
-    let stat = nix::sys::stat::fstat(&file).map_err(|errno| errno.to_string())?;
-    if Identity::of_stat(&stat) != identity {
+    if review_sandbox::born_of_descriptor(&file)
+        .map_err(|error| error.to_string())?
+        .identity
+        != identity
+    {
         return Err("it changed since it was found".into());
     }
+    let stat = nix::sys::stat::fstat(&file).map_err(|errno| errno.to_string())?;
     let mut bytes = Vec::new();
     file.take(MAX_PENDING_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)
@@ -1689,9 +1889,7 @@ fn read_publication(
     if bytes.len() as u64 > MAX_PENDING_BYTES {
         return Err(format!("it holds more than {MAX_PENDING_BYTES} bytes"));
     }
-    let entry: SurveyPendingV1 = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("it is no {SURVEY_PENDING_V1}: {error}"))?;
-    entry.validate()?;
+    let entry = super::pending::parse(&bytes, Path::new(name))?;
     if entry.survey_id != survey_id {
         return Err(format!("it names Survey {}", entry.survey_id));
     }
@@ -1709,6 +1907,13 @@ fn publication_survey(name: &OsStr) -> Option<String> {
     review_core::is_digest(&survey_id).then_some(survey_id)
 }
 
+/// The Survey the name of an object the writer staged names: `<64 hex>.object`.
+fn staged_survey(name: &OsStr) -> Option<String> {
+    let hex = name.to_str()?.strip_suffix(super::pending::STAGED_SUFFIX)?;
+    let survey_id = format!("sha256:{hex}");
+    review_core::is_digest(&survey_id).then_some(survey_id)
+}
+
 /// One pending-publication entry as [`look`] read it.
 struct PendingEntry {
     survey_id: String,
@@ -1719,29 +1924,42 @@ struct PendingEntry {
     bytes: u64,
     /// When the writer last wrote it, in Unix milliseconds.
     written_unix_ms: u64,
-    entry: SurveyPendingV1,
+    entry: SurveyPendingV2,
 }
 
-/// The pending-publication entries of the Project Store at `store` (ADR-0152 clauses 2 and
-/// 13), read once with the rest of [`look`] from `pending-surveys/`: each readable one, and the
-/// Surveys every entry names, a readable one or not. What is no entry is left `foreign`, and
-/// an entry that cannot be read is refused and left with what it names.
+/// One object the writer staged, `pending-surveys/<64 hex>.object`, as [`look`] stated it.
+struct StagedObject {
+    survey_id: String,
+    path: PathBuf,
+    identity: Identity,
+    size: u64,
+    bytes: u64,
+}
+
+/// The pending-publication entries of the Project Store at `store` (ADR-0158 clauses 2 and
+/// 13), read once with the rest of [`look`] from `pending-surveys/`: each readable one, the
+/// Surveys every entry names, a readable one or not, and every object the writer staged there.
+/// What is neither is left `foreign`, an entry that cannot be read is refused and left with what
+/// it names, and a staged object whose file system reports no birth time is refused and left.
 fn pending_entries(
     store: &Path,
     cas: &CasDirectories,
     look: &mut Look,
-) -> (Vec<PendingEntry>, BTreeSet<String>) {
+) -> (Vec<PendingEntry>, BTreeSet<String>, Vec<StagedObject>) {
     let mut entries = Vec::new();
     let mut named = BTreeSet::new();
+    let mut staged = Vec::new();
     let directory = match review_sandbox::open_beneath(&cas.store, Path::new(PENDING)) {
         Ok(directory) => directory,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return (entries, named),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (entries, named, staged);
+        }
         Err(error) => {
             look.refused.push((
                 store.join(PENDING),
                 format!("the pending-publication entries are left: refused: {error}"),
             ));
-            return (entries, named);
+            return (entries, named, staged);
         }
     };
     let names = match device_of(&directory).and_then(|device| {
@@ -1757,7 +1975,7 @@ fn pending_entries(
                 store.join(PENDING),
                 format!("the pending-publication entries are left: refused: {why}"),
             ));
-            return (entries, named);
+            return (entries, named, staged);
         }
     };
     for name in names {
@@ -1770,6 +1988,28 @@ fn pending_entries(
                 continue;
             }
         };
+        if let Some(survey_id) = staged_survey(&name).filter(|_| file.kind == FoundKind::File) {
+            if file.identity.born.is_none() {
+                look.refused.push((
+                    path.clone(),
+                    format!(
+                        "the object the writer staged for Survey {survey_id} is left: refused: \
+                         it is on a file system that reports no birth time, so af cannot tell it \
+                         from a file created later at the same inode"
+                    ),
+                ));
+                continue;
+            }
+            named.insert(survey_id.clone());
+            staged.push(StagedObject {
+                survey_id,
+                path,
+                identity: file.identity,
+                size: file.size,
+                bytes: file.bytes,
+            });
+            continue;
+        }
         let survey_id = match publication_survey(&name) {
             Some(survey_id) if file.kind == FoundKind::File => survey_id,
             _ => {
@@ -1814,23 +2054,40 @@ fn pending_entries(
             )),
         }
     }
-    (entries, named)
+    (entries, named, staged)
 }
 
-/// Judge the pending-publication entries [`pending_entries`] read (ADR-0152 clause 13): each
-/// one whose `SurveyRecorded@1` committed is cleared, and nothing deleted; for each other one,
-/// only the object at its Survey's CAS name that is the object it describes (its device, inode
-/// and length) is counted, as a Survey `pending`, and reclaimed by recovery before the entry is
-/// cleared, and any other file there is `foreign`. An object it describes that a dead pass
-/// moved into its container was planned with the dead passes' records (`moved`), so its entry
-/// too is cleared only after it. While the Store is held every one is the writer's and is left
-/// `held`.
+/// Judge the pending-publication entries and the staged objects [`pending_entries`] read
+/// (ADR-0158 clause 13). Every staged object is reclaimed first, as the writer's own leftover
+/// (no writer holds the lock between a sweep's look and its jobs, which take it): the bytes a
+/// crash staged before its entry named them, or the staged object an entry names whose CAS name
+/// never took it. Then each entry whose `SurveyRecorded@1` committed is cleared, and nothing
+/// deleted; for each other one, only the object at its Survey's CAS name that is the object it
+/// describes (its device, inode, birth time and length) is counted, as a Survey `pending`, and
+/// reclaimed by recovery before the entry is cleared, and any other file there is `foreign`. An
+/// object it describes that a dead pass moved into its container was planned with the dead
+/// passes' records (`moved`), so its entry too is cleared only after it. While the Store is held
+/// every one is the writer's and is left `held`.
 fn pending_publications(
     store: &Path,
     entries: Vec<PendingEntry>,
+    staged: Vec<StagedObject>,
     recorded: &BTreeSet<&str>,
     look: &mut Look,
 ) {
+    for object in staged {
+        look.recovery.push(Pending {
+            object: object.path,
+            bytes: object.bytes,
+            counted: Counted::Store,
+            job: Job::Staged {
+                store: store.to_path_buf(),
+                survey_id: object.survey_id,
+                identity: object.identity,
+                length: object.size,
+            },
+        });
+    }
     for pending in entries {
         let survey_id = pending.survey_id;
         let clear = Pending {
@@ -2267,6 +2524,9 @@ pub(crate) fn execute(job: &Job) -> Result<Executed, String> {
         Job::Publication { survey_id, .. } => {
             format!("the pending-publication entry of Survey {survey_id} is {why}")
         }
+        Job::Staged { survey_id, .. } => {
+            format!("the object the writer staged for Survey {survey_id} is {why}")
+        }
         Job::Container { container, .. } => format!(
             "the container `cas/{REMOVING}/{}` of a dead pass is {why}",
             container.to_string_lossy()
@@ -2275,7 +2535,10 @@ pub(crate) fn execute(job: &Job) -> Result<Executed, String> {
     let lost = |reason: String| {
         said(format!(
             "not {}: the lock was lost since the plan ({reason}); the next pass tries again",
-            if matches!(job, Job::Container { .. } | Job::Publication { .. }) {
+            if matches!(
+                job,
+                Job::Container { .. } | Job::Publication { .. } | Job::Staged { .. }
+            ) {
                 "removed"
             } else {
                 "collected"
@@ -2304,7 +2567,7 @@ pub(crate) fn execute(job: &Job) -> Result<Executed, String> {
             let settled = open_cas(store)
                 .and_then(|cas| read_settled(&cas))
                 .map_err(|why| said(format!("refused: {why}")))?;
-            if settled.contains(survey_id) {
+            if settled.survey_ids.contains(survey_id) {
                 return Err(said(format!(
                     "{REPLACED}: its record left the CAS since the plan, so what holds its name \
                      is foreign and nothing is deleted"
@@ -2317,6 +2580,12 @@ pub(crate) fn execute(job: &Job) -> Result<Executed, String> {
                     "{REPLACED}: another file holds its record's name since the plan, so \
                      nothing is deleted and the next pass plans again"
                 ))),
+                Some(record) if !settled.selects(survey_id, record.identity, record.size) => {
+                    Err(said(format!(
+                        "{REPLACED}: what holds its record's name is not the object its \
+                         collection selected, so it is foreign and nothing is deleted"
+                    )))
+                }
                 Some(record) if !record.is_the_record().unwrap_or(false) => Err(said(format!(
                     "{REPLACED}: its record's name holds bytes that are not its record's since \
                      the plan, so nothing is deleted"
@@ -2360,6 +2629,17 @@ pub(crate) fn execute(job: &Job) -> Result<Executed, String> {
                 .map(removed)
                 .map_err(said)
         }
+        Job::Staged {
+            store,
+            survey_id,
+            identity,
+            length,
+        } => {
+            let _lock = take_lock(store).map_err(lost)?;
+            remove_staged(store, survey_id, *identity, *length)
+                .map(removed)
+                .map_err(said)
+        }
         Job::Moved {
             store,
             container,
@@ -2367,6 +2647,19 @@ pub(crate) fn execute(job: &Job) -> Result<Executed, String> {
             identity,
         } => {
             let _held = hold(store)?.map_err(lost)?;
+            let settled = open_cas(store)
+                .and_then(|cas| read_settled(&cas))
+                .map_err(|why| said(format!("refused: {why}")))?;
+            if settled
+                .selected
+                .get(survey_id.as_str())
+                .is_none_or(|&(selected, _)| selected != *identity)
+            {
+                return Err(said(format!(
+                    "{REPLACED}: what the dead pass left is not the object its collection \
+                     selected, so nothing is deleted"
+                )));
+            }
             settle(store, container, survey_id, *identity, true, |_| {})
                 .map(removed)
                 .map_err(|error| said(refusal(error)))
@@ -2385,8 +2678,9 @@ pub(crate) fn execute(job: &Job) -> Result<Executed, String> {
 }
 
 /// Collect one live Survey of a held Store: its protection read again under the lock, its
-/// record found again and compared with what the plan stated, its tombstone appended, then the
-/// record deleted by [`Record::remove`].
+/// record found again and compared with what the plan stated, the object selected recorded in
+/// `settled.json` ([`record_selected`]), its tombstone appended, then the record deleted by
+/// [`Record::remove`].
 fn take(
     store: &mut ProjectStore,
     survey_id: &str,
@@ -2465,6 +2759,14 @@ fn take(
     tombstone
         .validate()
         .map_err(|why| format!("refused: {why}"))?;
+    // The object this collection takes, by device, inode, birth time and length, durable before
+    // its tombstone: whatever recovery finds at its name or in a dead pass's container later is
+    // its record only while it is that inode, never because its bytes hash to the Survey's ID.
+    if let Some(record) = &record {
+        open_cas(&directory)
+            .and_then(|cas| record_selected(&cas, survey_id, record.identity, record.size))
+            .map_err(|why| format!("refused: {why}"))?;
+    }
     let event = NewEvent::new(
         EventType::SurveyCollectedV1,
         serde_json::to_value(&tombstone).map_err(|error| format!("refused: {error}"))?,
@@ -2519,7 +2821,7 @@ fn committed(store: &ProjectStore, survey_id: &str) -> Result<bool, String> {
 fn publication_of(
     store: &ProjectStore,
     survey_id: &str,
-) -> Result<Option<(Identity, SurveyPendingV1)>, String> {
+) -> Result<Option<(Identity, SurveyPendingV2)>, String> {
     let cas = open_cas(&store.directory)?;
     let directory = match review_sandbox::open_beneath(&cas.store, Path::new(PENDING)) {
         Ok(directory) => directory,
@@ -2528,10 +2830,10 @@ fn publication_of(
     };
     let (_, hex) = survey_id.split_at("sha256:".len().min(survey_id.len()));
     let name = format!("{hex}.json");
-    let Some(stat) = stat_at(&directory, OsStr::new(&name))? else {
+    let Some(stated) = stat_at(&directory, OsStr::new(&name))? else {
         return Ok(None);
     };
-    let identity = Identity::of_stat(&stat);
+    let identity = stated.identity;
     read_publication(&directory, &name, survey_id, identity)
         .map(|(entry, _)| Some((identity, entry)))
         .map_err(|why| format!("refused: its pending-publication entry cannot be read: {why}"))
@@ -2604,7 +2906,6 @@ fn moved_unrecorded(
     planned: Identity,
     length: u64,
 ) -> Result<u64, String> {
-    use nix::sys::stat::SFlag;
     still_described(store, survey_id, planned, length)?;
     let cas = open_cas(&store.directory)?;
     let removing =
@@ -2622,14 +2923,12 @@ fn moved_unrecorded(
     };
     match stat_at(&dead, OsStr::new(survey_id)).map_err(|why| format!("refused: {why}"))? {
         None => Err(format!("{GONE}, so nothing of it is freed")),
-        Some(stat)
-            if kind_of(&stat) != SFlag::S_IFREG
-                || Identity::of_stat(&stat) != planned
-                || u64::try_from(stat.st_size).ok() != Some(length) =>
+        Some(stated)
+            if stated.kind != Kind::File || stated.identity != planned || stated.size != length =>
         {
             Err(object_changed(
-                Identity::of_stat(&stat),
-                u64::try_from(stat.st_size).unwrap_or(0),
+                stated.identity,
+                stated.size,
                 planned,
                 length,
             ))
@@ -2658,14 +2957,15 @@ enum Present {
     Changed,
 }
 
-/// Whether the held Store still holds a file with the inode `entry` describes, at its Survey's
-/// CAS name or moved into a pass's container under `cas/removing`, whatever its length now: the
-/// inode decides, never the length, so an object grown or truncated in place is still the
-/// entry's. An entry is cleared only once no such file remains.
+/// Whether the held Store still holds a file with the inode `entry` describes (its device, inode
+/// and birth time), at its Survey's CAS name, at its staged name in `pending-surveys` or moved
+/// into a pass's container under `cas/removing`, whatever its length now: the inode decides,
+/// never the length, so an object grown or truncated in place is still the entry's. An entry is
+/// cleared only once no such file remains.
 fn still_holds(
     store: &ProjectStore,
     survey_id: &str,
-    entry: &SurveyPendingV1,
+    entry: &SurveyPendingV2,
 ) -> Result<Present, String> {
     let Some((identity, length)) = described(entry) else {
         return Ok(Present::Gone);
@@ -2683,7 +2983,13 @@ fn still_holds(
     {
         return Ok(judged(record.size));
     }
-    let (found, _) = walk_removing(&open_cas(&store.directory)?)
+    let cas = open_cas(&store.directory)?;
+    if let Some(staged) = staged_at(&cas, survey_id)?
+        .filter(|staged| staged.kind == Kind::File && staged.identity == identity)
+    {
+        return Ok(judged(staged.size));
+    }
+    let (found, _) = walk_removing(&cas)
         .map_err(|why| format!("refused: what is under `cas/{REMOVING}` cannot be read: {why}"))?;
     Ok(found
         .iter()
@@ -2705,7 +3011,6 @@ fn clear_publication(
     survey_id: &str,
     planned: Identity,
 ) -> Result<u64, String> {
-    use nix::sys::stat::SFlag;
     let Some((identity, entry)) = publication_of(store, survey_id)? else {
         return Err(format!("{GONE}, so nothing of it is freed"));
     };
@@ -2738,10 +3043,10 @@ fn clear_publication(
         .map_err(|error| format!("refused: its `{PENDING}` directory: {error}"))?;
     let (_, hex) = survey_id.split_at("sha256:".len());
     let name = format!("{hex}.json");
-    let Some(stat) = stat_at(&directory, OsStr::new(&name))? else {
+    let Some(stated) = stat_at(&directory, OsStr::new(&name))? else {
         return Err(format!("{GONE}, so nothing of it is freed"));
     };
-    if kind_of(&stat) != SFlag::S_IFREG || Identity::of_stat(&stat) != planned {
+    if stated.kind != Kind::File || stated.identity != planned {
         return Err(format!(
             "{REPLACED_SINCE_INVENTORY}: another file holds its name, so it is left"
         ));
@@ -2752,7 +3057,71 @@ fn clear_publication(
         nix::unistd::UnlinkatFlags::NoRemoveDir,
     )
     .map_err(|errno| format!("refused: removing it: {errno}"))?;
-    Ok(allocated(&stat))
+    Ok(stated.allocated)
+}
+
+/// What holds the staged name of `survey_id` in the Store's `pending-surveys`, stated without
+/// following a link; `None` when nothing does or there is no such directory.
+fn staged_at(cas: &CasDirectories, survey_id: &str) -> Result<Option<Stated>, String> {
+    let directory = match review_sandbox::open_beneath(&cas.store, Path::new(PENDING)) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("refused: its `{PENDING}` directory: {error}")),
+    };
+    if device_of(&directory)? != cas.device {
+        return Err(format!(
+            "refused: its `{PENDING}` directory resolves outside its Project Store"
+        ));
+    }
+    stat_at(
+        &directory,
+        OsStr::new(&super::pending::staged_name(survey_id)),
+    )
+}
+
+/// Delete, under a Store lock the caller holds, the object the writer staged for `survey_id`
+/// that the plan stated as `planned`, `length` bytes long: stated again relative to the Store's
+/// `pending-surveys`, the writer's own directory, without following a link, and unlinked
+/// relative to the same descriptor only while it is that regular file of that device, inode,
+/// birth time and length; anything else is [`OBJECT_CHANGED`] and nothing is deleted. No writer
+/// holds the lock meanwhile, so a staged object is no publication's in progress. Returns the
+/// allocated bytes of the inode deleted.
+fn remove_staged(
+    store: &Path,
+    survey_id: &str,
+    planned: Identity,
+    length: u64,
+) -> Result<u64, String> {
+    let cas = open_cas(store)?;
+    let directory = match review_sandbox::open_beneath(&cas.store, Path::new(PENDING)) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("{GONE}, so nothing of it is freed"));
+        }
+        Err(error) => return Err(format!("refused: its `{PENDING}` directory: {error}")),
+    };
+    if device_of(&directory)? != cas.device {
+        return Err(format!(
+            "refused: its `{PENDING}` directory resolves outside its Project Store"
+        ));
+    }
+    let name = super::pending::staged_name(survey_id);
+    let Some(stated) = stat_at(&directory, OsStr::new(&name))? else {
+        return Err(format!("{GONE}, so nothing of it is freed"));
+    };
+    if stated.kind != Kind::File || stated.identity != planned || stated.size != length {
+        return Err(format!(
+            "{OBJECT_CHANGED}: what its staged name holds is not the object inventory stated, \
+             so nothing is deleted"
+        ));
+    }
+    nix::unistd::unlinkat(
+        &directory,
+        name.as_str(),
+        nix::unistd::UnlinkatFlags::NoRemoveDir,
+    )
+    .map_err(|errno| format!("refused: removing it: {errno}"))?;
+    Ok(stated.allocated)
 }
 
 /// A removal's error as a refusal: [`REPLACED`] already says so, and [`GONE`] is no refusal.
@@ -2811,6 +3180,14 @@ fn settle(
                         "it stays in this pass's container for the next pass"
                     }
                 )),
+                Err(Checked::Incomplete(why)) => Err(format!(
+                    "{why}; {}",
+                    if rename_free(&own.directory, entry, &dead, entry).is_ok() {
+                        "it is put back where the dead pass left it and nothing is deleted"
+                    } else {
+                        "it stays in this pass's container for the next pass"
+                    }
+                )),
                 Err(Checked::Gone) => Err(format!("{GONE}, so nothing of it is freed")),
                 Err(Checked::Failed(why)) => Err(format!(
                     "deleting it from `{}`: {why}; the next pass finishes it",
@@ -2833,25 +3210,26 @@ fn settle(
 /// or holding only the moved records the plan settles before it, under a Store lock the caller
 /// holds: stated again relative to `cas/removing` without following it, and removed only while
 /// it is that directory; `rmdir` removes no container that still holds a file. A container gone
-/// since inventory is [`GONE`]. Returns the allocated bytes of the directory it removed.
+/// since inventory is [`GONE`]. Returns the bytes it freed as the Storage Budget counts them:
+/// none, since a directory counts nothing.
 fn remove_container(store: &Path, container: &OsStr, identity: Identity) -> Result<u64, String> {
-    use nix::sys::stat::SFlag;
     let cas = open_cas(store)?;
     let gone = || format!("{GONE}, so nothing of it is freed");
     let Some(removing) = open_removing(&cas, false)? else {
         return Err(gone());
     };
-    let Some(stat) = stat_at(&removing, container)? else {
+    let Some(stated) = stat_at(&removing, container)? else {
         return Err(gone());
     };
-    if kind_of(&stat) != SFlag::S_IFDIR || Identity::of_stat(&stat) != identity {
+    if stated.kind != Kind::Directory || stated.identity != identity {
         return Err(format!(
             "{REPLACED_SINCE_INVENTORY}: another directory or file holds its name, so it is left"
         ));
     }
     nix::unistd::unlinkat(&removing, container, nix::unistd::UnlinkatFlags::RemoveDir)
         .map_err(|errno| format!("refused: removing it: {errno}; it is left"))?;
-    Ok(allocated(&stat))
+    // A directory holds no bytes the Storage Budget counts: only regular files do.
+    Ok(stated.counted())
 }
 
 /// `text` cut at a character boundary to what an `unreadable` tombstone holds.
@@ -3109,7 +3487,7 @@ fn history_lines(
 }
 
 /// Refuse a `[survey]` pattern list over [`MAX_PATTERNS`] entries or holding a pattern over
-/// [`MAX_PATTERN_BYTES`], naming `key` (ADR-0152 clause 14). The error names no pattern, so a
+/// [`MAX_PATTERN_BYTES`], naming `key` (ADR-0158 clause 14). The error names no pattern, so a
 /// `SurveyFailed@1` may carry it.
 pub(crate) fn check_patterns(key: &str, patterns: &[String]) -> Result<(), String> {
     if patterns.len() > MAX_PATTERNS {
@@ -3277,7 +3655,7 @@ pub(super) fn any_match(patterns: &[String], text: &str) -> bool {
     }
 }
 
-/// Measure the head under one deadline from `started` (ADR-0152 clause 14), every pattern list
+/// Measure the head under one deadline from `started` (ADR-0158 clause 14), every pattern list
 /// checking it before each match.
 pub(super) fn measure(
     git: &Git,
@@ -3688,6 +4066,23 @@ mod tests {
         (root, store, survey_id)
     }
 
+    /// Delete the file at `path` and create a byte-identical one there, as another process
+    /// could, born later: a file system that hands the freed inode to the next file (ext4 does)
+    /// gives it the same device and inode, so only its birth time tells it apart, and a test
+    /// that means a replacement waits until that birth time differs.
+    fn replace_born_later(path: &Path, bytes: &[u8]) {
+        let before = Identity::born_of(path).unwrap();
+        for _ in 0..100 {
+            std::fs::remove_file(path).unwrap();
+            std::thread::sleep(Duration::from_millis(5));
+            std::fs::write(path, bytes).unwrap();
+            if Identity::born_of(path).unwrap() != before {
+                return;
+            }
+        }
+        panic!("no file born later than the one at {}", path.display());
+    }
+
     #[test]
     fn a_record_is_reached_only_without_a_link() {
         let (root, store, survey_id) = store_with(b"{}");
@@ -3897,6 +4292,7 @@ mod tests {
             found,
             &BTreeSet::from([survey_id.clone()]),
             &BTreeMap::new(),
+            &BTreeMap::new(),
         );
         assert!(moved.is_empty(), "{moved:?}");
         assert_eq!(left.len(), 1);
@@ -3912,6 +4308,7 @@ mod tests {
     fn settled_in(store: &Path) -> Vec<String> {
         read_settled(&open_cas(store).unwrap())
             .unwrap()
+            .survey_ids
             .into_iter()
             .collect()
     }
@@ -3928,11 +4325,7 @@ mod tests {
         let error = record
             .remove_with(true, |step, inside| {
                 if step == Before::Check {
-                    // Held open across the replacement: ext4 hands a freed inode number to the
-                    // next file at once, and the check must meet another inode.
-                    let _old = std::fs::File::open(inside).unwrap();
-                    std::fs::remove_file(inside).unwrap();
-                    std::fs::write(inside, b"settled").unwrap();
+                    replace_born_later(inside, b"settled");
                 }
             })
             .unwrap_err();
@@ -3982,6 +4375,54 @@ mod tests {
         assert!(names.is_empty(), "{names:?}");
     }
 
+    /// A collection's selection is the record's identity and length, kept once its Survey is
+    /// settled too; one whose sync fails is put back, the earlier record restored, and the error
+    /// says no tombstone is appended.
+    #[test]
+    fn a_selection_is_recorded_durably_or_put_back() {
+        let (_root, store, survey_id) = store_with(b"selected");
+        let cas = open_cas(&store).unwrap();
+        let record = locate(&store, &survey_id).unwrap().unwrap();
+        let fail = |cas: &CasDirectories, of: SyncOf| match of {
+            SyncOf::Install => Err("injected".to_string()),
+            SyncOf::Rollback => sync_store(cas, of),
+        };
+        let error =
+            record_selected_with(&cas, &survey_id, record.identity, record.size, fail).unwrap_err();
+        assert!(
+            error.contains("put back") && error.contains("no tombstone is appended"),
+            "{error}"
+        );
+        assert!(!store.join(SETTLED).exists(), "no record, as before");
+        record_selected(&cas, &survey_id, record.identity, record.size).unwrap();
+        let settled = read_settled(&cas).unwrap();
+        assert!(settled.selects(&survey_id, record.identity, record.size));
+        let later = Identity {
+            born: record.identity.born.map(|born| born + 1),
+            ..record.identity
+        };
+        assert!(!settled.selects(&survey_id, later, record.size));
+        assert!(!settled.selects(&survey_id, record.identity, record.size + 1));
+        record_settled(&cas, &survey_id).unwrap();
+        let settled = read_settled(&cas).unwrap();
+        assert_eq!(settled.survey_ids, BTreeSet::from([survey_id.clone()]));
+        assert!(
+            settled.selects(&survey_id, record.identity, record.size),
+            "the selection outlives the settlement"
+        );
+        // A record another release wrote is refused by its label, naming the recovery.
+        std::fs::write(
+            store.join(SETTLED),
+            b"{\"schema\":\"af/ProjectSurveysSettled@1\",\"survey_ids\":[]}",
+        )
+        .unwrap();
+        let error = read_settled(&cas).unwrap_err();
+        assert!(
+            error.contains("superseded version") && error.contains("delete it"),
+            "{error}"
+        );
+    }
+
     /// A settlement whose install and put-back both fail to sync reports both failures and
     /// leaves the Survey an unverified settlement: the error says so, and nothing claims the
     /// Survey settled durably; the earlier record is what the directory holds.
@@ -4013,12 +4454,13 @@ mod tests {
     /// and never recorded: its log empty, its pending entry naming the object by device, inode
     /// and length, as the Surveyor writes it.
     fn unrecorded_store(bytes: &[u8]) -> (tempfile::TempDir, PathBuf, String) {
-        let (root, store, survey_id) = store_with(bytes);
+        let root = tempfile::tempdir().unwrap();
+        let store = std::fs::canonicalize(root.path()).unwrap().join("store");
+        Cas::open(store.join("cas")).unwrap();
         EventStore::open(store.join("events.sqlite")).unwrap();
-        let length = bytes.len() as u64;
-        let object = object_path(&store, &survey_id);
-        let kept = super::super::pending::begin(&store, &survey_id, length, &object).unwrap();
-        super::super::pending::written(&store, &survey_id, length, &object, kept).unwrap();
+        let survey_id = review_store::canonical::blob_content_id(bytes);
+        let kept = super::super::pending::begin(&store, &survey_id, bytes.len() as u64).unwrap();
+        super::super::pending::publish(&store, &survey_id, bytes, kept).unwrap();
         (root, store, survey_id)
     }
 
@@ -4190,6 +4632,74 @@ mod tests {
         assert_eq!(look(&store).unwrap(), Look::default());
     }
 
+    /// What a writer stopped before its staged object's identity, or after it and before its
+    /// CAS name, leaves in `pending-surveys` is the writer's own: recovery reclaims the staged
+    /// bytes, only while they are the file the look stated, and then clears the entry, which
+    /// stays while the staged object it names is there. Nothing is ever at the CAS name.
+    #[test]
+    fn a_staged_object_is_reclaimed_before_its_entry_and_never_at_a_cas_name() {
+        let bytes: &[u8] = b"{\"staged\":\"1\"}";
+        for named in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let store = std::fs::canonicalize(root.path()).unwrap().join("store");
+            Cas::open(store.join("cas")).unwrap();
+            EventStore::open(store.join("events.sqlite")).unwrap();
+            let survey_id = review_store::canonical::blob_content_id(bytes);
+            let staged = super::super::pending::staged_location(&store, &survey_id);
+            let entry = super::super::pending::location(&store, &survey_id);
+            let object = object_path(&store, &survey_id);
+            super::super::pending::begin(&store, &survey_id, bytes.len() as u64).unwrap();
+            if named {
+                // As a writer that stopped after the identity and before the CAS name leaves it.
+                super::super::pending::publish(&store, &survey_id, bytes, None).unwrap();
+                std::fs::rename(&object, &staged).unwrap();
+            } else {
+                // As a writer that stopped after the bytes and before their identity leaves it.
+                std::fs::write(&staged, bytes).unwrap();
+            }
+            assert!(!object.exists(), "named {named}");
+            let looked = look(&store).unwrap();
+            let jobs: Vec<&Job> = looked.recovery.iter().map(|pending| &pending.job).collect();
+            assert!(
+                matches!(
+                    jobs.as_slice(),
+                    [Job::Staged { .. }, Job::Publication { .. }]
+                ),
+                "named {named}: {jobs:?}"
+            );
+            assert_eq!(
+                looked.recovery[0].counted,
+                Counted::Store,
+                "its bytes are the Project Store's"
+            );
+            assert!(
+                looked.surveys.is_empty() && looked.left.is_empty(),
+                "{looked:?}"
+            );
+            if named {
+                let kept = execute(jobs[1]).unwrap_err();
+                assert!(kept.contains("kept: "), "first the staged object: {kept}");
+            }
+            // Replaced since the look, born later: skipped, nothing deleted.
+            let stated = Identity::born_of(&staged).unwrap();
+            replace_born_later(&staged, bytes);
+            let skipped = execute(jobs[0]).unwrap_err();
+            assert!(skipped.contains(OBJECT_CHANGED), "{skipped}");
+            assert!(staged.is_file());
+            let again = look(&store).unwrap();
+            let jobs: Vec<&Job> = again.recovery.iter().map(|pending| &pending.job).collect();
+            assert!(
+                matches!(&jobs[0], Job::Staged { identity, .. } if *identity != stated),
+                "{jobs:?}"
+            );
+            for job in jobs {
+                assert!(execute(job).unwrap().bytes > 0, "named {named}: {job:?}");
+            }
+            assert!(!staged.exists() && !entry.exists() && !object.exists());
+            assert_eq!(look(&store).unwrap(), Look::default(), "named {named}");
+        }
+    }
+
     /// A pending-publication entry is named by its Survey's hex and `.json`, nothing else.
     #[test]
     fn a_pending_entry_is_named_by_its_survey() {
@@ -4210,7 +4720,7 @@ mod tests {
         let dead = store.join("cas/removing/dead");
         std::fs::create_dir_all(&dead).unwrap();
         std::fs::rename(&object, dead.join(&survey_id)).unwrap();
-        let identity = Identity::of(&dead.join(&survey_id)).unwrap();
+        let identity = Identity::born_of(&dead.join(&survey_id)).unwrap();
         let other = Identity {
             inode: identity.inode + 1,
             ..identity
@@ -4245,19 +4755,24 @@ mod tests {
                             .find(|file| !file.starts_with("dead/"))
                             .unwrap(),
                     );
-                    // Held open across the replacement: ext4 hands a freed inode number to the
-                    // next file at once, and the check must meet another inode.
-                    let _old = std::fs::File::open(&inside).unwrap();
-                    std::fs::remove_file(&inside).unwrap();
-                    std::fs::write(&inside, b"one").unwrap();
+                    replace_born_later(&inside, b"one");
                 }
             },
         )
         .unwrap_err();
         assert!(error.starts_with(REPLACED), "{error}");
         assert_eq!(std::fs::read(dead.join(&survey_id)).unwrap(), b"one");
-        let identity = Identity::of(&dead.join(&survey_id)).unwrap();
-        let container = Identity::of(&dead).unwrap();
+        // The same device and inode born later is another file too, refused the same way.
+        let identity = Identity::born_of(&dead.join(&survey_id)).unwrap();
+        let later = Identity {
+            born: identity.born.map(|born| born + 1),
+            ..identity
+        };
+        let error =
+            settle(&store, OsStr::new("dead"), &survey_id, later, true, |_| {}).unwrap_err();
+        assert!(error.starts_with(REPLACED), "{error}");
+        assert!(dead.join(&survey_id).is_file());
+        let container = Identity::born_of(&dead).unwrap();
         let bytes = settle(
             &store,
             OsStr::new("dead"),
@@ -4294,7 +4809,11 @@ mod tests {
             container: container.map(OsString::from),
             name: OsStr::from_bytes(name).to_os_string(),
             kind: FoundKind::File,
-            identity: Identity { device: 1, inode },
+            identity: Identity {
+                device: 1,
+                inode,
+                born: Some(1),
+            },
             bytes: 4096,
             size: 10,
         }
@@ -4334,10 +4853,22 @@ mod tests {
             // And in one whose name is UTF-8 but no pass ID.
             file(Some("not-a-pass"), collected.as_bytes(), 10),
         ];
+        let selected = BTreeMap::from([(
+            collected.clone(),
+            (
+                Identity {
+                    device: 1,
+                    inode: 1,
+                    born: Some(1),
+                },
+                10,
+            ),
+        )]);
         let (moved, left) = judge_leftovers(
             store,
-            found,
+            found.clone(),
             &BTreeSet::from([collected.clone()]),
+            &selected,
             &BTreeMap::new(),
         );
         assert_eq!(
@@ -4346,7 +4877,8 @@ mod tests {
                 container: P1.into(),
                 identity: Identity {
                     device: 1,
-                    inode: 1
+                    inode: 1,
+                    born: Some(1),
                 },
                 bytes: 4096,
                 size: 10,
@@ -4392,6 +4924,38 @@ mod tests {
             "its bytes are listed, never the Survey's"
         );
         assert!(left[8].detail.contains("no pass ID"), "{}", left[8].detail);
+        // Without its collection's selection, or with the same device and inode born later,
+        // the file is no record of the Survey: foreign, whatever its bytes.
+        let later = BTreeMap::from([(
+            collected.clone(),
+            (
+                Identity {
+                    device: 1,
+                    inode: 1,
+                    born: Some(2),
+                },
+                10,
+            ),
+        )]);
+        for selected in [BTreeMap::new(), later] {
+            let (moved, left) = judge_leftovers(
+                store,
+                found.clone(),
+                &BTreeSet::from([collected.clone()]),
+                &selected,
+                &BTreeMap::new(),
+            );
+            assert!(moved.is_empty(), "{moved:?}");
+            let first = &left[0];
+            assert!(
+                first.path.ends_with(format!("{P1}/{collected}"))
+                    && first.reason == LeftReason::Foreign
+                    && first
+                        .detail
+                        .contains("not the object the collection of its Survey"),
+                "{first:?}"
+            );
+        }
     }
 
     /// A file in a pass container named by an unrecorded Survey whose pending-publication entry
@@ -4406,12 +4970,14 @@ mod tests {
         let identity = Identity {
             device: 1,
             inode: 1,
+            born: Some(1),
         };
         let pending = BTreeMap::from([(unrecorded.clone(), (identity, 10))]);
         let (moved, left) = judge_leftovers(
             store,
             vec![file(Some(P1), unrecorded.as_bytes(), 1)],
             &BTreeSet::new(),
+            &BTreeMap::new(),
             &pending,
         );
         assert_eq!(
@@ -4433,7 +4999,13 @@ mod tests {
             },
             file(Some("not-a-pass"), unrecorded.as_bytes(), 1),
         ] {
-            let (moved, left) = judge_leftovers(store, vec![other], &BTreeSet::new(), &pending);
+            let (moved, left) = judge_leftovers(
+                store,
+                vec![other],
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                &pending,
+            );
             assert!(moved.is_empty(), "{moved:?}");
             assert_eq!(left.len(), 1);
             assert_eq!(left[0].reason, LeftReason::Foreign);
@@ -4454,7 +5026,10 @@ mod tests {
         let (found, empty) = walk_removing(&open_cas(&store).unwrap()).unwrap();
         let names: Vec<&OsStr> = empty.iter().map(|empty| empty.name.as_os_str()).collect();
         assert_eq!(names, [OsStr::new(P1)]);
-        assert_eq!(empty[0].identity, Identity::of(&removing.join(P1)).unwrap());
+        assert_eq!(
+            empty[0].identity,
+            Identity::born_of(&removing.join(P1)).unwrap()
+        );
         let names: Vec<(Option<String>, String, FoundKind)> = found
             .iter()
             .map(|found| {
@@ -4480,6 +5055,7 @@ mod tests {
             &store,
             found,
             &BTreeSet::from([survey_id.clone()]),
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         assert!(

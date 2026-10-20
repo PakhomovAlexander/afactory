@@ -1,4 +1,4 @@
-//! The Project and its Workspaces (ADR-0151): the events a Project Store's log holds.
+//! The Project and its Workspaces (ADR-0157): the events a Project Store's log holds.
 //!
 //! A Project is the durable identity of one repository, derived from the `repository_id` every
 //! Snapshot origin already carries (its sorted root commits). A Workspace is one registered
@@ -7,7 +7,7 @@
 //! never in a record. The identities are derived by the `af` binary; these types fix their
 //! spelling and refuse anything that could carry a host path.
 //!
-//! A Survey (ADR-0152) is `af/ProjectSurvey@2`, one kernel-measured description of the Project at
+//! A Survey (ADR-0158) is `af/ProjectSurvey@2`, one kernel-measured description of the Project at
 //! one head, kept in the Project Store's CAS; `SurveyRecorded@1` and `SurveyFailed@1` record in
 //! the log that one was taken or could not be. Every number is decimal text, and neither the
 //! record nor an event holds a host path, a Provider ID or an email.
@@ -173,7 +173,7 @@ impl WorkspaceRemovedPayloadV1 {
 }
 
 // ------------------------------------------------------------------------------------------
-// Surveys (ADR-0152)
+// Surveys (ADR-0158)
 
 /// The record type of a Survey: one kernel-measured description of a Project at one head.
 /// Version 2 is the first that holds `stopped_record` in `history` and `contributors`.
@@ -232,7 +232,7 @@ pub const MAX_SURVEY_RECORD_BYTES: usize = 64 * 1024;
 /// The ceilings of `[survey] max_paths`, `max_entries` and `max_survey_bytes`: a project may only
 /// lower them. The Surveyor never writes a record longer than `MAX_SURVEY_BYTES`, af never reads
 /// one back as a Survey, and collection refuses one as `oversize` rather than taking it for
-/// corrupt (ADR-0152 clause 13).
+/// corrupt (ADR-0158 clause 13).
 pub const MAX_SURVEY_PATHS: u64 = 200_000;
 pub const MAX_SURVEY_ENTRIES: u64 = 1_000;
 pub const MAX_SURVEY_BYTES: u64 = 1_048_576;
@@ -389,7 +389,7 @@ impl SurveyReasonV1 {
     }
 }
 
-/// Why a Survey's Tree Digest is absent (ADR-0152 clause 9): never the digest of a part.
+/// Why a Survey's Tree Digest is absent (ADR-0158 clause 9): never the digest of a part.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SurveyTreeDigestReasonV1 {
@@ -935,7 +935,7 @@ pub struct SurveyChecksV1 {
     pub seen: SurveySeenV1,
 }
 
-/// Where a Survey that is not complete stopped (ADR-0152 clause 1), so a replay of its record
+/// Where a Survey that is not complete stopped (ADR-0158 clause 1), so a replay of its record
 /// reproduces it: the section the deadline cut first, or, when no deadline cut one, the first
 /// section that is not complete; that section's reason; how many of its items the Survey's
 /// clock charged; and the commit or the path the stop names, when it names one.
@@ -1915,7 +1915,7 @@ pub struct SurveyCollectedHistoryV1 {
     pub merges: DecimalU64,
 }
 
-/// Payload of `SurveyCollected@1` (ADR-0152 clause 13): the tombstone of a Survey the Storage
+/// Payload of `SurveyCollected@1` (ADR-0158 clause 13): the tombstone of a Survey the Storage
 /// Budget collected, appended before the record leaves the Project Store's CAS. It binds the
 /// Survey's `SurveyRecorded@1` once the record is gone: `head`, `cutoff_unix_s`, `completeness`,
 /// `refs_digest`, `policy_digest`, `surveyor_version` and `previous_survey_id`, copied from the
@@ -1997,41 +1997,89 @@ impl SurveyCollectedPayloadV1 {
     }
 }
 
-/// The schema of a pending-publication entry.
-pub const SURVEY_PENDING_V1: &str = "af/survey-pending@1";
+/// The schema of a pending-publication entry. Version 2 is the first whose object carries its
+/// birth time and whose bytes are staged in `pending-surveys/` before they take their CAS name.
+pub const SURVEY_PENDING_V2: &str = "af/survey-pending@2";
 
-/// The identity of the CAS object a pending publication wrote: its device and inode, as the
-/// Surveyor stated it without following a link.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SurveyObjectIdentityV1 {
-    pub device: DecimalU64,
-    pub inode: DecimalU64,
+/// The superseded entry type: what an earlier build wrote before the object's birth time.
+/// Refused by type (ADR-0145): never read, never migrated.
+pub const SURVEY_PENDING_V1_SUPERSEDED: &str = "af/survey-pending@1";
+
+/// How an entry of the superseded type is refused.
+pub const SUPERSEDED_SURVEY_PENDING: &str = "af/survey-pending@1 is a superseded version of the \
+     pending-publication entry; another af release wrote it";
+
+/// The `schema` of a pending-publication entry, deserialized only as [`SURVEY_PENDING_V2`].
+fn pending_schema<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    use serde::de::Error as _;
+    let schema = String::deserialize(deserializer)?;
+    match schema.as_str() {
+        SURVEY_PENDING_V2 => Ok(schema),
+        SURVEY_PENDING_V1_SUPERSEDED => Err(D::Error::custom(SUPERSEDED_SURVEY_PENDING)),
+        _ => Err(D::Error::custom(format!(
+            "a pending publication's schema is {SURVEY_PENDING_V2}"
+        ))),
+    }
 }
 
-/// `af/survey-pending@1`: one Survey the Surveyor is publishing (ADR-0152 clause 2), a
+/// The `schema` label `bytes` carry, read alone, so a reader recognises a superseded version by
+/// it before it decodes any field.
+pub fn schema_label(bytes: &[u8]) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Label {
+        schema: String,
+    }
+    serde_json::from_slice::<Label>(bytes)
+        .ok()
+        .map(|label| label.schema)
+}
+
+/// The identity of the object a pending publication wrote, or a collection selected: its
+/// device, its inode and its birth time in nanoseconds since the Unix epoch, as af stated it
+/// without following a link. The birth time survives a rename and tells the object from a file
+/// created later at a reused inode, which a file system such as ext4 hands out at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurveyObjectIdentityV2 {
+    pub device: DecimalU64,
+    pub inode: DecimalU64,
+    pub born_unix_ns: DecimalU64,
+}
+
+impl SurveyObjectIdentityV2 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.born_unix_ns.get() == 0 {
+            return Err("an object's identity carries its birth time".into());
+        }
+        Ok(())
+    }
+}
+
+/// `af/survey-pending@2`: one Survey the Surveyor is publishing (ADR-0158 clause 2), a
 /// machine-local file beside the Project Store's lock, never in the repository or the log. It is
-/// written under the lock before the record's bytes go into the CAS, naming the Survey and the
-/// bytes it will hold; given the object's identity once they are written; and removed once
+/// written under the lock before any byte of the record is, naming the Survey and the length of
+/// its bytes; given the identity of the staged object (`pending-surveys/<64 hex>.object`) once
+/// those bytes are durable there, and before they take their CAS name; and removed once
 /// `SurveyRecorded@1` committed. One that outlives its refresh names a record a crash left
 /// between the CAS and the log, which no event references.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SurveyPendingV1 {
+pub struct SurveyPendingV2 {
+    #[serde(deserialize_with = "pending_schema")]
     pub schema: String,
     pub survey_id: String,
     /// The length of the record's canonical bytes.
     pub bytes: DecimalU64,
-    /// The CAS object, once the bytes were written.
+    /// The object, once the bytes were staged and made durable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub object: Option<SurveyObjectIdentityV1>,
+    pub object: Option<SurveyObjectIdentityV2>,
 }
 
-impl SurveyPendingV1 {
+impl SurveyPendingV2 {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != SURVEY_PENDING_V1 {
+        if self.schema != SURVEY_PENDING_V2 {
             return Err(format!(
-                "a pending publication's schema is {SURVEY_PENDING_V1}"
+                "a pending publication's schema is {SURVEY_PENDING_V2}"
             ));
         }
         if !crate::is_digest(&self.survey_id) {
@@ -2041,6 +2089,9 @@ impl SurveyPendingV1 {
             return Err(format!(
                 "a pending publication holds a record of 1 to {MAX_SURVEY_BYTES} bytes"
             ));
+        }
+        if let Some(object) = &self.object {
+            object.validate()?;
         }
         Ok(())
     }
@@ -2158,40 +2209,103 @@ mod collected_tests {
     }
 }
 
-/// Schema of the machine-local record of the collected Surveys whose records have left the CAS
-/// (ADR-0152 clause 13).
-pub const PROJECT_SURVEYS_SETTLED_V1: &str = "af/ProjectSurveysSettled@1";
+/// Schema of the machine-local record of what Survey collection selected and settled
+/// (ADR-0158 clause 13). Version 2 is the first that records each collection's selected object
+/// before its tombstone.
+pub const PROJECT_SURVEYS_SETTLED_V2: &str = "af/ProjectSurveysSettled@2";
 
-/// Upper bound on the `af/ProjectSurveysSettled@1` file: some 230 000 Survey IDs.
+/// The superseded record type: what an earlier build wrote before the selections. Refused by
+/// type (ADR-0145): never read, never migrated.
+pub const PROJECT_SURVEYS_SETTLED_V1_SUPERSEDED: &str = "af/ProjectSurveysSettled@1";
+
+/// How a record of the superseded type is refused.
+pub const SUPERSEDED_SURVEYS_SETTLED: &str = "af/ProjectSurveysSettled@1 is a superseded version \
+     of the settled record; another af release wrote it";
+
+/// Upper bound on the `af/ProjectSurveysSettled@2` file: some 70 000 selections, or 230 000
+/// settled Survey IDs.
 pub const MAX_SURVEYS_SETTLED_BYTES: u64 = 16 << 20;
 
-/// `af/ProjectSurveysSettled@1` (ADR-0152 clause 13): `settled.json` beside `project.lock`, the
-/// collected Surveys whose own records have left the CAS, deleted at their name or settled from
-/// a dead pass's container. Collection adds a Survey under the Store's lock once its record has
-/// left its CAS name and before it is unlinked, and every later inventory reads it: a file at a
-/// settled Survey's CAS name is foreign even when its bytes hash to the Survey ID, sweep after
-/// sweep. `survey_ids` is sorted and holds each ID once. Machine-local: it names no path, and is
-/// never in a log.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectSurveysSettledV1 {
-    pub schema: String,
-    pub survey_ids: Vec<String>,
+/// The `schema` of a settled record, deserialized only as [`PROJECT_SURVEYS_SETTLED_V2`].
+fn settled_schema<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    use serde::de::Error as _;
+    let schema = String::deserialize(deserializer)?;
+    match schema.as_str() {
+        PROJECT_SURVEYS_SETTLED_V2 => Ok(schema),
+        PROJECT_SURVEYS_SETTLED_V1_SUPERSEDED => Err(D::Error::custom(SUPERSEDED_SURVEYS_SETTLED)),
+        _ => Err(D::Error::custom(format!(
+            "the settled record is {PROJECT_SURVEYS_SETTLED_V2}, not `{schema}`"
+        ))),
+    }
 }
 
-impl ProjectSurveysSettledV1 {
+/// One collection's selected object (ADR-0158 clause 13): the record at a Survey's CAS name
+/// that the collection found under the Store's lock and recorded, with its identity and length,
+/// before it appended the Survey's tombstone. Recovery deletes nothing else at that name or in
+/// a dead pass's container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurveySelectedV2 {
+    pub survey_id: String,
+    pub object: SurveyObjectIdentityV2,
+    /// Its length.
+    pub bytes: DecimalU64,
+}
+
+/// `af/ProjectSurveysSettled@2` (ADR-0158 clause 13): `settled.json` beside `project.lock`.
+/// `selected` holds, per collected Survey, the object its collection selected, recorded under
+/// the Store's lock before the tombstone is appended, so recovery follows that identity and
+/// never a hash: another inode at the Survey's CAS name or in a dead pass's container is
+/// foreign even when its bytes hash to the Survey ID. `survey_ids` holds the collected Surveys
+/// whose own records have left the CAS, deleted at their name or settled from a dead pass's
+/// container; a Survey is added there under the lock once its record has left its CAS name and
+/// before it is unlinked, and every later inventory reads it: a file at a settled Survey's CAS
+/// name is foreign, sweep after sweep, and only the selected inode is ever deleted from a dead
+/// pass's container. Both lists are sorted by Survey and hold each Survey once. Machine-local:
+/// it names no path, and is never in a log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectSurveysSettledV2 {
+    #[serde(deserialize_with = "settled_schema")]
+    pub schema: String,
+    pub survey_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected: Vec<SurveySelectedV2>,
+}
+
+impl ProjectSurveysSettledV2 {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != PROJECT_SURVEYS_SETTLED_V1 {
+        if self.schema != PROJECT_SURVEYS_SETTLED_V2 {
             return Err(format!(
-                "the settled record is {PROJECT_SURVEYS_SETTLED_V1}, not `{}`",
+                "the settled record is {PROJECT_SURVEYS_SETTLED_V2}, not `{}`",
                 self.schema
             ));
         }
-        if self.survey_ids.iter().any(|id| !crate::is_digest(id)) {
+        if self.survey_ids.iter().any(|id| !crate::is_digest(id))
+            || self
+                .selected
+                .iter()
+                .any(|selected| !crate::is_digest(&selected.survey_id))
+        {
             return Err("the settled record names its Surveys by digest".into());
         }
         if self.survey_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err("the settled record lists its Surveys sorted, each once".into());
+        }
+        if self
+            .selected
+            .windows(2)
+            .any(|pair| pair[0].survey_id >= pair[1].survey_id)
+        {
+            return Err("the settled record lists its selections sorted, each Survey once".into());
+        }
+        for selected in &self.selected {
+            selected.object.validate()?;
+            if selected.bytes.get() > MAX_SURVEY_BYTES {
+                return Err(format!(
+                    "a selection holds a record of at most {MAX_SURVEY_BYTES} bytes"
+                ));
+            }
         }
         Ok(())
     }
@@ -2205,11 +2319,24 @@ mod machine_local_tests {
         format!("sha256:{}", digit.to_string().repeat(64))
     }
 
+    fn selected(digit: char, born: u64) -> SurveySelectedV2 {
+        SurveySelectedV2 {
+            survey_id: id(digit),
+            object: SurveyObjectIdentityV2 {
+                device: 1.into(),
+                inode: 2.into(),
+                born_unix_ns: born.into(),
+            },
+            bytes: 10.into(),
+        }
+    }
+
     #[test]
     fn the_settled_record_lists_each_survey_once_in_order() {
-        let settled = ProjectSurveysSettledV1 {
-            schema: PROJECT_SURVEYS_SETTLED_V1.into(),
+        let settled = ProjectSurveysSettledV2 {
+            schema: PROJECT_SURVEYS_SETTLED_V2.into(),
             survey_ids: vec![id('a'), id('b')],
+            selected: vec![selected('c', 7), selected('d', 8)],
         };
         settled.validate().unwrap();
         for survey_ids in [
@@ -2218,7 +2345,7 @@ mod machine_local_tests {
             vec!["a".into()],
         ] {
             assert!(
-                ProjectSurveysSettledV1 {
+                ProjectSurveysSettledV2 {
                     survey_ids,
                     ..settled.clone()
                 }
@@ -2226,5 +2353,60 @@ mod machine_local_tests {
                 .is_err()
             );
         }
+        for selections in [
+            vec![selected('d', 8), selected('c', 7)],
+            vec![selected('c', 7), selected('c', 8)],
+            vec![selected('c', 0)],
+        ] {
+            assert!(
+                ProjectSurveysSettledV2 {
+                    selected: selections,
+                    ..settled.clone()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+    }
+
+    /// A superseded entry or settled record is refused by its label, before any field of it is
+    /// read, naming the version.
+    #[test]
+    fn superseded_machine_local_records_are_refused_by_type() {
+        let entry = serde_json::json!({
+            "bytes": "2", "object": {"device": "1", "inode": "2"},
+            "schema": "af/survey-pending@1", "survey_id": id('a'),
+        });
+        let bytes = serde_json::to_vec(&entry).unwrap();
+        assert_eq!(
+            schema_label(&bytes).as_deref(),
+            Some(SURVEY_PENDING_V1_SUPERSEDED)
+        );
+        let refused = serde_json::from_value::<SurveyPendingV2>(serde_json::json!({
+            "bytes": "2", "schema": "af/survey-pending@1", "survey_id": id('a'),
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(refused.contains(SUPERSEDED_SURVEY_PENDING), "{refused}");
+        let refused = serde_json::from_value::<ProjectSurveysSettledV2>(serde_json::json!({
+            "schema": "af/ProjectSurveysSettled@1", "survey_ids": [],
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(refused.contains(SUPERSEDED_SURVEYS_SETTLED), "{refused}");
+        let born = SurveyPendingV2 {
+            schema: SURVEY_PENDING_V2.into(),
+            survey_id: id('a'),
+            bytes: 2.into(),
+            object: Some(SurveyObjectIdentityV2 {
+                device: 1.into(),
+                inode: 2.into(),
+                born_unix_ns: 0.into(),
+            }),
+        };
+        assert!(
+            born.validate().is_err(),
+            "an identity carries its birth time"
+        );
     }
 }

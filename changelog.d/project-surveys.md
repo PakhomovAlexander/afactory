@@ -71,7 +71,7 @@
   text; with `--json`, which prints the complete record, it is usage error 2. `af onboard --apply`
   records the first Survey without changing its own exit code, and `af project show --json` stays
   `af/project@1`
-  ([ADR-0152](docs/adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md)).
+  ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md)).
 - PJ2 round 9 re-verified round 8, which had no code review, item by item: (i) a log that ends
   inside a record is `malformed_record`, partial with the counts before it and zero counts for the
   first record, `unavailable` kept for a walk that never ran: fixed, adding the record's ordinal and
@@ -92,7 +92,7 @@
   `max_record_bytes` fixed with its missing end-to-end fixture
   (`every_streamed_record_over_64_kib_stops_at_max_record_bytes`), while the discovery ceilings and
   the activity CAS-read budget belong to the `activity` section, which is PJ5's and not on this
-  branch, so neither was found complete nor fixed here and ADR-0152 clause 12 states them for PJ5;
+  branch, so neither was found complete nor fixed here and ADR-0158 clause 12 states them for PJ5;
   (vi) every persisted shape at its version with its schema and parity fixture: complete, every
   Survey shape still unreleased at `@1` (this round's `stopped_record` changes
   `af/ProjectSurvey@1`'s schema and parity in the same change) and Surveyor version 8 so no earlier
@@ -120,5 +120,20 @@
   refuses a `pending-surveys` that is a symbolic link or no directory of the Store, naming it and
   writing nothing through it
   (`a_pending_directory_replaced_by_a_link_refuses_the_refresh_and_nothing_is_written_outside`)
-  ([ADR-0152](docs/adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
   15).
+- Second close-out, the writer: a Survey's bytes are staged in the writer's own
+  `pending-surveys/<64 hex>.object`, its identity recorded in the pending entry, and only then
+  renamed to its CAS name, never over a taken name, so nothing is ever at a CAS name no entry
+  describes and every state between has its recovery: a refresh stopped before the identity
+  (`AF_TEST_SURVEY_STOP_BEFORE_IDENTITY`) leaves staged bytes and an empty CAS name, one stopped
+  after it (the new `AF_TEST_SURVEY_STOP_BEFORE_LINK`) an entry naming the staged object, and the
+  next refresh of the same bytes finishes either
+  (`the_writers_pending_entry_is_what_collection_reads_at_either_crash_point`). The entry is now
+  `af/survey-pending@2` (`schemas/project-survey-pending-v2.json`), whose `object` carries the
+  birth time `born_unix_ns` beside device and inode, since ext4 hands a freed inode number to the
+  next file at once; `@1` is refused naming its recovery, and a file system that reports no birth
+  time refuses the publication. The Surveys ADR is renumbered ADR-0158, after the numbers main
+  took
+  ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  2).

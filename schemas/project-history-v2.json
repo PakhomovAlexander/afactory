@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-history:2",
   "title": "af/project-history@2",
-  "description": "`af project history --json` (ADR-0152): the Survey chain of the invoking checkout's Project, newest first. A Survey whose record is of a superseded version (`af/ProjectSurvey@1`, which another af release wrote) is listed by its ID and when it was recorded, `unreadable` saying why, and none of its event's fields this release cannot verify.",
+  "description": "`af project history --json` (ADR-0158): the Survey chain of the invoking checkout's Project, newest first. A Survey whose record is of a superseded version (`af/ProjectSurvey@1`, which another af release wrote) is listed by its ID and when it was recorded, `unreadable` saying why, and none of its event's fields this release cannot verify.",
   "type": "object",
   "additionalProperties": false,
   "required": [

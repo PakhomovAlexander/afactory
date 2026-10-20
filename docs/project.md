@@ -4,8 +4,8 @@ What `af project` knows about the repository it runs in, where it keeps that, ho
 for one line of work becomes a **Workspace** with its own Task Store, Task files and bindings,
 and how the Surveyor measures the Project into **Surveys**. The terms are defined in
 [`../CONTEXT.md`](../CONTEXT.md); the decisions are
-[ADR-0151](adr/0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
-and [ADR-0152](adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md).
+[ADR-0157](adr/0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+and [ADR-0158](adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md).
 
 ## Identity
 
@@ -278,8 +278,13 @@ own entry under the repository's `worktrees/`, nothing else. The branch stays ei
 
 The removal goes by what it inspected, never by a name. Before it moves or deletes anything it
 writes a removal record in the Project Store, `removals/<workspace id>.toml`, never in the
-repository: the checkout path, the identity (device and inode) of the checkout and of its entry,
-the container it makes for each with that container's identity, and the step each reached. It
+repository: the checkout path, the identity of the checkout and of its entry (its device, inode
+and birth time: a file system such as ext4 hands a freed inode number to the next directory at
+once, and the birth time, which a rename keeps, tells the two apart), the container it makes for
+each with that container's identity, and the step each reached. A file system that reports no
+birth time refuses the removal before anything is written, nothing changed, with
+`<path> is on a file system (<type>) that reports no birth time, so af cannot tell it from a file
+created later at the same inode and leaves it`. It
 rewrites the record at every step and deletes it when it is done, just before the Workspace is
 unregistered. Each directory is first claimed: moved into a container the command creates
 beside it, `<name>.af-removing-<pid>-<16 random hex digits>` with mode 0700, through that
@@ -300,11 +305,11 @@ removed the worktree <path>; its administrative entry remains at <container>/<na
 and the Workspace stays registered. Run the same command again once the cause is fixed: it
 finishes from the record, step by step, acting only on directories whose identity the record
 holds, then unregisters the Workspace and reports what it removed; its messages begin `the
-worktree <path> is already gone;`. The step a record holds proves nothing by itself. Whatever
-the step, the rerun of a directory first checks the administrative entry as it is now, before
-it touches the checkout or the entry at all. The check is bound to the entry the record holds:
-it opens the entry without following a link and compares its device and inode with the ones
-recorded at inspection. Another directory at the entry's path is a replacement, never read,
+worktree <path> is already gone;`. The step a record holds proves nothing by itself. Before the
+rerun touches a live directory at all (the checkout until its deletion is recorded, the entry
+until its own deletion is recorded), it checks the administrative entry as it is now. The check
+is bound to the entry the record holds: it opens the entry without following a link and compares
+its device, inode and birth time with the ones recorded at inspection. Another directory at the entry's path is a replacement, never read,
 even when it names the checkout and holds no `locked`, and the message says `its administrative
 entry was replaced since inspection: <entry> is not the directory this removal inspected`. Only
 the recorded entry is read: its `gitdir` must name the checkout and it may hold no `locked`.
@@ -315,20 +320,28 @@ kept at <container>/<name>, where this removal moved it, because <condition>`, s
 it back, put the recorded entry back or clear it, and run the command again. A failed check
 never deletes the removal record, even when nothing has moved yet: the message then says
 `nothing was changed: the removal stays recorded in <record>`, and the next run goes by the
-identities it holds rather than inspecting afresh. Only then does the rerun check the step's
-own precondition on the file system, and a check that fails never moves the step on and never
-deletes the record either.
+identities it holds rather than inspecting afresh. An entry whose deletion was recorded is found
+by its identity in its container and its deletion resumes there without its `gitdir`, which that
+deletion may already have removed; one found in neither its container nor its path was deleted
+before the crash, and a new entry at its path since is kept and reported, never checked as the
+recorded one; a directory recorded deleted has nothing left to check, and its rerun removes its
+empty container and finishes. So a crash right after the entry's unlink, part way through its
+deletion or after its container's removal finishes on the rerun and unregisters the Workspace
+once. Only then does the rerun check the step's own precondition on the file system, and a check
+that fails never moves the step on and never deletes the record either.
 
 | Step | What the rerun checks before it acts, after the entry check |
 |---|---|
-| every step | The entry check: the entry at its path, opened without following a link (or found by identity in its container, for its own rerun), is the one recorded; another directory there is a replacement, never read, and nothing is deleted, moved or unregistered. Only then are its `gitdir` and `locked` read. |
+| a live directory (the checkout before `deleted`, an entry before `deleting`) | The entry check: the entry at its path, opened without following a link (or found by identity in its container, for its own rerun), is the one recorded, by device, inode and birth time; another directory there is a replacement, never read, and nothing is deleted, moved or unregistered. Only then are its `gitdir` and `locked` read. |
+| an entry at `deleting` | In its container by identity, its deletion resumes without its `gitdir`, a `locked` still refused; in neither its container nor its path, its deletion finished, and whatever holds its path is kept and reported, never checked as the recorded entry. |
+| a directory at `deleted` | No entry check: its empty container, still the one made, is removed, and it is done. |
 | every step | A check that fails, the entry check or the step's own, leaves the removal record: never deleted, and unchanged after a failed entry check, so the next run uses the recorded identities. |
 | `inspected` | The checkout's path holds the recorded identity (nothing there: gone; another directory: kept, and the command refused). The entry's `gitdir` names the checkout and the entry holds no `locked`, before the checkout is claimed and before the entry is. |
 | `container` | Nothing is proved: a directory found under the recorded name is reported and left, and the directory counts as `inspected` again. |
 | `contained` | The container is still the one made. The directory is in it by identity, or at its path by identity and moved in only while the container is empty and the entry passes the check above. In the container the checkout is judged again (its entry, its index, its files), and an entry is checked again before it is deleted. With the container gone, as `deleting`. |
 | `contained`, moved (`checkout-moved`, `entry-moved`) | The directory is in its container and its original path is free. A directory found there since the move, after an earlier run's or this one's, is a replacement that stops the removal: the recorded directory stays in its container, nothing is deleted, the record is unchanged and the Workspace stays registered. For an entry: `a new administrative entry appeared at <path> since this removal moved the recorded one; clear it or move the recorded entry back, then run the command again`; for the checkout the same with `a new directory` and `the recorded worktree`. |
 | `deleting` | The directory is in its container by identity (an entry there holding no `locked`, and any `gitdir` still there naming the checkout) and its deletion finishes. Otherwise its path decides: the recorded identity there is the directory moved back, claimed and judged again from the start; another directory is a replacement, kept and reported, and the Workspace stays registered; only when neither holds the recorded identity is it deleted. |
-| `deleted` | Its container goes only while it is the one made and empty; a directory at the checkout's path is kept and reported. |
+| `deleted` | Its container goes only while it is the one made and empty; a directory at the checkout's path is kept and reported; no container left means it went already, and the directory is done. |
 | `done` | Nothing. |
 
 An entry that is locked, whose `gitdir` names another checkout, or whose `gitdir` is missing
@@ -672,20 +685,26 @@ head.
 
 A Survey is published under the Project Store's lock in this order, which collection relies on:
 a pending-publication entry `pending-surveys/<64 hex>.json` beside `project.lock`,
-`af/survey-pending@1` ([schema](../schemas/project-survey-pending-v1.json)) naming the Survey and
-the length of its bytes, written and synced before any byte of the record enters the CAS; the
-record linked at its CAS name and made durable there; the device and inode of the file at that
-name, a regular file of exactly that length, recorded and synced in the entry; then
-`SurveyRecorded@1`, and the entry removed only once that committed. An entry is at most 4 KiB and
-names a record of at most `max_survey_bytes`' ceiling. A crash between the bytes and the event
-leaves the entry, with the object's identity once it was recorded, so the record no event names
-is never lost to inventory. The next refresh that measures the same bytes (the same Survey ID)
-finishes that publication and clears the entry; an entry of another Survey is left for
-collection. The entry is never in the repository or the log. A retry never discards the
-identity an earlier attempt recorded: an entry that already names an object is kept unrewritten,
-and the publication goes on only while the file at the Survey's CAS name is that object (its
-device, inode and length), else it is refused and the entry left for collection to reclaim that
-object; the entry is rewritten only once the bytes are linked and verified to be that file. The
+`af/survey-pending@2` ([schema](../schemas/project-survey-pending-v2.json)) naming the Survey and
+the length of its bytes, written and synced before any byte of the record is written anywhere;
+the record's bytes staged in the writer's own `pending-surveys/<64 hex>.object` and made durable
+there; the identity of that staged file (its device, inode and birth time, a regular file of
+exactly that length) recorded and synced in the entry; only then that inode renamed to its CAS
+name, never over a name that is taken, and made durable there; then `SurveyRecorded@1`, and the
+entry removed only once that committed. So nothing is ever at a Survey's CAS name that no entry
+describes. An entry is at most 4 KiB and names a record of at most `max_survey_bytes`' ceiling.
+A crash anywhere in between leaves the entry, with the object's identity once it was recorded,
+so the record no event names is never lost to inventory: bytes staged before the entry named
+them, the staged object the entry names, or the object at the CAS name, each of which `af storage
+prune --apply` reclaims before it clears the entry. The next refresh that measures the same bytes
+(the same Survey ID) finishes that publication and clears the entry; an entry of another Survey
+is left for collection. The entry is never in the repository or the log. A retry never discards
+the identity an earlier attempt recorded: an entry that already names an object is kept
+unrewritten, and the publication goes on only while its staged name or the Survey's CAS name
+holds that object (its device, inode, birth time and length), else it is refused and the entry
+left for collection to reclaim that object; the entry is rewritten only once the bytes are
+staged and verified to be that file. A file system that reports no birth time refuses the
+publication, nothing reaching the CAS name. The
 writer opens `pending-surveys` as collection's reader does, beneath the Project Store without
 following a link, and refuses one that is a symbolic link, not a directory, on another device or
 owned by another user than the Store, naming its path (`<store>/pending-surveys is refused: it is
@@ -815,7 +834,7 @@ before. `af project survey` exits 1 when the newest Survey was collected, saying
 `previous_survey_id` is a name: a collected predecessor keeps nothing alive.
 
 A sweep plans once, over one inventory snapshot, and `af storage prune` without `--apply` prints
-that plan in `af/storage-prune@2` ([schema](../schemas/storage-prune-v2.json)): every entry it
+that plan in `af/storage-prune@3` ([schema](../schemas/storage-prune-v3.json)): every entry it
 removes, in order, with the bytes it frees, its rule (`recovery`, then `collection` and
 `keep_surveys`, then `budget`) and af's total after it, and under `left` every file or Survey it
 leaves with its reason. `--apply` runs that same plan entry by entry and never chooses again: each
@@ -827,9 +846,18 @@ a child that cannot be unlinked, a final `rmdir` that failed because a child app
 is failed too, and its `bytes` are what actually left the disk, accounted from the removal's own
 start: what the directory held when its removal began, stated through its own descriptor
 immediately before anything was unlinked, less what its claim still holds. A directory that grew
-since the inventory never reports nothing for what the walk did unlink, and the running total
-moves by exactly those bytes. So the document's totals are what af then holds, but for the
-records a pass itself writes (a tombstone, `settled.json`), which the next inventory measures. A directory nested deeper than the removal walk's 128 levels is never planned: the
+since the inventory never reports nothing for what the walk did unlink. The running total
+reconciles such growth: what a removal measured its directory to hold when it began takes the
+place of the inventory's bytes before what left is subtracted, so a whole removal takes exactly
+the inventory's bytes out of the total, and a claim inventoried at 10 MiB that grew to 20 MiB and
+freed 8 MiB before it stopped leaves the 12 MiB it retains in the total. When what a deletion
+that stopped part way left cannot be measured, the total after it, and the sweep's, is `unknown`
+and `stop` is `unknown`, never `fits`; a Task records no sweep whose total is unknown. Every byte
+count, an entry's, a removal's and every total, is the allocated bytes of regular files:
+directories and links count nothing, so the numbers are the same on ext4, which charges a
+directory 4096 bytes, and on APFS, which charges none. So the document's totals are what af then
+holds, but for the records a pass itself writes (a tombstone, `settled.json`), which the next
+inventory measures. A directory nested deeper than the removal walk's 128 levels is never planned: the
 inventory lists it in use (`left: deeper than the removal walk`) and the preview and the applied
 sweep both leave it under `left` as `too_deep`, whole, for the operator. So the bytes of a deletion an
 interruption left count once: a preview that frees them first and then fits the budget stops
@@ -853,7 +881,8 @@ of the Store's. The snapshot is taken over the Store registrations as they are: 
 a dead process renamed into its claim is reached through its parent, the claim planned as
 `recovery`, and the registration, whose path holds no Store, dropped by the plan as an entry of
 `registry_dropped` of its own, the same in the preview and the applied sweep. Every Survey's
-record is measured once, with its device, inode and bytes: a record another file replaced after
+record is measured once, with its device, inode, birth time and bytes: a record another file
+replaced after
 that is refused `refused (replaced since inventory)` and taken in no way, and the bytes a plan
 lists are always those of the file it measured. Its `SurveyRecorded@1` is verified against it in
 that same read, once, and the plan and the inventory read only what it verified: a Survey whose
@@ -866,26 +895,37 @@ A record is reached, read and deleted only through directory descriptors, the re
 link, and the record stated and opened relative to its prefix directory. Its deletion names the
 inode that was checked: each job creates its own container `cas/removing/<pass-id>/` (mode 0700,
 a fresh random ID, never one that exists), renames the record into it and, just before the
-unlink, states it again relative to that container; only the device and inode stated before its
-tombstone is unlinked, and the bytes reported are that inode's. Only a process of the same user
+unlink, states it again relative to that container; only the identity selected before its
+tombstone (its device, inode and birth time, so a file born later at a reused inode is another
+file) is unlinked, and the bytes reported are that inode's. On a file system that reports no
+birth time a record has no identity to select, and its collection is refused and nothing is
+deleted. Only a process of the same user
 can replace a file inside a container af just created, the trust boundary af's delivery already
 accepts, and a replacement the check sees is refused: it is moved back to its name (or kept in the
 container as `<survey-id>.replaced`, a name no sweep deletes, when the name was taken again),
 nothing is deleted, and the sweep reports the Survey `refused (replaced during collection)`.
 
-The next sweep settles what a dead pass left the same way. A file in its container named by a
-collected Survey is that Survey's record, moved: renamed into the new pass's container, checked
-and deleted under `recovery`; the container, once it holds nothing else, is an entry of its own
-after it, removed with its bytes only through that entry. A file at that Survey's CAS name is
-then somebody else's: listed under `left` as `foreign` with its bytes, counted in the Project
-Store's bytes and never the Survey's, and never deleted by any sweep. Without a moved record, the
-file at a collected Survey's name is deleted only when its bytes are the record's (they hash to
-its ID) and its record has not left the CAS already, and is `foreign` otherwise. Once a collected
-Survey's own record has left its CAS name, deleted there or settled from a dead pass's container,
-the pass records so in `settled.json` beside `project.lock`
-([`af/ProjectSurveysSettled@1`](../schemas/project-surveys-settled-v1.json)), under the lock,
-after the check found the record's inode and before it is unlinked: the file is replaced whole
-and the Store's directory synced. When that fails, the sync after the rename included, the
+Before it appends a Survey's tombstone, a collection records the object it selected, the record
+at the Survey's CAS name by its device, inode, birth time and length, in `settled.json` beside
+`project.lock` ([`af/ProjectSurveysSettled@2`](../schemas/project-surveys-settled-v2.json)),
+under the lock and synced; when that cannot be made durable no tombstone is appended. The next
+sweep settles what a dead pass left by that selection, never by a hash. A file in a dead pass's
+container named by a collected Survey is that Survey's record, moved, only while it is the
+object the collection selected: renamed into the new pass's container, checked and deleted under
+`recovery`; the container, once it holds nothing else, is an entry of its own after it, removed
+only through that entry. A file at that Survey's CAS name is then somebody else's: listed under
+`left` as `foreign` with its bytes, counted in the Project Store's bytes and never the Survey's,
+and never deleted by any sweep. Without a moved record, the file at a collected Survey's name is
+deleted only when it is the object the collection selected, its bytes are the record's (they hash
+to its ID) and its record has not left the CAS already, and is `foreign` otherwise: a
+byte-identical copy put there after a crash that followed the tombstone is another inode, or the
+same inode number born later, and stays, sweep after sweep. Once a collected Survey's own record
+has left its CAS name, deleted there or settled from a dead pass's container, the pass records
+so in the same `settled.json`, under the lock, after the check found the record's inode and
+before it is unlinked: the file is replaced whole and the Store's directory synced. A
+`settled.json` of `af/ProjectSurveysSettled@1`, which another release wrote, is refused naming
+the recovery: delete it, and since no selection is then recorded, nothing at a collected Survey's
+name is deleted. When that fails, the sync after the rename included, the
 earlier `settled.json` is put back (the new one removed, when there was none) and that is synced
 too before the pass goes on, the record is not unlinked (it goes back to its name, or stays where
 the dead pass left it), and the entry fails with the reason; the Survey stays unsettled and the
@@ -897,8 +937,13 @@ it.
 
 A sweep reads the pending-publication entries the Surveyor's writer leaves when a crash stops it
 between a Survey's record and its event (`pending-surveys/<64 hex>.json` beside `project.lock`,
-the writer's `af/survey-pending@1`, described under "`af project refresh`" above). An entry
-whose event committed is cleared under `recovery`, and nothing is deleted. Otherwise the object at its
+the writer's `af/survey-pending@2`, described under "`af project refresh`" above), and the
+objects it staged beside them (`pending-surveys/<64 hex>.object`). A staged object is the
+writer's own, never a publication in progress outside the lock a sweep's job takes: it is
+reclaimed under `recovery` first, the bytes a crash staged before the entry named them and the
+staged object an entry names whose CAS name never took it alike, each only while it is still the
+file the inventory stated. An entry whose event committed is cleared under `recovery`, and
+nothing is deleted. Otherwise the object at its
 Survey's CAS name that is the one the entry describes (that device, inode and `bytes` length) is
 listed by `af storage` as a Survey with `state` `pending`, in use, last used when its entry was
 written, and reclaimed under `recovery` before its entry is cleared, by the preview and the
@@ -906,7 +951,7 @@ applied sweep alike; any other file at that name is `foreign`. The applied sweep
 device, the inode and the length again under the lock before it deletes, and an object grown,
 truncated or replaced since the inventory fails as `skipped: object changed`, nothing deleted.
 The entry is cleared only once no file with the inode it describes remains, at its Survey's CAS
-name or in any pass's container; the inode decides, never the length. A reclamation stopped after
+name, at its staged name or in any pass's container; the inode decides, never the length. A reclamation stopped after
 the object was renamed into its pass's container and before its unlink leaves the entry, and the
 next sweep finds the object in that dead pass's container (the same device, inode and length),
 reclaims it under `recovery`, never as `foreign`, then the container, then the entry. An object
@@ -954,7 +999,7 @@ pattern list overruns `max_wall_ms` by at most one match, and the section it cut
 reason `max_wall_ms`. `?` is one byte of a path's canonical encoded spelling: `caf?.rs` does not
 match `café.rs`, whose `é` is two bytes, and `caf??.rs` does; a byte that is not UTF-8 is spelled
 `%E9`, three bytes
-([ADR-0152](adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md), clauses 13
+([ADR-0158](adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md), clauses 13
 and 14).
 
 ## Briefs

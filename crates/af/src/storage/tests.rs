@@ -237,7 +237,12 @@ fn the_budget_evicts_the_least_recently_used_first_and_stops_when_af_fits() {
     );
     assert!(applied.failures.is_empty(), "{:?}", applied.failures);
     assert_eq!(applied.stop, Stop::Fits);
-    assert!(applied.total_after <= budget.max_bytes, "{applied:?}");
+    assert!(
+        applied
+            .total_after
+            .is_some_and(|total| total <= budget.max_bytes),
+        "{applied:?}"
+    );
     for gone in [&oldest, &old_campaign, &old_key, &old_workspace] {
         assert!(!gone.exists(), "{}", gone.display());
     }
@@ -415,7 +420,7 @@ fn a_registered_store_behind_a_replaced_ancestor_is_never_followed_into_a_decoy(
                 .is_some_and(|outcome| outcome.starts_with("failed: "))),
         "{report:?}"
     );
-    assert_eq!(report.total_after, report.total_before);
+    assert_eq!(report.total_after, Some(report.total_before));
     assert!(
         report.failures.iter().any(
             |failure| failure.contains(&registered.display().to_string())
@@ -645,7 +650,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         task_id: Some(format!("task-{index}")),
         bytes: 10,
         rule: Rule::Collection,
-        total_after: 0,
+        total_after: Some(0),
         unreadable: None,
         outcome: None,
     };
@@ -654,7 +659,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         collection: true,
         max_bytes: 100,
         total_before: 1000,
-        total_after: 900,
+        total_after: Some(900),
         stop: Stop::NothingEvictable,
         removals,
         left: Vec::new(),
@@ -692,7 +697,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         task_id: None,
         bytes: 4096,
         rule: Rule::Budget,
-        total_after: 0,
+        total_after: Some(0),
         unreadable: unreadable.map(str::to_string),
         outcome: None,
     };
@@ -823,7 +828,11 @@ fn a_planned_campaign_replaced_before_its_removal_stays_as_failed_with_the_total
         outcome.contains("not the directory that was measured"),
         "{outcome}"
     );
-    assert_eq!(failed.total_after, applied.total_before, "unchanged by it");
+    assert_eq!(
+        failed.total_after,
+        Some(applied.total_before),
+        "unchanged by it"
+    );
     assert!(
         applied
             .failures
@@ -831,7 +840,7 @@ fn a_planned_campaign_replaced_before_its_removal_stays_as_failed_with_the_total
             .any(|failure| outcome.ends_with(failure.as_str()))
     );
     assert_eq!(done.outcome, None);
-    assert_eq!(done.total_after, applied.total_before - done.bytes);
+    assert_eq!(done.total_after, Some(applied.total_before - done.bytes));
     assert_eq!(applied.total_after, done.total_after);
     assert!(
         replaced.join("events.sqlite").is_file(),
@@ -840,7 +849,7 @@ fn a_planned_campaign_replaced_before_its_removal_stays_as_failed_with_the_total
     assert!(!other.exists());
     // What the document says is left is what af holds.
     assert_eq!(
-        inventory(&layout.roots, Detail::Stores).total(),
+        Some(inventory(&layout.roots, Detail::Stores).total()),
         applied.total_after
     );
     // Not recorded as a removal on a Task: it freed nothing.
@@ -853,7 +862,9 @@ fn a_planned_campaign_replaced_before_its_removal_stays_as_failed_with_the_total
 /// and leaves the rest under its claim. The applied sweep keeps the entry as failed with the
 /// bytes that actually left the disk, accounted from what the campaign held when its removal
 /// started, never from what inventory measured: what grew since is counted when the walk
-/// unlinked it, so the running total moves by exactly what left the disk.
+/// unlinked it. Every total counts regular files alone, so a directory's blocks (4096 bytes on
+/// ext4, none on APFS) never enter either side, and the running total keeps exactly what the
+/// claim still holds in place of what inventory measured.
 #[test]
 fn a_partial_deletion_reports_the_bytes_it_actually_freed() {
     let layout = layout();
@@ -905,29 +916,26 @@ fn a_partial_deletion_reports_the_bytes_it_actually_freed() {
     assert!(outcome.contains("only partly removed"), "{outcome}");
     assert!(!target.exists(), "claimed, never renamed back");
     let claim = only_claim(&layout.roots.campaigns);
+    assert!(
+        claim.join("grows/d").is_dir(),
+        "the walk could not reach all of it"
+    );
+    // The files the claim still holds: the chain's own are empty, so none of their bytes.
     let remaining = review_sandbox::storage::allocated_bytes(&claim).unwrap();
-    assert!(remaining > 0, "the walk could not reach all of it");
-    let freed = started
-        .checked_sub(remaining)
-        .unwrap_or_else(|| panic!("{remaining} bytes remain of {started} at the start"));
+    assert!(started >= remaining, "{started} {remaining}");
     assert_eq!(
-        failed.bytes, freed,
+        failed.bytes,
+        started - remaining,
         "what the walk unlinked, accounted from the removal's own start"
     );
-    // The running total moves by what left the disk and stops at zero: when the walk unlinked
-    // more than inventory measured (the campaign grew since), the total is already spent.
     assert_eq!(
         failed.total_after,
-        applied.total_before.saturating_sub(failed.bytes)
+        Some(applied.total_before - measured + remaining),
+        "what the claim still holds in place of what inventory measured"
     );
     assert_eq!(applied.total_after, failed.total_after);
     // The schema accepts a failed entry that freed bytes.
-    let mut document = serde_json::to_value(&applied).unwrap();
-    document["schema"] = serde_json::json!("af/storage-prune@2");
-    let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../schemas/storage-prune-v2.json")).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
-    assert!(validator.is_valid(&document), "{document}");
+    prune_document(&applied);
     let line = removal_line(failed, true);
     assert!(line.contains("partly removed"), "{line}");
     // Left for the walk to finish once this process is gone; here, the test's own cleanup.
@@ -995,9 +1003,163 @@ fn a_failure_at_the_final_rmdir_is_a_partial_removal_with_what_it_freed() {
     );
     assert_eq!(
         failed.total_after,
-        applied.total_before.saturating_sub(failed.bytes)
+        Some(applied.total_before - failed.bytes)
     );
     std::fs::remove_dir_all(claim).unwrap();
+}
+
+/// The applied document of `report`, `af/storage-prune@3`, validated against its schema.
+fn prune_document(report: &SweepReport) -> serde_json::Value {
+    let mut document = serde_json::to_value(report).unwrap();
+    document["schema"] = serde_json::json!("af/storage-prune@3");
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../schemas/storage-prune-v3.json")).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let errors: Vec<String> = validator
+        .iter_errors(&document)
+        .map(|error| format!("{error} at {}", error.instance_path()))
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}: {document}");
+    document
+}
+
+/// Whether this process is held to directory permissions: an unprivileged user cannot create a
+/// file in a directory it may not write. Run as root, a permission fixture proves nothing and is
+/// skipped.
+fn enforced(root: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let probe = root.join("probe");
+    std::fs::create_dir_all(&probe).unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let enforced = std::fs::write(probe.join("file"), b"").is_err();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::remove_dir_all(&probe).unwrap();
+    enforced
+}
+
+const MIB: u64 = 1 << 20;
+
+/// A claim a dead process left in the campaigns root, holding `free/` (`free` files of 1 MiB)
+/// and `kept/` (`kept` files of 1 MiB).
+fn dead_claim(layout: &Layout, name: &str, free: u64, kept: u64) -> PathBuf {
+    let claim = layout.roots.campaigns.join(name);
+    for (directory, files) in [("free", free), ("kept", kept)] {
+        std::fs::create_dir_all(claim.join(directory)).unwrap();
+        for n in 0..files {
+            std::fs::write(
+                claim.join(directory).join(format!("{n:02}")),
+                vec![7_u8; MIB as usize],
+            )
+            .unwrap();
+        }
+    }
+    claim
+}
+
+/// ADR-0158 clause 13's running total: a claim inventory measured at 10 MiB grows to 20 MiB
+/// before its removal, and 12 MiB appear in it while its walk unlinks the 20, so its final
+/// `rmdir` fails and the walk freed 8 MiB net of what it still holds. The entry reports the 8
+/// MiB, and the total keeps the 12 MiB the claim retains in place of the 10 MiB inventory
+/// measured: the difference first, then what left.
+#[cfg(debug_assertions)]
+#[test]
+fn a_grown_claims_partial_deletion_reports_the_bytes_it_retains() {
+    let layout = layout();
+    let claim = dead_claim(&layout, ".af-removing-999999999-8-0", 8, 2);
+    let inventoried = review_sandbox::storage::allocated_bytes(&claim).unwrap();
+    assert_eq!(inventoried, 10 * MIB);
+    let previewed = sweep(&layout.roots, &policy(20 << 30), false, false);
+    let [planned] = previewed.removals.as_slice() else {
+        panic!("{previewed:?}");
+    };
+    assert_eq!((planned.kind, planned.bytes), (Kind::Claim, inventoried));
+    let at = claim.join("kept");
+    BEFORE_EXECUTE.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |_: &plan::Planned| {
+            for n in 2..12 {
+                std::fs::write(at.join(format!("{n:02}")), vec![8_u8; MIB as usize]).unwrap();
+            }
+        }));
+    });
+    let parent = layout.roots.campaigns.clone();
+    review_sandbox::removal::set_before_final_unlink(Some(Box::new(move |claim: &str| {
+        let late = parent.join(claim).join("late");
+        std::fs::create_dir(&late).unwrap();
+        for n in 0..12 {
+            std::fs::write(late.join(format!("{n:02}")), vec![9_u8; MIB as usize]).unwrap();
+        }
+    })));
+    let applied = sweep(&layout.roots, &policy(20 << 30), false, true);
+    review_sandbox::removal::set_before_final_unlink(None);
+    BEFORE_EXECUTE.with(|hook| *hook.borrow_mut() = None);
+
+    let [failed] = applied.removals.as_slice() else {
+        panic!("{applied:?}");
+    };
+    let outcome = failed.outcome.as_deref().unwrap();
+    assert!(outcome.contains("removing its claim"), "{outcome}");
+    let claim = only_claim(&layout.roots.campaigns);
+    let retained = review_sandbox::storage::allocated_bytes(&claim).unwrap();
+    assert_eq!(retained, 12 * MIB);
+    assert_eq!(
+        failed.bytes,
+        8 * MIB,
+        "20 MiB at its start less the 12 it holds"
+    );
+    assert_eq!(
+        failed.total_after,
+        Some(applied.total_before - 10 * MIB + 12 * MIB),
+        "the 12 MiB retained in place of the 10 MiB inventory measured"
+    );
+    assert_eq!(applied.total_after, failed.total_after);
+    assert_eq!(applied.stop, Stop::Fits);
+    prune_document(&applied);
+    std::fs::remove_dir_all(claim).unwrap();
+}
+
+/// A claim whose remainder cannot be walked once its removal stopped part way leaves af's
+/// total unknown: the entry and the document say `unknown`, `fits` is not claimed, the schema
+/// accepts it, and no Task record claims a number.
+#[test]
+fn a_partial_deletion_whose_remainder_cannot_be_walked_reports_the_total_unknown() {
+    use std::os::unix::fs::PermissionsExt;
+    let layout = layout();
+    if !enforced(&layout.root) {
+        eprintln!("skipped: directory permissions are not enforced for this user");
+        return;
+    }
+    let claim = dead_claim(&layout, ".af-removing-999999999-9-0", 2, 1);
+    let sealed = claim.join("kept");
+    let at = sealed.clone();
+    BEFORE_EXECUTE.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |_: &plan::Planned| {
+            std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }));
+    });
+    let applied = sweep(&layout.roots, &policy(20 << 30), false, true);
+    BEFORE_EXECUTE.with(|hook| *hook.borrow_mut() = None);
+    std::fs::set_permissions(
+        only_claim(&layout.roots.campaigns).join("kept"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    assert!(!sealed.exists());
+
+    let [failed] = applied.removals.as_slice() else {
+        panic!("{applied:?}");
+    };
+    let outcome = failed.outcome.as_deref().unwrap();
+    assert!(outcome.contains("cannot be measured"), "{outcome}");
+    assert_eq!(failed.bytes, 0, "nothing is counted freed");
+    assert_eq!(failed.total_after, None);
+    assert_eq!(applied.total_after, None);
+    assert_eq!(applied.stop, Stop::Unknown);
+    let document = prune_document(&applied);
+    assert_eq!(document["total_after"], "unknown");
+    assert_eq!(document["stop"], "unknown");
+    assert_eq!(document["removals"][0]["total_after"], "unknown");
+    assert!(observation(&applied).is_none(), "no record claims a number");
+    std::fs::remove_dir_all(only_claim(&layout.roots.campaigns)).unwrap();
 }
 
 /// A Project Store as a refresh leaves one, empty: its log, its CAS and its registration.
@@ -1052,9 +1214,13 @@ fn a_planned_container_gone_since_the_inventory_is_a_failed_entry() {
     };
     assert_eq!(failed.path, container);
     assert_eq!(failed.bytes, 0);
-    assert_eq!(failed.total_after, applied.total_before, "unchanged by it");
+    assert_eq!(
+        failed.total_after,
+        Some(applied.total_before),
+        "unchanged by it"
+    );
     let outcome = failed.outcome.as_deref().unwrap();
     assert!(outcome.starts_with("failed: finishing "), "{outcome}");
     assert!(outcome.contains("gone since the inventory"), "{outcome}");
-    assert_eq!(applied.total_after, applied.total_before);
+    assert_eq!(applied.total_after, Some(applied.total_before));
 }

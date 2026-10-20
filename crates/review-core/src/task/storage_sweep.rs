@@ -82,7 +82,7 @@ pub struct TaskStorageSweepV1 {
     pub removals: Vec<StorageSweepRemovalV1>,
     /// Removals counted but not listed: beyond [`MAX_SWEEP_REMOVALS`], with a path no record
     /// can name (not UTF-8, a control character, longer than [`MAX_SWEEP_PATH_BYTES`]), or of a
-    /// kind the record has none for, a Survey's (ADR-0152 clause 13).
+    /// kind the record has none for, a Survey's (ADR-0158 clause 13).
     pub omitted_removals: u64,
     /// Removals that failed, each bounded; the next sweep tries again.
     pub failures: Vec<String>,

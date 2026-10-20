@@ -284,9 +284,9 @@ future readers need.
   all](0155-publish-a-fixture-marker-whole-or-not-at-all.md)
 - [0156 — Give every `make test` run a private JUnit
   store](0156-give-every-make-test-run-a-private-junit-store.md)
-- [0151 — Give a repository one Project identity and register its checkouts as
-  Workspaces](0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
-- [0152 — Measure a Project into Surveys with a token-free
-  Surveyor](0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md)
+- [0157 — Give a repository one Project identity and register its checkouts as
+  Workspaces](0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+- [0158 — Measure a Project into Surveys with a token-free
+  Surveyor](0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md)
 - [0159 — Carry a bounded Project Brief on a declared
   port](0159-carry-a-bounded-project-brief-on-a-declared-port.md)

@@ -92,8 +92,11 @@ A typed `StoragePolicy` with `Config::storage_policy()` mirrors `SelfPolicy`. `a
 
 ### 3.2 Entries and their last use
 
-The budget counts entries. An entry is the unit af evicts whole; its size is its allocated bytes
-(`st_blocks * 512`, links not followed), so APFS clones and sparse files are not over-counted.
+The budget counts entries. An entry is the unit af evicts whole; its size is the allocated bytes
+(`st_blocks * 512`, links not followed) of the regular files it holds, so APFS clones and sparse
+files are not over-counted, and directories and links count nothing, so the size is the same on
+a file system that charges a directory its blocks (ext4) and one that does not (APFS; ADR-0158
+clause 13).
 
 | Kind | Path | Last use | In use when |
 | --- | --- | --- | --- |

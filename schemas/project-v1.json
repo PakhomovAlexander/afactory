@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project:1",
   "title": "af/project@1",
-  "description": "`af project show --json` (ADR-0151): the Project of the invoking checkout, a function of its Project Store's log and this machine's workspaces.toml. Every registered Workspace, in label order.",
+  "description": "`af project show --json` (ADR-0157): the Project of the invoking checkout, a function of its Project Store's log and this machine's workspaces.toml. Every registered Workspace, in label order.",
   "type": "object",
   "additionalProperties": false,
   "required": [

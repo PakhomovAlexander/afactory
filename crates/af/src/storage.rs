@@ -2,7 +2,7 @@
 //! a free-disk floor below which no check or Worker Attempt starts, and `af storage`.
 //!
 //! The budget counts entries — the unit af evicts whole: a warm toolchain key, a warm
-//! Workspace, a review campaign, a finished Task, a Survey (ADR-0152 clause 13), a Store this
+//! Workspace, a review campaign, a finished Task, a Survey (ADR-0158 clause 13), a Store this
 //! release cannot replay, an installed version. One sweep serves every trigger: the end of `af
 //! task run` and `af review run` (the budget; age-based collection too only when `auto_gc` is
 //! on, which it is not by default), a warm check about to create a new key (budget only),
@@ -117,10 +117,10 @@ pub(crate) enum Kind {
     /// What a Task Store holds beyond its finished Tasks: never evicted itself; its Tasks are,
     /// one at a time.
     TaskStore,
-    /// A Project Store (ADR-0151) beyond the Task Stores of its Workspaces and its Surveys:
+    /// A Project Store (ADR-0157) beyond the Task Stores of its Workspaces and its Surveys:
     /// never evicted, since it indexes the Project's Workspaces.
     ProjectStore,
-    /// One Survey's record in its Project Store's CAS (ADR-0152 clause 13), last used at its
+    /// One Survey's record in its Project Store's CAS (ADR-0158 clause 13), last used at its
     /// cutoff: collected one at a time behind a tombstone.
     Survey,
     UnreadableStore,
@@ -207,7 +207,7 @@ pub(crate) struct Entry {
     pub(crate) unmeasurable: Option<String>,
     /// What an entry that is not yet or no longer one af keeps is: `abandoned` for a removal a
     /// dead process left claimed, `pending` for a Survey published to its Project Store's CAS
-    /// whose `SurveyRecorded@1` never committed (ADR-0152 clause 13).
+    /// whose `SurveyRecorded@1` never committed (ADR-0158 clause 13).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) state: Option<&'static str>,
 }
@@ -232,7 +232,7 @@ pub(crate) struct Inventory {
     /// Each Store's directory identity as inventory reached it, opened from `/` without
     /// following a link: what collection and gate cleanup check again before they touch it.
     pub(crate) store_identities: BTreeMap<PathBuf, (PathBuf, review_sandbox::Identity)>,
-    /// Each readable Project Store as its one read found it (ADR-0152 clause 13): what a
+    /// Each readable Project Store as its one read found it (ADR-0158 clause 13): what a
     /// sweep's plan needs of its Surveys, in inventory order.
     pub(crate) projects: Vec<(PathBuf, crate::projects::survey::collect::Look)>,
     /// The removals dead processes left claimed, entries of kind `claim` with the identity and
@@ -747,7 +747,7 @@ fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
     }
 }
 
-/// A Project Store (ADR-0151): its own log and CAS, `workspaces.toml` and the Task files and
+/// A Project Store (ADR-0157): its own log and CAS, `workspaces.toml` and the Task files and
 /// bindings of the Workspaces `af project workspace new` made. Its Surveys are read with it
 /// unless `surveys` is off, past the Store discovery ceiling, which is then reported. The Task Stores below it are
 /// registered and counted on their own, so they are left out of its bytes. It is never evicted:
@@ -940,7 +940,7 @@ pub(crate) enum Rule {
     /// Idle at least `keep_days` beyond the newest `keep_*`.
     Collection,
     /// A Survey idle at least `keep_days` beyond the newest `[storage] keep_surveys` of its
-    /// Project (ADR-0152 clause 13).
+    /// Project (ADR-0158 clause 13).
     KeepSurveys,
     /// Least recently used while af held more than `max_bytes`.
     Budget,
@@ -970,9 +970,11 @@ pub(crate) struct Removal {
     /// What it frees: as planned in a preview, as freed by the applied sweep.
     pub(crate) bytes: u64,
     pub(crate) rule: Rule,
-    /// af's total after it, the same way.
-    pub(crate) total_after: u64,
-    /// A Survey collected `unreadable` (ADR-0152 clause 13): why its record's bytes were no
+    /// af's total after it, the same way; `unknown` (`None`) from a removal on that stopped part
+    /// way and could not measure what it left.
+    #[serde(serialize_with = "total")]
+    pub(crate) total_after: Option<u64>,
+    /// A Survey collected `unreadable` (ADR-0158 clause 13): why its record's bytes were no
     /// Survey, as its tombstone says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) unreadable: Option<String>,
@@ -984,7 +986,7 @@ pub(crate) struct Removal {
     pub(crate) outcome: Option<String>,
 }
 
-/// One file or Survey a sweep's plan left where it is, with its reason (ADR-0152 clause 13). A
+/// One file or Survey a sweep's plan left where it is, with its reason (ADR-0158 clause 13). A
 /// preview lists exactly what its pass leaves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct Left {
@@ -1031,6 +1033,22 @@ pub(crate) enum Stop {
     Fits,
     /// Over the budget, and every remaining entry is in use or was used within the hour.
     NothingEvictable,
+    /// The total is unknown: a removal stopped part way and what it left could not be
+    /// measured, so neither is claimed.
+    Unknown,
+}
+
+/// A total as the prune document spells it: its bytes, or `unknown`.
+fn total<S: serde::Serializer>(total: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error> {
+    match total {
+        Some(bytes) => serializer.serialize_u64(*bytes),
+        None => serializer.serialize_str("unknown"),
+    }
+}
+
+/// A total as a line says it.
+fn total_text(total: Option<u64>) -> String {
+    total.map_or_else(|| "unknown".to_string(), human_bytes)
 }
 
 /// What one sweep did (or, previewed, would do).
@@ -1040,7 +1058,10 @@ pub(crate) struct SweepReport {
     pub(crate) collection: bool,
     pub(crate) max_bytes: u64,
     pub(crate) total_before: u64,
-    pub(crate) total_after: u64,
+    /// af's total after the sweep; `unknown` (`None`) once a removal stopped part way and could
+    /// not measure what it left.
+    #[serde(serialize_with = "total")]
+    pub(crate) total_after: Option<u64>,
     pub(crate) stop: Stop,
     pub(crate) removals: Vec<Removal>,
     /// What the plan left where it is, with its reason.
@@ -1073,7 +1094,7 @@ pub(crate) fn sweep(
         collection,
         max_bytes: policy.max_bytes,
         total_before: 0,
-        total_after: 0,
+        total_after: Some(0),
         stop: Stop::Fits,
         removals: Vec::new(),
         left: Vec::new(),
@@ -1250,17 +1271,26 @@ fn execute_planned(
             let failed = |why: String| format!("{verb} {}: {why}", removal.path.display());
             stock.still_the_store(job.store()).map_err(failed)?;
             crate::projects::survey::collect::execute(job)
-                .map(|done| (done.bytes, done.unreadable))
+                .map(|done| plan::Ran {
+                    freed: done.bytes,
+                    unreadable: done.unreadable,
+                    started: None,
+                })
                 .map_err(|why| failed(why).into())
         }
-        plan::Job::Evict(entry) => evict(roots, policy, stock, entry).map(|freed| {
-            // At least what inventory measured is gone; a Task's collection may free more.
-            if removal.rule == Rule::Budget {
-                (freed.max(entry.bytes), None)
-            } else {
-                (entry.bytes, None)
-            }
-        }),
+        plan::Job::Evict(entry) => {
+            evict(roots, policy, stock, entry).map(|(freed, started)| match started {
+                // What it held when its removal started is what left the disk.
+                Some(started) => plan::Ran {
+                    freed: started,
+                    unreadable: None,
+                    started: Some(started),
+                },
+                // At least what inventory measured is gone; a Task's collection may free more.
+                None if removal.rule == Rule::Budget => plan::Ran::freed(freed.max(entry.bytes)),
+                None => plan::Ran::freed(entry.bytes),
+            })
+        }
         plan::Job::Task => {
             let state = &removal.path;
             let task_id = removal.task_id.clone().unwrap_or_default();
@@ -1283,7 +1313,7 @@ fn execute_planned(
                         state.display()
                     ))
                 })
-                .map(|bytes| (bytes, None))
+                .map(plan::Ran::freed)
                 .map_err(plan::Failed::from)
         }
     }
@@ -1506,18 +1536,19 @@ fn task_picks(
     picks
 }
 
-/// Remove one entry through the rule that owns it. Returns the bytes removed; a removal that
-/// stopped part way fails with the bytes it freed before it did.
+/// Remove one entry through the rule that owns it. Returns the bytes removed and, for a
+/// directory removed through descriptors, what it held when its removal started; a removal that
+/// stopped part way fails with the bytes it freed before it did and what it left.
 fn evict(
     roots: &Roots,
     policy: &StoragePolicy,
     stock: &Inventory,
     entry: &Entry,
-) -> Result<u64, plan::Failed> {
+) -> Result<(u64, Option<u64>), plan::Failed> {
     let failed = |error: String| format!("removing {}: {error}", entry.path.display());
     let partly = |failure: plan::Failed| plan::Failed {
         reason: failed(failure.reason),
-        freed: failure.freed,
+        ..failure
     };
     match entry.kind {
         Kind::WarmKey => {
@@ -1548,7 +1579,9 @@ fn evict(
                         .into());
                     };
                     match key.identity() {
-                        Ok(locked) if locked == measured => Ok(key.remove_key().map_err(failed)?),
+                        Ok(locked) if locked == measured => {
+                            Ok((key.remove_key().map_err(failed)?, None))
+                        }
                         Ok(_) => Err(failed(
                             "another directory holds its name since it was measured; left in \
                              place"
@@ -1623,10 +1656,15 @@ fn evict(
                 // Collection also sweeps whatever no Task reaches any more, an interrupted
                 // earlier collection's leftovers included: what the Store freed is measured.
                 let after = review_sandbox::storage::allocated_bytes(&entry.path).ok();
-                Ok(match (before, after) {
-                    (Some(before), Some(after)) => before.saturating_sub(after).max(entry.bytes),
-                    _ => entry.bytes,
-                })
+                Ok((
+                    match (before, after) {
+                        (Some(before), Some(after)) => {
+                            before.saturating_sub(after).max(entry.bytes)
+                        }
+                        _ => entry.bytes,
+                    },
+                    None,
+                ))
             } else {
                 Err(failed(format!("Task `{task_id}` is protected now")).into())
             }
@@ -1644,9 +1682,7 @@ fn evict(
                 .path
                 .parent()
                 .ok_or_else(|| failed("names no claim".into()))?;
-            remove_directory(parent, &entry.path, entry.identity, entry.bytes)
-                .map(|_| entry.bytes)
-                .map_err(partly)
+            remove_directory(parent, &entry.path, entry.identity, entry.bytes).map_err(partly)
         }
     }
 }
@@ -1667,9 +1703,9 @@ fn still_measured(entry: &Entry) -> Result<(), String> {
 }
 
 /// Remove an entry's directory from its anchor through descriptors, never following a link
-/// below the anchor, and only when it is still the directory inventory measured. The measured
-/// bytes are what was removed.
-fn remove_entry(roots: &Roots, entry: &Entry) -> Result<u64, plan::Failed> {
+/// below the anchor, and only when it is still the directory inventory measured. Returns what
+/// was removed and what the directory held when its removal started ([`remove_directory`]).
+fn remove_entry(roots: &Roots, entry: &Entry) -> Result<(u64, Option<u64>), plan::Failed> {
     let identity = entry
         .identity
         .ok_or("its identity was not measured, so it is not removed".to_string())?;
@@ -1685,37 +1721,60 @@ fn remove_entry(roots: &Roots, entry: &Entry) -> Result<u64, plan::Failed> {
 /// from `anchor` without following a link, refusing any directory but `identity`. What was
 /// removed is what the directory held when its removal started, stated through its own
 /// descriptor immediately before anything was unlinked (`measured`, the bytes inventory
-/// counted, when that cannot be stated). A removal that stopped part way (a tree grown deeper
-/// than the removal walk since inventory, a child that cannot be unlinked, a final `rmdir` that
-/// failed) fails with what left the disk, accounted from that same start: its bytes then less
-/// what its claim still holds, so a tree that grew since inventory never reports nothing for
-/// what the walk unlinked and the sweep's totals stay what the directory holds. When either
-/// cannot be measured, nothing is counted freed.
+/// counted, when that cannot be stated), and that start is returned with it so the sweep's
+/// running total reconciles a directory that grew or shrank since inventory. A removal that
+/// stopped part way (a tree grown deeper than the removal walk since inventory, a child that
+/// cannot be unlinked, a final `rmdir` that failed) fails with what left the disk, accounted
+/// from that same start: its bytes then less what its claim still holds, so a tree that grew
+/// since inventory never reports nothing for what the walk unlinked; and with what the claim
+/// still holds, which takes the place of inventory's bytes in the total. When the start cannot
+/// be measured nothing is counted freed, and when what the claim still holds cannot be
+/// measured the total is unknown from there on.
 fn remove_directory(
     anchor: &Path,
     path: &Path,
     identity: Option<review_sandbox::Identity>,
     measured: u64,
-) -> Result<u64, plan::Failed> {
+) -> Result<(u64, Option<u64>), plan::Failed> {
     let error = match review_sandbox::remove_beneath_measured(anchor, path, identity) {
-        Ok(started) => return Ok(started.unwrap_or(measured)),
+        Ok(started) => return Ok((started.unwrap_or(measured), started)),
         Err(error) => error,
     };
     match review_sandbox::partial(&error) {
         None => Err(format!("{error}; it is left, and the next sweep tries again").into()),
-        Some(partly) => match partly.freed {
-            Some(freed) => Err(plan::Failed {
-                reason: format!(
-                    "{error}; {freed} bytes of it were freed and the rest is left under its claim"
-                ),
-                freed,
-            }),
-            None => Err(format!(
-                "{error}; what it held when its removal started or what is left under its claim \
-                 cannot be measured, so nothing of it is counted freed"
-            )
-            .into()),
-        },
+        Some(partly) => {
+            let remains = match partly.remaining {
+                Some(left) => plan::Remains::Measured(left),
+                None => plan::Remains::Unmeasured,
+            };
+            Err(match (partly.freed, partly.remaining) {
+                (Some(freed), Some(left)) => plan::Failed {
+                    reason: format!(
+                        "{error}; {freed} bytes of it were freed and the rest, {left} bytes, is \
+                         left under its claim"
+                    ),
+                    freed,
+                    remains,
+                },
+                (None, Some(left)) => plan::Failed {
+                    reason: format!(
+                        "{error}; what it held when its removal started cannot be measured, so \
+                         nothing of it is counted freed, and the rest, {left} bytes, is left \
+                         under its claim"
+                    ),
+                    freed: 0,
+                    remains,
+                },
+                (_, None) => plan::Failed {
+                    reason: format!(
+                        "{error}; what is left under its claim cannot be measured, so nothing of \
+                         it is counted freed and af's total after it is unknown"
+                    ),
+                    freed: 0,
+                    remains,
+                },
+            })
+        }
     }
 }
 
@@ -1736,13 +1795,18 @@ pub(crate) fn report_to_stderr(report: &SweepReport) {
     for failure in unmarked_failures(report) {
         eprintln!("af storage: warning: {failure}");
     }
-    if report.stop == Stop::NothingEvictable {
-        eprintln!(
+    match report.stop {
+        Stop::NothingEvictable => eprintln!(
             "af storage: warning: af holds {} against a budget of {}, and nothing else may be \
              removed now (in use, or used within the hour); see `af storage`",
-            human_bytes(report.total_after),
+            total_text(report.total_after),
             human_bytes(report.max_bytes)
-        );
+        ),
+        Stop::Unknown => eprintln!(
+            "af storage: warning: what af holds after this sweep is unknown: a removal stopped \
+             part way and what it left cannot be measured; see `af storage`"
+        ),
+        Stop::Fits => {}
     }
 }
 
@@ -1796,6 +1860,9 @@ pub(crate) fn observation(
     if !report.applied || (removed.is_empty() && report.failures.is_empty()) {
         return None;
     }
+    // A total that is unknown has no number the record could hold: the sweep's own warning says
+    // so, and the record is not written (its shape keeps its version).
+    let total_after = report.total_after?;
     let listable: Vec<StorageSweepRemovalV1> = removed
         .iter()
         .filter_map(|removal| {
@@ -1857,10 +1924,11 @@ pub(crate) fn observation(
         stop: match report.stop {
             Stop::Fits => StorageSweepStopV1::Fits,
             Stop::NothingEvictable => StorageSweepStopV1::NothingEvictable,
+            Stop::Unknown => return None,
         },
         max_bytes: report.max_bytes,
         total_before: report.total_before,
-        total_after: report.total_after,
+        total_after,
     };
     sweep.validate().is_ok().then_some(sweep)
 }
@@ -2431,7 +2499,7 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
     let report = sweep(&roots, &policy, true, apply);
     if json_output {
         let mut document = serde_json::to_value(&report).map_err(|e| e.to_string())?;
-        document["schema"] = json!("af/storage-prune@2");
+        document["schema"] = json!("af/storage-prune@3");
         println!(
             "{}",
             serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?
@@ -2463,12 +2531,14 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
     println!(
         "{} → {} of a {} budget; {}{}",
         human_bytes(report.total_before),
-        human_bytes(report.total_after),
+        total_text(report.total_after),
         human_bytes(report.max_bytes),
         match report.stop {
             Stop::Fits => "fits",
             Stop::NothingEvictable =>
                 "still over: everything left is in use or was used within the hour",
+            Stop::Unknown =>
+                "unknown: a removal stopped part way and what it left cannot be measured",
         },
         if apply {
             String::new()
@@ -2479,7 +2549,7 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-/// The Surveys of the readable Project Store at `path` (ADR-0152 clause 13), from its one look:
+/// The Surveys of the readable Project Store at `path` (ADR-0158 clause 13), from its one look:
 /// one entry of kind `survey` each, its record's CAS bytes, last used at its cutoff and stated
 /// by device and inode, taken out of the Project Store's own bytes; an object a
 /// pending-publication entry describes whose `SurveyRecorded@1` never committed is one too, its

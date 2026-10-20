@@ -107,7 +107,7 @@ test -z "$(git remote)"
     assert_eq!(plan["schema"], "af/review-plan@1");
     assert_eq!(plan["token_free"], true);
     // Planning records nothing; `af onboard --apply` registers the Project and its checkout
-    // (ADR-0151), which is the only state the walkthrough leaves.
+    // (ADR-0157), which is the only state the walkthrough leaves.
     let kept: std::collections::BTreeSet<String> = std::fs::read_dir(root.path().join("state/af"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())

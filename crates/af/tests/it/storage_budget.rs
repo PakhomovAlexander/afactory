@@ -156,7 +156,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
     // 1 MiB of budget: the two older keys go, least recently used first; the fresh one stays.
     let budget = [("AF_STORAGE__MAX_BYTES", "1MiB")];
     let preview = json(&machine.af(&machine.root, &budget, &["storage", "prune", "--json"]));
-    schemas::valid(&schemas::validator("storage-prune-v2.json"), &preview);
+    schemas::valid(&schemas::validator("storage-prune-v3.json"), &preview);
     assert_eq!(preview["applied"], false);
     let paths = |document: &Value| -> Vec<String> {
         document["removals"]
@@ -176,7 +176,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
         &budget,
         &["storage", "prune", "--apply", "--json"],
     ));
-    schemas::valid(&schemas::validator("storage-prune-v2.json"), &applied);
+    schemas::valid(&schemas::validator("storage-prune-v3.json"), &applied);
     assert_eq!(applied["applied"], true);
     assert_eq!(paths(&applied), paths(&preview));
     assert_eq!(applied["stop"], "fits");

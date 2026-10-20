@@ -294,11 +294,12 @@ fn the_workspaces_file_refuses_another_version_unknown_keys_and_relative_paths()
     assert!(file::parse(removing).is_err());
 }
 
-const RECORD: &str = "version = 1\nworkspace_id = \"w-000000000000000a\"\npath = \"/src/a\"\n\n\
-                      [checkout]\npath = \"/src/a\"\nidentity = \"16777230:42\"\nstep = \
-                      \"contained\"\ncontainer = \"/src/a.af-removing-7-0123456789abcdef\"\n\
-                      container_identity = \"16777230:43\"\n\n[[entries]]\npath = \
-                      \"/src/.git/worktrees/a\"\nidentity = \"16777230:44\"\nstep = \"inspected\"\n";
+const RECORD: &str = "version = 2\nworkspace_id = \"w-000000000000000a\"\npath = \"/src/a\"\n\n\
+                      [checkout]\npath = \"/src/a\"\nidentity = \"16777230:42:1792000000000000042\"\n\
+                      step = \"contained\"\ncontainer = \"/src/a.af-removing-7-0123456789abcdef\"\n\
+                      container_identity = \"16777230:43:1792000000000000043\"\n\n[[entries]]\n\
+                      path = \"/src/.git/worktrees/a\"\nidentity = \"16777230:44:1792000000000000044\"\n\
+                      step = \"inspected\"\n";
 
 #[test]
 fn a_removal_record_round_trips_and_refuses_what_this_release_does_not_write() {
@@ -309,7 +310,8 @@ fn a_removal_record_round_trips_and_refuses_what_this_release_does_not_write() {
         removal::decode(&checkout.identity),
         Some(review_sandbox::removal::Identity {
             device: 16777230,
-            inode: 42
+            inode: 42,
+            born: Some(1_792_000_000_000_000_042),
         })
     );
     assert_eq!(record.entries.len(), 1);
@@ -342,8 +344,12 @@ fn a_removal_record_round_trips_and_refuses_what_this_release_does_not_write() {
 
     for (broken, why) in [
         (
-            RECORD.replace("version = 1", "version = 2"),
+            RECORD.replace("version = 2", "version = 3"),
             "another version",
+        ),
+        (
+            RECORD.replace("version = 2", "version = 1"),
+            "the superseded version",
         ),
         (format!("{RECORD}extra = true\n"), "an unknown key"),
         (
@@ -351,11 +357,22 @@ fn a_removal_record_round_trips_and_refuses_what_this_release_does_not_write() {
             "another Workspace",
         ),
         (
-            RECORD.replace("\"16777230:42\"", "\"16777230\""),
+            RECORD.replace("\"16777230:42:1792000000000000042\"", "\"16777230\""),
             "an identity without its inode",
         ),
         (
-            RECORD.replace("\"16777230:42\"", "\"-1:42\""),
+            RECORD.replace("\"16777230:42:1792000000000000042\"", "\"16777230:42\""),
+            "an identity without its birth time",
+        ),
+        (
+            RECORD.replace("\"16777230:42:1792000000000000042\"", "\"16777230:42:0\""),
+            "an identity whose birth time is unknown",
+        ),
+        (
+            RECORD.replace(
+                "\"16777230:42:1792000000000000042\"",
+                "\"-1:42:1792000000000000042\"",
+            ),
             "a signed identity",
         ),
         (
@@ -363,7 +380,10 @@ fn a_removal_record_round_trips_and_refuses_what_this_release_does_not_write() {
             "a relative checkout",
         ),
         (
-            RECORD.replace("container_identity = \"16777230:43\"\n", ""),
+            RECORD.replace(
+                "container_identity = \"16777230:43:1792000000000000043\"\n",
+                "",
+            ),
             "a made container without its identity",
         ),
         (
@@ -431,7 +451,7 @@ fn an_entry_is_claimed_only_while_what_it_holds_now_names_the_checkout() {
     std::fs::create_dir_all(&entry).unwrap();
     std::fs::create_dir_all(&moved).unwrap();
     let own = canonical.join("wt/.git");
-    let identity = |at: &Path| review_sandbox::removal::Identity::of(at).unwrap();
+    let identity = |at: &Path| review_sandbox::removal::Identity::born_of(at).unwrap();
     let unproven =
         |at: &Path, deleting| removal::entry_unproven(at, identity(at), &entry, &own, deleting);
     let condition = |at: &Path, deleting| unproven(at, deleting).unwrap_or_default();
@@ -516,7 +536,7 @@ fn an_entry_is_read_only_while_it_is_the_directory_the_record_holds() {
     std::fs::create_dir_all(&entry).unwrap();
     let own = canonical.join("wt/.git");
     std::fs::write(entry.join("gitdir"), format!("{}\n", own.display())).unwrap();
-    let recorded = review_sandbox::removal::Identity::of(&entry).unwrap();
+    let recorded = review_sandbox::removal::Identity::born_of(&entry).unwrap();
     let unproven = || removal::entry_unproven(&entry, recorded, &entry, &own, false);
     let replaced = format!(
         "its administrative entry was replaced since inspection: {} is not the directory this \
@@ -577,7 +597,7 @@ fn a_container_name_is_fresh_every_time_and_proves_nothing() {
 /// A directory below a fresh root, opened as a parent, and the identity of its child `name`.
 fn claimed(root: &Path, name: &str) -> (std::os::fd::OwnedFd, review_sandbox::removal::Identity) {
     let parent = review_sandbox::removal::open_anchor(root).unwrap();
-    let identity = review_sandbox::removal::Identity::of(&root.join(name)).unwrap();
+    let identity = review_sandbox::removal::Identity::born_of(&root.join(name)).unwrap();
     (parent, identity)
 }
 
@@ -596,10 +616,17 @@ fn a_claimed_tree_is_deleted_through_descriptors_and_a_link_is_never_followed() 
 
     // Another directory than the one claimed is never deleted.
     let other = review_sandbox::removal::Identity {
-        device: identity.device,
         inode: identity.inode + 1,
+        ..identity
     };
     assert!(removal::remove_tree(&container, OsStr::new("wt"), other).is_err());
+    // Nor one at the same device and inode born later, as a file system that reuses an inode
+    // hands it to the next directory: the birth time tells them apart.
+    let later = review_sandbox::removal::Identity {
+        born: identity.born.map(|born| born + 1),
+        ..identity
+    };
+    assert!(removal::remove_tree(&container, OsStr::new("wt"), later).is_err());
     assert!(target.join("deep/er/file").is_file());
 
     removal::remove_tree(&container, OsStr::new("wt"), identity).unwrap();
@@ -709,8 +736,8 @@ fn a_claimed_worktree_is_compared_with_its_commit_through_descriptors() {
     assert_eq!(first().as_deref(), Some(".git/config"));
     // Another directory than the one claimed is refused.
     let other = review_sandbox::removal::Identity {
-        device: identity.device,
         inode: identity.inode + 1,
+        ..identity
     };
     assert!(removal::first_difference_at(&container, OsStr::new("wt"), other, &manifest).is_err());
 }
@@ -835,6 +862,13 @@ fn committed_repository(root: &Path) -> (Git, String) {
     (git, commit)
 }
 
+/// The identity of nothing: what `workspace new` would hold for a directory that does not exist.
+const NONE: review_sandbox::Identity = review_sandbox::Identity {
+    device: 0,
+    inode: 0,
+    born: None,
+};
+
 /// What `workspace new` records of the worktree it adds at `path`: the identity the directory has
 /// now, or none when it does not exist, and an empty manifest, as before materialization.
 fn adding(
@@ -847,7 +881,7 @@ fn adding(
         path: path.to_path_buf(),
         identity: std::fs::symlink_metadata(path)
             .map(|metadata| commands::identity(&metadata))
-            .unwrap_or_default(),
+            .unwrap_or(NONE),
         administrative: administrative.to_path_buf(),
         before,
         commit: commit.to_string(),
@@ -862,7 +896,7 @@ fn ancestor(path: PathBuf) -> commands::Ancestor {
     commands::Ancestor {
         identity: std::fs::symlink_metadata(&path)
             .map(|metadata| commands::identity(&metadata))
-            .unwrap_or_default(),
+            .unwrap_or(NONE),
         path,
     }
 }

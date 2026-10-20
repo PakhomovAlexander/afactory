@@ -28,7 +28,7 @@
       }
     },
     "omitted_removals": {
-      "description": "Removals counted but not listed: beyond the 256 listed, with a path no record can name, or of a kind the record has none for, a Survey's (ADR-0152 clause 13).",
+      "description": "Removals counted but not listed: beyond the 256 listed, with a path no record can name, or of a kind the record has none for, a Survey's (ADR-0158 clause 13).",
       "$ref": "#/$defs/count"
     },
     "failures": {

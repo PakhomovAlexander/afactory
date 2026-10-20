@@ -91,7 +91,7 @@ pub(super) fn write(location: &Path, mut workspaces: Vec<WorkspacePaths>) -> Res
         .write_all(
             format!(
                 "# This machine's paths of the Project's Workspaces; `af project workspaces` \
-                 reads this (ADR-0151).\n{text}"
+                 reads this (ADR-0157).\n{text}"
             )
             .as_bytes(),
         )
