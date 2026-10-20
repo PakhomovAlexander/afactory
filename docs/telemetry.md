@@ -351,7 +351,9 @@ naming the file, with nothing of that read printed (exit 1). `--json` prints one
 `af/telemetry-tail@1` object per line
 ([`schemas/telemetry-tail-v1.json`](../schemas/telemetry-tail-v1.json)). With `RUN` tail first
 looks the run up, within `--store ID` when given: a run no Store records there exits 1 naming
-it, and nothing is followed. It then follows that run in one Store for its whole lifetime: the
+it, and nothing is followed. A run that cannot be found while a segment is unreadable is never
+called unknown, since that segment may hold it: tail names the segment and why it is unreadable
+and exits 1 without following anything. It then follows that run in one Store for its whole lifetime: the
 one `--store ID` names, else the one Store that records it when tail starts. When two Stores
 record the run id without `--store`, at the start or once a second Store starts it while it is
 followed (also in a segment created and sealed during tail's startup or between two of its

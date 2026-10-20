@@ -3097,3 +3097,96 @@ fn telemetry_tail_of_an_unknown_run_exits_1() {
         unknown(&machine, args, run);
     }
 }
+
+/// Design §6 and §10: a reader refuses what it cannot read. A live segment holds RUN's `af.run`
+/// span, then an invalid complete line followed by a valid record, before `tail RUN` starts: the
+/// index drops the segment's rows, so the run cannot be resolved. Tail never calls it unknown:
+/// with and without `--store` it names the `.jsonl` and its interior corruption and exits as the
+/// fail-closed refusal does (1, as the unknown run's exit is too: the message tells them apart),
+/// following nothing.
+#[test]
+fn telemetry_tail_refuses_an_unreadable_segment_before_startup() {
+    use review_telemetry::record::{Attrs, SpanKind};
+    let machine = Machine::new();
+    let segment = "1700000000000-4242-0a1b2c3d";
+    let writer = golden_writer(&machine.telemetry(), segment, 1_700_000_000_000);
+    let execution = review_telemetry::trace::Execution {
+        store_id: GOLDEN_STORE.into(),
+        run_id: GOLDEN_RUN.into(),
+        execution_id: segment.into(),
+        ordinal: 1,
+        store_sequence_at_start: 2,
+    };
+    let trace = execution.trace_id();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let run = writer
+        .span_start(
+            Some(&trace),
+            Some(command.as_str()),
+            "af.run",
+            SpanKind::Internal,
+            execution.attributes().enumerated("af.run.kind", "task"),
+        )
+        .unwrap();
+    writer.flush();
+    let path = writer.path().unwrap();
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"{\"t\":\"event\",\"not\":\"a record\"}\n")
+            .unwrap();
+    }
+    writer.event(&run, "af.after", Attrs::new());
+    writer.flush();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(
+        review_telemetry::segment::reader::scan(&bytes).interior_corruption,
+        "an invalid line before a valid one"
+    );
+    let path = path.display().to_string();
+    for args in [
+        &["telemetry", "tail", GOLDEN_RUN][..],
+        &["telemetry", "tail", GOLDEN_RUN, "--store", GOLDEN_STORE],
+        &["telemetry", "tail", GOLDEN_RUN, "--json"],
+        &["telemetry", "tail", "task:none"],
+    ] {
+        let mut tail = machine
+            .command(&machine.root, &[], args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (status, stderr) = exited(
+            &mut tail,
+            std::time::Duration::from_secs(60),
+            "tail followed a run it could not resolve",
+        );
+        let mut stdout = String::new();
+        std::io::Read::read_to_string(&mut tail.stdout.take().unwrap(), &mut stdout).unwrap();
+        assert_eq!(status.code(), Some(1), "{args:?}: {stderr}");
+        let error = if args.contains(&"--json") {
+            // The refusal is the `af/error@1` document, and nothing else.
+            let refusal: Value = serde_json::from_str(stdout.trim()).unwrap();
+            assert_eq!(refusal["schema"], "af/error@1", "{refusal}");
+            assert_eq!(refusal["exit_code"], 1, "{refusal}");
+            refusal["error"].as_str().unwrap().to_string()
+        } else {
+            assert!(stdout.is_empty(), "{args:?}: nothing followed: {stdout}");
+            stderr
+        };
+        assert!(
+            error.contains(&path) && error.contains("interior corruption"),
+            "{args:?}: names the segment and its corruption: {error}"
+        );
+        assert!(
+            !error.contains("unknown run"),
+            "{args:?}: never claims the run is unknown: {error}"
+        );
+    }
+    writer.abandon();
+}

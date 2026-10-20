@@ -29,7 +29,8 @@
   latest execution's own, by ordinal — its span tree and its live tail, which ends only at a
   published seal or a recovery, recovers a crashed writer's segment itself, fails naming a
   sealed segment it cannot read or a live one with interior corruption, exits 1 for an unknown
-  run before following anything, and follows a run in one Store, refusing with `--store`
+  run before following anything (naming the unreadable segment instead when one could hold
+  it), and follows a run in one Store, refusing with `--store`
   guidance, once the followed Store's pending records are printed, a second Store that starts
   the same run id while it is followed, even in a segment sealed during its startup or between
   two of its looks.

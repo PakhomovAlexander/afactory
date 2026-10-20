@@ -1571,7 +1571,8 @@ starts it or seals a segment of it, it asks for `--store ID` before printing any
 second.\n\n\
 Never: reads a Store, records telemetry, removes a segment, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the telemetry directory or a followed segment cannot be read (a \
-segment with interior corruption included) or RUN is unknown, 2 a wrong command line, a run \
+segment with interior corruption included) or RUN is unknown (never said while a segment is \
+unreadable: tail then names that segment), 2 a wrong command line, a run \
 two Stores share without `--store`, or a refused `[telemetry]` key.",
         after_long_help = "Examples:\n  af telemetry tail\n  af telemetry tail RUN_ID\n  af telemetry tail RUN_ID --json | jq -c 'select(.record == \"span_end\")'"
     )]

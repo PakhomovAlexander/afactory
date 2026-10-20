@@ -1282,6 +1282,9 @@ pub enum TailStart {
 /// [`tail`]), then the index ingests every new segment byte and resolves the run, within
 /// `store` when given: an unknown run or one two Stores share without `store` starts no follow
 /// loop. A segment sealed after the baseline was listed is not in it, so `tail` inspects it.
+/// A run that cannot be resolved while a segment is unreadable (interior corruption, a sealed
+/// file that cannot be read) is never called unknown: the rows it may hold were dropped, so
+/// `tail` fails closed naming that segment and its reason.
 pub fn tail_start(
     root: &Path,
     run_id: Option<&str>,
@@ -1302,7 +1305,7 @@ pub fn tail_start(
         .sealed
         .into_iter()
         .collect();
-    let (index, _, _) = open(root)?;
+    let (index, _, unreadable) = open(root)?;
     Ok(match resolve(&index, run_id, store)? {
         Resolved::Run { store_id, .. } => TailStart::Follow(TailSelection {
             run_id: Some(run_id.to_string()),
@@ -1310,7 +1313,24 @@ pub fn tail_start(
             store_named: store.is_some(),
             sealed_baseline: Some(baseline),
         }),
-        Resolved::Unknown => TailStart::Unknown,
+        Resolved::Unknown => {
+            // Only a segment can hold the run's rows; another version's directory never could.
+            let segment = unreadable.iter().find(|unreadable| {
+                Path::new(&unreadable.path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(layout::parse_segment_name)
+                    .is_some()
+            });
+            if let Some(segment) = segment {
+                return Err(format!(
+                    "{}: an unreadable segment ({}); never read, so run {run_id} cannot be \
+                     resolved",
+                    segment.path, segment.reason
+                ));
+            }
+            TailStart::Unknown
+        }
         Resolved::Ambiguous(stores) => TailStart::Ambiguous(stores),
     })
 }
