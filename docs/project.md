@@ -785,10 +785,13 @@ exactly where the applied sweep stops.
 The snapshot is the only thing a sweep reads. A removal a process that died left half done (a
 `.af-removing-<pid>-…` claim) and a container a dead Survey collection left are in it, each a
 `claim` entry under `recovery` with the bytes it measured, so the preview lists them and the
-applied sweep removes nothing it did not list. `af storage` lists every such claim no other entry
-holds as a `claim` entry with `state` `abandoned` and counts its bytes in `kinds` and
-`total_bytes`, so the listing, the preview and the applied sweep agree on what the directory
-holds. A claim the inventory's walk cannot measure (nested deeper than its 256 levels, or
+applied sweep removes nothing it did not list. `af storage` lists every such claim, wherever it
+sits, as a `claim` entry with `state` `abandoned` and its measured bytes, so its claims are the
+ones the preview recovers: one no other entry holds is counted in `kinds` and `total_bytes`, and
+one inside an entry measured whole (a Project Store) carries `counted_in`, that entry's path,
+whose bytes already hold its own, so `total_bytes` counts them once (in text, `abandoned removal
+<path> (<bytes>) counted in <entry>`). The listing, the preview and the applied sweep agree on
+what the directory holds. A claim the inventory's walk cannot measure (nested deeper than its 256 levels, or
 unreadable) holds no bytes it could account for: it is listed in use with no bytes, and the
 preview and the applied sweep leave it, `too_deep` or `unmeasurable` with why, and never touch
 it. A claim inside a Project Store (a Workspace's
@@ -828,20 +831,28 @@ its ID) and its record has not left the CAS already, and is `foreign` otherwise.
 Survey's own record has left its CAS name, deleted there or settled from a dead pass's container,
 the pass records so in `settled.json` beside `project.lock`
 ([`af/ProjectSurveysSettled@1`](../schemas/project-surveys-settled-v1.json)), under the lock,
-after the check found the record's inode and before it is unlinked. Every later inventory reads
-it: a file at that name is `foreign` even when its bytes hash to the Survey's ID, sweep after
-sweep, and no sweep deletes it.
+after the check found the record's inode and before it is unlinked: the file is replaced whole
+and the Store's directory synced. When that fails, the sync after the rename included, the
+earlier `settled.json` is put back, the record is not unlinked (it goes back to its name, or
+stays where the dead pass left it), and the entry fails with the reason; the Survey stays
+unsettled and the next sweep retries. Every later inventory reads it: a file at that name is
+`foreign` even when its bytes hash to the Survey's ID, sweep after sweep, and no sweep deletes
+it.
 
-The Surveyor's writer keeps a pending-publication entry while it publishes a Survey,
-`pending/<hex of the Survey ID>.json` beside `project.lock`
-([`af/ProjectPendingPublication@1`](../schemas/project-pending-publication-v1.json)): the Survey
-ID and the length it is about to write, recorded under the lock before the bytes enter the CAS,
-then the object's device and inode once they are there, and removed once `SurveyRecorded@1`
-commits. A sweep reads what a crash between the two left. An entry whose event committed is
-cleared under `recovery`, and nothing is deleted. Otherwise the object at its Survey's CAS name
-that is the one the entry describes (that device, inode and length) is listed by `af storage` as
-a Survey with `state` `pending`, in use, and reclaimed under `recovery` before its entry is
-cleared, by the preview and the applied sweep alike; any other file at that name is `foreign`.
+A sweep reads the pending-publication entries the Surveyor's writer leaves when a crash stops it
+between a Survey's record and its event (`pending-surveys/<64 hex>.json` beside `project.lock`,
+the writer's `af/survey-pending@1`, described under "`af project refresh`" above). An entry
+whose event committed is cleared under `recovery`, and nothing is deleted. Otherwise the object at its
+Survey's CAS name that is the one the entry describes (that device, inode and `bytes` length) is
+listed by `af storage` as a Survey with `state` `pending`, in use, last used when its entry was
+written, and reclaimed under `recovery` before its entry is cleared, by the preview and the
+applied sweep alike; any other file at that name is `foreign`. The applied sweep checks the
+device, the inode and the length again under the lock before it deletes, and an object grown,
+truncated or replaced since the inventory fails as `skipped: object changed`, nothing deleted.
+The entry is cleared only once the object it describes is gone: a reclamation stopped after the
+object was renamed into its pass's container and before its unlink leaves the entry, and the
+next sweep finds the object in that dead pass's container (the same device, inode and length),
+reclaims it under `recovery`, never as `foreign`, then the container, then the entry.
 Any object of the Project Store's CAS that no `SurveyRecorded@1`, tombstone or pending entry
 names is `foreign` too: listed with its bytes, counted in the Project Store's, never reclaimed. Anything else under `cas/removing` is listed and left; names
 are read raw, so one that is not UTF-8 is `unreadable_name`, shown lossily in text and in its

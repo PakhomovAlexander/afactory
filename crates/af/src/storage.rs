@@ -236,8 +236,9 @@ pub(crate) struct Inventory {
     /// sweep's plan needs of its Surveys, in inventory order.
     pub(crate) projects: Vec<(PathBuf, crate::projects::survey::collect::Look)>,
     /// The removals dead processes left claimed, entries of kind `claim` with the identity and
-    /// bytes listed: the sweep's plan finishes them first. Those no entry measured as part of
-    /// its own ([`Inventory::listed_claims`]) are in [`Inventory::total`] and `af storage`.
+    /// bytes listed: the sweep's plan finishes them first. `af storage` lists every one; those
+    /// no entry measured as part of its own ([`Inventory::counted_claims`]) are in
+    /// [`Inventory::total`].
     pub(crate) claims: Vec<Entry>,
     /// The registered paths that held no Store when inventory read the registry. Inventory is
     /// taken over every registration as it is, so such a path (renamed into a dead process's
@@ -266,14 +267,15 @@ impl Inventory {
     pub(crate) fn total(&self) -> u64 {
         self.entries
             .iter()
-            .chain(self.listed_claims())
+            .chain(self.counted_claims())
             .map(|entry| entry.bytes)
             .fold(0, u64::saturating_add)
     }
 
-    /// The claims that are entries of their own: those no entry measured whole holds (a claim
-    /// under a Project Store is in that Store's bytes already), as the plan counts them.
-    pub(crate) fn listed_claims(&self) -> impl Iterator<Item = &Entry> {
+    /// The claims whose bytes count on their own: those no entry measured whole holds (a claim
+    /// under a Project Store is in that Store's bytes already, and `af storage` lists it
+    /// `counted_in` that Store), as the plan counts them.
+    pub(crate) fn counted_claims(&self) -> impl Iterator<Item = &Entry> {
         self.claims
             .iter()
             .filter(|claim| plan::holder(&self.entries, &claim.path).is_none())
@@ -2265,23 +2267,47 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
         .iter()
         .filter_map(|volume| volume.free.as_ref().ok().map(|free| (*free, &volume.path)))
         .min_by_key(|(free, _)| *free);
-    // Every entry the total counts: the abandoned claims no entry holds included, as the plan
-    // of a sweep counts them.
-    let listed: Vec<&Entry> = stock.entries.iter().chain(stock.listed_claims()).collect();
+    // Every entry, and every abandoned claim inventory found, wherever it sits, as the plan of a
+    // sweep recovers them: a claim inside an entry measured whole is listed `counted_in` that
+    // entry, whose bytes hold its own, so `kinds` and the total count its bytes once.
+    let listed: Vec<(&Entry, Option<&Path>)> = stock
+        .entries
+        .iter()
+        .map(|entry| (entry, None))
+        .chain(stock.claims.iter().map(|claim| {
+            let holder = plan::holder(&stock.entries, &claim.path);
+            (claim, holder.map(|holder| holder.path.as_path()))
+        }))
+        .collect();
+    let counted = |of: &[&(&Entry, Option<&Path>)]| {
+        of.iter()
+            .filter(|(_, counted_in)| counted_in.is_none())
+            .map(|(entry, _)| entry.bytes)
+            .fold(0, u64::saturating_add)
+    };
     let mut kinds = Vec::new();
     for kind in Kind::ALL {
-        let of: Vec<&&Entry> = listed.iter().filter(|e| e.kind == kind).collect();
-        let bytes = of.iter().map(|e| e.bytes).fold(0, u64::saturating_add);
+        let of: Vec<&(&Entry, Option<&Path>)> =
+            listed.iter().filter(|(e, _)| e.kind == kind).collect();
+        let bytes = counted(&of);
         kinds.push(json!({
             "kind": kind.as_str(),
             "entries": of.len(),
             "bytes": bytes,
-            "oldest_use_unix_ms": of.iter().map(|e| e.last_use_unix_ms).min(),
-            "newest_use_unix_ms": of.iter().map(|e| e.last_use_unix_ms).max(),
+            "oldest_use_unix_ms": of.iter().map(|(e, _)| e.last_use_unix_ms).min(),
+            "newest_use_unix_ms": of.iter().map(|(e, _)| e.last_use_unix_ms).max(),
         }));
     }
     let total = stock.total();
     if json_output {
+        let mut entries = Vec::new();
+        for (entry, counted_in) in &listed {
+            let mut value = serde_json::to_value(entry).map_err(|e| e.to_string())?;
+            if let Some(counted_in) = counted_in {
+                value["counted_in"] = json!(counted_in);
+            }
+            entries.push(value);
+        }
         let document = json!({
             "schema": "af/storage@3",
             "max_bytes": policy.max_bytes,
@@ -2289,7 +2315,7 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
             "min_free_bytes": policy.min_free_bytes,
             "free_bytes": free.as_ref().map(|(free, _)| *free),
             "kinds": kinds,
-            "entries": listed,
+            "entries": entries,
             "problems": stock.problems,
         });
         println!(
@@ -2303,17 +2329,28 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
         "KIND", "ENTRIES", "BYTES", "OLDEST USE", "NEWEST USE"
     );
     for kind in Kind::ALL {
-        let of: Vec<&&Entry> = listed.iter().filter(|e| e.kind == kind).collect();
-        let bytes = of.iter().map(|e| e.bytes).fold(0, u64::saturating_add);
+        let of: Vec<&(&Entry, Option<&Path>)> =
+            listed.iter().filter(|(e, _)| e.kind == kind).collect();
+        let bytes = counted(&of);
         let when = |value: Option<u64>| value.filter(|ms| *ms > 0).map_or("-".to_string(), iso);
         println!(
             "{:<20} {:>7} {:>10}  {:<20}  {:<20}",
             kind.label(),
             of.len(),
             human_bytes(bytes),
-            when(of.iter().map(|e| e.last_use_unix_ms).min()),
-            when(of.iter().map(|e| e.last_use_unix_ms).max()),
+            when(of.iter().map(|(e, _)| e.last_use_unix_ms).min()),
+            when(of.iter().map(|(e, _)| e.last_use_unix_ms).max()),
         );
+    }
+    for (claim, counted_in) in &listed {
+        if let Some(counted_in) = counted_in {
+            println!(
+                "abandoned removal {} ({}) counted in {}",
+                claim.path.display(),
+                human_bytes(claim.bytes),
+                counted_in.display()
+            );
+        }
     }
     for entry in stock
         .entries

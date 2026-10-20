@@ -24,9 +24,11 @@
   storage`. The claims dead processes left (`.af-removing-*`) and the containers of dead passes
   are in that one inventory, `claim` entries under `recovery` that the preview and the applied
   sweep list alike with the same bytes, a container that held a moved record planned after it,
-  and nothing is removed beside the plan; a claim inside a Project Store is counted once, in the
-  Store's bytes, and every other one is an `af storage` entry of kind `claim`, `state`
-  `abandoned`, counted in its kinds and total as the preview counts it, while one the inventory
+  and nothing is removed beside the plan; every one is an `af storage` entry of kind `claim`,
+  `state` `abandoned`, with its measured bytes, so the listing's claims are the preview's claim
+  recoveries, and its bytes are counted once: in its kinds and total as the preview counts it,
+  or, for a claim inside a Project Store, in the Store's bytes, the claim saying so with
+  `counted_in`, while one the inventory
   cannot measure is left `too_deep` or `unmeasurable` with no bytes and never touched. A registration whose path holds no Store is dropped by the plan
   (`registry_dropped`, the same in preview and apply), after the inventory reached its parent's
   claims, so a registered Store a dead process renamed into its claim is recovered alike by
@@ -44,11 +46,15 @@
   `foreign`, listed with its bytes, never counted as the Survey's and never deleted; once a
   Survey's record has left the CAS the Project Store's `settled.json`
   (`af/ProjectSurveysSettled@1`) says so, so a byte-identical file at its name stays `foreign`
-  sweep after sweep. A crash between a Survey's bytes and its `SurveyRecorded@1` leaves a
-  pending-publication entry (`pending/<hex>.json`, `af/ProjectPendingPublication@1`) that
-  `af storage` counts as a Survey `pending` and recovery settles: cleared when the event
-  committed, otherwise only the object it describes is reclaimed, and any object nothing names is
-  `foreign`; and a
+  sweep after sweep, and a settlement whose directory sync fails puts the earlier record back and
+  deletes nothing, for the next sweep to retry. A crash between a Survey's bytes and its
+  `SurveyRecorded@1` leaves the writer's pending-publication entry
+  (`pending-surveys/<64 hex>.json`, `af/survey-pending@1`) that `af storage` counts as a Survey
+  `pending` and recovery settles: cleared when the event committed, otherwise only the object it
+  describes (device, inode and length, checked again under the lock, `skipped: object changed`
+  otherwise) is reclaimed, the entry cleared only once that object is gone, so a reclamation
+  interrupted inside its pass's container is finished by the next sweep, never left `foreign`;
+  any object nothing names is `foreign`; and a
   leftover whose name, or whose container's name, is not UTF-8 is walked with its raw name, listed
   `unreadable_name` (its `--json` path percent-encoded) and left with its container. A CAS prefix directory replaced by a symbolic link
   refuses its Survey, which is reported and keeps its record and its place in the log; the

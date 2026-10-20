@@ -1994,6 +1994,9 @@ fn a_registered_store_renamed_into_a_dead_claim_is_recovered_and_unregistered_al
 /// A claimed Workspace `state` directory under a Project Store is in the Store's measured
 /// bytes: counted once, so `total_before` is what `af storage` measures, and the recovery takes
 /// the claim's bytes out of the Store's, leaving `total_after` the measured total less them.
+/// `af storage` lists the nested claim all the same, a `claim` entry `abandoned` with its
+/// measured bytes and `counted_in` the Project Store, whose bytes hold them: its entries are the
+/// claims the preview recovers, and `total_bytes` and `kinds` count its bytes once.
 #[test]
 fn a_claim_under_a_project_store_is_counted_once() {
     let machine = Machine::new();
@@ -2006,26 +2009,66 @@ fn a_claim_under_a_project_store_is_counted_once() {
 
     let measured = storage_total(&machine, &repo);
     let (shown, _) = survey_entries(&machine, &repo);
-    let of_store: u64 = shown["entries"]
-        .as_array()
-        .unwrap()
+    let listed = shown["entries"].as_array().unwrap();
+    let of_store: u64 = listed
         .iter()
         .filter(|entry| {
-            entry["path"]
-                .as_str()
-                .unwrap()
-                .starts_with(machine.store().to_str().unwrap())
+            entry.get("counted_in").is_none()
+                && entry["path"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(machine.store().to_str().unwrap())
         })
         .map(|entry| entry["bytes"].as_u64().unwrap())
         .sum();
     assert_eq!(of_store, allocated(&machine.store()), "the directory, once");
+    let claims: Vec<&Value> = listed
+        .iter()
+        .filter(|entry| entry["kind"] == "claim")
+        .collect();
+    assert_eq!(claims.len(), 1, "{shown}");
+    assert_eq!(claims[0]["path"], claim.to_str().unwrap());
+    assert_eq!(claims[0]["state"], "abandoned");
+    assert_eq!(claims[0]["bytes"].as_u64().unwrap(), claim_bytes);
+    assert_eq!(claims[0]["counted_in"], machine.store().to_str().unwrap());
+    let counted: u64 = listed
+        .iter()
+        .filter(|entry| entry.get("counted_in").is_none())
+        .map(|entry| entry["bytes"].as_u64().unwrap())
+        .sum();
+    assert_eq!(shown["total_bytes"].as_u64().unwrap(), counted);
+    assert_eq!(counted, measured);
+    let kind_bytes: u64 = shown["kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|kind| kind["bytes"].as_u64().unwrap())
+        .sum();
+    assert_eq!(kind_bytes, measured, "every kind counts its bytes once");
+    let claim_kind = shown["kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|kind| kind["kind"] == "claim")
+        .unwrap();
+    assert_eq!(claim_kind["entries"], 1);
+    assert_eq!(claim_kind["bytes"], 0, "counted in the Project Store");
+    let (text, _) = machine.expect(&repo, &[], &["storage"], 0);
+    let line = text
+        .lines()
+        .find(|line| line.starts_with(&format!("abandoned removal {} (", claim.display())))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        line.ends_with(&format!(") counted in {}", machine.store().display())),
+        "{line}"
+    );
 
     let previewed = preview(&machine, &repo, &[]);
     assert_eq!(previewed["total_before"].as_u64().unwrap(), measured);
     let planned = removals_of(&previewed, "claim");
     assert_eq!(planned.len(), 1, "{previewed}");
-    assert_eq!(planned[0]["path"], claim.to_str().unwrap());
-    assert_eq!(planned[0]["bytes"].as_u64().unwrap(), claim_bytes);
+    assert_eq!(planned[0]["path"], claims[0]["path"], "the listed claims");
+    assert_eq!(planned[0]["bytes"], claims[0]["bytes"]);
     assert_eq!(
         planned[0]["total_after"].as_u64().unwrap(),
         measured - claim_bytes
@@ -2310,7 +2353,8 @@ fn unrecorded_object(machine: &Machine, bytes: &[u8]) -> String {
     survey_id
 }
 
-/// The pending-publication entry a writer keeps for `survey_id` (ADR-0152 clause 13), naming
+/// The pending-publication entry a writer keeps for `survey_id` (ADR-0152 clause 2,
+/// `af/survey-pending@1` at `pending-surveys/<64 hex>.json`), naming the record's length and
 /// `object` by device and inode when given. Returns its path.
 fn pending_entry(
     machine: &Machine,
@@ -2318,13 +2362,12 @@ fn pending_entry(
     length: usize,
     object: Option<&Path>,
 ) -> PathBuf {
-    let directory = machine.store().join("pending");
+    let directory = machine.store().join("pending-surveys");
     std::fs::create_dir_all(&directory).unwrap();
     let mut entry = serde_json::json!({
-        "schema": "af/ProjectPendingPublication@1",
+        "schema": "af/survey-pending@1",
         "survey_id": survey_id,
-        "length": length.to_string(),
-        "recorded_unix_ms": (old_cutoff() * 1000).to_string(),
+        "bytes": length.to_string(),
     });
     if let Some(object) = object {
         use std::os::unix::fs::MetadataExt;
@@ -2335,12 +2378,209 @@ fn pending_entry(
         });
     }
     schemas::valid(
-        &schemas::validator("project-pending-publication-v1.json"),
+        &schemas::validator("project-survey-pending-v1.json"),
         &entry,
     );
     let path = directory.join(format!("{}.json", survey_id.trim_start_matches("sha256:")));
     std::fs::write(&path, entry.to_string()).unwrap();
     path
+}
+
+/// A refresh at `cutoff` that the writer's own debug-build stop ends after the record's bytes
+/// and before `SurveyRecorded@1`, as a crash would: the Survey it was publishing and the one
+/// pending entry it left, valid as the writer's `af/survey-pending@1`.
+fn stopped_refresh(machine: &Machine, repo: &Path, cutoff: &str) -> (String, PathBuf) {
+    machine.expect(
+        repo,
+        &[
+            ("AF_TEST_SURVEY_CUTOFF_UNIX_S", cutoff),
+            ("AF_TEST_SURVEY_STOP_BEFORE_EVENT", "1"),
+        ],
+        &["project", "refresh", "--force"],
+        86,
+    );
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(machine.store().join("pending-surveys"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let path = entries.pop().unwrap();
+    let entry: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    schemas::valid(
+        &schemas::validator("project-survey-pending-v1.json"),
+        &entry,
+    );
+    let survey_id = entry["survey_id"].as_str().unwrap().to_string();
+    assert!(
+        !machine.recorded().contains(&survey_id),
+        "no event names it"
+    );
+    assert!(machine.held(&survey_id), "its bytes are in the CAS");
+    (survey_id, path)
+}
+
+/// Writer and reader meet: a refresh stopped by the writer's own hook after its record's bytes
+/// and before its event leaves its `af/survey-pending@1` entry; `af storage` counts the object
+/// as a Survey `pending`, the preview plans exactly that object's recovery and then the entry's,
+/// and the applied sweep, the same plan, removes both and nothing else.
+#[test]
+fn a_survey_the_writer_left_before_its_event_is_recovered_through_its_own_entry() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let kept = refresh(&machine, &repo, &at(0), true);
+    let (survey_id, entry) = stopped_refresh(&machine, &repo, &at(60));
+    let object = machine.object(&survey_id);
+
+    let (shown, entries) = survey_entries(&machine, &repo);
+    let pending = &entries[&path_of(&machine, &survey_id)];
+    assert_eq!(pending["state"], "pending", "{shown}");
+    assert_eq!(pending["bytes"].as_u64().unwrap(), allocated(&object));
+
+    let previewed = preview(&machine, &repo, &[]);
+    let planned = removals_of(&previewed, "survey");
+    assert_eq!(planned.len(), 2, "{previewed}");
+    assert_eq!(planned[0]["path"], path_of(&machine, &survey_id).as_str());
+    assert_eq!(planned[0]["rule"], "recovery");
+    assert_eq!(planned[0]["bytes"].as_u64().unwrap(), allocated(&object));
+    assert_eq!(planned[1]["path"], entry.to_str().unwrap());
+    assert_eq!(planned[1]["rule"], "recovery");
+    assert_eq!(previewed["removals"].as_array().unwrap().len(), 2);
+    assert!(left(&previewed, "foreign").is_empty(), "{previewed}");
+
+    let applied = prune(&machine, &repo, &[]);
+    assert_eq!(removals_of(&applied, "survey"), planned, "entry for entry");
+    assert!(!object.exists() && !entry.exists());
+    assert!(machine.held(&kept), "the recorded Survey is kept");
+    assert!(machine.collected().is_empty(), "no tombstone");
+    assert_eq!(machine.recorded(), [kept]);
+    let again = preview(&machine, &repo, &[]);
+    assert!(again["removals"].as_array().unwrap().is_empty(), "{again}");
+}
+
+/// The writer's own entry outliving its committed event (a crash between the commit and the
+/// clear, restored here from the bytes the stopped refresh wrote) is cleared as a planned
+/// `recovery` entry, and nothing is deleted: the Survey stays recorded and held.
+#[test]
+fn the_writers_entry_of_a_committed_survey_is_cleared_without_deletion() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let (survey_id, entry) = stopped_refresh(&machine, &repo, &at(0));
+    let written = std::fs::read(&entry).unwrap();
+    // The same bytes again: the writer finishes that publication and clears its entry.
+    assert_eq!(refresh(&machine, &repo, &at(0), true), survey_id);
+    assert!(!entry.exists());
+    std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+    std::fs::write(&entry, &written).unwrap();
+
+    let previewed = preview(&machine, &repo, &[]);
+    let planned = removals_of(&previewed, "survey");
+    assert_eq!(planned.len(), 1, "{previewed}");
+    assert_eq!(planned[0]["path"], entry.to_str().unwrap());
+    assert_eq!(planned[0]["rule"], "recovery");
+    let applied = prune(&machine, &repo, &[]);
+    assert_eq!(removals_of(&applied, "survey"), planned);
+    assert!(!entry.exists(), "the entry is cleared");
+    assert!(machine.held(&survey_id), "its Survey is kept");
+    assert!(machine.collected().is_empty());
+}
+
+/// A recovery of a pending object stopped after its rename into its pass's container and
+/// before its unlink keeps its recovery path: the entry is not cleared, the next preview plans
+/// that object (never `foreign`), then the dead container, then the entry, and the applied
+/// sweep, the same plan, finishes all three.
+#[test]
+fn a_pending_recovery_stopped_before_its_unlink_is_finished_by_the_next_sweep() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let kept = refresh(&machine, &repo, &at(0), true);
+    let (survey_id, entry) = stopped_refresh(&machine, &repo, &at(60));
+    let object = machine.object(&survey_id);
+    let bytes = allocated(&object);
+    machine.expect(
+        &repo,
+        &[("AF_TEST_SURVEY_STOP_BEFORE_UNLINK", "1")],
+        &["storage", "prune", "--apply", "--json"],
+        86,
+    );
+    assert!(!object.exists(), "moved off its CAS name");
+    assert!(entry.is_file(), "the entry outlives no object it describes");
+    let removing = machine.store().join("cas/removing");
+    let containers: Vec<PathBuf> = std::fs::read_dir(&removing)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(containers.len(), 1, "{containers:?}");
+    assert!(containers[0].join(&survey_id).is_file());
+
+    let previewed = preview(&machine, &repo, &[]);
+    assert!(left(&previewed, "foreign").is_empty(), "{previewed}");
+    let planned = removals_of(&previewed, "survey");
+    assert_eq!(planned.len(), 2, "{previewed}");
+    assert_eq!(planned[0]["path"], path_of(&machine, &survey_id).as_str());
+    assert_eq!(planned[0]["rule"], "recovery");
+    assert_eq!(planned[0]["bytes"].as_u64().unwrap(), bytes);
+    assert_eq!(planned[1]["path"], entry.to_str().unwrap());
+    let container = removals_of(&previewed, "claim");
+    assert_eq!(container.len(), 1, "{previewed}");
+    assert_eq!(container[0]["path"], containers[0].to_str().unwrap());
+
+    let applied = prune(&machine, &repo, &[]);
+    assert_eq!(removals_of(&applied, "survey"), planned, "entry for entry");
+    assert!(!containers[0].exists() && !entry.exists());
+    assert!(!object.exists());
+    assert!(machine.held(&kept));
+    assert!(machine.collected().is_empty());
+    assert!(
+        !machine.store().join("settled.json").exists(),
+        "nothing settled"
+    );
+}
+
+/// A settlement whose directory sync fails after the rename of `settled.json` fails its
+/// collection: the record is put back at its CAS name and nothing is deleted, the earlier
+/// settled record stays, and the failure is reported; the tombstone stays, and the next sweep
+/// deletes the record as `recovery` and settles it.
+#[test]
+fn a_failed_settlement_sync_deletes_nothing_and_the_next_sweep_retries() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..2)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let oldest = &surveys[0];
+    let settled = machine.store().join("settled.json");
+    let pruned = prune(
+        &machine,
+        &repo,
+        &[
+            ("AF_STORAGE__KEEP_SURVEYS", "1"),
+            ("AF_TEST_SURVEY_FAIL_SETTLED_SYNC", "1"),
+        ],
+    );
+    let removals = removals_of(&pruned, "survey");
+    assert_eq!(removals.len(), 1, "{pruned}");
+    let outcome = removals[0]["outcome"].as_str().unwrap();
+    assert!(
+        outcome.starts_with("failed: ")
+            && outcome.contains("syncing `settled.json`")
+            && outcome.contains("its record is put back and nothing is deleted"),
+        "{outcome}"
+    );
+    assert_eq!(removals[0]["bytes"], 0, "nothing freed");
+    assert!(machine.held(oldest), "the original record is not unlinked");
+    assert!(!settled.exists(), "the Survey stays unsettled");
+    assert_eq!(machine.collected(), [oldest.clone()], "its tombstone stays");
+
+    let retried = prune(&machine, &repo, &[]);
+    assert_eq!(
+        removed(&retried, "recovery"),
+        [path_of(&machine, oldest)],
+        "{retried}"
+    );
+    assert!(!machine.held(oldest));
+    let record: Value = serde_json::from_slice(&std::fs::read(&settled).unwrap()).unwrap();
+    assert_eq!(record["survey_ids"], serde_json::json!([oldest]));
+    assert_consistent(&machine);
 }
 
 /// A Survey published to the CAS whose `SurveyRecorded@1` never committed, its pending entry
@@ -2444,34 +2684,6 @@ fn an_unreferenced_object_without_an_entry_describing_it_is_foreign_and_kept() {
     let again = prune(&machine, &repo, &squeeze);
     assert_eq!(left(&again, "foreign").len(), 2, "{again}");
     assert!(machine.object(&undescribed).is_file());
-}
-
-/// A pending-publication entry whose `SurveyRecorded@1` committed is cleared, and nothing is
-/// deleted: the Survey it names is recorded and stays.
-#[test]
-fn a_pending_entry_whose_event_committed_is_cleared_without_deletion() {
-    let machine = Machine::new();
-    let repo = repository(&machine, "");
-    let survey_id = refresh(&machine, &repo, &at(0), true);
-    let object = machine.object(&survey_id);
-    let length = std::fs::metadata(&object).unwrap().len() as usize;
-    let entry = pending_entry(&machine, &survey_id, length, Some(&object));
-    let previewed = preview(&machine, &repo, &[]);
-    let planned = removals_of(&previewed, "survey");
-    assert_eq!(planned.len(), 1, "{previewed}");
-    assert_eq!(planned[0]["path"], entry.to_str().unwrap());
-    assert_eq!(planned[0]["rule"], "recovery");
-    let applied = prune(&machine, &repo, &[]);
-    assert_eq!(removals_of(&applied, "survey"), planned);
-    assert!(!entry.exists(), "the entry is cleared");
-    assert!(machine.held(&survey_id), "its Survey is kept");
-    assert!(machine.collected().is_empty());
-    let (_, entries) = survey_entries(&machine, &repo);
-    assert!(
-        entries[&path_of(&machine, &survey_id)]
-            .get("state")
-            .is_none()
-    );
 }
 
 /// A dead claim nested deeper than the 256-level measurement walk cannot be measured: the

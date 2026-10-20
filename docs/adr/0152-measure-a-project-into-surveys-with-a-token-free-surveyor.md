@@ -457,10 +457,13 @@ email first of all.
     `.af-removing-<pid>-…` (ADR-0144) and the containers dead passes left empty, each with the
     identity and bytes the listing stated, are planned first as `recovery` entries of kind
     `claim`, so the applied sweep removes nothing before the inventory and nothing the plan does
-    not list. `af storage` counts the same claims: each one no other entry measured as part of its
-    own is an entry of kind `claim` with `state` `abandoned` and its measured bytes, in `kinds`,
-    `entries` and `total_bytes` (`af/storage@3` gains the kind `claim` and `state`), so the
-    listing, the preview and the applied document agree on what the directory holds. A dead
+    not list. `af storage` lists the same claims: every dead claim the inventory found, wherever it
+    sits, is an entry of kind `claim` with `state` `abandoned` and its measured bytes, so the
+    listing's claims are the preview's planned claim recoveries; one no other entry measured as
+    part of its own is counted in `kinds` and `total_bytes`, and one inside an entry measured
+    whole carries `counted_in`, that entry's path, its bytes counted once, inside that entry's
+    (`af/storage@3` gains the kind `claim`, `state` and `counted_in`), so the listing, the
+    preview and the applied document agree on what the directory holds. A dead
     claim the listing's walk cannot measure (nested deeper than its 256 levels, or any error) has
     no bytes the plan could account for, and no `(0, 0)` stands in for them: the inventory records
     it in use with no bytes (`left: deeper than the removal walk`, or `left: unmeasurable:
@@ -585,29 +588,36 @@ email first of all.
     lock once the inode off its CAS name (renamed into its own container, or the moved record in
     a dead pass's) is checked to be the record and before it is unlinked, and once a tombstoned
     record is found gone from the CAS; the file is rewritten whole through a fresh temporary file
-    renamed over it, and a record that cannot be written puts the inode back and deletes
-    nothing. Every inventory reads it: once a Survey is settled, any later occupant of its CAS
+    renamed over it and the Store's directory synced, and a record that cannot be written puts
+    the inode back and deletes nothing. A sync that fails after the rename is such a failure:
+    the earlier `settled.json` is put back (removed, when there was none), so the Survey stays
+    unsettled, its record is not unlinked (back at its name, or where the dead pass left it),
+    the entry fails with the reason, and the next sweep retries. Every inventory reads it: once a Survey is settled, any later occupant of its CAS
     name is `foreign` even when its bytes hash to the Survey ID, sweep after sweep, and an
     applied `recovery` that finds the Survey settled since its plan deletes nothing. A
     `settled.json` that cannot be read settles every tombstoned Survey for that sweep, so nothing
     at a tombstoned name is deleted, and is reported.
-    The Surveyor's writer keeps a pending-publication entry while it publishes one Survey:
-    `pending/<hex of the Survey ID>.json` beside the lock, `af/ProjectPendingPublication@1`
-    ([schema](../../schemas/project-pending-publication-v1.json)) {`schema`, `survey_id`,
-    `length`, the record's byte length, at most `MAX_SURVEY_BYTES`, `object` {`device`,
-    `inode`} once the bytes are written, absent before, and `recorded_unix_ms`, every number
-    decimal text}, at most 4 KiB, written under the Store's lock before the record's bytes enter
-    the CAS, `object` added once they are there, and removed once `SurveyRecorded@1` commits;
-    the writer follows this shape. Collection reads it in the Store's one read: an entry whose
-    Survey a `SurveyRecorded@1` names is cleared as a planned `recovery` entry and nothing is
-    deleted; for any other, only the object at the Survey's CAS name with the entry's device,
-    inode and length is counted, a `survey` entry of `af storage` with `state` `pending`, in use,
+    Collection reads the writer's pending-publication entries, `af/survey-pending@1` at
+    `pending-surveys/<64 hex>.json` beside the lock, whose shape and writing clause 2 states,
+    in the Store's one read: an entry whose Survey a `SurveyRecorded@1` names is cleared as a
+    planned `recovery` entry and nothing is deleted; for any other, only the object at the
+    Survey's CAS name with the entry's device, inode and length (`bytes`) is counted, a `survey`
+    entry of `af storage` with `state` `pending`, in use, last used when the entry was written,
     its bytes out of the Project Store's, and reclaimed as a planned `recovery` entry before the
     entry is cleared, preview and apply alike, each job checking again under the lock that the
-    event did not commit, the entry still describes that inode and the name still holds it. A
-    file at that name the entry does not describe is `foreign`, and the entry is cleared; an
-    entry of a held Store is the writer's and is left `held`, and one that cannot be read is
-    reported and left with its object. Any object of the Project Store's CAS that no
+    event did not commit, that the entry still describes that device, inode and length and that
+    the name still holds that inode at that length: an object grown, truncated or replaced since
+    the inventory fails as `skipped: object changed` and nothing is deleted. The entry is
+    cleared only once the object it describes is gone, from the CAS name and from every pass's
+    container: a reclamation interrupted after its rename into its container and before its
+    unlink leaves the entry, and the next inventory, which matches the entries against what the
+    pass containers hold as well as against CAS names, finds there a regular file named by the
+    entry's Survey with its device, inode and length, which is that entry's object: planned as
+    `recovery` again (renamed into the new pass's container, checked and unlinked as a moved
+    record is, never recorded in `settled.json`, since no tombstone names its Survey), before
+    the dead container and the entry, never `foreign`. A file at the CAS name the entry does not
+    describe is `foreign`, and the entry is cleared; an entry of a held Store is the writer's
+    and is left `held`, and one that cannot be read is reported and left with its object. Any object of the Project Store's CAS that no
     `SurveyRecorded@1`, tombstone or pending entry names is `foreign`: listed with its bytes,
     counted in the Store's total, never reclaimed. A container's
     own name is checked as the names inside it are: only a container named by a pass ID (32
@@ -615,12 +625,16 @@ email first of all.
     listed: a name that is not UTF-8, a file's or its container's, as `unreadable_name`, its
     display lossy only in the text output and its `--json` path in `review_core::encode_path`'s
     spelling with `path_encoded`, and anything else (no pass container, a container whose name
-    is no pass ID, not a regular file, no tombstone naming it, a `.replaced` file) as `foreign`;
+    is no pass ID, not a regular file, no tombstone naming it and no pending entry describing it, a
+    `.replaced` file) as `foreign`;
     a container whose name is no pass ID stays with everything inside it, even empty, and a
     container of a dead pass that holds nothing is removed, only while it is the empty directory
     the inventory stated. Each such deletion has the rule `recovery`, and the preview lists
     exactly those entries, so preview and pass agree entry for entry. A debug build reads
-    `AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES=1` to stop after the tombstones, and
+    `AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES=1` to stop after the tombstones,
+    `AF_TEST_SURVEY_STOP_BEFORE_UNLINK=1` to stop a removal after its rename into its pass's
+    container and before its unlink, `AF_TEST_SURVEY_FAIL_SETTLED_SYNC=1` to fail the sync after
+    `settled.json`'s rename, and
     `AF_TEST_SURVEY_REPLACE_BEFORE_RENAME=<directory>` and
     `AF_TEST_SURVEY_REPLACE_BEFORE_JUDGE=<directory>` to replace a record by a byte-identical
     copy between its identity read and its rename, or between inventory and the plan's

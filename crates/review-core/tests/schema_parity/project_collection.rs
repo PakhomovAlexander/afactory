@@ -2,18 +2,17 @@
 //! Survey leaves in its Project Store's log and that binds every identity field of its record,
 //! against its own schema, inside `run-event-v1.json` and through the Rust validator alike; and
 //! `af/TaskStorageSweep@1`, whose kind set Survey collection leaves unchanged, so a Survey's
-//! removal is counted and never listed; and the two machine-local records collection reads
-//! beside a Project Store's lock, `af/ProjectPendingPublication@1` and
-//! `af/ProjectSurveysSettled@1`, against their schemas and their typed contracts alike.
+//! removal is counted and never listed; and `af/ProjectSurveysSettled@1`, the machine-local
+//! record collection keeps beside a Project Store's lock, against its schema and its typed
+//! contract alike. The pending-publication entry collection reads is the writer's
+//! `af/survey-pending@1` (ADR-0152 clause 2), whose parity lives with the Survey's.
 
 use super::{assert_invalid, assert_valid};
 use review_core::EventType;
 use review_core::event::validate_event_payload;
 use review_core::project::{
-    MAX_SURVEY_BYTES, PROJECT_PENDING_PUBLICATION_V1, PROJECT_SURVEYS_SETTLED_V1,
-    ProjectObjectIdentityV1, ProjectPendingPublicationV1, ProjectSurveysSettledV1,
-    SurveyCollectedHistoryV1, SurveyCollectedPayloadV1, SurveyCollectedTreeV1,
-    SurveyCompletenessV1,
+    PROJECT_SURVEYS_SETTLED_V1, ProjectSurveysSettledV1, SurveyCollectedHistoryV1,
+    SurveyCollectedPayloadV1, SurveyCollectedTreeV1, SurveyCompletenessV1,
 };
 use serde_json::{Value, json};
 
@@ -221,70 +220,6 @@ fn the_sweep_record_counts_a_survey_and_has_no_survey_kind() {
         "a Survey is no kind of the sweep record",
     );
     assert!(validate_event_payload(EventType::TaskTransitionV5, &transition).is_err());
-}
-
-/// A pending-publication entry names its Survey by digest, the length it announces within the
-/// ceiling every Survey is written within, and, once written, its object by device and inode as
-/// decimal text; never a path. The schema and the typed contract accept and refuse alike.
-#[test]
-fn a_pending_publication_entry_is_closed_and_names_no_path() {
-    const PENDING: &str = "project-pending-publication-v1.json";
-    let entry = ProjectPendingPublicationV1 {
-        schema: PROJECT_PENDING_PUBLICATION_V1.into(),
-        survey_id: format!("sha256:{}", "a".repeat(64)),
-        length: 2048.into(),
-        object: Some(ProjectObjectIdentityV1 {
-            device: 16_777_220.into(),
-            inode: 42.into(),
-        }),
-        recorded_unix_ms: 1_800_000_000_000.into(),
-    };
-    entry.validate().unwrap();
-    let value = serde_json::to_value(&entry).unwrap();
-    let unwritten = without(&value, "object");
-    for accepted in [&value, &unwritten] {
-        assert_valid(PENDING, accepted);
-        let typed: ProjectPendingPublicationV1 = serde_json::from_value(accepted.clone()).unwrap();
-        typed.validate().unwrap();
-    }
-    for (broken, why) in [
-        (
-            with(&value, "schema", json!("af/ProjectPendingPublication@2")),
-            "another version is refused",
-        ),
-        (
-            with(&value, "survey_id", json!("survey-1")),
-            "a Survey is named by its digest",
-        ),
-        (
-            with(&value, "length", json!(2048)),
-            "lengths are decimal text",
-        ),
-        (
-            with(&value, "object", json!({"device": "1"})),
-            "an object is its device and its inode",
-        ),
-        (
-            with(&value, "path", json!("/home/me/.local/state")),
-            "no field holds a path",
-        ),
-        (without(&value, "length"), "the length is announced"),
-    ] {
-        assert_invalid(PENDING, &broken, why);
-        let typed = serde_json::from_value::<ProjectPendingPublicationV1>(broken.clone());
-        assert!(
-            typed.is_err() || typed.unwrap().validate().is_err(),
-            "the typed contract accepted it ({why})"
-        );
-    }
-    // Beyond the ceiling: decimal text the schema cannot bound, refused by the contract.
-    let over = with(&value, "length", json!((MAX_SURVEY_BYTES + 1).to_string()));
-    assert!(
-        serde_json::from_value::<ProjectPendingPublicationV1>(over)
-            .unwrap()
-            .validate()
-            .is_err()
-    );
 }
 
 /// The settled record lists collected Survey IDs by digest, each once; anything else is
