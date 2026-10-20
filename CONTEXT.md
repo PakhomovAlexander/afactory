@@ -176,6 +176,17 @@ plumbing under one `max_wall_ms` deadline, and never while the survey key is unc
 _Avoid_: a daemon — it is one call that reads, writes one record and returns; and a Worker — it
 has no Provider, no Attempt and no budget.
 
+**Project Brief**:
+The bounded, named selection of Survey sections, `af/ProjectBrief@1`, that a pipeline's declared
+`project_brief` root port carries into the Workers it is wired to and no other: a
+`[brief.<name>]` variant of project policy (built in: `orient` and `none`) rendered
+deterministically from the Survey the Task's initial capture pinned, whole sections dropped
+last-declared first until it fits `max_bytes`, pinned by artifact ID in the Execution Plan and
+listed in the Attempt's context manifest. Its staleness is the consuming Task's receipt, never a
+field of the Brief.
+_Avoid_: the Survey itself, which never enters a prompt; ambient context; a prose summary a
+model wrote.
+
 **Telemetry**:
 What af records about its own work — spans, events and, at the `content` level, redacted
 content blobs — in per-process segments under the state root's `telemetry/`, never in a Store.

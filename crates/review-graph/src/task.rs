@@ -335,6 +335,7 @@ impl CompiledTask {
                                 optional: false,
                                 affinity: PortAffinityV1::Unbound {},
                                 root_default: None,
+                                brief: None,
                                 covers: BTreeSet::new(),
                             },
                         )]),
@@ -818,6 +819,7 @@ fn compile_structure_mode(
     let mut boundary_outputs = definition.contract.inputs.clone();
     for port in boundary_outputs.values_mut() {
         port.root_default = None;
+        port.brief = None;
     }
     compiler.require_node_capacity()?;
     compiler.graph.nodes.insert(
@@ -2015,6 +2017,7 @@ impl CompiledReviewIntegrationV1 {
             optional: false,
             affinity,
             root_default: None,
+            brief: None,
             covers: BTreeSet::new(),
         };
         CompiledNode {

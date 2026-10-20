@@ -76,6 +76,7 @@ fn port(ty: &str, affinity: PortAffinityV1, optional: bool) -> PipelinePortV1 {
         optional,
         affinity,
         root_default: None,
+        brief: None,
         covers: BTreeSet::new(),
     }
 }

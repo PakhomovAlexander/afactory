@@ -1,0 +1,40 @@
+schema = "af.task-catalog/2"
+code_policy = ".af/code-policy.toml"
+
+# Placeholders: `crates/af/tests/it/project_brief.rs` pins every digest from the copied tree
+# before it commits, as `task_input_bindings.rs` does for `bound-inputs`.
+[packages."fixture/evaluator"]
+version = "1.0.0"
+digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+path = ".af/task-packages/fixture/evaluator"
+
+[packages."fixture/exposing"]
+version = "1.0.0"
+digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+path = ".af/task-packages/fixture/exposing"
+
+[packages."fixture/forged"]
+version = "1.0.0"
+digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+path = ".af/task-packages/fixture/forged"
+
+[packages."fixture/forger"]
+version = "1.0.0"
+digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+path = ".af/task-packages/fixture/forger"
+
+[packages."fixture/implementer"]
+version = "1.0.0"
+digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+path = ".af/task-packages/fixture/implementer"
+
+[packages."fixture/oriented"]
+version = "1.0.0"
+digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+path = ".af/task-packages/fixture/oriented"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false

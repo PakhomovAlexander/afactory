@@ -29,6 +29,12 @@ pub struct ProjectFile {
     #[serde(default)]
     #[allow(dead_code)]
     survey: Option<crate::projects::survey::policy::SurveyTable>,
+    /// The Project Brief variants (ADR-0153). Admitted here so the full-file parse refuses an
+    /// unknown key; capture and `af project brief` read the merged ladder through
+    /// `project_brief::load_policy`, which also checks every value.
+    #[serde(default)]
+    #[allow(dead_code)]
+    brief: Option<std::collections::BTreeMap<String, crate::project_brief::BriefTable>>,
 }
 
 #[derive(Debug, Default, Deserialize)]

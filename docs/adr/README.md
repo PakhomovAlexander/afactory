@@ -288,3 +288,5 @@ future readers need.
   Workspaces](0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
 - [0152 — Measure a Project into Surveys with a token-free
   Surveyor](0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md)
+- [0153 — Carry a bounded Project Brief on a declared
+  port](0153-carry-a-bounded-project-brief-on-a-declared-port.md)

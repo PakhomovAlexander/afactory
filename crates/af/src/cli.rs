@@ -179,7 +179,7 @@ lives under `$XDG_STATE_HOME/af/project/<hex>/`. A Workspace is one registered c
 Project, with its own Task Store, bindings file and Task-file directory, under one label; the \
 paths are kept on this machine only, in the Project Store's `workspaces.toml`.\n\n\
 Registration is lazy and token-free: `af onboard --apply`, `af task plan`, `af task start`, \
-`af review run` and every `af project` command register the Project and the invoking checkout \
+`af review run` and every `af project` command but `brief` register the Project and the invoking checkout \
 (origin `adopted`, labelled by its directory name, its Store the default Task Store). A shallow \
 clone is refused until `git fetch --unshallow`; a repository without commits has no Project. \
 `af task deliver` registers the worktree it creates (origin `delivered`, labelled by the Task \
@@ -191,15 +191,20 @@ text, bounded by the `[survey]` table of `.af/af.toml`. The token-free Surveyor 
 `af onboard --apply` and on `af project refresh`, in the Project Store, and reuses a complete \
 Survey while its survey key (head, refs, policy digest, Surveyor version) is unchanged. It calls \
 no Provider, runs no hook or project code, and never stores an author email.\n\n\
+A Project Brief (`af/ProjectBrief@1`) is the bounded selection of one Survey that a pipeline's \
+declared `project_brief` root port carries into the Workers it is wired to, and no other: a \
+`[brief.<name>]` variant of `.af/af.toml` (built in: `orient` and `none`) rendered from the \
+Survey a Task pinned when it was planned, whole sections dropped last-declared first until it \
+fits `max_bytes`. `af project brief` prints the exact bytes a plan would bind, token-free.\n\n\
 Never: writes inside a checkout, commits, pushes, or removes a Store. Results go to stdout \
-(`--json` prints `af/project@1`, `af/project-workspaces@1`, `af/ProjectSurvey@1` or \
-`af/project-history@1`); warnings go to stderr. Exit codes: 0 success, 1 failure (the message \
+(`--json` prints `af/project@1`, `af/project-workspaces@1`, `af/ProjectSurvey@1`, \
+`af/project-history@1` or `af/project-brief-preview@1`); warnings go to stderr. Exit codes: 0 success, 1 failure (the message \
 names the next action; `af/error@1` under --json), 2 usage error.",
-        after_long_help = "Examples:\n  af project show\n  af project refresh\n  af project survey --json | jq .tree.files\n  af project history\n  af project workspaces --json\n  af project workspace new research --branch agent/research\n  af project workspace add ../afactory-wt-research --label research --state \"$W/state\"\n  af project workspace remove research\n  af project workspace remove research --delete-worktree\n  af task plan --workspace research --file ticket.json"
+        after_long_help = "Examples:\n  af project show\n  af project refresh\n  af project survey --json | jq .tree.files\n  af project history\n  af project brief --variant orient\n  af project workspaces --json\n  af project workspace new research --branch agent/research\n  af project workspace add ../afactory-wt-research --label research --state \"$W/state\"\n  af project workspace remove research\n  af project workspace remove research --delete-worktree\n  af task plan --workspace research --file ticket.json"
     )]
     Project {
         #[command(subcommand)]
-        command: ProjectCommand,
+        command: ProjectCli,
     },
     /// Show the effective configuration and where each value came from
     #[command(
@@ -1457,6 +1462,43 @@ pub(crate) fn survey_sections(argv: &[String]) -> Vec<String> {
             )
         })
         .unwrap_or_default()
+}
+
+/// `af project`: the commands of [`ProjectCommand`], then `brief`, which reads the Project
+/// Store and records nothing (ADR-0153).
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProjectCli {
+    #[command(flatten)]
+    Core(ProjectCommand),
+    /// Print the exact Project Brief a `project` port would carry, recording nothing
+    #[command(
+        long_about = "Render one Project Brief variant (`af/ProjectBrief@1`) of this checkout's \
+newest complete Survey, or of the complete Survey --survey names, and print exactly the \
+canonical bytes a plan would bind on a `project_brief` port of that variant: what a Worker \
+wired to the port reads, before any token is spent.\n\n\
+A variant is a `[brief.<name>]` table of `.af/af.toml` (`sections`, `max_bytes`, `decisions`, \
+`hot_paths`); `orient` (tree, vocabulary, decisions, checks, hot_paths in 8192 bytes, the newest \
+12 decisions and the first 20 hot paths) and `none` are built in. Whole sections are dropped, \
+last-declared first, until the record fits `max_bytes`, each named in `dropped` with its reason.\n\n\
+--json prints `af/project-brief-preview@1`: the Brief's artifact ID, the Brief byte for byte as \
+the text form prints it, and the context manifest entry a Worker would see (bytes and the \
+runner's token estimate); or `outcome: none` with its reason (`variant_none`, `no_survey`), exit \
+0. Without a Survey the text form exits 1 and names `af project refresh`; variant `none` prints \
+nothing and says so on stderr. Reads the Project Store only: registers nothing, records nothing \
+and writes nothing inside the checkout.",
+        after_long_help = "Examples:\n  af project brief\n  af project brief --variant orient --json | jq .manifest\n  af project brief --survey sha256:… | wc -c"
+    )]
+    Brief {
+        /// The variant to render [default: orient]
+        #[arg(long, value_name = "NAME")]
+        variant: Option<String>,
+        /// Render this complete Survey instead of the newest complete one
+        #[arg(long, value_name = "ID")]
+        survey: Option<String>,
+        /// One `af/project-brief-preview@1` document on stdout instead of the Brief's bytes
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

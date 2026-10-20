@@ -408,6 +408,46 @@ fn project_survey_refresh_and_history_describe_the_surveyor() {
     }
 }
 
+/// `af project brief` (ADR-0153) is listed under `af project` with the Brief, says what it prints
+/// and records, and has its own manual page.
+#[test]
+fn project_brief_describes_the_exact_bytes_a_port_carries() {
+    let project = out(&af(&["project", "--help"]));
+    assert!(
+        project
+            .lines()
+            .any(|line| line.trim_start().starts_with("brief ")),
+        "{project}"
+    );
+    let project = project.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "af/ProjectBrief@1",
+        "`[brief.<name>]` variant",
+        "af/project-brief-preview@1",
+        "af project brief --variant orient",
+    ] {
+        assert!(project.contains(needle), "`{needle}` missing:\n{project}");
+    }
+    let brief = out(&af(&["project", "brief", "--help"]));
+    let brief = brief.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "--variant <NAME>",
+        "--survey <ID>",
+        "--json",
+        "exactly the canonical bytes a plan would bind",
+        "`orient` (tree, vocabulary, decisions, checks, hot_paths in 8192 bytes",
+        "last-declared first",
+        "`outcome: none` with its reason (`variant_none`, `no_survey`), exit 0",
+        "registers nothing, records nothing and writes nothing inside the checkout",
+    ] {
+        assert!(brief.contains(needle), "`{needle}` missing:\n{brief}");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let man = af(&["self", "man", dir.path().to_str().unwrap()]);
+    assert!(man.status.success(), "{}", err(&man));
+    assert!(dir.path().join("af-project-brief.1").is_file());
+}
+
 /// `af telemetry`, its two commands and `af help telemetry` say what they print, what they never
 /// do, their options and their exit codes, in `--help`, in `af help` and in the man pages
 /// (ADR-0153, ADR-0146).

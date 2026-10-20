@@ -913,6 +913,134 @@ match `café.rs`, whose `é` is two bytes, and `caf??.rs` does; a byte that is n
 ([ADR-0152](adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md), clauses 13
 and 14).
 
+## Briefs
+
+A **Project Brief** is the bounded selection of one Survey that a pipeline's declared `project`
+port carries into the Workers it is wired to, and no other: the record `af/ProjectBrief@1`
+([schema](../schemas/project-brief-v1.json)) in the Task Store's CAS, rendered by a variant from
+the Survey the Task pinned when it was planned
+([ADR-0153](adr/0153-carry-a-bounded-project-brief-on-a-declared-port.md)). Every section is
+that Survey's verbatim, except `decisions`, whose records are the variant's newest N (by date
+descending, undated last, then number descending, then path), and `hot_paths`, the first N of
+`history.hot_paths`. `rendered_bytes` is the byte length of the record's own canonical JSON.
+
+### Variants
+
+A variant is a `[brief.<name>]` table of `.af/af.toml`, in the project layer beside `[survey]`,
+deep-merged like every other table:
+
+| Key | Holds | Default |
+|---|---|---|
+| `sections` | rendered in this order: `identity`, `tree`, `history`, `contributors`, `decisions`, `vocabulary`, `checks`, `hot_paths` (`history.hot_paths` alone) or `activity`, each at most once | required for a variant of the project's own |
+| `max_bytes` | the Brief's canonical bytes are at most this, 1,024 to 262,144 | 8192 |
+| `decisions` | how many of the newest decision records `decisions` keeps, 0 to 1,000 | 12 |
+| `hot_paths` | how many of the first hot paths `hot_paths` keeps, 0 to 1,000 | 20 |
+
+Two variants are built in. `orient` renders `tree`, `vocabulary`, `decisions`, `checks` and
+`hot_paths` in 8,192 bytes, and a project may override it key by key:
+
+```toml
+[brief.orient]
+max_bytes = 4096
+
+[brief.reviewer]
+sections = ["decisions", "checks", "contributors"]
+max_bytes = 16384
+decisions = 40
+```
+
+`none` constructs nothing: no Brief, no manifest entry, nothing on the port. An unknown key, an
+unknown or repeated section, a count or `max_bytes` out of range, a `[brief.none]` table and
+`contributors` or `activity` in `orient` are refused when the policy loads, naming the variant
+and the key. No Survey of this release measures `activity`, so a variant that lists it records it
+under `dropped` with the reason `not_in_survey`.
+
+When a rendering is over `max_bytes`, whole sections are dropped, last-declared first, until the
+exact canonical bytes (`dropped` and `rendered_bytes` included) fit; each drop is recorded in
+`dropped` with the reason `max_bytes`. A rendering exactly at `max_bytes` drops nothing, and one
+that does not fit once every section is gone fails the plan naming the variant and both byte
+counts.
+
+### The port
+
+A pipeline that wants a Brief declares the root port and wires it only to the nodes that should
+see the Project:
+
+```toml
+[contract.inputs.project]
+artifact_type = "af/ProjectBrief@1"
+cardinality = "one"
+optional = true
+covers = []
+root_default = "project_brief"
+brief = "orient"
+
+[contract.inputs.project.affinity]
+kind = "unbound"
+
+[[nodes]]
+id = "implement"
+# …
+[nodes.inputs.project]
+kind = "input"
+port = "project"
+```
+
+The Worker package admits the port in `[signature.contract.inputs.project]`, optional and
+`unbound` like the root port, and in its `input.schema.json`. A Brief describes the Survey's
+head, which may be older than or divergent from the Task's source, so its value carries no
+Snapshot ID. A node that does not wire the port sees nothing; the Worker that does sees one more
+context manifest entry: name `project`, `required_by` `port:project`, the Brief's artifact ID and
+type, its bytes and the runner's token estimate. A Worker output of type `af/ProjectBrief@1` is
+refused at output admission: only the kernel constructs a Brief.
+
+The Task's initial capture, before any pipeline is selected, pins the newest complete Survey as
+`af/ProjectSurveyPin@1` in the Task Store, and every later normalization renders the Brief from
+that pin alone: a refresh, a removed Project Store or a deleted checkout between planning and
+running changes nothing, and run, resume, retry and replay use the Brief the plan pinned. A Task
+file may bind the port like any other root input, to a recorded Task result output of type
+`af/ProjectBrief@1` (ADR-0134); the binding suppresses construction, and a Brief the kernel did
+not construct is refused (`not_kernel_constructed`).
+
+### In the preview
+
+`af task plan` and `af task explain` print one line for each Brief port under `IN`:
+
+```text
+IN    project, requirements, source
+      project: af/ProjectBrief@1 sha256:59f2678a… (orient, 7194 B, ~1833 tokens, survey 0ee227f92100, behind 3)
+```
+
+`behind` counts the commits from the Survey's head to the Task's source commit, observed once
+when the Task was planned; it is `unknown` when the head is no ancestor of it, the checkout
+lacked the objects, git did not answer in time or the source has no commit. Staleness is
+reported, never refused. A bound Brief reads `(bound, orient, …)`. An empty port reads
+`project: none (no Survey recorded; run af project refresh)` or `project: none (variant none)`,
+and the Task still runs.
+
+### Where Briefs live
+
+A Brief, its pin, the capture and the receipts are records of the Task Store's `cas/`, written by
+`af task plan` and `af task start` only when the captured catalog can carry a Brief (a pipeline
+declares a `project_brief` port or a Planner may generate one) or the Task file binds one; a
+Task whose capture would record nothing writes none of them. The Project Store is only read.
+Collecting a Task releases its pin and Briefs, while a later Task keeps its own.
+
+### `af project brief`
+
+Prints exactly the canonical bytes a plan would bind for a variant (default `orient`) of the
+newest complete Survey, or of the complete Survey `--survey ID` names, before any token is spent.
+It reads the Project Store only and records nothing. `--json` prints `af/project-brief-preview@1`
+([schema](../schemas/project-brief-preview-v1.json)): `brief_id`, the Brief byte for byte as the
+text form, and `manifest`, the entry a Worker would see; or `outcome: none` with the reason
+`variant_none` or `no_survey`, exit 0. The text form exits 1 without a Survey.
+
+```sh
+af project brief
+af project brief --variant orient --json | jq .manifest
+af project brief | wc -c
+```
+
 ## What is written where
 
 | Written | Where | By |
