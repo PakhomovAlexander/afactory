@@ -263,6 +263,75 @@ fn provider_models_help_and_man_page_describe_the_command() {
     assert!(page.contains("list_models"), "{page}");
 }
 
+/// `af telemetry`, its two commands and `af help telemetry` say what they print, what they never
+/// do, their options and their exit codes, in `--help`, in `af help` and in the man pages
+/// (ADR-0153, ADR-0146).
+#[test]
+fn telemetry_help_and_man_pages_describe_the_commands() {
+    let namespace = out(&af(&["telemetry", "--help"]));
+    for command in ["status ", "reindex "] {
+        assert!(
+            namespace
+                .lines()
+                .any(|line| line.trim_start().starts_with(command)),
+            "{namespace}"
+        );
+    }
+    assert!(namespace.contains("ADR-0153"), "{namespace}");
+    let bare = af(&["telemetry"]);
+    assert_eq!(bare.status.code(), Some(2));
+    for (command, schema) in [
+        ("status", "af/telemetry-status@1"),
+        ("reindex", "af/telemetry-reindex@1"),
+    ] {
+        for help in [
+            af(&["telemetry", command, "--help"]),
+            af(&["help", "telemetry", command]),
+        ] {
+            assert!(help.status.success(), "{}", err(&help));
+            let text = out(&help).split_whitespace().collect::<Vec<_>>().join(" ");
+            for needle in [
+                &format!("Usage: af telemetry {command} [OPTIONS]"),
+                "--json",
+                "--dir <PATH>",
+                schema,
+                "Never:",
+                "Exit codes: 0 success, 1",
+                &format!("af telemetry {command} --json"),
+            ] {
+                assert!(text.contains(needle), "`{needle}` missing:\n{text}");
+            }
+        }
+    }
+    let topic = af(&["help", "telemetry"]);
+    assert!(topic.status.success());
+    let text = out(&topic);
+    for needle in [
+        "[telemetry]",
+        "level = \"spans\"",
+        "off | metrics | spans | content",
+        "AF_TELEMETRY__<KEY>",
+        "segment_max_bytes = \"256MiB\"",
+        "sink_timeout_ms = 5000",
+        "af telemetry status",
+        "af telemetry reindex",
+        "machine layers only",
+    ] {
+        assert!(text.contains(needle), "`{needle}` missing:\n{text}");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let man = af(&["self", "man", dir.path().to_str().unwrap()]);
+    assert!(man.status.success(), "{}", err(&man));
+    for page in [
+        "af-telemetry.1",
+        "af-telemetry-status.1",
+        "af-telemetry-reindex.1",
+        "af-telemetry.7",
+    ] {
+        assert!(dir.path().join(page).is_file(), "{page} missing");
+    }
+}
+
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();

@@ -25,4 +25,4 @@
   shows it twice; a killed installer's staging
   counts
   against the Storage Budget until the next installation recovers it; `CI`, `AF_SELF_OFFLINE`,
-  `update_check = false` and `auto_update = "never"` still turn the check off ([ADR-0153](docs/adr/0153-check-for-updates-after-headless-and-json-commands.md)).
+  `update_check = false` and `auto_update = "never"` still turn the check off ([ADR-0154](docs/adr/0154-check-for-updates-after-headless-and-json-commands.md)).

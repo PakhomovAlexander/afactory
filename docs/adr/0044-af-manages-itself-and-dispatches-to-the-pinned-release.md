@@ -13,7 +13,7 @@ Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the `afa
 configuration read-through and the `AFACTORY_*` rename refusals. The trust gate that the
 Consequences declare was never implemented, and its `af help trust` topic was removed before GA.
 Superseded in part by
-[ADR-0153](0153-check-for-updates-after-headless-and-json-commands.md): the check is scheduled
+[ADR-0154](0154-check-for-updates-after-headless-and-json-commands.md): the check is scheduled
 after headless and `--json` commands too; only the notice stays on a TTY.
 
 Consumers ran `af` through per-repository launcher scripts that carried a version and digests,

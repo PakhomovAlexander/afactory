@@ -863,7 +863,7 @@ fn already_installed(
 ///
 /// The versions lock is held only to look for an installed copy and to publish the verified one,
 /// never across the release source: a command that records a seen pin, activates or sweeps waits
-/// for no download (ADR-0153).
+/// for no download (ADR-0154).
 fn install(
     paths: &Paths,
     policy: &SelfPolicy,

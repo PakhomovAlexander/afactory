@@ -1,4 +1,4 @@
-# ADR-0153: Check for updates after headless and `--json` commands
+# ADR-0154: Check for updates after headless and `--json` commands
 
 **Status:** accepted (2026-10-19). Supersedes in part
 [ADR-0044](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md): clause 4's "on a

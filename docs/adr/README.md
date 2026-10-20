@@ -98,7 +98,7 @@ future readers need.
   reviewers](0042-require-provider-bindings-and-isolate-claude-reviewers.md)
 - [0044 — `af` manages itself: dispatch to the pinned release, policy-driven updates, a
   layered configuration](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)
-  (superseded in part by [ADR-0153](0153-check-for-updates-after-headless-and-json-commands.md))
+  (superseded in part by [ADR-0154](0154-check-for-updates-after-headless-and-json-commands.md))
 - [0045 — One release train, and a pin that binds
   bytes](0045-one-release-train-and-a-pin-that-binds-bytes.md)
 - [0046 — Add versioned Task contracts with exact-plan
@@ -276,5 +276,7 @@ future readers need.
   Markdown](0151-export-a-human-presentation-of-a-report-beside-its-canonical-markdown.md)
 - [0152 — Push the release pin with a deploy key that bypasses main's
   ruleset](0152-push-the-release-pin-with-a-deploy-key-that-bypasses-mains-ruleset.md)
-- [0153 — Check for updates after headless and `--json`
-  commands](0153-check-for-updates-after-headless-and-json-commands.md)
+- [0153 — Record telemetry in its own store, and never let it
+  steer](0153-record-telemetry-in-its-own-store-and-never-let-it-steer.md)
+- [0154 — Check for updates after headless and `--json`
+  commands](0154-check-for-updates-after-headless-and-json-commands.md)

@@ -68,7 +68,7 @@ and nothing waits for the network. `[self] check_every` (24h) throttles invocati
 daemon or service runs between them. The cached notice reaches stderr only when stderr is a
 terminal and the run has no `--json`. `CI`, `AF_SELF_OFFLINE=1`, `[self] update_check = false` and
 `auto_update = "never"` turn the check off; `af help self` has the whole policy
-([ADR-0153](docs/adr/0153-check-for-updates-after-headless-and-json-commands.md)). While a
+([ADR-0154](docs/adr/0154-check-for-updates-after-headless-and-json-commands.md)). While a
 background check runs, `af self uninstall` refuses rather than race an installation it may be
 making; run it again when the check has finished.
 

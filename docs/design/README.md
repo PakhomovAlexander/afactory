@@ -37,3 +37,9 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   cache key, one machine-wide budget evicted least recently used and enforced after every run,
   collection that reaches every Store, an af-owned scratch directory and `HOME` for every check, and removal of
   what Workers and gates leave in Claude and GitHub. Accepted 2026-10-07; package D1–D5 in flight.
+- [`telemetry.md`](telemetry.md) — Telemetry: a separate, machine-only, bounded store of spans,
+  events and content-addressed blobs that the kernel writes and never reads — kernel phases,
+  supervised processes with their resource use, harness turns, tool calls and reasoning, the
+  configuration a run ran under, a mirror of the Store's events, failures — with `af telemetry`
+  views, OTLP and Perfetto exports, and an optional loopback receiver for the harnesses' native
+  OpenTelemetry. Packages T1–T6; under review, nothing shipped.
