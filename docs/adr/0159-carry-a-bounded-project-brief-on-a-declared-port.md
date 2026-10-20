@@ -2,9 +2,9 @@
 
 **Status:** accepted (2026-10-20). Package PJ3 of the
 [Project design note](../design/project.md). Builds on
-[ADR-0151](0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+[ADR-0157](0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
 (the Project and its Project Store),
-[ADR-0152](0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md) (Surveys),
+[ADR-0158](0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md) (Surveys),
 [ADR-0117](0117-bind-task-inputs-to-recorded-task-outputs.md) and
 [ADR-0134](0134-bind-any-declared-root-port-to-recorded-task-outputs.md) (root inputs resolved
 at plan time, pinned, bound only from recorded result outputs),
@@ -16,7 +16,7 @@ measures), [ADR-0135](0135-collect-finished-tasks-behind-a-tombstone-and-a-reach
 
 ## Context
 
-A Survey (ADR-0152) says how big a Project is, what it decided, which terms it defines and
+A Survey (ADR-0158) says how big a Project is, what it decided, which terms it defines and
 which checks it declares. A Worker still learns none of it unless it spends tool calls
 rediscovering it in every Attempt; the kernel's implementer is told to read `CONTEXT.md` and the
 ADRs whole. Giving every Worker the Survey would break minimum context (ADR-0028): a Survey is
@@ -32,7 +32,7 @@ the Task is planned so a later Survey can never change what an admitted plan agr
 - **Read the newest Survey when a Worker is dispatched.** Rejected: a refresh between plan and
   run would change a Worker's input under an admitted plan, and replay could not reproduce it
   (ADR-0117 resolves every root input once, at plan time).
-- **Let a model write the Brief.** Rejected for the reason ADR-0152 rejected a model-written
+- **Let a model write the Brief.** Rejected for the reason ADR-0158 rejected a model-written
   Survey: the kernel measures. A model-written project summary is a later, separate decision.
 - **Truncate an oversized Brief mid-section, or leave the port silently empty.** Rejected: a cut
   section misreports what it holds, and an empty port hides that the variant cannot fit. Whole
