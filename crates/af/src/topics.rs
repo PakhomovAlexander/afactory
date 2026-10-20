@@ -140,7 +140,8 @@ stderr still gets one diagnostic line, so discarding stdout never hides a refusa
 
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
 change bumps the version rather than reinterpreting an old one. Nothing af prints under --json is
-affected by a TTY, colours, or the update notice (which goes to stderr, and only on a TTY).";
+affected by a TTY, colours, or the update check: its notice goes to stderr, only on a TTY, and
+never under --json.";
 
 const STORAGE: &str = "\
 af keeps a bounded amount of disk between runs (ADR-0144). One budget covers warm build keys,
@@ -215,17 +216,30 @@ Updates — `[self]` in ~/.config/af/config.toml
   install_pins = true
   keep_versions = 3
 
-  The check never runs on the hot path: after a command's result is written, on a TTY only,
-  never under CI, --json, or AF_SELF_OFFLINE, af spawns a detached child that refreshes the cache
-  and exits. The next invocation prints one line on stderr. With `always`, the child installs the
-  newer release and retargets the default; the running process and every pinned project are
-  untouched.
+  The check never runs on the hot path. After an eligible command — any but help, --version,
+  `af self`, `af config`, completions and the browser — af spawns a detached child that
+  refreshes the cache and exits, with or without a terminal and under --json too. The child holds
+  none of the command's pipes, and never changes its output or exit status. check_every
+  throttles invocations, a failed attempt included: no timer, daemon or service runs between
+  them. CI, AF_SELF_OFFLINE, update_check = false and auto_update = \"never\" turn the check
+  off. Inside a pinned project the af that dispatches schedules it, once. Only an interactive
+  run — stderr a terminal, no --json — prints the cached notice, one line on stderr; under a
+  pin, the af that dispatches prints it. With `always`, the child installs the newer release
+  and retargets the default, unless `af self update` or `rollback` changed it meanwhile; the
+  running process and every pinned project are untouched. Its \"updated the default\" notice is
+  shown only while the activation it announces stands: one a later update or rollback made
+  stale, even an update back to the same version, is dropped.
 
 Commands
   af self status | update [--check] | rollback | install V | remove V | prune
   af self setup-shell [--write] | uninstall [--purge]
   Update, rollback, remove, prune, and uninstall refuse to touch a binary af did not install.
+  uninstall refuses while a background check runs, since it may be installing a release: run
+  it again when the check has finished. A check that starts after an uninstall writes nothing,
+  and a command that was running during an uninstall --purge recreates none of what it removed.
   From a cargo/source-installed af at the default path, `af self install V` explicitly replaces
   that running executable with the verified release and adopts the self-managed layout. An
   unrelated file at the default path is never replaced.
-  remove and prune keep the default and every version a project seen on this machine pins.";
+  remove and prune keep the default and every version a project seen on this machine pins,
+  read again under the lock every activation holds. A pinned release runs only once its pin is
+  recorded under that lock: when it cannot be, the command fails and says why.";

@@ -32,6 +32,7 @@ mod render;
 mod routing;
 mod self_managed;
 mod self_optimizer;
+mod self_update_check;
 mod setup_docs;
 mod storage_budget;
 mod task_acceptance;
