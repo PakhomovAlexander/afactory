@@ -193,6 +193,8 @@ pub(crate) struct Log {
     pub(crate) project: Option<ProjectRegisteredPayloadV1>,
     /// Registered Workspaces by ID.
     pub(crate) workspaces: std::collections::BTreeMap<String, Registered>,
+    /// Workspaces whose last event is their `WorkspaceRemoved@1`, by ID, as they were registered.
+    pub(crate) removed: std::collections::BTreeMap<String, Registered>,
     /// Every Survey recorded and every Survey that failed, in log order.
     pub(crate) surveys: Vec<survey::Outcome>,
 }
@@ -217,6 +219,7 @@ impl Log {
                     let payload: WorkspaceRegisteredPayloadV1 =
                         serde_json::from_value(event.payload.clone())
                             .map_err(|error| format!("WorkspaceRegistered@1: {error}"))?;
+                    log.removed.remove(&payload.workspace_id);
                     log.workspaces.insert(
                         payload.workspace_id.clone(),
                         Registered {
@@ -231,7 +234,9 @@ impl Log {
                     let payload: WorkspaceRemovedPayloadV1 =
                         serde_json::from_value(event.payload.clone())
                             .map_err(|error| format!("WorkspaceRemoved@1: {error}"))?;
-                    log.workspaces.remove(&payload.workspace_id);
+                    if let Some(workspace) = log.workspaces.remove(&payload.workspace_id) {
+                        log.removed.insert(payload.workspace_id, workspace);
+                    }
                 }
                 EventType::SurveyRecordedV1 => {
                     let payload: SurveyRecordedPayloadV1 =
@@ -257,6 +262,14 @@ impl Log {
         self.workspaces
             .values()
             .find(|workspace| workspace.label == label)
+    }
+
+    /// The removed Workspaces that were labelled `label`, which no registered one holds now.
+    pub(crate) fn removed_by_label(&self, label: &str) -> Vec<&Registered> {
+        self.removed
+            .values()
+            .filter(|workspace| workspace.label == label)
+            .collect()
     }
 }
 
@@ -488,6 +501,9 @@ impl ProjectStore {
         origin: WorkspaceOriginV1,
         paths: WorkspacePaths,
     ) -> Result<Registration, String> {
+        // A completed removal whose unregistration is durable leaves nothing to a new
+        // registration of the same checkout path: its record goes before the new event.
+        self.settle_removal(log, &paths.id)?;
         if let Some(existing) = log.workspaces.get(&paths.id) {
             let mut known = self.paths()?;
             if !known.iter().any(|entry| entry.id == paths.id) {
@@ -536,6 +552,29 @@ impl ProjectStore {
         let mut known = self.paths()?;
         known.retain(|entry| entry.id != workspace_id);
         file::write(&self.workspaces_file(), known)
+    }
+
+    /// Finish the removal of `workspace_id` once its unregistration is durable: a completed
+    /// removal record of a Workspace the log no longer registers (its `WorkspaceRemoved@1` is
+    /// appended) has the Workspace's paths dropped, when a crash left them, and is then deleted.
+    /// Idempotent: whichever of the three a crash left, the next call finishes the rest. `true`
+    /// when it settled a record. A record of a registered Workspace, or one not complete, is
+    /// left: its removal still owns it (ADR-0157 clause 5).
+    pub(crate) fn settle_removal(&mut self, log: &Log, workspace_id: &str) -> Result<bool, String> {
+        if log.workspaces.contains_key(workspace_id) {
+            return Ok(false);
+        }
+        match removal::read(&self.directory, workspace_id)? {
+            Some(record) if removal::complete(&record) => {}
+            _ => return Ok(false),
+        }
+        let mut known = self.paths()?;
+        if known.iter().any(|entry| entry.id == workspace_id) {
+            known.retain(|entry| entry.id != workspace_id);
+            file::write(&self.workspaces_file(), known)?;
+        }
+        removal::delete(&self.directory, workspace_id)?;
+        Ok(true)
     }
 
     /// The directory `af project workspace new` makes for a Workspace's Store, Task files and

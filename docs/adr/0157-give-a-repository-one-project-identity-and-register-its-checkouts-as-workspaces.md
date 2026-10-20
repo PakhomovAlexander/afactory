@@ -5,7 +5,8 @@ again (2026-10-20) by its second round, clauses 3 and 5 by its third, clause 5 b
 fifth, clauses 3 and 5 by its sixth, clause 5 by its seventh, eighth and ninth, clause 5
 by the PJ2 close-out (2026-10-20: every `*-moved` step checks its original path), and clause 5
 by the second close-out (2026-10-20: the entry check follows the recorded step, and every
-identity carries its birth time, the removal record `version = 2`). Package PJ1
+identity carries its birth time, the removal record `version = 2`), and clause 5 by the
+third close-out (2026-10-21: a completed removal record outlives the unregistration). Package PJ1
 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery makes only a local
@@ -205,9 +206,23 @@ directories.
    registered checkout path; the identity of the checkout and of its administrative entry as
    inspected; for each, the container this removal named and that container's identity once
    made; and the step each reached (`inspected`, `container`, `contained`, `deleting`, `deleted`,
-   `done`). It is rewritten before each next step and deleted when the removal completes, before
-   the Workspace is unregistered, so the Workspace is unregistered exactly once.
-   `workspaces.toml` holds no removal state and stays version 1 (ADR-0145).
+   `done`). It is rewritten before each next step. A completed record, every directory `done`,
+   outlives the unregistration: the Workspace is unregistered (`WorkspaceRemoved@1` appended,
+   then its paths dropped from `workspaces.toml`) while the record stays, and only then is the
+   record deleted, so no crash leaves a registered Workspace whose removal holds no identities,
+   and the Workspace is unregistered exactly once. Recovery reconciles the three idempotently
+   before it deletes the record, never inspecting the path again: a rerun that finds a completed
+   record of a registered Workspace touches nothing on disk, unregisters it and deletes the
+   record; a rerun of `workspace remove LABEL --delete-worktree` whose label names only a removed
+   Workspace with a completed record drops that Workspace's paths when a crash left them, deletes
+   the record and reports `removed Workspace <label> (<id>)` with `it was already unregistered`,
+   appending no second `WorkspaceRemoved@1`; and a registration of the same Workspace ID again
+   (`workspace add`, `workspace new`) settles such a record before its own event, so the new
+   Workspace's removal inspects afresh. Only a completed record of a Workspace the log no longer
+   registers is deleted that way; any other record stays for its removal. A worktree created at
+   the registered path after such a crash is therefore never inspected, claimed or deleted by
+   the retry. `workspaces.toml` holds no removal state and stays version 1 (ADR-0145), and the
+   record keeps version 2: its shape is unchanged, only when it is deleted.
 
    An identity is a directory's device, its inode and its birth time in nanoseconds since the
    Unix epoch, spelled `<device>:<inode>:<birth time>`: a file system may hand a freed inode
@@ -321,14 +336,15 @@ directories.
    | `deleted` | The directory went by its identity. Its container goes only while it has its recorded identity and is empty; a directory at the checkout's path is kept and reported. A crash after the container's removal and before `done` is recorded finds no container, and the directory is `done`. |
    | `done` | Nothing; the next directory. |
 
-   Once every directory is `done`, the rerun deletes the record and unregisters. A recorded container that is not the one made is
+   Once every directory is `done`, the rerun unregisters and then deletes the record, as above. A recorded container that is not the one made is
    reported and left, and a name recorded for a container that was never identified proves
    nothing about a directory found there. A directory that merely looks like a container,
    beside the checkout or among the entries, whether nobody recorded it or it is a worktree or
    an entry whose own name has that form, is never touched and is reported as
    `left <directory>: it is named like a removal's container, but no removal record names it, so it is not this removal's`.
    A rerun's messages begin `the worktree <path> is already gone;` once the checkout's deletion
-   is recorded. Without a record a removal is fresh: a registered checkout path that no longer
+   is recorded. Without a record a removal is fresh (a completed record is never deleted before
+   the unregistration, so a registered Workspace without one has no removal begun): a registered checkout path that no longer
    exists has each entry at its own path whose `gitdir` names `<path>/.git` recorded and removed
    as above, and is otherwise unregistered and reported as already gone. `workspace remove
    LABEL` without `--delete-worktree` is refused while the Workspace has a removal record,

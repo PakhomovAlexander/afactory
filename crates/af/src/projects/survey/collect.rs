@@ -61,7 +61,10 @@
 //! log. So does a record the file system will not let af read, and one over
 //! [`MAX_SURVEY_BYTES`], the ceiling the Surveyor writes within, which is left as `oversize`; a
 //! record within it whose bytes are no Survey is collected with an `unreadable` tombstone, since
-//! reclaiming corrupt bytes is the budget's job.
+//! reclaiming corrupt bytes is the budget's job. An interruption between such a tombstone and
+//! the record's move leaves it at its name; the next sweep reclaims it by the object its
+//! collection selected (device, inode, birth time and length) alone, since its bytes never hash
+//! to its ID, and anything else at that name is `foreign`.
 //!
 //! The pattern rules of clause 14 live here too: a `[survey]` pattern is at most
 //! [`MAX_PATTERN_BYTES`] and a list at most [`MAX_PATTERNS`], and the measurement's one pattern
@@ -1083,11 +1086,14 @@ pub(crate) enum Job {
         survey_id: String,
         identity: Option<Identity>,
     },
-    /// Delete the record a tombstoned Survey still holds at its CAS name.
+    /// Delete the record a tombstoned Survey still holds at its CAS name, the object its
+    /// collection selected. `unreadable`: its tombstone says its bytes were no Survey, so they
+    /// are never compared with its ID; otherwise they must still hash to it.
     AtName {
         store: PathBuf,
         survey_id: String,
         identity: Identity,
+        unreadable: bool,
     },
     /// Delete a tombstoned Survey's record a dead pass left in its container.
     Moved {
@@ -1504,9 +1510,10 @@ fn judge_leftovers(
 /// uncollected Surveys, each record read and its event verified against it once here
 /// ([`verify`]), and what an interruption left: per tombstoned Survey, in tombstone order, its
 /// record moved into a dead pass's container (a file that took its CAS name since is
-/// `foreign`), otherwise its record still at its name, which is its record only when its bytes
-/// hash to its ID and its record has not left the CAS already ([`read_settled`]; any other file
-/// there is `foreign`); then the objects of unrecorded Surveys a dead pass moved into its
+/// `foreign`), otherwise its record still at its name, which is its record only when it is the
+/// object its collection selected, its record has not left the CAS already ([`read_settled`])
+/// and its bytes hash to its ID, or, for a Survey collected `unreadable`, by that selection alone
+/// (any other file there is `foreign`); then the objects of unrecorded Surveys a dead pass moved into its
 /// container that their pending-publication entries still describe ([`pending_entries`], read
 /// before the leftovers are judged); then each dead pass's container whose every file is a
 /// moved record or object planned before it, and each one that holds nothing; then the
@@ -1531,7 +1538,15 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
             .map_err(|ceiling| format!("{BEYOND_DISCOVERY}: {ceiling}"))
     };
     let log = Log::fold(&replay(RUN_ID)?)?;
-    let order: Vec<String> = tombstones_of(replay(COLLECTION_RUN)?)?
+    let tombstoned = tombstones_of(replay(COLLECTION_RUN)?)?;
+    // The Surveys collected `unreadable`: their records' bytes were no Survey, so they never
+    // hash to their IDs, and their selection alone names them.
+    let unreadable: BTreeSet<String> = tombstoned
+        .iter()
+        .filter(|tombstone| tombstone.unreadable.is_some())
+        .map(|tombstone| tombstone.survey_id.clone())
+        .collect();
+    let order: Vec<String> = tombstoned
         .into_iter()
         .map(|tombstone| tombstone.survey_id)
         .collect();
@@ -1603,7 +1618,8 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
     // What each collected Survey left, in the order the tombstones were appended: its record
     // moved into a dead pass's container, or its record at its name, each only while it is the
     // object its collection selected before the tombstone (its device, inode, birth time and
-    // length) and, at its name, its bytes are the record's. Any other file is somebody else's,
+    // length) and, at its name, its bytes are the record's (or its tombstone says they were no
+    // Survey, `unreadable`, and the selection alone names it). Any other file is somebody else's,
     // durably, even when its bytes hash to the Survey's ID: listed `foreign`, never the
     // Survey's, never deleted.
     let mut not_records = BTreeSet::new();
@@ -1669,6 +1685,20 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
                         .into(),
                 ));
             }
+            // Collected `unreadable` (its bytes did not match its ID or did not parse): the
+            // object its collection selected, by device, inode, birth time and length, is its
+            // record whatever its bytes, since no digest of them could ever name it.
+            Ok(Some(record)) if unreadable.contains(survey_id) => look.recovery.push(Pending {
+                object,
+                bytes: record.bytes,
+                counted: Counted::Survey,
+                job: Job::AtName {
+                    store: store.to_path_buf(),
+                    survey_id: survey_id.clone(),
+                    identity: record.identity,
+                    unreadable: true,
+                },
+            }),
             Ok(Some(record)) => match record.is_the_record() {
                 Ok(true) => look.recovery.push(Pending {
                     object,
@@ -1678,6 +1708,7 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
                         store: store.to_path_buf(),
                         survey_id: survey_id.clone(),
                         identity: record.identity,
+                        unreadable: false,
                     },
                 }),
                 Ok(false) => {
@@ -2562,6 +2593,7 @@ pub(crate) fn execute(job: &Job) -> Result<Executed, String> {
             store,
             survey_id,
             identity,
+            unreadable,
         } => {
             let _held = hold(store)?.map_err(lost)?;
             let settled = open_cas(store)
@@ -2586,10 +2618,12 @@ pub(crate) fn execute(job: &Job) -> Result<Executed, String> {
                          collection selected, so it is foreign and nothing is deleted"
                     )))
                 }
-                Some(record) if !record.is_the_record().unwrap_or(false) => Err(said(format!(
-                    "{REPLACED}: its record's name holds bytes that are not its record's since \
-                     the plan, so nothing is deleted"
-                ))),
+                Some(record) if !*unreadable && !record.is_the_record().unwrap_or(false) => {
+                    Err(said(format!(
+                        "{REPLACED}: its record's name holds bytes that are not its record's \
+                         since the plan, so nothing is deleted"
+                    )))
+                }
                 Some(record) => record
                     .remove(true)
                     .map(removed)

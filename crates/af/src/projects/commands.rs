@@ -1745,11 +1745,37 @@ fn store_note(state: &Path) -> String {
 fn remove(label: &str, delete_worktree: bool, json_output: bool) -> Result<i32, String> {
     let (checkout, mut store) = open_here()?;
     let log = store.log()?;
-    let workspace = log.by_label(label).cloned().ok_or_else(|| {
-        format!(
-            "this Project has no Workspace labelled `{label}`; `af project workspaces` lists them"
-        )
-    })?;
+    let Some(workspace) = log.by_label(label).cloned() else {
+        // A crash after the unregistration of a `--delete-worktree` and before its completed
+        // record went: the rerun finishes it, appending no second `WorkspaceRemoved@1`.
+        let mut settled = Vec::new();
+        for removed in log.removed_by_label(label) {
+            if store.settle_removal(&log, &removed.workspace_id)? {
+                settled.push(removed.workspace_id.clone());
+            }
+        }
+        let [workspace_id] = settled.as_slice() else {
+            return Err(format!(
+                "this Project has no Workspace labelled `{label}`; `af project workspaces` lists \
+                 them"
+            ));
+        };
+        if json_output {
+            let log = store.log()?;
+            print_json(&workspaces_document(&store, &log, &store.paths()?))?;
+            eprintln!(
+                "af project workspace remove: Workspace `{label}` ({workspace_id}) was already \
+                 unregistered; its finished removal record is deleted"
+            );
+        } else {
+            println!("removed Workspace {label} ({workspace_id})");
+            println!(
+                "it was already unregistered; its finished removal record is deleted, and its \
+                 checkout path was not inspected again"
+            );
+        }
+        return Ok(0);
+    };
     let paths = store
         .paths()?
         .into_iter()
@@ -1785,6 +1811,22 @@ fn remove(label: &str, delete_worktree: bool, json_output: bool) -> Result<i32, 
         ));
     }
     store.unregister(&workspace.workspace_id)?;
+    if deleted.is_some() {
+        // The completed record outlives the unregistration, never the other way round: a
+        // crash before this leaves a record that the rerun settles without touching the path.
+        super::removal::stop_after("unregistered");
+        let log = store.log()?;
+        store
+            .settle_removal(&log, &workspace.workspace_id)
+            .map_err(|error| {
+                format!(
+                    "Workspace `{label}` is removed and unregistered, but its finished removal \
+                     record {} stays: {error}; `af project workspace remove {label} \
+                     --delete-worktree` deletes it",
+                    record.display()
+                )
+            })?;
+    }
     let note = paths.as_ref().map(|paths| store_note(&paths.state));
     if json_output {
         let log = store.log()?;

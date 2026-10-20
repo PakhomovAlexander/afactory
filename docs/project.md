@@ -46,7 +46,8 @@ these events, each canonical JSON with numbers as decimal strings:
 No event ever holds a path. Beside the log, outside every record, `workspaces.toml` holds this
 machine's paths of each Workspace: its checkout, its Task Store, and, when it has them, its
 bindings file and its Task-file directory. An unfinished `--delete-worktree` of a Workspace is
-held by its removal record beside it, `removals/<workspace id>.toml`. af writes each file whole
+held by its removal record beside it, `removals/<workspace id>.toml`, until its unregistration
+is durable. af writes each file whole
 through a temporary file and a rename, as it writes `stores.toml`.
 
 The Store registry (`$XDG_STATE_HOME/af/stores.toml`) records every Project Store with the kind
@@ -285,8 +286,10 @@ each with that container's identity, and the step each reached. A file system th
 birth time refuses the removal before anything is written, nothing changed, with
 `<path> is on a file system (<type>) that reports no birth time, so af cannot tell it from a file
 created later at the same inode and leaves it`. It
-rewrites the record at every step and deletes it when it is done, just before the Workspace is
-unregistered. Each directory is first claimed: moved into a container the command creates
+rewrites the record at every step. Once every directory is `done` the record stays, complete,
+while the Workspace is unregistered (its `WorkspaceRemoved@1` appended, then its paths dropped
+from `workspaces.toml`), and only then is it deleted, so no crash leaves a registered Workspace
+whose removal has lost its identities. Each directory is first claimed: moved into a container the command creates
 beside it, `<name>.af-removing-<pid>-<16 random hex digits>` with mode 0700, through that
 container's own descriptor once its identity is checked, never over a name that is taken, and
 found there by its identity. The checkout is judged there, its files read through descriptors
@@ -357,6 +360,17 @@ record, a checkout that no longer exists has each entry whose `gitdir` still nam
 the same way, and is otherwise unregistered and reported as already gone. While a removal record
 exists, `workspace remove` without `--delete-worktree` is refused and names the command that
 finishes it.
+
+A crash between a completed removal and the record's deletion is finished from the record,
+never by inspecting the path again. Before the unregistration, the rerun finds every directory
+`done`, touches nothing on disk, so a worktree created at the same path since stays as it is,
+then unregisters the Workspace and deletes the record. After the unregistration, the rerun of
+the same command finds the label among the removed Workspaces and its completed record, drops
+the Workspace's paths if the crash left them, deletes the record and says `removed Workspace
+<label> (<id>)` and `it was already unregistered`, appending no second `WorkspaceRemoved@1`. A
+Workspace registered again at that path (`workspace add` or `workspace new`, the same Workspace
+ID) settles such a completed record first, so the new Workspace's removal inspects afresh. Only
+a completed record of a Workspace the log no longer registers is ever deleted this way.
 
 ```sh
 af project workspace remove research
@@ -852,7 +866,14 @@ place of the inventory's bytes before what left is subtracted, so a whole remova
 the inventory's bytes out of the total, and a claim inventoried at 10 MiB that grew to 20 MiB and
 freed 8 MiB before it stopped leaves the 12 MiB it retains in the total. When what a deletion
 that stopped part way left cannot be measured, the total after it, and the sweep's, is `unknown`
-and `stop` is `unknown`, never `fits`; a Task records no sweep whose total is unknown. Every byte
+and `stop` is `unknown`, never `fits`. The sweep that ends a Task's run is recorded on that Task
+all the same, as `af/TaskStorageSweep@2`
+([schema](../schemas/task-storage-sweep-v2.json)): its removals, its failures, `freed_bytes`
+(what left the disk, every removal's and what a removal that stopped part way measured it freed)
+and its totals, `total_after` and `stop` both `unknown` when the total is; `af task show` prints
+`→ unknown` for it. Only a sweep that removed nothing and failed nothing records nothing. A
+Task log holding the superseded `af/TaskStorageSweep@1`, whose totals were numbers only, is
+refused as a superseded version. Every byte
 count, an entry's, a removal's and every total, is the allocated bytes of regular files:
 directories and links count nothing, so the numbers are the same on ext4, which charges a
 directory 4096 bytes, and on APFS, which charges none. So the document's totals are what af then
@@ -917,7 +938,11 @@ only through that entry. A file at that Survey's CAS name is then somebody else'
 `left` as `foreign` with its bytes, counted in the Project Store's bytes and never the Survey's,
 and never deleted by any sweep. Without a moved record, the file at a collected Survey's name is
 deleted only when it is the object the collection selected, its bytes are the record's (they hash
-to its ID) and its record has not left the CAS already, and is `foreign` otherwise: a
+to its ID) and its record has not left the CAS already, and is `foreign` otherwise. A Survey
+collected `unreadable` (below) is the exception to the hash: its bytes never hash to its ID, so
+the object its collection selected, by device, inode, birth time and length, is its record by
+that selection alone, and a crash between its tombstone and its record's move is reclaimed by
+the next sweep under `recovery`, never left `foreign` for good. Either way a
 byte-identical copy put there after a crash that followed the tombstone is another inode, or the
 same inode number born later, and stays, sweep after sweep. Once a collected Survey's own record
 has left its CAS name, deleted there or settled from a dead pass's container, the pass records
@@ -982,8 +1007,8 @@ The preview and the applied sweep decide `held` by one predicate: `project.lock`
 applied sweep opens it and released at once. The Surveys of a Project Store a refresh or a plan
 holds, or whose lock af cannot open or lock (`lock unavailable: <error>`, say a lock file it may
 not write), and the deletions an interruption left there, are left as `held` with that reason
-(`held survey …` in text), never removed. A Task's `af/TaskStorageSweep@1` counts a Survey's
-removal without listing it; its kinds are unchanged.
+(`held survey …` in text), never removed. A Task's `af/TaskStorageSweep@2` counts a Survey's
+removal without listing it; its kinds are those of `@1`.
 
 ```sh
 af storage --json | jq '[.entries[] | select(.kind == "survey")] | length'

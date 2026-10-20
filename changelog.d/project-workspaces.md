@@ -86,3 +86,12 @@
   the numbers main took
   ([ADR-0157](docs/adr/0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
   clause 5).
+- Third close-out, Workspace removal: a completed `--delete-worktree` removal record now outlives
+  the Workspace's unregistration and is deleted only after `WorkspaceRemoved@1` is appended and
+  its paths dropped. A crash before the unregistration, or after it and before the record's
+  deletion, is finished by the rerun from the record, never by inspecting the path again, so a
+  clean worktree created at the same path since is left untouched and exactly one
+  `WorkspaceRemoved@1` is recorded; registering that path again settles the finished record first
+  (`a_completed_removal_record_outlives_the_unregistration_and_a_replacement_survives_the_retry`)
+  ([ADR-0157](docs/adr/0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+  clause 5).

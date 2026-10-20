@@ -23,7 +23,9 @@
 //! checkout moved back out of its container is claimed again, and an entry locked, re-pointed or
 //! without its `gitdir` survives with the Workspace registered, the entry checked before every
 //! step's action so a checkout already claimed stays in its container; a replaced checkout, foreign content in a container and a
-//! directory merely named like a container are kept and reported. A git that outlives its deadline fails the command and
+//! directory merely named like a container are kept and reported. The completed record outlives
+//! the unregistration, so a crash on either side of it followed by a clean worktree at the same
+//! path leaves that worktree untouched and one `WorkspaceRemoved@1`. A git that outlives its deadline fails the command and
 //! leaves no child. The first `af task plan --workspace <checkout>` finds the checkout it
 //! registers. No command writes inside a checkout, the Surveyor's (ADR-0158) included, and the
 //! help answers in under 50 ms.
@@ -2996,6 +2998,155 @@ fn an_interrupted_removal_is_recorded_by_identity_and_a_rerun_finishes_it_unregi
             &["rev-parse", "--verify", &format!("refs/heads/af/{label}")],
         );
     }
+}
+
+/// Put a clean linked worktree of `repo` at `worktree`, on a branch of its own: what a fresh
+/// removal would inspect and delete. Its identity and its entry's.
+fn replacement_worktree(repo: &Path, worktree: &Path, branch: &str) -> (String, String) {
+    git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            branch,
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let entry = repo
+        .join(".git/worktrees")
+        .join(worktree.file_name().unwrap());
+    assert!(entry.join("gitdir").is_file(), "{}", entry.display());
+    (recorded_identity(worktree), recorded_identity(&entry))
+}
+
+#[test]
+fn a_completed_removal_record_outlives_the_unregistration_and_a_replacement_survives_the_retry() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let store = project_store(&machine, &repo);
+    // A crash after every directory is done and before the unregistration, then one after the
+    // unregistration and before the completed record is deleted: each time a clean worktree
+    // takes the path, and the retry neither inspects nor deletes it.
+    for (label, point) in [("cut-before", "entry-done"), ("cut-after", "unregistered")] {
+        let created = machine.json(&repo, &["project", "workspace", "new", label, "--json"]);
+        let id = workspace(&created, label)["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let name = format!("fixture-wt-{label}");
+        let worktree = machine.root().join(&name);
+        let entry = repo.join(".git/worktrees").join(&name);
+        let remove = ["project", "workspace", "remove", label, "--delete-worktree"];
+        let stopped = af_stopped_at(&machine, &repo, point, &remove);
+        assert_eq!(
+            stopped.status.code(),
+            Some(86),
+            "{point}: {}",
+            text(&stopped).1
+        );
+        let record = store.join("removals").join(format!("{id}.toml"));
+        let held = std::fs::read_to_string(&record)
+            .unwrap_or_else(|error| panic!("{point}: the completed record stays: {error}"));
+        assert_eq!(
+            held.matches("step = \"done\"").count(),
+            2,
+            "{point}: {held}"
+        );
+        assert!(!worktree.exists() && !entry.exists(), "{point}");
+        let unregistered = usize::from(point == "unregistered");
+        assert_eq!(removals_of(&machine, &repo, &id), unregistered, "{point}");
+        let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+        assert_eq!(
+            labels(&listed).contains(&label.to_string()),
+            unregistered == 0,
+            "{point}: {listed}"
+        );
+
+        let (worktree_identity, entry_identity) =
+            replacement_worktree(&repo, &worktree, &format!("replacement-{label}"));
+        let finished = machine.expect(&repo, &remove, 0);
+        assert!(
+            finished.contains(&format!("removed Workspace {label} ({id})")),
+            "{point}: {finished}"
+        );
+        if point == "unregistered" {
+            assert!(
+                finished.contains("it was already unregistered"),
+                "{finished}"
+            );
+        } else {
+            assert!(
+                finished.contains(&format!(
+                    "the worktree {} is already gone; its branch is kept",
+                    worktree.display()
+                )),
+                "{point}: {finished}"
+            );
+        }
+        // The replacement is untouched: the same directories, its files, its entry.
+        assert_eq!(recorded_identity(&worktree), worktree_identity, "{point}");
+        assert_eq!(recorded_identity(&entry), entry_identity, "{point}");
+        assert!(worktree.join("README.md").is_file(), "{point}");
+        assert!(entry.join("gitdir").is_file(), "{point}");
+        assert!(!record.exists(), "{point}");
+        assert_eq!(removals_of(&machine, &repo, &id), 1, "{point}");
+        let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+        assert!(!labels(&listed).contains(&label.to_string()), "{point}");
+        // Once settled, the label is unknown again, and nothing more is recorded.
+        let again = machine.af(&repo, &remove);
+        let (_, stderr) = text(&again);
+        assert_eq!(again.status.code(), Some(1), "{point}: {stderr}");
+        assert!(stderr.contains("has no Workspace labelled"), "{stderr}");
+        assert_eq!(removals_of(&machine, &repo, &id), 1, "{point}");
+    }
+
+    // A crash after the unregistration, then the replacement registered as a Workspace of its
+    // own at the same path (the same Workspace ID): the registration settles the finished
+    // record first, so the new Workspace inherits nothing of the old removal.
+    let label = "cut-again";
+    let created = machine.json(&repo, &["project", "workspace", "new", label, "--json"]);
+    let id = workspace(&created, label)["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let worktree = machine.root().join(format!("fixture-wt-{label}"));
+    let remove = ["project", "workspace", "remove", label, "--delete-worktree"];
+    let stopped = af_stopped_at(&machine, &repo, "unregistered", &remove);
+    assert_eq!(stopped.status.code(), Some(86), "{}", text(&stopped).1);
+    let record = store.join("removals").join(format!("{id}.toml"));
+    assert!(record.is_file());
+    replacement_worktree(&repo, &worktree, "replacement-again");
+    let added = machine.json(
+        &repo,
+        &[
+            "project",
+            "workspace",
+            "add",
+            worktree.to_str().unwrap(),
+            "--label",
+            label,
+            "--json",
+        ],
+    );
+    assert_eq!(workspace(&added, label)["workspace_id"], id.as_str());
+    assert!(
+        !record.exists(),
+        "the registration settled the finished record"
+    );
+    assert_eq!(removals_of(&machine, &repo, &id), 1);
+    // Its own removal inspects it afresh, as a new Workspace's removal does.
+    let finished = machine.expect(&repo, &remove, 0);
+    assert!(
+        finished.contains(&format!(
+            "removed the worktree {}; its branch is kept",
+            worktree.display()
+        )),
+        "{finished}"
+    );
+    assert!(!worktree.exists());
+    assert_eq!(removals_of(&machine, &repo, &id), 2);
 }
 
 #[test]

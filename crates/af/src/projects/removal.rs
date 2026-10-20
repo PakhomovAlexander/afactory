@@ -6,10 +6,13 @@
 //! the checkout and of its administrative entry as inspected, the container it creates for each
 //! with that container's identity, and the step each reached. The birth time tells a directory
 //! from a later one at a reused inode (ext4 hands one out at once); a file system that reports
-//! none refuses the removal at inspection, nothing changed. The record is rewritten at every step and
-//! deleted once the removal is done, so a rerun finishes an interrupted removal from it and acts
-//! only on directories whose identity it holds. A directory that is merely named like a
-//! container is somebody else's: reported and left alone.
+//! none refuses the removal at inspection, nothing changed. The record is rewritten at every step,
+//! so a rerun finishes an interrupted removal from it and acts only on directories whose identity
+//! it holds. Once every directory is done the record stays, complete, until the Workspace's
+//! `WorkspaceRemoved@1` is appended and its paths dropped; only then is it deleted
+//! (`ProjectStore::settle_removal`), so no crash leaves a registered Workspace whose removal holds
+//! no identities, and a replacement at its path is never inspected afresh. A directory that is
+//! merely named like a container is somebody else's: reported and left alone.
 //!
 //! Each directory is claimed before it is judged or deleted: this removal creates a container
 //! beside it exclusively (`mkdir`, mode 0700, a fresh random name), records the container's
@@ -297,8 +300,21 @@ pub(super) fn write(store: &Path, record: &Record) -> Result<(), String> {
     Ok(())
 }
 
-/// Delete the record of `workspace_id`, and `removals/` once it is empty.
-fn delete(store: &Path, workspace_id: &str) -> Result<(), String> {
+/// Whether `record` is a completed removal: every directory it names is done, so nothing of it
+/// is left to claim or delete and only the Workspace's unregistration and the record's own
+/// deletion remain.
+pub(super) fn complete(record: &Record) -> bool {
+    record
+        .checkout
+        .iter()
+        .chain(&record.entries)
+        .all(|claim| claim.step == Step::Done)
+}
+
+/// Delete the record of `workspace_id`, and `removals/` once it is empty: only once the
+/// Workspace's unregistration is durable (`ProjectStore::settle_removal`), or when a fresh
+/// removal refused with nothing moved.
+pub(super) fn delete(store: &Path, workspace_id: &str) -> Result<(), String> {
     let file = location(store, workspace_id);
     match std::fs::remove_file(&file) {
         Ok(()) => {}
@@ -1276,8 +1292,8 @@ impl Removal<'_> {
     /// The message of a stop that `reason` explains. The record is deleted here only when the
     /// worktree refused the removal (`Stop::Refused`) while nothing moved, and the message then
     /// says nothing was changed, with the ways on when its state is the reason (`advice`). A
-    /// failed precondition never deletes it: it stays as it is for the rerun, which a completed
-    /// removal alone deletes it after.
+    /// failed precondition never deletes it: it stays as it is for the rerun, and only the
+    /// unregistration that follows a completed removal deletes it after.
     fn abandon(&mut self, reason: &str, stop: Stop) -> String {
         let file = location(self.store, &self.record.workspace_id);
         match stop {
@@ -1323,13 +1339,9 @@ impl Removal<'_> {
                 removed.push(at);
             }
         }
-        delete(self.store, &self.record.workspace_id).map_err(|error| {
-            self.with_notes(format!(
-                "the worktree {} and its administrative entry are removed, but {error}; run the \
-                 command again",
-                self.path().display()
-            ))
-        })?;
+        // The record stays, complete, until the Workspace's unregistration is durable: it is the
+        // caller's to delete after that (`ProjectStore::settle_removal`), never before.
+        debug_assert!(complete(&self.record));
         let path = self.path().display();
         let line = if !self.gone_before {
             format!("removed the worktree {path}; its branch is kept")
@@ -2162,11 +2174,18 @@ fn trace(which: Which, event: &str) {
 
 /// Stop here, as a crash would, when a debug build's fixture asks for `<which>-<point>`.
 fn stop_at(which: Which, point: &str) {
+    stop_after(&format!("{}-{point}", which.name()));
+}
+
+/// Stop here, as a crash would, when a debug build's fixture asks for `point`: a step of a
+/// directory, or `unregistered`, after the Workspace's unregistration and before its completed
+/// record is deleted.
+pub(super) fn stop_after(point: &str) {
     #[cfg(debug_assertions)]
-    if std::env::var(TEST_STOP).is_ok_and(|stop| stop == format!("{}-{point}", which.name())) {
-        eprintln!("af: stopped after {}-{point} ({TEST_STOP})", which.name());
+    if std::env::var(TEST_STOP).is_ok_and(|stop| stop == point) {
+        eprintln!("af: stopped after {point} ({TEST_STOP})");
         std::process::exit(86);
     }
     #[cfg(not(debug_assertions))]
-    let _ = (which, point);
+    let _ = point;
 }
