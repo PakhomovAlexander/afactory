@@ -616,7 +616,7 @@ fn the_fixture_repository_yields_the_checked_in_survey_byte_for_byte() {
     assert_eq!(identity["name"], "survey-fixture");
     assert_eq!(identity["head"], git(&repo, &["rev-parse", "HEAD"]));
     assert_eq!(identity["cutoff_unix_s"], CUTOFF.to_string());
-    assert_eq!(identity["surveyor_version"], "7");
+    assert_eq!(identity["surveyor_version"], "8");
     assert_eq!(identity["git_version"], git_version().as_str());
     assert_eq!(identity["refs_digest"], refs_digest(&repo));
     // The Tree Digest is the committed capture's, from the digest-only path: the blob over
@@ -681,7 +681,7 @@ fn an_unchanged_survey_key_records_nothing_and_prints_the_key() {
     let identity = &survey["identity"];
     let hex16 = |digest: &Value| digest.as_str().unwrap()["sha256:".len()..][..16].to_string();
     let key = format!(
-        "unchanged: head {}, refs {}, policy {}, surveyor 7",
+        "unchanged: head {}, refs {}, policy {}, surveyor 8",
         &identity["head"].as_str().unwrap()[..12],
         hex16(&identity["refs_digest"]),
         hex16(&identity["policy_digest"])
@@ -3376,7 +3376,9 @@ fn a_log_record_that_does_not_parse_leaves_history_partial_naming_its_commit() {
     machine.expect(&repo, &[], &["project", "show"], 0);
     // The history's log, as a git that wrote the `broken`th commit's time as no number would:
     // the second, after the newest was folded, or the newest itself, before anything was.
-    for (broken, named, commits, identities) in [(2, &second, "1", "1"), (1, &head, "0", "0")] {
+    for (broken, named, commits, identities, record) in
+        [(2, &second, "1", "1", "2"), (1, &head, "0", "0", "1")]
+    {
         let bin = fake_git(
             &machine,
             &format!("malformed-bin-{broken}"),
@@ -3412,6 +3414,9 @@ fn a_log_record_that_does_not_parse_leaves_history_partial_naming_its_commit() {
             assert_eq!(history["commits"], commits, "{why}: the commits before it");
             assert_eq!(history["reachable_commits"], "3");
             assert_eq!(history["stopped_in"], named.as_str(), "{why}");
+            // Both sections name the record by its ordinal in the log.
+            assert_eq!(history["stopped_record"], record, "{why}");
+            assert_eq!(survey["contributors"]["stopped_record"], record, "{why}");
             // No identity was taken from it: Ada's newest commit alone, or nobody.
             let contributors = &survey["contributors"];
             assert_eq!(contributors["identities"], identities, "{why}");
@@ -3443,6 +3448,14 @@ fn a_log_record_that_does_not_parse_leaves_history_partial_naming_its_commit() {
         stop.ends_with(&format!(", commit {} (malformed_record)", &head[..12])),
         "{stop}"
     );
+    assert!(
+        stdout.contains(&format!(
+            "  history       0 commits (0 merges), 0 in 30 days, 0 in 90 days, stopped in record \
+             1 (commit {}) (partial: malformed_record)",
+            &head[..12]
+        )),
+        "{stdout}"
+    );
 }
 
 /// A fake git whose history `log` is the real one passed through the perl substitution `cut`,
@@ -3471,14 +3484,15 @@ fn a_log_stream_cut_before_its_final_nul_is_partial_history_naming_the_cut_commi
     machine.expect(&repo, &[], &["project", "show"], 0);
     // Where each git stops writing, the commit whose record it cut, and the records that ended
     // before it. The newest record ends with its numstat line `c.txt`; the second begins after.
-    for (name, cut, named, commits, identities) in [
-        ("after-numstat", r"s/\0\z//", &root, "2", "2"),
+    for (name, cut, named, commits, identities, record) in [
+        ("after-numstat", r"s/\0\z//", &root, "2", "2", "3"),
         (
             "after-id",
             r"s/(c\.txt\0[0-9a-f]{40}).*/$1/s",
             &second,
             "1",
             "1",
+            "2",
         ),
         (
             "in-header",
@@ -3486,6 +3500,7 @@ fn a_log_stream_cut_before_its_final_nul_is_partial_history_naming_the_cut_commi
             &second,
             "1",
             "1",
+            "2",
         ),
     ] {
         let bin = cutting_git(&machine, &format!("cut-{name}"), cut);
@@ -3516,6 +3531,8 @@ fn a_log_stream_cut_before_its_final_nul_is_partial_history_naming_the_cut_commi
             "{name}: the records that ended"
         );
         assert_eq!(survey["contributors"]["identities"], identities, "{name}");
+        assert_eq!(history["stopped_record"], record, "{name}: the cut record");
+        assert_eq!(survey["contributors"]["stopped_record"], record, "{name}");
         assert_eq!(survey["stopped"]["commit"], named.as_str(), "{name}");
     }
     assert!(
@@ -3570,12 +3587,20 @@ fn a_gitlink_is_one_file_of_no_bytes_or_lines_never_fetched_and_digests_as_the_m
             .contains(&format!("160000 commit {absent}       -\tvendor/sub")),
         "the head holds the gitlink"
     );
-    // Every git the refresh starts is logged: none fetches, clones or asks for a submodule.
+    // Every git the refresh starts is logged, and every object name a `cat-file --batch` is
+    // asked for: none fetches, clones or asks for a submodule, and the gitlink's target is
+    // never opened.
     let calls = machine.root().join("git-calls");
+    let batches = machine.root().join("git-batches");
     let bin = fake_git(
         &machine,
         "gitlink-bin",
-        &format!("echo \"$*\" >> '{}'", calls.display()),
+        &format!(
+            "echo \"$*\" >> '{}'\nfor argument in \"$@\"; do\n  if [ \"$argument\" = --batch ]; \
+             then\n    tee -a '{}' | \"$REAL\" \"$@\"\n    exit $?\n  fi\ndone",
+            calls.display(),
+            batches.display()
+        ),
     );
     let output = af_with_git(&machine, &repo, &bin, &[], &["project", "refresh"]);
     assert_eq!(
@@ -3592,6 +3617,12 @@ fn a_gitlink_is_one_file_of_no_bytes_or_lines_never_fetched_and_digests_as_the_m
         );
     }
     assert!(!remote.exists(), "nothing reached the submodule's URL");
+    let asked = std::fs::read_to_string(&batches).unwrap();
+    assert!(!asked.is_empty(), "the blobs were read through cat-file");
+    assert!(
+        !asked.contains(absent),
+        "the gitlink's target is never asked for: {asked}"
+    );
 
     let after = machine.json(&repo, &[], &["project", "survey", "--json"]);
     schemas::valid(&schemas::validator("project-survey-v1.json"), &after);
@@ -3725,5 +3756,412 @@ fn a_crash_between_a_surveys_bytes_and_its_event_leaves_its_pending_entry() {
         pending_entries(&machine),
         left,
         "another Survey's entry stays"
+    );
+}
+
+/// Every `SurveyFailed@1` payload of the Project Store, oldest first.
+fn failed_events(machine: &Machine) -> Vec<Value> {
+    let log = rusqlite::Connection::open(machine.store().join("events.sqlite")).unwrap();
+    log.prepare("SELECT payload FROM events WHERE type = 'SurveyFailed@1' ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|payload| serde_json::from_str(&payload.unwrap()).unwrap())
+        .collect()
+}
+
+/// The CAS file at `survey_id`'s name, as the Surveyor's writer links it.
+fn cas_name(machine: &Machine, survey_id: &str) -> PathBuf {
+    let hex = survey_id.trim_start_matches("sha256:");
+    machine
+        .store()
+        .join("cas/objects")
+        .join(&hex[..2])
+        .join(&hex[2..])
+}
+
+/// Writer and reader of the pending-publication entry, one fixture for both halves at both
+/// crash points: a refresh stopped after its bytes are linked and before their identity leaves
+/// the entry without `object`, and the next refresh of the same bytes finishes that publication;
+/// one stopped after the identity and before its event leaves the entry naming the object at the
+/// Survey's CAS name by device, inode and length, which `af storage` counts as a Survey
+/// `pending` and `af storage prune --apply` reclaims through that entry, as collection's reader
+/// consumes the shape, preview and apply alike.
+#[test]
+fn the_writers_pending_entry_is_what_collection_reads_at_either_crash_point() {
+    use std::os::unix::fs::MetadataExt;
+    let machine = Machine::new();
+    let repo = repository(&machine.root(), "pending-both", &[("a.txt", b"a\n")]);
+    machine.expect(&repo, &[], &["project", "show"], 0);
+    let validator = schemas::validator("project-survey-pending-v1.json");
+
+    // Crash point one: the bytes linked, no identity yet.
+    machine.expect(
+        &repo,
+        &[("AF_TEST_SURVEY_STOP_BEFORE_IDENTITY", "1")],
+        &["project", "refresh"],
+        86,
+    );
+    assert_eq!(machine.surveys(), 0, "no event names the record");
+    let entries = pending_entries(&machine);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let (path, entry) = &entries[0];
+    schemas::valid(&validator, entry);
+    assert!(entry.get("object").is_none(), "no identity yet: {entry}");
+    let survey_id = entry["survey_id"].as_str().unwrap().to_string();
+    let object = cas_name(&machine, &survey_id);
+    let stated = std::fs::symlink_metadata(&object).unwrap();
+    assert!(
+        stated.file_type().is_file(),
+        "the bytes are at the CAS name"
+    );
+    assert_eq!(entry["bytes"], stated.len().to_string());
+    assert!(std::fs::read(path).unwrap().len() <= 4096);
+    // The same bytes again: the publication finishes and the entry goes.
+    let (stdout, _) = machine.expect(&repo, &[], &["project", "refresh"], 0);
+    assert!(stdout.starts_with("recorded\n"), "{stdout}");
+    let recorded = recorded_events(&machine);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].1["survey_id"], survey_id.as_str());
+    assert!(
+        pending_entries(&machine).is_empty(),
+        "a finished publication"
+    );
+
+    // Crash point two: the identity recorded, no event. A later cutoff gives other bytes.
+    let later = (CUTOFF + 60).to_string();
+    machine.expect(
+        &repo,
+        &[
+            ("AF_TEST_SURVEY_STOP_BEFORE_EVENT", "1"),
+            ("AF_TEST_SURVEY_CUTOFF_UNIX_S", later.as_str()),
+        ],
+        &["project", "refresh", "--force"],
+        86,
+    );
+    let entries = pending_entries(&machine);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let (entry_path, entry) = entries[0].clone();
+    schemas::valid(&validator, &entry);
+    let unrecorded = entry["survey_id"].as_str().unwrap().to_string();
+    assert_ne!(unrecorded, survey_id);
+    let object = cas_name(&machine, &unrecorded);
+    let stated = std::fs::symlink_metadata(&object).unwrap();
+    assert_eq!(
+        entry["object"],
+        serde_json::json!({
+            "device": stated.dev().to_string(),
+            "inode": stated.ino().to_string(),
+        }),
+        "the identity is the file's at the Survey's CAS name"
+    );
+    assert_eq!(entry["bytes"], stated.len().to_string());
+    assert_eq!(machine.surveys(), 1, "no event names it");
+
+    // The reader: the object is a Survey `pending`, and recovery reclaims it and then the
+    // entry, preview and apply alike; nothing else moves.
+    let shown = machine.json(&repo, &[], &["storage", "--json"]);
+    let pending = shown["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|listed| listed["path"] == object.to_str().unwrap())
+        .unwrap_or_else(|| panic!("the object is inventoried: {shown}"));
+    assert_eq!(pending["kind"], "survey");
+    assert_eq!(pending["state"], "pending", "{pending}");
+    let recoveries = |document: &Value| -> Vec<String> {
+        document["removals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|removal| removal["rule"] == "recovery")
+            .map(|removal| removal["path"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let planned = recoveries(&prune_surveys(&machine, &repo, "50", false));
+    let expected = vec![
+        object.to_string_lossy().into_owned(),
+        entry_path.to_string_lossy().into_owned(),
+    ];
+    assert_eq!(planned, expected, "the object, then its entry");
+    let applied = prune_surveys(&machine, &repo, "50", true);
+    assert_eq!(recoveries(&applied), expected, "{applied}");
+    assert!(!object.exists() && !entry_path.exists());
+    assert!(pending_entries(&machine).is_empty());
+    assert!(
+        cas_name(&machine, &survey_id).is_file(),
+        "the recorded Survey stays"
+    );
+    assert_eq!(machine.surveys(), 1);
+    assert!(
+        tombstones(&machine).is_empty(),
+        "recovery appends no tombstone"
+    );
+}
+
+/// Every refresh of a registered Project that stops without a Survey leaves a record of the
+/// attempt: a deadline before `rev-parse` answered, a newest Survey that does not replay, and a
+/// record the CAS cannot take each record `SurveyFailed@1` naming the head, which `af project
+/// show` prints, and the command still fails.
+#[test]
+fn every_refresh_that_stops_without_a_survey_records_its_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine.root(), "failures", &[("a.txt", b"a\n")]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    machine.expect(&repo, &[], &["project", "show"], 0);
+
+    // The deadline before `rev-parse` answered: the head is still named.
+    let (_, stderr) = machine.expect(
+        &repo,
+        &[("AF_SURVEY__MAX_WALL_MS", "1")],
+        &["project", "refresh"],
+        1,
+    );
+    assert!(
+        stderr.contains("could not be computed within max_wall_ms"),
+        "{stderr}"
+    );
+    let failed = failed_events(&machine);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0]["head"], head.as_str());
+    assert_eq!(
+        failed[0]["reason"],
+        "the survey key could not be computed within max_wall_ms"
+    );
+    schemas::valid(
+        &schemas::validator("project-survey-failed-v1.json"),
+        &failed[0],
+    );
+    let (stdout, _) = machine.expect(&repo, &[], &["project", "show"], 0);
+    assert!(
+        stdout.contains(&format!("Survey failed at {}", &head[..12])),
+        "{stdout}"
+    );
+
+    // A record the CAS cannot take: the entry begun stays for collection, the failure names
+    // the head, and no path or `@` enters the event.
+    let objects = machine.store().join("cas/objects");
+    std::fs::create_dir_all(&objects).unwrap();
+    std::fs::set_permissions(&objects, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let (_, stderr) = machine.expect(&repo, &[], &["project", "refresh"], 1);
+    std::fs::set_permissions(&objects, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let failed = failed_events(&machine);
+    assert_eq!(failed.len(), 2, "{stderr}");
+    assert_eq!(failed[1]["head"], head.as_str());
+    assert_eq!(
+        failed[1]["reason"],
+        "the Survey could not be published in the Project Store; run `af project refresh` again"
+    );
+    assert_eq!(machine.surveys(), 0);
+    assert_eq!(pending_entries(&machine).len(), 1, "the entry begun stays");
+
+    // A newest Survey that does not replay: refused as before, and recorded.
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    assert!(
+        pending_entries(&machine).is_empty(),
+        "the same bytes finished it"
+    );
+    let sequence = recorded_sequences(&machine)[0];
+    mismatch_refs_digest(&machine, sequence);
+    let said = refusal(&machine, &repo, &[], &["project", "refresh"]);
+    assert!(
+        said.contains(&format!(
+            "SurveyRecorded@1 at sequence {sequence} names a refs_digest"
+        )),
+        "{said}"
+    );
+    let failed = failed_events(&machine);
+    assert_eq!(failed.len(), 3);
+    assert_eq!(failed[2]["head"], head.as_str());
+    let reason = failed[2]["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("the Project Store's newest Survey does not replay"),
+        "{reason}"
+    );
+    assert!(!reason.contains('@') && !reason.contains('/'), "{reason}");
+}
+
+/// The spill sweep runs on every refresh before and after the Tree Digest, on every way out of
+/// the digest: a spill a dead Surveyor left after this refresh's first sweep (planted while its
+/// key is observed) is gone once the refresh ends, after a complete digest and after one a
+/// ceiling stopped, while the directory of a process that still runs is kept.
+#[test]
+fn the_spill_sweep_runs_after_the_tree_digest_on_every_way_out() {
+    let machine = Machine::new();
+    let repo = fixture(&machine.root());
+    machine.expect(&repo, &[], &["project", "show"], 0);
+    let scratch = machine.root().join("sweep-tmp");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let dead = scratch.join("af-tree-digest-2000000000-planted");
+    let live = scratch.join(format!("af-tree-digest-{}-live", std::process::id()));
+    // The key's one ref observation runs after the refresh's first sweep and before the digest.
+    let bin = fake_git(
+        &machine,
+        "plant-bin",
+        &format!(
+            "for argument in \"$@\"; do\n  if [ \"$argument\" = for-each-ref ]; then\n    \
+             mkdir -p '{}/runs' '{}'\n  fi\ndone",
+            dead.display(),
+            live.display()
+        ),
+    );
+    let tmpdir = scratch.to_str().unwrap();
+    for (env, completeness, why) in [
+        (
+            vec![("TMPDIR", tmpdir)],
+            "complete",
+            "a digest that finished",
+        ),
+        (
+            vec![
+                ("TMPDIR", tmpdir),
+                ("AF_TEST_SURVEY_DIGEST_MANIFEST_BYTES", "300"),
+                ("AF_TEST_SURVEY_DIGEST_TEMP_BYTES", "1"),
+            ],
+            "partial",
+            "a digest a ceiling stopped",
+        ),
+    ] {
+        let output = af_with_git(
+            &machine,
+            &repo,
+            &bin,
+            &env,
+            &["project", "refresh", "--force"],
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{why}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+        assert_eq!(survey["completeness"], completeness, "{why}");
+        assert!(!dead.exists(), "{why}: the dead Surveyor's spill is swept");
+        assert!(live.is_dir(), "{why}: a live process's directory is kept");
+        let left: Vec<String> = std::fs::read_dir(&scratch)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("af-tree-digest-") && !live.ends_with(name))
+            .collect();
+        assert!(left.is_empty(), "{why}: nothing else is left: {left:?}");
+    }
+}
+
+/// Every streamed record is read up to 64 KiB and no further, each with its own fixture: a log
+/// field (history and contributors partial with `max_record_bytes`, naming the record by its
+/// ordinal), a tree listing record (`tree` partial, and the declarations' sections with it,
+/// since they did not see the whole listing) and a ref of the survey key (`SurveyFailed@1`, since
+/// the key cannot be complete).
+#[test]
+fn every_streamed_record_over_64_kib_stops_at_max_record_bytes() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root(), "records", &[("a.txt", b"a\n")]);
+    write(&repo, "b.txt", b"b\n");
+    commit(&repo, BOB, 1, &["Second"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let root = git(&repo, &["rev-parse", "HEAD~1"]);
+    machine.expect(&repo, &[], &["project", "show"], 0);
+    let long = 64 * 1024 + 1;
+
+    // Ada's author name, in the log's second record (the root commit's), over 64 KiB.
+    let bin = fake_git(
+        &machine,
+        "long-log-bin",
+        &format!(
+            "for argument in \"$@\"; do\n  if [ \"$argument\" = --numstat ]; then\n    \
+             \"$REAL\" \"$@\" | perl -0 -pe '$_ = (\"n\" x {long}) . \"\\0\" if $_ eq \
+             \"Ada\\0\"'\n    exit 0\n  fi\ndone"
+        ),
+    );
+    let output = af_with_git(
+        &machine,
+        &repo,
+        &bin,
+        &[],
+        &["project", "refresh", "--force"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    for section in ["history", "contributors"] {
+        assert_eq!(survey[section]["completeness"], "partial", "{section}");
+        assert_eq!(survey[section]["reason"], "max_record_bytes", "{section}");
+        assert_eq!(survey[section]["stopped_record"], "2", "{section}");
+    }
+    assert_eq!(survey["history"]["stopped_in"], root.as_str());
+    assert_eq!(survey["history"]["commits"], "1");
+    assert_eq!(survey["tree"]["completeness"], "complete");
+
+    // One record of the tree's listing over 64 KiB, after every real one.
+    let bin = fake_git(
+        &machine,
+        "long-listing-bin",
+        &format!(
+            "listing=0\nfor argument in \"$@\"; do\n  [ \"$argument\" = ls-tree ] && \
+             listing=$((listing + 1))\n  [ \"$argument\" = -l ] && listing=$((listing + 1))\n\
+             done\nif [ $listing = 2 ]; then\n  \"$REAL\" \"$@\"\n  perl -e 'print \"100644 \
+             blob \" . (\"0\" x 40) . \" 1\\t\" . (\"x\" x {long}) . \"\\0\"'\n  exit 0\nfi"
+        ),
+    );
+    let output = af_with_git(
+        &machine,
+        &repo,
+        &bin,
+        &[],
+        &["project", "refresh", "--force"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    assert_eq!(survey["tree"]["completeness"], "partial");
+    assert_eq!(survey["tree"]["reason"], "max_record_bytes");
+    assert_eq!(
+        survey["tree"]["files"], "2",
+        "the entries before it counted"
+    );
+    for section in ["decisions", "vocabulary", "checks"] {
+        assert_eq!(survey[section]["reason"], "max_record_bytes", "{section}");
+    }
+    assert_eq!(survey["history"]["completeness"], "complete");
+
+    // A ref of the survey key over 64 KiB: no key, so no Survey, and the failure recorded.
+    let surveys = machine.surveys();
+    let bin = fake_git(
+        &machine,
+        "long-ref-bin",
+        &format!(
+            "for argument in \"$@\"; do\n  if [ \"$argument\" = for-each-ref ]; then\n    \
+             \"$REAL\" \"$@\"\n    perl -e 'print \"refs/tags/\" . (\"t\" x {long}) . \"\\n\"'\n    \
+             exit 0\n  fi\ndone"
+        ),
+    );
+    let output = af_with_git(
+        &machine,
+        &repo,
+        &bin,
+        &[],
+        &["project", "refresh", "--force"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(machine.surveys(), surveys, "no Survey without its key");
+    let failed = failed_events(&machine);
+    let last = failed.last().unwrap();
+    assert_eq!(last["head"], head.as_str());
+    assert_eq!(
+        last["reason"],
+        "the survey key could not be computed: a ref is longer than 65536 bytes \
+         (max_record_bytes)"
     );
 }

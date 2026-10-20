@@ -696,6 +696,10 @@ pub struct SurveyHistoryV1 {
     /// [`MAX_SURVEY_RECORD_BYTES`] or a malformed record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_in: Option<String>,
+    /// The ordinal in the log of the record `stopped_in` names, `1` for the first, the head's:
+    /// the record after the commits counted. Present exactly with `stopped_in`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_record: Option<DecimalU64>,
     pub churn_90d: BTreeMap<String, SurveyChurnV1>,
     /// Most commits first, ties by path.
     pub hot_paths: Vec<SurveyHotPathV1>,
@@ -782,6 +786,11 @@ pub struct SurveyContributorsV1 {
     /// The identities ranked by commits, then lines added, both descending, then key, at most
     /// `max_entries`.
     pub by_identity: Vec<SurveyContributorV1>,
+    /// The ordinal in the log of the record that stopped the walk this section folds, as
+    /// `history.stopped_record` names it: present exactly when a record stopped the walk
+    /// (`malformed_record`, `max_record_bytes` or `max_paths`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_record: Option<DecimalU64>,
     /// `by_identity`, when cut.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub seen: SurveySeenV1,
@@ -1149,6 +1158,33 @@ impl ProjectSurveyV1 {
                 "a history stopped at malformed_record names the commit in stopped_in".into(),
             );
         }
+        // `contributors` folds the walk `history` measures: a record that stopped it is the
+        // same record in both, by its ordinal.
+        if let Some(contributors) = &self.contributors.body {
+            let walked = self
+                .history
+                .body
+                .as_ref()
+                .and_then(|history| history.stopped_record);
+            if contributors.stopped_record != walked {
+                return Err(
+                    "contributors names the record that stopped the walk as history does".into(),
+                );
+            }
+            if matches!(
+                self.contributors.reason,
+                Some(
+                    SurveyReasonV1::MalformedRecord
+                        | SurveyReasonV1::MaxRecordBytes
+                        | SurveyReasonV1::MaxPaths
+                )
+            ) && contributors.stopped_record.is_none()
+            {
+                return Err(
+                    "contributors stopped by a log record names that record's ordinal".into(),
+                );
+            }
+        }
         self.validate_stop()?;
         self.identity.validate_with("identity", validate_identity)?;
         self.tree.validate_with("tree", validate_tree)?;
@@ -1354,6 +1390,18 @@ fn validate_history(history: &SurveyHistoryV1) -> Result<(), String> {
     // A walk that folded no commit stopped in the head's record, and names it.
     if history.commits.get() == 0 && history.stopped_in.is_none() {
         return Err("a history that reached no commit names the commit it stopped in".into());
+    }
+    // The record that stopped the walk is the one after every commit counted.
+    match (&history.stopped_in, history.stopped_record) {
+        (None, None) => {}
+        (Some(_), Some(record)) if record.get() == history.commits.get().saturating_add(1) => {}
+        _ => {
+            return Err(
+                "a history that names the commit it stopped in names its record, the one after \
+                 the commits counted"
+                    .into(),
+            );
+        }
     }
     if history.commits.get() > history.reachable_commits.get()
         || history.merges.get() > history.commits.get()

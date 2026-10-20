@@ -1045,6 +1045,18 @@ fn malformed() -> Ended {
     Ended::Bound(SurveyReasonV1::MalformedRecord)
 }
 
+/// [`read_log_counted`] without the record's ordinal.
+#[cfg(test)]
+pub(super) fn read_log(
+    input: &mut dyn BufRead,
+    clock: &Clock,
+    policy: &Policy,
+    stopped_in: &mut Option<String>,
+    each: impl FnMut(Commit) -> Result<(), SurveyReasonV1>,
+) -> Ended {
+    read_log_counted(input, clock, policy, stopped_in, &mut 0, each)
+}
+
 /// Read `log -z --numstat` in [`log_format`]: each commit's NUL-ended fields, the NUL that ends
 /// them and its numstat lines, the first after a newline; `each` receives every commit whose
 /// record ended and may stop the walk with a bound. A record over [`MAX_SURVEY_RECORD_BYTES`]
@@ -1059,11 +1071,18 @@ fn malformed() -> Ended {
 /// without its NUL begins the record it names, after the one before it ended), and the first
 /// record without its ID names nothing: the caller names the head, whose record the log begins
 /// with.
-pub(super) fn read_log(
+///
+/// `record` says which record of the log the reader stopped in, by ordinal (`1` for the first,
+/// the head's), when a record stopped it, and stays `0` otherwise. A record is told complete by
+/// its own terminators alone (its fields' NUL, every item's NUL, the commit ID repeated), never
+/// by how the pipe delivered it: a read that returns part of a record while git is still
+/// writing it waits for the rest, and only the end of the stream inside a record cuts it.
+pub(super) fn read_log_counted(
     input: &mut dyn BufRead,
     clock: &Clock,
     policy: &Policy,
     stopped_in: &mut Option<String>,
+    record: &mut u64,
     mut each: impl FnMut(Commit) -> Result<(), SurveyReasonV1>,
 ) -> Ended {
     let fields = match policy.identity {
@@ -1076,9 +1095,12 @@ pub(super) fn read_log(
     let mut record_ended = false;
     let mut item = Vec::new();
     let mut header: Vec<Vec<u8>> = Vec::with_capacity(4);
-    // Stop in `commit` with `ended`, naming it.
-    let mut stop = |commit: Option<&str>, ended: Ended| {
+    // The records begun: the current one's ordinal once its ID was read.
+    let mut begun = 0_u64;
+    // Stop in `commit`, the `at`th record, with `ended`, naming it.
+    let mut stop = |commit: Option<&str>, at: u64, ended: Ended| {
         *stopped_in = commit.map(str::to_string);
+        *record = at.max(1);
         ended
     };
     loop {
@@ -1089,15 +1111,17 @@ pub(super) fn read_log(
                     return Ended::Done;
                 };
                 if !record_ended {
-                    return stop(Some(&commit.id), Ended::Cut);
+                    return stop(Some(&commit.id), begun, Ended::Cut);
                 }
                 let last = commit.id.clone();
                 if let Err(reason) = each(commit) {
-                    return stop(Some(&last), Ended::Bound(reason));
+                    return stop(Some(&last), begun, Ended::Bound(reason));
                 }
                 return Ended::Done;
             }
-            Item::Stop(ended) => return stop(current.as_ref().map(|c| c.id.as_str()), ended),
+            Item::Stop(ended) => {
+                return stop(current.as_ref().map(|c| c.id.as_str()), begun, ended);
+            }
         };
         if !item_ended {
             // The stream was cut inside this item. A whole commit ID begins the record it
@@ -1111,12 +1135,12 @@ pub(super) fn read_log(
                 if let Some(commit) = current.take() {
                     let previous = commit.id.clone();
                     if let Err(reason) = each(commit) {
-                        return stop(Some(&previous), Ended::Bound(reason));
+                        return stop(Some(&previous), begun, Ended::Bound(reason));
                     }
                 }
-                return stop(Some(id), Ended::Cut);
+                return stop(Some(id), begun + 1, Ended::Cut);
             }
-            return stop(current.as_ref().map(|c| c.id.as_str()), Ended::Cut);
+            return stop(current.as_ref().map(|c| c.id.as_str()), begun, Ended::Cut);
         }
         // The NUL that ends a commit's fields.
         if item.is_empty() {
@@ -1131,35 +1155,40 @@ pub(super) fn read_log(
                 return Ended::Deadline;
             }
             if !record_ended {
-                return stop(current.as_ref().map(|c| c.id.as_str()), malformed());
+                return stop(current.as_ref().map(|c| c.id.as_str()), begun, malformed());
             }
             let Some(commit) = current.as_mut() else {
-                return stop(None, malformed());
+                return stop(None, begun, malformed());
             };
             match change_of(line, policy) {
                 Ok(Some(_)) if commit.changes.len() as u64 >= policy.max_paths => {
-                    return stop(Some(&commit.id), Ended::Bound(SurveyReasonV1::MaxPaths));
+                    return stop(
+                        Some(&commit.id),
+                        begun,
+                        Ended::Bound(SurveyReasonV1::MaxPaths),
+                    );
                 }
                 Ok(change) => commit.changes.extend(change),
-                Err(_) => return stop(Some(&commit.id), malformed()),
+                Err(_) => return stop(Some(&commit.id), begun, malformed()),
             }
             continue;
         }
         // A commit begins with its ID, after the record before it ended.
         let id = match std::str::from_utf8(&item) {
             Ok(id) if review_core::project::is_commit_id(id) => id.to_string(),
-            _ => return stop(current.as_ref().map(|c| c.id.as_str()), malformed()),
+            _ => return stop(current.as_ref().map(|c| c.id.as_str()), begun, malformed()),
         };
         if let Some(commit) = current.take() {
             if !record_ended {
-                return stop(Some(&commit.id), malformed());
+                return stop(Some(&commit.id), begun, malformed());
             }
             let previous = commit.id.clone();
             if let Err(reason) = each(commit) {
-                return stop(Some(&previous), Ended::Bound(reason));
+                return stop(Some(&previous), begun, Ended::Bound(reason));
             }
         }
         record_ended = false;
+        begun += 1;
         if clock.item() {
             return Ended::Deadline;
         }
@@ -1168,12 +1197,14 @@ pub(super) fn read_log(
         for _ in 0..=fields {
             match log_item(input, &mut item) {
                 Item::Read { ended: true } => header.push(item.clone()),
-                Item::Read { ended: false } | Item::End => return stop(Some(&id), Ended::Cut),
-                Item::Stop(ended) => return stop(Some(&id), ended),
+                Item::Read { ended: false } | Item::End => {
+                    return stop(Some(&id), begun, Ended::Cut);
+                }
+                Item::Stop(ended) => return stop(Some(&id), begun, ended),
             }
         }
         if header[fields] != id.as_bytes() {
-            return stop(Some(&id), malformed());
+            return stop(Some(&id), begun, malformed());
         }
         // The `Co-Authored-By` values, up to the ID a third time.
         let mut agent_trailer = false;
@@ -1181,8 +1212,10 @@ pub(super) fn read_log(
             match log_item(input, &mut item) {
                 Item::Read { ended: true } if item == id.as_bytes() => break,
                 Item::Read { ended: true } => {}
-                Item::Read { ended: false } | Item::End => return stop(Some(&id), Ended::Cut),
-                Item::Stop(ended) => return stop(Some(&id), ended),
+                Item::Read { ended: false } | Item::End => {
+                    return stop(Some(&id), begun, Ended::Cut);
+                }
+                Item::Stop(ended) => return stop(Some(&id), begun, ended),
             }
             if clock.passed() {
                 return Ended::Deadline;
@@ -1202,7 +1235,7 @@ pub(super) fn read_log(
         };
         match commit_of(&parsed, agent_trailer, policy) {
             Some(commit) => current = Some(commit),
-            None => return stop(Some(&id), malformed()),
+            None => return stop(Some(&id), begun, malformed()),
         }
     }
 }
@@ -1388,6 +1421,7 @@ pub(super) fn history_section(
             .then(|| walk.oldest.clone())
             .flatten(),
         stopped_in: None,
+        stopped_record: None,
         churn_90d: churn
             .into_iter()
             .map(|(name, (commits, added, removed))| {
@@ -1541,6 +1575,7 @@ pub(super) fn contributors_section(
                 truncated: totals.truncated,
             })
             .collect(),
+        stopped_record: None,
         seen,
     };
     (body, deadline)
@@ -2286,6 +2321,8 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
     // and the commit it stopped in.
     let mut walk_cut = None;
     let mut stopped_in = None;
+    // The ordinal of the record that stopped the walk, when one did.
+    let mut stopped_record = 0_u64;
     let objects = match clock.remaining() {
         Some(remaining) if !halted => match git.objects_within(remaining) {
             Ok(objects) => Some(objects),
@@ -2347,9 +2384,14 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
                         ]),
                         &[],
                         |input| {
-                            read_log(input, &history_clock, policy, &mut stopped_in, |commit| {
-                                walk.add(commit)
-                            })
+                            read_log_counted(
+                                input,
+                                &history_clock,
+                                policy,
+                                &mut stopped_in,
+                                &mut stopped_record,
+                                |commit| walk.add(commit),
+                            )
                         },
                     )?;
                     let mut deadline = stopped == Some(SurveyReasonV1::MaxWallMs);
@@ -2401,6 +2443,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
                         let mut body =
                             history_section(&walk, reachable, hot, distinct, &absent, policy);
                         body.stopped_in = walk_cut.and(stopped_in.take());
+                        body.stopped_record = walk_cut.map(|_| decimal(stopped_record));
                         let Some(refs) = observed else {
                             return Err(Failure::new(
                                 "the survey key's ref observation was not handed to the \
@@ -2446,7 +2489,9 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
         after_deadline()
     } else {
         let contributors_clock = clock.section("contributors");
-        let (body, mut deadline) = contributors_section(&walk, policy, &contributors_clock);
+        let (mut body, mut deadline) = contributors_section(&walk, policy, &contributors_clock);
+        // The record that stopped the walk, as `history` names it.
+        body.stopped_record = walk_cut.map(|_| decimal(stopped_record));
         deadline = deadline || contributors_clock.finished();
         halted |= deadline;
         let cut_lists = !body.seen.is_empty();
@@ -2618,7 +2663,9 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
 /// no blob written to any CAS, no listing buffered whole, at most the fixed manifest buffer and
 /// temporary manifest data, in an `af-tree-digest-<pid>-*` directory of the system's temporary
 /// directory, removed on every way out and, when a killed process could not, by the crash sweep
-/// every refresh begins with (`super::refresh`).
+/// every refresh begins with (`super::refresh`) and the one that follows the digest on every way
+/// out, a ceiling's and a failure's included, both bounded by the Survey's deadline and both
+/// keeping the directory of a process that still runs.
 /// The reason when it did not finish: the deadline, a listing record over 64 KiB, or a ceiling.
 fn tree_digest(
     git: &Git,
@@ -2633,6 +2680,9 @@ fn tree_digest(
     let temp_parent = std::env::temp_dir();
     let digested =
         review_source_git::committed_digest(&repo, head, digest_ceilings(), &temp_parent);
+    // What a killed Surveyor spilled while this one digested: swept after the digest whatever
+    // it returned, as before it, within the deadline.
+    review_sandbox::stale::sweep_stale_tree_digests_before(&temp_parent, clock.deadline());
     Ok(match digested {
         Ok(Ok(_)) | Err(_) if clock.passed() => Err(SurveyTreeDigestReasonV1::Deadline),
         Ok(Ok(digest)) => Ok(digest),

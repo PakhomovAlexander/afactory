@@ -437,6 +437,10 @@
           "description": "The commit whose log record stopped the walk unfolded: one over max_paths, a record over 64 KiB or a malformed record (one cut before its NUL included); the head when the walk stopped in its first record, which history then counts as zero commits.",
           "$ref": "#/$defs/commit"
         },
+        "stopped_record": {
+          "description": "The ordinal in the log of the record stopped_in names, 1 for the first, the head's: the record after the commits counted. Present exactly with stopped_in.",
+          "$ref": "#/$defs/ordinal"
+        },
         "churn_90d": {
           "description": "By top-level directory, over 90 days.",
           "type": "object",
@@ -536,6 +540,14 @@
             }
           ]
         }
+      },
+      "dependentRequired": {
+        "stopped_in": [
+          "stopped_record"
+        ],
+        "stopped_record": [
+          "stopped_in"
+        ]
       },
       "allOf": [
         {
@@ -713,6 +725,10 @@
             }
           }
         },
+        "stopped_record": {
+          "description": "The ordinal in the log of the record that stopped the walk this section folds, as history's stopped_record names it: present exactly when a record stopped the walk.",
+          "$ref": "#/$defs/ordinal"
+        },
         "seen": {
           "allOf": [
             {
@@ -775,6 +791,28 @@
                 "const": "partial"
               }
             }
+          }
+        },
+        {
+          "description": "A log record that stopped the walk is named by its ordinal.",
+          "if": {
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "enum": [
+                  "malformed_record",
+                  "max_record_bytes",
+                  "max_paths"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "stopped_record"
+            ]
           }
         },
         {
@@ -1148,6 +1186,11 @@
       "description": "A non-negative integer as canonical decimal text: every number of a Survey is one.",
       "type": "string",
       "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "ordinal": {
+      "description": "A position counted from 1, as canonical decimal text.",
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
     },
     "basis_points": {
       "description": "A share in basis points, rounded down.",

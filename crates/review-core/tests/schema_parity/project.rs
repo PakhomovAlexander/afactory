@@ -417,6 +417,7 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
         last_commit_unix_s: 1_791_000_000.into(),
         oldest_reached: Some(HEAD.into()),
         stopped_in: None,
+        stopped_record: None,
         churn_90d: BTreeMap::from([(
             "src".into(),
             SurveyChurnV1 {
@@ -480,6 +481,7 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
                 truncated: false,
             },
         ],
+        stopped_record: None,
         seen: BTreeMap::new(),
     };
     let decisions = SurveyDecisionsV1 {
@@ -593,6 +595,7 @@ fn malformed_first(
         history.first_commit_unix_s = 0.into();
         history.last_commit_unix_s = 0.into();
         history.oldest_reached = None;
+        history.stopped_record = Some(1.into());
         history.churn_90d.clear();
         history.hot_paths.clear();
     }
@@ -608,6 +611,7 @@ fn malformed_first(
             agent_share_bp: 0.into(),
             top_share_bp: 0.into(),
             by_identity: Vec::new(),
+            stopped_record: Some(1.into()),
             seen: std::collections::BTreeMap::new(),
         },
     );
@@ -1008,8 +1012,13 @@ fn a_survey_that_is_not_complete_names_its_stopping_point() {
     malformed.history.reason = Some(SurveyReasonV1::MalformedRecord);
     malformed.contributors.reason = Some(SurveyReasonV1::MalformedRecord);
     let stopped_in = "4".repeat(40);
+    // ... in the record after the four it counted, the fifth, in both sections.
     if let Some(history) = malformed.history.body.as_mut() {
         history.stopped_in = Some(stopped_in.clone());
+        history.stopped_record = Some(5.into());
+    }
+    if let Some(contributors) = malformed.contributors.body.as_mut() {
+        contributors.stopped_record = Some(5.into());
     }
     let malformed = restopped(malformed);
     malformed.validate().unwrap();
@@ -1020,7 +1029,71 @@ fn a_survey_that_is_not_complete_names_its_stopping_point() {
         malformed_value["history"]["stopped_in"],
         stopped_in.as_str()
     );
+    assert_eq!(malformed_value["history"]["stopped_record"], "5");
+    assert_eq!(malformed_value["contributors"]["stopped_record"], "5");
     assert_eq!(malformed_value["stopped"]["commit"], stopped_in.as_str());
+    // The ordinal is the record after the commits counted, the same in both sections, present
+    // exactly with `stopped_in` and whenever a record stopped `contributors`.
+    for (change, why) in [
+        (
+            (|survey: &mut ProjectSurveyV1| {
+                if let Some(history) = survey.history.body.as_mut() {
+                    history.stopped_record = Some(4.into());
+                }
+                if let Some(contributors) = survey.contributors.body.as_mut() {
+                    contributors.stopped_record = Some(4.into());
+                }
+            }) as fn(&mut ProjectSurveyV1),
+            "the record after the commits counted",
+        ),
+        (
+            |survey| {
+                if let Some(contributors) = survey.contributors.body.as_mut() {
+                    contributors.stopped_record = Some(6.into());
+                }
+            },
+            "contributors names history's record",
+        ),
+        (
+            |survey| {
+                if let Some(history) = survey.history.body.as_mut() {
+                    history.stopped_record = None;
+                }
+                if let Some(contributors) = survey.contributors.body.as_mut() {
+                    contributors.stopped_record = None;
+                }
+            },
+            "a record that stopped the walk is named by its ordinal",
+        ),
+        (
+            |survey| {
+                if let Some(contributors) = survey.contributors.body.as_mut() {
+                    contributors.stopped_record = None;
+                }
+            },
+            "contributors stopped by a record names it",
+        ),
+    ] {
+        let mut changed = malformed.clone();
+        change(&mut changed);
+        assert!(changed.validate().is_err(), "{why}");
+    }
+    for (pointer, why) in [
+        ("/history", "stopped_in names its record"),
+        ("/contributors", "a malformed contributors names its record"),
+    ] {
+        assert_invalid(
+            SCHEMA,
+            &without_pointer(&malformed_value, pointer, "stopped_record"),
+            why,
+        );
+    }
+    let mut zero = malformed_value.clone();
+    zero["history"]["stopped_record"] = json!("0");
+    assert_invalid(SCHEMA, &zero, "an ordinal counts from 1");
+    let mut unstopped = serde_json::to_value(&survey).unwrap();
+    unstopped["history"]["stopped_record"] = json!("5");
+    assert_invalid(SCHEMA, &unstopped, "a record ordinal comes with stopped_in");
     let mut elsewhere = malformed.clone();
     elsewhere.tree.completeness = SurveyCompletenessV1::Partial;
     elsewhere.tree.reason = Some(SurveyReasonV1::MalformedRecord);
@@ -1056,6 +1129,8 @@ fn a_survey_that_is_not_complete_names_its_stopping_point() {
             stopped_in.as_str(),
             "{identity:?}"
         );
+        assert_eq!(first_value["history"]["stopped_record"], "1");
+        assert_eq!(first_value["contributors"]["stopped_record"], "1");
         assert_eq!(first_value["contributors"]["identities"], "0");
         assert_eq!(first_value["contributors"]["identity"], identity.as_str());
         assert_eq!(first_value["stopped"]["commit"], stopped_in.as_str());

@@ -87,18 +87,29 @@ email first of all.
    hex>][, <path>] (<reason>)`. The record holds no host path, Provider ID or author email.
 2. **Storage.** The record goes into the Project Store's CAS; its ID is the CAS digest of its
    canonical bytes. It is published under the Project Store's lock, and a crash between the CAS
-   and the log never leaves a record no inventory sees: before the bytes are written the
-   Surveyor records a machine-local pending-publication entry, `af/survey-pending@1`
+   and the log never leaves a record no inventory sees. The writer publishes in this order, all
+   of it holding the Project Store's lock, and the collection companion's reader relies on it:
+   (a) a machine-local pending-publication entry, `af/survey-pending@1`
    ([schema](../../schemas/project-survey-pending-v1.json)) at `pending-surveys/<64 hex>.json`
-   beside `project.lock`, naming the Survey ID and the length of its bytes; once they are
-   written it adds the CAS object's identity (device and inode, stated without following a
-   link); and it removes the entry once `SurveyRecorded@1` committed. The entry is never in the
-   repository or the log. A crash after the bytes and before the event leaves it with the
-   identity; a refresh that finds the entry of the Survey it is publishing (the same ID, so the
-   same bytes) finishes that publication and clears it; an entry of another Survey is left. The
-   collection companion reads the entries for inventory and recovery; this writer only writes,
-   updates and clears them. A debug build reads `AF_TEST_SURVEY_STOP_BEFORE_EVENT=1` to stop
-   after the identity is recorded and before the event, as a crash would. `SurveyRecorded@1` {`survey_id`, `head`, `cutoff_unix_s`, `completeness`,
+   beside `project.lock`, {`schema`, `survey_id`, `bytes`}, the Survey ID and the length of its
+   bytes, written through a synced temporary file renamed into place and its directory synced
+   (the Project Store's too when the directory is new), before any byte of the record enters
+   the CAS; (b) the record linked at its CAS name and made durable there (the CAS flushed), and
+   then `object` {`device`, `inode`}, the identity of the file at the Survey's CAS name, stated
+   without following a link and refused unless it is a regular file of exactly `bytes`,
+   recorded and synced the same way, before the event is appended; (c) `SurveyRecorded@1`, and
+   the entry removed only once that event committed, never before. An entry is at most 4 KiB
+   (it holds a digest and three decimal numbers) and `bytes` at most `MAX_SURVEY_BYTES`, the
+   record ceiling; the writer refuses to write one beyond either. The entry is never in the
+   repository or the log. A crash after the bytes leaves it, without `object` before (b)
+   recorded it and with it after; (d) a refresh that finds the entry of the Survey it is
+   publishing (the same ID, so the same bytes) finishes that publication, (b) and (c) again
+   over the bytes already at the name, and clears it; an entry of another Survey is left. The
+   collection companion reads the entries for inventory and recovery (clause 13); this writer
+   only writes, updates and clears them. A debug build stops at the two crash points, as a
+   crash would, exiting 86: `AF_TEST_SURVEY_STOP_BEFORE_IDENTITY=1` after the bytes are linked
+   and before `object` is recorded, and `AF_TEST_SURVEY_STOP_BEFORE_EVENT=1` after `object` is
+   recorded and before the event; `survey/pending.rs` states the order and both stops. `SurveyRecorded@1` {`survey_id`, `head`, `cutoff_unix_s`, `completeness`,
    `policy_digest`, `surveyor_version`, `refs_digest`, `previous_survey_id` when any,
    `recorded_unix_ms`} and
    `SurveyFailed@1` {`head`, `reason`, `recorded_unix_ms`} go into its log, each with a schema and
@@ -135,7 +146,7 @@ email first of all.
 3. **Reuse on an unchanged survey key.** The survey key is the head commit, `refs_digest` =
    `sha256:` + hex(SHA-256 of the exact stdout of the one ref observation, `git for-each-ref
    --format=%(refname)%09%(objectname)%09%(objecttype)%09%(creatordate:unix) refs/heads
-   refs/tags`), the `policy_digest` and the `surveyor_version` (now 7); `activity`'s watermark
+   refs/tags`), the `policy_digest` and the `surveyor_version` (now 8); `activity`'s watermark
    joins it in PJ5. That observation is the Survey's only read of ref names: its lines, each a
    name, a target, the target's object type and the creator date git resolves through that
    target (an annotated tag's tagger time, a commit's committer time, none for another object),
@@ -145,11 +156,13 @@ email first of all.
    what remains of it, and `for-each-ref` streams under it, one ref per item, each ref at most
    64 KiB; a deadline reached before the key exists, or a ref over its bound, records
    `SurveyFailed@1` with that reason and no Survey, since the key cannot be complete (`the survey
-   key could not be computed within max_wall_ms`; only an exit 1 when `rev-parse` itself did not
-   answer, since the event names a head). Before any work beyond `rev-parse HEAD`, that `for-each-ref`,
+   key could not be computed within max_wall_ms`; when `rev-parse` itself did not answer in time,
+   the failure names the head one more `rev-parse` reads, under a bound of its own of one second,
+   and only a head that one cannot name either leaves no event, since the event names a head).
+   Before any work beyond `rev-parse HEAD`, that `for-each-ref`,
    reading the policy and reading the log, a newest uncollected Survey whose record is
    `complete` and carries an unchanged survey key is reused: the command prints one line,
-   `unchanged: head <12 hex>, refs <16 hex>, policy <16 hex>, surveyor 7`, with that Survey's
+   `unchanged: head <12 hex>, refs <16 hex>, policy <16 hex>, surveyor 8`, with that Survey's
    summary and records nothing. A new commit, tag or branch, a policy
    change or a newer Surveyor records a new Survey; a newest Survey that is `partial` or
    `unavailable` is measured again; `af project refresh --force` records one regardless of the
@@ -299,7 +312,20 @@ email first of all.
    and so cannot carry `stopped_in`; the stopping point of an unavailable `history` names no
    commit, and the validator and the schema refuse a `malformed_record` section that is not
    `partial`, a `malformed_record` history without `stopped_in`, and a history of zero commits
-   without it.
+   without it. Whichever record stopped the walk (malformed, cut, over 64 KiB or over
+   `max_paths`), both sections name it by its ordinal in the log too: `history.stopped_record`,
+   present exactly with `stopped_in`, and `contributors.stopped_record`, the same number,
+   present whenever the walk was stopped by a record and `contributors` was measured, so a
+   `contributors` partial with `malformed_record`, `max_record_bytes` or `max_paths` always
+   carries it; `1` is the first record, the head's, and the ordinal is always the record after
+   the commits counted (`commits` + 1), which the validator checks, and the schema requires it
+   with `stopped_in` and refuses `0`. `af project survey` prints it on the `history` line,
+   `stopped in record <n> (commit <12 hex>)`. The log reader tells a record git is still
+   writing from a cut one by the record's own terminators, never by a length prefix git does
+   not write and never by how the pipe delivers it: each item is read until its NUL, a read
+   that returns part of a record waits for the rest however many pieces it comes in, and only
+   the end of the stream before a record's last terminator (its fields' NUL, every item's NUL)
+   cuts it, which `malformed_record` then reports as above.
 8. **Decisions, vocabulary, checks.** `decisions` holds every decision record (clause 5) up to
    `max_entries`, sorted by number, then path, with `count` and `by_status`; a Brief variant
    picks the newest N in PJ3. Each has the number (the four leading digits), the path, the
@@ -369,8 +395,12 @@ email first of all.
    project refresh`, the refresh of `af onboard --apply`, and PJ4's detached one) sweeps the
    `af-tree-digest-` directories alone at its start, before the reuse decision of clause 3, so a
    refresh that reuses the newest complete Survey still removes what a killed predecessor
-   spilled, and a refresh killed after it spilled leaves its runs only until the next refresh
-   or run. That sweep is bounded: one listing of the temporary root, the sweeper's liveness and
+   spilled, and again right after its own Tree Digest, on every way out of
+   `review_source_git::committed_digest` (a digest, a ceiling's stop, the deadline, a failure),
+   so a spill a Surveyor killed while this one ran is not left for the next run; a refresh
+   killed after it spilled leaves its runs only until the next refresh or run. Neither sweep
+   touches the directory of a process that still exists, this refresh's own included. Each
+   sweep is bounded: one listing of the temporary root, the sweeper's liveness and
    preservation rules, and no removal begun once the refresh's deadline passed
    (`review_sandbox::stale::sweep_stale_tree_digests_before`), so it never holds a refresh, or
    the post-run preflight, past its deadline by more than the one removal then running. Its digest equals
@@ -392,7 +422,13 @@ email first of all.
    `max_survey_bytes` for the record: one that needs more records `SurveyFailed@1` naming the
    bytes it needed, and nothing else. It runs plumbing only: no checkout, hook, filter, textconv
    or project code, and nothing written inside the checkout. Any other failure records
-   `SurveyFailed@1`. A Survey never calls a Provider and never takes a writer lease on a Task
+   `SurveyFailed@1`: every way a refresh of a registered Project stops without a Survey, before
+   any section completed or after, records one with af's own sentence naming no path and no
+   `@`, so the Project Store always holds a record of the attempt; a newest Survey that does not
+   replay records `the Project Store's newest Survey does not replay against its record` (the
+   refusal itself, which names sequences and the Store's path, is what the command prints), and
+   a record the Project Store cannot take records `the Survey could not be published in the
+   Project Store`, its pending entry left to collection. A Survey never calls a Provider and never takes a writer lease on a Task
    Store; it holds the Project Store's lock only to read the log and to record.
 10. **Commands.** `af project survey [--section NAME…] [--json]` prints the newest Survey's
     summary or its record, and exits 1 with one line naming `af project refresh` when there is
@@ -411,7 +447,13 @@ email first of all.
     nor anything else onboarding does; `af onboard` without `--apply` records nothing, and a
     second `--apply` with an unchanged survey key records nothing.
 12. **Not here.** Project Briefs (PJ3); the detached after-run refresh, the single-flight lock and
-    `[survey] refresh` (PJ4); and the `activity` section (PJ5). PJ4 also adds collection: until
+    `[survey] refresh` (PJ4); and the `activity` section (PJ5), with what bounds it: the
+    discovery ceilings (1,000 Stores, 100,000 rows per Store, 1 MiB per row, 16 MiB of buffered
+    projection state) and the 64 MiB per-Store CAS-read budget of validated accounting, its
+    deadline checked between 64 KiB chunks and before each artifact is decoded, each with its
+    fixture in PJ5. This package's one CAS read, a Survey record read back by replay or reuse,
+    is bounded before it is decoded: `get_bounded` at `MAX_SURVEY_BYTES` by its stated length,
+    and only then parsed. PJ4 also adds collection: until
     then every Survey stays in the Project Store, which ADR-0151 already never evicts, and
     `[storage] keep_surveys` and `SurveyCollected@1` do not exist.
 13. **Collection and the budget.** This clause replaces the collection sentence of clause 12:
@@ -754,7 +796,18 @@ is 4,572 bytes plus the length of `git --version` less 11 (4,595 bytes with
   its target), with the Tree Digest equal to the committed Manifest's; leaves a pending
   entry with the CAS object's identity and length when a refresh stops after the bytes and
   before the event, finishes that publication at the next refresh of the same bytes and
-  clears it, leaves none after a completed refresh, and leaves another Survey's entry; counts a four-commit history with one merge
+  clears it, leaves none after a completed refresh, and leaves another Survey's entry; drives
+  writer and reader in one fixture at both crash points, an entry without `object` after
+  `AF_TEST_SURVEY_STOP_BEFORE_IDENTITY` that the next refresh of the same bytes finishes, and
+  one naming the file at the Survey's CAS name after `AF_TEST_SURVEY_STOP_BEFORE_EVENT` that
+  `af storage` counts as a Survey `pending` and `af storage prune --apply` reclaims, object
+  then entry, preview and apply alike; records `SurveyFailed@1` naming the head for a deadline
+  before `rev-parse` answered, a record the CAS cannot take and a newest Survey that does not
+  replay; sweeps a dead Surveyor's spill planted after the first sweep once the Tree Digest
+  ends, complete or stopped by a ceiling, while a live process's directory is kept; stops a log
+  field, a tree listing record and a ref over 64 KiB with `max_record_bytes` (the last with
+  `SurveyFailed@1`), naming the log record by its ordinal; and asks `cat-file` for no
+  gitlink's target; counts a four-commit history with one merge
   at `max_commits` 4, 3 and 1 (four commits, a merge and three authors; three, the merge and
   three; the merge alone and its author, no churn); finds two forced complete refreshes at one
   cutoff equal but for `previous_survey_id`, and a partial one at `max_commits` 7 recorded twice
@@ -802,8 +855,11 @@ is 4,572 bytes plus the length of `git --version` less 11 (4,595 bytes with
   for the measurement to name the head), and end a stream cut in its final NUL, after a commit
   ID, in every header field, in a trailer, before the fields' NUL, inside an ID or a numstat
   line with `Ended::Cut` naming the cut commit or the one before it, passing on only records
-  that ended; `survey/pending.rs` begins, completes and clears an entry and keeps another
-  Survey's. `review_sandbox::stale` sweeps a dead `af-tree-digest-` directory and keeps a live
+  that ended, name the record that stopped the walk by its ordinal, and read a log delivered in
+  pieces while its writer is still writing as whole history, the same pieces ended early as a
+  cut record; `survey/pending.rs` begins, completes and clears an entry and keeps another
+  Survey's, records an identity only for a regular file of the record's length, and keeps every
+  entry within 4 KiB. `review_sandbox::stale` sweeps a dead `af-tree-digest-` directory and keeps a live
   and a preserved one, and its bounded form begins no removal past its deadline.
   `crates/review-source-git/tests/it/tree_digest.rs` proves the digest-only path equal to the
   committed capture held and spilled, its typed stops with nothing left in temporary storage,
@@ -812,6 +868,7 @@ is 4,572 bytes plus the length of `git --version` less 11 (4,595 bytes with
   the record, its stopping point (required exactly when not complete, the deadline's section
   over an earlier bound, `history`'s commit, the first declaration not read, `malformed_record`
   in the walk's sections alone, partial with zero counts and `stopped_in` for a malformed first
-  record under both identity policies, never unavailable), both events, the pending entry and
+  record under both identity policies, never unavailable, and the record's ordinal, the one
+  after the commits counted, in both sections), both events, the pending entry and
   the history document, and `crates/af/tests/it/cli_surface.rs` the
   help.

@@ -451,7 +451,13 @@ is not counted, or the commit before it when the cut came before any ID. A malfo
 record, the head's, leaves both sections `partial` too, with zero counts, naming the head:
 `unavailable`, which holds nothing but its completeness and reason, is for a walk that never
 started (the deadline before it). A record over 64 KiB or a commit over `max_paths` names the
-commit it stopped in the same way, the first included.
+commit it stopped in the same way, the first included. Whichever record stopped the walk, both
+sections name it by its ordinal in the log as well, `history.stopped_record` and
+`contributors.stopped_record`: `1` for the first, the head's, and always the record after the
+commits counted. A record is told complete by its own terminators alone, never by how the pipe
+delivered it: while git is still writing a record the reader waits for the rest, however it
+arrives, and only the end of the stream inside a record makes it a cut one. `af project survey`
+prints the record on the `history` line, `stopped in record 2 (commit 4f1c09b2a7e3)`.
 
 `max_wall_ms` is one absolute deadline for the whole Survey, its start plus `max_wall_ms`, from
 before `rev-parse HEAD` to the last section. Every git process the Surveyor starts runs under the
@@ -484,9 +490,11 @@ the next refresh and the sweep of the next review or Task run remove the directo
 process has that pid, under the same rules (a directory whose process still runs is kept, a
 `preserved` one is left for the operator, and the tree is removed through directory descriptors
 without following a link). Every refresh sweeps first, before it decides whether to reuse the
-newest Survey, so one that reuses it still removes what a killed refresh spilled; the sweep is
-one listing of `$TMPDIR` and begins no removal after the refresh's deadline. On every other way
-out:
+newest Survey, so one that reuses it still removes what a killed refresh spilled, and again right
+after its Tree Digest, whatever the digest returned, a ceiling's stop included, so a spill a
+Surveyor killed meanwhile does not wait for the next run; each sweep is one listing of `$TMPDIR`,
+keeps the directory of every process that still runs and begins no removal after the refresh's
+deadline. On every other way out:
 `tree_digest_reason` is `deadline` when the deadline passed first (every later section is then
 `unavailable`), `max_record_bytes` for a listing record over 64 KiB, and `manifest_bytes` or
 `temp_bytes` when a ceiling stopped it, which makes `identity` partial with that reason and stops
@@ -646,24 +654,33 @@ over 64 KiB, records `SurveyFailed@1`. Then nothing beyond `rev-parse HEAD`, tha
 the newest Survey's summary, and nothing is recorded:
 
 ```text
-unchanged: head 219207013596, refs df39bc03fecd7f04, policy f9da720b696edb5a, surveyor 7
+unchanged: head 219207013596, refs df39bc03fecd7f04, policy f9da720b696edb5a, surveyor 8
 ```
 
 A new commit, even one with the same tree, a new tag or branch, a policy change or a newer
 Surveyor records a new Survey, and so does a newest Survey that is `partial` or `unavailable`.
 `af project refresh --force` records one regardless of the key. A Survey that cannot be taken,
 for a `[survey]` key that does not load, a git that fails or a record over `max_survey_bytes`,
-records `SurveyFailed@1` and exits 1.
+records `SurveyFailed@1` and exits 1. So does every other way a refresh of a registered Project
+stops without a Survey, so the Project Store always holds a record of the attempt: a newest
+Survey that does not replay (the refusal is printed; the event says only that the newest Survey
+does not replay), a record the Project Store cannot take, and a deadline that passes before
+`rev-parse HEAD` answered, whose failure names the head one more `rev-parse`, of at most one
+second, reads. Only a head that no `rev-parse` names leaves no event, since the event names a
+head.
 
-A Survey is published under the Project Store's lock in this order: a pending-publication entry
-`pending-surveys/<64 hex>.json` beside `project.lock`, `af/survey-pending@1`
-([schema](../schemas/project-survey-pending-v1.json)) naming the Survey and the length of its
-bytes; the record into the CAS, and the CAS object's device and inode into the entry; then
-`SurveyRecorded@1`, and the entry removed once that committed. A crash between the bytes and the
-event leaves the entry with the object's identity, so the record no event names is never lost
-to inventory. The next refresh that measures the same bytes (the same Survey ID) finishes that
-publication and clears the entry; an entry of another Survey is left for collection. The entry
-is never in the repository or the log.
+A Survey is published under the Project Store's lock in this order, which collection relies on:
+a pending-publication entry `pending-surveys/<64 hex>.json` beside `project.lock`,
+`af/survey-pending@1` ([schema](../schemas/project-survey-pending-v1.json)) naming the Survey and
+the length of its bytes, written and synced before any byte of the record enters the CAS; the
+record linked at its CAS name and made durable there; the device and inode of the file at that
+name, a regular file of exactly that length, recorded and synced in the entry; then
+`SurveyRecorded@1`, and the entry removed only once that committed. An entry is at most 4 KiB and
+names a record of at most `max_survey_bytes`' ceiling. A crash between the bytes and the event
+leaves the entry, with the object's identity once it was recorded, so the record no event names
+is never lost to inventory. The next refresh that measures the same bytes (the same Survey ID)
+finishes that publication and clears the entry; an entry of another Survey is left for
+collection. The entry is never in the repository or the log.
 
 An example, from the integration test's fixture repository
 (`crates/af/tests/it/project_survey.rs`), not from afactory:

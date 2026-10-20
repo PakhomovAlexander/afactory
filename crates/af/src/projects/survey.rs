@@ -54,8 +54,9 @@ use super::{Checkout, Git, Log, ProjectStore, RUN_ID};
 /// record that does not parse stops the walk with `malformed_record`, and the stopping point of
 /// a Survey that is not complete. 7: a log that ends inside a record (its last item without its
 /// NUL) is a malformed record and never whole history, and a walk stopped in its first record
-/// leaves `history` and `contributors` partial with zero counts, naming the commit.
-pub(crate) const SURVEYOR_VERSION: u64 = 7;
+/// leaves `history` and `contributors` partial with zero counts, naming the commit. 8: the
+/// record that stopped the walk named by its ordinal in `history` and `contributors`.
+pub(crate) const SURVEYOR_VERSION: u64 = 8;
 
 /// Why a refresh whose deadline passed before its survey key existed failed.
 const KEY_DEADLINE: &str = "the survey key could not be computed within max_wall_ms";
@@ -568,10 +569,13 @@ impl ProjectStore {
         Ok(())
     }
 
-    /// Publish `survey`, whose canonical bytes are `bytes`, under the Project Store's lock: its
-    /// pending-publication entry first, then its record into the CAS and the object's identity
-    /// into the entry, then `SurveyRecorded@1`, and the entry cleared once that committed, so a
-    /// crash between the CAS and the log leaves an entry naming the record.
+    /// Publish `survey`, whose canonical bytes are `bytes`, under the Project Store's lock, in
+    /// the order collection's reader relies on (`pending.rs`): its pending-publication entry
+    /// written and synced first, then its record linked at its CAS name and made durable, then
+    /// the identity of the file at that name recorded and synced in the entry, then
+    /// `SurveyRecorded@1`, and the entry cleared only once that committed, so a crash between
+    /// the CAS and the log leaves an entry naming the record. An entry a crash left for these
+    /// same bytes is this publication's, which finishes it.
     fn record_survey(
         &mut self,
         survey: &ProjectSurveyV1,
@@ -586,6 +590,9 @@ impl ProjectStore {
                 "the CAS stored Survey {survey_id} as {stored}; run `af project refresh` again"
             ));
         }
+        // The bytes and their name durable before the entry names the object.
+        self.cas.flush().map_err(|error| error.to_string())?;
+        pending::stop_before_identity();
         pending::written(
             &self.directory,
             &survey_id,
@@ -675,14 +682,104 @@ fn open(checkout: &Checkout) -> Result<ProjectStore, String> {
     Ok(store)
 }
 
+/// Why a refresh recorded no Survey: what its `SurveyFailed@1` says and what the command
+/// prints.
+#[derive(Debug)]
+struct Unrecorded {
+    /// The head the attempt surveyed, once `rev-parse` named it.
+    head: Option<String>,
+    /// af's own sentence for `SurveyFailed@1`: no path, no email.
+    reason: String,
+    /// What the command prints, which may say more.
+    error: String,
+}
+
+impl Unrecorded {
+    fn new(head: Option<&str>, reason: impl Into<String>, error: impl Into<String>) -> Self {
+        Self {
+            head: head.map(str::to_string),
+            reason: reason.into(),
+            error: error.into(),
+        }
+    }
+
+    /// A failure whose reason is also what the command prints.
+    fn said(head: &str, reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        Self::new(Some(head), reason.clone(), reason)
+    }
+
+    /// A measurement's failure: its reason, and its detail for the command alone.
+    fn of(head: &str, failure: &measure::Failure) -> Self {
+        Self::new(
+            Some(head),
+            failure.reason.clone(),
+            format!("{}: {}", failure.reason, failure.detail),
+        )
+    }
+}
+
+/// Why a refresh whose newest Survey does not replay recorded none: the refusal itself names
+/// sequences and the Project Store's path, which a `SurveyFailed@1` never holds.
+const REPLAY_REFUSED: &str = "the Project Store's newest Survey does not replay against its \
+                              record; run `af project history` to see why, or `af project \
+                              refresh --force` to record a new one";
+
+/// Why a refresh whose record could not be published recorded none.
+const NOT_PUBLISHED: &str =
+    "the Survey could not be published in the Project Store; run `af project refresh` again";
+
+/// How long the one `rev-parse` may take that names the head of a failure whose Survey clock
+/// ran out before its own `rev-parse` answered.
+const FAILURE_HEAD_MS: u64 = 1_000;
+
 /// Record a Survey of the checkout's head now, synchronously, unless the newest Survey is
 /// complete under the current survey key and `force` is not asked. One `max_wall_ms` deadline
 /// runs from before `rev-parse` to the last section: a deadline that passes before the key
 /// exists records `SurveyFailed@1`. A Survey that cannot be taken, or whose record is over
-/// `max_survey_bytes`, records `SurveyFailed@1` and is the error.
+/// `max_survey_bytes`, records `SurveyFailed@1` and is the error. Every way a refresh of a
+/// registered Project stops without a Survey records `SurveyFailed@1` naming the head, so the
+/// Project Store always holds a record of the attempt; the one exception is a head no
+/// `rev-parse` names, even within [`FAILURE_HEAD_MS`] of its own after the deadline, since the
+/// event names a head.
 pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, String> {
     let started = Instant::now();
     let git = Git::open(&checkout.toplevel)?;
+    let unrecorded = match attempt(checkout, &git, started, force) {
+        Ok(refreshed) => return Ok(refreshed),
+        Err(unrecorded) => unrecorded,
+    };
+    let head = unrecorded.head.clone().or_else(|| {
+        let clock = measure::Clock::new(Instant::now(), FAILURE_HEAD_MS).section("key");
+        measure::head(&git, &clock).ok().flatten()
+    });
+    // Only a registered Project's log holds it: a Project Store is never created for it.
+    let logged = crate::xdg_state_root().is_ok_and(|state_home| {
+        super::store_directory(&state_home, &checkout.project_id)
+            .join("events.sqlite")
+            .is_file()
+    });
+    if let Some(head) = head
+        && logged
+        && let Ok(mut store) = open(checkout)
+        && let Err(error) = store.record_failure(&head, &unrecorded.reason)
+    {
+        return Err(format!(
+            "{}; recording SurveyFailed@1 failed too: {error}",
+            unrecorded.error
+        ));
+    }
+    Err(unrecorded.error)
+}
+
+/// One refresh under the Survey's clock from `started`: the recorded or reused Survey, or why
+/// none was recorded, which [`refresh`] records.
+fn attempt(
+    checkout: &Checkout,
+    git: &Git,
+    started: Instant,
+    force: bool,
+) -> Result<Refreshed, Unrecorded> {
     let policy = Policy::load(&checkout.toplevel).and_then(within_pattern_limits);
     let clock = measure::Clock::new(
         started,
@@ -691,26 +788,37 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
             .map_or(Policy::default().max_wall_ms, |policy| policy.max_wall_ms),
     );
     // The spills of a refresh killed after it spilled, and only those whose process is gone:
-    // swept by every refresh before it decides whether to reuse a Survey, within its deadline.
+    // swept by every refresh before it decides whether to reuse a Survey, within its deadline,
+    // and again after its Tree Digest (`measure::tree_digest`).
     review_sandbox::stale::sweep_stale_tree_digests_before(&std::env::temp_dir(), clock.deadline());
     // The key's reads are no section's: a fixture that slows one section leaves them alone.
     let key_clock = clock.section("key");
-    let head = match measure::head(&git, &key_clock) {
+    let head = match measure::head(git, &key_clock) {
         Ok(Some(head)) => head,
-        Ok(None) => return Err(format!("{KEY_DEADLINE}; no head was read")),
-        Err(failure) => return Err(format!("{}: {}", failure.reason, failure.detail)),
-    };
-    let policy = match policy {
-        Ok(policy) => policy,
-        Err(reason) => {
-            open(checkout)?.record_failure(&head, &reason)?;
-            return Err(format!(
-                "{reason}; fix the [survey] table and run `af project refresh` again"
+        Ok(None) => {
+            return Err(Unrecorded::new(
+                None,
+                KEY_DEADLINE,
+                format!("{KEY_DEADLINE}; no head was read in time"),
+            ));
+        }
+        Err(failure) => {
+            return Err(Unrecorded::new(
+                None,
+                failure.reason.clone(),
+                format!("{}: {}", failure.reason, failure.detail),
             ));
         }
     };
+    let policy = policy.map_err(|reason| {
+        Unrecorded::new(
+            Some(&head),
+            reason.clone(),
+            format!("{reason}; fix the [survey] table and run `af project refresh` again"),
+        )
+    })?;
     // One ref observation: the key's `refs_digest` and `history`'s tags and branches.
-    let observed = match measure::observe_refs(&git, &key_clock, &policy) {
+    let observed = match measure::observe_refs(git, &key_clock, &policy) {
         Ok(Ok(observed)) => observed,
         Ok(Err(reason)) => {
             let reason = match reason {
@@ -721,40 +829,41 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
                     other.as_str()
                 ),
             };
-            open(checkout)?.record_failure(&head, &reason)?;
-            return Err(reason);
+            return Err(Unrecorded::said(&head, reason));
         }
-        Err(failure) => {
-            open(checkout)?.record_failure(&head, &failure.reason)?;
-            return Err(format!("{}: {}", failure.reason, failure.detail));
-        }
+        Err(failure) => return Err(Unrecorded::of(&head, &failure)),
     };
     let refs_digest = observed.digest.clone();
-    let store = open(checkout)?;
+    // A Project Store that cannot be opened (an unregistered Project) holds no failure either.
+    let unopened = |error: String| Unrecorded::new(None, error.clone(), error);
+    let replayed = |error: String| Unrecorded::new(Some(&head), REPLAY_REFUSED, error);
+    let store = open(checkout).map_err(unopened)?;
     let key = Key {
         head: head.clone(),
         refs_digest: refs_digest.clone(),
-        policy_digest: policy.digest()?,
+        policy_digest: policy
+            .digest()
+            .map_err(|error| Unrecorded::said(&head, error))?,
         surveyor_version: SURVEYOR_VERSION,
     };
     if !force
-        && let Some(newest) = newest(&store, &store.log()?)?
+        && let Some(newest) = newest(&store, &store.log().map_err(replayed)?).map_err(replayed)?
         && key.reuses(&newest)
     {
         return Ok(Refreshed::Unchanged(newest));
     }
     // The Store is not held while the head is measured.
     drop(store);
-    let git_version = match measure::git_version(&git, &key_clock) {
+    let git_version = match measure::git_version(git, &key_clock) {
         Ok(Some(version)) => version,
-        Ok(None) => {
-            open(checkout)?.record_failure(&head, KEY_DEADLINE)?;
-            return Err(KEY_DEADLINE.into());
-        }
+        Ok(None) => return Err(Unrecorded::said(&head, KEY_DEADLINE)),
         Err(failure) => {
             let reason = "git --version failed; run `af project refresh` again";
-            open(checkout)?.record_failure(&head, reason)?;
-            return Err(format!("{reason}: {}", failure.detail));
+            return Err(Unrecorded::new(
+                Some(&head),
+                reason,
+                format!("{reason}: {}", failure.detail),
+            ));
         }
     };
     let basis = measure::Basis {
@@ -769,18 +878,12 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         git_version: &git_version,
     };
     measure::hand_over(observed);
-    let measured = collect::measure(&git, &basis, started, clock.clone());
-    let mut store = open(checkout)?;
-    let sections = match measured {
-        Ok(sections) => sections,
-        Err(failure) => {
-            store.record_failure(&head, &failure.reason)?;
-            return Err(format!("{}: {}", failure.reason, failure.detail));
-        }
-    };
-    let log = store.log()?;
+    let sections = collect::measure(git, &basis, started, clock.clone())
+        .map_err(|failure| Unrecorded::of(&head, &failure))?;
+    let mut store = open(checkout).map_err(unopened)?;
+    let log = store.log().map_err(replayed)?;
     if !force
-        && let Some(newest) = newest(&store, &log)?
+        && let Some(newest) = newest(&store, &log).map_err(replayed)?
         && key.reuses(&newest)
     {
         // Another refresh recorded this head while this one measured it.
@@ -809,7 +912,13 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         checks: sections.checks,
     };
     survey.stopped = stopped(&survey, &clock);
-    let bytes = record_bytes(&survey)?;
+    let bytes = record_bytes(&survey).map_err(|error| {
+        Unrecorded::new(
+            Some(&head),
+            "the Survey measured is no valid record; run `af project refresh` again",
+            format!("the Survey measured is no valid record: {error}"),
+        )
+    })?;
     if bytes.len() as u64 > policy.max_survey_bytes.min(MAX_SURVEY_BYTES) {
         let reason = format!(
             "the Survey needs {} bytes, more than [survey] max_survey_bytes = {}; raise it to at \
@@ -818,10 +927,12 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
             policy.max_survey_bytes,
             review_core::project::MAX_SURVEY_BYTES
         );
-        store.record_failure(&head, &reason)?;
-        return Err(reason);
+        return Err(Unrecorded::said(&head, reason));
     }
-    store.record_survey(&survey, bytes).map(Refreshed::Recorded)
+    store
+        .record_survey(&survey, bytes)
+        .map(Refreshed::Recorded)
+        .map_err(|error| Unrecorded::new(Some(&head), NOT_PUBLISHED, error))
 }
 
 /// Where `survey` stopped when it is not complete (ADR-0152 clause 1): the stopping point its
@@ -980,13 +1091,21 @@ fn all_lines(recorded: &Recorded) -> Vec<String> {
     lines.push(line(
         "history",
         survey.history.body.as_ref().map(|history| {
-            format!(
+            let mut measured = format!(
                 "{} commits ({} merges), {} in 30 days, {} in 90 days",
                 history.commits.get(),
                 history.merges.get(),
                 history.windows.days_30.commits.get(),
                 history.windows.days_90.commits.get()
-            )
+            );
+            if let (Some(commit), Some(record)) = (&history.stopped_in, history.stopped_record) {
+                measured.push_str(&format!(
+                    ", stopped in record {} (commit {})",
+                    record.get(),
+                    short(commit)
+                ));
+            }
+            measured
         }),
         survey.history.completeness,
         survey.history.reason,

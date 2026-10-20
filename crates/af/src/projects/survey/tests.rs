@@ -6,7 +6,7 @@ use serde_json::json;
 
 use super::measure::{
     self, Change, ChecksFold, Clock, Commit, Ended, Entry, EntryKind, Found, Object, TreeFold,
-    Walk, hash16, identity_of, read_batch, read_listing, read_log,
+    Walk, hash16, identity_of, read_batch, read_listing, read_log, read_log_counted,
 };
 use super::policy::Policy;
 use super::*;
@@ -624,6 +624,190 @@ fn a_stream_cut_inside_a_record_is_never_a_whole_history() {
     }
     // The first record cut before its ID names nothing: the caller names the head.
     assert_eq!(read(&B[..7]), (Ended::Cut, None, Vec::new()));
+}
+
+/// Read `log` through [`read_log_counted`] from `input`: how it ended, the commit it names, the
+/// ordinal of the record it stopped in and the commits passed on.
+fn counted(
+    input: &mut dyn std::io::BufRead,
+    policy: &Policy,
+) -> (Ended, Option<String>, u64, Vec<String>) {
+    let mut commits = Vec::new();
+    let (mut stopped_in, mut record) = (None, 0);
+    let ended = read_log_counted(
+        input,
+        &clock(),
+        policy,
+        &mut stopped_in,
+        &mut record,
+        |commit| {
+            if commit.changes.len() as u64 > policy.max_paths {
+                return Err(SurveyReasonV1::MaxPaths);
+            }
+            commits.push(commit.id);
+            Ok(())
+        },
+    );
+    (ended, stopped_in, record, commits)
+}
+
+#[test]
+fn the_record_that_stops_the_walk_is_named_by_its_ordinal_the_one_after_those_passed_on() {
+    let policy = Policy::default();
+    let read = |log: &str| counted(&mut log.as_bytes(), &policy);
+    let first = logged(B, A, 200, "Ada", None, &[], &["1\t0\ta"]);
+    let last = logged(A, "", 100, "Bob", None, &[], &["1\t0\tb"]);
+    let whole = format!("{first}{last}");
+    assert_eq!(
+        read(&whole),
+        (Ended::Done, None, 0, vec![B.to_string(), A.to_string()]),
+        "a walk no record stopped names none"
+    );
+    let malformed = || Ended::Bound(SurveyReasonV1::MalformedRecord);
+    for (log, ended, named, record, passed, why) in [
+        (
+            format!("{first}{A}\0\0soon\0Bob\0{A}\0\0{A}\0\0"),
+            malformed(),
+            Some(A),
+            2,
+            1,
+            "a malformed second record",
+        ),
+        (
+            format!("{A}\0\0soon\0Bob\0{A}\0\0{A}\0\0{first}"),
+            malformed(),
+            Some(A),
+            1,
+            0,
+            "a malformed first record",
+        ),
+        (
+            "garbage\0".to_string(),
+            malformed(),
+            None,
+            1,
+            0,
+            "a first record without its ID, which the caller names by the head",
+        ),
+        (
+            whole[..whole.len() - 1].to_string(),
+            Ended::Cut,
+            Some(A),
+            2,
+            1,
+            "the final NUL cut",
+        ),
+        (
+            format!("{first}{A}"),
+            Ended::Cut,
+            Some(A),
+            2,
+            1,
+            "cut right after the second record's ID",
+        ),
+        (
+            format!("{first}{}", &A[..12]),
+            Ended::Cut,
+            Some(B),
+            1,
+            0,
+            "cut inside the second ID, naming the first record",
+        ),
+        (
+            B[..7].to_string(),
+            Ended::Cut,
+            None,
+            1,
+            0,
+            "cut inside the first ID",
+        ),
+        (
+            format!(
+                "{first}{A}\0\0100\0{}\0{A}\0\0{A}\0\0",
+                "n".repeat(review_core::project::MAX_SURVEY_RECORD_BYTES + 1)
+            ),
+            Ended::Bound(SurveyReasonV1::MaxRecordBytes),
+            Some(A),
+            2,
+            1,
+            "a name over 64 KiB in the second record",
+        ),
+    ] {
+        assert_eq!(
+            read(&log),
+            (
+                ended,
+                named.map(str::to_string),
+                record,
+                [B, A][..passed].iter().map(|id| id.to_string()).collect()
+            ),
+            "{why}"
+        );
+    }
+    // A commit over max_paths, which the walk refuses to fold, is the record it stopped in.
+    let wide = Policy {
+        max_paths: 1,
+        ..Policy::default()
+    };
+    let log = format!(
+        "{first}{}",
+        logged(A, "", 100, "Bob", None, &[], &["1\t0\tb", "1\t0\tc"])
+    );
+    assert_eq!(
+        counted(&mut log.as_bytes(), &wide),
+        (
+            Ended::Bound(SurveyReasonV1::MaxPaths),
+            Some(A.to_string()),
+            2,
+            vec![B.to_string()]
+        )
+    );
+}
+
+#[test]
+fn a_record_git_is_still_writing_is_awaited_and_only_the_streams_end_cuts_it() {
+    use std::io::Write as _;
+    let policy = Policy::default();
+    let whole = [
+        logged(
+            B,
+            A,
+            200,
+            "Ada",
+            None,
+            &["Claude <c@x.invalid>"],
+            &["1\t0\ta"],
+        ),
+        logged(A, "", 100, "Bob", None, &[], &["1\t0\tb"]),
+    ]
+    .concat();
+    // A writer that delivers every record in pieces, pausing inside each field, as a git still
+    // writing does: the reader waits for each record's own terminators, so the history is whole.
+    let pieces = |log: String| {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let writing = std::thread::spawn(move || {
+            for piece in log.as_bytes().chunks(7) {
+                writer.write_all(piece).unwrap();
+                writer.flush().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        });
+        let read = counted(&mut std::io::BufReader::with_capacity(4, reader), &policy);
+        writing.join().unwrap();
+        read
+    };
+    assert_eq!(
+        pieces(whole.clone()),
+        (Ended::Done, None, 0, vec![B.to_string(), A.to_string()]),
+        "a record delivered in pieces is one record"
+    );
+    // The same pieces with the stream ending before the last record's final NUL: the end of
+    // the stream, not a pause, makes it a cut record.
+    assert_eq!(
+        pieces(whole[..whole.len() - 1].to_string()),
+        (Ended::Cut, Some(A.to_string()), 2, vec![B.to_string()]),
+        "only the stream's end cuts a record"
+    );
 }
 
 #[test]
