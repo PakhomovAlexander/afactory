@@ -1,4 +1,4 @@
-//! A sweep's one plan (ADR-0144, ADR-0152 clause 13). [`make`] takes one inventory snapshot and
+//! A sweep's one plan (ADR-0144, ADR-0158 clause 13). [`make`] takes one inventory snapshot and
 //! returns, in order, every entry the sweep removes with the bytes it frees, its rule
 //! (`recovery`, `collection`, `keep_surveys`, `budget`) and the total after it, and every file
 //! or Survey it leaves with its reason (`held`, `foreign`, `oversize`, `unreadable_name`,
@@ -17,7 +17,10 @@
 //! the plan; the applied sweep runs it entry by entry with [`run`] and reports what each entry
 //! actually did, an entry that failed (the lock lost, what it names replaced or gone) kept in its
 //! place as `failed: <reason>` with what it actually freed (nothing, unless a deletion stopped
-//! part way), and never plans again.
+//! part way), and never plans again. Its running total reconciles an entry that grew or shrank
+//! since the snapshot: what a removal measured its entry to hold when it started replaces the
+//! snapshot's bytes before what left the disk is taken out, and a deletion that stopped part
+//! way leaves the total `unknown` when what it left cannot be measured.
 
 use std::path::{Path, PathBuf};
 
@@ -35,21 +38,62 @@ pub(crate) enum Job {
     Survey(collect::Job),
 }
 
-/// What running one planned entry did: the bytes it freed and, for a Survey, why it was
-/// collected `unreadable`; or why it did not, and what it freed before it stopped.
-pub(crate) type Outcome = Result<(u64, Option<String>), Failed>;
+/// What running one planned entry did, or why it did not, and what it freed before it stopped.
+pub(crate) type Outcome = Result<Ran, Failed>;
 
-/// Why a planned entry failed, and the allocated bytes that left the disk before it did: none,
-/// unless a deletion stopped part way and what is left of it was measured.
+/// What one planned entry that ran did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Ran {
+    /// The allocated bytes that left the disk.
+    pub(crate) freed: u64,
+    /// A Survey collected `unreadable`: why.
+    pub(crate) unreadable: Option<String>,
+    /// What the entry held when its removal started, stated through its own descriptor
+    /// immediately before anything was unlinked; `None` where nothing measured it (a Survey's
+    /// file, a Task's collection), whose freed bytes are then all the total loses.
+    pub(crate) started: Option<u64>,
+}
+
+impl Ran {
+    /// An entry that freed `freed` bytes and measured nothing else.
+    pub(crate) fn freed(freed: u64) -> Self {
+        Self {
+            freed,
+            unreadable: None,
+            started: None,
+        }
+    }
+}
+
+/// Why a planned entry failed, the allocated bytes that left the disk before it did (none,
+/// unless a deletion stopped part way), and what the entry still holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Failed {
     pub(crate) reason: String,
     pub(crate) freed: u64,
+    pub(crate) remains: Remains,
+}
+
+/// What a planned entry that failed still holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Remains {
+    /// Nothing of it was removed: it holds what the snapshot counted.
+    Counted,
+    /// A deletion stopped part way and what it left was measured: these bytes, in place of the
+    /// snapshot's.
+    Measured(u64),
+    /// A deletion stopped part way and what it left cannot be measured: from here on the total
+    /// is unknown.
+    Unmeasured,
 }
 
 impl From<String> for Failed {
     fn from(reason: String) -> Self {
-        Self { reason, freed: 0 }
+        Self {
+            reason,
+            freed: 0,
+            remains: Remains::Counted,
+        }
     }
 }
 
@@ -176,7 +220,7 @@ impl Plan {
         within: Option<(Kind, &Path)>,
     ) {
         model.take(key, within, removal.bytes);
-        removal.total_after = model.total;
+        removal.total_after = Some(model.total);
         self.steps.push(Planned { removal, job });
     }
 
@@ -200,7 +244,7 @@ fn removal(kind: Kind, path: PathBuf, task_id: Option<String>, bytes: u64, rule:
         task_id,
         bytes,
         rule,
-        total_after: 0,
+        total_after: None,
         unreadable: None,
         outcome: None,
     }
@@ -597,30 +641,54 @@ fn collect_into(plan: &mut Plan, model: &mut Model, inputs: &Inputs<'_>, judge: 
 /// and the total after it; one that failed, of any kind, is a failure and stays in its place
 /// with its outcome `failed: <reason>` and what it actually freed: nothing, the running total
 /// unchanged by it, unless a deletion stopped part way, whose freed bytes are what left the
-/// disk. So the document's totals are what the directory holds. The stop is what the total
-/// after the last entry says. The plan's registrations are the caller's to drop.
+/// disk. An entry that grew or shrank since the snapshot is reconciled before what left is taken
+/// out: a removal that measured what its entry held when it started puts those bytes in place
+/// of the snapshot's (once, in whichever entry counted it), so a whole removal takes exactly the
+/// entry's snapshot bytes out of the total and one that stopped part way leaves exactly what it
+/// measured left; one that stopped part way and could not measure what it left makes the total
+/// `unknown` from there on, and `fits` is never claimed of it. So the document's totals are what
+/// the directory holds. The stop is what the total after the last entry says. The plan's
+/// registrations are the caller's to drop.
 pub(crate) fn run(
     plan: Plan,
     report: &mut SweepReport,
     execute: &mut dyn FnMut(&Planned) -> Outcome,
 ) {
-    let mut total = plan.total_before;
+    let mut total = Some(plan.total_before);
     report
         .left
         .extend(plan.left.into_iter().map(super::Left::of));
     report.failures.extend(plan.failures);
     for planned in plan.steps {
         let mut removal = planned.removal.clone();
+        // What the snapshot counted for the entry.
+        let counted = planned.removal.bytes;
         match execute(&planned) {
-            Ok((freed, unreadable)) => {
-                total = total.saturating_sub(freed);
-                removal.bytes = freed;
-                removal.unreadable = unreadable;
+            Ok(ran) => {
+                total = total.map(|total| match ran.started {
+                    Some(started) => total
+                        .saturating_add(started)
+                        .saturating_sub(counted)
+                        .saturating_sub(ran.freed),
+                    None => total.saturating_sub(ran.freed),
+                });
+                removal.bytes = ran.freed;
+                removal.unreadable = ran.unreadable;
                 removal.total_after = total;
                 report.removals.push(removal);
             }
-            Err(Failed { reason, freed }) => {
-                total = total.saturating_sub(freed);
+            Err(Failed {
+                reason,
+                freed,
+                remains,
+            }) => {
+                total = match remains {
+                    Remains::Counted => total,
+                    Remains::Measured(left) => {
+                        total.map(|total| total.saturating_add(left).saturating_sub(counted))
+                    }
+                    Remains::Unmeasured => None,
+                };
                 removal.bytes = freed;
                 removal.unreadable = None;
                 removal.total_after = total;
@@ -631,7 +699,7 @@ pub(crate) fn run(
         }
     }
     report.total_after = total;
-    report.stop = stop(total, report.max_bytes);
+    report.stop = total.map_or(Stop::Unknown, |total| stop(total, report.max_bytes));
 }
 
 /// The plan as a preview reports it: every entry as planned, the registrations it drops included.
@@ -644,7 +712,7 @@ pub(crate) fn preview(plan: Plan, report: &mut SweepReport) {
     report
         .removals
         .extend(plan.steps.into_iter().map(|planned| planned.removal));
-    report.total_after = plan.total_after;
+    report.total_after = Some(plan.total_after);
     report.stop = plan.stop;
 }
 
@@ -677,7 +745,7 @@ mod tests {
             collection: true,
             max_bytes,
             total_before: 0,
-            total_after: 0,
+            total_after: Some(0),
             stop: Stop::Fits,
             removals: Vec::new(),
             left: Vec::new(),
@@ -694,7 +762,11 @@ mod tests {
     }
 
     fn identity(inode: u64) -> review_sandbox::Identity {
-        review_sandbox::Identity { device: 1, inode }
+        review_sandbox::Identity {
+            device: 1,
+            inode,
+            born: Some(1),
+        }
     }
 
     /// The reviewer's numbers: a 10-byte record an interruption moved under `cas/removing`,
@@ -748,7 +820,7 @@ mod tests {
          -> Judged { unreachable!("no Survey is picked") };
         let plan = make(inputs(), &mut judge);
         assert_eq!(plan.total_before, 110);
-        let steps: Vec<(Rule, u64, u64)> = plan
+        let steps: Vec<(Rule, u64, Option<u64>)> = plan
             .steps
             .iter()
             .map(|planned| {
@@ -759,7 +831,13 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(steps, [(Rule::Recovery, 10, 100), (Rule::Budget, 20, 80)]);
+        assert_eq!(
+            steps,
+            [
+                (Rule::Recovery, 10, Some(100)),
+                (Rule::Budget, 20, Some(80))
+            ]
+        );
         assert_eq!(plan.total_after, 80);
         assert_eq!(plan.stop, Stop::Fits);
 
@@ -769,16 +847,16 @@ mod tests {
         let mut applied = report(85, true);
         applied.total_before = plan.total_before;
         run(plan, &mut applied, &mut |planned: &Planned| {
-            Ok((planned.removal.bytes, None))
+            Ok(Ran::freed(planned.removal.bytes))
         });
         for document in [&previewed, &applied] {
-            let removals: Vec<(Rule, u64, u64)> = document
+            let removals: Vec<(Rule, u64, Option<u64>)> = document
                 .removals
                 .iter()
                 .map(|removal| (removal.rule, removal.bytes, removal.total_after))
                 .collect();
             assert_eq!(removals, steps);
-            assert_eq!(document.total_after, 80);
+            assert_eq!(document.total_after, Some(80));
             assert_eq!(document.stop, Stop::Fits);
         }
         let as_json = |document: &SweepReport| serde_json::to_value(&document.removals).unwrap();
@@ -850,7 +928,7 @@ mod tests {
                 Job::Survey(_) => {
                     Err(String::from("Survey x is refused (replaced during collection)").into())
                 }
-                _ => Ok((planned.removal.bytes, None)),
+                _ => Ok(Ran::freed(planned.removal.bytes)),
             },
         );
         assert_eq!(applied.removals.len(), 2, "{:?}", applied.removals);
@@ -859,9 +937,13 @@ mod tests {
             applied.removals[0].outcome.as_deref(),
             Some("failed: Survey x is refused (replaced during collection)")
         );
-        assert_eq!(applied.removals[0].total_after, 124, "unchanged by it");
-        assert_eq!(applied.removals[1].total_after, 84);
-        assert_eq!(applied.total_after, 84);
+        assert_eq!(
+            applied.removals[0].total_after,
+            Some(124),
+            "unchanged by it"
+        );
+        assert_eq!(applied.removals[1].total_after, Some(84));
+        assert_eq!(applied.total_after, Some(84));
         assert_eq!(
             applied.stop,
             Stop::NothingEvictable,
@@ -993,7 +1075,7 @@ mod tests {
         };
         let plan = make(inputs(), &mut |_, _, _| unreachable!("no Survey is picked"));
         assert_eq!(plan.total_before, 94, "the claim is counted");
-        let steps: Vec<(Kind, Rule, u64, u64)> = plan
+        let steps: Vec<(Kind, Rule, u64, Option<u64>)> = plan
             .steps
             .iter()
             .map(|planned| {
@@ -1009,9 +1091,9 @@ mod tests {
         assert_eq!(
             steps,
             [
-                (Kind::Claim, Rule::Recovery, 64, 30),
-                (Kind::Claim, Rule::Recovery, 4, 26),
-                (Kind::WarmKey, Rule::Budget, 20, 6),
+                (Kind::Claim, Rule::Recovery, 64, Some(30)),
+                (Kind::Claim, Rule::Recovery, 4, Some(26)),
+                (Kind::WarmKey, Rule::Budget, 20, Some(6)),
             ]
         );
         assert_eq!(plan.steps[1].removal.path, container);
@@ -1024,7 +1106,7 @@ mod tests {
         let mut applied = report(0, true);
         applied.total_before = plan.total_before;
         run(plan, &mut applied, &mut |planned: &Planned| {
-            Ok((planned.removal.bytes, None))
+            Ok(Ran::freed(planned.removal.bytes))
         });
         let as_json = |document: &SweepReport| serde_json::to_value(&document.removals).unwrap();
         assert_eq!(as_json(&previewed), as_json(&applied), "entry for entry");
@@ -1084,7 +1166,7 @@ mod tests {
             if index % 2 == 0 {
                 Err(format!("removing /af/{index}: it changed since it was measured").into())
             } else {
-                Ok((10, None))
+                Ok(Ran::freed(10))
             }
         });
         assert_eq!(
@@ -1108,9 +1190,9 @@ mod tests {
                 total -= 10;
                 assert_eq!(removal.outcome, None);
             }
-            assert_eq!(removal.total_after, total, "{removal:?}");
+            assert_eq!(removal.total_after, Some(total), "{removal:?}");
         }
-        assert_eq!(applied.total_after, 160);
+        assert_eq!(applied.total_after, Some(160));
         assert_eq!(applied.failures.len(), 4);
         assert_eq!(applied.stop, Stop::NothingEvictable);
     }
@@ -1162,7 +1244,7 @@ mod tests {
             plan.total_before, 108,
             "the Store's 100 and the outside claim's 8"
         );
-        let steps: Vec<(&Path, u64, u64)> = plan
+        let steps: Vec<(&Path, u64, Option<u64>)> = plan
             .steps
             .iter()
             .map(|planned| {
@@ -1176,11 +1258,11 @@ mod tests {
         assert_eq!(
             steps,
             [
-                (inside.path.as_path(), 40, 68),
+                (inside.path.as_path(), 40, Some(68)),
                 (
                     Path::new("/state/af/review/campaigns/.af-removing-9-2-0"),
                     8,
-                    60
+                    Some(60)
                 ),
             ]
         );
@@ -1319,8 +1401,8 @@ mod tests {
         );
     }
 
-    /// A deletion that stopped part way is failed with what left the disk: the running total
-    /// falls by exactly that, and the entry keeps it.
+    /// A deletion that stopped part way is failed with what left the disk, which the entry keeps,
+    /// and what it left takes the place of the snapshot's bytes in the running total.
     #[test]
     fn a_partial_deletion_is_failed_with_the_bytes_it_freed() {
         let plan = Plan {
@@ -1347,17 +1429,124 @@ mod tests {
             Err(Failed {
                 reason: "removing /af/c: only partly removed".into(),
                 freed: 25,
+                remains: Remains::Measured(35),
             })
         });
         let [removal] = applied.removals.as_slice() else {
             panic!("{:?}", applied.removals);
         };
         assert_eq!(removal.bytes, 25);
-        assert_eq!(removal.total_after, 75);
+        assert_eq!(removal.total_after, Some(75));
         assert_eq!(
             removal.outcome.as_deref(),
             Some("failed: removing /af/c: only partly removed")
         );
-        assert_eq!(applied.total_after, 75);
+        assert_eq!(applied.total_after, Some(75));
+    }
+
+    const MIB: u64 = 1 << 20;
+
+    /// One planned claim of 10 MiB beside 20 MiB of other entries.
+    fn grown_plan() -> Plan {
+        let claim = |path: &str| Planned {
+            removal: removal(
+                Kind::Claim,
+                PathBuf::from(path),
+                None,
+                10 * MIB,
+                Rule::Recovery,
+            ),
+            job: Job::Task,
+        };
+        Plan {
+            total_before: 30 * MIB,
+            steps: vec![
+                claim("/af/.af-removing-9-1-0"),
+                claim("/af/.af-removing-9-2-0"),
+            ],
+            left: Vec::new(),
+            failures: Vec::new(),
+            registrations: Vec::new(),
+            total_after: 10 * MIB,
+            stop: Stop::Fits,
+        }
+    }
+
+    /// A claim the snapshot measured at 10 MiB that grew to 20 MiB before its removal: what its
+    /// removal measured it to hold when it started takes the place of the snapshot's bytes
+    /// before what left is taken out. Removed part way, 8 MiB freed, the total keeps the 12 MiB
+    /// it still holds; removed whole, the total loses exactly the snapshot's 10 MiB, while the
+    /// entry reports the 20 MiB that left the disk.
+    #[test]
+    fn a_grown_claims_removal_reconciles_the_total_before_what_left_is_taken_out() {
+        let mut applied = report(u64::MAX, true);
+        applied.total_before = 30 * MIB;
+        run(grown_plan(), &mut applied, &mut |planned: &Planned| {
+            if planned.removal.path.ends_with(".af-removing-9-1-0") {
+                Err(Failed {
+                    reason: "removing it: only partly removed".into(),
+                    freed: 8 * MIB,
+                    remains: Remains::Measured(12 * MIB),
+                })
+            } else {
+                Ok(Ran {
+                    freed: 20 * MIB,
+                    unreadable: None,
+                    started: Some(20 * MIB),
+                })
+            }
+        });
+        let [partly, whole] = applied.removals.as_slice() else {
+            panic!("{:?}", applied.removals);
+        };
+        assert_eq!(partly.bytes, 8 * MIB);
+        assert_eq!(
+            partly.total_after,
+            Some(32 * MIB),
+            "the 20 MiB of the others and the 12 MiB the claim retains"
+        );
+        assert_eq!(whole.bytes, 20 * MIB, "what left the disk");
+        assert_eq!(
+            whole.total_after,
+            Some(22 * MIB),
+            "the snapshot's 10 MiB out"
+        );
+        assert_eq!(applied.total_after, Some(22 * MIB));
+        assert_eq!(applied.stop, Stop::Fits);
+    }
+
+    /// A deletion that stopped part way and could not measure what it left makes the total
+    /// unknown from there on: the entry, every later one and the document say `unknown`, and the
+    /// stop claims neither `fits` nor `nothing_evictable`.
+    #[test]
+    fn a_partial_deletion_whose_remainder_cannot_be_measured_leaves_the_total_unknown() {
+        let mut applied = report(u64::MAX, true);
+        applied.total_before = 30 * MIB;
+        run(grown_plan(), &mut applied, &mut |planned: &Planned| {
+            if planned.removal.path.ends_with(".af-removing-9-1-0") {
+                Err(Failed {
+                    reason: "removing it: what is left cannot be measured".into(),
+                    freed: 0,
+                    remains: Remains::Unmeasured,
+                })
+            } else {
+                Ok(Ran::freed(10 * MIB))
+            }
+        });
+        assert!(
+            applied
+                .removals
+                .iter()
+                .all(|removal| removal.total_after.is_none()),
+            "{:?}",
+            applied.removals
+        );
+        assert_eq!(applied.total_after, None);
+        assert_eq!(applied.stop, Stop::Unknown);
+        let document = serde_json::to_value(&applied).unwrap();
+        assert_eq!(document["total_after"], "unknown");
+        assert_eq!(document["stop"], "unknown");
+        assert_eq!(document["removals"][0]["total_after"], "unknown");
+        assert_eq!(document["removals"][1]["bytes"], 10 * MIB);
     }
 }

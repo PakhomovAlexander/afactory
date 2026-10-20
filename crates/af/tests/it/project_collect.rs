@@ -1,4 +1,4 @@
-//! ADR-0152 clauses 13 and 14 end to end: Surveys in the Storage Budget, and bounded patterns.
+//! ADR-0158 clauses 13 and 14 end to end: Surveys in the Storage Budget, and bounded patterns.
 //!
 //! Every Survey is an `af storage` entry of kind `survey` with its CAS bytes and its cutoff as
 //! its last use. `af project refresh` collects nothing: 51 forced refreshes within the hour leave
@@ -44,7 +44,7 @@
 //! once; a campaign nested deeper than the removal walk is left `too_deep`; and an event whose
 //! cutoff its record disproves is never the Survey's last use, the Survey refused and kept.
 //! `?` is one byte of the canonical encoded spelling in the Surveyor's `exclude`, and the
-//! superseded `af/storage@2` and `af/storage-prune@1` are refused.
+//! superseded `af/storage@2`, `af/storage-prune@1` and `af/storage-prune@2` are refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -195,17 +195,23 @@ impl Machine {
     }
 }
 
-/// Allocated bytes below `path`, links not followed.
+/// Allocated bytes of the regular files below `path`, links not followed, as af counts them: a
+/// directory or a link holds nothing, whatever blocks its file system charges it (4096 bytes on
+/// ext4, none on APFS).
 fn allocated(path: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::symlink_metadata(path).unwrap();
-    let mut bytes = metadata.blocks() * 512;
     if metadata.is_dir() {
-        for entry in std::fs::read_dir(path).unwrap() {
-            bytes += allocated(&entry.unwrap().path());
-        }
+        return std::fs::read_dir(path)
+            .unwrap()
+            .map(|entry| allocated(&entry.unwrap().path()))
+            .sum();
     }
-    bytes
+    if metadata.file_type().is_file() {
+        metadata.blocks() * 512
+    } else {
+        0
+    }
 }
 
 fn git(repo: &Path, args: &[&str]) -> String {
@@ -288,24 +294,24 @@ fn survey_entries(machine: &Machine, repo: &Path) -> (Value, BTreeMap<String, Va
     (shown, entries)
 }
 
-/// `af storage prune --apply --json` under `env`, validated against `af/storage-prune@2`. Unless
+/// `af storage prune --apply --json` under `env`, validated against `af/storage-prune@3`. Unless
 /// a debug hook makes an entry of the applied sweep fail, the preview just before it is the same
 /// plan: every removal, with its bytes and the total after it, and every entry left agree.
 fn prune(machine: &Machine, repo: &Path, env: &[(&str, &str)]) -> Value {
     let hooked = env.iter().any(|(name, _)| name.starts_with("AF_TEST_"));
     let preview = (!hooked).then(|| preview(machine, repo, env));
     let pruned = machine.json(repo, env, &["storage", "prune", "--apply", "--json"]);
-    schemas::valid(&schemas::validator("storage-prune-v2.json"), &pruned);
+    schemas::valid(&schemas::validator("storage-prune-v3.json"), &pruned);
     if let Some(preview) = preview {
         assert_agree(&preview, &pruned);
     }
     pruned
 }
 
-/// `af storage prune --json` under `env`, validated against `af/storage-prune@2`.
+/// `af storage prune --json` under `env`, validated against `af/storage-prune@3`.
 fn preview(machine: &Machine, repo: &Path, env: &[(&str, &str)]) -> Value {
     let preview = machine.json(repo, env, &["storage", "prune", "--json"]);
-    schemas::valid(&schemas::validator("storage-prune-v2.json"), &preview);
+    schemas::valid(&schemas::validator("storage-prune-v3.json"), &preview);
     assert_eq!(preview["applied"], false);
     preview
 }
@@ -460,7 +466,7 @@ fn an_explicit_collection_beyond_keep_surveys_tombstones_and_frees_the_bytes() {
     // A preview names what would go and removes nothing.
     let keep = [("AF_STORAGE__KEEP_SURVEYS", "2")];
     let preview = machine.json(&repo, &keep, &["storage", "prune", "--json"]);
-    schemas::valid(&schemas::validator("storage-prune-v2.json"), &preview);
+    schemas::valid(&schemas::validator("storage-prune-v3.json"), &preview);
     assert_eq!(removed(&preview, "keep_surveys").len(), 3, "{preview}");
     assert!(machine.collected().is_empty());
 
@@ -758,10 +764,8 @@ fn a_collection_interrupted_after_its_tombstones_is_finished_by_the_next_sweep()
         ],
         "{preview}"
     );
-    let own_bytes = |path: &Path| {
-        use std::os::unix::fs::MetadataExt;
-        std::fs::symlink_metadata(path).unwrap().blocks() * 512
-    };
+    // A directory holds no bytes af counts, on every file system.
+    let own_bytes = |_: &Path| 0_u64;
     assert_eq!(planned[0]["bytes"].as_u64().unwrap(), own_bytes(&dead));
     assert_eq!(
         planned[1]["bytes"].as_u64().unwrap(),
@@ -854,10 +858,8 @@ fn a_file_at_a_moved_surveys_name_is_foreign_and_only_the_moved_record_is_delete
     std::fs::rename(&object, dead.join(target)).unwrap();
     std::fs::write(&object, b"not af's").unwrap();
     let moved_bytes = allocated(&dead.join(target));
-    let container_bytes = {
-        use std::os::unix::fs::MetadataExt;
-        std::fs::symlink_metadata(&dead).unwrap().blocks() * 512
-    };
+    // A directory holds no bytes af counts, on every file system.
+    let container_bytes = 0_u64;
     let foreign_bytes = allocated(&object);
     assert!(foreign_bytes > 0);
 
@@ -865,6 +867,8 @@ fn a_file_at_a_moved_surveys_name_is_foreign_and_only_the_moved_record_is_delete
     let (shown, entries) = survey_entries(&machine, &repo);
     assert!(!entries.contains_key(&path_of(&machine, target)), "{shown}");
     let before = storage_total(&machine, &repo);
+    // The interrupted pass recorded its selection there before its tombstone.
+    let settled_before = allocated(&machine.store().join("settled.json"));
 
     let previewed = preview(&machine, &repo, &[keep]);
     assert_eq!(previewed["total_before"].as_u64().unwrap(), before);
@@ -907,12 +911,15 @@ fn a_file_at_a_moved_surveys_name_is_foreign_and_only_the_moved_record_is_delete
         "the foreign file is left"
     );
     // The pass recorded that the Survey's record left the CAS: `settled.json`, af's own record
-    // beside the lock, written by the pass and measured by the next inventory.
+    // beside the lock, rewritten by the pass and measured by the next inventory.
     let settled = allocated(&machine.store().join("settled.json"));
     let after = storage_total(&machine, &repo);
-    assert_eq!(applied["total_after"].as_u64().unwrap() + settled, after);
     assert_eq!(
-        before + settled - after,
+        applied["total_after"].as_u64().unwrap() + settled - settled_before,
+        after
+    );
+    assert_eq!(
+        before + settled - settled_before - after,
         moved_bytes + container_bytes,
         "the directory freed what was said: the moved record and its planned container"
     );
@@ -1248,7 +1255,7 @@ fn a_corrupt_survey_is_collected_unreadable_and_an_unreadable_one_is_refused() {
     );
     assert_eq!(tombstone["unreadable"], "its bytes do not match its digest");
     assert!(tombstone.get("tree").is_none() && tombstone.get("history").is_none());
-    // An uncollected record af cannot read refuses replay (ADR-0152 clause 2) until it can.
+    // An uncollected record af cannot read refuses replay (ADR-0158 clause 2) until it can.
     let (history, refused) =
         machine.expect(&repo, &[], &["project", "history"], i32::from(enforced));
     if enforced {
@@ -1316,7 +1323,7 @@ fn the_preview_lists_held_surveys_as_held_and_agrees_with_the_sweep() {
     };
     let preview_json = |machine: &Machine| {
         let preview = machine.json(&repo, &keep, &["storage", "prune", "--json"]);
-        schemas::valid(&schemas::validator("storage-prune-v2.json"), &preview);
+        schemas::valid(&schemas::validator("storage-prune-v3.json"), &preview);
         preview
     };
 
@@ -1453,7 +1460,8 @@ fn a_question_mark_is_one_byte_in_the_surveyors_exclude() {
 }
 
 /// ADR-0145 clause 2: the documents Survey collection changed are `af/storage@3` and
-/// `af/storage-prune@2`; their superseded versions are refused and no schema of them ships.
+/// `af/storage-prune@3` (`@2` added the kind `survey`, `@3` the `unknown` total); their
+/// superseded versions are refused and no schema of them ships.
 #[test]
 fn superseded_storage_documents_are_refused() {
     let machine = Machine::new();
@@ -1464,10 +1472,12 @@ fn superseded_storage_documents_are_refused() {
     shown["schema"] = serde_json::json!("af/storage@2");
     assert!(!current.is_valid(&shown));
     let mut pruned = machine.json(&repo, &[], &["storage", "prune", "--json"]);
-    let current = schemas::validator("storage-prune-v2.json");
+    let current = schemas::validator("storage-prune-v3.json");
     assert!(current.is_valid(&pruned));
-    pruned["schema"] = serde_json::json!("af/storage-prune@1");
-    assert!(!current.is_valid(&pruned));
+    for superseded in ["af/storage-prune@1", "af/storage-prune@2"] {
+        pruned["schema"] = serde_json::json!(superseded);
+        assert!(!current.is_valid(&pruned), "{superseded}");
+    }
     let schemas = std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
@@ -1476,15 +1486,18 @@ fn superseded_storage_documents_are_refused() {
         "storage-v1.json",
         "storage-v2.json",
         "storage-prune-v1.json",
+        "storage-prune-v2.json",
     ] {
         assert!(!schemas.join(superseded).exists(), "{superseded}");
     }
 }
 
 /// A Survey's record replaced between its identity read and its rename, by the debug build's
-/// hook: a byte-identical copy, another inode, takes its name and the original moves aside.
+/// hook: a byte-identical copy, another inode, takes its name and the original moves aside. The
+/// collection selected the original before its tombstone, so the copy is never its record: the
+/// removal refuses it and puts it back, and every later sweep lists it `foreign` and keeps it.
 #[test]
-fn a_record_replaced_before_its_rename_is_refused_and_a_rerun_collects_it() {
+fn a_record_replaced_before_its_rename_is_refused_and_its_copy_stays_foreign() {
     let machine = Machine::new();
     let repo = repository(&machine, "");
     let surveys: Vec<String> = (0..4)
@@ -1535,7 +1548,7 @@ fn a_record_replaced_before_its_rename_is_refused_and_a_rerun_collects_it() {
     assert_eq!(marked[0]["total_after"], pruned["total_before"]);
     assert_eq!(pruned["total_after"], pruned["total_before"]);
     // Nothing is deleted: the original is where the replacement put it, and its name holds the
-    // copy, the Survey's record still.
+    // copy, which is no record of the Survey: another inode than the one its collection selected.
     let moved = aside.join(object.file_name().unwrap());
     assert_eq!(std::fs::read(&moved).unwrap(), original);
     assert_eq!(std::fs::read(&object).unwrap(), original);
@@ -1551,25 +1564,27 @@ fn a_record_replaced_before_its_rename_is_refused_and_a_rerun_collects_it() {
         assert!(machine.held(survey_id));
     }
 
-    // A rerun deletes the record its name holds, and only that.
-    let pruned = prune(&machine, &repo, &[keep]);
-    assert_eq!(
-        removed(&pruned, "recovery"),
-        vec![path_of(&machine, target)],
-        "{pruned}"
-    );
-    assert!(
-        pruned["failures"].as_array().unwrap().is_empty(),
-        "{pruned}"
-    );
-    assert!(!machine.held(target));
-    assert_eq!(
-        std::fs::read(&moved).unwrap(),
-        original,
-        "nothing unrelated"
-    );
+    // A rerun follows the object the collection selected before its tombstone, never the
+    // bytes: the copy at its name hashes to the Survey's ID, but it is another inode, so it is
+    // `foreign`, listed and kept, sweep after sweep, and nothing is deleted.
+    for sweep in ["the rerun", "the sweep after it"] {
+        let pruned = prune(&machine, &repo, &[keep]);
+        assert!(removed(&pruned, "recovery").is_empty(), "{sweep}: {pruned}");
+        let foreign = left(&pruned, "foreign");
+        assert_eq!(foreign.len(), 1, "{sweep}: {pruned}");
+        assert_eq!(foreign[0]["path"], path_of(&machine, target).as_str());
+        assert!(
+            pruned["failures"].as_array().unwrap().is_empty(),
+            "{sweep}: {pruned}"
+        );
+        assert_eq!(std::fs::read(&object).unwrap(), original, "{sweep}");
+        assert_eq!(
+            std::fs::read(&moved).unwrap(),
+            original,
+            "{sweep}: nothing unrelated"
+        );
+    }
     assert_eq!(machine.collected(), vec![target.clone()]);
-    assert_consistent(&machine);
 }
 
 /// The one ceiling the Surveyor writes within: `max_survey_bytes`, 1 MiB.
@@ -2315,7 +2330,7 @@ fn a_byte_identical_replacement_at_a_settled_surveys_name_survives_two_sweeps_as
     let settled: Value =
         serde_json::from_slice(&std::fs::read(machine.store().join("settled.json")).unwrap())
             .unwrap();
-    assert_eq!(settled["schema"], "af/ProjectSurveysSettled@1");
+    assert_eq!(settled["schema"], "af/ProjectSurveysSettled@2");
     assert!(
         settled["survey_ids"]
             .as_array()
@@ -2324,7 +2339,7 @@ fn a_byte_identical_replacement_at_a_settled_surveys_name_survives_two_sweeps_as
         "{settled}"
     );
     schemas::valid(
-        &schemas::validator("project-surveys-settled-v1.json"),
+        &schemas::validator("project-surveys-settled-v2.json"),
         &settled,
     );
     assert_eq!(
@@ -2336,6 +2351,41 @@ fn a_byte_identical_replacement_at_a_settled_surveys_name_survives_two_sweeps_as
         1,
         "no tombstone twice"
     );
+}
+
+/// The identity af records of the file at `path`: its device, inode and birth time in
+/// nanoseconds, decimal text.
+fn object_identity(path: &Path) -> Value {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path).unwrap();
+    let born = metadata
+        .created()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    serde_json::json!({
+        "device": metadata.dev().to_string(),
+        "inode": metadata.ino().to_string(),
+        "born_unix_ns": born.to_string(),
+    })
+}
+
+/// Delete the file at `path` and create one of `bytes` there, born later, as another process
+/// could: a file system that hands the freed inode to the next file (ext4 does) gives it the
+/// same device and inode, so the fixture waits until its birth time differs, which is what tells
+/// it apart.
+fn replace_born_later(path: &Path, bytes: &[u8]) {
+    let before = object_identity(path);
+    for _ in 0..100 {
+        std::fs::remove_file(path).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(path, bytes).unwrap();
+        if object_identity(path) != before {
+            return;
+        }
+    }
+    panic!("no file born later than the one at {}", path.display());
 }
 
 /// The digest af names the bytes `bytes` by in a CAS.
@@ -2353,9 +2403,9 @@ fn unrecorded_object(machine: &Machine, bytes: &[u8]) -> String {
     survey_id
 }
 
-/// The pending-publication entry a writer keeps for `survey_id` (ADR-0152 clause 2,
-/// `af/survey-pending@1` at `pending-surveys/<64 hex>.json`), naming the record's length and
-/// `object` by device and inode when given. Returns its path.
+/// The pending-publication entry a writer keeps for `survey_id` (ADR-0158 clause 2,
+/// `af/survey-pending@2` at `pending-surveys/<64 hex>.json`), naming the record's length and
+/// `object` by device, inode and birth time when given. Returns its path.
 fn pending_entry(
     machine: &Machine,
     survey_id: &str,
@@ -2365,20 +2415,15 @@ fn pending_entry(
     let directory = machine.store().join("pending-surveys");
     std::fs::create_dir_all(&directory).unwrap();
     let mut entry = serde_json::json!({
-        "schema": "af/survey-pending@1",
+        "schema": "af/survey-pending@2",
         "survey_id": survey_id,
         "bytes": length.to_string(),
     });
     if let Some(object) = object {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = std::fs::symlink_metadata(object).unwrap();
-        entry["object"] = serde_json::json!({
-            "device": metadata.dev().to_string(),
-            "inode": metadata.ino().to_string(),
-        });
+        entry["object"] = object_identity(object);
     }
     schemas::valid(
-        &schemas::validator("project-survey-pending-v1.json"),
+        &schemas::validator("project-survey-pending-v2.json"),
         &entry,
     );
     let path = directory.join(format!("{}.json", survey_id.trim_start_matches("sha256:")));
@@ -2388,7 +2433,7 @@ fn pending_entry(
 
 /// A refresh at `cutoff` that the writer's own debug-build stop ends after the record's bytes
 /// and before `SurveyRecorded@1`, as a crash would: the Survey it was publishing and the one
-/// pending entry it left, valid as the writer's `af/survey-pending@1`.
+/// pending entry it left, valid as the writer's `af/survey-pending@2`.
 fn stopped_refresh(machine: &Machine, repo: &Path, cutoff: &str) -> (String, PathBuf) {
     machine.expect(
         repo,
@@ -2407,7 +2452,7 @@ fn stopped_refresh(machine: &Machine, repo: &Path, cutoff: &str) -> (String, Pat
     let path = entries.pop().unwrap();
     let entry: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     schemas::valid(
-        &schemas::validator("project-survey-pending-v1.json"),
+        &schemas::validator("project-survey-pending-v2.json"),
         &entry,
     );
     let survey_id = entry["survey_id"].as_str().unwrap().to_string();
@@ -2420,7 +2465,7 @@ fn stopped_refresh(machine: &Machine, repo: &Path, cutoff: &str) -> (String, Pat
 }
 
 /// Writer and reader meet: a refresh stopped by the writer's own hook after its record's bytes
-/// and before its event leaves its `af/survey-pending@1` entry; `af storage` counts the object
+/// and before its event leaves its `af/survey-pending@2` entry; `af storage` counts the object
 /// as a Survey `pending`, the preview plans exactly that object's recovery and then the entry's,
 /// and the applied sweep, the same plan, removes both and nothing else.
 #[test]
@@ -2569,7 +2614,14 @@ fn a_failed_settlement_sync_deletes_nothing_and_the_next_sweep_retries() {
     );
     assert_eq!(removals[0]["bytes"], 0, "nothing freed");
     assert!(machine.held(oldest), "the original record is not unlinked");
-    assert!(!settled.exists(), "the Survey stays unsettled");
+    // The selection made before the tombstone stays; the settlement was put back.
+    let record = settled_record(&machine);
+    assert_eq!(
+        record["survey_ids"],
+        serde_json::json!([]),
+        "the Survey stays unsettled"
+    );
+    assert_eq!(record["selected"][0]["survey_id"], oldest.as_str());
     assert_eq!(machine.collected(), [oldest.clone()], "its tombstone stays");
 
     let retried = prune(&machine, &repo, &[]);
@@ -2820,16 +2872,9 @@ fn a_settlement_whose_rollback_sync_fails_too_is_left_unverified_and_deletes_not
     assert_consistent(&machine);
 }
 
-/// The device and inode of `path`, not following it.
-fn identity_of(path: &Path) -> (String, String) {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = std::fs::symlink_metadata(path).unwrap();
-    (metadata.dev().to_string(), metadata.ino().to_string())
-}
-
-/// A retry never discards a pending object's identity (ADR-0152 clause 2): a refresh that
+/// A retry never discards a pending object's identity (ADR-0158 clause 2): a refresh that
 /// stopped after its record's bytes and their identity leaves the entry naming the object; a
-/// retry of the same bytes whose CAS write fails (the debug build's `AF_TEST_SURVEY_FAIL_PUT`)
+/// retry of the same bytes whose write fails (the debug build's `AF_TEST_SURVEY_FAIL_PUT`)
 /// keeps that entry byte for byte, so it still names the first object, and collection reclaims
 /// that object and then clears the entry.
 #[test]
@@ -2841,14 +2886,7 @@ fn a_retry_whose_put_fails_keeps_the_first_objects_identity_for_collection() {
     let object = machine.object(&survey_id);
     let first = std::fs::read(&entry).unwrap();
     let named: Value = serde_json::from_slice(&first).unwrap();
-    let (device, inode) = identity_of(&object);
-    assert_eq!(
-        (
-            named["object"]["device"].as_str(),
-            named["object"]["inode"].as_str()
-        ),
-        (Some(device.as_str()), Some(inode.as_str()))
-    );
+    assert_eq!(named["object"], object_identity(&object));
 
     let (_, stderr) = machine.expect(
         &repo,
@@ -2880,7 +2918,7 @@ fn a_retry_whose_put_fails_keeps_the_first_objects_identity_for_collection() {
     assert!(machine.collected().is_empty());
 }
 
-/// A pending entry is cleared only once no file with its inode remains (ADR-0152 clause 13):
+/// A pending entry is cleared only once no file with its inode remains (ADR-0158 clause 13):
 /// the object truncated in place, grown in place and then moved into a pass's container at its
 /// new length is still the entry's inode, so the applied sweep keeps the entry, its outcome
 /// `kept: object changed, still present`, and lists the object `foreign`; once the operator
@@ -3108,4 +3146,284 @@ fn project_stores_beyond_the_store_discovery_ceiling_are_reported_and_their_surv
     );
     let (_, all) = survey_entries(&machine, &first);
     assert_eq!(all.len(), 2, "both listed within the ceiling");
+}
+
+/// The record `settled.json` holds of what collection selected and settled, valid as
+/// `af/ProjectSurveysSettled@2`.
+fn settled_record(machine: &Machine) -> Value {
+    let settled: Value =
+        serde_json::from_slice(&std::fs::read(machine.store().join("settled.json")).unwrap())
+            .unwrap();
+    schemas::valid(
+        &schemas::validator("project-surveys-settled-v2.json"),
+        &settled,
+    );
+    settled
+}
+
+/// Collection records the object it selects before its tombstone (ADR-0158 clause 13), and
+/// recovery follows that identity, never a hash: stopped after the tombstone with the record
+/// still at its CAS name, a byte-identical copy born later in its place (another inode, or on
+/// ext4 the same inode number born later) is no record of the Survey, though its bytes hash to
+/// the Survey's ID. Two recovery sweeps both keep it and list it `foreign`, and `settled.json`
+/// carries the identity of the record the collection selected.
+#[test]
+fn a_byte_identical_replacement_after_a_tombstone_survives_two_sweeps_as_foreign() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..4)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let keep = ("AF_STORAGE__KEEP_SURVEYS", "3");
+    let target = &surveys[0];
+    let object = machine.object(target);
+    let selected = object_identity(&object);
+    let length = std::fs::metadata(&object).unwrap().len();
+    prune(
+        &machine,
+        &repo,
+        &[keep, ("AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES", "1")],
+    );
+    assert_eq!(machine.collected(), vec![target.clone()]);
+    assert!(machine.held(target), "stopped after the tombstone");
+    let settled = settled_record(&machine);
+    assert_eq!(
+        settled["selected"],
+        serde_json::json!([{
+            "survey_id": target,
+            "object": selected,
+            "bytes": length.to_string(),
+        }]),
+        "the selected record, before its tombstone: {settled}"
+    );
+    assert!(
+        settled["survey_ids"].as_array().unwrap().is_empty(),
+        "nothing settled yet: {settled}"
+    );
+
+    let record = std::fs::read(&object).unwrap();
+    replace_born_later(&object, &record);
+    let replacement = object_identity(&object);
+    assert_ne!(replacement, selected);
+    for sweep in ["the first recovery sweep", "the second"] {
+        let applied = prune(&machine, &repo, &[keep, ("AF_STORAGE__MAX_BYTES", "1")]);
+        let foreign = left(&applied, "foreign");
+        assert_eq!(foreign.len(), 1, "{sweep}: {applied}");
+        assert_eq!(foreign[0]["path"], path_of(&machine, target).as_str());
+        assert_eq!(foreign[0]["kind"], "survey");
+        assert_eq!(foreign[0]["bytes"].as_u64().unwrap(), allocated(&object));
+        assert!(
+            foreign[0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("is not the object the collection of that Survey selected"),
+            "{sweep}: {}",
+            foreign[0]
+        );
+        assert!(
+            !applied["removals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|removal| removal["path"] == path_of(&machine, target).as_str()),
+            "{sweep}: nothing plans the replacement: {applied}"
+        );
+        assert_eq!(std::fs::read(&object).unwrap(), record, "{sweep}");
+        assert_eq!(
+            object_identity(&object),
+            replacement,
+            "{sweep}: the same file"
+        );
+    }
+    let settled = settled_record(&machine);
+    let selection = settled["selected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|selection| selection["survey_id"] == target.as_str())
+        .unwrap_or_else(|| panic!("{settled}"));
+    assert_eq!(
+        selection["object"], selected,
+        "the selection still names the record, never the replacement"
+    );
+    assert_eq!(
+        machine
+            .collected()
+            .iter()
+            .filter(|id| *id == target)
+            .count(),
+        1,
+        "no tombstone twice"
+    );
+}
+
+/// The object the writer stages for `survey_id` before it takes its CAS name.
+fn staged(machine: &Machine, survey_id: &str) -> PathBuf {
+    machine.store().join("pending-surveys").join(format!(
+        "{}.object",
+        survey_id.trim_start_matches("sha256:")
+    ))
+}
+
+/// The pending-publication entry of `survey_id`, when there is one.
+fn entry_of(machine: &Machine, survey_id: &str) -> Option<Value> {
+    let path = machine
+        .store()
+        .join("pending-surveys")
+        .join(format!("{}.json", survey_id.trim_start_matches("sha256:")));
+    std::fs::read(path)
+        .ok()
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+}
+
+/// The writer stages a record's bytes in its own `pending-surveys` and links them at their CAS
+/// name only once its entry records their identity (ADR-0158 clause 2), so a crash leaves
+/// nothing at the CAS name no entry describes. Stopped before the identity is recorded, the
+/// staged bytes are the writer's own leftover; stopped after it and before the CAS name, the
+/// staged object is the one its entry names. Either way a later `af storage prune --apply`,
+/// with the Survey never recreated, reclaims the staged bytes and then clears the entry, preview
+/// and apply alike, and nothing is ever at the CAS name.
+#[test]
+fn a_survey_stopped_before_its_cas_name_leaves_staged_bytes_a_later_prune_reclaims() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let kept = refresh(&machine, &repo, &at(0), true);
+    for (index, (stop, named)) in [
+        ("AF_TEST_SURVEY_STOP_BEFORE_IDENTITY", false),
+        ("AF_TEST_SURVEY_STOP_BEFORE_LINK", true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let cutoff = at(60 + index as u64);
+        machine.expect(
+            &repo,
+            &[
+                ("AF_TEST_SURVEY_CUTOFF_UNIX_S", cutoff.as_str()),
+                (stop, "1"),
+            ],
+            &["project", "refresh", "--force"],
+            86,
+        );
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(machine.store().join("pending-surveys"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .collect();
+        assert_eq!(entries.len(), 1, "{stop}: {entries:?}");
+        let entry_path = entries.pop().unwrap();
+        let entry: Value = serde_json::from_slice(&std::fs::read(&entry_path).unwrap()).unwrap();
+        schemas::valid(
+            &schemas::validator("project-survey-pending-v2.json"),
+            &entry,
+        );
+        let survey_id = entry["survey_id"].as_str().unwrap().to_string();
+        let staged = staged(&machine, &survey_id);
+        assert!(staged.is_file(), "{stop}: the bytes are staged");
+        assert!(
+            !machine.held(&survey_id),
+            "{stop}: nothing is at the CAS name before the entry names it"
+        );
+        assert_eq!(
+            entry.get("object").is_some(),
+            named,
+            "{stop}: the entry names the staged object only once its identity is recorded"
+        );
+        if named {
+            assert_eq!(entry["object"], object_identity(&staged), "{stop}");
+        }
+        let bytes = allocated(&staged);
+        assert!(bytes > 0);
+
+        let planned = preview(&machine, &repo, &[]);
+        let applied = prune(&machine, &repo, &[]);
+        for document in [&planned, &applied] {
+            let recovered: Vec<(String, u64)> = document["removals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|removal| removal["rule"] == "recovery")
+                .map(|removal| {
+                    (
+                        removal["path"].as_str().unwrap().to_string(),
+                        removal["bytes"].as_u64().unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(recovered.len(), 2, "{stop}: {document}");
+            assert_eq!(
+                recovered[0],
+                (staged.to_string_lossy().into_owned(), bytes),
+                "{stop}: the staged bytes first"
+            );
+            assert_eq!(
+                recovered[1].0,
+                entry_path.to_string_lossy().into_owned(),
+                "{stop}: then the entry"
+            );
+        }
+        assert!(
+            applied["removals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|removal| removal.get("outcome").is_none()),
+            "{stop}: {applied}"
+        );
+        assert!(!staged.exists() && !entry_path.exists(), "{stop}");
+        assert!(entry_of(&machine, &survey_id).is_none());
+        assert!(!machine.held(&survey_id), "{stop}");
+        assert!(!machine.recorded().contains(&survey_id), "{stop}");
+        assert!(machine.held(&kept), "{stop}: the recorded Survey stays");
+        assert!(machine.collected().is_empty(), "{stop}: no tombstone");
+    }
+}
+
+/// On a file system that reports no birth time a Survey's record has no complete identity
+/// (ADR-0158 clauses 2 and 13): collection refuses it with one sentence naming the file system,
+/// appends no tombstone and deletes nothing, and without that condition the same sweep collects
+/// it. The writer refuses to publish a Survey whose staged object has no birth time.
+#[cfg(debug_assertions)]
+#[test]
+fn a_file_system_without_birth_time_refuses_collection_and_deletes_nothing() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..4)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let keep = ("AF_STORAGE__KEEP_SURVEYS", "3");
+    let no_birth = ("AF_TEST_NO_BIRTH_TIME", "1");
+    let pruned = prune(&machine, &repo, &[keep, no_birth]);
+    assert!(removed(&pruned, "keep_surveys").is_empty(), "{pruned}");
+    let failures = pruned["failures"].as_array().unwrap();
+    assert!(
+        failures.iter().any(|failure| failure
+            .as_str()
+            .unwrap()
+            .contains("reports no birth time, so af cannot tell it from a file created later")),
+        "{pruned}"
+    );
+    assert!(machine.collected().is_empty(), "no tombstone");
+    for survey_id in &surveys {
+        assert!(machine.held(survey_id));
+    }
+    let pruned = prune(&machine, &repo, &[keep]);
+    assert_eq!(
+        removed(&pruned, "keep_surveys"),
+        vec![path_of(&machine, &surveys[0])]
+    );
+    assert_consistent(&machine);
+
+    let failed = machine.af(
+        &repo,
+        &[no_birth, ("AF_TEST_SURVEY_CUTOFF_UNIX_S", at(9).as_str())],
+        &["project", "refresh", "--force"],
+    );
+    assert_eq!(failed.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(stderr.contains("reports no birth time"), "{stderr}");
+    assert_eq!(machine.recorded().len(), 4, "nothing is published");
 }

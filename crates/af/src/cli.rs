@@ -1702,7 +1702,7 @@ Finished Tasks go through the Store's own collection, so each keeps its tombston
         /// Remove what the preview names (default: preview only)
         #[arg(long)]
         apply: bool,
-        /// Machine-readable af/storage-prune@2
+        /// Machine-readable af/storage-prune@3
         #[arg(long)]
         json: bool,
     },

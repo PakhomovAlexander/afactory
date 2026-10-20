@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-registered:1",
   "title": "ProjectRegistered@1",
-  "description": "The first event of a Project Store's log (ADR-0151): the Project's identity, derived from the repository's root commits, and the `[project] name` and `min_af` of the registering checkout's `.af/af.toml` when that file parses. Never a path or a remote URL.",
+  "description": "The first event of a Project Store's log (ADR-0157): the Project's identity, derived from the repository's root commits, and the `[project] name` and `min_af` of the registering checkout's `.af/af.toml` when that file parses. Never a path or a remote URL.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -1141,14 +1141,14 @@ fn main() {
         std::process::exit(1);
     }
     let collects_after = collects_after_run(&command);
-    // Registered best effort (ADR-0151): `af task plan|start` before `--workspace` resolves,
+    // Registered best effort (ADR-0157): `af task plan|start` before `--workspace` resolves,
     // every other command once it ran.
     let registers = projects::lazy_target(&command);
     if let Some(lazy) = registers.as_ref().filter(|lazy| lazy.first) {
         projects::register_lazily(lazy);
     }
     let delivered = projects::delivered_target(&command);
-    // `af onboard --apply` records the first Survey once it registered (ADR-0152).
+    // `af onboard --apply` records the first Survey once it registered (ADR-0158).
     let surveyed = match &command {
         cli::Command::Onboard(args) if args.apply => Some((args.repo.clone(), args.json)),
         _ => None,

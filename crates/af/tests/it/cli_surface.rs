@@ -264,7 +264,7 @@ fn provider_models_help_and_man_page_describe_the_command() {
 }
 
 /// `af project` is a namespace of its own with long help and examples, listed in `af --help`,
-/// and every `af task` command that takes `--state` takes `--workspace` beside it (ADR-0151).
+/// and every `af task` command that takes `--state` takes `--workspace` beside it (ADR-0157).
 #[test]
 fn project_help_and_the_workspace_flag_describe_the_commands() {
     let root = out(&af(&["--help"]));
@@ -351,7 +351,7 @@ fn project_help_and_the_workspace_flag_describe_the_commands() {
     }
 }
 
-/// The Surveyor's commands (ADR-0152) are listed under `af project` with their documents, the
+/// The Surveyor's commands (ADR-0158) are listed under `af project` with their documents, the
 /// skip rule, the bound and the email rule, and each has its own manual page.
 #[test]
 fn project_survey_refresh_and_history_describe_the_surveyor() {

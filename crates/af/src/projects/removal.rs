@@ -1,10 +1,12 @@
-//! `af project workspace remove --delete-worktree`, bound to what it inspected (ADR-0151 clause 5).
+//! `af project workspace remove --delete-worktree`, bound to what it inspected (ADR-0157 clause 5).
 //!
 //! Names prove nothing; a record does. Before a removal moves or deletes anything it writes a
 //! machine-local removal record beside `workspaces.toml`, `removals/<workspace id>.toml` in the
-//! Project Store: the registered checkout path, the identity (device and inode) of the checkout
-//! and of its administrative entry as inspected, the container it creates for each with that
-//! container's identity, and the step each reached. The record is rewritten at every step and
+//! Project Store: the registered checkout path, the identity (device, inode and birth time) of
+//! the checkout and of its administrative entry as inspected, the container it creates for each
+//! with that container's identity, and the step each reached. The birth time tells a directory
+//! from a later one at a reused inode (ext4 hands one out at once); a file system that reports
+//! none refuses the removal at inspection, nothing changed. The record is rewritten at every step and
 //! deleted once the removal is done, so a rerun finishes an interrupted removal from it and acts
 //! only on directories whose identity it holds. A directory that is merely named like a
 //! container is somebody else's: reported and left alone.
@@ -21,11 +23,16 @@
 //! replacement at the registered path is never touched and is reported.
 //!
 //! A recorded step proves nothing by itself: a rerun re-establishes its precondition from the
-//! file system and the record together before it acts. Whatever the step, the first thing the
-//! rerun of a directory does is check the administrative entry now (`Removal::entry_proves`): it
-//! is opened without following a link and must be the directory whose identity the record holds,
-//! or it is a replacement and is never read; only then must its `gitdir` still name the checkout
-//! and may it hold no `locked`, or nothing of that directory is touched. A failed check never
+//! file system and the record together before it acts. Before a live directory (the checkout
+//! before its deletion is recorded done, an entry before its deletion is recorded) is claimed or
+//! deleted, the rerun checks the administrative entry now (`Removal::entry_proves`): it is opened
+//! without following a link and must be the directory whose identity the record holds, or it is a
+//! replacement and is never read; only then must its `gitdir` still name the checkout and may it
+//! hold no `locked`, or nothing of that directory is touched. An entry whose deletion is recorded
+//! (`deleting`) is found by its identity in its container and its deletion resumes without its
+//! `gitdir`, which that deletion may have removed; one found in neither its container nor its
+//! path has been deleted, and with one recorded `deleted` it advances to done once its recorded
+//! locations are verified (`claim_directory`, `remove_container`). A failed check never
 //! deletes the record (`Stop::Precondition`): the next run honours the identities it holds
 //! instead of inspecting afresh. A directory that is neither in its container nor gone is found
 //! by its identity at its path and claimed again from inspection, and an administrative entry is
@@ -47,8 +54,9 @@ use serde::{Deserialize, Serialize};
 
 use super::Git;
 
-/// The version of a removal record.
-const VERSION: u32 = 1;
+/// The version of a removal record. Version 2 is the first whose identities carry a birth time;
+/// version 1 is refused (ADR-0145).
+const VERSION: u32 = 2;
 
 /// The infix of a container's name: `<name>.af-removing-<pid>-<16 random hex digits>`. Only
 /// people read it; a rerun knows a container by the record, never by its name.
@@ -107,13 +115,13 @@ impl Step {
 pub(super) struct Claim {
     /// Where it was inspected.
     pub(super) path: PathBuf,
-    /// `<device>:<inode>` as inspected, decimal.
+    /// `<device>:<inode>:<birth time in nanoseconds>` as inspected, decimal.
     pub(super) identity: String,
     pub(super) step: Step,
     /// The container this removal named for it, beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) container: Option<PathBuf>,
-    /// `<device>:<inode>` of that container when it was made.
+    /// `<device>:<inode>:<birth time in nanoseconds>` of that container when it was made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) container_identity: Option<String>,
 }
@@ -135,18 +143,28 @@ pub(super) struct Record {
     pub(super) entries: Vec<Claim>,
 }
 
+/// The record's spelling of a born identity, `<device>:<inode>:<birth time in nanoseconds>`. A
+/// removal records only an identity that carries its birth time ([`born_at`]).
 pub(super) fn encode(identity: Identity) -> String {
-    format!("{}:{}", identity.device, identity.inode)
+    format!(
+        "{}:{}:{}",
+        identity.device,
+        identity.inode,
+        identity.born.unwrap_or(0)
+    )
 }
 
 pub(super) fn decode(text: &str) -> Option<Identity> {
-    let (device, inode) = text.split_once(':')?;
+    let mut parts = text.split(':');
+    let (device, inode, born) = (parts.next()?, parts.next()?, parts.next()?);
     let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
-    (digits(device) && digits(inode)).then_some(())?;
+    (parts.next().is_none() && digits(device) && digits(inode) && digits(born)).then_some(())?;
     Some(Identity {
         device: device.parse().ok()?,
         inode: inode.parse().ok()?,
+        born: Some(born.parse().ok()?).filter(|&born| born > 0),
     })
+    .filter(|identity| identity.born.is_some())
 }
 
 /// Where the Project Store at `store` keeps the removal record of `workspace_id`.
@@ -172,6 +190,26 @@ pub(super) fn read(store: &Path, workspace_id: &str) -> Result<Option<Record>, S
 
 /// Parse and check a removal record of `workspace_id`.
 pub(super) fn parse(text: &str, workspace_id: &str) -> Result<Record, String> {
+    // The version is read before any other field: a record another release wrote is refused
+    // as what it is, never decoded as this one.
+    #[derive(Deserialize)]
+    struct Version {
+        version: Option<u32>,
+    }
+    if let Ok(Version {
+        version: Some(version),
+    }) = toml::from_str::<Version>(text)
+        && version != VERSION
+    {
+        return Err(format!(
+            "version {version} is not {VERSION}{}",
+            if version == 1 {
+                ", a superseded version of the removal record another af release wrote"
+            } else {
+                ""
+            }
+        ));
+    }
     let record: Record = toml::from_str(text).map_err(|error| error.to_string())?;
     if record.version != VERSION {
         return Err(format!("version {} is not {VERSION}", record.version));
@@ -197,7 +235,9 @@ fn check(claim: &Claim) -> Result<(), String> {
         return Err(format!("{shown} is no absolute path of a directory"));
     }
     if decode(&claim.identity).is_none() {
-        return Err(format!("the identity of {shown} is no `<device>:<inode>`"));
+        return Err(format!(
+            "the identity of {shown} is no `<device>:<inode>:<birth time>`"
+        ));
     }
     let needs_container = !matches!(claim.step, Step::Inspected | Step::Done);
     let needs_identity = !matches!(claim.step, Step::Inspected | Step::Container | Step::Done);
@@ -220,7 +260,7 @@ fn check(claim: &Claim) -> Result<(), String> {
     }
     match &claim.container_identity {
         Some(identity) if decode(identity).is_none() => Err(format!(
-            "the identity of the container of {shown} is no `<device>:<inode>`"
+            "the identity of the container of {shown} is no `<device>:<inode>:<birth time>`"
         )),
         None if needs_identity => Err(format!(
             "{shown} is {} without its container's identity",
@@ -242,7 +282,7 @@ pub(super) fn write(store: &Path, record: &Record) -> Result<(), String> {
         .write_all(
             format!(
                 "# An unfinished `af project workspace remove --delete-worktree`; the next run of \
-                 it finishes from here (ADR-0151).\n{text}"
+                 it finishes from here (ADR-0157).\n{text}"
             )
             .as_bytes(),
         )
@@ -272,22 +312,31 @@ fn delete(store: &Path, workspace_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The standard library's widening of a `stat`'s device and inode.
+/// The standard library's widening of a `stat`'s device and inode: the identity a walk compares
+/// a name with the descriptor it opens there, never one a removal records.
 #[allow(clippy::unnecessary_cast)]
 fn identity_of(stat: &rustix::fs::Stat) -> Identity {
     Identity {
         device: stat.st_dev as u64,
         inode: stat.st_ino as u64,
+        born: None,
     }
 }
 
-/// The identity of `name` in `parent`, without following a link; `None` when nothing is there.
+/// The born identity of `name` in `parent` (its device, inode and birth time), without following
+/// a link; `None` when nothing is there. A file system that reports no birth time is the error,
+/// one sentence naming it: nothing could tell the directory from a later one at its inode.
 fn identity_at(parent: &OwnedFd, name: &OsStr) -> std::io::Result<Option<Identity>> {
-    match rustix::fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(stat) => Ok(Some(identity_of(&stat))),
-        Err(rustix::io::Errno::NOENT) => Ok(None),
-        Err(errno) => Err(errno.into()),
-    }
+    review_sandbox::born_at(parent, name)?
+        .map(|stated| stated.complete(&name.to_string_lossy(), parent))
+        .transpose()
+}
+
+/// The born identity of the directory `descriptor` holds open, refused as [`identity_at`]
+/// refuses one.
+fn identity_held(descriptor: &OwnedFd) -> std::io::Result<Identity> {
+    review_sandbox::born_of_descriptor(descriptor)?
+        .complete("a directory this removal opened", descriptor)
 }
 
 /// The directory `name` of `parent`, opened without following a link.
@@ -333,18 +382,30 @@ fn rename_free(
 /// Delete the directory `name` of `parent`, which must be `identity`, and everything below it,
 /// through descriptors: a link is unlinked as the entry it is, never followed, and nothing's
 /// permissions are changed, so what may not be deleted stays and is the error.
+#[cfg(test)]
 pub(super) fn remove_tree(
     parent: &OwnedFd,
     name: &OsStr,
     identity: Identity,
 ) -> std::io::Result<()> {
+    remove_tree_with(parent, name, identity, &mut |_| {})
+}
+
+/// [`remove_tree`], `unlinked` told the name of every entry the walk unlinks at the top of the
+/// directory, after it went: where a debug build's fixture stops a deletion part way.
+fn remove_tree_with(
+    parent: &OwnedFd,
+    name: &OsStr,
+    identity: Identity,
+    unlinked: &mut dyn FnMut(&OsStr),
+) -> std::io::Result<()> {
     let directory = open_directory(parent, name)?;
-    if identity_of(&rustix::fs::fstat(&directory)?) != identity {
+    if identity_held(&directory)? != identity {
         return Err(std::io::Error::other(
             "it is not the directory this removal claimed",
         ));
     }
-    empty(&directory, 0)?;
+    empty(&directory, 0, unlinked)?;
     drop(directory);
     // POSIX has no unlink by descriptor: the name is checked once more right before it goes, and
     // `rmdir` removes only an empty directory.
@@ -356,7 +417,11 @@ pub(super) fn remove_tree(
     Ok(rustix::fs::unlinkat(parent, name, AtFlags::REMOVEDIR)?)
 }
 
-fn empty(directory: &OwnedFd, depth: usize) -> std::io::Result<()> {
+fn empty(
+    directory: &OwnedFd,
+    depth: usize,
+    unlinked: &mut dyn FnMut(&OsStr),
+) -> std::io::Result<()> {
     if depth > MAX_DEPTH {
         return Err(std::io::Error::other(format!(
             "it nests deeper than {MAX_DEPTH} directories"
@@ -365,7 +430,7 @@ fn empty(directory: &OwnedFd, depth: usize) -> std::io::Result<()> {
     for name in names(directory)? {
         match open_directory(directory, &name) {
             Ok(child) => {
-                empty(&child, depth + 1)?;
+                empty(&child, depth + 1, &mut |_| {})?;
                 drop(child);
                 rustix::fs::unlinkat(directory, &name, AtFlags::REMOVEDIR)?;
             }
@@ -379,6 +444,9 @@ fn empty(directory: &OwnedFd, depth: usize) -> std::io::Result<()> {
                 rustix::fs::unlinkat(directory, &name, AtFlags::empty())?;
             }
             Err(error) => return Err(error),
+        }
+        if depth == 0 {
+            unlinked(&name);
         }
     }
     Ok(())
@@ -516,7 +584,7 @@ pub(super) fn first_difference_at(
     manifest: &Manifest,
 ) -> std::io::Result<Option<String>> {
     let top = open_directory(container, name)?;
-    if identity_of(&rustix::fs::fstat(&top)?) != identity {
+    if identity_held(&top)? != identity {
         return Err(std::io::Error::other(
             "it is not the directory this removal claimed",
         ));
@@ -633,15 +701,21 @@ fn own_entry(git: &Git, path: &Path) -> Result<PathBuf, String> {
     Ok(entry)
 }
 
-/// The identity of the directory at `path`, without following a link.
+/// The born identity of the directory at `path`, without following a link; refused, nothing
+/// changed, on a file system that reports no birth time.
 fn directory_identity(path: &Path) -> Result<Identity, String> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|error| format!("inspecting {}: {error}", path.display()))?;
     if !metadata.is_dir() {
         return Err(format!("{} is not a directory", path.display()));
     }
-    let (device, inode) = super::commands::identity(&metadata);
-    Ok(Identity { device, inode })
+    Identity::born_of(path).map_err(|error| format!("inspecting {}: {error}", path.display()))
+}
+
+/// The born identity of what `at` names, without following a link; `None` when nothing is
+/// there or it cannot be stated with its birth time.
+fn identity_of_path(at: &Path) -> Option<Identity> {
+    Identity::born_of(at).ok()
 }
 
 fn locked(entry: &Path) -> bool {
@@ -682,8 +756,7 @@ fn open_entry(at: &Path, identity: Identity) -> Result<OwnedFd, String> {
             });
         }
     };
-    let stat = rustix::fs::fstat(&entry).map_err(|errno| unopened(errno.into()))?;
-    if identity_of(&stat) != identity {
+    if identity_held(&entry).map_err(unopened)? != identity {
         return Err(replaced());
     }
     Ok(entry)
@@ -1288,8 +1361,12 @@ impl Removal<'_> {
             .map(|entry| entry.path.clone())
             .ok_or("the removal record names no administrative entry of the checkout")?;
         let path = self.path().to_path_buf();
-        // Before any step touches the checkout, wherever it is: a failed check leaves it there.
-        if let Some(reason) = self.entry_proves(Which::Checkout) {
+        // Before any step touches the live checkout, wherever it is: a failed check leaves it
+        // there. Once its deletion is recorded, nothing of it is left to claim, judge or delete:
+        // its rerun removes only its container, which its recorded identity proves.
+        if self.claim(Which::Checkout).step < Step::Deleted
+            && let Some(reason) = self.entry_proves(Which::Checkout)
+        {
             return Err(self.checkout_kept(&reason));
         }
         // The commit and its tree, read through the administrative entry, never the checkout.
@@ -1462,19 +1539,17 @@ impl Removal<'_> {
     /// from, `None` when nothing of it was left to delete.
     fn entry(&mut self, index: usize) -> Result<Option<PathBuf>, String> {
         let which = Which::Entry(index);
-        // Before any step touches the entry, wherever it is: a failed check leaves it there.
+        if self.claim(which).step == Step::Done {
+            return Ok(None);
+        }
+        // Before any step touches the entry, as its step and where it is now require: a failed
+        // check leaves it there.
         if let Some(reason) = self.entry_proves(which) {
             return Err(self.entry_refusal(&reason));
         }
         let claim = self.claim(which).clone();
-        if claim.step == Step::Done {
-            return Ok(None);
-        }
         let identity = decode(&claim.identity).ok_or("a removal record without identity")?;
-        let at_path = std::fs::symlink_metadata(&claim.path).ok().map(|metadata| {
-            let (device, inode) = super::commands::identity(&metadata);
-            Identity { device, inode }
-        });
+        let at_path = identity_of_path(&claim.path);
         // Where it is found decides only where it is reported deleted from; whether it may be
         // claimed or deleted is read from it wherever it is (`claim_directory`).
         let in_place = at_path == Some(identity);
@@ -1583,41 +1658,55 @@ impl Removal<'_> {
         }
     }
 
-    /// The entry check the rerun of every step makes first, before anything touches `which`:
-    /// the administrative entry, opened now without following a link, must be the one the record
-    /// holds by identity, and only then is it read: its `gitdir` must name the checkout and it
-    /// may hold no `locked`; the reason it does not, `None` when it does. The checkout's entry is
-    /// opened at its own path, where it stays until the checkout is done, and another directory
-    /// there is a replacement. An entry is read where its recorded identity is found now, at its
-    /// path or in its container; one found in neither while another directory holds its path
-    /// before its deletion was recorded is a replacement too, and one that left nothing at all
-    /// has nothing left to act on, which its claim then finds.
+    /// The entry check a rerun makes before anything touches `which`, as its recorded step
+    /// requires: the administrative entry, opened now without following a link, must be the one
+    /// the record holds by identity (device, inode and birth time), and only then is it read: its
+    /// `gitdir` must name the checkout and it may hold no `locked`; the reason it does not,
+    /// `None` when it does. The live checkout's entry (`Removal::checkout` asks only before the
+    /// checkout's deletion is recorded) is opened at its own path, where it stays until the
+    /// checkout is done, and another directory there is a replacement. An entry is read where its
+    /// recorded identity is found now, at its path or in its container. Live (before its deletion
+    /// is recorded), its `gitdir` must be there, and one found in neither place while another
+    /// directory holds its path is a replacement. Once its deletion is recorded (`deleting`) and
+    /// it is in its container, that deletion resumes without the `gitdir` it may have removed;
+    /// found in neither place, its deletion finished, and whatever its path holds now is not it,
+    /// which its claim keeps and reports. Recorded `deleted`, nothing of it is left to read: its
+    /// claim verifies the recorded locations and advances it to done.
     fn entry_proves(&self, which: Which) -> Option<String> {
-        trace(which, &format!("check-{}", self.claim(which).step.name()));
-        let own = self.path().join(".git");
+        let checked = |at: &Path, identity, entry: &Claim, deleting| {
+            trace(which, &format!("check-{}", self.claim(which).step.name()));
+            entry_unproven(
+                at,
+                identity,
+                &entry.path,
+                &self.path().join(".git"),
+                deleting,
+            )
+        };
         let entry = match which {
             Which::Checkout => self.record.entries.first(),
             Which::Entry(index) => self.record.entries.get(index),
         };
         let Some(entry) = entry else {
+            trace(which, &format!("check-{}", self.claim(which).step.name()));
             return Some("the removal record names no administrative entry of the checkout".into());
         };
         let Some(identity) = decode(&entry.identity) else {
             return Some("a removal record without identity".into());
         };
         match which {
-            Which::Checkout => entry_unproven(&entry.path, identity, &entry.path, &own, false),
-            Which::Entry(_) => match found(entry) {
-                Some(at) => {
-                    let deleting = at != entry.path && entry.step == Step::Deleting;
-                    entry_unproven(&at, identity, &entry.path, &own, deleting)
+            Which::Checkout => checked(&entry.path, identity, entry, false),
+            Which::Entry(_) => match (entry.step, found(entry)) {
+                (Step::Deleted | Step::Done, _) => None,
+                (Step::Deleting, Some(at)) if at != entry.path => {
+                    checked(&at, identity, entry, true)
                 }
-                None if entry.step < Step::Deleted
-                    && std::fs::symlink_metadata(&entry.path).is_ok() =>
-                {
-                    entry_unproven(&entry.path, identity, &entry.path, &own, false)
+                (_, Some(at)) => checked(&at, identity, entry, false),
+                (Step::Deleting, None) => None,
+                (_, None) if std::fs::symlink_metadata(&entry.path).is_ok() => {
+                    checked(&entry.path, identity, entry, false)
                 }
-                None => None,
+                (_, None) => None,
             },
         }
     }
@@ -1760,9 +1849,7 @@ impl Removal<'_> {
                             )));
                         }
                     };
-                    if identity_of(&rustix::fs::fstat(&container).map_err(std::io::Error::from)?)
-                        != expected
-                    {
+                    if identity_held(&container)? != expected {
                         if claim.step == Step::Contained
                             && identity_at(&parent, &name)? == Some(identity)
                         {
@@ -1884,14 +1971,23 @@ impl Removal<'_> {
         }
     }
 
-    /// Delete what `which` holds in its container, then record that.
+    /// Delete what `which` holds in its container, then record that. A debug build's fixture
+    /// may stop as a crash would part way, once an entry's `gitdir` is unlinked
+    /// (`<which>-partial`), and once the directory is unlinked, before that is recorded
+    /// (`<which>-unlinked`).
     fn delete_held(&mut self, which: Which, held: &Held) -> Result<(), Fail> {
         trace(which, "delete");
         self.changed = true;
-        remove_tree(&held.container, &held.name, held.identity).map_err(|error| Fail::Remains {
+        remove_tree_with(&held.container, &held.name, held.identity, &mut |name| {
+            if name == "gitdir" {
+                stop_at(which, "partial");
+            }
+        })
+        .map_err(|error| Fail::Remains {
             at: held.container_path.join(&held.name),
             error,
         })?;
+        stop_at(which, "unlinked");
         self.reach(which, Step::Deleted, None)
     }
 
@@ -1934,7 +2030,7 @@ impl Removal<'_> {
                 .map(|first| container_path.join(first)))
         };
         let container = open_directory(&parent, container_name)?;
-        if identity_of(&rustix::fs::fstat(&container).map_err(std::io::Error::from)?) != expected {
+        if identity_held(&container)? != expected {
             return Err(Fail::ContainerReplaced {
                 container: container_path,
             });
@@ -1946,6 +2042,9 @@ impl Removal<'_> {
             });
         }
         match rustix::fs::unlinkat(&parent, container_name, AtFlags::REMOVEDIR) {
+            // A debug build's fixture may stop here as a crash would: the container gone, its
+            // removal not yet recorded (`<which>-rmdir`).
+            Ok(()) if after == Step::Done => stop_at(which, "rmdir"),
             Ok(()) => {}
             Err(rustix::io::Errno::NOTEMPTY | rustix::io::Errno::EXIST) => {
                 let first = foreign(&container)?.unwrap_or_else(|| container_path.clone());
@@ -1977,12 +2076,7 @@ fn found(claim: &Claim) -> Option<PathBuf> {
         .map(|(container, name)| container.join(name));
     std::iter::once(claim.path.clone())
         .chain(inside)
-        .find(|at| {
-            std::fs::symlink_metadata(at).is_ok_and(|metadata| {
-                let (device, inode) = super::commands::identity(&metadata);
-                Identity { device, inode } == identity
-            })
-        })
+        .find(|at| identity_of_path(at) == Some(identity))
 }
 
 /// Move the directory `name` of `parent` into `container` under the same name, never over a

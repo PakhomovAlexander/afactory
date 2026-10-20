@@ -44,8 +44,8 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   after runs, and bounded **Project Briefs** that a pipeline carries to chosen Workers on a
   declared port; all behind `af project`. Proposed 2026-10-19; package PJ1, PJ1b, PJ2 and its collection
   companion implemented on branch `design/project` with
-  [ADR-0151](../adr/0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
-  and [`../project.md`](../project.md), [ADR-0152](../adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md),
+  [ADR-0157](../adr/0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+  and [`../project.md`](../project.md), [ADR-0158](../adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md),
   verified by af Tasks; PJ3 (Project Brief) in progress, PJ4–PJ5 not started.
 - [`telemetry.md`](telemetry.md) — Telemetry: a separate, machine-only, bounded store of spans,
   events and content-addressed blobs that the kernel writes and never reads — kernel phases,

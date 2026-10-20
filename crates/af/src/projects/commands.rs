@@ -431,21 +431,21 @@ pub(super) enum Made {
 }
 
 /// A directory above the worktree that this command's own `create_dir` made at `path`, with the
-/// filesystem `identity` (device, inode) it had then: the undo removes only that directory, never
-/// another one at the same path.
+/// filesystem `identity` (device, inode, birth time) it had then: the undo removes only that
+/// directory, never another one at the same path.
 pub(super) struct Ancestor {
     pub(super) path: PathBuf,
-    pub(super) identity: (u64, u64),
+    pub(super) identity: review_sandbox::Identity,
 }
 
 /// The worktree `workspace new` adds at `path`, whose directory this command's own `create_dir`
-/// made with the filesystem `identity` (device, inode), with the names `administrative`
-/// (`<common dir>/worktrees`) held before `git worktree add` ran, and the `commit`, the captured
+/// made with the filesystem `identity` (device, inode, birth time), with the names
+/// `administrative` (`<common dir>/worktrees`) held before `git worktree add` ran, and the `commit`, the captured
 /// `manifest` and the `submodules` (paths relative to the worktree, each an empty directory) it
 /// fills the worktree from.
 pub(super) struct Adding {
     pub(super) path: PathBuf,
-    pub(super) identity: (u64, u64),
+    pub(super) identity: review_sandbox::Identity,
     pub(super) administrative: PathBuf,
     pub(super) before: BTreeSet<OsString>,
     pub(super) commit: String,
@@ -891,7 +891,7 @@ fn added_entries(
 }
 
 /// What the undo says of a new entry named after `path` that is not attributably this add's,
-/// and so is left where it is. Each line is ADR-0151's, word for word.
+/// and so is left where it is. Each line is ADR-0157's, word for word.
 fn left_alone(administrative: &Path, entry: &NewEntry) -> String {
     let location = administrative.join(&entry.name);
     match &entry.gitdir {
@@ -959,10 +959,28 @@ fn foreign_git(path: &Path, administrative: &Path, owned: &[OsString]) -> Option
     })
 }
 
-/// A directory's filesystem identity: its device and inode.
-pub(super) fn identity(metadata: &std::fs::Metadata) -> (u64, u64) {
+/// A directory's filesystem identity: its device, its inode and its birth time, which tells it
+/// from a directory created later at a reused inode (ext4 hands one out at once). `None` birth
+/// time where the file system reports none: [`same`] then accepts no comparison.
+pub(super) fn identity(metadata: &std::fs::Metadata) -> review_sandbox::Identity {
     use std::os::unix::fs::MetadataExt;
-    (metadata.dev(), metadata.ino())
+    review_sandbox::Identity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        born: metadata
+            .created()
+            .ok()
+            .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|since| u64::try_from(since.as_nanos()).ok())
+            .filter(|&born| born > 0),
+    }
+}
+
+/// Whether `found` is the directory recorded as `recorded`: the same device, inode and birth
+/// time, a birth time known. Without one nothing proves it is not a later directory, so it is
+/// never the recorded one.
+pub(super) fn same(found: review_sandbox::Identity, recorded: review_sandbox::Identity) -> bool {
+    recorded.born.is_some() && found == recorded
 }
 
 /// Every directory below `root`, relative to it, found without following a symbolic link and
@@ -1239,7 +1257,7 @@ fn remove_worktree(git: &Git, adding: &Adding) -> Result<WorktreeUndone, Unremov
     let mut changed = match &metadata {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => Some(format!("it could not be read: {error}")),
-        Ok(metadata) if !metadata.is_dir() || identity(metadata) != *created => {
+        Ok(metadata) if !metadata.is_dir() || !same(identity(metadata), *created) => {
             Some("it was replaced since this add created it".to_string())
         }
         Ok(_) => {
@@ -1403,7 +1421,8 @@ pub(super) fn undo(git: &Git, store: &mut ProjectStore, made: Vec<Made>) -> Stri
                             continue;
                         }
                         Ok(metadata)
-                            if !metadata.is_dir() || identity(&metadata) != ancestor.identity =>
+                            if !metadata.is_dir()
+                                || !same(identity(&metadata), ancestor.identity) =>
                         {
                             remains.push(format!(
                                 "the directory {directory}, kept because it was replaced since \

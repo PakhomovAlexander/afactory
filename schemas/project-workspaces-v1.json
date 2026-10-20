@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-workspaces:1",
   "title": "af/project-workspaces@1",
-  "description": "`af project workspaces --json` (ADR-0151): every registered Workspace of the invoking checkout's Project, in label order.",
+  "description": "`af project workspaces --json` (ADR-0157): every registered Workspace of the invoking checkout's Project, in label order.",
   "type": "object",
   "additionalProperties": false,
   "required": [

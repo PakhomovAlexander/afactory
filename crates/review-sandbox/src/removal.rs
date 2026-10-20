@@ -34,10 +34,17 @@ pub struct PartlyRemoved {
     /// The private name in the parent that holds what is left, `.af-removing-<pid>-…`.
     pub claim: String,
     /// The allocated bytes that left the disk: what the claim held immediately before the walk
-    /// began unlinking, less what it still holds after it stopped, both stated through the
-    /// claim's own descriptor and within the walk's reach. `None` when the removal measured
-    /// nothing or either could not be measured.
+    /// began unlinking ([`PartlyRemoved::started`]), less what it still holds after it stopped
+    /// ([`PartlyRemoved::remaining`]), both stated through the claim's own descriptor and within
+    /// the walk's reach. `None` when the removal measured nothing or either could not be
+    /// measured.
     pub freed: Option<u64>,
+    /// What the claim held immediately before the walk began unlinking; `None` when the removal
+    /// measured nothing or it could not be measured.
+    pub started: Option<u64>,
+    /// What the claim still holds after the walk stopped; `None` when the removal measured
+    /// nothing or it could not be measured.
+    pub remaining: Option<u64>,
     message: String,
 }
 
@@ -62,34 +69,51 @@ pub fn partial(error: &io::Error) -> Option<&PartlyRemoved> {
         .and_then(|inner| inner.downcast_ref::<PartlyRemoved>())
 }
 
-/// What names one directory on this machine independent of its path: its device and inode.
+/// What names one directory or file on this machine independent of its path: its device and
+/// inode, and, where a later file at a reused inode must be told from it, its birth time.
+///
+/// A file system may hand a freed inode number to the next file it creates (ext4 does, at the
+/// same path, within the same second), so device and inode alone name a slot, not a file. The
+/// birth time survives `rename(2)` and differs for a file created later, so an identity that
+/// carries it ([`Identity::born_of`], [`born_at`], [`born_of_descriptor`]) names one file: the
+/// identities the Project's removals and Survey records compare (ADR-0157 clause 5, ADR-0158
+/// clauses 2 and 13). Those constructors refuse a file system that reports no birth time, never
+/// standing in the change time (a rename changes it) or the modification time (a replacement can
+/// set it). The device-and-inode identity of [`Identity::of`] and its siblings leaves it `None`,
+/// as ADR-0144's removals compare it. Two identities are equal only when all three are, so a
+/// born identity never equals a later file's, nor one without a birth time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Identity {
     pub device: u64,
     pub inode: u64,
+    /// When the file was born, in nanoseconds since the Unix epoch; `None` for a
+    /// device-and-inode identity.
+    pub born: Option<u64>,
 }
 
 impl Identity {
-    /// The identity of what `path` names, without following a final link.
+    /// The device-and-inode identity of what `path` names, without following a final link.
     pub fn of(path: &Path) -> io::Result<Self> {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::symlink_metadata(path)?;
         Ok(Self {
             device: metadata.dev(),
             inode: metadata.ino(),
+            born: None,
         })
     }
 
-    /// The identity a `stat` reports.
+    /// The device-and-inode identity a `stat` reports.
     #[allow(clippy::unnecessary_cast)]
     pub fn of_stat(stat: &nix::sys::stat::FileStat) -> Self {
         Self {
             device: stat.st_dev as u64,
             inode: stat.st_ino as u64,
+            born: None,
         }
     }
 
-    /// The identity of the directory or file `descriptor` holds open.
+    /// The device-and-inode identity of the directory or file `descriptor` holds open.
     #[allow(clippy::unnecessary_cast)]
     pub fn of_descriptor(descriptor: impl AsFd) -> io::Result<Self> {
         let stat = nix::sys::stat::fstat(descriptor).map_err(io::Error::from)?;
@@ -97,7 +121,260 @@ impl Identity {
         Ok(Self {
             device: stat.st_dev as u64,
             inode: stat.st_ino as u64,
+            born: None,
         })
+    }
+
+    /// The born identity of what `path` names, without following a final link; an error naming
+    /// the file system when it reports no birth time ([`is_incomplete`]).
+    pub fn born_of(path: &Path) -> io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(path)?;
+        let born = metadata
+            .created()
+            .ok()
+            .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|since| u64::try_from(since.as_nanos()).ok());
+        let identity = Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            born: born.filter(|&born| born > 0 && !test_no_birth_time()),
+        };
+        identity.complete(&path.display().to_string(), || file_system_at_path(path))
+    }
+
+    /// This identity when it carries a birth time; otherwise the error [`is_incomplete`] tells
+    /// apart, naming what `shown` is and the file system `kind` names.
+    fn complete(self, shown: &str, kind: impl FnOnce() -> String) -> io::Result<Self> {
+        match self.born {
+            Some(_) => Ok(self),
+            None => Err(io::Error::other(Incomplete(format!(
+                "{shown} is on a file system ({}) that reports no birth time, so af cannot tell \
+                 it from a file created later at the same inode and leaves it",
+                kind()
+            )))),
+        }
+    }
+}
+
+/// The error a born identity's constructor returns on a file system that reports no birth time:
+/// told apart from every other failure by [`is_incomplete`].
+#[derive(Debug)]
+struct Incomplete(String);
+
+impl std::fmt::Display for Incomplete {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Incomplete {}
+
+/// Whether `error` says a born identity could not be stated because the file system reports no
+/// birth time, rather than that the file could not be stated at all.
+pub fn is_incomplete(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.downcast_ref::<Incomplete>().is_some())
+}
+
+/// What one no-follow `stat` of a name found, with its born identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stated {
+    /// Its device, inode and birth time; `born` is `None` where the file system reports none,
+    /// which [`Stated::complete`] refuses.
+    pub identity: Identity,
+    pub kind: Kind,
+    /// Its length.
+    pub size: u64,
+    /// Its allocated bytes, `st_blocks * 512`.
+    pub allocated: u64,
+    pub links: u64,
+}
+
+/// What kind of entry a [`Stated`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+impl Stated {
+    /// Its identity when it carries a birth time; otherwise the error [`is_incomplete`] tells
+    /// apart, naming `shown` and the file system of `directory`, which holds it.
+    pub fn complete(&self, shown: &str, directory: impl AsFd) -> io::Result<Identity> {
+        self.identity
+            .complete(shown, || file_system_of(directory.as_fd()))
+    }
+
+    /// The allocated bytes it holds as the Storage Budget counts them: a regular file's, and
+    /// nothing for a directory, a link or anything else ([`crate::storage`]).
+    pub fn counted(&self) -> u64 {
+        if self.kind == Kind::File {
+            self.allocated
+        } else {
+            0
+        }
+    }
+}
+
+/// `name` of `directory`, stated without following a link, with its birth time where the file
+/// system reports one; `None` when nothing is there.
+pub fn born_at(directory: impl AsFd, name: &OsStr) -> io::Result<Option<Stated>> {
+    match stat_born(directory.as_fd(), name, false) {
+        Ok(stated) => Ok(Some(stated)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The directory or file `descriptor` holds open, stated with its birth time where the file
+/// system reports one.
+pub fn born_of_descriptor(descriptor: impl AsFd) -> io::Result<Stated> {
+    stat_born(descriptor.as_fd(), OsStr::new(""), true)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn stat_born(
+    directory: std::os::fd::BorrowedFd<'_>,
+    name: &OsStr,
+    itself: bool,
+) -> io::Result<Stated> {
+    use rustix::fs::{AtFlags, FileType, StatxFlags};
+    let flags = if itself {
+        AtFlags::EMPTY_PATH
+    } else {
+        AtFlags::SYMLINK_NOFOLLOW
+    };
+    // One call states everything, the birth time with the inode it belongs to.
+    let stat = rustix::fs::statx(
+        directory,
+        name,
+        flags,
+        StatxFlags::BASIC_STATS | StatxFlags::BTIME,
+    )?;
+    let born = (stat.stx_mask & StatxFlags::BTIME.bits() != 0)
+        .then(|| {
+            u64::try_from(stat.stx_btime.tv_sec)
+                .ok()
+                .and_then(|seconds| {
+                    seconds
+                        .checked_mul(1_000_000_000)?
+                        .checked_add(u64::from(stat.stx_btime.tv_nsec))
+                })
+        })
+        .flatten();
+    Ok(Stated {
+        identity: Identity {
+            device: rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor),
+            inode: stat.stx_ino,
+            born: born.filter(|&born| born > 0 && !test_no_birth_time()),
+        },
+        kind: match FileType::from_raw_mode(u32::from(stat.stx_mode)) {
+            FileType::RegularFile => Kind::File,
+            FileType::Directory => Kind::Directory,
+            FileType::Symlink => Kind::Symlink,
+            _ => Kind::Other,
+        },
+        size: stat.stx_size,
+        allocated: stat.stx_blocks.saturating_mul(512),
+        links: u64::from(stat.stx_nlink),
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[allow(clippy::unnecessary_cast)]
+fn stat_born(
+    directory: std::os::fd::BorrowedFd<'_>,
+    name: &OsStr,
+    itself: bool,
+) -> io::Result<Stated> {
+    use nix::sys::stat::SFlag;
+    let stat = if itself {
+        nix::sys::stat::fstat(directory)
+    } else {
+        nix::sys::stat::fstatat(directory, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW)
+    }
+    .map_err(io::Error::from)?;
+    // `st_birthtime` is the birth time on every file system macOS mounts; one that keeps none
+    // reports the epoch, which no file af makes was born at.
+    let born = u64::try_from(stat.st_birthtime)
+        .ok()
+        .and_then(|seconds| {
+            seconds
+                .checked_mul(1_000_000_000)?
+                .checked_add(u64::try_from(stat.st_birthtime_nsec).ok()?)
+        })
+        .filter(|&born| born > 0 && !test_no_birth_time());
+    Ok(Stated {
+        identity: Identity {
+            device: stat.st_dev as u64,
+            inode: stat.st_ino as u64,
+            born,
+        },
+        kind: match SFlag::from_bits_truncate(stat.st_mode as nix::libc::mode_t) & SFlag::S_IFMT {
+            SFlag::S_IFREG => Kind::File,
+            SFlag::S_IFDIR => Kind::Directory,
+            SFlag::S_IFLNK => Kind::Symlink,
+            _ => Kind::Other,
+        },
+        size: u64::try_from(stat.st_size).unwrap_or(0),
+        allocated: (stat.st_blocks as u64).saturating_mul(512),
+        links: stat.st_nlink as u64,
+    })
+}
+
+/// What a message calls the file system that holds `directory`: its type as the operating
+/// system names it.
+fn file_system_of(directory: std::os::fd::BorrowedFd<'_>) -> String {
+    match nix::sys::statfs::fstatfs(directory) {
+        Ok(statfs) => file_system_kind(&statfs),
+        Err(errno) => format!("of an unknown type: {errno}"),
+    }
+}
+
+fn file_system_at_path(path: &Path) -> String {
+    match nix::sys::statfs::statfs(path) {
+        Ok(statfs) => file_system_kind(&statfs),
+        Err(errno) => format!("of an unknown type: {errno}"),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn file_system_kind(statfs: &nix::sys::statfs::Statfs) -> String {
+    statfs.filesystem_type_name().to_string()
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn file_system_kind(statfs: &nix::sys::statfs::Statfs) -> String {
+    format!("type {:#x}", statfs.filesystem_type().0)
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static NO_BIRTH_TIME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A debug build's test hook: on this thread, every born identity is stated as on a file system
+/// that reports no birth time. A fixture's process asks the same with
+/// `AF_TEST_NO_BIRTH_TIME=1`. Release builds have neither.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn set_no_birth_time(on: bool) {
+    NO_BIRTH_TIME.with(|slot| slot.set(on));
+}
+
+fn test_no_birth_time() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        NO_BIRTH_TIME.with(std::cell::Cell::get)
+            || std::env::var_os("AF_TEST_NO_BIRTH_TIME").is_some_and(|value| value == "1")
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
     }
 }
 
@@ -253,11 +530,14 @@ fn remove_tree(
     // name since. Once this process has exited, a later sweep finishes the claim
     // ([`finish_abandoned_claims`]) and reports it while it cannot.
     let partly = |directory: &Dir, why: String| {
-        let freed = before.and_then(|before| {
-            within_reach(directory)
-                .ok()
-                .map(|remaining| before.saturating_sub(remaining))
-        });
+        let remaining = if measure {
+            within_reach(directory).ok()
+        } else {
+            None
+        };
+        let freed = before
+            .zip(remaining)
+            .map(|(before, remaining)| before.saturating_sub(remaining));
         io::Error::other(PartlyRemoved {
             message: format!(
                 "`{}` was only partly removed ({why}); the rest is left under `{claimed}` for a \
@@ -266,6 +546,8 @@ fn remove_tree(
             ),
             claim: claimed.clone(),
             freed,
+            started: before,
+            remaining,
         })
     };
     if let Err(errno) = crate::stale::remove_children_nofollow(&mut directory, 0) {
@@ -294,15 +576,15 @@ fn remove_tree(
     Ok(before)
 }
 
-/// Allocated bytes of the directory `directory` holds open and of everything below it that the
+/// Allocated bytes of the regular files below the directory `directory` holds open that the
 /// removal walk reaches ([`REMOVAL_MAX_DEPTH`] levels of directories and their entries), stated
 /// through descriptors without following a link; a file reached through several hard links
-/// counts once. What lies deeper is never touched by the walk, so it is in neither of the two
-/// measurements a partial removal is accounted from.
+/// counts once, and a directory or a link counts nothing, as [`crate::storage`] counts. What lies
+/// deeper is never touched by the walk, so it is in neither of the two measurements a partial
+/// removal is accounted from.
 fn within_reach(directory: &impl AsFd) -> io::Result<u64> {
     let mut seen = std::collections::BTreeSet::new();
-    let own = nix::sys::stat::fstat(directory).map_err(io::Error::from)?;
-    Ok(allocated(&own).saturating_add(below(directory, 0, &mut seen)?))
+    below(directory, 0, &mut seen)
 }
 
 #[allow(clippy::unnecessary_cast)]
@@ -343,13 +625,14 @@ fn below(
         #[allow(clippy::unnecessary_cast)]
         let kind = SFlag::from_bits_truncate(stat.st_mode as nix::libc::mode_t) & SFlag::S_IFMT;
         if kind != SFlag::S_IFDIR {
-            if stat.st_nlink > 1 && !seen.insert(Identity::of_stat(&stat)) {
+            if kind != SFlag::S_IFREG
+                || (stat.st_nlink > 1 && !seen.insert(Identity::of_stat(&stat)))
+            {
                 continue;
             }
             total = total.saturating_add(allocated(&stat));
             continue;
         }
-        total = total.saturating_add(allocated(&stat));
         match openat(
             directory,
             name.as_c_str(),
@@ -665,14 +948,107 @@ mod tests {
         let claim = the_claim(&parent, &error);
         let remaining = crate::storage::allocated_bytes(&claim).unwrap();
         assert!(remaining > 0, "the walk could not reach all of it");
-        let freed = partial(&error).unwrap().freed;
-        assert_eq!(freed, Some(before - remaining), "{error}");
+        let partly = partial(&error).unwrap();
+        assert_eq!(partly.freed, Some(before - remaining), "{error}");
+        // What it held when it started and what it still holds, within the walk's reach: the
+        // files deeper than it are in neither, so the difference is what the walk unlinked.
+        let (started, still) = (partly.started.unwrap(), partly.remaining.unwrap());
+        assert!(started <= before && still <= remaining, "{started} {still}");
+        assert_eq!(started - still, before - remaining);
         // An unmeasured removal says nothing of what it freed.
         let again = Identity::of(&claim).unwrap();
         let name = claim.file_name().unwrap().to_os_string();
         let error = remove_tree_at(&fd, &name, Some(again)).unwrap_err();
-        assert_eq!(partial(&error).unwrap().freed, None);
+        let partly = partial(&error).unwrap();
+        assert_eq!(
+            (partly.freed, partly.started, partly.remaining),
+            (None, None, None)
+        );
         std::fs::remove_dir_all(the_claim(&parent, &error)).unwrap();
+    }
+
+    /// A born identity names one file: it survives a rename, and a file created later at the
+    /// same path is another, also where a file system hands it the freed inode number, since its
+    /// birth time is later. A device-and-inode identity of the same file never equals it.
+    #[test]
+    fn a_born_identity_survives_a_rename_and_refuses_a_later_file_at_a_reused_inode() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("record");
+        std::fs::write(&path, b"one").unwrap();
+        let born = Identity::born_of(&path).unwrap();
+        assert!(born.born.is_some());
+        let moved = root.path().join("moved");
+        std::fs::rename(&path, &moved).unwrap();
+        assert_eq!(
+            Identity::born_of(&moved).unwrap(),
+            born,
+            "a rename keeps it"
+        );
+        let anchor = open_anchor(root.path()).unwrap();
+        let stated = born_at(&anchor, OsStr::new("moved")).unwrap().unwrap();
+        assert_eq!(
+            stated.identity, born,
+            "stated relative to a directory, the same"
+        );
+        assert_eq!(
+            (stated.kind, stated.size, stated.counted()),
+            (Kind::File, 3, stated.allocated)
+        );
+        let file = std::fs::File::open(&moved).unwrap();
+        assert_eq!(born_of_descriptor(&file).unwrap().identity, born);
+        assert_ne!(
+            Identity::of(&moved).unwrap(),
+            born,
+            "no birth time, another identity"
+        );
+        // Created later at the old path, the same bytes: another file.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, b"one").unwrap();
+        let later = Identity::born_of(&path).unwrap();
+        assert_ne!(later, born);
+        assert!(later.born > born.born, "born later");
+        // A file system that reuses the inode gives it the same device and inode: the later
+        // birth time alone tells it apart, and the identity refuses it.
+        let reused = Identity {
+            born: later.born,
+            ..born
+        };
+        assert_ne!(reused, born);
+        assert_eq!(born_at(&anchor, OsStr::new("absent")).unwrap(), None);
+    }
+
+    /// On a file system that reports no birth time a born identity is incomplete: its
+    /// constructor refuses with one sentence naming the file system, never standing in another
+    /// time, and a stated name carries no birth time to compare.
+    #[test]
+    fn a_file_system_without_birth_time_leaves_a_born_identity_incomplete() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("record");
+        std::fs::write(&path, b"one").unwrap();
+        set_no_birth_time(true);
+        let refused = Identity::born_of(&path);
+        let anchor = open_anchor(root.path()).unwrap();
+        let stated = born_at(&anchor, OsStr::new("record")).unwrap().unwrap();
+        let incomplete = stated.complete("the record", &anchor);
+        set_no_birth_time(false);
+        let error = refused.unwrap_err();
+        assert!(is_incomplete(&error), "{error}");
+        assert!(
+            error.to_string().contains("reports no birth time"),
+            "{error}"
+        );
+        assert_eq!(stated.identity.born, None);
+        let error = incomplete.unwrap_err();
+        assert!(
+            is_incomplete(&error)
+                && error
+                    .to_string()
+                    .starts_with("the record is on a file system ("),
+            "{error}"
+        );
+        assert!(!is_incomplete(&io::Error::other("permission denied")));
+        let again = born_at(&anchor, OsStr::new("record")).unwrap().unwrap();
+        assert!(again.complete("the record", &anchor).is_ok());
     }
 
     #[test]

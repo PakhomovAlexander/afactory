@@ -168,14 +168,22 @@ commit, through delivery's supervised, filter-free cached-index comparison and t
 committed capture, refusing a staged, unmerged or differing entry without moving a byte; it never calls `git worktree remove`,
 whose cleanliness check runs the repository's clean filters (ADR-0001), and it deletes the
 directory and the worktree's own administrative entry itself, bound to what it inspected: it
-records both identities, claims the checkout under an absent private name beside it, verifies
-identity and cleanliness there by descriptor-based, no-follow traversal, deletes only the claimed
-directory, preserves and reports a replacement found at the registered path, and persists enough
-machine-local state to finish an interrupted claim on rerun.
+records both identities (device, inode and birth time, so a later directory at a reused inode,
+which ext4 hands out at once, is never taken for either; a file system that reports no birth
+time refuses the removal with nothing changed), claims the checkout under an absent private name
+beside it, verifies identity and cleanliness there by descriptor-based, no-follow traversal,
+deletes only the claimed directory, preserves and reports a replacement found at the registered
+path, and persists enough machine-local state to finish an interrupted claim on rerun. A rerun's
+check follows the step it recorded: the administrative entry's identity, `gitdir` and lock are
+checked before a live checkout or entry is claimed or deleted; an entry whose deletion is
+recorded resumes it from its container without the `gitdir` that deletion may have removed; and
+one gone from its container and its path, or recorded deleted, advances to done once its recorded
+container is verified, so a crash after the entry's unlink, part way through its deletion or
+after its container's removal finishes on the rerun and unregisters once (ADR-0157 clause 5).
 
 `--workspace LABEL` on every `af task` subcommand that takes `--state` resolves `--state` (and,
 for `plan` and `start`, an absent `--bindings`) against the Workspace; `--workspace` together with
-`--state` is a usage error, exit 2, as ADR-0151 clause 6 decides. `af review run --workspace` and
+`--state` is a usage error, exit 2, as ADR-0157 clause 6 decides. `af review run --workspace` and
 a relative `--file` resolved against the Workspace are a separate later decision. The worktree `af task deliver`
 creates is registered as a Workspace of origin `delivered`, labelled by the Task ID, after
 delivery succeeds and best effort, so `af project workspaces` lists it and
@@ -316,7 +324,10 @@ The Surveyor reads the checkout with git plumbing (`ls-tree`, `cat-file --batch`
 `rev-list`, `tag`) under the typed-method rule ADR-0001 set for tree diffs, runs no hook and no
 project code, and opens Stores read-only without taking a writer lease. It therefore needs no
 sandbox and no Check runtime. A running Task is never affected: its Brief was pinned at plan
-time (§3.5), and a refresh writes only the Project Store.
+time (§3.5), and a refresh writes only the Project Store. It publishes a record by staging its
+bytes beside its pending-publication entry and moving that inode to its CAS name only once the
+entry records the inode's identity (device, inode and birth time), so a crash at any point leaves
+nothing at a CAS name that no entry describes (§3.9, ADR-0158 clause 2).
 
 Why no model: the kernel measures, and a model never writes a number the kernel did not record
 (ADR-0132). A model-written description of the project is a Report Task's Document, bound to
@@ -498,7 +509,7 @@ ADR-0145: a later shape change is a new version.
 | `SurveyRecorded@1`, `SurveyFailed@1`, `SurveyCollected@1` | Project Store | Survey artifact ID, head, cutoff, completeness; or the failure reason; or the tombstone summary |
 | `af/ProjectSurvey@2` | Project Store CAS | §3.3 |
 | `af/ProjectBrief@1` | Task Store CAS | §3.5 |
-| `af/project@N`, `af/project-workspaces@N`, `af/project-tasks@1` | `--json` documents | the projections `af project` prints; every package that changes a typed shape bumps its version (ADR-0145 clause 2), writers, readers, schemas and parity fixtures moving together and the superseded version refused: `af/project` when Survey fields enter it, `af/project-workspaces` to `@2` when PJ5 adds Tasks and spend, `af/ProjectSurvey` to `@3` when PJ5 adds `activity` (`@2` since PJ2 added `stopped_record`), and `af/storage` to `@3` and the prune document to `@2` when PJ2 adds the `survey` entry kind, while `af/TaskStorageSweep@1` keeps its kinds and counts Survey removals in `omitted_removals` (ADR-0152 clause 13) |
+| `af/project@N`, `af/project-workspaces@N`, `af/project-tasks@1` | `--json` documents | the projections `af project` prints; every package that changes a typed shape bumps its version (ADR-0145 clause 2), writers, readers, schemas and parity fixtures moving together and the superseded version refused: `af/project` when Survey fields enter it, `af/project-workspaces` to `@2` when PJ5 adds Tasks and spend, `af/ProjectSurvey` to `@3` when PJ5 adds `activity` (`@2` since PJ2 added `stopped_record`), `af/storage` to `@3` and the prune document to `@2` when PJ2 adds the `survey` entry kind and the prune document to `@3` when its total may be `unknown`, and `af/survey-pending@2`, `af/ProjectSurveysSettled@2` and the Workspace removal record's `version = 2` when their identities gain the birth time, while `af/TaskStorageSweep@1` keeps its kinds and counts Survey removals in `omitted_removals` (ADR-0158 clause 13) |
 | `workspaces.toml` | beside the Project Store | machine-local paths, best effort, like `stores.toml` |
 
 ### 3.8 Configuration
@@ -569,24 +580,40 @@ the record from the CAS; replay treats a `SurveyRecorded@1` whose Survey a tombs
 collected once the event matches the tombstone on every field it binds, so `af project history` answers from the tombstone and `af project survey` reports the
 newest Survey only while it is uncollected; `previous_survey_id` is a name, never a reachability
 edge, so a collected predecessor keeps nothing alive and a chain that reaches a collected Survey
-ends at its tombstone. Once a collected Survey's record has left the CAS, deleted at its name or
-settled from a dead pass's container, any later file at that name is foreign even when its bytes
-hash to the Survey ID: the settlement is recorded machine-locally and every later sweep reads it,
-so a byte-identical replacement survives sweep after sweep, listed `foreign`. The tombstone is appended before the bytes go, so an interruption between
-the two leaves a record the next sweep finishes. Both collection paths, the count and the budget, protect the newest complete Survey and any
+ends at its tombstone. Before it appends the tombstone, a collection records the object it
+selects, the record at the Survey's CAS name by device, inode, birth time and length, in a
+machine-local collection record beside the lock (`settled.json`), and recovery follows that
+identity, never a hash: a file at the name or in a dead pass's container that is another inode,
+or the same inode number born later, is foreign even when its bytes hash to the Survey ID. Once a
+collected Survey's record has left the CAS, deleted at its name or settled from a dead pass's
+container, any later file at that name is foreign as well: the settlement is recorded in the same
+record and every later sweep reads it, so a byte-identical replacement survives sweep after
+sweep, listed `foreign`. The tombstone is appended after the selection and before the bytes go,
+so an interruption between the two leaves a record the next sweep finishes, and only the selected
+inode. Both collection paths, the count and the budget, protect the newest complete Survey and any
 held one. Under the machine budget (ADR-0144 clause 4)
 every Survey is besides an inventoried entry of kind `survey`, sized by its CAS bytes and last
 used at its cutoff, that the budget pass may reclaim oldest first through the same tombstone and
 deletion even below `keep_surveys`; protected are the newest complete Survey, any Survey a running
 refresh or Brief build holds under the Project Store lock, and the recent-use window ADR-0144
 grants every entry; the Project's log, `workspaces.toml` and operator files are never reclaimed.
-PJ2 ships the inventory, the byte accounting and the budget-driven tombstone and deletion with
-the first Survey writer, which records a machine-local pending-publication entry under the
-Project Store lock before a Survey's bytes enter the CAS and clears it once `SurveyRecorded@1`
-commits, so a crash between the two leaves an entry collection reads: inventory counts the
-pending bytes, and recovery either finds the event committed and clears the entry or reclaims
-only the recorded, identity-matching unreferenced object as a planned `recovery` entry; PJ4 adds
-only the detached refresh. Collection never breaks a Task: a plan pins a
+Every byte the budget counts is the allocated bytes of regular files, directories and links
+counting nothing, so a total is the same on ext4 (4096 bytes per directory) and APFS (none) and a
+removal's bytes are those of the regular files it deleted. The prune's running total reconciles a
+claim that grew since inventory: what its removal measured it to hold when it started takes the
+place of the inventoried bytes before what left the disk is subtracted, so a claim inventoried at
+10 MiB that grew to 20 MiB and freed 8 MiB leaves 12 MiB in the total; when what a removal that
+stopped part way left cannot be measured, the total is reported `unknown` and `fits` is not
+claimed. PJ2 ships the inventory, the byte accounting and the budget-driven tombstone and
+deletion with the first Survey writer, which records a machine-local pending-publication entry
+under the Project Store lock before any byte of a Survey is written, stages the bytes in its own
+directory beside the entry, records the staged object's identity in the entry, and only then
+moves that inode to its CAS name, clearing the entry once `SurveyRecorded@1` commits; so nothing
+is ever at a CAS name no entry describes, and a crash anywhere leaves what collection reads:
+inventory counts the pending or staged bytes, and recovery either finds the event committed and
+clears the entry, or reclaims the staged bytes (the writer's own, before or after the entry named
+them) or only the recorded, identity-matching unreferenced object at the CAS name, each as a
+planned `recovery` entry before the entry; PJ4 adds only the detached refresh. Collection never breaks a Task: a plan pins a
 Brief in the Task Store, not the Survey in the Project Store.
 
 ## 4. Values check
@@ -631,14 +658,19 @@ Acceptance: two worktrees of one fixture repository register one Project with tw
 a shallow clone is refused with the `--unshallow` message; adopting an existing default Store
 changes no byte of it; `--workspace` resolves the same paths as the explicit flags and the
 recorded Task is identical either way; the repository's own `.af/` still loads unchanged and the
-layout test still passes; `af --help` and `af project --help` stay under 50 ms.
+layout test still passes; `af --help` and `af project --help` stay under 50 ms; a
+`--delete-worktree` interrupted right after the entry's unlink, part way through its deletion
+(its `gitdir` gone) or after its container's removal completes on the rerun and unregisters once,
+while a live checkout or entry is still checked for identity, `gitdir` and lock before any step;
+an identity carries the directory's birth time beside its device and inode, so one at the same
+inode born later is refused, and a file system without birth times refuses the removal.
 
 ### PJ2 — Survey and Surveyor
 
 Deliverables: `af/ProjectSurvey@2` with `identity`, `tree`, `history`, `contributors`,
 `decisions`, `vocabulary` and `checks`; the Surveyor operator with its bounds, every git subprocess under the
 minimum of its own limit and the remaining Survey time with its process group terminated at the
-deadline, the digest-only capture path for the Tree Digest (ADR-0152 clause 9 amended to it),
+deadline, the digest-only capture path for the Tree Digest (ADR-0158 clause 9 amended to it),
 history measured through a private bare repository and one ref observation for key and
 statistics; `af onboard
 --apply` recording the first Survey; `af project survey|refresh|history`; the survey key and
@@ -654,8 +686,14 @@ produce `partial` sections and a recorded Survey; a four-commit history with one
 `max_commits` boundary yields the stated commit, merge and contributor counts; a gitlink whose
 target is absent locally counts one file of zero bytes and lines with digest parity to the
 committed Manifest; two sweeps over a moved original and a byte-identical replacement leave the
-replacement listed `foreign` both times; a crash after a Survey's bytes and before its event
-leaves a pending entry inventory counts and recovery settles; two forced
+replacement listed `foreign` both times, and so do two sweeps over a byte-identical replacement
+made after a tombstone crash, the collection record carrying the selected identity; a crash after
+a Survey's bytes and before its event leaves a pending entry inventory counts and recovery
+settles, and a crash before its identity is recorded leaves staged bytes, nothing at the CAS
+name, that a later prune reclaims; a replacement at the same inode born later is refused by its
+birth time, and a file system without birth times refuses collection; a grown claim's partial
+deletion reports the bytes it retains, and an unmeasurable remainder reports the total `unknown`;
+two forced
 complete refreshes at a fixed cutoff differ only in `previous_survey_id`; af killed after a
 manifest spill leaves a directory the next sweep removes while a live refresh's survives; an early deadline leaves the Tree Digest absent
 with its reason, never a partial digest, and a silent git process against a short deadline

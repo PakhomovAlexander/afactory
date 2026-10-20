@@ -1,4 +1,4 @@
-//! The Surveyor (ADR-0152): the token-free operator that measures a Project into Surveys.
+//! The Surveyor (ADR-0158): the token-free operator that measures a Project into Surveys.
 //!
 //! A Survey is `af/ProjectSurvey@1`, one canonical JSON record of the head: `identity`, `tree`,
 //! `history`, `contributors`, `decisions`, `vocabulary` and `checks`, every number decimal text,
@@ -275,7 +275,7 @@ fn untombstoned_field(
     .find_map(|(field, equal)| (!equal).then_some(field))
 }
 
-/// The identity a `SurveyCollected@1` binds (ADR-0152 clauses 2 and 13): what replay compares a
+/// The identity a `SurveyCollected@1` binds (ADR-0158 clauses 2 and 13): what replay compares a
 /// collected Survey's event with once its record is gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TombstoneIdentity {
@@ -624,11 +624,12 @@ impl ProjectStore {
 
     /// Publish `survey`, whose canonical bytes are `bytes`, under the Project Store's lock, in
     /// the order collection's reader relies on (`pending.rs`): its pending-publication entry
-    /// written and synced first, then its record linked at its CAS name and made durable, then
-    /// the identity of the file at that name recorded and synced in the entry, then
-    /// `SurveyRecorded@1`, and the entry cleared only once that committed, so a crash between
-    /// the CAS and the log leaves an entry naming the record. An entry a crash left for these
-    /// same bytes is this publication's, which finishes it.
+    /// written and synced first, then its record staged in the writer's own `pending-surveys`
+    /// and made durable there, then the staged object's identity recorded and synced in the
+    /// entry, then that object renamed to its CAS name, then `SurveyRecorded@1`, and the entry
+    /// cleared only once that committed, so a crash anywhere between them leaves an entry, or
+    /// staged bytes, that collection settles. An entry a crash left for these same bytes is
+    /// this publication's, which finishes it.
     fn record_survey(
         &mut self,
         survey: &ProjectSurveyV2,
@@ -636,20 +637,10 @@ impl ProjectStore {
     ) -> Result<Recorded, String> {
         let survey_id = review_store::canonical::blob_content_id(&bytes);
         let length = bytes.len() as u64;
-        let object = collect::object_path(&self.directory, &survey_id);
         // An entry an earlier attempt of these bytes left keeps the object it names.
-        let kept = pending::begin(&self.directory, &survey_id, length, &object)?;
+        let kept = pending::begin(&self.directory, &survey_id, length)?;
         pending::fail_put()?;
-        let stored = self.cas.put(&bytes).map_err(|error| error.to_string())?;
-        if stored != survey_id {
-            return Err(format!(
-                "the CAS stored Survey {survey_id} as {stored}; run `af project refresh` again"
-            ));
-        }
-        // The bytes and their name durable before the entry names the object.
-        self.cas.flush().map_err(|error| error.to_string())?;
-        pending::stop_before_identity();
-        pending::written(&self.directory, &survey_id, length, &object, kept)?;
+        pending::publish(&self.directory, &survey_id, &bytes, kept)?;
         pending::stop_before_event();
         let identity = survey
             .identity
@@ -1073,7 +1064,7 @@ fn attempt(
         .map_err(|error| Unrecorded::new(Some(&head), NOT_PUBLISHED, error))
 }
 
-/// Where `survey` stopped when it is not complete (ADR-0152 clause 1): the stopping point its
+/// Where `survey` stopped when it is not complete (ADR-0158 clause 1): the stopping point its
 /// sections determine, with the items the Clock charged in that section.
 fn stopped(
     survey: &ProjectSurveyV2,
@@ -1088,7 +1079,7 @@ fn stopped(
     Some(stop)
 }
 
-/// The newest recorded Survey of the Project while it is uncollected (ADR-0152 clause 13): a
+/// The newest recorded Survey of the Project while it is uncollected (ADR-0158 clause 13): a
 /// newest Survey a tombstone names is none, once its event is bound to that tombstone, and an
 /// uncollected one is read through [`ProjectStore::survey`], so no field of the newest event is
 /// used before it is verified.
@@ -1419,7 +1410,7 @@ fn survey_sections(sections: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
-/// The pattern limits of ADR-0152 clause 14, where the Surveyor loads its patterns: every
+/// The pattern limits of ADR-0158 clause 14, where the Surveyor loads its patterns: every
 /// pattern list, `[survey.languages]` included, at most 64 patterns and every pattern at most
 /// 256 bytes, refused naming the key.
 fn within_pattern_limits(policy: Policy) -> Result<Policy, String> {

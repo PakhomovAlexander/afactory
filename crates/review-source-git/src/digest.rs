@@ -1,4 +1,4 @@
-//! The content digest of a committed tree without capturing it (ADR-0152 clause 9).
+//! The content digest of a committed tree without capturing it (ADR-0158 clause 9).
 //!
 //! [`crate::Capture::committed`] stores every blob in a CAS and holds the whole manifest before
 //! it digests it. A reader that wants only the digest needs neither: this path writes no blob

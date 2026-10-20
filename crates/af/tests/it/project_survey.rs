@@ -1,4 +1,4 @@
-//! ADR-0152 end to end: the Surveyor measures a Project into Surveys.
+//! ADR-0158 end to end: the Surveyor measures a Project into Surveys.
 //!
 //! A fixture repository built with fixed dates, names, emails and messages, a merge, a rename,
 //! a binary change, a commit whose author date is a year before its committer date and agent
@@ -248,7 +248,7 @@ fn commit(repo: &Path, who: (&str, &str), days: u64, message: &[&str]) {
     git_as(repo, Some((who.0, who.1, days)), &args);
 }
 
-/// The fixture repository of ADR-0152's test (a): eight commits over 500 days by two people, a
+/// The fixture repository of ADR-0158's test (a): eight commits over 500 days by two people, a
 /// bot and an author named by an email address; a human commit with an agent trailer and one
 /// with two; a merge; a rename and a binary change in a commit authored a year before it was
 /// committed; two tags, two branches, several top-level directories, a tests directory, a
@@ -3669,15 +3669,20 @@ fn a_gitlink_is_one_file_of_no_bytes_or_lines_never_fetched_and_digests_as_the_m
     );
 }
 
-/// The pending-publication entries of the Project Store, by file.
+/// The pending-publication entries of the Project Store, by file: its `<64 hex>.json` files,
+/// never the objects the writer stages beside them.
 fn pending_entries(machine: &Machine) -> Vec<(PathBuf, Value)> {
     let directory = machine.store().join("pending-surveys");
     let Ok(listing) = std::fs::read_dir(&directory) else {
         return Vec::new();
     };
     let mut entries: Vec<(PathBuf, Value)> = listing
-        .map(|entry| {
-            let path = entry.unwrap().path();
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .map(|path| {
             let value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             (path, value)
         })
@@ -3688,7 +3693,6 @@ fn pending_entries(machine: &Machine) -> Vec<(PathBuf, Value)> {
 
 #[test]
 fn a_crash_between_a_surveys_bytes_and_its_event_leaves_its_pending_entry() {
-    use std::os::unix::fs::MetadataExt;
     let machine = Machine::new();
     let repo = repository(&machine.root(), "pending", &[("a.txt", b"a\n")]);
     machine.expect(&repo, &[], &["project", "show"], 0);
@@ -3700,7 +3704,7 @@ fn a_crash_between_a_surveys_bytes_and_its_event_leaves_its_pending_entry() {
     let entries = pending_entries(&machine);
     assert_eq!(entries.len(), 1, "{entries:?}");
     let (path, entry) = &entries[0];
-    schemas::valid(&schemas::validator("project-survey-pending-v1.json"), entry);
+    schemas::valid(&schemas::validator("project-survey-pending-v2.json"), entry);
     let survey_id = entry["survey_id"].as_str().unwrap().to_string();
     let hex = survey_id.trim_start_matches("sha256:");
     assert_eq!(
@@ -3715,13 +3719,7 @@ fn a_crash_between_a_surveys_bytes_and_its_event_leaves_its_pending_entry() {
         .join(&hex[..2])
         .join(&hex[2..]);
     let stated = std::fs::symlink_metadata(&object).unwrap();
-    assert_eq!(
-        entry["object"],
-        serde_json::json!({
-            "device": stated.dev().to_string(),
-            "inode": stated.ino().to_string(),
-        })
-    );
+    assert_eq!(entry["object"], object_identity(&stated));
     assert_eq!(entry["bytes"], stated.len().to_string());
 
     // The next refresh measures the same bytes, finishes that publication and clears it.
@@ -3770,6 +3768,31 @@ fn failed_events(machine: &Machine) -> Vec<Value> {
         .collect()
 }
 
+/// An object's identity as a pending-publication entry records it: its device, inode and birth
+/// time in nanoseconds.
+fn object_identity(stated: &std::fs::Metadata) -> Value {
+    use std::os::unix::fs::MetadataExt;
+    let born = stated
+        .created()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    serde_json::json!({
+        "device": stated.dev().to_string(),
+        "inode": stated.ino().to_string(),
+        "born_unix_ns": born.to_string(),
+    })
+}
+
+/// The object the Surveyor's writer stages for `survey_id` before it takes its CAS name.
+fn staged_name(machine: &Machine, survey_id: &str) -> PathBuf {
+    machine.store().join("pending-surveys").join(format!(
+        "{}.object",
+        survey_id.trim_start_matches("sha256:")
+    ))
+}
+
 /// The CAS file at `survey_id`'s name, as the Surveyor's writer links it.
 fn cas_name(machine: &Machine, survey_id: &str) -> PathBuf {
     let hex = survey_id.trim_start_matches("sha256:");
@@ -3780,22 +3803,23 @@ fn cas_name(machine: &Machine, survey_id: &str) -> PathBuf {
         .join(&hex[2..])
 }
 
-/// Writer and reader of the pending-publication entry, one fixture for both halves at both
-/// crash points: a refresh stopped after its bytes are linked and before their identity leaves
-/// the entry without `object`, and the next refresh of the same bytes finishes that publication;
-/// one stopped after the identity and before its event leaves the entry naming the object at the
-/// Survey's CAS name by device, inode and length, which `af storage` counts as a Survey
-/// `pending` and `af storage prune --apply` reclaims through that entry, as collection's reader
-/// consumes the shape, preview and apply alike.
+/// Writer and reader of the pending-publication entry, one fixture for both halves at every
+/// crash point: a refresh stopped after its bytes are staged and before their identity leaves
+/// the entry without `object` and nothing at the CAS name, and the next refresh of the same
+/// bytes finishes that publication; one stopped after the identity and before the staged object
+/// takes its CAS name leaves the entry naming the staged object, and the next refresh finishes
+/// from it; one stopped after the CAS name and before its event leaves the entry naming the
+/// object at the Survey's CAS name by device, inode, birth time and length, which `af storage`
+/// counts as a Survey `pending` and `af storage prune --apply` reclaims through that entry, as
+/// collection's reader consumes the shape, preview and apply alike.
 #[test]
 fn the_writers_pending_entry_is_what_collection_reads_at_either_crash_point() {
-    use std::os::unix::fs::MetadataExt;
     let machine = Machine::new();
     let repo = repository(&machine.root(), "pending-both", &[("a.txt", b"a\n")]);
     machine.expect(&repo, &[], &["project", "show"], 0);
-    let validator = schemas::validator("project-survey-pending-v1.json");
+    let validator = schemas::validator("project-survey-pending-v2.json");
 
-    // Crash point one: the bytes linked, no identity yet.
+    // Crash point one: the bytes staged, no identity yet, nothing at the CAS name.
     machine.expect(
         &repo,
         &[("AF_TEST_SURVEY_STOP_BEFORE_IDENTITY", "1")],
@@ -3810,12 +3834,13 @@ fn the_writers_pending_entry_is_what_collection_reads_at_either_crash_point() {
     assert!(entry.get("object").is_none(), "no identity yet: {entry}");
     let survey_id = entry["survey_id"].as_str().unwrap().to_string();
     let object = cas_name(&machine, &survey_id);
-    let stated = std::fs::symlink_metadata(&object).unwrap();
     assert!(
-        stated.file_type().is_file(),
-        "the bytes are at the CAS name"
+        std::fs::symlink_metadata(&object).is_err(),
+        "nothing is at the CAS name before the entry names it"
     );
-    assert_eq!(entry["bytes"], stated.len().to_string());
+    let staged = std::fs::symlink_metadata(staged_name(&machine, &survey_id)).unwrap();
+    assert!(staged.file_type().is_file(), "the bytes are staged");
+    assert_eq!(entry["bytes"], staged.len().to_string());
     assert!(std::fs::read(path).unwrap().len() <= 4096);
     // The same bytes again: the publication finishes and the entry goes.
     let (stdout, _) = machine.expect(&repo, &[], &["project", "refresh"], 0);
@@ -3823,10 +3848,47 @@ fn the_writers_pending_entry_is_what_collection_reads_at_either_crash_point() {
     let recorded = recorded_events(&machine);
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].1["survey_id"], survey_id.as_str());
+    assert!(object.is_file(), "the record took its CAS name");
     assert!(
         pending_entries(&machine).is_empty(),
         "a finished publication"
     );
+    assert!(!staged_name(&machine, &survey_id).exists());
+
+    // Crash point between: the staged object's identity recorded, not yet at its CAS name. The
+    // next refresh of the same bytes finishes from that object, never staging another.
+    let between = (CUTOFF + 30).to_string();
+    let at_between = [("AF_TEST_SURVEY_CUTOFF_UNIX_S", between.as_str())];
+    machine.expect(
+        &repo,
+        &[
+            ("AF_TEST_SURVEY_STOP_BEFORE_LINK", "1"),
+            ("AF_TEST_SURVEY_CUTOFF_UNIX_S", between.as_str()),
+        ],
+        &["project", "refresh", "--force"],
+        86,
+    );
+    let entries = pending_entries(&machine);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let (_, entry) = entries[0].clone();
+    schemas::valid(&validator, &entry);
+    let linked_later = entry["survey_id"].as_str().unwrap().to_string();
+    let staged = staged_name(&machine, &linked_later);
+    let stated = std::fs::symlink_metadata(&staged).unwrap();
+    assert_eq!(
+        entry["object"],
+        object_identity(&stated),
+        "the staged object"
+    );
+    assert!(!cas_name(&machine, &linked_later).exists());
+    machine.expect(&repo, &at_between, &["project", "refresh", "--force"], 0);
+    let finished = std::fs::symlink_metadata(cas_name(&machine, &linked_later)).unwrap();
+    assert_eq!(
+        object_identity(&finished),
+        object_identity(&stated),
+        "the very inode the entry named took the CAS name"
+    );
+    assert!(pending_entries(&machine).is_empty() && !staged.exists());
 
     // Crash point two: the identity recorded, no event. A later cutoff gives other bytes.
     let later = (CUTOFF + 60).to_string();
@@ -3849,14 +3911,11 @@ fn the_writers_pending_entry_is_what_collection_reads_at_either_crash_point() {
     let stated = std::fs::symlink_metadata(&object).unwrap();
     assert_eq!(
         entry["object"],
-        serde_json::json!({
-            "device": stated.dev().to_string(),
-            "inode": stated.ino().to_string(),
-        }),
+        object_identity(&stated),
         "the identity is the file's at the Survey's CAS name"
     );
     assert_eq!(entry["bytes"], stated.len().to_string());
-    assert_eq!(machine.surveys(), 1, "no event names it");
+    assert_eq!(machine.surveys(), 2, "no event names it");
 
     // The reader: the object is a Survey `pending`, and recovery reclaims it and then the
     // entry, preview and apply alike; nothing else moves.
@@ -3892,7 +3951,7 @@ fn the_writers_pending_entry_is_what_collection_reads_at_either_crash_point() {
         cas_name(&machine, &survey_id).is_file(),
         "the recorded Survey stays"
     );
-    assert_eq!(machine.surveys(), 1);
+    assert_eq!(machine.surveys(), 2);
     assert!(
         tombstones(&machine).is_empty(),
         "recovery appends no tombstone"
@@ -4180,7 +4239,7 @@ fn failure_reasons(machine: &Machine) -> Vec<String> {
         .collect()
 }
 
-/// The Project Store's lock honours the Survey deadline (ADR-0152 clause 2): while another
+/// The Project Store's lock honours the Survey deadline (ADR-0158 clause 2): while another
 /// process holds `project.lock`, a refresh tries it until its `max_wall_ms` deadline and then
 /// stops with the bounded failure `store_locked`, recorded in the log while the holder still
 /// holds the lock, and never hangs. Released, the next refresh records a Survey.

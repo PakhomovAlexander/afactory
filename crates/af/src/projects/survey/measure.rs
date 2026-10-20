@@ -1,4 +1,4 @@
-//! The seven sections of a Survey, measured from the head through git plumbing (ADR-0152).
+//! The seven sections of a Survey, measured from the head through git plumbing (ADR-0158).
 //!
 //! Every git process runs through `projects/git.rs` under the lesser of its own limit and what
 //! remains of the Survey's one `max_wall_ms` deadline, its process group ended when that passes:
@@ -131,7 +131,7 @@ fn unreadable(detail: String) -> Failure {
 }
 
 /// How many items each section's Clock charged, by section: what a Survey's stopping point
-/// names (ADR-0152 clause 1).
+/// names (ADR-0158 clause 1).
 #[derive(Debug, Default)]
 struct Charged(Mutex<BTreeMap<&'static str, Arc<AtomicU64>>>);
 

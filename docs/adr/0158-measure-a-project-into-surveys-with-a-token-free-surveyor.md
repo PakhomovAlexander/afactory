@@ -1,9 +1,13 @@
-# ADR-0152: Measure a Project into Surveys with a token-free Surveyor
+# ADR-0158: Measure a Project into Surveys with a token-free Surveyor
 
 **Status:** accepted (2026-10-20); clauses 1, 2, 10, 12 and 13 amended (2026-10-20) by the PJ2
-close-out, which adds clause 15. Package PJ2 of the
+close-out, which adds clause 15, and clauses 2, 13 and 15 by the second close-out (2026-10-20:
+the writer stages a record before its CAS name, every recorded identity carries its birth time,
+collection records the object it selects before its tombstone, the prune running total
+reconciles a claim that grew and says `unknown` when it cannot, and every byte count is of
+regular files alone). Package PJ2 of the
 [Project design note](../design/project.md). Builds on
-[ADR-0151](0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+[ADR-0157](0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
 (the Project, its Project Store and every git process of `projects/git.rs`),
 [ADR-0132](0132-measure-and-compare-source-candidates-in-the-kernel.md) (the kernel measures; a
 model never writes a number), [ADR-0001](0001-tree-diff-behind-a-typed-method.md) (typed git
@@ -17,7 +21,7 @@ every changed shape).
 
 ## Context
 
-A Project (ADR-0151) has an identity and Workspaces, and nothing else: af still cannot say how
+A Project (ADR-0157) has an identity and Workspaces, and nothing else: af still cannot say how
 big the repository is, how fast it changes, who works on it or what has been decided. Every
 Worker rediscovers it with tool calls in each Attempt. The answer has to be a kernel record:
 counted the same way every time, bounded, and free of anything a later Brief must not carry, an
@@ -89,29 +93,54 @@ email first of all.
    hex>][, <path>] (<reason>)`. The record holds no host path, Provider ID or author email.
 2. **Storage.** The record goes into the Project Store's CAS; its ID is the CAS digest of its
    canonical bytes. It is published under the Project Store's lock, and a crash between the CAS
-   and the log never leaves a record no inventory sees. The writer publishes in this order, all
-   of it holding the Project Store's lock, and the collection companion's reader relies on it:
-   (a) a machine-local pending-publication entry, `af/survey-pending@1`
-   ([schema](../../schemas/project-survey-pending-v1.json)) at `pending-surveys/<64 hex>.json`
+   and the log never leaves a record no inventory sees, nor anything at a Survey's CAS name no
+   entry describes. The writer publishes in this order, all of it holding the Project Store's
+   lock, and the collection companion's reader relies on it: (a) a machine-local
+   pending-publication entry, `af/survey-pending@2`
+   ([schema](../../schemas/project-survey-pending-v2.json)) at `pending-surveys/<64 hex>.json`
    beside `project.lock`, {`schema`, `survey_id`, `bytes`}, the Survey ID and the length of its
    bytes, written through a synced temporary file renamed into place and its directory synced
-   (the Project Store's too when the directory is new), before any byte of the record enters
-   the CAS; (b) the record linked at its CAS name and made durable there (the CAS flushed), and
-   then `object` {`device`, `inode`}, the identity of the file at the Survey's CAS name, stated
-   without following a link and refused unless it is a regular file of exactly `bytes`,
-   recorded and synced the same way, before the event is appended; (c) `SurveyRecorded@1`, and
-   the entry removed only once that event committed, never before. An entry is at most 4 KiB
-   (it holds a digest and three decimal numbers) and `bytes` at most `MAX_SURVEY_BYTES`, the
-   record ceiling; the writer refuses to write one beyond either. The entry is never in the
-   repository or the log. A crash after the bytes leaves it, without `object` before (b)
-   recorded it and with it after; (d) a refresh that finds the entry of the Survey it is
-   publishing (the same ID, so the same bytes) finishes that publication, (b) and (c) again
-   over the bytes already at the name, and clears it; an entry of another Survey is left. The
-   collection companion reads the entries for inventory and recovery (clause 13); this writer
-   only writes, updates and clears them. A debug build stops at the two crash points, as a
-   crash would, exiting 86: `AF_TEST_SURVEY_STOP_BEFORE_IDENTITY=1` after the bytes are linked
-   and before `object` is recorded, and `AF_TEST_SURVEY_STOP_BEFORE_EVENT=1` after `object` is
-   recorded and before the event; `survey/pending.rs` states the order and both stops. Clause 15
+   (the Project Store's too when the directory is new), before any byte of the record is written
+   anywhere; (b) the record's bytes staged in the writer's own `pending-surveys/<64
+   hex>.object`, created exclusively, synced and the directory synced; then `object`
+   {`device`, `inode`, `born_unix_ns`}, the identity of that staged file stated without
+   following a link and refused unless it is a regular file of exactly `bytes`, recorded and
+   synced the same way; and only then that inode renamed to the Survey's CAS name, never over a
+   name that is taken, and the prefix directory (`objects` too when the prefix directory is new)
+   and `pending-surveys` synced, before the event is appended; (c) `SurveyRecorded@1`, whose
+   append flushes the object at its CAS name, and the entry removed only once that event
+   committed, never before. An object's identity is its device, its inode and its birth time in
+   nanoseconds since the Unix epoch, read with the inode it belongs to (`statx` on Linux,
+   `st_birthtime` on macOS): a file system may hand a freed inode number to the next file it
+   creates (ext4 does, at the same path, within the same second), so device and inode name a
+   slot, and the birth time, which `rename(2)` keeps and a file created later does not share,
+   names the file. It is never replaced by the change time (a rename changes it) or the
+   modification time (a replacement can set it): a file system that reports no birth time leaves
+   the identity incomplete, the writer refuses the publication, nothing taking its CAS name, and
+   collection refuses the Survey (clause 13), each with one sentence naming the file system,
+   `<path> is on a file system (<type>) that reports no birth time, so af cannot tell it from a
+   file created later at the same inode and leaves it`. Birth times come from the file system's
+   clock, so two files born within one tick of it at one reused inode stay indistinguishable: a
+   window only a process of the same user can use, inside the trust boundary of clause 13. An
+   entry is at most 4 KiB (it holds a digest and four decimal numbers) and `bytes` at most
+   `MAX_SURVEY_BYTES`, the record ceiling; the writer refuses to write one beyond either. The
+   entry is never in the repository or the log. Every state between the steps has its recovery,
+   collection's (clause 13): bytes staged before the entry named them are the writer's own
+   leftover, reclaimed; an entry naming the staged object while the CAS name is empty has that
+   staged object reclaimed; an entry naming the object at the CAS name has that object
+   reclaimed; and the entry is cleared only once no file with its inode is left. (d) A refresh
+   that finds the entry of the Survey it is publishing (the same ID, so the same bytes)
+   finishes that publication and clears it: an entry without `object` has whatever is staged
+   replaced, the leftover of an attempt that stopped before its identity; one naming the staged
+   object has it checked to hold the record's bytes and renamed to its CAS name; one naming the
+   object at the CAS name goes on to the event. An entry of another Survey is left. The
+   collection companion reads the entries and the staged objects for inventory and recovery
+   (clause 13); this writer only writes, updates and clears them. A debug build stops at the
+   three crash points, as a crash would, exiting 86: `AF_TEST_SURVEY_STOP_BEFORE_IDENTITY=1`
+   after the bytes are staged and before `object` is recorded, nothing at the CAS name;
+   `AF_TEST_SURVEY_STOP_BEFORE_LINK=1` after `object` is recorded and before the staged object
+   takes its CAS name; and `AF_TEST_SURVEY_STOP_BEFORE_EVENT=1` after the CAS name and before
+   the event; `survey/pending.rs` states the order and the three stops. Clause 15
    bounds the writer's wait for the lock, keeps an earlier attempt's `object` through (d) and
    refuses a `pending-surveys` that is no real directory of the Store. `SurveyRecorded@1` {`survey_id`, `head`, `cutoff_unix_s`, `completeness`,
    `policy_digest`, `surveyor_version`, `refs_digest`, `previous_survey_id` when any,
@@ -461,7 +490,7 @@ email first of all.
     discovery set reads under the same ceilings. This package's one CAS read, a Survey record read back by replay or reuse,
     is bounded before it is decoded: `get_bounded` at `MAX_SURVEY_BYTES` by its stated length,
     and only then parsed. PJ4 also adds collection: until
-    then every Survey stays in the Project Store, which ADR-0151 already never evicts, and
+    then every Survey stays in the Project Store, which ADR-0157 already never evicts, and
     `[storage] keep_surveys` and `SurveyCollected@1` do not exist.
 13. **Collection and the budget.** This clause replaces the collection sentence of clause 12:
     PJ2 ships Survey collection with the synchronous Surveyor, `SurveyCollected@1`, `[storage]
@@ -470,9 +499,10 @@ email first of all.
     Every Survey is an entry of kind `survey` of the machine budget (ADR-0144 clause 4): its
     record's allocated CAS bytes, taken out of the Project Store entry's, last used at its
     cutoff, its `path` the CAS object. `af storage` lists it, and its documents become
-    `af/storage@3` ([schema](../../schemas/storage-v3.json)) and `af/storage-prune@2`
-    ([schema](../../schemas/storage-prune-v2.json)), each gaining the kind `survey`, and their
-    earlier versions are refused; a sweep's `af/TaskStorageSweep@1` counts a Survey's removal in
+    `af/storage@3` ([schema](../../schemas/storage-v3.json)) and `af/storage-prune@3`
+    ([schema](../../schemas/storage-prune-v3.json)), each gaining the kind `survey` (`@2` of the
+    prune document did; `@3` adds its `unknown` total, below), and their earlier versions are
+    refused; a sweep's `af/TaskStorageSweep@1` counts a Survey's removal in
     `omitted_removals` without listing it, so its shape and its kinds are unchanged and it keeps
     its version. Surveys are collected
     only in the Storage Budget's own passes, under ADR-0144's protections, and `af project
@@ -531,7 +561,15 @@ email first of all.
     (`review_sandbox::REMOVAL_MAX_DEPTH`), as the walk that measured its bytes found it, is
     refused by the inventory, listed in use (`left: deeper than the removal walk`) and left by
     the preview and the applied sweep alike as `too_deep` with its bytes, never planned. Every
-    object is recorded once with its identity (device and inode) and its bytes:
+    byte this clause counts, in `af storage`, the plan and the applied sweep, is the allocated
+    bytes (`st_blocks * 512`) of regular files: a directory and a link count nothing, so a total
+    is the same on a file system that charges a directory its blocks (ext4, 4096 bytes each) and
+    on one that does not (APFS), an entry's `bytes` are those of the regular files it holds, and
+    a removal's `bytes` those of the regular files it deleted (an empty container of a dead pass
+    frees none). `review_sandbox::storage::allocated_bytes` and the removal walk's measurements
+    count so, every document keeps its fields, and ADR-0144's entries are measured the same way.
+    Every Survey object is recorded once with its identity (device, inode and birth time, clause
+    2) and its bytes:
     the plan's judgement of a Survey, the budget step and the applied job each compare the
     identity they open with the inventory's and refuse the entry, `refused (replaced since
     inventory)`, on a mismatch, never adopting an inode the inventory did not measure, so the
@@ -552,12 +590,22 @@ email first of all.
     unlinked, and the `PartlyRemoved` failure carries `freed`, those bytes less what the claim
     still holds, stated the same way after the walk stopped (nothing, when either cannot be
     measured). A claim that grew since the inventory therefore never reports zero for files the
-    walk did unlink, and the running total moves by exactly `freed`. A failure at the final
-    `rmdir`, once the claim's children were unlinked (a child appeared meanwhile, the claim's
-    name holds another directory, any error), is such a partial removal too, with the bytes freed
-    so far, never a failure that freed nothing. So the document's totals are what the directory
-    holds, but for the records a pass itself writes (a tombstone, `settled.json`), which the next
-    inventory measures.
+    walk did unlink. A failure at the final `rmdir`, once the claim's children were unlinked (a
+    child appeared meanwhile, the claim's name holds another directory, any error), is such a
+    partial removal too, with the bytes freed so far, never a failure that freed nothing. The
+    running total reconciles what the inventory could not know: a removal that measured what its
+    entry held when it started puts those bytes in place of the inventory's in the model (once,
+    in the entry that counts them, a claim `counted_in` its Store included) before what left the
+    disk is subtracted, so a whole removal takes exactly the inventory's bytes out of the total,
+    and one that stopped part way leaves exactly what it measured left: a claim inventoried at 10
+    MiB that grew to 20 MiB and freed 8 MiB before it stopped leaves the 12 MiB it retains in the
+    total, and its entry reports the 8 MiB. When what a removal that stopped part way left cannot
+    be measured, the applied document's total after it, and after the sweep, is `unknown`, and
+    `stop` is `unknown`, never `fits`: `af/storage-prune@3` spells a total as its bytes or
+    `unknown`, and `af/TaskStorageSweep@1`, whose totals are numbers, is not recorded for such a
+    sweep, whose warning says so. So the document's totals are what the directory holds, but for
+    the records a pass itself writes (a tombstone, `settled.json`), which the next inventory
+    measures.
     The tombstone binds the
     event: every field but `survey_id` and `collected_unix_ms` is copied from the record after
     the event was verified against it on every field clause 2 compares, never from the event,
@@ -570,20 +618,24 @@ email first of all.
     use are read from the verified fields (the record's own cutoff and completeness when the
     record disproves its event, the event's only when no record vouches for anything, as an
     `unreadable` tombstone takes them), so a forged cutoff is never a Survey's last use. The pass
-    verifies again under the lock before its tombstone. A Survey whose event disagrees with its record is refused, preview and pass
+    verifies again under the lock before its tombstone, and records the object it selects, the
+    record at the Survey's CAS name by its identity and length, in `settled.json` (below),
+    durably, before it appends the tombstone; a selection that cannot be made durable appends no
+    tombstone. A Survey whose event disagrees with its record is refused, preview and pass
     alike, and reported `refused: its SurveyRecorded@1 names a <field> its record does not
     record, so it is kept`: no tombstone is appended and its record stays.
     A record is reached, read and deleted only through directory descriptors, ADR-0144's removal
     boundary: the Project Store from `/`, then `cas`, `objects` and the digest-prefix directory,
     each opened `O_NOFOLLOW | O_DIRECTORY`, and the record stated without following it (its
-    device and inode, the identity read before the tombstone) and opened `O_NOFOLLOW` relative
+    device, inode and birth time, the identity selected before the tombstone) and opened
+    `O_NOFOLLOW` relative
     to its prefix directory. The deletion names the inode it checks: each job creates its own
     container `cas/removing/<pass-id>/` exclusively (`mkdirat` with mode 0700 under 128 fresh
     random bits, failing when the name exists) on the Store's device, renames the record into
     it with `renameat`, never over a taken name, and immediately before `unlinkat` states it
     again with `fstatat`, without following it, relative to the container's own descriptor; only
-    the device and inode stated before the tombstone is unlinked, and the bytes reported are the
-    allocated bytes of that inode. This is the Store's trust boundary: inside a container this
+    the identity selected before the tombstone is unlinked, a file born later at a reused inode
+    being another file, and the bytes reported are the allocated bytes of that inode. This is the Store's trust boundary: inside a container this
     pass created, only a process of the same user can replace a file between that check and the
     unlink, the boundary delivery's rollback already accepts (ADR-0031), and a replacement the
     check observes is refused and reported: the file is moved back to its name, or, when the
@@ -618,22 +670,32 @@ email first of all.
     chain, so the chain's own sequence is only ever the Surveyor's. Every sweep's plan first
     finishes what an interruption left, read without the lock, under each Store's lock when it
     runs: `cas/removing` is walked with raw (`OsStr`) names end to end, `fstatat`, rename and
-    unlink taking the raw name. A regular file in a container of a dead pass (every pass holds
-    the Store's lock, so a container found under it is a dead one's) named by a tombstoned
-    Survey is that Survey's record, moved: its bytes are the Survey's, and it is settled by the
-    same sequence, renamed into the new pass's own container, checked there and unlinked; the
-    dead container, when every file in it is such a moved record, is planned as a `recovery`
-    entry of its own after them with its allocated bytes, and its `rmdir` runs only as that
-    planned entry, so preview and apply list the same containers. A file at that Survey's CAS name is then a foreign
+    unlink taking the raw name. Recovery follows the identity the collection selected before its
+    tombstone, never a hash. A regular file in a container of a dead pass (every pass holds the
+    Store's lock, so a container found under it is a dead one's) named by a tombstoned Survey is
+    that Survey's record, moved, only while it is the object the collection selected (its
+    device, inode, birth time and length): it is settled by the same sequence, renamed into the
+    new pass's own container, checked there and unlinked; the dead container, when every file
+    in it is such a moved record, is planned as a `recovery` entry of its own after them, and its
+    `rmdir` runs only as that planned entry, so preview and apply list the same containers. Any
+    other file there is `foreign`. A file at that Survey's CAS name is then a foreign
     object: it is left in place and listed as `foreign` with its bytes, counted in the Store's
     total and never as the Survey's, and never deleted by any path. Without a moved record, the
-    file at a tombstoned Survey's name is its record, deleted as above, only when its bytes are
-    the record's (they hash to its ID) and the Survey is not settled; any other is `foreign` in
-    the same way. The settlement is persisted machine-locally, in a `settled` record beside the
-    lock (chosen over a field of a follow-up event, so the log keeps only the Surveyor's and the
-    tombstones' events): `settled.json` of the Project Store,
-    `af/ProjectSurveysSettled@1` ([schema](../../schemas/project-surveys-settled-v1.json)), the
-    sorted Survey IDs whose own records have left the CAS. A pass adds a Survey under the Store's
+    file at a tombstoned Survey's name is its record, deleted as above, only when it is the
+    object the collection selected, its bytes are the record's (they hash to its ID) and the
+    Survey is not settled; any other is `foreign` in the same way, a byte-identical copy at
+    another inode, or born later at a reused one, included, and so is any file at the name of a
+    Survey whose collection selected nothing (its record was gone from the CAS when it was
+    collected). The selection and the settlement are persisted machine-locally, in one record
+    beside the lock (chosen over a field of a follow-up event, so the log keeps only the
+    Surveyor's and the tombstones' events): `settled.json` of the Project Store,
+    `af/ProjectSurveysSettled@2` ([schema](../../schemas/project-surveys-settled-v2.json)),
+    `selected`, per collected Survey the object its collection selected (`object` {`device`,
+    `inode`, `born_unix_ns`} and its length `bytes`), recorded under the lock before the
+    tombstone is appended and kept, and `survey_ids`, the sorted Survey IDs whose own records
+    have left the CAS. `af/ProjectSurveysSettled@1`, which held no selection, is refused as a
+    superseded version, the one sentence naming its recovery: deleting it leaves no selection,
+    so nothing at a collected Survey's name is deleted. A pass adds a Survey under the Store's
     lock once the inode off its CAS name (renamed into its own container, or the moved record in
     a dead pass's) is checked to be the record and before it is unlinked, and once a tombstoned
     record is found gone from the CAS; the file is rewritten whole through a fresh temporary file
@@ -646,9 +708,18 @@ email first of all.
     applied `recovery` that finds the Survey settled since its plan deletes nothing. A
     `settled.json` that cannot be read settles every tombstoned Survey for that sweep, so nothing
     at a tombstoned name is deleted, and is reported.
-    Collection reads the writer's pending-publication entries, `af/survey-pending@1` at
-    `pending-surveys/<64 hex>.json` beside the lock, whose shape and writing clause 2 states,
-    in the Store's one read: an entry whose Survey a `SurveyRecorded@1` names is cleared as a
+    Collection reads the writer's pending-publication entries, `af/survey-pending@2` at
+    `pending-surveys/<64 hex>.json` beside the lock, whose shape and writing clause 2 states
+    (`af/survey-pending@1` is refused as a superseded version, left with what it names), and the
+    objects the writer staged there, `pending-surveys/<64 hex>.object`, in the Store's one read.
+    A staged object is the writer's own, and no publication is in progress outside the lock a
+    sweep's job takes, so each is reclaimed as a planned `recovery` entry, its bytes the
+    Project Store's, before any entry is judged, preview and apply alike: the bytes a crash
+    staged before its entry named them, and the staged object an entry names whose CAS name never
+    took it; the job states it again under the lock, relative to `pending-surveys` without
+    following a link, and unlinks it only while it is that regular file of that identity and
+    length (`skipped: object changed` otherwise), and one whose file system reports no birth
+    time is refused and left. An entry whose Survey a `SurveyRecorded@1` names is cleared as a
     planned `recovery` entry and nothing is deleted; for any other, only the object at the
     Survey's CAS name with the entry's device, inode and length (`bytes`) is counted, a `survey`
     entry of `af storage` with `state` `pending`, in use, last used when the entry was written,
@@ -657,8 +728,8 @@ email first of all.
     event did not commit, that the entry still describes that device, inode and length and that
     the name still holds that inode at that length: an object grown, truncated or replaced since
     the inventory fails as `skipped: object changed` and nothing is deleted. The entry is
-    cleared only once the object it describes is gone, from the CAS name and from every pass's
-    container: a reclamation interrupted after its rename into its container and before its
+    cleared only once the object it describes is gone, from the CAS name, its staged name and
+    every pass's container: a reclamation interrupted after its rename into its container and before its
     unlink leaves the entry, and the next inventory, which matches the entries against what the
     pass containers hold as well as against CAS names, finds there a regular file named by the
     entry's Survey with its device, inode and length, which is that entry's object: planned as
@@ -751,21 +822,22 @@ email first of all.
     and the other readers still wait for the lock.
     *The pending entry.* A retry never discards a pending object's identity: (d) of clause 2 keeps
     an entry of the same Survey that already names an `object` unrewritten and goes on only while
-    the file at the Survey's CAS name is a regular file of that device, inode and `bytes`, and
-    otherwise refuses the publication, the entry left for collection to reclaim the object it
-    names; the entry is rewritten with an identity only after the bytes are linked, made durable
-    and stated to be that same file. An entry that cannot be read, or that names another Survey,
-    is never replaced by the writer either. The writer opens `pending-surveys` as collection's
+    its staged name or the Survey's CAS name holds a regular file of that device, inode, birth
+    time and `bytes`, and otherwise refuses the publication, the entry left for collection to
+    reclaim the object it names; the entry is rewritten with an identity only after the bytes are
+    staged, made durable and stated to be that same file. An entry that cannot be read, or that
+    names another Survey, is never replaced by the writer either. The writer opens `pending-surveys` as collection's
     reader does: beneath the Project Store, without following a link
     (`review_sandbox::open_beneath`), and only a directory on the Store's device owned by the
     Store's owner; anything else (a symbolic link, a file, another device or owner) refuses the
     refresh naming the path, `<store>/pending-surveys is refused: …`, and every entry is written,
     renamed and removed relative to that directory's descriptor, so nothing is ever written through
-    a link. A debug build's `AF_TEST_SURVEY_FAIL_PUT=1` fails the CAS write after the entry, as a
-    CAS that refuses the bytes would.
+    a link, and so is every staged object. A debug build's `AF_TEST_SURVEY_FAIL_PUT=1` fails the
+    record's write after the entry, as a file system that refuses the bytes would.
     *Clearing an entry.* Collection clears an entry whose event did not commit only once no file
-    with the inode it describes remains, at its Survey's CAS name or in any pass's container under
-    `cas/removing`; the inode decides, never the length. While a file with that inode is there at
+    with the inode it describes (its device, inode and birth time) remains, at its Survey's CAS
+    name, at its staged name or in any pass's container under `cas/removing`; the inode decides,
+    never the length. While a file with that inode is there at
     another length (truncated or grown in place, or moved so), the entry stays, the applied
     document saying `failed: … kept: object changed, still present: …`, and the object is listed
     `foreign`, never reclaimed; once it is gone, the next pass clears the entry.
@@ -869,8 +941,10 @@ is 4,572 bytes plus the length of `git --version` less 11 (4,595 bytes with
   entry with the CAS object's identity and length when a refresh stops after the bytes and
   before the event, finishes that publication at the next refresh of the same bytes and
   clears it, leaves none after a completed refresh, and leaves another Survey's entry; drives
-  writer and reader in one fixture at both crash points, an entry without `object` after
-  `AF_TEST_SURVEY_STOP_BEFORE_IDENTITY` that the next refresh of the same bytes finishes, and
+  writer and reader in one fixture at every crash point, an entry without `object` and nothing
+  at the CAS name after `AF_TEST_SURVEY_STOP_BEFORE_IDENTITY` that the next refresh of the same
+  bytes finishes, an entry naming the staged object after `AF_TEST_SURVEY_STOP_BEFORE_LINK`
+  whose very inode the next refresh renames to its CAS name, and
   one naming the file at the Survey's CAS name after `AF_TEST_SURVEY_STOP_BEFORE_EVENT` that
   `af storage` counts as a Survey `pending` and `af storage prune --apply` reclaims, object
   then entry, preview and apply alike; records `SurveyFailed@1` naming the head for a deadline
@@ -967,3 +1041,31 @@ is 4,572 bytes plus the length of `git --version` less 11 (4,595 bytes with
   after the commits counted, in both sections), both events, the pending entry and
   the history document, and `crates/af/tests/it/cli_surface.rs` the
   help.
+  The second close-out adds, end to end:
+  `a_survey_stopped_before_its_cas_name_leaves_staged_bytes_a_later_prune_reclaims` (stopped
+  before the identity, and after it and before the CAS name: nothing at the CAS name, and a
+  later `af storage prune --apply`, the Survey never recreated, reclaims the staged bytes and
+  then the entry, preview and apply alike),
+  `a_byte_identical_replacement_after_a_tombstone_survives_two_sweeps_as_foreign` (stopped
+  after the tombstone, the record replaced by a byte-identical copy born later: two recovery
+  sweeps keep it and list it `foreign`, and `settled.json` carries the selected record's
+  identity), `a_record_replaced_before_its_rename_is_refused_and_its_copy_stays_foreign` and
+  `a_file_system_without_birth_time_refuses_collection_and_deletes_nothing` (the debug build's
+  `AF_TEST_NO_BIRTH_TIME`; the writer refuses to publish there too); and beside the code,
+  `review_sandbox`'s `a_born_identity_survives_a_rename_and_refuses_a_later_file_at_a_reused_inode`
+  (the same device and inode with a later birth time is another file),
+  `a_file_system_without_birth_time_leaves_a_born_identity_incomplete` and
+  `only_regular_files_are_counted`, the writer's
+  `a_staged_object_takes_its_cas_name_only_once_the_entry_names_it` and
+  `a_staged_object_never_replaces_a_taken_cas_name`, collection's
+  `leftovers_are_judged_by_their_raw_names` (a moved file that is not the selected object, or
+  the same inode born later, is `foreign`), the plan's
+  `a_grown_claims_removal_reconciles_the_total_before_what_left_is_taken_out` and
+  `a_partial_deletion_whose_remainder_cannot_be_measured_leaves_the_total_unknown`, the sweep's
+  `a_grown_claims_partial_deletion_reports_the_bytes_it_retains` (inventoried at 10 MiB, grown
+  to 20 MiB, 8 MiB freed: 12 MiB retained in the total) and
+  `a_partial_deletion_whose_remainder_cannot_be_walked_reports_the_total_unknown`, and the
+  parity tests of `af/survey-pending@2`, `af/ProjectSurveysSettled@2` and their superseded
+  `@1`. Every test that compares allocated bytes counts regular files alone, and every test
+  that means a replacement waits until its birth time differs, so none depends on APFS's
+  unique inode numbers or its directories that cost no blocks.

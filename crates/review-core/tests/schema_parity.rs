@@ -35,7 +35,7 @@ const SCHEMAS: [&str; 182] = [
     "project-survey-v2.json",
     "project-survey-recorded-v1.json",
     "project-survey-failed-v1.json",
-    "project-survey-pending-v1.json",
+    "project-survey-pending-v2.json",
     "project-history-v2.json",
     "project-workspace-registered-v1.json",
     "project-workspace-removed-v1.json",
@@ -212,7 +212,7 @@ const SCHEMAS: [&str; 182] = [
     "source-snapshot-v1.json",
     "subject-v1.json",
     "project-survey-collected-v1.json",
-    "project-surveys-settled-v1.json",
+    "project-surveys-settled-v2.json",
 ];
 
 fn workspace_root() -> PathBuf {

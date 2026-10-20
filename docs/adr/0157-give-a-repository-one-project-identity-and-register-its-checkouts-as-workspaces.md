@@ -1,9 +1,11 @@
-# ADR-0151: Give a repository one Project identity and register its checkouts as Workspaces
+# ADR-0157: Give a repository one Project identity and register its checkouts as Workspaces
 
 **Status:** accepted (2026-10-19); clauses 4, 5 and 8 amended (2026-10-20) by PJ1b, clause 5
 again (2026-10-20) by its second round, clauses 3 and 5 by its third, clause 5 by its
-fifth, clauses 3 and 5 by its sixth, clause 5 by its seventh, eighth and ninth, and clause 5
-by the PJ2 close-out (2026-10-20: every `*-moved` step checks its original path). Package PJ1
+fifth, clauses 3 and 5 by its sixth, clause 5 by its seventh, eighth and ninth, clause 5
+by the PJ2 close-out (2026-10-20: every `*-moved` step checks its original path), and clause 5
+by the second close-out (2026-10-20: the entry check follows the recorded step, and every
+identity carries its birth time, the removal record `version = 2`). Package PJ1
 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery makes only a local
@@ -114,11 +116,13 @@ directories.
    succeeds once its cause is gone. Every deletion of an undo rests on ownership evidence
    (ADR-0031), by four rules. First, the destination directory is recorded as made only when
    this command's own `create_dir` succeeded on a path that did not exist, together with its
-   identity (device and inode), and `git worktree add` then adds into that empty directory; a
-   path that appears between the checks and the add is a refusal with nothing of it deleted. The
+   identity (device, inode and birth time), and `git worktree add` then adds into that empty
+   directory; a path that appears between the checks and the add is a refusal with nothing of it
+   deleted. The
    missing directories above it are created one at a time from the deepest existing ancestor,
    and only those this command's own `create_dir` made are recorded, each with its identity
-   (device and inode) at creation, never one another process made meanwhile; the undo removes
+   (device, inode and birth time, as every identity below) at creation, never one another
+   process made meanwhile; the undo removes
    only those, deepest first, each only while it is still that directory, its identity
    unchanged, and empty. A directory at the same path that is not that one, removed and
    recreated by anyone, is left and reported as
@@ -196,15 +200,27 @@ directories.
 
    Names prove nothing; a record does. Before `--delete-worktree` moves or deletes anything it
    writes the Workspace's removal record in the Project Store, beside `workspaces.toml` and never
-   in a repository: `removals/<workspace id>.toml`, `version = 1`, machine-written and replaced
+   in a repository: `removals/<workspace id>.toml`, `version = 2`, machine-written and replaced
    whole through a temporary file and a rename under the Project Store's lock. It holds the
-   registered checkout path; the identity (device and inode) of the checkout and of its
-   administrative entry as inspected; for each, the container this removal named and that
-   container's identity once made; and the step each reached (`inspected`, `container`,
-   `contained`, `deleting`, `deleted`, `done`). It is rewritten before each next step and deleted
-   when the removal completes, before the Workspace is unregistered, so the Workspace is
-   unregistered exactly once. `workspaces.toml` holds no removal state and stays version 1, as
-   no release has written either file (ADR-0145).
+   registered checkout path; the identity of the checkout and of its administrative entry as
+   inspected; for each, the container this removal named and that container's identity once
+   made; and the step each reached (`inspected`, `container`, `contained`, `deleting`, `deleted`,
+   `done`). It is rewritten before each next step and deleted when the removal completes, before
+   the Workspace is unregistered, so the Workspace is unregistered exactly once.
+   `workspaces.toml` holds no removal state and stays version 1 (ADR-0145).
+
+   An identity is a directory's device, its inode and its birth time in nanoseconds since the
+   Unix epoch, spelled `<device>:<inode>:<birth time>`: a file system may hand a freed inode
+   number to the next directory it creates (ext4 does, at once), so device and inode name a slot,
+   and the birth time, which `rename(2)` keeps and a later directory does not share, names the
+   directory. It is read with the inode it belongs to (`statx` on Linux, `st_birthtime` on
+   macOS), never replaced by the change time (a rename changes it) or the modification time
+   (anyone may set it). A file system that reports no birth time leaves the identity incomplete,
+   and the removal is refused at inspection with nothing changed:
+   `<path> is on a file system (<type>) that reports no birth time, so af cannot tell it from a file created later at the same inode and leaves it`.
+   Version 2 is the first record whose identities carry the birth time; a version-1 record is
+   refused as a superseded version (ADR-0145), and so is an identity without a birth time. The
+   undo of `workspace new` above compares the same identities.
 
    Each directory is claimed before it is judged or deleted. The removal names a container
    beside it, `<name>.af-removing-<pid>-<16 random hex digits>`, records that name, creates it
@@ -252,18 +268,27 @@ directories.
    `removed the worktree <path>; its administrative entry remains at <container>/<name>: <os error>; fix it and run the command again`
 
    and the Workspace stays registered. A rerun acts through the record and the file system
-   together; the recorded step alone proves nothing. Whatever step the record holds, the first
-   thing the rerun of a directory does, before it claims, judges, deletes or moves anything of
-   it or reads the commit, is one entry check, bound to the entry the record holds and never
-   to whatever sits at its path. The administrative entry is opened without following a link,
-   at its own path for the checkout's rerun and wherever its recorded identity is found for its
-   own, and `fstat` of that descriptor must equal the identity the record holds for it. A
-   directory, link or file of another identity at the entry's path, its recorded identity in
-   neither its path nor its container, is a replacement: it is never read, and the check fails
-   as
+   together; the recorded step alone proves nothing. Before the rerun claims, judges, deletes or
+   moves anything of a live directory, or reads the checkout's commit, it makes one entry check,
+   bound to the entry the record holds and never to whatever sits at its path; which check the
+   directory needs follows its recorded step and where the entry is now. The checkout is live
+   until its deletion is recorded `deleted`; the entry until its own deletion is recorded
+   `deleting`. For the live checkout, and for the live entry, identity, `gitdir` and lock are
+   checked: the administrative entry is opened without following a link, at its own path for
+   the checkout's rerun and wherever its recorded identity is found for its own, and `fstat` of
+   that descriptor must equal the identity the record holds for it. A directory, link or file of
+   another identity at the entry's path, its recorded identity in neither its path nor its
+   container, is a replacement: it is never read, and the check fails as
    `its administrative entry was replaced since inspection: <entry> is not the directory this removal inspected, so it is left alone`.
    Only an identity match goes on to read its `gitdir` and `locked`, through that same
-   descriptor: its `gitdir` must name `<path>/.git` and it may hold no `locked`. A failed
+   descriptor: its `gitdir` must name `<path>/.git` and it may hold no `locked`. An entry whose
+   deletion is recorded (`deleting`) and that is found by its identity in its container resumes
+   its deletion without its `gitdir`, which that deletion may have removed (identity and lock
+   still checked, and a `gitdir` still there must name `<path>/.git`); one found in neither its
+   container nor its path has been deleted, and whatever its path holds now is not it: no check
+   reads that, and the rerun goes on to the recorded locations. An entry recorded `deleted`, and
+   a checkout recorded `deleted`, has nothing left to check: its rerun verifies the recorded
+   container (its identity, and that it is empty) and advances to `done`. A failed
    check stops the removal with that condition and leaves everything as found: the checkout
    at its path, or in its container, reported there by its claim name as
 
@@ -284,14 +309,16 @@ directories.
 
    | Step | What the rerun verifies on the file system before acting, after the entry check |
    |---|---|
-   | every step | The entry check: the administrative entry, opened at its path without following a link (or found by identity in its container, for its own rerun), has the identity the record holds; another identity there is a replacement, never read, and the removal stops with nothing deleted, moved or unregistered. Only then are its `gitdir` and `locked` read. |
+   | a live directory (the checkout before `deleted`, an entry before `deleting`) | The entry check: the administrative entry, opened at its path without following a link (or found by identity in its container, for its own rerun), has the identity the record holds, device, inode and birth time; another identity there is a replacement, never read, and the removal stops with nothing deleted, moved or unregistered. Only then are its `gitdir` and `locked` read. |
+   | an entry at `deleting` | Found by identity in its container, its deletion resumes without its `gitdir`, its lock still refused; found in neither its container nor its path, its deletion finished, and what holds its path now is not it, kept and reported; back at its path by identity, it is live again and checked as above. |
+   | a directory at `deleted` | No entry check: nothing of it is left to read. Its recorded container is verified (its identity, and empty) and removed, and it advances to `done`. |
    | every step | A failed precondition, the entry check's or the step's own, leaves the removal record: never deleted, byte for byte as it was after a failed entry check, so the next run acts on the recorded identities. |
    | `inspected` | The registered path holds the recorded identity: nothing there is a directory gone without this removal, another identity a replacement, kept. The entry's `gitdir` names `<path>/.git` and it holds no `locked`, for the checkout's claim as for the entry's own. Only then is a container named. |
    | `container` | Nothing is proved: the name was recorded before the container was made, so a directory found there is reported and left, and the directory is `inspected` again. |
    | `contained` | The container at the recorded name has the recorded identity, or it is reported and kept. The directory is found in it by identity, or at its path by identity, and then moved in only while the container is empty and its entry passes the reading above. In the container the checkout is judged (its entry's `gitdir` and lock, its index, its files) and an entry read again before either is deleted. With the container gone, the registered path decides as for `deleting`. |
    | `contained`, moved (`checkout-moved`, `entry-moved`) | The directory found in its container by identity, moved there by an earlier run or by this one, leaves its original path free. A directory at that path now is a replacement that stops the removal before anything is judged or deleted: the recorded directory stays in its container, nothing is deleted, the record stays as it is and the Workspace stays registered, reported for an entry as `a new administrative entry appeared at <path> since this removal moved the recorded one; clear it or move the recorded entry back, then run the command again` (prefixed with where the recorded entry is kept), and for the checkout as `the worktree <path> is kept at <container>/<name>, where this removal moved it, and the Workspace stays registered: a new directory appeared at <path> since this removal moved the recorded worktree; clear it or move the recorded worktree back, then run the command again`. Cleared, or with the recorded directory moved back to its path, the same command finishes the removal. |
-   | `deleting` | The directory is found in its container by identity, an entry there holding no `locked` and naming `<path>/.git` by any `gitdir` still there, and its deletion finishes. Otherwise the registered path decides: the recorded identity there is the directory moved back, claimed again from `inspected` and judged again; another identity is a replacement, kept and reported, the Workspace registered; only when neither the container nor the path holds the recorded identity is it `deleted`. |
-   | `deleted` | The directory went by its identity. Its container goes only while it has its recorded identity and is empty; a directory at the checkout's path is kept and reported. |
+   | `deleting` | The directory is found in its container by identity, an entry there holding no `locked` and naming `<path>/.git` by any `gitdir` still there, and its deletion finishes. Otherwise the registered path decides: the recorded identity there is the directory moved back, claimed again from `inspected` and judged again; only when neither the container nor the path holds the recorded identity is it `deleted`, and another identity at the path then is not it, kept and reported, the Workspace unregistered once the rest is done. |
+   | `deleted` | The directory went by its identity. Its container goes only while it has its recorded identity and is empty; a directory at the checkout's path is kept and reported. A crash after the container's removal and before `done` is recorded finds no container, and the directory is `done`. |
    | `done` | Nothing; the next directory. |
 
    Once every directory is `done`, the rerun deletes the record and unregisters. A recorded container that is not the one made is
@@ -389,7 +416,16 @@ directories.
   before the add while removing the one the command created, and leaves and reports a created
   parent a fake `git` removed and recreated; names the entry inside its container
   `<name>.af-removing-<pid>-<hex>` when it cannot be emptied and finishes it on the rerun by
-  its recorded identity, also once its `gitdir` is gone; leaves untouched an empty directory at
+  its recorded identity, also once its `gitdir` is gone; stopped as a crash would right after
+  the entry's unlink (`entry-unlinked`), part way through its deletion once its `gitdir` is gone
+  (`entry-partial`), after the container's removal (`entry-rmdir`, `checkout-rmdir`) and after
+  the checkout's unlink (`checkout-unlinked`), finishes on the rerun and unregisters once, and
+  after `entry-unlinked` or `entry-partial` also while a new entry another add made holds the
+  entry's path, which it keeps
+  (`a_rerun_after_the_entrys_unlink_or_part_of_its_deletion_finishes_beside_a_new_entry`);
+  refuses `--delete-worktree` on a file system without birth times, nothing changed and no
+  record written (`a_file_system_without_birth_time_refuses_a_removal_and_changes_nothing`, the
+  debug build's `AF_TEST_NO_BIRTH_TIME`); leaves untouched an empty directory at
   the predictable `<name>.af-removing-<pid>` of the removing process; refuses, still
   registered, a rerun that meets an unreadable `gitdir`, finishing once it is readable; stopped
   as a crash would (a debug build's `AF_TEST_PROJECT_REMOVAL_STOP`) after every step from the
@@ -421,7 +457,9 @@ directories.
   prune; keep a destination holding an empty directory, a directory inside a submodule's or one
   where the manifest has a file, while the directories above the manifest's paths pass; remove
   an ancestor only while its identity is unchanged; read back a removal record and refuse
-  another version, Workspace, identity form, relative path or step without its container;
+  another version (the superseded version 1 among them), Workspace, identity form (one without
+  its birth time, or with a zero one), relative path or step without its container; refuse a
+  claimed tree whose identity has the same device and inode and a later birth time;
   draw a fresh container name each time; delete a claimed tree through descriptors without
   following a link or changing a permission, refusing another identity; compare a claimed
   worktree with its manifest through descriptors, naming the first re-moded, untracked or

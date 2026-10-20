@@ -1,4 +1,4 @@
-//! The Project and its Workspaces (ADR-0151).
+//! The Project and its Workspaces (ADR-0157).
 //!
 //! A Project is the identity of one repository across every clone, worktree and fork af has
 //! seen: `sha256:` + hex(SHA-256(`af/project-id@1\0` ‖ repository_id)), where `repository_id` is
@@ -12,7 +12,7 @@
 //! `stores.toml`. Registration is lazy, token-free and best effort: a command that registers
 //! never changes its own result because of it, and nothing is ever written inside a checkout.
 //!
-//! The Project Store also holds the Project's Surveys (ADR-0152): the Surveyor in [`survey`]
+//! The Project Store also holds the Project's Surveys (ADR-0158): the Surveyor in [`survey`]
 //! records each in the CAS and `SurveyRecorded@1` or `SurveyFailed@1` in the log.
 //!
 //! `crate::project` is something else: the parser of the `.af/af.toml` declaration.
@@ -279,7 +279,7 @@ pub(crate) enum Wait {
     /// Until the holder releases it: registration and the commands that read the Store.
     Blocking,
     /// Trying without blocking until this instant, and at least once: a refresh, whose one
-    /// Survey deadline a holder never extends (ADR-0152 clause 2).
+    /// Survey deadline a holder never extends (ADR-0158 clause 2).
     Until(std::time::Instant),
 }
 
@@ -583,7 +583,7 @@ pub(crate) fn free_label(log: &Log, preferred: &str, workspace_id: &str) -> Resu
     }
 }
 
-/// The automatic label of a directory name (ADR-0151 clause 4): every byte outside ASCII
+/// The automatic label of a directory name (ADR-0157 clause 4): every byte outside ASCII
 /// letters, digits, `-` and `_` becomes `-`; leading `-` and `_` are stripped; the result is cut
 /// to 119 bytes; an empty result is `checkout`.
 pub(crate) fn label_from_name(name: &OsStr) -> String {

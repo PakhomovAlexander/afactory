@@ -1,4 +1,4 @@
-//! The Project and its Workspaces (ADR-0151): the three Project Store events, each against its
+//! The Project and its Workspaces (ADR-0157): the three Project Store events, each against its
 //! own schema and inside `run-event-v1.json`, and the two `af project` documents.
 //!
 //! What must stay unrepresentable is a host path in a record: a Workspace is named by an opaque
@@ -323,7 +323,7 @@ fn the_project_documents_join_the_log_with_this_machines_paths() {
 }
 
 // ------------------------------------------------------------------------------------------
-// Surveys (ADR-0152): the record, its two events and the history document.
+// Surveys (ADR-0158): the record, its two events and the history document.
 
 const HEAD: &str = "89abcdef0123456789abcdef0123456789abcdef";
 
@@ -1492,13 +1492,14 @@ fn the_history_document_lists_the_chain_newest_first() {
 }
 
 /// A pending-publication entry names its Survey, the length of its bytes and, once they were
-/// written, the CAS object's identity; nothing else, and never a path.
+/// staged, the object's identity with its birth time; nothing else, and never a path. The
+/// superseded `af/survey-pending@1` is refused by schema and by type.
 #[test]
 fn a_pending_publication_names_its_survey_its_bytes_and_its_object() {
     use review_core::project::*;
-    const SCHEMA: &str = "project-survey-pending-v1.json";
-    let begun = SurveyPendingV1 {
-        schema: SURVEY_PENDING_V1.into(),
+    const SCHEMA: &str = "project-survey-pending-v2.json";
+    let begun = SurveyPendingV2 {
+        schema: SURVEY_PENDING_V2.into(),
         survey_id: digest('a'),
         bytes: 4_595.into(),
         object: None,
@@ -1507,13 +1508,14 @@ fn a_pending_publication_names_its_survey_its_bytes_and_its_object() {
     let value = serde_json::to_value(&begun).unwrap();
     assert_eq!(
         value,
-        json!({"schema": "af/survey-pending@1", "survey_id": digest('a'), "bytes": "4595"})
+        json!({"schema": "af/survey-pending@2", "survey_id": digest('a'), "bytes": "4595"})
     );
     assert_valid(SCHEMA, &value);
-    let written = SurveyPendingV1 {
-        object: Some(SurveyObjectIdentityV1 {
+    let written = SurveyPendingV2 {
+        object: Some(SurveyObjectIdentityV2 {
             device: 16_777_232.into(),
             inode: 123_456.into(),
+            born_unix_ns: 1_792_000_000_123_456_789.into(),
         }),
         ..begun.clone()
     };
@@ -1521,13 +1523,17 @@ fn a_pending_publication_names_its_survey_its_bytes_and_its_object() {
     let written_value = serde_json::to_value(&written).unwrap();
     assert_eq!(
         written_value["object"],
-        json!({"device": "16777232", "inode": "123456"})
+        json!({"device": "16777232", "inode": "123456", "born_unix_ns": "1792000000123456789"})
     );
     assert_valid(SCHEMA, &written_value);
 
     for (broken, why) in [
         (
-            with(&value, "schema", json!("af/survey-pending@2")),
+            with(&value, "schema", json!("af/survey-pending@1")),
+            "the superseded version",
+        ),
+        (
+            with(&value, "schema", json!("af/survey-pending@3")),
             "its version",
         ),
         (with(&value, "survey_id", json!("abc")), "a digest"),
@@ -1536,19 +1542,29 @@ fn a_pending_publication_names_its_survey_its_bytes_and_its_object() {
         (with(&value, "path", json!("/tmp/x")), "no other field"),
         (without(&value, "bytes"), "its length"),
         (
-            with(&value, "object", json!({"device": "1"})),
-            "a device and an inode",
+            with(&value, "object", json!({"device": "1", "inode": "2"})),
+            "a device, an inode and a birth time",
+        ),
+        (
+            with(
+                &value,
+                "object",
+                json!({"device": "1", "inode": "2", "born_unix_ns": "0"}),
+            ),
+            "a birth time is never zero",
         ),
     ] {
         assert_invalid(SCHEMA, &broken, why);
         assert!(
-            serde_json::from_value::<SurveyPendingV1>(broken)
+            serde_json::from_value::<SurveyPendingV2>(broken)
                 .map_err(|error| error.to_string())
                 .and_then(|entry| entry.validate())
                 .is_err(),
             "{why}"
         );
     }
+    let schemas = super::workspace_root().join("schemas");
+    assert!(!schemas.join("project-survey-pending-v1.json").exists());
     let mut oversize = begun;
     oversize.bytes = (MAX_SURVEY_BYTES + 1).into();
     assert!(oversize.validate().is_err(), "at most MAX_SURVEY_BYTES");
