@@ -134,7 +134,8 @@ oversized policy names, and the Worker packages they reference; it drops a pin w
 `.af/workers/NAME` package or `.af/pipelines/NAME.toml` file no longer exists.\n\
   * .af/af.lock records the af release that wrote it and the archive digest of that release for \
 every target. Inside such a project any `af` on PATH runs that release, installing it on demand \
-only when the bytes match; --refresh-lock re-pins to the running release, and --af VERSION runs \
+only as `[self] install_pins` allows and only when the bytes match the lock and the signed \
+release checksums; --refresh-lock re-pins to the running release, and --af VERSION runs \
 the command under another installed-or-installable release, which is how a pin moves forward. A \
 build without an install receipt (a source build) pins nothing.\n\n\
 The command never calls a model, executes a Gate, reads credentials, creates Campaign state, \
@@ -191,9 +192,10 @@ history, and previews a report-only common Task. Binary-management subcommands r
 project dispatch.\n\n\
 Installed versions live under `$XDG_DATA_HOME/af/versions/<v>/` with a receipt each; the \
 default is the `~/.local/bin/af` symlink. A project whose `.af/af.lock` pins another version \
-is run by that version: `af` execs it, installing it on demand when the archive matches the \
-digest the lock records. Outside a lock, releases are verified against their signed \
-`SHA256SUMS`. Updates are checked by a detached, rate-limited child and applied by the policy \
+is run by that version: `af` execs it. One not installed yet is installed on demand as \
+`[self] install_pins` says (\"ask\" by default: a confirmation at the terminal, none without \
+one), and only when the archive matches both the digest the lock records and the release's \
+signed `SHA256SUMS`, which verify every install. Updates are checked by a detached, rate-limited child and applied by the policy \
 in `[self]` (see `af help self`).\n\n\
 An explicit `af self install V` run from a cargo/source-installed af at the default path replaces \
 that running executable with the verified release and adopts the self-managed layout. Other \

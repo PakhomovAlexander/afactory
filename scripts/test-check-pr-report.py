@@ -49,9 +49,12 @@ def right_after(lead, block):
             + '\n## Checklist\n\n- [x] `make check` passes locally.\n')
 
 
-def event(body, author='contributor', branch='af/paginate'):
+def event(body, author='contributor', branch='af/paginate', head_repo='owner/afactory'):
+    """A pull request event into `owner/afactory`, from `head_repo` (None: a deleted fork)."""
     return {'action': 'edited', 'pull_request': {
-        'body': body, 'user': {'login': author}, 'head': {'ref': branch}}}
+        'body': body, 'user': {'login': author},
+        'head': {'ref': branch, 'repo': head_repo and {'full_name': head_repo}},
+        'base': {'ref': 'main', 'repo': {'full_name': 'owner/afactory'}}}}
 
 
 def check(payload, *, as_body=False):
@@ -370,6 +373,13 @@ def main():
         'a Dependabot-like name': (event('', 'dependabot'), 'no af task report block'),
         'a branch that only mentions release': (event('', branch='af/release/notes'),
                                                 'no af task report block'),
+        # A fork can name its branch anything: only this repository's release/ branch is exempt.
+        'a release/ branch from a fork': (event(None, branch='release/0.12.0',
+                                                head_repo='someone/afactory'),
+                                          'no af task report block'),
+        'a release/ branch from a deleted fork': (event(None, branch='release/0.12.0',
+                                                        head_repo=None),
+                                                  'no af task report block'),
         **raw_cases,
         'the block inside an uppercase PRE with an attribute': (event(description(
             '<PRE class="report">\n' + BLOCK + '</PRE>\n')), inside_raw),

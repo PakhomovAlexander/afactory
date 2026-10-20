@@ -22,7 +22,7 @@ update_check = true
 check_every = "24h"
 auto_update = "notify"
 channel = "stable"
-install_pins = true
+install_pins = "ask"
 keep_versions = 3
 source = "PakhomovAlexander/afactory"
 
@@ -94,6 +94,26 @@ pub(crate) enum AutoUpdate {
     Never,
 }
 
+/// Whether a project lock's pin that is not installed yet is installed on demand: `ask` on a
+/// terminal first, `always`, or `never` (then `af self install <version>` is the step). The
+/// booleans of earlier releases keep their meaning: `true` is `always`, `false` is `never`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallPins {
+    Ask,
+    Always,
+    Never,
+}
+
+impl InstallPins {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            InstallPins::Ask => "ask",
+            InstallPins::Always => "always",
+            InstallPins::Never => "never",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Channel {
     Stable,
@@ -107,7 +127,7 @@ pub(crate) struct SelfPolicy {
     pub(crate) check_every: Duration,
     pub(crate) auto_update: AutoUpdate,
     pub(crate) channel: Channel,
-    pub(crate) install_pins: bool,
+    pub(crate) install_pins: InstallPins,
     pub(crate) keep_versions: usize,
     pub(crate) source: String,
 }
@@ -153,6 +173,18 @@ impl Config {
             "rc" => Channel::Rc,
             other => return Err(format!("[self] channel = \"{other}\" is not stable or rc")),
         };
+        let install_pins = match get("install_pins")? {
+            Value::Boolean(true) => InstallPins::Always,
+            Value::Boolean(false) => InstallPins::Never,
+            Value::String(text) if text == "ask" => InstallPins::Ask,
+            Value::String(text) if text == "always" => InstallPins::Always,
+            Value::String(text) if text == "never" => InstallPins::Never,
+            other => {
+                return Err(format!(
+                    "[self] install_pins = {other} is not one of \"ask\", \"always\", \"never\" (or true, false)"
+                ));
+            }
+        };
         let keep_versions = get("keep_versions")?
             .as_integer()
             .filter(|value| *value >= 1)
@@ -164,7 +196,7 @@ impl Config {
                 .ok_or("[self] check_every must look like 24h, 30m, or 90s")?,
             auto_update,
             channel,
-            install_pins: bool_of("install_pins")?,
+            install_pins,
             keep_versions,
             source: str_of("source")?,
         })
@@ -923,7 +955,36 @@ mod tests {
         };
         let policy = config.self_policy().unwrap();
         assert_eq!(policy.auto_update, AutoUpdate::Notify);
+        assert_eq!(policy.install_pins, InstallPins::Ask);
         assert_eq!(policy.keep_versions, 3);
+    }
+
+    #[test]
+    fn install_pins_takes_three_values_and_the_booleans_keep_their_meaning() {
+        let policy = |value: &str| {
+            let mut effective: Value = toml::from_str(BUILT_IN).unwrap();
+            effective["self"]["install_pins"] =
+                toml::from_str::<Value>(&format!("v = {value}")).unwrap()["v"].clone();
+            Config {
+                machine_scope: true,
+                ignored: Vec::new(),
+                files: Vec::new(),
+                toplevel: None,
+                effective,
+                origins: BTreeMap::new(),
+            }
+            .self_policy()
+            .map(|policy| policy.install_pins)
+        };
+        assert_eq!(policy("\"ask\""), Ok(InstallPins::Ask));
+        assert_eq!(policy("\"always\""), Ok(InstallPins::Always));
+        assert_eq!(policy("\"never\""), Ok(InstallPins::Never));
+        assert_eq!(policy("true"), Ok(InstallPins::Always));
+        assert_eq!(policy("false"), Ok(InstallPins::Never));
+        for refused in ["\"sometimes\"", "1"] {
+            let error = policy(refused).unwrap_err();
+            assert!(error.contains("[self] install_pins"), "{error}");
+        }
     }
 
     #[test]

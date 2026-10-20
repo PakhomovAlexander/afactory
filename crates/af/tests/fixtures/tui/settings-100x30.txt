@@ -17,7 +17,7 @@ v hub  (project)            |layer      file                                 sta
                             |auto_update = "notify"                    built-in
                             |channel = "stable"                        built-in
                             |check_every = "24h"                       built-in
-                            |install_pins = true                       built-in
+                            |install_pins = "ask"                      built-in
                             |keep_versions = 3                         built-in
                             |source = "PakhomovAlexander/afactory"     built-in
                             |update_check = true                       built-in
