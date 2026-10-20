@@ -4,28 +4,31 @@
 //! `max_wall_ms` deadline: `cat-file --batch`, `ls-tree`, `rev-list`, `log` and `for-each-ref`,
 //! and the committed capture for the Tree Digest. None checks anything out, runs a hook, a
 //! filter, a textconv or other project code, or writes inside the checkout. Every stream is read
-//! as it arrives, never buffered whole, and every loop over its items (tree entries, blobs,
-//! commits, numstat lines, decision files, tags and refs) checks the Clock once per item: a
-//! section that reaches the deadline stops at that item and is `partial` with what it reached,
-//! every section after it is `unavailable`, and the Survey is still recorded. Any other git
-//! failure fails the Survey.
+//! as it arrives, never buffered whole and never a record over [`MAX_SURVEY_RECORD_BYTES`], and
+//! every loop over its items (tree entries, blobs, commits, numstat lines, decision files, tags
+//! and refs) and every loop after its streams (the tree's aggregation, the ranking of
+//! identities, the reading of decisions, terms and checks) checks the Clock once per item: a
+//! section that reaches the deadline stops at that item and is `partial` with what it reached
+//! (`unavailable` when it reached nothing), every section after it is `unavailable`, and the
+//! Survey is still recorded. Any other git failure fails the Survey.
 //!
 //! The readers and the folds are pure functions of git's bytes, the policy and the cutoff, so a
 //! Survey is byte-identical for the same head, refs, policy, cutoff and Surveyor version.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::time::{Duration, Instant};
 
 use review_core::project::{
-    MAX_SURVEY_TEXT_BYTES, ProjectRegisteredPayloadV1, SURVEY_DECISION_STATUSES,
-    SURVEY_EMAIL_HASH_HEX_LEN, SURVEY_NAME_HASH_PREFIX, SURVEY_RELEASE_TAGS, SURVEY_UNREADABLE,
-    SurveyAfPinV1, SurveyCheckV1, SurveyChecksV1, SurveyChurnV1, SurveyContributorV1,
-    SurveyContributorsV1, SurveyDecisionV1, SurveyDecisionsV1, SurveyDirectoryV1, SurveyHistoryV1,
-    SurveyHotPathV1, SurveyIdentityPolicyV1, SurveyIdentityV1, SurveyLanguageV1, SurveyNameV1,
-    SurveyReasonV1, SurveySectionV1, SurveySeenV1, SurveyTagsV1, SurveyTestsV1, SurveyTreeV1,
-    SurveyVocabularyV1, SurveyWindowV1, SurveyWindowsV1, is_email_shaped, is_survey_text,
+    MAX_SURVEY_RECORD_BYTES, MAX_SURVEY_TEXT_BYTES, ProjectRegisteredPayloadV1,
+    SURVEY_CODE_POLICY_SOURCE, SURVEY_DECISION_STATUSES, SURVEY_EMAIL_HASH_HEX_LEN,
+    SURVEY_NAME_HASH_PREFIX, SURVEY_RELEASE_TAGS, SURVEY_UNREADABLE, SurveyAfPinV1, SurveyCheckV1,
+    SurveyChecksV1, SurveyChurnV1, SurveyContributorV1, SurveyContributorsV1, SurveyDecisionV1,
+    SurveyDecisionsV1, SurveyDirectoryV1, SurveyHistoryV1, SurveyHotPathV1, SurveyIdentityPolicyV1,
+    SurveyIdentityV1, SurveyLanguageV1, SurveyNameV1, SurveyReasonV1, SurveySectionV1,
+    SurveySeenV1, SurveyTagsV1, SurveyTestsV1, SurveyTreeV1, SurveyVocabularyV1, SurveyWindowV1,
+    SurveyWindowsV1, is_email_shaped, is_survey_text,
 };
 use review_core::task::usage::DecimalU64;
 use sha2::{Digest, Sha256};
@@ -42,25 +45,40 @@ const STREAM_BUFFER: usize = 64 * 1024;
 /// The toolchain declarations `checks` looks for at the root.
 pub(crate) const TOOLCHAIN_FILES: [&str; 8] = [
     "rust-toolchain.toml",
-    ".nvmrc",
-    ".python-version",
+    "rust-toolchain",
     ".tool-versions",
-    "go.mod",
-    "package.json",
-    "Cargo.toml",
-    "pyproject.toml",
+    ".nvmrc",
+    ".node-version",
+    ".python-version",
+    ".ruby-version",
+    ".java-version",
 ];
 /// Where a project's code policy declares its checks.
 pub(crate) const CODE_POLICY: &str = ".af/code-policy.toml";
-/// The review pipelines whose `[[checks]]` `checks` lists: the `.af/` layout's `pipelines/`.
+/// The pipelines whose `[[checks]]` `checks` lists: every file of the `.af/` layout's
+/// `pipelines/` in the head tree, routed or not.
 pub(crate) const PIPELINES: &str = ".af/pipelines/*.toml";
 /// The CI workflow files `checks` counts.
 const WORKFLOWS: [&str; 2] = [".github/workflows/*.yml", ".github/workflows/*.yaml"];
-/// A debug build's fixture may make every item of every stream cost this many microseconds, so
-/// a test whose subject is the deadline reaches it inside a section. Release binaries never
-/// read it.
+/// A debug build's fixture may make every item of every stream and of every loop after them cost
+/// this many microseconds, so a test whose subject is the deadline reaches it inside a section;
+/// [`TEST_SLOW_SECTION`] names the one section whose items cost it. Release binaries read
+/// neither.
 #[cfg(debug_assertions)]
 const TEST_SLOW_ITEM_US: &str = "AF_TEST_SURVEY_SLOW_ITEM_US";
+#[cfg(debug_assertions)]
+const TEST_SLOW_SECTION: &str = "AF_TEST_SURVEY_SLOW_SECTION";
+/// The sections, by the names the Clock and [`TEST_SLOW_SECTION`] know them by.
+#[cfg(debug_assertions)]
+const SECTIONS: [&str; 7] = [
+    "identity",
+    "tree",
+    "history",
+    "contributors",
+    "decisions",
+    "vocabulary",
+    "checks",
+];
 
 fn decimal(value: u64) -> DecimalU64 {
     value.into()
@@ -94,11 +112,13 @@ fn unreadable(detail: String) -> Failure {
     )
 }
 
-/// The Survey's one deadline.
+/// The Survey's one deadline, from before `rev-parse` to the last section.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Clock {
     deadline: Instant,
     slow: Duration,
+    /// The one section whose items cost `slow`, when a fixture names one.
+    only: Option<&'static str>,
 }
 
 impl Clock {
@@ -106,7 +126,17 @@ impl Clock {
         Self {
             deadline: started + Duration::from_millis(max_wall_ms),
             slow: slow_item(),
+            only: slow_section(),
         }
+    }
+
+    /// The same deadline, for the items of `section`.
+    pub(super) fn section(&self, section: &'static str) -> Self {
+        let slow = match self.only {
+            Some(only) if only != section => Duration::ZERO,
+            _ => self.slow,
+        };
+        Self { slow, ..*self }
     }
 
     fn remaining(&self) -> Option<Duration> {
@@ -118,7 +148,8 @@ impl Clock {
         self.remaining().is_none()
     }
 
-    /// One item of a stream: whether the deadline passed before it, where the stream stops.
+    /// One item of a stream or of a loop over what it read: whether the deadline passed before
+    /// it, where the loop stops.
     pub(super) fn item(&self) -> bool {
         if !self.slow.is_zero() {
             std::thread::sleep(self.slow);
@@ -139,6 +170,15 @@ fn slow_item() -> Duration {
     Duration::ZERO
 }
 
+/// The section a debug build's fixture slows alone; none otherwise.
+fn slow_section() -> Option<&'static str> {
+    #[cfg(debug_assertions)]
+    if let Ok(named) = std::env::var(TEST_SLOW_SECTION) {
+        return SECTIONS.iter().copied().find(|section| *section == named);
+    }
+    None
+}
+
 /// How a reader of one git stream ended.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Ended {
@@ -146,8 +186,43 @@ pub(super) enum Ended {
     Done,
     /// The deadline passed before an item; the stream stopped there.
     Deadline,
+    /// A bound stopped the stream: `max_record_bytes`, or `max_paths` in the history walk.
+    Bound(SurveyReasonV1),
     /// git wrote what af does not read.
     Bad(String),
+}
+
+/// One record of a stream, ended by `end`, read into `record` without its end.
+#[derive(Debug, PartialEq, Eq)]
+enum Record {
+    /// The stream ended before another record.
+    End,
+    /// A record; `ended` when its end followed it.
+    Read { ended: bool },
+    /// The record is longer than [`MAX_SURVEY_RECORD_BYTES`]; nothing more was read.
+    TooLong,
+}
+
+/// Read one record of at most [`MAX_SURVEY_RECORD_BYTES`] ended by `end`; the last record of a
+/// stream may lack its end.
+fn read_record(input: &mut dyn BufRead, end: u8, record: &mut Vec<u8>) -> Result<Record, String> {
+    record.clear();
+    let limit = MAX_SURVEY_RECORD_BYTES as u64 + 1;
+    let read = (&mut *input)
+        .take(limit)
+        .read_until(end, record)
+        .map_err(|error| error.to_string())?;
+    if read == 0 {
+        return Ok(Record::End);
+    }
+    if record.last() == Some(&end) {
+        record.pop();
+        Ok(Record::Read { ended: true })
+    } else if record.len() as u64 >= limit {
+        Ok(Record::TooLong)
+    } else {
+        Ok(Record::Read { ended: false })
+    }
 }
 
 /// Plumbing under the clock.
@@ -184,19 +259,20 @@ impl Reader<'_> {
     }
 
     /// Stream git's stdout through `parse`, with `lines` written to its stdin, under what
-    /// remains of the deadline. `true` when the deadline passed before the stream ended.
+    /// remains of the deadline: `None` when the stream ended in time, `max_wall_ms` when the
+    /// deadline passed before it ended or right after, or the bound that stopped it.
     fn stream<P>(
         &self,
         what: &str,
         args: &[OsString],
         lines: &[String],
         parse: P,
-    ) -> Result<bool, Failure>
+    ) -> Result<Option<SurveyReasonV1>, Failure>
     where
         P: FnOnce(&mut dyn BufRead) -> Ended + Send,
     {
         let Some(remaining) = self.clock.remaining() else {
-            return Ok(true);
+            return Ok(Some(SurveyReasonV1::MaxWallMs));
         };
         let streamed = self.git.stream_within(
             args,
@@ -213,15 +289,19 @@ impl Reader<'_> {
         match streamed {
             Ok(output) => match output.output {
                 // A reader that stopped closed the pipe; how git then exited says nothing.
-                Ended::Deadline => Ok(true),
+                Ended::Deadline => Ok(Some(SurveyReasonV1::MaxWallMs)),
+                Ended::Bound(reason) => Ok(Some(reason)),
                 Ended::Bad(detail) => Err(unreadable(format!("git {what}: {detail}"))),
-                Ended::Done if output.status.success() => Ok(false),
+                // A stream that ended after the deadline ended late.
+                Ended::Done if output.status.success() => {
+                    Ok(self.clock.passed().then_some(SurveyReasonV1::MaxWallMs))
+                }
                 Ended::Done => Err(Self::failed(
                     what,
                     String::from_utf8_lossy(&output.stderr).trim().to_string(),
                 )),
             },
-            Err(stopped) if stopped.deadline => Ok(true),
+            Err(stopped) if stopped.deadline => Ok(Some(SurveyReasonV1::MaxWallMs)),
             Err(stopped) => Err(Self::failed(what, stopped.message)),
         }
     }
@@ -232,13 +312,17 @@ impl Reader<'_> {
     fn objects(&self, names: &[String], keep: u64) -> Result<(Vec<Option<Object>>, bool), Failure> {
         let mut objects = Vec::with_capacity(names.len());
         if names.is_empty() {
-            return Ok((objects, false));
+            return Ok((objects, self.clock.passed()));
         }
         let clock = self.clock;
-        let deadline = self.stream("cat-file", &os(&["cat-file", "--batch"]), names, |input| {
-            read_batch(input, &clock, Some(keep), |_, object| objects.push(object))
+        let stopped = self.stream("cat-file", &os(&["cat-file", "--batch"]), names, |input| {
+            read_batch(input, &clock, Some(keep), |_, object| {
+                objects.push(object);
+                true
+            })
         })?;
-        Ok((objects, deadline))
+        // A cat-file header is a record too; one over the bound reads as the deadline would.
+        Ok((objects, stopped.is_some()))
     }
 }
 
@@ -255,29 +339,32 @@ pub(super) struct Object {
 }
 
 /// Read `cat-file --batch`: `<oid> <type> <size>\n<content>\n`, or `<name> missing\n`, for each
-/// object requested, in order. `each` receives the request's index and the object; contents of
-/// at most `keep` bytes are kept, and every object's newlines are counted as it streams.
+/// object requested, in order. `each` receives the request's index and the object, and returns
+/// `false` when the deadline passed while it took it, which stops the stream; contents of at
+/// most `keep` bytes are kept, and every object's newlines are counted as it streams.
 pub(super) fn read_batch(
     input: &mut dyn BufRead,
     clock: &Clock,
     keep: Option<u64>,
-    mut each: impl FnMut(usize, Option<Object>),
+    mut each: impl FnMut(usize, Option<Object>) -> bool,
 ) -> Ended {
     let mut header = Vec::new();
     let mut index = 0;
     loop {
-        header.clear();
-        match input.read_until(b'\n', &mut header) {
-            Ok(0) => return Ended::Done,
-            Ok(_) => {}
-            Err(error) => return Ended::Bad(error.to_string()),
+        match read_record(input, b'\n', &mut header) {
+            Ok(Record::End) => return Ended::Done,
+            Ok(Record::Read { .. }) => {}
+            Ok(Record::TooLong) => return Ended::Bound(SurveyReasonV1::MaxRecordBytes),
+            Err(error) => return Ended::Bad(error),
         }
         if clock.item() {
             return Ended::Deadline;
         }
-        let line = String::from_utf8_lossy(header.strip_suffix(b"\n").unwrap_or(&header));
+        let line = String::from_utf8_lossy(&header);
         if line.ends_with(" missing") || line.ends_with(" ambiguous") {
-            each(index, None);
+            if !each(index, None) {
+                return Ended::Deadline;
+            }
             index += 1;
             continue;
         }
@@ -290,16 +377,18 @@ pub(super) fn read_batch(
         };
         let kept = keep.is_some_and(|keep| size <= keep);
         match read_content(input, size, kept) {
-            Ok((lines, content)) => each(
-                index,
-                Some(Object {
+            Ok((lines, content)) => {
+                let object = Object {
                     oid: oid.to_string(),
                     blob: *kind == "blob",
                     size,
                     lines,
                     content,
-                }),
-            ),
+                };
+                if !each(index, Some(object)) {
+                    return Ended::Deadline;
+                }
+            }
             Err(detail) => return Ended::Bad(format!("{oid}: {detail}")),
         }
         index += 1;
@@ -402,20 +491,19 @@ fn read_records(
 ) -> Ended {
     let mut record = Vec::new();
     loop {
-        record.clear();
-        match input.read_until(0, &mut record) {
-            Ok(0) => return Ended::Done,
-            Ok(_) => {}
-            Err(error) => return Ended::Bad(error.to_string()),
+        match read_record(input, 0, &mut record) {
+            Ok(Record::End) => return Ended::Done,
+            Ok(Record::Read { .. }) => {}
+            Ok(Record::TooLong) => return Ended::Bound(SurveyReasonV1::MaxRecordBytes),
+            Err(error) => return Ended::Bad(error),
         }
         if clock.item() {
             return Ended::Deadline;
         }
-        let record = record.strip_suffix(&[0]).unwrap_or(&record);
         if record.is_empty() {
             continue;
         }
-        if let Err(detail) = each(record) {
+        if let Err(detail) = each(&record) {
             return Ended::Bad(detail);
         }
     }
@@ -433,24 +521,21 @@ pub(super) fn read_listing(
     })
 }
 
-/// Read newline-ended lines, one item each, as `for-each-ref` prints them.
-fn read_lines(input: &mut dyn BufRead, clock: &Clock, mut each: impl FnMut(&str)) -> Ended {
+/// Read newline-ended lines, one item each, as `for-each-ref` prints them: `each` receives the
+/// line and whether its newline followed it.
+fn read_lines(input: &mut dyn BufRead, clock: &Clock, mut each: impl FnMut(&[u8], bool)) -> Ended {
     let mut line = Vec::new();
     loop {
-        line.clear();
-        match input.read_until(b'\n', &mut line) {
-            Ok(0) => return Ended::Done,
-            Ok(_) => {}
-            Err(error) => return Ended::Bad(error.to_string()),
-        }
+        let ended = match read_record(input, b'\n', &mut line) {
+            Ok(Record::End) => return Ended::Done,
+            Ok(Record::Read { ended }) => ended,
+            Ok(Record::TooLong) => return Ended::Bound(SurveyReasonV1::MaxRecordBytes),
+            Err(error) => return Ended::Bad(error),
+        };
         if clock.item() {
             return Ended::Deadline;
         }
-        let text = String::from_utf8_lossy(&line);
-        let text = text.trim();
-        if !text.is_empty() {
-            each(text);
-        }
+        each(&line, ended);
     }
 }
 
@@ -505,95 +590,138 @@ fn cut_map<T>(
     entries.into_iter().collect()
 }
 
-/// `tree` over the entries considered (at most `max_paths`, after `exclude`), of the `seen`
-/// entries the listing held; `lines` holds the newline count of each blob read, `None` for a
-/// binary one, and nothing for a blob not read before the deadline.
-pub(super) fn tree_section(
-    entries: &[Entry],
-    lines: &BTreeMap<String, Option<u64>>,
-    seen_paths: u64,
-    policy: &Policy,
-) -> SurveyTreeV1 {
-    let mut directories: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
-    let mut languages: BTreeMap<String, (u64, u64)> = BTreeMap::new();
-    let (mut files, mut bytes, mut total_lines, mut without) = (0, 0, 0, 0);
-    let mut tests = (0, 0, 0, 0);
-    for entry in entries {
-        let counted = match entry.kind {
-            EntryKind::File if entry.size <= policy.max_file_bytes => {
-                lines.get(&entry.oid).copied().flatten()
-            }
-            _ => None,
-        };
+/// `tree`, folded as its two streams arrive: each entry of the listing as it is read (after
+/// `exclude`, at most `max_paths`), then the newline count of each text blob as `cat-file`
+/// yields it. No loop over the entries runs after the streams.
+#[derive(Debug, Default)]
+pub(super) struct TreeFold {
+    files: u64,
+    bytes: u64,
+    lines: u64,
+    /// Entries whose blob's lines were counted.
+    with_lines: u64,
+    directories: BTreeMap<String, (u64, u64, u64)>,
+    languages: BTreeMap<String, (u64, u64)>,
+    tests: (u64, u64, u64, u64),
+    /// The blobs whose lines are still to count, and where each of their entries counts them:
+    /// its directory, its language and whether `tests` matches it.
+    pending: BTreeMap<String, Vec<(String, String, bool)>>,
+}
+
+impl TreeFold {
+    /// One entry of the listing: a file, a symlink or a submodule.
+    pub(super) fn add(&mut self, entry: &Entry, policy: &Policy) {
         let language = match entry.kind {
-            EntryKind::File => policy.language(basename(&entry.path)),
+            EntryKind::File => policy.language(&entry.path),
             EntryKind::Symlink | EntryKind::Submodule => "other".into(),
         };
-        let entry_lines = counted.unwrap_or(0);
-        files += 1;
-        bytes += entry.size;
-        total_lines += entry_lines;
-        without += u64::from(counted.is_none());
-        let directory = directories
-            .entry(top_level(&entry.path).to_string())
-            .or_default();
-        directory.0 += 1;
-        directory.1 += entry_lines;
-        directory.2 += entry.size;
-        let language = languages.entry(language).or_default();
-        language.0 += 1;
-        language.1 += entry_lines;
-        if any_match(&policy.tests, &entry.path) {
-            tests.0 += 1;
-            tests.1 += entry_lines;
+        let test = any_match(&policy.tests, &entry.path);
+        let directory = top_level(&entry.path).to_string();
+        self.files += 1;
+        self.bytes += entry.size;
+        let counts = self.directories.entry(directory.clone()).or_default();
+        counts.0 += 1;
+        counts.2 += entry.size;
+        self.languages.entry(language.clone()).or_default().0 += 1;
+        if test {
+            self.tests.0 += 1;
         } else {
-            tests.2 += 1;
-            tests.3 += entry_lines;
+            self.tests.2 += 1;
+        }
+        if entry.kind == EntryKind::File && entry.size <= policy.max_file_bytes {
+            self.pending
+                .entry(entry.oid.clone())
+                .or_default()
+                .push((directory, language, test));
         }
     }
-    let mut seen = SurveySeenV1::new();
-    if seen_paths > files {
-        seen.insert("paths".into(), decimal(seen_paths));
+
+    /// The blobs whose lines to count, each once.
+    pub(super) fn blobs(&self) -> Vec<String> {
+        self.pending.keys().cloned().collect()
     }
-    let directories = cut_map(directories, "directories", policy.max_entries, &mut seen);
-    let languages = cut_map(languages, "languages", policy.max_entries, &mut seen);
-    SurveyTreeV1 {
-        files: decimal(files),
-        bytes: decimal(bytes),
-        lines: decimal(total_lines),
-        files_without_lines: decimal(without),
-        directories: directories
-            .into_iter()
-            .map(|(name, (files, lines, bytes))| {
-                (
-                    name,
-                    SurveyDirectoryV1 {
-                        files: decimal(files),
-                        lines: decimal(lines),
-                        bytes: decimal(bytes),
-                    },
-                )
-            })
-            .collect(),
-        languages: languages
-            .into_iter()
-            .map(|(name, (files, lines))| {
-                (
-                    name,
-                    SurveyLanguageV1 {
-                        files: decimal(files),
-                        lines: decimal(lines),
-                    },
-                )
-            })
-            .collect(),
-        tests: SurveyTestsV1 {
-            files: decimal(tests.0),
-            lines: decimal(tests.1),
-            other_files: decimal(tests.2),
-            other_lines: decimal(tests.3),
-        },
-        seen,
+
+    /// The newline count of one blob read, `None` for a binary one, into each of its entries.
+    pub(super) fn lines(&mut self, oid: &str, lines: Option<u64>) {
+        let (Some(entries), Some(lines)) = (self.pending.remove(oid), lines) else {
+            return;
+        };
+        for (directory, language, test) in entries {
+            self.lines += lines;
+            self.with_lines += 1;
+            if let Some(counts) = self.directories.get_mut(&directory) {
+                counts.1 += lines;
+            }
+            if let Some(counts) = self.languages.get_mut(&language) {
+                counts.1 += lines;
+            }
+            if test {
+                self.tests.1 += lines;
+            } else {
+                self.tests.3 += lines;
+            }
+        }
+    }
+
+    /// The entries folded so far.
+    pub(super) fn files(&self) -> u64 {
+        self.files
+    }
+
+    /// `tree` over the entries folded, of the `seen_paths` the listing held, its lists cut at
+    /// `max_entries` by name. An entry whose blob was not read before the deadline, binary or
+    /// over `max_file_bytes`, a symlink and a submodule have no lines.
+    pub(super) fn finish(self, seen_paths: u64, policy: &Policy) -> SurveyTreeV1 {
+        let mut seen = SurveySeenV1::new();
+        if seen_paths > self.files {
+            seen.insert("paths".into(), decimal(seen_paths));
+        }
+        let directories = cut_map(
+            self.directories,
+            "directories",
+            policy.max_entries,
+            &mut seen,
+        );
+        let languages = cut_map(self.languages, "languages", policy.max_entries, &mut seen);
+        let tests = self.tests;
+        SurveyTreeV1 {
+            files: decimal(self.files),
+            bytes: decimal(self.bytes),
+            lines: decimal(self.lines),
+            files_without_lines: decimal(self.files - self.with_lines),
+            directories: directories
+                .into_iter()
+                .map(|(name, (files, lines, bytes))| {
+                    (
+                        name,
+                        SurveyDirectoryV1 {
+                            files: decimal(files),
+                            lines: decimal(lines),
+                            bytes: decimal(bytes),
+                        },
+                    )
+                })
+                .collect(),
+            languages: languages
+                .into_iter()
+                .map(|(name, (files, lines))| {
+                    (
+                        name,
+                        SurveyLanguageV1 {
+                            files: decimal(files),
+                            lines: decimal(lines),
+                        },
+                    )
+                })
+                .collect(),
+            tests: SurveyTestsV1 {
+                files: decimal(tests.0),
+                lines: decimal(tests.1),
+                other_files: decimal(tests.2),
+                other_lines: decimal(tests.3),
+            },
+            seen,
+        }
     }
 }
 
@@ -613,8 +741,11 @@ pub(super) struct Commit {
     pub(super) merge: bool,
     /// Committer time, Unix seconds.
     pub(super) time: u64,
-    pub(super) identity: String,
-    /// The identity is a name cut to [`MAX_SURVEY_TEXT_BYTES`].
+    /// The author's identity: what contributors are grouped and ranked by.
+    pub(super) key: String,
+    /// The author's display text, under `identity = "name"` only.
+    pub(super) name: Option<String>,
+    /// The name was cut to [`MAX_SURVEY_TEXT_BYTES`].
     pub(super) truncated: bool,
     /// Agent-assisted: the author or a `Co-Authored-By` name matches the agent patterns.
     pub(super) agent: bool,
@@ -623,31 +754,40 @@ pub(super) struct Commit {
 
 /// The first 16 hex digits of SHA-256 of `text` lowercased and trimmed.
 pub(crate) fn hash16(text: &str) -> String {
-    let digest = Sha256::digest(text.trim().to_lowercase().as_bytes());
-    review_core::hex::encode(&digest)[..SURVEY_EMAIL_HASH_HEX_LEN].to_string()
+    hex16_of(text.trim().to_lowercase().as_bytes())
 }
 
-/// A contributor's identity under the policy, and whether a name was cut. Under `name` an
-/// author name that is itself an email address, or that a record cannot hold as text, is `h:`
-/// and the 16-hex hash of the name; a longer one is cut to [`MAX_SURVEY_TEXT_BYTES`]. Under
-/// `email_hash` it is the 16-hex hash of the email. An email never enters a record.
+/// The first 16 hex digits of SHA-256 of `bytes`.
+fn hex16_of(bytes: &[u8]) -> String {
+    review_core::hex::encode(&Sha256::digest(bytes))[..SURVEY_EMAIL_HASH_HEX_LEN].to_string()
+}
+
+/// A contributor as a record holds one: its key, its display name under `identity = "name"`, and
+/// whether the name was cut. An author name any whitespace-separated token of which is an email
+/// address, under either policy, is `h:` and the 16-hex hash of the lowercased, trimmed name as
+/// both key and name, decided before any cut and without the email; so is a name a record
+/// cannot hold as text. Otherwise, under `name`, the key is the 16-hex hash of the exact
+/// author-name bytes and the name is cut to [`MAX_SURVEY_TEXT_BYTES`]; under `email_hash`, the
+/// key is the 16-hex hash of the email and there is no name. An email never enters a record.
 pub(super) fn identity_of(
-    name: &str,
+    name: &[u8],
     email: &str,
     policy: SurveyIdentityPolicyV1,
-) -> (String, bool) {
+) -> (String, Option<String>, bool) {
+    let text = String::from_utf8_lossy(name);
+    let hashed = format!("{SURVEY_NAME_HASH_PREFIX}{}", hash16(&text));
     match policy {
-        SurveyIdentityPolicyV1::Name => {
-            let hashed = || (format!("{SURVEY_NAME_HASH_PREFIX}{}", hash16(name)), false);
-            if is_email_shaped(name.trim()) {
-                return hashed();
+        _ if is_email_shaped(&text) => match policy {
+            SurveyIdentityPolicyV1::Name => (hashed.clone(), Some(hashed), false),
+            SurveyIdentityPolicyV1::EmailHash => (hashed, None, false),
+        },
+        SurveyIdentityPolicyV1::Name => match display(&text) {
+            Some((kept, truncated)) if !is_email_shaped(&kept) => {
+                (hex16_of(name), Some(kept), truncated)
             }
-            match display(name) {
-                Some((kept, truncated)) if !is_email_shaped(&kept) => (kept, truncated),
-                _ => hashed(),
-            }
-        }
-        SurveyIdentityPolicyV1::EmailHash => (hash16(email), false),
+            _ => (hashed.clone(), Some(hashed), false),
+        },
+        SurveyIdentityPolicyV1::EmailHash => (hash16(email), None, false),
     }
 }
 
@@ -672,28 +812,31 @@ pub(super) fn log_format(policy: &Policy) -> String {
 
 /// The commit a log record's six fields describe, its identity and partition derived as it is
 /// read: an email is hashed, or never asked for, and is never kept.
-fn commit_of(fields: &[String], policy: &Policy) -> Result<Commit, String> {
+fn commit_of(fields: &[Vec<u8>], policy: &Policy) -> Result<Commit, String> {
     let [id, parents, time, name, email, trailers] = fields else {
         return Err("a log record without its six fields".into());
     };
-    if !review_core::project::is_commit_id(id) {
+    let text = |field: &[u8]| String::from_utf8_lossy(field).into_owned();
+    let id = text(id);
+    if !review_core::project::is_commit_id(&id) {
         return Err("a log record without a commit ID".into());
     }
-    let agent = any_match(&policy.agent_authors, name.trim())
-        || trailers
+    let agent = any_match(&policy.agent_authors, text(name).trim())
+        || text(trailers)
             .split('\u{1d}')
             .map(trailer_name)
             .filter(|value| !value.is_empty())
             .any(|value| any_match(&policy.agent_trailers, value));
-    let (identity, truncated) = identity_of(name, email, policy.identity);
+    let (key, display_name, truncated) = identity_of(name, &text(email), policy.identity);
     Ok(Commit {
-        id: id.clone(),
-        merge: parents.split_whitespace().count() >= 2,
-        time: time
+        id,
+        merge: text(parents).split_whitespace().count() >= 2,
+        time: text(time)
             .trim()
             .parse()
             .map_err(|_| "a committer time that is not a number")?,
-        identity,
+        key,
+        name: display_name,
         truncated,
         agent,
         changes: Vec::new(),
@@ -728,12 +871,14 @@ fn change_of(line: &[u8], policy: &Policy) -> Result<Option<Change>, String> {
 }
 
 /// Read `log -z --numstat` in [`log_format`], one commit and one numstat line per item; `each`
-/// receives every commit read to its end.
+/// receives every commit read to its end and may stop the walk with a bound. A record over
+/// [`MAX_SURVEY_RECORD_BYTES`] stops it with `max_record_bytes`, and a commit touching more
+/// than `max_paths` paths with `max_paths`; the commit it stopped in is not passed on.
 pub(super) fn read_log(
     input: &mut dyn BufRead,
     clock: &Clock,
     policy: &Policy,
-    mut each: impl FnMut(Commit),
+    mut each: impl FnMut(Commit) -> Result<(), SurveyReasonV1>,
 ) -> Ended {
     const RECORD: u8 = 0x1e;
     const UNIT: u8 = 0x1f;
@@ -747,24 +892,28 @@ pub(super) fn read_log(
         };
         match first {
             None => {
-                each_commit(&mut current, &mut each);
-                return Ended::Done;
+                return match each_commit(&mut current, &mut each) {
+                    Ok(()) => Ended::Done,
+                    Err(reason) => Ended::Bound(reason),
+                };
             }
             Some(RECORD) => {
                 input.consume(1);
-                each_commit(&mut current, &mut each);
+                if let Err(reason) = each_commit(&mut current, &mut each) {
+                    return Ended::Bound(reason);
+                }
                 if clock.item() {
                     return Ended::Deadline;
                 }
                 let mut fields = Vec::with_capacity(6);
                 for _ in 0..6 {
-                    line.clear();
-                    match input.read_until(UNIT, &mut line) {
-                        Ok(_) if line.last() == Some(&UNIT) => {
-                            fields.push(String::from_utf8_lossy(&line[..line.len() - 1]).into());
+                    match read_record(input, UNIT, &mut line) {
+                        Ok(Record::Read { ended: true }) => fields.push(line.clone()),
+                        Ok(Record::TooLong) => {
+                            return Ended::Bound(SurveyReasonV1::MaxRecordBytes);
                         }
                         Ok(_) => return Ended::Bad("a log record ends early".into()),
-                        Err(error) => return Ended::Bad(error.to_string()),
+                        Err(error) => return Ended::Bad(error),
                     }
                 }
                 match commit_of(&fields, policy) {
@@ -774,18 +923,22 @@ pub(super) fn read_log(
             }
             Some(0 | b'\n') => input.consume(1),
             Some(_) => {
-                line.clear();
-                if let Err(error) = input.read_until(0, &mut line) {
-                    return Ended::Bad(error.to_string());
+                match read_record(input, 0, &mut line) {
+                    Ok(Record::Read { .. }) => {}
+                    Ok(Record::TooLong) => return Ended::Bound(SurveyReasonV1::MaxRecordBytes),
+                    Ok(Record::End) => return Ended::Bad("a numstat line ends early".into()),
+                    Err(error) => return Ended::Bad(error),
                 }
                 if clock.item() {
                     return Ended::Deadline;
                 }
-                let numstat = line.strip_suffix(&[0]).unwrap_or(&line);
                 let Some(commit) = current.as_mut() else {
                     return Ended::Bad("a numstat line before its commit".into());
                 };
-                match change_of(numstat, policy) {
+                match change_of(&line, policy) {
+                    Ok(Some(_)) if commit.changes.len() as u64 >= policy.max_paths => {
+                        return Ended::Bound(SurveyReasonV1::MaxPaths);
+                    }
                     Ok(change) => commit.changes.extend(change),
                     Err(detail) => return Ended::Bad(detail),
                 }
@@ -794,9 +947,13 @@ pub(super) fn read_log(
     }
 }
 
-fn each_commit(current: &mut Option<Commit>, each: &mut impl FnMut(Commit)) {
-    if let Some(commit) = current.take() {
-        each(commit);
+fn each_commit(
+    current: &mut Option<Commit>,
+    each: &mut impl FnMut(Commit) -> Result<(), SurveyReasonV1>,
+) -> Result<(), SurveyReasonV1> {
+    match current.take() {
+        Some(commit) => each(commit),
+        None => Ok(()),
     }
 }
 
@@ -809,6 +966,7 @@ fn in_window(time: u64, cutoff: u64, days: u64) -> bool {
 /// One contributor's totals over the commits reached.
 #[derive(Debug, Clone, Default)]
 struct Totals {
+    name: Option<String>,
     commits: u64,
     added: u64,
     removed: u64,
@@ -822,6 +980,8 @@ struct Totals {
 #[derive(Debug, Clone, Default)]
 pub(super) struct Walk {
     cutoff: u64,
+    /// The distinct paths the walk may track: `max_paths`.
+    max_paths: u64,
     pub(super) commits: u64,
     merges: u64,
     /// Commits and merges in the 30, 90 and 365-day windows.
@@ -833,20 +993,38 @@ pub(super) struct Walk {
     churn: BTreeMap<String, (u64, u64, u64)>,
     touched: BTreeMap<String, u64>,
     identities: BTreeMap<String, Totals>,
+    /// The commits of the identity with the most, and the identities active in 90 days.
+    top: u64,
+    active: u64,
     agent: u64,
 }
 
 impl Walk {
-    pub(super) fn new(cutoff: u64) -> Self {
+    pub(super) fn new(cutoff: u64, max_paths: u64) -> Self {
         Self {
             cutoff,
+            max_paths,
             ..Self::default()
         }
     }
 
-    /// Fold one commit. A merge counts as a commit and a merge and contributes no churn.
-    pub(super) fn add(&mut self, commit: Commit) {
+    /// Fold one commit. A merge counts as a commit and a merge and contributes no churn. A
+    /// commit that would make the walk track more than `max_paths` distinct paths is not folded
+    /// and stops the walk with `max_paths`.
+    pub(super) fn add(&mut self, commit: Commit) -> Result<(), SurveyReasonV1> {
         let cutoff = self.cutoff;
+        let recent = in_window(commit.time, cutoff, 90);
+        let changes: &[Change] = if commit.merge { &[] } else { &commit.changes };
+        if recent {
+            let new: BTreeSet<&str> = changes
+                .iter()
+                .map(|change| change.path.as_str())
+                .filter(|path| !self.touched.contains_key(*path))
+                .collect();
+            if self.touched.len() as u64 + new.len() as u64 > self.max_paths {
+                return Err(SurveyReasonV1::MaxPaths);
+            }
+        }
         self.commits += 1;
         self.merges += u64::from(commit.merge);
         for (window, days) in self.windows.iter_mut().zip([30, 90, 365]) {
@@ -860,8 +1038,6 @@ impl Walk {
                 .map_or(commit.time, |first| first.min(commit.time)),
         );
         self.last = self.last.max(commit.time);
-        let recent = in_window(commit.time, cutoff, 90);
-        let changes: &[Change] = if commit.merge { &[] } else { &commit.changes };
         let (added, removed) = changes.iter().fold((0, 0), |(added, removed), change| {
             (added + change.added, removed + change.removed)
         });
@@ -885,22 +1061,23 @@ impl Walk {
                 *self.touched.entry(path.to_string()).or_default() += 1;
             }
         }
-        let totals = self
-            .identities
-            .entry(commit.identity)
-            .or_insert_with(|| Totals {
-                first: u64::MAX,
-                ..Totals::default()
-            });
+        let totals = self.identities.entry(commit.key).or_insert_with(|| Totals {
+            name: commit.name,
+            first: u64::MAX,
+            ..Totals::default()
+        });
         totals.commits += 1;
         totals.added += added;
         totals.removed += removed;
         totals.first = totals.first.min(commit.time);
         totals.last = totals.last.max(commit.time);
+        self.active += u64::from(recent && !totals.active);
         totals.active |= recent;
         totals.truncated |= commit.truncated;
+        self.top = self.top.max(totals.commits);
         self.agent += u64::from(commit.agent);
         self.oldest = Some(commit.id);
+        Ok(())
     }
 
     /// The paths with the most commits in 90 days, most first, ties by path: at most `limit`,
@@ -987,19 +1164,23 @@ pub(super) fn history_section(
     }
 }
 
-/// The refs `history` counts, read from one `for-each-ref --sort=-creatordate` of `refs/heads`
-/// and `refs/tags`, newest first.
+/// How a release tag ranks: by its date (the tagger time of an annotated tag, the target's
+/// committer time of a lightweight one) newest first, undated last, then by name.
+type TagRank = (bool, std::cmp::Reverse<u64>, String);
+
+/// The refs `history` counts, read from one `for-each-ref` of `refs/heads` and `refs/tags`.
 #[derive(Debug, Default)]
 pub(super) struct Refs {
     branches: u64,
     tags: u64,
-    release: Vec<SurveyNameV1>,
+    /// The newest release tags so far, ranked, at most [`SURVEY_RELEASE_TAGS`].
+    release: Vec<(TagRank, SurveyNameV1)>,
     release_seen: u64,
 }
 
 impl Refs {
-    /// One ref name.
-    pub(super) fn add(&mut self, refname: &str, policy: &Policy) {
+    /// One ref, and its creator date when it has one.
+    pub(super) fn add(&mut self, refname: &str, date: Option<u64>, policy: &Policy) {
         if refname.starts_with("refs/heads/") {
             self.branches += 1;
         } else if let Some(tag) = refname.strip_prefix("refs/tags/") {
@@ -1008,84 +1189,112 @@ impl Refs {
                 && let Some(name) = named(tag)
             {
                 self.release_seen += 1;
-                if self.release.len() < SURVEY_RELEASE_TAGS {
-                    self.release.push(name);
+                let rank = (
+                    date.is_none(),
+                    std::cmp::Reverse(date.unwrap_or(0)),
+                    tag.to_string(),
+                );
+                let at = self.release.partition_point(|(held, _)| *held < rank);
+                if at < SURVEY_RELEASE_TAGS {
+                    self.release.insert(at, (rank, name));
+                    self.release.truncate(SURVEY_RELEASE_TAGS);
                 }
             }
         }
     }
 
+    /// One line of `for-each-ref --format=%(creatordate:unix)%09%(refname)`.
+    fn line(&mut self, line: &[u8], policy: &Policy) {
+        let line = String::from_utf8_lossy(line);
+        let (date, refname) = line.split_once('\t').unwrap_or(("", &line));
+        self.add(refname.trim_end(), date.trim().parse().ok(), policy);
+    }
+
     /// The tags and the local branch count, and the release tags cut at `max_entries`.
-    pub(super) fn fill(mut self, history: &mut SurveyHistoryV1, policy: &Policy) {
+    pub(super) fn fill(self, history: &mut SurveyHistoryV1, policy: &Policy) {
         let held = usize::try_from(policy.max_entries).unwrap_or(usize::MAX);
-        if self.release.len() > held {
+        let mut release: Vec<SurveyNameV1> =
+            self.release.into_iter().map(|(_, name)| name).collect();
+        if release.len() > held {
             history
                 .seen
                 .insert("tags".into(), decimal(self.release_seen));
-            self.release.truncate(held);
+            release.truncate(held);
         }
         history.tags = Some(SurveyTagsV1 {
             count: decimal(self.tags),
-            release: self.release,
+            release,
         });
         history.local_branches = Some(decimal(self.branches));
     }
 }
 
-/// `contributors` from the walk: every identity with its totals, the identities with the most
-/// commits kept at `max_entries`, and the human and agent-assisted partition, each commit once.
-pub(super) fn contributors_section(walk: &Walk, policy: &Policy) -> SurveyContributorsV1 {
+/// `contributors` from the walk: every identity with its totals, ranked by commits, then lines
+/// added, both descending, then key, and kept at `max_entries`, and the human and agent-assisted
+/// partition, each commit once. The ranking reads one identity per item of `clock`; when the
+/// deadline passes it ranks those it read and says so with `true`, the list then recording
+/// under `seen` how many identities there were.
+pub(super) fn contributors_section(
+    walk: &Walk,
+    policy: &Policy,
+    clock: &Clock,
+) -> (SurveyContributorsV1, bool) {
     let total = walk.commits;
     let share = |part: u64| decimal((part * 10_000).checked_div(total).unwrap_or(0));
-    let top = walk
-        .identities
-        .values()
-        .map(|totals| totals.commits)
-        .max()
-        .unwrap_or(0);
-    let mut ranked: Vec<(&String, &Totals)> = walk.identities.iter().collect();
-    ranked.sort_by(|a, b| b.1.commits.cmp(&a.1.commits).then(a.0.cmp(b.0)));
+    let mut ranked: Vec<(&String, &Totals)> = Vec::new();
+    let mut deadline = false;
+    for identity in &walk.identities {
+        if clock.item() {
+            deadline = true;
+            break;
+        }
+        ranked.push(identity);
+    }
+    ranked.sort_by(|a, b| {
+        b.1.commits
+            .cmp(&a.1.commits)
+            .then(b.1.added.cmp(&a.1.added))
+            .then(a.0.cmp(b.0))
+    });
     let mut seen = SurveySeenV1::new();
     cut(&mut ranked, "by_identity", policy.max_entries, &mut seen);
-    SurveyContributorsV1 {
+    let identities = walk.identities.len() as u64;
+    if (ranked.len() as u64) < identities {
+        seen.insert("by_identity".into(), decimal(identities));
+    }
+    let body = SurveyContributorsV1 {
         identity: policy.identity,
-        identities: decimal(walk.identities.len() as u64),
-        active_90d: decimal(
-            walk.identities
-                .values()
-                .filter(|totals| totals.active)
-                .count() as u64,
-        ),
+        identities: decimal(identities),
+        active_90d: decimal(walk.active),
         human_commits: decimal(total - walk.agent),
         agent_commits: decimal(walk.agent),
         human_share_bp: share(total - walk.agent),
         agent_share_bp: share(walk.agent),
-        top_share_bp: share(top),
+        top_share_bp: share(walk.top),
         by_identity: ranked
             .into_iter()
-            .map(|(identity, totals)| {
-                (
-                    identity.clone(),
-                    SurveyContributorV1 {
-                        commits: decimal(totals.commits),
-                        added: decimal(totals.added),
-                        removed: decimal(totals.removed),
-                        first_unix_s: decimal(totals.first),
-                        last_unix_s: decimal(totals.last),
-                        active_90d: totals.active,
-                        truncated: totals.truncated,
-                    },
-                )
+            .map(|(key, totals)| SurveyContributorV1 {
+                key: key.clone(),
+                name: totals.name.clone(),
+                commits: decimal(totals.commits),
+                added: decimal(totals.added),
+                removed: decimal(totals.removed),
+                first_unix_s: decimal(totals.first),
+                last_unix_s: decimal(totals.last),
+                active_90d: totals.active,
+                truncated: totals.truncated,
             })
             .collect(),
         seen,
-    }
+    };
+    (body, deadline)
 }
 
-/// The first `YYYY-MM-DD` of `line` that no digit touches.
+/// The first `YYYY-MM-DD` of `line` that no digit touches, when it is a calendar date: a month
+/// of `01` to `12` and a day of `01` to `31`. A malformed first date is no date.
 fn first_date(line: &str) -> Option<String> {
     let bytes = line.as_bytes();
-    (0..bytes.len().saturating_sub(9)).find_map(|start| {
+    let first = (0..bytes.len().saturating_sub(9)).find(|&start| {
         let candidate = &bytes[start..start + 10];
         let shaped = candidate.iter().enumerate().all(|(index, byte)| {
             if matches!(index, 4 | 7) {
@@ -1096,11 +1305,16 @@ fn first_date(line: &str) -> Option<String> {
         });
         let touched = (start > 0 && bytes[start - 1].is_ascii_digit())
             || bytes.get(start + 10).is_some_and(u8::is_ascii_digit);
-        (shaped && !touched).then(|| String::from_utf8_lossy(candidate).into_owned())
-    })
+        shaped && !touched
+    })?;
+    let date = &line[first..first + 10];
+    let month: u8 = date[5..7].parse().ok()?;
+    let day: u8 = date[8..10].parse().ok()?;
+    ((1..=12).contains(&month) && (1..=31).contains(&day)).then(|| date.to_string())
 }
 
-/// The status a line names, as a whole word in any case: the earliest on the line.
+/// The status a status line names: the first, by position, of the closed statuses, each a whole
+/// word in any case.
 fn named_status(line: &str) -> Option<&'static str> {
     let lower = line.to_ascii_lowercase();
     let bytes = lower.as_bytes();
@@ -1118,6 +1332,11 @@ fn named_status(line: &str) -> Option<&'static str> {
         .map(|(_, status)| status)
 }
 
+/// Whether `line` is a decision's status line: it starts with `**Status:**` or `Status:`.
+fn is_status_line(line: &str) -> bool {
+    line.starts_with("**Status:**") || line.starts_with("Status:")
+}
+
 /// The number of a decision file: its name's four leading ASCII digits, when a dash follows.
 pub(super) fn decision_number(path: &str) -> Option<&str> {
     let name = basename(path).as_bytes();
@@ -1131,12 +1350,14 @@ pub(super) fn is_decision(path: &str, policy: &Policy) -> bool {
     glob_matches(&policy.decisions, path) && decision_number(path).is_some()
 }
 
-/// One decision record: number from the file name, title from the first H1, status and date
-/// from the first other line that names a status. Without a text content (over
-/// `max_file_bytes` or binary) it is `unreadable` and has no title.
-pub(super) fn decision(path: &str, content: Option<&[u8]>) -> SurveyDecisionV1 {
+/// One decision record: number from the file name, title from the first H1, and status and
+/// date from the first line that starts with `**Status:**` or `Status:`: the first closed
+/// status on it, `amended` when it says so, and its first date; each absent, counted `unknown`,
+/// without one. Without a text content (over `max_file_bytes`, binary or not UTF-8) it is
+/// `unreadable` and has no title.
+pub(super) fn decision(path: &str, content: Option<&str>) -> SurveyDecisionV1 {
     let number = decision_number(path).unwrap_or_default().to_string();
-    let Some(text) = content.map(String::from_utf8_lossy) else {
+    let Some(text) = content else {
         return SurveyDecisionV1 {
             number,
             path: path.to_string(),
@@ -1144,37 +1365,23 @@ pub(super) fn decision(path: &str, content: Option<&[u8]>) -> SurveyDecisionV1 {
             truncated: false,
             status: Some(SURVEY_UNREADABLE.into()),
             date: None,
+            amended: false,
         };
     };
-    let mut title = None;
-    let mut title_line = None;
-    for (index, line) in text.lines().enumerate() {
-        if let Some(heading) = line.strip_prefix("# ") {
-            title = display(heading);
-            title_line = Some(index);
-            break;
-        }
-    }
-    let mut status = None;
-    let mut date = None;
-    for (index, line) in text.lines().enumerate() {
-        if Some(index) == title_line {
-            continue;
-        }
-        if let Some(named) = named_status(line) {
-            status = Some(named.to_string());
-            date = first_date(line);
-            break;
-        }
-    }
-    let (title, truncated) = title.map_or((None, false), |(title, cut)| (Some(title), cut));
+    let (title, truncated) = text
+        .lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .and_then(display)
+        .map_or((None, false), |(title, cut)| (Some(title), cut));
+    let status_line = text.lines().find(|line| is_status_line(line));
     SurveyDecisionV1 {
         number,
         path: path.to_string(),
         title,
         truncated,
-        status,
-        date,
+        status: status_line.and_then(named_status).map(str::to_string),
+        date: status_line.and_then(first_date),
+        amended: status_line.is_some_and(|line| line.to_ascii_lowercase().contains("amended")),
     }
 }
 
@@ -1205,12 +1412,14 @@ pub(super) fn decisions_section(
     }
 }
 
-/// The names of the bold-colon headings, `**Term**:` alone on a line, in file order, each once.
-pub(super) fn terms(content: &[u8]) -> Vec<SurveyNameV1> {
-    let text = String::from_utf8_lossy(content);
-    let mut seen = BTreeSet::new();
-    let mut terms = Vec::new();
-    for line in text.lines() {
+/// The names of the bold-colon headings, `**Term**:` alone on a line, by name, each once: one
+/// line per item of `clock`, and whether the deadline stopped the reading.
+pub(super) fn terms(content: &str, clock: &Clock) -> (Vec<SurveyNameV1>, bool) {
+    let mut terms: BTreeMap<String, bool> = BTreeMap::new();
+    for line in content.lines() {
+        if clock.item() {
+            return (named_terms(terms), true);
+        }
         let Some(inner) = line
             .trim_end()
             .strip_prefix("**")
@@ -1221,28 +1430,37 @@ pub(super) fn terms(content: &[u8]) -> Vec<SurveyNameV1> {
         if inner.contains("**") {
             continue;
         }
-        if let Some(term) = named(inner)
-            && seen.insert(term.name.clone())
-        {
-            terms.push(term);
+        if let Some(term) = named(inner) {
+            terms.entry(term.name).or_insert(term.truncated);
         }
     }
+    (named_terms(terms), false)
+}
+
+fn named_terms(terms: BTreeMap<String, bool>) -> Vec<SurveyNameV1> {
     terms
+        .into_iter()
+        .map(|(name, truncated)| SurveyNameV1 { name, truncated })
+        .collect()
 }
 
 /// `vocabulary`: the file, whether the head holds it, and its terms; `content` is `None` when
-/// the file is over `max_file_bytes` or not text, which leaves the terms unmeasured.
+/// the file is over `max_file_bytes`, not text or not UTF-8, which leaves the terms
+/// unmeasured. Also whether the deadline stopped the reading of the terms.
 pub(super) fn vocabulary_section(
     file: &str,
     present: bool,
-    content: Option<&[u8]>,
+    content: Option<&str>,
     policy: &Policy,
-) -> SurveyVocabularyV1 {
+    clock: &Clock,
+) -> (SurveyVocabularyV1, bool) {
     let mut seen = SurveySeenV1::new();
+    let mut deadline = false;
     let listed = match (present, content) {
         (false, _) => Some(Vec::new()),
         (true, Some(content)) => {
-            let mut found = terms(content);
+            let (mut found, stopped) = terms(content, clock);
+            deadline = stopped;
             cut(&mut found, "terms", policy.max_entries, &mut seen);
             Some(found)
         }
@@ -1254,13 +1472,14 @@ pub(super) fn vocabulary_section(
                 .map_or(listed.len() as u64, |seen| seen.get()),
         )
     });
-    SurveyVocabularyV1 {
+    let body = SurveyVocabularyV1 {
         file: file.to_string(),
         present,
         count,
         terms: listed,
         seen,
-    }
+    };
+    (body, deadline)
 }
 
 /// A check's name and program as a record may hold them: an absolute program becomes its file
@@ -1282,9 +1501,10 @@ fn check(source: &str, name: &str, program: &str) -> Option<SurveyCheckV1> {
 }
 
 /// The checks `.af/code-policy.toml` declares: `[checks.<key>]` with `name` (else the key) and
-/// `command.program`. Read leniently; a file that does not parse declares nothing here.
-pub(super) fn code_policy_checks(content: &[u8]) -> Vec<SurveyCheckV1> {
-    let Ok(value) = toml::from_str::<toml::Value>(&String::from_utf8_lossy(content)) else {
+/// `command.program`, each with its exact name. Read leniently; a file that does not parse
+/// declares nothing here.
+pub(super) fn code_policy_checks(content: &str) -> Vec<(String, SurveyCheckV1)> {
+    let Ok(value) = toml::from_str::<toml::Value>(content) else {
         return Vec::new();
     };
     let Some(checks) = value.get("checks").and_then(toml::Value::as_table) else {
@@ -1301,14 +1521,18 @@ pub(super) fn code_policy_checks(content: &[u8]) -> Vec<SurveyCheckV1> {
                 .get("command")
                 .and_then(|command| command.get("program"))
                 .and_then(toml::Value::as_str)?;
-            check(CODE_POLICY, name, program)
+            Some((
+                name.to_string(),
+                check(SURVEY_CODE_POLICY_SOURCE, name, program)?,
+            ))
         })
         .collect()
 }
 
-/// The `[[checks]]` of one review pipeline: `name` and `program`.
-pub(super) fn pipeline_checks(path: &str, content: &[u8]) -> Vec<SurveyCheckV1> {
-    let Ok(value) = toml::from_str::<toml::Value>(&String::from_utf8_lossy(content)) else {
+/// The `[[checks]]` of one pipeline file: `name` and `program`, each with its exact name, the
+/// source the file's basename.
+pub(super) fn pipeline_checks(path: &str, content: &str) -> Vec<(String, SurveyCheckV1)> {
+    let Ok(value) = toml::from_str::<toml::Value>(content) else {
         return Vec::new();
     };
     let Some(checks) = value.get("checks").and_then(toml::Value::as_array) else {
@@ -1317,11 +1541,11 @@ pub(super) fn pipeline_checks(path: &str, content: &[u8]) -> Vec<SurveyCheckV1> 
     checks
         .iter()
         .filter_map(|declared| {
-            check(
-                path,
-                declared.get("name")?.as_str()?,
-                declared.get("program")?.as_str()?,
-            )
+            let name = declared.get("name")?.as_str()?;
+            Some((
+                name.to_string(),
+                check(basename(path), name, declared.get("program")?.as_str()?)?,
+            ))
         })
         .collect()
 }
@@ -1345,33 +1569,109 @@ impl Found {
     }
 }
 
-/// `checks` from the declarations read (`None` content: over `max_file_bytes` or not text,
-/// listed under `unreadable`) and what the listing found.
-pub(super) fn checks_section(
-    declarations: &[(&str, Option<&[u8]>)],
-    found: &Found,
-    policy: &Policy,
-) -> SurveyChecksV1 {
-    let mut declared = Vec::new();
-    let mut unreadable = Vec::new();
-    for (path, content) in declarations {
-        match content {
-            None => unreadable.push(path.to_string()),
-            Some(content) if *path == CODE_POLICY => declared.extend(code_policy_checks(content)),
-            Some(content) => declared.extend(pipeline_checks(path, content)),
+/// `checks`, folded one declaration at a time as `cat-file` yields them. A check's identity is
+/// `<source>:<name>`; the first declared of an identity is kept.
+#[derive(Debug, Default)]
+pub(super) struct ChecksFold {
+    declared: BTreeMap<(String, String), SurveyCheckV1>,
+    unreadable: Vec<String>,
+}
+
+impl ChecksFold {
+    /// The declaration at `path`, `None` when it is over `max_file_bytes`, not text or not
+    /// UTF-8 (listed under `unreadable`): one declared check per item of `clock`. `false` when
+    /// the deadline stopped it.
+    pub(super) fn add(&mut self, path: &str, content: Option<&str>, clock: &Clock) -> bool {
+        let checks = match content {
+            None => {
+                self.unreadable.push(path.to_string());
+                return true;
+            }
+            Some(content) if path == CODE_POLICY => code_policy_checks(content),
+            Some(content) => pipeline_checks(path, content),
+        };
+        for (name, check) in checks {
+            if clock.item() {
+                return false;
+            }
+            self.declared
+                .entry((check.source.clone(), name))
+                .or_insert(check);
+        }
+        true
+    }
+
+    /// `checks` from the declarations folded and what the listing found, every list ranked by
+    /// name, then cut at `max_entries` with `seen`.
+    pub(super) fn finish(self, found: &Found, policy: &Policy) -> SurveyChecksV1 {
+        let mut declared: Vec<SurveyCheckV1> = self.declared.into_values().collect();
+        declared.sort_by(|a, b| (a.identity(), &a.program).cmp(&(b.identity(), &b.program)));
+        let mut unreadable = self.unreadable;
+        unreadable.sort();
+        let mut toolchain: Vec<String> = found.toolchain.iter().cloned().collect();
+        let mut seen = SurveySeenV1::new();
+        cut(&mut declared, "declared", policy.max_entries, &mut seen);
+        cut(&mut toolchain, "toolchain", policy.max_entries, &mut seen);
+        cut(&mut unreadable, "unreadable", policy.max_entries, &mut seen);
+        SurveyChecksV1 {
+            declared,
+            toolchain,
+            ci_workflows: decimal(found.workflows),
+            unreadable,
+            seen,
         }
     }
-    declared.sort();
-    unreadable.sort();
-    let mut seen = SurveySeenV1::new();
-    cut(&mut declared, "declared", policy.max_entries, &mut seen);
-    SurveyChecksV1 {
-        declared,
-        toolchain: found.toolchain.iter().cloned().collect(),
-        ci_workflows: decimal(found.workflows),
-        unreadable,
-        seen,
+}
+
+/// Hand the declarations `entries` to `each`, in order, as one `cat-file --batch` streams them:
+/// each with its content when it is a text blob, valid UTF-8, at or under `max_file_bytes`, and
+/// `None` otherwise, never decoded lossily. One declaration per item of the reader's Clock;
+/// `each` returns `false` when the deadline passed while it took one. `true` when the deadline
+/// stopped the reading, the declarations before it handed on.
+fn each_declaration(
+    reader: &Reader,
+    entries: &[&Entry],
+    policy: &Policy,
+    mut each: impl FnMut(&Entry, Option<String>) -> bool + Send,
+) -> Result<bool, Failure> {
+    let readable = |entry: &Entry| entry.size <= policy.max_file_bytes;
+    let names: Vec<String> = entries
+        .iter()
+        .filter(|entry| readable(entry))
+        .map(|entry| entry.oid.clone())
+        .collect();
+    let clock = reader.clock;
+    let mut position = 0;
+    let mut deadline = false;
+    if !names.is_empty() {
+        let stopped =
+            reader.stream("cat-file", &os(&["cat-file", "--batch"]), &names, |input| {
+                read_batch(input, &clock, Some(policy.max_file_bytes), |_, object| {
+                    // The oversized declarations before this one, then this one.
+                    while let Some(entry) = entries.get(position).filter(|entry| !readable(entry)) {
+                        position += 1;
+                        if !each(entry, None) {
+                            return false;
+                        }
+                    }
+                    let Some(entry) = entries.get(position) else {
+                        return true;
+                    };
+                    position += 1;
+                    let content = object
+                        .filter(|object| object.lines.is_some())
+                        .and_then(|object| object.content)
+                        .and_then(|content| String::from_utf8(content).ok());
+                    each(entry, content)
+                })
+            })?;
+        deadline = stopped.is_some();
     }
+    while !deadline && let Some(entry) = entries.get(position) {
+        position += 1;
+        deadline = clock.item() || !each(entry, None);
+    }
+    Ok(deadline)
 }
 
 /// What the Surveyor knows before it reads the head: the Project, the survey key, the policy,
@@ -1452,51 +1752,59 @@ fn declarations(
     (name, min_af, pin)
 }
 
-/// `sha256:` + hex(SHA-256 of the exact stdout of `git for-each-ref
-/// --format=%(refname)%09%(objectname) refs/heads refs/tags`), hashed as it streams: the refs
-/// of the survey key.
-pub(super) fn refs_digest(git: &Git) -> Result<String, String> {
-    let args = os(&[
-        "for-each-ref",
-        "--format=%(refname)%09%(objectname)",
-        "refs/heads",
-        "refs/tags",
-    ]);
-    let output = git
-        .stream(
-            &args,
-            |_| Ok::<(), std::io::Error>(()),
-            |stdout| -> Result<String, std::io::Error> {
-                let mut hasher = Sha256::new();
-                let mut chunk = vec![0_u8; STREAM_BUFFER];
-                loop {
-                    let read = stdout.read(&mut chunk)?;
-                    if read == 0 {
-                        break;
-                    }
-                    hasher.update(&chunk[..read]);
-                }
-                Ok(format!(
-                    "sha256:{}",
-                    review_core::hex::encode(&hasher.finalize())
-                ))
-            },
-        )
-        .map_err(|stopped| stopped.message)?;
-    if !output.status.success() {
-        return Err(format!(
-            "git for-each-ref: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    output
-        .output
-        .map_err(|error| format!("git for-each-ref: {error}"))
+/// The head commit of the checkout under the Survey's Clock: `None` when the deadline passed.
+pub(super) fn head(git: &Git, clock: &Clock) -> Result<Option<String>, Failure> {
+    let reader = Reader { git, clock: *clock };
+    reader.answer(
+        "rev-parse",
+        &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    )
 }
 
-/// The contents of the declarations read, in order: `None` for one over `max_file_bytes` or
-/// not text, and none past the file where the deadline stopped the reads, which the flag says.
-type Contents = (Vec<Option<Vec<u8>>>, bool);
+/// `sha256:` + hex(SHA-256 of the exact stdout of `git for-each-ref
+/// --format=%(refname)%09%(objectname) refs/heads refs/tags`), hashed as it streams under the
+/// Survey's Clock, one ref per item: the refs of the survey key. The error is the bound that
+/// stopped it: `max_wall_ms`, or `max_record_bytes` for a ref longer than
+/// [`MAX_SURVEY_RECORD_BYTES`].
+pub(super) fn refs_digest(
+    git: &Git,
+    clock: &Clock,
+) -> Result<Result<String, SurveyReasonV1>, Failure> {
+    let reader = Reader { git, clock: *clock };
+    let mut hasher = Sha256::new();
+    let stopped = reader.stream(
+        "for-each-ref",
+        &os(&[
+            "for-each-ref",
+            "--format=%(refname)%09%(objectname)",
+            "refs/heads",
+            "refs/tags",
+        ]),
+        &[],
+        |input| {
+            read_lines(input, clock, |line, ended| {
+                hasher.update(line);
+                if ended {
+                    hasher.update(b"\n");
+                }
+            })
+        },
+    )?;
+    Ok(match stopped {
+        None => Ok(format!(
+            "sha256:{}",
+            review_core::hex::encode(&hasher.finalize())
+        )),
+        Some(reason) => Err(reason),
+    })
+}
+
+/// The `git --version` stdout, trimmed, under the Survey's Clock: `None` when the deadline
+/// passed.
+pub(super) fn git_version(git: &Git, clock: &Clock) -> Result<Option<String>, Failure> {
+    let reader = Reader { git, clock: *clock };
+    reader.answer("--version", &["--version"])
+}
 
 /// The section after a deadline: `unavailable`, and every later one with it.
 fn after_deadline<T>() -> SurveySectionV1<T> {
@@ -1511,20 +1819,21 @@ fn section<T>(body: T, reasons: &[(bool, SurveyReasonV1)]) -> SurveySectionV1<T>
     }
 }
 
-/// Measure the head of `git` into the seven sections under one deadline from `started`.
-pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sections, Failure> {
+/// Measure the head of `git` into the seven sections under the Survey's one deadline, `clock`,
+/// which started before the survey key was computed.
+pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections, Failure> {
     let policy = basis.policy;
-    let reader = Reader {
+    let reader = |section: &'static str| Reader {
         git,
-        clock: Clock::new(started, policy.max_wall_ms),
+        clock: clock.section(section),
     };
-    let clock = reader.clock;
     let head = basis.head;
     // Set once the deadline passed: the section it stopped is partial, every later one
     // unavailable.
     let mut halted = false;
 
     // identity: what is known already, the head's declarations, and the Tree Digest.
+    let identity_reader = reader("identity");
     let mut identity = SurveyIdentityV1 {
         project_id: basis.project_id.to_string(),
         repository_id: basis.repository_id.to_string(),
@@ -1540,7 +1849,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sect
         surveyor_version: decimal(basis.surveyor_version),
         git_version: basis.git_version.to_string(),
     };
-    let (declared, deadline) = reader.objects(
+    let (declared, deadline) = identity_reader.objects(
         &[format!("{head}:.af/af.toml"), format!("{head}:.af/af.lock")],
         policy.max_file_bytes,
     )?;
@@ -1555,7 +1864,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sect
         };
         (identity.name, identity.min_af, identity.af_pin) =
             declarations(basis, content(0), content(1));
-        match tree_digest(git, &clock, head)? {
+        match tree_digest(git, &identity_reader.clock, head)? {
             Some(digest) => {
                 identity.tree_digest = Some(digest);
                 identity.tree_digest_reason = None;
@@ -1565,21 +1874,25 @@ pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sect
     }
     let identity = section(identity, &[(halted, SurveyReasonV1::MaxWallMs)]);
 
-    // tree: the listing, then the line counts of its text blobs.
-    let mut considered: Vec<Entry> = Vec::new();
+    // tree: folded as the listing, then the blobs' line counts, stream.
     let mut seen_paths = 0_u64;
     let mut declaring: Vec<Entry> = Vec::new();
     let mut found = Found::default();
+    // A bound that stopped the listing: the later sections did not see all of it either.
+    let mut listing_cut = None;
     let tree = if halted || clock.passed() {
         halted = true;
         after_deadline()
     } else {
-        let deadline = reader.stream(
+        let tree_reader = reader("tree");
+        let tree_clock = tree_reader.clock;
+        let mut fold = TreeFold::default();
+        let stopped = tree_reader.stream(
             "ls-tree",
             &os(&["ls-tree", "-r", "-l", "-z", "--full-tree", head]),
             &[],
             |input| {
-                read_listing(input, &clock, |entry| {
+                read_listing(input, &tree_clock, |entry| {
                     if any_match(&policy.exclude, &entry.path) {
                         return;
                     }
@@ -1595,56 +1908,63 @@ pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sect
                         }
                     }
                     if seen_paths <= policy.max_paths {
-                        considered.push(entry);
+                        fold.add(&entry, policy);
                     }
                 })
             },
         )?;
-        let mut lines: BTreeMap<String, Option<u64>> = BTreeMap::new();
-        if deadline {
-            halted = true;
-        } else {
-            let oids: Vec<String> = considered
-                .iter()
-                .filter(|entry| {
-                    entry.kind == EntryKind::File && entry.size <= policy.max_file_bytes
-                })
-                .map(|entry| entry.oid.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            if !oids.is_empty() {
-                halted |=
-                    reader.stream("cat-file", &os(&["cat-file", "--batch"]), &oids, |input| {
-                        read_batch(input, &clock, None, |_, object| {
+        let mut deadline = stopped == Some(SurveyReasonV1::MaxWallMs);
+        listing_cut = stopped.filter(|reason| *reason != SurveyReasonV1::MaxWallMs);
+        if !deadline {
+            let blobs = fold.blobs();
+            if !blobs.is_empty() {
+                let stopped = tree_reader.stream(
+                    "cat-file",
+                    &os(&["cat-file", "--batch"]),
+                    &blobs,
+                    |input| {
+                        read_batch(input, &tree_clock, None, |_, object| {
                             if let Some(object) = object {
-                                lines.insert(object.oid, object.lines);
+                                fold.lines(&object.oid, object.lines);
                             }
+                            true
                         })
-                    })?;
+                    },
+                )?;
+                deadline = stopped.is_some();
             }
         }
-        let body = tree_section(&considered, &lines, seen_paths, policy);
-        let cut_paths = seen_paths > considered.len() as u64;
-        let cut_lists = !body.seen.is_empty();
-        section(
-            body,
-            &[
-                (halted, SurveyReasonV1::MaxWallMs),
-                (cut_paths, SurveyReasonV1::MaxPaths),
-                (cut_lists, SurveyReasonV1::MaxEntries),
-            ],
-        )
+        halted |= deadline;
+        let cut_paths = seen_paths > fold.files();
+        if deadline && fold.files() == 0 {
+            after_deadline()
+        } else {
+            let body = fold.finish(seen_paths, policy);
+            let cut_lists = !body.seen.is_empty();
+            section(
+                body,
+                &[
+                    (deadline, SurveyReasonV1::MaxWallMs),
+                    (listing_cut.is_some(), SurveyReasonV1::MaxRecordBytes),
+                    (cut_paths, SurveyReasonV1::MaxPaths),
+                    (cut_lists, SurveyReasonV1::MaxEntries),
+                ],
+            )
+        }
     };
 
     // history, and the walk contributors folds.
-    let mut walk = Walk::new(basis.cutoff);
+    let mut walk = Walk::new(basis.cutoff, policy.max_paths);
     let mut reachable = 0;
+    // A bound that stopped the walk: `max_paths` or `max_record_bytes`.
+    let mut walk_cut = None;
     let history = if halted || clock.passed() {
         halted = true;
         after_deadline()
     } else {
-        match reader.answer(
+        let history_reader = reader("history");
+        let history_clock = history_reader.clock;
+        match history_reader.answer(
             "rev-list",
             &["rev-list", "--count", "--end-of-options", head, "--"],
         )? {
@@ -1656,7 +1976,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sect
                 reachable = count
                     .parse::<u64>()
                     .map_err(|_| unreadable("rev-list --count is not a number".into()))?;
-                let deadline = reader.stream(
+                let stopped = history_reader.stream(
                     "log",
                     &os(&[
                         "-c",
@@ -1679,33 +1999,38 @@ pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sect
                         "--",
                     ]),
                     &[],
-                    |input| read_log(input, &clock, policy, |commit| walk.add(commit)),
+                    |input| read_log(input, &history_clock, policy, |commit| walk.add(commit)),
                 )?;
-                halted |= deadline;
-                if walk.commits == 0 && !halted {
+                let mut deadline = stopped == Some(SurveyReasonV1::MaxWallMs);
+                walk_cut = stopped.filter(|reason| *reason != SurveyReasonV1::MaxWallMs);
+                if walk.commits == 0 && !deadline && walk_cut.is_none() {
                     return Err(unreadable("git log reached no commit".into()));
                 }
                 if walk.commits == 0 {
-                    after_deadline()
+                    halted |= deadline;
+                    SurveySectionV1::unavailable(walk_cut.unwrap_or(SurveyReasonV1::MaxWallMs))
                 } else {
                     let (hot, distinct) = walk.hot_paths(policy.hot_paths.min(policy.max_entries));
+                    deadline |= history_clock.item();
                     // The hot paths the head no longer holds, asked of the head itself.
                     let mut present = BTreeSet::new();
-                    if !halted && !hot.is_empty() {
+                    if !deadline && !hot.is_empty() {
                         let mut args = os(&["ls-tree", "-z", "--full-tree", "--name-only", head]);
                         args.push("--".into());
                         args.extend(hot.iter().map(|(path, _)| {
                             use std::os::unix::ffi::OsStringExt;
                             OsString::from_vec(review_core::decode_path(path))
                         }));
-                        halted |= reader.stream("ls-tree", &args, &[], |input| {
-                            read_records(input, &clock, |record| {
-                                present.insert(review_core::encode_path(record));
-                                Ok(())
-                            })
-                        })?;
+                        deadline |= history_reader
+                            .stream("ls-tree", &args, &[], |input| {
+                                read_records(input, &history_clock, |record| {
+                                    present.insert(review_core::encode_path(record));
+                                    Ok(())
+                                })
+                            })?
+                            .is_some();
                     }
-                    let absent: BTreeSet<String> = if halted {
+                    let absent: BTreeSet<String> = if deadline {
                         BTreeSet::new()
                     } else {
                         hot.iter()
@@ -1715,30 +2040,43 @@ pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sect
                     };
                     let mut body =
                         history_section(&walk, reachable, hot, distinct, &absent, policy);
-                    if !halted {
+                    let mut refs_cut = false;
+                    if !deadline {
                         let mut refs = Refs::default();
-                        halted |= reader.stream(
+                        let stopped = history_reader.stream(
                             "for-each-ref",
                             &os(&[
                                 "for-each-ref",
-                                "--sort=-creatordate",
-                                "--format=%(refname)",
+                                "--format=%(creatordate:unix)%09%(refname)",
                                 "refs/heads",
                                 "refs/tags",
                             ]),
                             &[],
-                            |input| read_lines(input, &clock, |refname| refs.add(refname, policy)),
+                            |input| {
+                                read_lines(input, &history_clock, |line, _| refs.line(line, policy))
+                            },
                         )?;
-                        if !halted {
+                        deadline = stopped == Some(SurveyReasonV1::MaxWallMs);
+                        refs_cut = stopped.is_some() && !deadline;
+                        if stopped.is_none() {
                             refs.fill(&mut body, policy);
                         }
                     }
+                    halted |= deadline;
                     let cut_commits = walk.commits < reachable;
                     let cut_lists = !body.seen.is_empty();
                     section(
                         body,
                         &[
-                            (halted, SurveyReasonV1::MaxWallMs),
+                            (deadline, SurveyReasonV1::MaxWallMs),
+                            (
+                                refs_cut || walk_cut == Some(SurveyReasonV1::MaxRecordBytes),
+                                SurveyReasonV1::MaxRecordBytes,
+                            ),
+                            (
+                                walk_cut == Some(SurveyReasonV1::MaxPaths),
+                                SurveyReasonV1::MaxPaths,
+                            ),
                             (cut_commits, SurveyReasonV1::MaxCommits),
                             (cut_lists, SurveyReasonV1::MaxEntries),
                         ],
@@ -1748,55 +2086,43 @@ pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sect
         }
     };
 
-    // contributors: the same walk, folded by author.
+    // contributors: the same walk, folded by key and ranked.
     let contributors = if halted || clock.passed() {
         halted = true;
         after_deadline()
+    } else if walk.commits == 0 {
+        SurveySectionV1::unavailable(walk_cut.unwrap_or(SurveyReasonV1::MaxWallMs))
     } else {
-        let body = contributors_section(&walk, policy);
+        let (body, deadline) = contributors_section(&walk, policy, &clock.section("contributors"));
+        halted |= deadline;
         let cut_lists = !body.seen.is_empty();
         section(
             body,
             &[
+                (deadline, SurveyReasonV1::MaxWallMs),
+                (
+                    walk_cut == Some(SurveyReasonV1::MaxRecordBytes),
+                    SurveyReasonV1::MaxRecordBytes,
+                ),
+                (
+                    walk_cut == Some(SurveyReasonV1::MaxPaths),
+                    SurveyReasonV1::MaxPaths,
+                ),
                 (walk.commits < reachable, SurveyReasonV1::MaxCommits),
                 (cut_lists, SurveyReasonV1::MaxEntries),
             ],
         )
     };
 
-    // decisions, vocabulary and checks read their declarations, one file per item.
-    let readable = |entry: &Entry| entry.size <= policy.max_file_bytes;
-    let read = |entries: &[&Entry]| -> Result<Contents, Failure> {
-        let names: Vec<String> = entries
-            .iter()
-            .filter(|entry| readable(entry))
-            .map(|entry| entry.oid.clone())
-            .collect();
-        let (objects, deadline) = reader.objects(&names, policy.max_file_bytes)?;
-        let mut objects = objects.into_iter();
-        let mut contents = Vec::new();
-        for entry in entries {
-            if !readable(entry) {
-                contents.push(None);
-                continue;
-            }
-            match objects.next() {
-                Some(object) => contents.push(
-                    object
-                        .filter(|object| object.lines.is_some())
-                        .and_then(|object| object.content),
-                ),
-                // The deadline stopped the stream before this file.
-                None => break,
-            }
-        }
-        Ok((contents, deadline))
-    };
+    // decisions, vocabulary and checks read their declarations as they stream, one file per
+    // item, and keep a content only when it is text and UTF-8.
+    let listing_short = listing_cut.is_some();
 
     let decisions = if halted || clock.passed() {
         halted = true;
         after_deadline()
     } else {
+        let decisions_reader = reader("decisions");
         let mut matched: Vec<&Entry> = declaring
             .iter()
             .filter(|entry| is_decision(&entry.path, policy))
@@ -1804,84 +2130,106 @@ pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sect
         matched.sort_by(|a, b| {
             (decision_number(&a.path), &a.path).cmp(&(decision_number(&b.path), &b.path))
         });
-        let (contents, deadline) = read(&matched)?;
+        let mut records: Vec<SurveyDecisionV1> = Vec::new();
+        let deadline = each_declaration(&decisions_reader, &matched, policy, |entry, content| {
+            records.push(decision(&entry.path, content.as_deref()));
+            true
+        })?;
         halted |= deadline;
-        let records: Vec<SurveyDecisionV1> = matched
-            .iter()
-            .zip(&contents)
-            .map(|(entry, content)| decision(&entry.path, content.as_deref()))
-            .collect();
-        let unread = records
-            .iter()
-            .any(|record| record.status.as_deref() == Some(SURVEY_UNREADABLE));
-        let body = decisions_section(records, policy);
-        let cut_lists = !body.seen.is_empty();
-        section(
-            body,
-            &[
-                (halted, SurveyReasonV1::MaxWallMs),
-                (unread, SurveyReasonV1::MaxFileBytes),
-                (cut_lists, SurveyReasonV1::MaxEntries),
-            ],
-        )
+        if deadline && records.is_empty() && !matched.is_empty() {
+            after_deadline()
+        } else {
+            let unread = records
+                .iter()
+                .any(|record| record.status.as_deref() == Some(SURVEY_UNREADABLE));
+            let body = decisions_section(records, policy);
+            let cut_lists = !body.seen.is_empty();
+            section(
+                body,
+                &[
+                    (deadline, SurveyReasonV1::MaxWallMs),
+                    (listing_short, SurveyReasonV1::MaxRecordBytes),
+                    (cut_lists, SurveyReasonV1::MaxEntries),
+                    (unread, SurveyReasonV1::MaxFileBytes),
+                ],
+            )
+        }
     };
 
     let vocabulary = if halted || clock.passed() {
         halted = true;
         after_deadline()
     } else {
+        let vocabulary_reader = reader("vocabulary");
+        let vocabulary_clock = vocabulary_reader.clock;
         let file: Vec<&Entry> = declaring
             .iter()
             .filter(|entry| entry.path == policy.vocabulary)
             .take(1)
             .collect();
-        let (contents, deadline) = read(&file)?;
-        if deadline && contents.is_empty() {
-            halted = true;
-            after_deadline()
-        } else {
-            let content = contents.first().cloned().flatten();
-            let body = vocabulary_section(
+        let mut read = None;
+        let mut deadline = each_declaration(&vocabulary_reader, &file, policy, |_, content| {
+            let (body, stopped) = vocabulary_section(
                 &policy.vocabulary,
-                !file.is_empty(),
+                true,
                 content.as_deref(),
                 policy,
+                &vocabulary_clock,
             );
-            let unread = body.terms.is_none();
-            let cut_lists = !body.seen.is_empty();
-            section(
-                body,
-                &[
-                    (unread, SurveyReasonV1::MaxFileBytes),
-                    (cut_lists, SurveyReasonV1::MaxEntries),
-                ],
-            )
+            read = Some(body);
+            !stopped
+        })?;
+        if file.is_empty() {
+            let (body, _) =
+                vocabulary_section(&policy.vocabulary, false, None, policy, &vocabulary_clock);
+            read = Some(body);
+        }
+        deadline |= clock.passed() && read.is_none();
+        halted |= deadline;
+        match read {
+            // The deadline passed before the file was read.
+            None => after_deadline(),
+            Some(body) => {
+                let unread = body.terms.is_none();
+                let cut_lists = !body.seen.is_empty();
+                section(
+                    body,
+                    &[
+                        (deadline, SurveyReasonV1::MaxWallMs),
+                        (listing_short, SurveyReasonV1::MaxRecordBytes),
+                        (cut_lists, SurveyReasonV1::MaxEntries),
+                        (unread, SurveyReasonV1::MaxFileBytes),
+                    ],
+                )
+            }
         }
     };
 
     let checks = if halted || clock.passed() {
         after_deadline()
     } else {
+        let checks_reader = reader("checks");
+        let checks_clock = checks_reader.clock;
         let mut declaring: Vec<&Entry> = declaring
             .iter()
             .filter(|entry| entry.path == CODE_POLICY || glob_matches(PIPELINES, &entry.path))
             .collect();
         declaring.sort_by(|a, b| a.path.cmp(&b.path));
-        let (contents, deadline) = read(&declaring)?;
-        let declarations: Vec<(&str, Option<&[u8]>)> = declaring
-            .iter()
-            .zip(&contents)
-            .map(|(entry, content)| (entry.path.as_str(), content.as_deref()))
-            .collect();
-        let body = checks_section(&declarations, &found, policy);
+        let mut fold = ChecksFold::default();
+        let deadline = each_declaration(&checks_reader, &declaring, policy, |entry, content| {
+            fold.add(&entry.path, content.as_deref(), &checks_clock)
+        })?;
+        // The toolchain files and workflows the listing found are reached in any case.
+        let body = fold.finish(&found, policy);
         let unread = !body.unreadable.is_empty();
         let cut_lists = !body.seen.is_empty();
         section(
             body,
             &[
                 (deadline, SurveyReasonV1::MaxWallMs),
-                (unread, SurveyReasonV1::MaxFileBytes),
+                (listing_short, SurveyReasonV1::MaxRecordBytes),
                 (cut_lists, SurveyReasonV1::MaxEntries),
+                (unread, SurveyReasonV1::MaxFileBytes),
             ],
         )
     };

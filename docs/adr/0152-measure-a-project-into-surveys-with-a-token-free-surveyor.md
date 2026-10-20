@@ -53,17 +53,20 @@ email first of all.
 
 1. **The record.** A Survey is `af/ProjectSurvey@1` ([schema](../../schemas/project-survey-v1.json)):
    RFC 8785 canonical JSON, every map sorted by key, every list in a stated order, and every
-   number a decimal string of an integer (counts, bytes, lines, Unix seconds, basis points); the
-   Surveyor's serializer refuses any JSON number, float or integer. Its sections are `identity`
+   number a decimal string of an integer (counts, bytes, lines, Unix seconds, basis points), a
+   share being its population's basis points rounded down (`3333` for one third of three, `0`
+   for an empty population); the Surveyor's serializer refuses any JSON number, float or
+   integer. Its sections are `identity`
    (Project ID, `repository_id`, `[project] name` and `min_af` and the af pin of `.af/af.lock` as
    the head declares them, head commit, `refs_digest`, the Tree Digest of the head's committed
    capture or `tree_digest_reason`, `cutoff_unix_s`, `policy_digest`, `surveyor_version` and
    `git_version`), `tree`, `history`, `contributors`, `decisions`, `vocabulary` and `checks`;
    `activity` is PJ5's. Each section carries `completeness` (`complete`, `partial` or
    `unavailable`) and, when not complete, the bound it reached as `reason` (`max_wall_ms`,
-   `max_commits`, `max_paths`, `max_entries` or `max_file_bytes`); an unavailable section holds
-   nothing else, and a section that cut a list, or left a value unmeasured, is never complete. A
-   list cut at its maximum records how many items it saw under `seen`, by list name. The
+   `max_record_bytes`, `max_paths`, `max_commits`, `max_entries` or `max_file_bytes`, the first
+   that holds in that order); an unavailable section holds nothing else, and a section that cut
+   a list, or left a value unmeasured, is never complete. A list cut at its maximum, or stopped
+   by the deadline, records how many items it saw under `seen`, by list name. The
    record's `completeness` folds them: `unavailable` only when every section is, otherwise
    `partial` when any section is not complete. `previous_survey_id` names the Survey before it
    in the same Project Store. The record holds no host path, Provider ID or author email.
@@ -73,37 +76,59 @@ email first of all.
    `recorded_unix_ms`} and
    `SurveyFailed@1` {`head`, `reason`, `recorded_unix_ms`} go into its log, each with a schema and
    in `run-event-v1.json`. A failure's reason is af's own sentence of at most 512 bytes, never a
-   path or an `@`.
+   path or an `@`. Replay binds every `SurveyRecorded@1` it reads a record by to that record:
+   `ProjectStore::survey`, through which `af project survey`, `af project show`, the reuse of
+   clause 3 and the chain's newest Survey read a record, refuses an event whose `head`,
+   `refs_digest`, `cutoff_unix_s`, `completeness`, `policy_digest`, `surveyor_version` or
+   `previous_survey_id` differs from the record's `identity` and chain, with a replay error
+   naming the event's sequence and the field, and the survey key is taken from the verified
+   record, never from the event alone.
 3. **Reuse on an unchanged survey key.** The survey key is the head commit, `refs_digest` =
    `sha256:` + hex(SHA-256 of the exact stdout of `git for-each-ref
    --format=%(refname)%09%(objectname) refs/heads refs/tags`), the `policy_digest` and the
-   `surveyor_version` (now 2); `activity`'s watermark joins it in PJ5. Before any work beyond
-   `rev-parse HEAD`, that `for-each-ref`, reading the policy and reading the log, a newest
-   `SurveyRecorded@1` that is `complete` and carries an unchanged survey key is reused: the
-   command prints one line, `unchanged: head <12 hex>, refs <16 hex>, policy <16 hex>, surveyor
-   2`, with that Survey's summary and records nothing. A new commit, tag or branch, a policy
+   `surveyor_version` (now 3); `activity`'s watermark joins it in PJ5. The key is computed
+   under the Survey's one `max_wall_ms` Clock, which starts before `rev-parse HEAD`: `rev-parse`
+   runs under what remains of it, and `for-each-ref` streams under it, one ref per item and what
+   remains of it as git's deadline, never the separate 30-second plumbing deadline; a deadline
+   reached before the key exists records `SurveyFailed@1` with the reason `the survey key could
+   not be computed within max_wall_ms` (only an exit 1 when `rev-parse` itself did not answer,
+   since the event names a head). Before any work beyond `rev-parse HEAD`, that `for-each-ref`,
+   reading the policy and reading the log, a newest uncollected Survey whose record is
+   `complete` and carries an unchanged survey key is reused: the command prints one line,
+   `unchanged: head <12 hex>, refs <16 hex>, policy <16 hex>, surveyor 3`, with that Survey's
+   summary and records nothing. A new commit, tag or branch, a policy
    change or a newer Surveyor records a new Survey; a newest Survey that is `partial` or
    `unavailable` is measured again; `af project refresh --force` records one regardless of the
    key.
 4. **Time.** `cutoff_unix_s` is the clock when the Survey starts, and no other field depends on
    when it was taken; a debug build reads `AF_TEST_SURVEY_CUTOFF_UNIX_S` to fix it, as
    `AF_TEST_PROJECT_GIT_DEADLINE_MS` lowers the git deadline and `AF_TEST_SURVEY_SLOW_ITEM_US`
-   makes every streamed item cost that many microseconds, and a release build reads none of
-   them. A window holds a commit when `cutoff - window < committer time <= cutoff`, for windows
+   makes every item cost that many microseconds, an item of a stream and of every loop after
+   one alike (an aggregated tree entry, a ranked identity, a declaration, a line of terms, a
+   declared check), `AF_TEST_SURVEY_SLOW_SECTION` naming the one section whose items alone cost
+   it, and a release build reads none of them. A window holds a commit when `cutoff - window < committer time <= cutoff`, for windows
    of 30, 90 and 365 days. So a Survey is byte-identical for the same head, refs, policy,
    cutoff, Surveyor version and git version.
 5. **Policy.** The `[survey]` table of `.af/af.toml` sits in the project layer and deep-merges
    like every other table; every key is typed and an unknown one is refused, `refresh` included
    until PJ4. The keys and defaults are `max_wall_ms = 60000`, `max_commits = 100000`,
    `max_file_bytes = 1048576`, `max_paths = 200000`, `max_entries = 1000`,
-   `max_survey_bytes = 1048576`, `exclude = []`,
+   `max_survey_bytes = 1048576` (these three are ceilings: a layer may lower one to any
+   positive integer at most 200000, 1000 and 1048576, and zero, a value above the ceiling or one
+   that does not fit an integer is refused when the policy loads, from the project layer and the
+   environment form alike, naming the key and the ceiling; an integer TOML itself cannot hold
+   is refused with its file), `exclude = []`,
    `tests = ["**/tests/**", "**/*_test.*", "**/test_*", "**/fixtures/**"]`,
    `decisions = "docs/adr/*.md"`, `vocabulary = "CONTEXT.md"`,
    `release_tags = "v*"`, `identity = "name"` (or `"email_hash"`), `agent_authors = ["*[bot]"]`,
    `agent_trailers = ["*Claude*", "*Codex*", "*GPT*"]` and `hot_paths = 20`.
-   `[survey.languages]` maps a file name or `*.ext` to a language and extends the
-   built-in map that [docs/project.md](../project.md#surveys) lists; it never replaces it. Every
-   pattern (`exclude`, `tests`, `decisions`, `release_tags`, `agent_authors`, `agent_trailers`)
+   `[survey.languages]` maps patterns to languages ahead of the built-in extension map that
+   [docs/project.md](../project.md#surveys) lists: each file counts for exactly one language,
+   the bytewise-lexicographically first configured pattern that matches it (one without `/`
+   matches the file name, one with `/` the whole path) over the built-in map, which names a file
+   by its exact name, else its longest extension; a file nothing matches is `other`, as
+   symlinks and submodules are. Every pattern (`exclude`, `tests`, `decisions`, `release_tags`,
+   `agent_authors`, `agent_trailers`, the keys of `[survey.languages]`)
    matches with `crate::project::glob_matches`, the one grammar of `.af/af.toml`: `**` spans
    segments, `*` a run inside one, `?` one character, and every other character is literal,
    brackets included, so `*[bot]` matches `dependabot[bot]` and no name that merely ends in `t`,
@@ -112,12 +137,17 @@ email first of all.
    `policy_digest` is `sha256:` + hex(SHA-256 of the canonical JSON of the effective policy).
    The generic environment form of the configuration ladder applies
    (`AF_SURVEY__MAX_COMMITS=1`); nothing bespoke is added.
-6. **Contributors.** `identity = "name"` names a contributor by `%an`, and never asks git for the
-   email; a name longer than 256 bytes is cut at a character boundary and marked `truncated`. An
-   author name that is itself an email address (an `@` between non-empty parts, no whitespace),
-   or that is blank or holds a control character, is replaced under both policies by `h:` and
-   the first 16 hex digits of SHA-256 of the lowercased, trimmed name. `identity = "email_hash"`
-   names one by the first 16 hex digits of SHA-256 of the lowercased, trimmed `%ae`. The no-email
+6. **Contributors.** Each contributor carries a `key`, by which it is grouped and ranked, never
+   by its display text. `identity = "name"` keys one by the first 16 hex digits of SHA-256 of
+   the exact `%an` bytes, and never asks git for the email, and records `name`, the display
+   text: the author name, cut at a character boundary to 256 bytes and marked `truncated` when
+   longer, so two names sharing a 256-byte prefix are two identities with equal names. An author
+   name any whitespace-separated token of which is an email address (an `@` between non-empty
+   parts), or that is blank or holds a control character, is replaced whole, before any cut and
+   under both policies, by `h:` and the first 16 hex digits of SHA-256 of the lowercased,
+   trimmed name, as its key and, under `name`, its name; the email is not used for it.
+   `identity = "email_hash"` keys one by the first 16 hex digits of SHA-256 of the lowercased,
+   trimmed `%ae` and records no name. The no-email
    rule covers author identities only: an author email never enters a record, an event, a
    document, a text output or an error, while repository text (decision titles, paths, terms,
    check names, hot paths) is recorded as committed, `@` included, bounded by clause 9. A commit
@@ -127,8 +157,8 @@ email first of all.
    `agent_commits` and their shares in basis points) and once for its author, who keeps the
    per-identity totals; an empty window makes every share `0`. `contributors` carries, per
    identity, the commits, lines added and removed, first and last committer time and
-   `active_90d`, the identities with the most commits up to `max_entries`, the count active in
-   90 days, and the top identity's share.
+   `active_90d`, the identities ranked by commits, then lines added, both descending, then key,
+   up to `max_entries`, the count active in 90 days, and the top identity's share.
 7. **Tree and history.** `tree` comes from `git ls-tree -r -l` of the head and one
    `git cat-file --batch`, both read as they stream. `exclude` removes entries before anything
    is counted, in `tree`, `decisions`, `vocabulary`, `checks` and the numstat of `history` and
@@ -146,45 +176,72 @@ email first of all.
    entry (`-` `-`) is one file touched and zero lines; ties break by path, then by commit ID.
    `history` comes from `git rev-list --count`, that `git log --numstat`, one `git ls-tree
    --name-only` of the hot paths (to mark the ones the head no longer holds `removed`) and one
-   `git for-each-ref --sort=-creatordate refs/heads refs/tags` (local branches, the tag count
-   and the newest five tags matching `release_tags`): commits and merges in total and per
-   window, first and last committer time, churn per top-level directory over 90 days, and the
-   `hot_paths` paths with the most commits in 90 days. The log also runs with `--no-mailmap
-   --no-textconv --no-ext-diff --diff-algorithm=myers` and `log.showRoot=true`, so neither a
+   `git for-each-ref --format=%(creatordate:unix)%09%(refname) refs/heads refs/tags` (local
+   branches, the tag count and the newest five tags matching `release_tags`): commits and merges
+   in total and per window, first and last committer time, churn per top-level directory over
+   90 days, and the `hot_paths` paths with the most commits in 90 days. Every bounded list is
+   ranked before `max_entries` cuts it and its totals cover the whole population: contributors
+   by commits, then lines added, both descending, then key; hot paths by touching commits in 90
+   days, descending, then path; release tags by tagger time (annotated) or the target's
+   committer time (lightweight), newest first, undated last, then name; directories,
+   languages, churn, terms and checks by name; decisions by number, then path. The tree is
+   folded as its listing and its blobs stream, and a file's language is the one clause 5
+   names. Intermediate state is bounded too: the history walk tracks at most `max_paths`
+   distinct paths (the paths of the 90-day window, and the paths of any one commit), and no
+   streamed record (a tree entry, a numstat line or log field, a ref, a `cat-file` header) is
+   read past 64 KiB; beyond either the walk or the listing stops, the section is `partial`
+   with reason `max_paths` or `max_record_bytes` (`contributors` with the walk), and its totals
+   and rankings cover the population observed before it; a ref of the survey key past 64 KiB
+   records `SurveyFailed@1`. The log also runs with `--no-mailmap --no-textconv --no-ext-diff
+   --diff-algorithm=myers` and `log.showRoot=true`, so neither a
    checkout's configuration nor a program it names changes or computes a count, and
    `identity.git_version` records the exact `git --version` stdout, trimmed, because git
    decides these numbers.
 8. **Decisions, vocabulary, checks.** `decisions` holds every decision record (clause 5) up to
    `max_entries`, sorted by number, then path, with `count` and `by_status`; a Brief variant
    picks the newest N in PJ3. Each has the number (the four leading digits), the path, the
-   title from the first H1, and the status and date from the first other line naming
-   `accepted`, `proposed`, `superseded`, `deprecated` or `rejected` (as a word, in any case) and
-   the first ISO date on it; `by_status` counts `unknown` for none. `vocabulary` lists the names
-   of the `**Term**:` headings of the `vocabulary` file, in file order and never a definition.
-   `checks` lists the names and programs (an absolute program reduced to its file name; never
-   an argument) of `.af/code-policy.toml`'s `[checks.*]` and of the `[[checks]]` of the review
-   pipelines, which the `.af/` layout keeps under `.af/pipelines/`; the toolchain declarations
-   present at the root among `rust-toolchain.toml`, `.nvmrc`, `.python-version`,
-   `.tool-versions`, `go.mod`, `package.json`, `Cargo.toml` and `pyproject.toml`; and the count
-   of `.github/workflows/*.yml|yaml`. A file these sections read that is over `max_file_bytes`
-   or not text makes its section `partial` with reason `max_file_bytes`, never `complete` with
-   nothing in it: a decision is listed with status `unreadable` and no title, the vocabulary is
-   `present` with `terms` and `count` absent, and a declaration is named under `unreadable`.
+   title from the first H1, and the status and date from the first line that starts with
+   `**Status:**` or `Status:`: the status is the first of `proposed`, `accepted`, `superseded`,
+   `deprecated` and `rejected` on that line (as a word, in any case; so `accepted; superseded in
+   part by` is `accepted`), with `amended: true` when the line says `amended`, and the date is
+   the first `YYYY-MM-DD` on it when that is a calendar date; each is absent, the status
+   counted `unknown` in `by_status`, when absent or malformed. `vocabulary` lists the names of
+   the `**Term**:` headings of the `vocabulary` file, by name, each once, and never a
+   definition. `checks` lists the names and programs (an absolute program reduced to its file
+   name; never an argument) of exactly these sources: `.af/code-policy.toml`'s `[checks.*]`, and
+   each `[[checks]]` of every `.af/pipelines/*.toml` in the head tree, routed or not. A check's
+   source is `code-policy` or the pipeline file's basename and its identity `<source>:<name>`,
+   so equal names in two pipelines are two checks and the first declared of an identity is
+   kept. It lists the toolchain files present at the root among `rust-toolchain.toml`,
+   `rust-toolchain`, `.tool-versions`, `.nvmrc`, `.node-version`, `.python-version`,
+   `.ruby-version` and `.java-version`, and counts `.github/workflows/*.yml` and `*.yaml`.
+   `declared`, `toolchain` and `unreadable` are each cut at `max_entries` after ranking, with
+   `seen` and reason `max_entries`. A file these sections read that is over `max_file_bytes`,
+   not text or not valid UTF-8 is never decoded lossily: it makes its section `partial` with
+   reason `max_file_bytes`, never `complete` with nothing in it: a decision is listed with
+   status `unreadable` and no title, the vocabulary is `present` with `terms` and `count`
+   absent, and a declaration is named under `unreadable`.
 9. **Bounds and processes.** Every git process of the Surveyor runs through `projects/git.rs`,
    supervised in delivery's isolated command, with a deadline of what remains of the one
    `max_wall_ms` (`Git::run_within` for a one-line answer, `Git::stream_within` for every stream,
    and `Git::repo_within`, whose every git command ends by that one deadline, for the committed
    capture of the Tree Digest, into a scratch CAS outside the checkout). Every stream (`cat-file --batch`, `ls-tree`, `log --numstat`,
    `for-each-ref`) is consumed as it arrives, never buffered whole, and every loop over tree
-   entries, blobs, commits, numstat lines, decision files, tags and refs checks the clock once
-   per item: a section that reaches the deadline stops at that item and is `partial` with reason
-   `max_wall_ms` and what it reached, every later section is `unavailable`, and the Survey is
-   still recorded, so its wall time is at most `max_wall_ms` plus one item plus what remained of
-   one git command's deadline. The Tree Digest is the committed capture's digest of the whole
+   entries, blobs, commits, numstat lines, decision files, tags and refs, and every loop over
+   what a stream read, checks the clock once per item: the tree's aggregation, folded as its
+   streams arrive; the ranking of identities; the reading of each decision, of each line of the
+   vocabulary file and of each declaration and declared check, each parsed as `cat-file` yields
+   it; and the clock is checked after every git stream, so a stream that ends after the
+   deadline ended late. A section whose work passed the deadline stops at that item and is
+   `partial` with reason `max_wall_ms` and what it reached (`unavailable` when it reached
+   nothing), never `complete`, every later section is `unavailable`, and the Survey is still
+   recorded, so its wall time is at most `max_wall_ms` plus one item plus what remained of one
+   git command's deadline. The Tree Digest is the committed capture's digest of the whole
    head tree, independent of `exclude` and every maximum; a capture that does not finish leaves
    it absent with `tree_digest_reason = "max_wall_ms"`, never a digest of a part. Fixed maxima
    bound the rest: `max_entries` items in any list of a section (directories, languages, churn,
-   hot paths, tags, decisions, terms, contributors, checks), 256 bytes for a display string (a
+   hot paths, tags, decisions, terms, contributors, and the declared checks, toolchain files and
+   unreadable declarations of `checks`), 256 bytes for a display string (a
    contributor name, a decision title, a term, a tag or a check name or program, cut at a
    character boundary and marked `truncated: true`), while identity strings (every field of
    `identity`, commit IDs, digests, ref names and paths) are recorded exactly, and
@@ -298,7 +355,7 @@ on afactory inside the Task that builds it: the operator measures `af project re
 real checkout, and the pull request states its wall time and the record's size (§5 PJ2 of the
 design note). This ADR records only the bounds above and the fixture's measured size: the
 record of `crates/af/tests/fixtures/project-survey/expected.json`, eight commits and 16 files,
-is 4,392 bytes plus the length of `git --version` less 11 (4,415 bytes with
+is 4,477 bytes plus the length of `git --version` less 11 (4,500 bytes with
 `git version 2.54.0 (Apple Git-157)`), against `max_survey_bytes = 1048576`.
 
 ## Consequences
@@ -309,9 +366,10 @@ is 4,392 bytes plus the length of `git --version` less 11 (4,415 bytes with
 - A second refresh with an unchanged survey key costs `rev-parse`, `for-each-ref`, the policy
   and one read of the log. A new tag or branch, a changed `[survey]` policy or a new Surveyor
   version surveys the same head again, and so does a partial newest Survey.
-- A Survey cut by `max_wall_ms`, `max_commits`, `max_paths`, `max_entries` or `max_file_bytes`
-  is recorded and says so, with `seen` for every cut list; a reader never mistakes it for a
-  complete one. A Survey's wall time and size are bounded whatever the repository holds.
+- A Survey cut by `max_wall_ms`, `max_record_bytes`, `max_paths`, `max_commits`, `max_entries`
+  or `max_file_bytes` is recorded and says so, with `seen` for every cut list; a reader never
+  mistakes it for a complete one. A Survey's wall time, size and intermediate state are bounded
+  whatever the repository holds, the survey key's reads included.
 - Contributor counts under `name` split one person who wrote under two names; `email_hash` joins
   them by address at the cost of opaque identities.
 - Surveys accumulate in the Project Store until a later round collects them; each is a few
@@ -324,11 +382,30 @@ is 4,392 bytes plus the length of `git --version` less 11 (4,415 bytes with
   in its one place, stating the totals; proves the `max_commits` boundary in date order; proves
   an unchanged survey key records nothing and prints the key, while a new commit, tag or
   branch, a partial newest Survey and `--force` each record one chained to the one before;
-  records a partial Survey under `max_wall_ms = 1` with the Tree Digest absent and its reason;
-  stops a 2,000-file tree at the deadline inside `tree` with every later section unavailable and
-  the refresh under `max_wall_ms` + 2 s; cuts at `max_paths` and `max_entries` with `seen`,
+  refuses `max_wall_ms = 1`, which computes no survey key, and records a partial Survey with the
+  Tree Digest absent and its reason when the deadline falls inside `identity`; stops a
+  2,000-file tree at the deadline inside `tree` with every later section unavailable and the
+  refresh under `max_wall_ms` + 2 s; with `AF_TEST_SURVEY_SLOW_SECTION`, leaves `tree`,
+  `contributors`, `decisions`, `vocabulary` and `checks` each partial with what it reached when
+  the deadline falls inside its own work after its streams, every earlier section complete and
+  every later one unavailable, each refresh under `max_wall_ms` + 2 s; fails a refresh whose
+  fake git never answers the key's `for-each-ref` with `SurveyFailed@1` within `max_wall_ms` +
+  2 s; refuses at replay a hand-written `SurveyRecorded@1` whose `refs_digest` differs from its
+  record's; refuses zero, above-ceiling and overflowing `max_paths`, `max_entries` and
+  `max_survey_bytes` from the project layer and the environment; states the status lines (two
+  dates, a partial supersession with `amended`, a missing date, no status line), the one-third
+  share `3333`, the ranking by commits before lines added and a cut at `max_entries = 1`, the
+  checks of an unused pipeline, of equal names in two pipelines and of two toolchain files, and
+  the languages of overlapping configured patterns, of a pattern over a built-in extension and
+  of an unmatched file; leaves `history` partial with `max_paths` for a small head whose one
+  historical commit touched more paths than `max_paths`; lists one of two oversized pipelines
+  under `unreadable` with `seen` 2 at `max_entries = 1`; leaves a non-UTF-8 decision,
+  vocabulary and declaration unreadable; hashes the names `carol@fixture.invalid` and
+  `Alice alice@example.org` under both identity policies; cuts at `max_paths` and
+  `max_entries` with `seen`,
   records `SurveyFailed@1` naming the bytes under `max_survey_bytes = 1024`, cuts and marks a
-  300-byte author name and keeps a 286-byte seven-root `repository_id` exact; leaves an
+  300-byte author name, keeps a second name with the same first 256 bytes a second identity
+  with equal display text, and keeps a 286-byte seven-root `repository_id` exact; leaves an
   oversized vocabulary, decision and declaration partial with `max_file_bytes`; finds no author
   email in any byte of the state home or any output under either identity policy, an
   email-shaped author name included, while the ADR titled with an address is recorded as
@@ -338,7 +415,9 @@ is 4,392 bytes plus the length of `git --version` less 11 (4,415 bytes with
   Surveyor refuse a JSON number in a record and sort every map, match every pattern with the
   one grammar (`dependabot[bot]` matches `*[bot]`, `[0-9]` is literal, `docs/adr/README.md` is
   no decision), refuse unknown and invalid policy keys, read git's listing, batch and log
-  streams item by item and stop at a passed deadline, and fold windows, the partition, cut
-  lists, decisions, terms and checks. `crates/review-core/tests/schema_parity/project.rs` pins
+  streams item by item and stop at a passed deadline, at a record over 64 KiB and at a commit
+  over `max_paths`, stop the ranking, the terms and the checks at a passed deadline, and fold
+  windows, the partition, shares, rankings, status lines, languages, cut lists, decisions,
+  terms and checks. `crates/review-core/tests/schema_parity/project.rs` pins
   the record, both events and the history document, and `crates/af/tests/it/cli_surface.rs` the
   help.

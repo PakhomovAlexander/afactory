@@ -190,6 +190,20 @@ pub const MAX_SURVEY_HOT_PATHS: usize = 1000;
 /// paths) are recorded exactly and never bounded by it.
 pub const MAX_SURVEY_TEXT_BYTES: usize = 256;
 
+/// Upper bound on one record of a git stream the Surveyor reads (a tree entry, a numstat line, a
+/// ref): a longer one stops the measurement with reason `max_record_bytes`.
+pub const MAX_SURVEY_RECORD_BYTES: usize = 64 * 1024;
+
+/// The ceilings of `[survey] max_paths`, `max_entries` and `max_survey_bytes`: a project may only
+/// lower them.
+pub const MAX_SURVEY_PATHS: u64 = 200_000;
+pub const MAX_SURVEY_ENTRIES: u64 = 1_000;
+pub const MAX_SURVEY_BYTES: u64 = 1_048_576;
+
+/// The source of the checks `.af/code-policy.toml` declares; a pipeline's checks name the
+/// pipeline file's basename.
+pub const SURVEY_CODE_POLICY_SOURCE: &str = "code-policy";
+
 /// Upper bound on the reason a `SurveyFailed@1` records.
 pub const MAX_SURVEY_FAILURE_REASON_BYTES: usize = 512;
 
@@ -226,13 +240,16 @@ pub fn is_survey_text(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
-/// Whether `value` is shaped like an email address: no whitespace, and an `@` between non-empty
-/// parts. An author name of this shape is never recorded as text.
+/// Whether `value` carries an email address: any of its whitespace-separated tokens holds an
+/// `@` between non-empty parts. An author name of this shape is never recorded as text: under
+/// either identity policy it is replaced whole by [`SURVEY_NAME_HASH_PREFIX`] and the 16-hex hash
+/// of the name.
 pub fn is_email_shaped(value: &str) -> bool {
-    !value.chars().any(char::is_whitespace)
-        && value
+    value.split_whitespace().any(|token| {
+        token
             .char_indices()
-            .any(|(index, character)| character == '@' && index > 0 && index + 1 < value.len())
+            .any(|(index, character)| character == '@' && index > 0 && index + 1 < token.len())
+    })
 }
 
 /// Whether `value` is a contributor named by hash: [`SURVEY_NAME_HASH_PREFIX`] and 16
@@ -300,12 +317,16 @@ pub enum SurveyReasonV1 {
     MaxWallMs,
     /// History reached `[survey] max_commits` before the root commits.
     MaxCommits,
-    /// The tree held more entries than `[survey] max_paths` after `exclude`.
+    /// The tree held more entries than `[survey] max_paths` after `exclude`, or the history walk
+    /// met more distinct paths than it.
     MaxPaths,
     /// A list of the section held more items than `[survey] max_entries`.
     MaxEntries,
-    /// A declaration the section reads is over `[survey] max_file_bytes` or not text.
+    /// A declaration the section reads is over `[survey] max_file_bytes`, not text or not UTF-8.
     MaxFileBytes,
+    /// A streamed record (a tree entry, a numstat line, a ref) is longer than
+    /// [`MAX_SURVEY_RECORD_BYTES`].
+    MaxRecordBytes,
 }
 
 impl SurveyReasonV1 {
@@ -316,6 +337,7 @@ impl SurveyReasonV1 {
             Self::MaxPaths => "max_paths",
             Self::MaxEntries => "max_entries",
             Self::MaxFileBytes => "max_file_bytes",
+            Self::MaxRecordBytes => "max_record_bytes",
         }
     }
 }
@@ -664,10 +686,20 @@ impl SurveyIdentityPolicyV1 {
     }
 }
 
-/// One contributor identity over the commits reached.
+/// One contributor identity over the commits reached, grouped and ranked by `key`, never by its
+/// display text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SurveyContributorV1 {
+    /// Under `identity = "name"` the first 16 hex digits of SHA-256 of the exact author-name
+    /// bytes; under `email_hash` the 16-hex email hash; under either, for an author name that
+    /// carries an email address (or is blank or holds a control character),
+    /// [`SURVEY_NAME_HASH_PREFIX`] and the 16-hex hash of the lowercased, trimmed name.
+    pub key: String,
+    /// Under `identity = "name"` only: the author name cut to [`MAX_SURVEY_TEXT_BYTES`], or the
+    /// key for a name that carries an email address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub commits: DecimalU64,
     pub added: DecimalU64,
     pub removed: DecimalU64,
@@ -681,6 +713,11 @@ pub struct SurveyContributorV1 {
         deserialize_with = "only_true"
     )]
     pub truncated: bool,
+}
+
+/// Whether `value` is a contributor key: 16 lowercase hex digits, or a name hash.
+pub fn is_contributor_key(value: &str) -> bool {
+    is_name_hash(value) || (value.len() == SURVEY_EMAIL_HASH_HEX_LEN && is_lower_hex(value))
 }
 
 /// `contributors`: who authored the commits reached, and how many were agent-assisted. Each
@@ -699,8 +736,9 @@ pub struct SurveyContributorsV1 {
     pub agent_share_bp: DecimalU64,
     /// The share of the identity with the most commits, in basis points, rounded down.
     pub top_share_bp: DecimalU64,
-    /// The identities with the most commits, at most `max_entries`, keyed by identity.
-    pub by_identity: BTreeMap<String, SurveyContributorV1>,
+    /// The identities ranked by commits, then lines added, both descending, then key, at most
+    /// `max_entries`.
+    pub by_identity: Vec<SurveyContributorV1>,
     /// `by_identity`, when cut.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub seen: SurveySeenV1,
@@ -722,11 +760,19 @@ pub struct SurveyDecisionV1 {
         deserialize_with = "only_true"
     )]
     pub truncated: bool,
-    /// A closed status, or `unreadable` for a file over `max_file_bytes` or not text.
+    /// The first closed status on the status line, or `unreadable` for a file over
+    /// `max_file_bytes`, not text or not UTF-8; absent (counted `unknown`) without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
+    /// The status line says `amended`.
+    #[serde(
+        default,
+        skip_serializing_if = "is_false",
+        deserialize_with = "only_true"
+    )]
+    pub amended: bool,
 }
 
 /// `decisions`: the files the `decisions` pattern matches whose name starts with four ASCII
@@ -750,8 +796,8 @@ pub struct SurveyDecisionsV1 {
 pub struct SurveyVocabularyV1 {
     pub file: String,
     pub present: bool,
-    /// The terms defined, and the first `max_entries` of them in file order, each once. Both
-    /// absent when the file is over `max_file_bytes` or not text.
+    /// The terms defined, and the first `max_entries` of them by name, each once. Both absent
+    /// when the file is over `max_file_bytes`, not text or not UTF-8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<DecimalU64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -761,7 +807,8 @@ pub struct SurveyVocabularyV1 {
     pub seen: SurveySeenV1,
 }
 
-/// One declared check: where it is declared, its name and its program, never its arguments.
+/// One declared check: where it is declared (`code-policy` or the pipeline file's basename),
+/// its name and its program, never its arguments. Its identity is `<source>:<name>`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SurveyCheckV1 {
@@ -777,19 +824,26 @@ pub struct SurveyCheckV1 {
     pub truncated: bool,
 }
 
+impl SurveyCheckV1 {
+    /// `<source>:<name>`: equal names in two sources are two checks.
+    pub fn identity(&self) -> String {
+        format!("{}:{}", self.source, self.name)
+    }
+}
+
 /// `checks`: declared checks, toolchain declarations and CI workflow files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SurveyChecksV1 {
-    /// By source, then name, then program.
+    /// By identity, `<source>:<name>`, then program; one per identity.
     pub declared: Vec<SurveyCheckV1>,
     /// The toolchain declarations present at the root, sorted.
     pub toolchain: Vec<String>,
     pub ci_workflows: DecimalU64,
-    /// Declarations over `max_file_bytes` or not text, sorted.
+    /// Declarations over `max_file_bytes`, not text or not UTF-8, sorted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unreadable: Vec<String>,
-    /// `declared`, when cut.
+    /// `declared`, `toolchain` and `unreadable`, when cut.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub seen: SurveySeenV1,
 }
@@ -1139,12 +1193,12 @@ fn validate_contributors(contributors: &SurveyContributorsV1) -> Result<(), Stri
     let cut = contributors.seen.contains_key("by_identity");
     let commits: u64 = contributors
         .by_identity
-        .values()
+        .iter()
         .map(|entry| entry.commits.get())
         .sum();
     let active = contributors
         .by_identity
-        .values()
+        .iter()
         .filter(|entry| entry.active_90d)
         .count() as u64;
     let total = contributors.human_commits.get() + contributors.agent_commits.get();
@@ -1169,26 +1223,43 @@ fn validate_contributors(contributors: &SurveyContributorsV1) -> Result<(), Stri
     {
         return Err("a share is at most 10000 basis points".into());
     }
-    for (identity, entry) in &contributors.by_identity {
-        let named = match contributors.identity {
-            SurveyIdentityPolicyV1::Name => {
-                is_name_hash(identity)
-                    || (is_survey_text(identity)
-                        && identity == identity.trim()
-                        && !is_email_shaped(identity))
-            }
-            SurveyIdentityPolicyV1::EmailHash => {
-                identity.len() == SURVEY_EMAIL_HASH_HEX_LEN && is_lower_hex(identity)
-            }
+    // Ranked by commits, then lines added, both descending, then key: one entry per key.
+    if !contributors.by_identity.windows(2).all(|pair| {
+        let rank = |entry: &SurveyContributorV1| {
+            (
+                std::cmp::Reverse(entry.commits.get()),
+                std::cmp::Reverse(entry.added.get()),
+                entry.key.clone(),
+            )
         };
+        rank(&pair[0]) < rank(&pair[1])
+    }) {
+        return Err(
+            "identities are ranked by commits, then lines added, then key, each key once".into(),
+        );
+    }
+    for entry in &contributors.by_identity {
+        let named = is_contributor_key(&entry.key)
+            && match (contributors.identity, entry.name.as_deref()) {
+                (SurveyIdentityPolicyV1::Name, Some(name)) if is_name_hash(&entry.key) => {
+                    name == entry.key && !entry.truncated
+                }
+                (SurveyIdentityPolicyV1::Name, Some(name)) => {
+                    is_survey_text(name) && name == name.trim() && !is_email_shaped(name)
+                }
+                (SurveyIdentityPolicyV1::EmailHash, None) => !entry.truncated,
+                _ => false,
+            };
         if !named {
             return Err(format!(
                 "an identity under `{}` is {}, never an email",
                 contributors.identity.as_str(),
                 match contributors.identity {
                     SurveyIdentityPolicyV1::Name =>
-                        "a name that is not an email address, or `h:` and 16 hex digits",
-                    SurveyIdentityPolicyV1::EmailHash => "16 lowercase hex digits",
+                        "a 16-hex key with a name that carries no email address, or `h:` and 16 \
+                         hex digits as both",
+                    SurveyIdentityPolicyV1::EmailHash =>
+                        "a key of 16 lowercase hex digits, or `h:` and 16 hex digits, without a name",
                 }
             ));
         }
@@ -1241,7 +1312,8 @@ fn validate_decisions(decisions: &SurveyDecisionsV1) -> Result<(), String> {
             || decision.status.as_deref().is_some_and(|status| {
                 status != SURVEY_UNREADABLE && !SURVEY_DECISION_STATUSES.contains(&status)
             })
-            || (unreadable && (decision.title.is_some() || decision.date.is_some()))
+            || (unreadable
+                && (decision.title.is_some() || decision.date.is_some() || decision.amended))
             || decision.date.as_deref().is_some_and(|date| !is_date(date))
         {
             return Err(
@@ -1276,6 +1348,9 @@ fn validate_vocabulary(vocabulary: &SurveyVocabularyV1) -> Result<(), String> {
             if !terms.iter().all(|term| is_survey_text(&term.name)) {
                 return Err("a term is short text".into());
             }
+            if !terms.windows(2).all(|pair| pair[0].name < pair[1].name) {
+                return Err("terms are sorted by name, each once".into());
+            }
         }
         _ => {
             return Err(
@@ -1287,22 +1362,37 @@ fn validate_vocabulary(vocabulary: &SurveyVocabularyV1) -> Result<(), String> {
 }
 
 fn validate_checks(checks: &SurveyChecksV1) -> Result<(), String> {
-    validate_seen(&checks.seen, &[("declared", checks.declared.len())])?;
+    validate_seen(
+        &checks.seen,
+        &[
+            ("declared", checks.declared.len()),
+            ("toolchain", checks.toolchain.len()),
+            ("unreadable", checks.unreadable.len()),
+        ],
+    )?;
     for check in &checks.declared {
-        if !crate::path::is_valid_repo_path(&check.source)
+        let source = check.source == SURVEY_CODE_POLICY_SOURCE
+            || (crate::path::is_valid_repo_path(&check.source)
+                && !check.source.contains('/')
+                && check.source.ends_with(".toml"));
+        if !source
             || !is_survey_text(&check.name)
             || !is_survey_text(&check.program)
             || check.program.starts_with('/')
         {
             return Err(
-                "a declared check is a repository source, a name and a program that is not a \
-                 host path"
+                "a declared check is `code-policy` or a pipeline file's basename, a name and a \
+                 program that is not a host path"
                     .into(),
             );
         }
     }
-    if !checks.declared.windows(2).all(|pair| pair[0] <= pair[1]) {
-        return Err("declared checks are sorted by source, name and program".into());
+    if !checks.declared.windows(2).all(|pair| {
+        (pair[0].identity(), &pair[0].program) <= (pair[1].identity(), &pair[1].program)
+    }) {
+        return Err(
+            "declared checks are sorted by identity, `<source>:<name>`, then program".into(),
+        );
     }
     for list in [&checks.toolchain, &checks.unreadable] {
         if !list.windows(2).all(|pair| pair[0] < pair[1])

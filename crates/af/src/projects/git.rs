@@ -171,22 +171,6 @@ impl Git {
         })
     }
 
-    /// [`Git::stream_within`] under the plumbing deadline.
-    pub(crate) fn stream<I, R, F, G>(
-        &self,
-        args: &[OsString],
-        writer: F,
-        reader: G,
-    ) -> Result<SupervisedDuplexOutput<I, R>, Stopped>
-    where
-        I: Send,
-        R: Send,
-        F: FnOnce(&mut dyn std::io::Write) -> Result<(), I> + Send,
-        G: FnOnce(&mut dyn std::io::Read) -> R + Send,
-    {
-        self.stream_within(args, deadline(PLUMBING_DEADLINE), writer, reader)
-    }
-
     /// Run git and require success: its trimmed stdout, or its stderr as the error.
     pub(crate) fn require<I, S>(&self, args: I, input: Option<Vec<u8>>) -> Result<String, String>
     where

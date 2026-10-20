@@ -6,13 +6,16 @@
 //! The table lives in the project layer and deep-merges like every other table of the
 //! configuration ladder, so the directory layer above every checkout can set it once, and the
 //! generic environment form (`AF_SURVEY__MAX_COMMITS=1`) overrides one key. Every key is typed
-//! and an unknown key is refused, as in the rest of `af.toml`. `[survey.languages]` extends the
-//! built-in extension map; it never replaces it.
+//! and an unknown key is refused, as in the rest of `af.toml`. `max_paths`, `max_entries` and
+//! `max_survey_bytes` are ceilings a layer may only lower. `[survey.languages]` maps patterns to
+//! languages ahead of the built-in extension map: the bytewise-first matching pattern wins.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use review_core::project::SurveyIdentityPolicyV1;
+use review_core::project::{
+    MAX_SURVEY_BYTES, MAX_SURVEY_ENTRIES, MAX_SURVEY_PATHS, SurveyIdentityPolicyV1,
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -23,9 +26,10 @@ pub(crate) struct SurveyTable {
     max_wall_ms: Option<u64>,
     max_commits: Option<u64>,
     max_file_bytes: Option<u64>,
-    max_paths: Option<u64>,
-    max_entries: Option<u64>,
-    max_survey_bytes: Option<u64>,
+    // The ceilings, read as written so a value that does not fit is refused naming its key.
+    max_paths: Option<toml::Value>,
+    max_entries: Option<toml::Value>,
+    max_survey_bytes: Option<toml::Value>,
     exclude: Option<Vec<String>>,
     tests: Option<Vec<String>>,
     decisions: Option<String>,
@@ -64,7 +68,7 @@ pub(crate) struct Policy {
     pub(crate) agent_authors: Vec<String>,
     pub(crate) agent_trailers: Vec<String>,
     pub(crate) hot_paths: u64,
-    /// `[survey.languages]` only; [`BUILT_IN_LANGUAGES`] is the Surveyor's own.
+    /// `[survey.languages]` only, by pattern; [`BUILT_IN_LANGUAGES`] is the Surveyor's own.
     pub(crate) languages: BTreeMap<String, String>,
 }
 
@@ -75,9 +79,9 @@ impl Default for Policy {
             max_wall_ms: 60_000,
             max_commits: 100_000,
             max_file_bytes: 1_048_576,
-            max_paths: 200_000,
-            max_entries: 1_000,
-            max_survey_bytes: 1_048_576,
+            max_paths: MAX_SURVEY_PATHS,
+            max_entries: MAX_SURVEY_ENTRIES,
+            max_survey_bytes: MAX_SURVEY_BYTES,
             exclude: Vec::new(),
             tests: strings(&["**/tests/**", "**/*_test.*", "**/test_*", "**/fixtures/**"]),
             decisions: "docs/adr/*.md".into(),
@@ -139,13 +143,32 @@ pub(crate) const BUILT_IN_LANGUAGES: &[(&str, &str)] = &[
     ("Makefile", "make"),
 ];
 
-/// Whether `key` is a `[survey.languages]` key: an exact file name, or `*.` and an extension.
+/// Whether `key` is a `[survey.languages]` key: a pattern of 1 to [`MAX_TEXT`] bytes, anchored at
+/// the repository root, without `/` at either end, an empty segment or a control character.
 fn is_language_key(key: &str) -> bool {
-    let name = key.strip_prefix("*.").unwrap_or(key);
-    !name.is_empty()
+    !key.is_empty()
         && key.len() <= MAX_TEXT
-        && !name.contains(['/', '*', '?', '['])
-        && !name.chars().any(char::is_control)
+        && !key.starts_with('/')
+        && !key.split('/').any(str::is_empty)
+        && !key.chars().any(char::is_control)
+}
+
+/// A ceiling's value: a positive integer at most `ceiling`, so a layer may only lower it. Zero,
+/// a value above the ceiling and one that does not fit an integer are refused naming the key.
+fn ceiling(key: &str, value: Option<&toml::Value>, ceiling: u64) -> Result<u64, String> {
+    let Some(value) = value else {
+        return Ok(ceiling);
+    };
+    value
+        .as_integer()
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| (1..=ceiling).contains(value))
+        .ok_or_else(|| {
+            format!(
+                "the [survey] policy does not load: {key} is a positive integer at most its \
+                 ceiling {ceiling}, which a layer may only lower"
+            )
+        })
 }
 
 impl Policy {
@@ -176,9 +199,17 @@ impl Policy {
             max_wall_ms: table.max_wall_ms.unwrap_or(defaults.max_wall_ms),
             max_commits: table.max_commits.unwrap_or(defaults.max_commits),
             max_file_bytes: table.max_file_bytes.unwrap_or(defaults.max_file_bytes),
-            max_paths: table.max_paths.unwrap_or(defaults.max_paths),
-            max_entries: table.max_entries.unwrap_or(defaults.max_entries),
-            max_survey_bytes: table.max_survey_bytes.unwrap_or(defaults.max_survey_bytes),
+            max_paths: ceiling("max_paths", table.max_paths.as_ref(), MAX_SURVEY_PATHS)?,
+            max_entries: ceiling(
+                "max_entries",
+                table.max_entries.as_ref(),
+                MAX_SURVEY_ENTRIES,
+            )?,
+            max_survey_bytes: ceiling(
+                "max_survey_bytes",
+                table.max_survey_bytes.as_ref(),
+                MAX_SURVEY_BYTES,
+            )?,
             exclude: table.exclude.unwrap_or(defaults.exclude),
             tests: table.tests.unwrap_or(defaults.tests),
             decisions: table.decisions.unwrap_or(defaults.decisions),
@@ -197,17 +228,8 @@ impl Policy {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if self.max_wall_ms == 0
-            || self.max_commits == 0
-            || self.max_paths == 0
-            || self.max_entries == 0
-            || self.max_survey_bytes == 0
-        {
-            return Err(
-                "max_wall_ms, max_commits, max_paths, max_entries and max_survey_bytes are at \
-                 least 1"
-                    .into(),
-            );
+        if self.max_wall_ms == 0 || self.max_commits == 0 {
+            return Err("max_wall_ms and max_commits are at least 1".into());
         }
         if self.max_wall_ms > 86_400_000 {
             return Err("max_wall_ms is at most 86400000 (one day)".into());
@@ -268,7 +290,9 @@ impl Policy {
         for (key, language) in &self.languages {
             if !is_language_key(key) {
                 return Err(format!(
-                    "[survey.languages] key `{key}` is a file name or `*.` and an extension"
+                    "[survey.languages] key `{key}` is a pattern of 1 to {MAX_TEXT} bytes, \
+                     anchored at the repository root, without `/` at either end or an empty \
+                     segment"
                 ));
             }
             if !review_core::project::is_language(language) {
@@ -314,22 +338,28 @@ impl Policy {
         ))
     }
 
-    /// The language of a file by its name: `[survey.languages]` first, then the built-in map;
-    /// the exact name, then the longest extension; `other` when neither names it.
-    pub(crate) fn language(&self, name: &str) -> String {
-        let lookup = |key: &str| {
-            self.languages.get(key).cloned().or_else(|| {
-                BUILT_IN_LANGUAGES
-                    .iter()
-                    .find(|(built_in, _)| *built_in == key)
-                    .map(|(_, language)| language.to_string())
-            })
+    /// The language of the file at `path`: the first `[survey.languages]` pattern, bytewise,
+    /// that matches it (one without `/` matches the file name, one with `/` the whole path);
+    /// else the built-in map by exact name, then by longest extension; else `other`.
+    pub(crate) fn language(&self, path: &str) -> String {
+        let name = path.rsplit_once('/').map_or(path, |(_, name)| name);
+        if let Some(language) = self.languages.iter().find_map(|(pattern, language)| {
+            let text = if pattern.contains('/') { path } else { name };
+            crate::project::glob_matches(pattern, text).then(|| language.clone())
+        }) {
+            return language;
+        }
+        let built_in = |key: &str| {
+            BUILT_IN_LANGUAGES
+                .iter()
+                .find(|(built_in, _)| *built_in == key)
+                .map(|(_, language)| language.to_string())
         };
-        if let Some(language) = lookup(name) {
+        if let Some(language) = built_in(name) {
             return language;
         }
         for (index, _) in name.match_indices('.') {
-            if let Some(language) = lookup(&format!("*{}", &name[index..])) {
+            if let Some(language) = built_in(&format!("*{}", &name[index..])) {
                 return language;
             }
         }

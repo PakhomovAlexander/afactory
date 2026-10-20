@@ -985,8 +985,13 @@ pub(super) fn any_match(patterns: &[String], text: &str) -> bool {
 
 /// Measure the head under one deadline from `started` (ADR-0152 clause 14), every pattern list
 /// checking it before each match.
-pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sections, Failure> {
-    measure_counted(git, basis, started, Arc::default())
+pub(super) fn measure(
+    git: &Git,
+    basis: &Basis,
+    started: Instant,
+    clock: super::measure::Clock,
+) -> Result<Sections, Failure> {
+    measure_counted(git, basis, started, clock, Arc::default())
 }
 
 /// [`measure`], counting into `matches`. The listing stops at the item after a match the
@@ -1001,11 +1006,12 @@ fn measure_counted(
     git: &Git,
     basis: &Basis,
     started: Instant,
+    clock: super::measure::Clock,
     matches: Arc<Matches>,
 ) -> Result<Sections, Failure> {
     let deadline = started + Duration::from_millis(basis.policy.max_wall_ms);
     let under = UnderDeadline::new(basis.policy, deadline, Arc::clone(&matches));
-    let measured = super::measure::measure(git, basis, started);
+    let measured = super::measure::measure(git, basis, clock);
     drop(under);
     let mut sections = measured?;
     if matches.cut()
@@ -1318,7 +1324,12 @@ mod tests {
                 );
             }
         }));
-        let sections = measure_counted(&git, &basis, started, Arc::clone(&matches)).unwrap();
+        let sections = measure_counted(
+            &git,
+            &basis,
+            started,
+            super::super::measure::Clock::new(started, basis.policy.max_wall_ms),
+            Arc::clone(&matches)).unwrap();
         (matches.matched() > 0).then_some((sections, matches))
     }
 
