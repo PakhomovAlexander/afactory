@@ -3635,6 +3635,188 @@ fn a_failed_entry_check_after_checkout_deleting_deletes_nothing_and_a_rerun_fini
     assert!(other.is_file(), "the other checkout is untouched");
 }
 
+/// The removal record of Workspace `id` in the Project Store of `repo`.
+fn removal_record(machine: &Machine, repo: &Path, id: &str) -> PathBuf {
+    project_store(machine, repo)
+        .join("removals")
+        .join(format!("{id}.toml"))
+}
+
+#[test]
+fn an_entry_replaced_since_inspection_stops_the_rerun_and_nothing_is_deleted() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let created = machine.json(&repo, &["project", "workspace", "new", "swap", "--json"]);
+    let id = workspace(&created, "swap")["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let name = "fixture-wt-swap";
+    let worktree = machine.root().join(name);
+    let entry = repo.join(".git/worktrees").join(name);
+    let aside = repo.join(".git/worktrees/aside");
+    let remove = [
+        "project",
+        "workspace",
+        "remove",
+        "swap",
+        "--delete-worktree",
+    ];
+    // Claimed, judged clean and recorded `deleting`, with nothing of it deleted yet.
+    let stopped = af_stopped_at(&machine, &repo, "checkout-deleting", &remove);
+    assert_eq!(stopped.status.code(), Some(86), "{}", text(&stopped).1);
+    let (container, claimed) = claimed_checkout(&machine, name);
+    let files_before = files(&claimed);
+    let record = removal_record(&machine, &repo, &id);
+    let recorded = std::fs::read(&record).unwrap();
+
+    // The recorded entry moves aside; another directory takes its path, unlocked, with a
+    // `gitdir` naming the checkout: everything the old check read, and not the recorded entry.
+    std::fs::rename(&entry, &aside).unwrap();
+    std::fs::create_dir(&entry).unwrap();
+    std::fs::copy(aside.join("gitdir"), entry.join("gitdir")).unwrap();
+    let replacement = files(&entry);
+
+    let rerun = machine.af(&repo, &remove);
+    let (_, stderr) = text(&rerun);
+    assert_eq!(rerun.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "the worktree {} is kept at {}, where this removal moved it, because its \
+             administrative entry was replaced since inspection: {} is not the directory this \
+             removal inspected, so it is left alone; the Workspace stays registered",
+            worktree.display(),
+            claimed.display(),
+            entry.display()
+        )),
+        "{stderr}"
+    );
+    // Nothing is deleted, nothing unregistered, and the record is as the stop left it.
+    assert_eq!(files(&claimed), files_before);
+    assert_eq!(claimed_checkout(&machine, name).0, container);
+    assert!(!worktree.exists());
+    assert_eq!(files(&entry), replacement, "the replacement is left alone");
+    assert!(
+        aside.join("gitdir").is_file(),
+        "the recorded entry is untouched"
+    );
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    assert!(labels(&listed).contains(&"swap".to_string()), "{listed}");
+    assert_eq!(removals_of(&machine, &repo, &id), 0);
+    assert_eq!(std::fs::read(&record).unwrap(), recorded);
+
+    // The recorded entry back at its path, the next rerun finishes normally.
+    std::fs::remove_dir_all(&entry).unwrap();
+    std::fs::rename(&aside, &entry).unwrap();
+    let finished = machine.expect(&repo, &remove, 0);
+    assert!(finished.contains("removed Workspace swap"), "{finished}");
+    assert!(!worktree.exists() && !entry.exists());
+    assert!(named(&machine.root(), name).is_empty());
+    assert!(administrative_entries(&repo).is_empty());
+    assert!(!record.exists());
+    assert_eq!(removals_of(&machine, &repo, &id), 1);
+}
+
+#[test]
+fn a_failed_entry_check_keeps_the_removal_record_and_a_rerun_honours_its_identities() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let created = machine.json(&repo, &["project", "workspace", "new", "keep", "--json"]);
+    let id = workspace(&created, "keep")["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let name = "fixture-wt-keep";
+    let worktree = machine.root().join(name);
+    let entry = repo.join(".git/worktrees").join(name);
+    let (checkout_identity, entry_identity) =
+        (recorded_identity(&worktree), recorded_identity(&entry));
+    let remove = [
+        "project",
+        "workspace",
+        "remove",
+        "keep",
+        "--delete-worktree",
+    ];
+    let record = removal_record(&machine, &repo, &id);
+
+    // Its container named, then a rerun stopped once the checkout is `inspected` again: an
+    // earlier run's record of identities, with nothing moved.
+    let stopped = af_stopped_at(&machine, &repo, "checkout-container", &remove);
+    assert_eq!(stopped.status.code(), Some(86), "{}", text(&stopped).1);
+    let stopped = af_stopped_at(&machine, &repo, "checkout-inspected", &remove);
+    assert_eq!(stopped.status.code(), Some(86), "{}", text(&stopped).1);
+    let recorded = std::fs::read_to_string(&record).unwrap();
+    assert!(
+        recorded.contains(&format!("identity = \"{checkout_identity}\""))
+            && recorded.contains(&format!("identity = \"{entry_identity}\""))
+            && !recorded.contains("step = \"container\""),
+        "{recorded}"
+    );
+
+    // A locked entry fails the check: the removal stops, and its record stays exactly as it was.
+    std::fs::write(entry.join("locked"), "held by a fixture\n").unwrap();
+    let refused = machine.af(&repo, &remove);
+    let (_, stderr) = text(&refused);
+    assert_eq!(refused.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "the worktree {} is not claimed, because its administrative entry {} is locked",
+            worktree.display(),
+            entry.display()
+        )) && stderr.contains(&format!(
+            "nothing was changed: the removal stays recorded in {}",
+            record.display()
+        )),
+        "{stderr}"
+    );
+    assert_eq!(std::fs::read_to_string(&record).unwrap(), recorded);
+    assert!(worktree.join("README.md").is_file());
+    assert_eq!(removals_of(&machine, &repo, &id), 0);
+
+    // Unlocked, a rerun goes by the recorded identities, never a fresh inspection: an identical
+    // copy put in the checkout's place is a replacement, kept, and the record still stays.
+    std::fs::remove_file(entry.join("locked")).unwrap();
+    let original = machine.root().join(format!("{name}.original"));
+    std::fs::rename(&worktree, &original).unwrap();
+    let copied = std::process::Command::new("cp")
+        .arg("-Rp")
+        .arg(&original)
+        .arg(&worktree)
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    let replaced = machine.af(&repo, &remove);
+    let (_, stderr) = text(&replaced);
+    assert_eq!(replaced.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "the worktree {} was replaced since this removal inspected it",
+            worktree.display()
+        )),
+        "{stderr}"
+    );
+    assert!(worktree.join("README.md").is_file(), "the copy is kept");
+    assert_eq!(std::fs::read_to_string(&record).unwrap(), recorded);
+    assert_eq!(removals_of(&machine, &repo, &id), 0);
+
+    // The recorded checkout back in its place, the removal completes from the record.
+    std::fs::remove_dir_all(&worktree).unwrap();
+    std::fs::rename(&original, &worktree).unwrap();
+    let finished = machine.expect(&repo, &remove, 0);
+    assert!(
+        finished.contains(&format!(
+            "removed the worktree {}; its branch is kept",
+            worktree.display()
+        )) && finished.contains("removed Workspace keep"),
+        "{finished}"
+    );
+    assert!(!worktree.exists() && !entry.exists());
+    assert!(named(&machine.root(), name).is_empty());
+    assert!(!record.exists());
+    assert_eq!(removals_of(&machine, &repo, &id), 1);
+}
+
 /// The lines a rerun appended to its trace, `<which>-<event>` each.
 fn traced(file: &Path) -> Vec<String> {
     std::fs::read_to_string(file)
@@ -3666,7 +3848,12 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
     ];
     for (index, (point, checkout_step, entry_step)) in points.into_iter().enumerate() {
         let label = format!("order{index}");
-        machine.expect(&repo, &["project", "workspace", "new", &label], 0);
+        let created = machine.json(&repo, &["project", "workspace", "new", &label, "--json"]);
+        let id = workspace(&created, &label)["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let record = removal_record(&machine, &repo, &id);
         let name = format!("fixture-wt-{label}");
         let entry = repo.join(".git/worktrees").join(&name);
         let remove = [
@@ -3698,7 +3885,7 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
         let entry_check = format!("entry-check-{entry_step}");
 
         // While its entry, wherever it is, is locked, a step's rerun checks first and then
-        // touches nothing.
+        // touches nothing: the failed precondition leaves the record exactly as it was.
         let locked_at = std::iter::once(entry.clone())
             .chain(
                 administrative_entries(&repo)
@@ -3710,6 +3897,7 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
         if let Some(locked_at) = locked_at {
             std::fs::write(locked_at.join("locked"), "held by a fixture\n").unwrap();
             let checkout_before = checkout_place(&machine, &name);
+            let recorded = std::fs::read(&record).unwrap();
             let trace = machine.root().join(format!("trace-{label}-locked"));
             let refused = rerun(&trace);
             let (_, stderr) = text(&refused);
@@ -3723,7 +3911,36 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
             assert_eq!(traced(&trace), expected, "{point}: {stderr}");
             assert_eq!(checkout_place(&machine, &name), checkout_before, "{point}");
             assert!(locked_at.join("locked").is_file(), "{point}");
+            assert_eq!(std::fs::read(&record).unwrap(), recorded, "{point}");
             std::fs::remove_file(locked_at.join("locked")).unwrap();
+
+            // The recorded entry moved aside and another directory at its path, unlocked and
+            // naming the checkout: the check opens the path, finds another identity and reads
+            // nothing more; nothing is touched and the record stays as it was.
+            let aside = repo.join(".git/worktrees").join(format!("aside-{label}"));
+            std::fs::rename(&locked_at, &aside).unwrap();
+            std::fs::create_dir(&entry).unwrap();
+            std::fs::copy(aside.join("gitdir"), entry.join("gitdir")).unwrap();
+            let trace = machine.root().join(format!("trace-{label}-replaced"));
+            let refused = rerun(&trace);
+            let (_, stderr) = text(&refused);
+            assert_eq!(refused.status.code(), Some(1), "{point}: {stderr}");
+            assert!(
+                stderr.contains(&format!(
+                    "its administrative entry was replaced since inspection: {} is not the \
+                     directory this removal inspected",
+                    entry.display()
+                )),
+                "{point}: {stderr}"
+            );
+            assert_eq!(traced(&trace), expected, "{point}: {stderr}");
+            assert_eq!(checkout_place(&machine, &name), checkout_before, "{point}");
+            assert!(entry.join("gitdir").is_file() && aside.join("gitdir").is_file());
+            assert_eq!(std::fs::read(&record).unwrap(), recorded, "{point}");
+            let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+            assert!(labels(&listed).contains(&label), "{point}: {listed}");
+            std::fs::remove_dir_all(&entry).unwrap();
+            std::fs::rename(&aside, &locked_at).unwrap();
         } else {
             assert!(
                 matches!(point, "entry-deleted" | "entry-done"),

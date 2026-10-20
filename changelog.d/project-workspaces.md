@@ -33,10 +33,14 @@
   such path, and a directory merely named like a container is reported and never touched. An
   interrupted or failed removal says where what is left remains, keeps the Workspace registered
   and is finished by the same command from its record, which unregisters the Workspace exactly
-  once. The rerun never takes a recorded step as proof: whatever the step, it first reads the
-  administrative entry now, and while the entry is locked or its `gitdir` names another checkout
-  it touches nothing, a checkout already in its container staying there, reported by its claim
-  name; then it checks that step's precondition on the file system, so a checkout moved back out of its container is claimed and
+  once. The rerun never takes a recorded step as proof: whatever the step, it first checks the
+  administrative entry now, opened without following a link and read only while its device and
+  inode are the ones the record holds, so another directory put at its path is a replacement,
+  reported and never read; while the entry is replaced or locked or its `gitdir` names another
+  checkout it touches nothing, a checkout already in its container staying there, reported by
+  its claim name, and a failed check never deletes the removal record, so the next run goes by
+  the recorded identities rather than inspecting afresh; then it checks that step's
+  precondition on the file system, so a checkout moved back out of its container is claimed and
   judged again and a replacement at its path is kept, and an entry is claimed or deleted only
   while its `gitdir` names the checkout and it holds no `locked`, whatever the step; an entry that
   is locked, names another checkout or lacks its `gitdir` stays where it is, reported, and so does

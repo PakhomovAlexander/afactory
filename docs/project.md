@@ -301,17 +301,28 @@ and the Workspace stays registered. Run the same command again once the cause is
 finishes from the record, step by step, acting only on directories whose identity the record
 holds, then unregisters the Workspace and reports what it removed; its messages begin `the
 worktree <path> is already gone;`. The step a record holds proves nothing by itself. Whatever
-the step, the rerun of a directory first reads the administrative entry as it is now, before it
-touches the checkout or the entry at all: its `gitdir` must name the checkout and it may hold no
-`locked`. When it does not, the command stops with that condition and leaves everything where it
+the step, the rerun of a directory first checks the administrative entry as it is now, before
+it touches the checkout or the entry at all. The check is bound to the entry the record holds:
+it opens the entry without following a link and compares its device and inode with the ones
+recorded at inspection. Another directory at the entry's path is a replacement, never read,
+even when it names the checkout and holds no `locked`, and the message says `its administrative
+entry was replaced since inspection: <entry> is not the directory this removal inspected`. Only
+the recorded entry is read: its `gitdir` must name the checkout and it may hold no `locked`.
+When the check fails, the command stops with that condition and leaves everything where it
 found it, the entry, the record and the registration untouched; a checkout an earlier run moved
 into its container stays there and is reported by its claim name, as `the worktree <path> is
 kept at <container>/<name>, where this removal moved it, because <condition>`, so you can move
-it back or clear the entry and run the command again. Only then does the rerun check the step's
-own precondition on the file system, and a check that fails never moves the step on.
+it back, put the recorded entry back or clear it, and run the command again. A failed check
+never deletes the removal record, even when nothing has moved yet: the message then says
+`nothing was changed: the removal stays recorded in <record>`, and the next run goes by the
+identities it holds rather than inspecting afresh. Only then does the rerun check the step's
+own precondition on the file system, and a check that fails never moves the step on and never
+deletes the record either.
 
 | Step | What the rerun checks before it acts, after the entry check |
 |---|---|
+| every step | The entry check: the entry at its path, opened without following a link (or found by identity in its container, for its own rerun), is the one recorded; another directory there is a replacement, never read, and nothing is deleted, moved or unregistered. Only then are its `gitdir` and `locked` read. |
+| every step | A check that fails, the entry check or the step's own, leaves the removal record: never deleted, and unchanged after a failed entry check, so the next run uses the recorded identities. |
 | `inspected` | The checkout's path holds the recorded identity (nothing there: gone; another directory: kept, and the command refused). The entry's `gitdir` names the checkout and the entry holds no `locked`, before the checkout is claimed and before the entry is. |
 | `container` | Nothing is proved: a directory found under the recorded name is reported and left, and the directory counts as `inspected` again. |
 | `contained` | The container is still the one made. The directory is in it by identity, or at its path by identity and moved in only while the container is empty and the entry passes the check above. In the container the checkout is judged again (its entry, its index, its files), and an entry is checked again before it is deleted. With the container gone, as `deleting`. |
