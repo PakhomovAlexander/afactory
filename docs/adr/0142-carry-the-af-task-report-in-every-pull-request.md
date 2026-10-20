@@ -2,6 +2,9 @@
 
 **Status:** accepted (2026-10-06); its Tokens cells amended in place before release by
 [ADR-0143](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md).
+**Amended 2026-10-20** (security audit, finding L13): the `release/` exemption counts only a
+branch of the base repository itself (`head.repo.full_name` equal to `base.repo.full_name`); a
+fork's branch named `release/…`, or one from a deleted fork, needs the block like any other.
 
 ## Context
 

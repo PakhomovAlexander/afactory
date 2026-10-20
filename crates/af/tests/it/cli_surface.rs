@@ -403,7 +403,7 @@ fn the_configuration_ladder_merges_in_order_and_names_origins() {
     check("defaults.pipeline", "\"review\"", "# project");
     check("ui.pager", "\"less\"", "# local");
     check("self.check_every", "\"1h\"", "# environment");
-    check("self.install_pins", "true", "# built-in");
+    check("self.install_pins", "\"ask\"", "# built-in");
     check("self.source", "PakhomovAlexander", "# built-in");
     assert!(
         text.contains("# ignored: [self] in") && text.contains("proj/.af/af.toml (project layer)"),

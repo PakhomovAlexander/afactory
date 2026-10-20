@@ -26,7 +26,7 @@ release, not a promise about the next one
 ## Install
 
 ```sh
-curl -fsSL https://github.com/PakhomovAlexander/afactory/releases/latest/download/install.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/PakhomovAlexander/afactory/releases/latest/download/install.sh | sh
 af self setup-shell --write     # completions + man pages for your shell
 af self status                  # what is installed, the default, the release key, the pin here
 af self update --check          # exit 10 when a newer release exists; `af self update` installs it
@@ -36,8 +36,16 @@ The installer places the newest release in the self-managed layout (`$XDG_DATA_H
 default symlink at `~/.local/bin/af`) and `af` takes over from there. Every release ships
 per-target tarballs, a `SHA256SUMS` file, and `SHA256SUMS.minisig` signed with the release key in
 [`crates/af/keys/release.pub`](crates/af/keys/release.pub); the binary embeds that
-key and refuses an unsigned or badly signed release. `install.sh` verifies the archive digest and,
-when `minisign` is on `PATH`, the signature too.
+key and refuses an unsigned or badly signed release. `install.sh` verifies the archive digest and
+the signature, fetching over HTTPS only; without `minisign` on `PATH` it refuses, unless
+`AF_INSTALL_ALLOW_UNSIGNED=1` accepts the checksum alone (from the same release as the archive,
+so it catches a corrupt download only). A re-run verifies the installed binary again.
+
+Updates need no `gh` for the public repository: `af self` lists and downloads releases
+anonymously over HTTPS with `curl`, as the installer does, and turns to the GitHub CLI (under
+your own `gh` login) only when that is refused, as it is for a repository that is not public.
+`af self update` without `--version` never moves the default to a release older than the one
+running.
 
 Supported targets: `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, and
 `aarch64-unknown-linux-musl` (static: no glibc floor). On x86_64 macOS, or another Linux or macOS
@@ -201,7 +209,12 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
   Campaign Manifest so later Rounds never re-route.
 - **Signed, self-managed releases with a byte-binding lock.** `.af/af.lock` pins the release that
   wrote it and its archive digest per target; inside such a project any `af` on `PATH` execs that
-  version, installing it on demand only when the bytes match.
+  version. A pin that is not installed yet is installed on demand only when the archive matches
+  both the lock's digest and the release's signed `SHA256SUMS`, and only as `[self] install_pins`
+  allows: `"ask"`, the default, asks at the terminal first (naming the version, the lock, and
+  whether it is older than the running `af` or a pre-release) and without a terminal installs
+  nothing and runs the current `af`; `"always"` installs; `"never"` leaves it to
+  `af self install <version>`. `af review plan` never installs.
 
 ## Requirements
 
@@ -211,7 +224,8 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
   terminal; `af provider status` shows what each context can do. Command Workers need neither.
 - Optional: an OCI container runtime (Docker or compatible) for `provider = "container"` Gates.
   Detection runs the runtime's own `info`; an unusable runtime is refused, never silently downgraded.
-- Optional: `minisign`, for verifying release signatures at install time.
+- `curl` and `minisign` for `install.sh`, which refuses without `minisign` unless
+  `AF_INSTALL_ALLOW_UNSIGNED=1`; `gh` only for a release repository that is not public.
 
 ## Configuration
 
@@ -261,7 +275,12 @@ pull request. Merging it tags the commit, runs `make check` on Linux
 and macOS, builds every target, signs `SHA256SUMS`, and publishes the release. The workflow then
 pins that release in this repository's own `.af/af.lock` on `main`, so `af` here always runs the
 newest release; `make check` fails if the pin falls behind
-([ADR-0138](docs/adr/0138-the-repository-pins-its-newest-release.md)).
+([ADR-0138](docs/adr/0138-the-repository-pins-its-newest-release.md)). That `pin` job runs the
+release binary it just installed, verified against the signed `SHA256SUMS`, in a checkout that
+holds the push-capable `PIN_DEPLOY_KEY`. That is the job's blast radius: a release whose signed
+bytes were hostile could push anything to `main` with the key, past the ruleset; the signature
+check is what stands in the way, and the script itself only fast-forwards
+([ADR-0152](docs/adr/0152-push-the-release-pin-with-a-deploy-key-that-bypasses-mains-ruleset.md)).
 
 ## Security and licence
 

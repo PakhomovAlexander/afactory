@@ -3,7 +3,10 @@
 ## Supported versions
 
 During the public alpha, security fixes ship in the latest public alpha release; older alpha
-releases and release candidates are not patched. Use `af self update` to move forward.
+releases and release candidates are not patched. Use `af self update` to move forward. A
+project's `.af/af.lock` can still pin one of them (anything from 0.8.0 on): `af` installs such a
+pin only after you confirm it at the terminal, or under `[self] install_pins = "always"`, and the
+prompt says when the pinned release is older than the one running or a pre-release.
 A release reads only the state and configuration it writes itself, so a security fix carries no
 compatibility guarantee for state or configuration an earlier release wrote
 ([ADR-0145](docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)).
@@ -74,13 +77,32 @@ A runtime that is installed but unusable reports no isolation and refuses to run
 falling back to the host. Pipelines that require `container` isolation are refused otherwise.
 
 **No network code of its own.** The workspace contains no HTTP crates. Network egress happens
-only through the `gh` and `git` CLIs and through the reviewer CLIs themselves, each under the
-environment rules above. The workspace forbids `unsafe_code`.
+only through the `curl`, `gh` and `git` CLIs and through the reviewer CLIs themselves, each under
+the environment rules above. The workspace forbids `unsafe_code`.
 
 **Releases are signed.** Every release's `SHA256SUMS` is signed with minisign; the public key
 is committed at `crates/af/keys/release.pub` and embedded in the binary, and `af self`
-verifies the signature before trusting a checksum. `install.sh` verifies the signature when
-`minisign` is on `PATH` and the checksum otherwise.
+verifies the signature before trusting a checksum, on every install path. An install that a
+project lock asks for needs the archive to match both the lock's digest for this target and the
+signed `SHA256SUMS` (the receipt records `verified_by = "lock+signature"`); a release without
+signature material is refused, with or without a lock. A pin that is not installed is installed
+on demand only as `[self] install_pins` allows: `"ask"` (the default) asks at the terminal and,
+with no terminal, installs nothing and runs the current `af`; `"always"` installs; `"never"`
+never does. `af review plan` never installs. `install.sh` fetches over HTTPS only and verifies
+the signature; without `minisign` it refuses unless `AF_INSTALL_ALLOW_UNSIGNED=1` accepts the
+checksum alone, which only catches a corrupt download, and a re-run verifies the installed
+binary again.
+
+**Self-management talks to GitHub, and remembers pinned projects.** After an eligible command,
+at most once per `[self] check_every` (24 hours by default), a detached `af self refresh-check`
+asks the release repository for its releases: anonymously over HTTPS with `curl`
+(`api.github.com` and `github.com`, which see your IP address and the `curl` user agent), and,
+only when that is refused, through `gh` under your own GitHub login. `[self] update_check =
+false`, `auto_update = "never"`, `CI` or `AF_SELF_OFFLINE=1` turn it off. Each project lock that
+dispatch honours is remembered in `$XDG_STATE_HOME/af/self.toml`, the canonical path of the lock
+and the version it pins, up to the 64 most recent, so `af self remove` and `prune` keep those
+versions; `af self status --json` prints the list, entries whose lock is gone are dropped, and
+`af self uninstall --purge` removes the file.
 
 **`af` never publishes.** It does not commit, push, or open pull requests on your behalf. A
 verified result is delivered as uncommitted work in a new local worktree for a human to
@@ -96,5 +118,5 @@ inspect (ADR-0031).
   whatever they do with the credentials in the directories you grant them.
 - **`trusted_local` escapes.** Treat anything a `trusted_local` gate could reach as reachable.
   Use `container` when the code under review is untrusted.
-- **Your own environment.** A compromised host, a modified `gh` or `git`, or a tampered
+- **Your own environment.** A compromised host, a modified `curl`, `gh` or `git`, or a tampered
   `.af/` policy committed to the repository are outside what `af` can defend against.
