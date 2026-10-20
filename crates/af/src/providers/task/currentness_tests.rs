@@ -21,6 +21,18 @@ fn fixture(kind: ProviderKind, directory: &Path, body: &str) -> (PathBuf, Provid
     (program, spec)
 }
 
+/// Publishes the fixture shell's PID as `$auth/ready`, complete or not at all. A redirection opens
+/// and truncates its target before `printf` writes, so a deadline kill between the two left an
+/// empty `ready` that the reap check read as a PID (issue #278). The PID is written beside the
+/// marker and renamed over it: a kill leaves at most `ready.tmp`, never a partial `ready`.
+const PUBLISH_READY: &str =
+    "printf '%s' $$ >\"$auth/ready.tmp\" && mv \"$auth/ready.tmp\" \"$auth/ready\"";
+
+/// Neither the marker nor its unpublished temporary: the fixture never started.
+fn unspawned(directory: &Path) -> bool {
+    !directory.join("ready").exists() && !directory.join("ready.tmp").exists()
+}
+
 #[test]
 fn identity_rechecks_use_remaining_attempt_deadline_and_prespawn_cancellation() {
     for kind in [ProviderKind::Claude, ProviderKind::Codex] {
@@ -28,14 +40,14 @@ fn identity_rechecks_use_remaining_attempt_deadline_and_prespawn_cancellation() 
         let (program, spec) = fixture(
             kind,
             directory.path(),
-            "auth=${CLAUDE_CONFIG_DIR:-$CODEX_HOME}\nprintf '%s' $$ >\"$auth/ready\"\nsleep 30 &\nwait",
+            &format!("auth=${{CLAUDE_CONFIG_DIR:-$CODEX_HOME}}\n{PUBLISH_READY}\nsleep 30 &\nwait"),
         );
         let flag = AtomicBool::new(true);
         let path = std::ffi::OsStr::new("/usr/bin:/bin");
         let deadline = Instant::now() + Duration::from_secs(2);
         assert!(probe_identity(&program, &spec, path, &flag, Some(deadline)).is_err());
         assert!(
-            !directory.path().join("ready").exists(),
+            unspawned(directory.path()),
             "pre-cancelled identity check spawned"
         );
         flag.store(false, Ordering::Release);
@@ -50,18 +62,19 @@ fn identity_rechecks_use_remaining_attempt_deadline_and_prespawn_cancellation() 
         // Under load the deadline can expire before the shell reaches its first marker.
         // The separate cancellation case below requires an observed live process.
         if let Ok(text) = std::fs::read_to_string(directory.path().join("ready")) {
-            let pid: i32 = text.parse().unwrap();
+            let pid: i32 = text
+                .parse()
+                .unwrap_or_else(|error| panic!("published PID marker {text:?}: {error}"));
             assert!(
                 nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err(),
                 "status leader was not reaped"
             );
             std::fs::remove_file(directory.path().join("ready")).unwrap();
         }
+        // A kill between the write and the rename leaves the unpublished temporary behind.
+        let _ = std::fs::remove_file(directory.path().join("ready.tmp"));
         assert!(probe_identity(&program, &spec, path, &flag, Some(deadline)).is_err());
-        assert!(
-            !directory.path().join("ready").exists(),
-            "expired check spawned"
-        );
+        assert!(unspawned(directory.path()), "expired check spawned");
     }
 }
 
@@ -72,7 +85,7 @@ fn identity_rechecks_cancel_an_inflight_status_process() {
         let (program, spec) = fixture(
             kind,
             directory.path(),
-            "auth=${CLAUDE_CONFIG_DIR:-$CODEX_HOME}\nprintf '%s' $$ >\"$auth/ready\"\nsleep 30 &\nwait",
+            &format!("auth=${{CLAUDE_CONFIG_DIR:-$CODEX_HOME}}\n{PUBLISH_READY}\nsleep 30 &\nwait"),
         );
         let flag = AtomicBool::new(false);
         let (result, pid) = std::thread::scope(|scope| {
@@ -113,6 +126,81 @@ fn identity_rechecks_cancel_an_inflight_status_process() {
             nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err(),
             "status leader was not reaped"
         );
+    }
+}
+
+#[test]
+fn interrupted_fixture_publishes_a_complete_pid_marker_or_none() {
+    use std::os::unix::process::CommandExt;
+    let directory = tempfile::tempdir().unwrap();
+    let ready = directory.path().join("ready");
+    let temporary = directory.path().join("ready.tmp");
+    // Deterministic: a `mv` that never returns holds the fixture after its write and before
+    // publication, the window a redirection straight onto `ready` left empty.
+    let stubs = tempfile::tempdir().unwrap();
+    let stub = stubs.path().join("mv");
+    std::fs::write(&stub, "#!/bin/sh\n: >\"$auth/held\"\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(PUBLISH_READY)
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", stubs.path().display()))
+        .env("auth", directory.path())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let leader = nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap());
+    // Kills the held group even when an assertion below fails first.
+    struct Group(nix::unistd::Pid);
+    impl Drop for Group {
+        fn drop(&mut self) {
+            let _ = nix::sys::signal::killpg(self.0, nix::sys::signal::Signal::SIGKILL);
+        }
+    }
+    let group = Group(leader);
+    let held = Instant::now() + LOAD_SAFE_WALL;
+    while !directory.path().join("held").exists() {
+        assert!(Instant::now() < held, "fixture never reached publication");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!ready.exists(), "marker visible before publication");
+    drop(group);
+    child.wait().unwrap();
+    assert!(!ready.exists(), "interrupted publication left a marker");
+    assert_eq!(
+        std::fs::read_to_string(&temporary).unwrap(),
+        child.id().to_string()
+    );
+    std::fs::remove_file(&temporary).unwrap();
+    std::fs::remove_file(directory.path().join("held")).unwrap();
+    // Kill points from before the shell starts to after it has published, so both outcomes and
+    // the window between the write and the rename are exercised; every outcome must hold.
+    for step in 0..64u64 {
+        // A directory per kill point: a rename already inside the kernel when SIGKILL lands can
+        // only finish in its own run's directory, never publish into a later run's.
+        let run = tempfile::tempdir_in(directory.path()).unwrap();
+        let ready = run.path().join("ready");
+        let mut child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("{PUBLISH_READY}\nsleep 30"))
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("auth", run.path())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let leader = nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap());
+        std::thread::sleep(Duration::from_micros(step * 250));
+        // The whole group, so a `mv` mid-rename is killed too. Its orphan may linger as a
+        // zombie that `killpg(.., None)` still finds and only init reaps, so the check does not
+        // wait for the group to vanish: a SIGKILLed process never runs again and cannot write.
+        let _ = nix::sys::signal::killpg(leader, nix::sys::signal::Signal::SIGKILL);
+        child.wait().unwrap();
+        match std::fs::read_to_string(&ready) {
+            Ok(text) => assert_eq!(text, child.id().to_string(), "partial PID marker"),
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+        }
     }
 }
 
