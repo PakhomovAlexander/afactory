@@ -566,3 +566,45 @@ fn projection_applies_the_same_writers_earlier_time_and_fences_every_other_case(
         assert!(error.to_string().contains("finished"), "{error}");
     }
 }
+
+/// Telemetry numbers a run's executions by the leases that began a kernel run (design §5): a
+/// lease that only planned, or one a housekeeping command took, is not counted; one under which
+/// an Attempt was prepared is.
+#[test]
+fn only_leases_that_began_a_kernel_run_are_counted() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let count = |f: &Fixture, epoch: u64| {
+        f.store
+            .task_run_executions_before(&f.cas, "task-1", epoch)
+            .unwrap()
+    };
+    let planning = f.open();
+    f.propose(&planning);
+    f.store.release_task_lease(&f.cas, &planning).unwrap();
+    let housekeeping = f
+        .store
+        .take_task_lease(&f.cas, "task-1", "af-storage-sweep-1", 60_000)
+        .unwrap();
+    f.store.release_task_lease(&f.cas, &housekeeping).unwrap();
+    let run = f
+        .store
+        .take_task_lease(&f.cas, "task-1", "writer-3", 60_000)
+        .unwrap();
+    assert_eq!(run.epoch(), 3);
+    assert_eq!(
+        count(&f, 3),
+        0,
+        "planning and housekeeping began no kernel run"
+    );
+    f.store.admit_task_plan(&f.cas, &run, &f.authority).unwrap();
+    f.record_execution_inputs(&run);
+    f.store
+        .reserve_task_attempt(&f.cas, &run, "root.nodes.write", &f.authority)
+        .unwrap();
+    assert_eq!(count(&f, 3), 0, "a lease is not before itself");
+    assert_eq!(
+        count(&f, 4),
+        1,
+        "the lease that prepared an Attempt began one"
+    );
+}

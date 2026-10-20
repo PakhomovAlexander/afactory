@@ -182,7 +182,12 @@ fn telemetry_eviction_frees_exactly_the_marginal_bytes() {
         let directory = Directory::measure(&root, false).unwrap().unwrap();
         let marginal = directory.marginal(id);
         let before = allocated(&root);
-        budget::evict(&root, id, State::Sealed).unwrap();
+        let target = directory.target(id).unwrap();
+        assert_eq!(target.state, State::Sealed);
+        assert!(matches!(
+            budget::evict(&root, &target, now).unwrap(),
+            budget::Evicted::Removed(_)
+        ));
         budget::reclaim(&root, std::slice::from_ref(id), now).unwrap();
         assert_eq!(before - allocated(&root), marginal, "segment {id}");
     }

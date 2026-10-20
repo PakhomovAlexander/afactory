@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:storage-prune:2",
   "title": "af/storage-prune@2",
-  "description": "`af storage prune --json` (ADR-0144, ADR-0153): what one sweep removed, or without --apply would remove. Collection first (rule `collection`), then the budget, least recently used first (rule `budget`; among equals a corrupt telemetry segment first), until the total fits `max_bytes` or nothing else may be removed (`stop`); then telemetry past its own `[telemetry] max_bytes` under the same rules. Gate cleanups of finished Tasks are those the sweep tried; registry entries whose path holds no Store any more are dropped; a failed removal is listed and tried again by the next sweep. `telemetry` is the telemetry kind's part: its bytes before and after, why its step stopped, what every applied sweep reclaimed per directory beyond its evictions (temporary files and unreferenced blobs older than an hour, the index's free pages), measured as allocated bytes, what was skipped or deferred, and registered telemetry directories that no longer exist.",
+  "description": "`af storage prune --json` (ADR-0144, ADR-0153): what one sweep removed, or without --apply would remove. Collection first (rule `collection`), then the budget, least recently used first (rule `budget`; among equals a corrupt telemetry segment first), until the total fits `max_bytes` or nothing else may be removed (`stop`); then telemetry past its own `[telemetry] max_bytes` under the same rules. Gate cleanups of finished Tasks are those the sweep tried; registry entries whose path holds no Store any more are dropped; a failed removal is listed and tried again by the next sweep. `telemetry` is the telemetry kind's part: its bytes before and after, why its step stopped, what every applied sweep reclaimed per directory beyond its evictions (temporary files and unreferenced blobs older than an hour, the index's free pages), measured as allocated bytes, what was skipped or deferred, registered telemetry directories that no longer exist, and the entries an applied eviction found changed when it checked them again immediately before unlinking (the telemetry directory or the file under the name no longer the device and inode inventoried, a writer holding its lock, a use within the last hour), each left in place (`changed`).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -143,7 +143,8 @@
         "stop",
         "reclaimed",
         "notes",
-        "registry_dropped"
+        "registry_dropped",
+        "changed"
       ],
       "properties": {
         "max_bytes": {
@@ -184,6 +185,37 @@
           "type": "array",
           "items": {
             "type": "string"
+          }
+        },
+        "changed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "directory",
+              "segment_id",
+              "path",
+              "reason"
+            ],
+            "properties": {
+              "directory": {
+                "type": "string",
+                "minLength": 1
+              },
+              "segment_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
           }
         }
       }

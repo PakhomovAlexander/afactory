@@ -232,6 +232,10 @@ pub(crate) struct Entry {
     /// descriptors and refuses any other directory found under its name.
     #[serde(skip)]
     pub(crate) identity: Option<review_sandbox::Identity>,
+    /// For an evictable telemetry entry: the root's and its own device and inode as inventory
+    /// found them, which an applied eviction checks again before it unlinks (ADR-0144).
+    #[serde(skip)]
+    pub(crate) found: Option<budget::Found>,
 }
 
 /// A directory the inventory could not judge: listed, never removed.
@@ -759,6 +763,7 @@ fn telemetry_inventory(roots: &Roots, inventory: &mut Inventory) {
             segment_id: None,
             state: Some("overlapping".into()),
             identity: None,
+            found: None,
         });
         inventory.telemetry.insert(path.clone(), None);
     }
@@ -777,6 +782,7 @@ fn telemetry_entry(root: &Path, entry: budget::Entry) -> Entry {
         segment_id: entry.segment_id,
         state: Some(entry.state.to_string()),
         identity: None,
+        found: entry.found,
     }
 }
 
@@ -801,6 +807,7 @@ fn measure_into(
                 segment_id: None,
                 state: None,
                 identity: review_sandbox::Identity::of(path).ok(),
+                found: None,
             });
         }
         Err(error) => inventory.problems.push(Problem {
@@ -853,6 +860,7 @@ fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
                     segment_id: None,
                     state: None,
                     identity: review_sandbox::Identity::of(&key).ok(),
+                    found: None,
                     path: key,
                     task_id: None,
                     bytes,
@@ -928,6 +936,7 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
                 segment_id: None,
                 state: None,
                 identity: None,
+                found: None,
             });
             inventory.problems.push(Problem {
                 path: state.to_path_buf(),
@@ -977,6 +986,7 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
             segment_id: None,
             state: None,
             identity: None,
+            found: None,
         });
     }
     inventory.entries.push(Entry {
@@ -991,6 +1001,7 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
         segment_id: None,
         state: None,
         identity: None,
+        found: None,
     });
     record_store(inventory, roots, state.to_path_buf());
 }
@@ -1039,10 +1050,23 @@ pub(crate) struct TelemetrySweep {
     /// Registered telemetry directories that no longer exist, dropped from the registry by an
     /// applied sweep (named by a preview).
     pub(crate) registry_dropped: Vec<PathBuf>,
+    /// Entries an applied sweep found changed when it checked them again before unlinking —
+    /// replaced, locked or used within the hour — and left in place (ADR-0144).
+    pub(crate) changed: Vec<TelemetryChanged>,
     /// The notes without their directory, as this process records them as telemetry problems
     /// (a path is no part of a problem's reason).
     #[serde(skip)]
     pub(crate) problems: Vec<String>,
+}
+
+/// One telemetry entry left in place because it changed since the inventory.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct TelemetryChanged {
+    pub(crate) directory: PathBuf,
+    pub(crate) segment_id: String,
+    pub(crate) path: PathBuf,
+    /// What changed.
+    pub(crate) reason: String,
 }
 
 /// One telemetry directory's reclamation.
@@ -1118,6 +1142,7 @@ pub(crate) fn sweep(
             reclaimed: Vec::new(),
             notes: Vec::new(),
             registry_dropped: Vec::new(),
+            changed: Vec::new(),
             problems: Vec::new(),
         },
     };
@@ -1250,6 +1275,7 @@ fn budget_step(
         })
         .collect();
     candidates.sort_by(least_recently_used);
+    // Removed, or found changed and left in place: either way not tried again.
     let mut evicted: BTreeSet<PathBuf> = BTreeSet::new();
     let mut candidates = candidates.into_iter();
     while total > policy.max_bytes {
@@ -1258,7 +1284,15 @@ fn budget_step(
             break;
         };
         let removed = if entry.kind == Kind::Telemetry {
-            evict_telemetry(&mut models, entry, apply)
+            match evict_telemetry(&mut models, entry, apply) {
+                Ok(Evicted::Freed(freed)) => Ok(freed),
+                Ok(Evicted::Changed(changed)) => {
+                    evicted.insert(entry.path.clone());
+                    report.telemetry.changed.push(changed);
+                    continue;
+                }
+                Err(error) => Err(error),
+            }
         } else if apply {
             evict(roots, policy, &stock, entry).map(|freed| freed.max(entry.bytes))
         } else {
@@ -1297,11 +1331,12 @@ fn budget_step(
                 break;
             };
             match evict_telemetry(&mut models, entry, apply) {
-                Ok(freed) => {
+                Ok(Evicted::Freed(freed)) => {
                     total = total.saturating_sub(freed);
                     telemetry = telemetry.saturating_sub(freed);
                     report.removals.push(removal(entry, freed, Rule::Budget));
                 }
+                Ok(Evicted::Changed(changed)) => report.telemetry.changed.push(changed),
                 Err(error) => report.failures.push(error),
             }
         }
@@ -1413,13 +1448,22 @@ fn models_total(models: &BTreeMap<PathBuf, Option<budget::Directory>>, stock: &I
         .fold(0, u64::saturating_add)
 }
 
+/// What evicting one telemetry entry came to.
+enum Evicted {
+    /// The bytes it freed (applied) or would free (a preview).
+    Freed(u64),
+    /// Changed since the inventory: left in place.
+    Changed(TelemetryChanged),
+}
+
 /// Evict one telemetry entry: from the model — what it frees now, its blobs going with the last
-/// segment that names them — and, applied, from the disk, relative to the opened directory.
+/// segment that names them — and, applied, from the disk, relative to the opened directory,
+/// after checking again that it is still what the inventory found (ADR-0144).
 fn evict_telemetry(
     models: &mut BTreeMap<PathBuf, Option<budget::Directory>>,
     entry: &Entry,
     apply: bool,
-) -> Result<u64, String> {
+) -> Result<Evicted, String> {
     let failed = |error: String| format!("removing {}: {error}", entry.path.display());
     let (Some(root), Some(id)) = (&entry.directory, &entry.segment_id) else {
         return Err(failed("not a telemetry segment".into()));
@@ -1434,9 +1478,54 @@ fn evict_telemetry(
         .map(|segment| segment.state)
         .ok_or_else(|| failed("it is gone".into()))?;
     if apply {
-        budget::evict(root, id, state).map_err(failed)?;
+        let changed = |reason: String| {
+            Evicted::Changed(TelemetryChanged {
+                directory: root.clone(),
+                segment_id: id.clone(),
+                path: entry.path.clone(),
+                reason,
+            })
+        };
+        let Some(found) = entry.found else {
+            return Ok(changed("inventoried without its identity".into()));
+        };
+        pause_before_telemetry_eviction(id);
+        let target = budget::Target {
+            id: id.clone(),
+            state,
+            found,
+            last_use_unix_ms: entry.last_use_unix_ms,
+        };
+        match budget::evict(root, &target, SystemTime::now()).map_err(failed)? {
+            budget::Evicted::Removed(_) => {}
+            budget::Evicted::Changed(reason) => return Ok(changed(reason)),
+        }
     }
-    Ok(model.remove(id))
+    Ok(Evicted::Freed(model.remove(id)))
+}
+
+/// Deterministic fixtures pause an applied telemetry eviction between the inventory and its
+/// check, as a writer replacing the file meanwhile would: `AF_TEST_TELEMETRY_EVICT_PAUSE=DIR`
+/// writes `DIR/<segment>.paused` and waits, at most a minute, for `DIR/<segment>.resume`.
+/// Production release binaries never read this setting.
+fn pause_before_telemetry_eviction(segment_id: &str) {
+    #[cfg(debug_assertions)]
+    {
+        let Some(directory) = std::env::var_os("AF_TEST_TELEMETRY_EVICT_PAUSE") else {
+            return;
+        };
+        let directory = PathBuf::from(directory);
+        let _ = std::fs::write(directory.join(format!("{segment_id}.paused")), b"");
+        let resume = directory.join(format!("{segment_id}.resume"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !resume.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = segment_id;
+    }
 }
 
 /// Recover every unsealed segment whose lock can be taken in every registered telemetry
@@ -1559,6 +1648,7 @@ pub(crate) fn sweep_telemetry(
             reclaimed: Vec::new(),
             notes: Vec::new(),
             registry_dropped: Vec::new(),
+            changed: Vec::new(),
             problems: Vec::new(),
         },
     };
@@ -1811,10 +1901,15 @@ fn collect_telemetry(
     let mut taken = Vec::new();
     for entry in idle {
         match evict_telemetry(&mut stock.telemetry, entry, apply) {
-            Ok(freed) => {
+            Ok(Evicted::Freed(freed)) => {
                 report
                     .removals
                     .push(removal(entry, freed, Rule::Collection));
+                taken.push(entry.path.clone());
+            }
+            // Left in place, and not tried again by this sweep's budget step.
+            Ok(Evicted::Changed(changed)) => {
+                report.telemetry.changed.push(changed);
                 taken.push(entry.path.clone());
             }
             Err(error) => report.failures.push(error),
@@ -2750,6 +2845,13 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
                 Rule::Budget => "budget",
                 Rule::Recovery => "recovery",
             }
+        );
+    }
+    for changed in &report.telemetry.changed {
+        println!(
+            "left in place telemetry {} ({}: changed since the inventory)",
+            changed.path.display(),
+            changed.reason
         );
     }
     for path in &report.registry_dropped {

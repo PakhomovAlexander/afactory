@@ -16,6 +16,13 @@
 //! share, orphaned blobs and temporary files — is one `shared` entry, never evicted whole and
 //! reclaimed by every sweep ([`reclaim`]). A directory of another telemetry version (`v0/`,
 //! `v2/`) is one `unreadable` entry, evicted whole like a segment and never read.
+//!
+//! **Identity-bound eviction** (ADR-0144). The inventory records where it found each entry —
+//! the telemetry root's and the entry's own device and inode ([`Found`]) — and its last-use
+//! time; [`evict`] checks all of them again immediately before it unlinks, through the held
+//! directory descriptors: the root it opens must be the one inventoried, the file under the
+//! name the one inventoried, no writer may hold its lock, and it must not have been used within
+//! [`PROTECTED`]. An entry that changed is left in place and reported as changed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -23,7 +30,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::blob::collect;
 use crate::index::{self, Index};
-use crate::layout::{self, Confined, EntryKind, Layout, SegmentFile};
+use crate::layout::{self, Confined, EntryKind, FileIdentity, Layout, SegmentFile};
 use crate::segment::reader;
 
 /// Nothing used within this long is evicted, and temporaries and orphaned blobs younger than
@@ -73,12 +80,24 @@ pub struct Segment {
     pub last_use_unix_ms: u64,
     /// The blob digests it references.
     pub refs: BTreeSet<String>,
+    /// The device and inode of its file (another version's: its directory) as inventoried.
+    pub identity: Option<(u64, u64)>,
+}
+
+/// Where the inventory found an entry: the telemetry root's device and inode and the entry's
+/// own. An applied eviction removes nothing that is no longer both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Found {
+    pub root: (u64, u64),
+    pub file: (u64, u64),
 }
 
 /// One telemetry directory as the budget sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Directory {
     pub root: PathBuf,
+    /// The root's device and inode as the inventory opened it.
+    pub root_identity: Option<(u64, u64)>,
     /// Every allocated byte beneath the root.
     pub total: u64,
     pub segments: BTreeMap<String, Segment>,
@@ -100,6 +119,8 @@ pub struct Entry {
     pub last_use_unix_ms: u64,
     /// Why it is never evicted now.
     pub in_use: Option<String>,
+    /// Where the inventory found it, for an evictable segment: what [`evict`] checks again.
+    pub found: Option<Found>,
 }
 
 /// The `in_use` reason of the `shared` entry.
@@ -110,7 +131,32 @@ fn modified_ms(directory: &Confined, name: &str) -> u64 {
     directory.modified_unix_ms(name).unwrap_or(0)
 }
 
+fn identity_of(directory: &Confined, name: &str) -> Option<(u64, u64)> {
+    directory.entry_identity(name)
+}
+
 impl Directory {
+    /// The eviction target of segment `id` as this inventory found it; `None` for an entry in
+    /// use or one found without an identity.
+    pub fn target(&self, id: &str) -> Option<Target> {
+        let segment = self.segments.get(id)?;
+        if !matches!(
+            segment.state,
+            State::Sealed | State::Corrupt | State::Unreadable
+        ) {
+            return None;
+        }
+        Some(Target {
+            id: segment.id.clone(),
+            state: segment.state,
+            found: Found {
+                root: self.root_identity?,
+                file: segment.identity?,
+            },
+            last_use_unix_ms: segment.last_use_unix_ms,
+        })
+    }
+
     /// Measure the telemetry directory `root`; `None` when it does not exist. With `recover`
     /// (an applied sweep, before it collects anything) every unsealed segment whose lock can be
     /// taken is recovered first, and the flushed prefix of every one that cannot be locked is
@@ -122,6 +168,7 @@ impl Directory {
         };
         let mut directory = Self {
             root: root.to_path_buf(),
+            root_identity: root_dir.own_identity().ok(),
             total: root_dir.own_allocated(),
             segments: BTreeMap::new(),
             blobs: BTreeMap::new(),
@@ -140,6 +187,7 @@ impl Directory {
                         own_bytes: root_dir.allocated_tree(&name),
                         last_use_unix_ms: root_dir.newest_modified_unix_ms(&name),
                         refs: BTreeSet::new(),
+                        identity: identity_of(&root_dir, &name),
                     },
                 );
             }
@@ -183,6 +231,7 @@ impl Directory {
                             own_bytes: segments.allocated(&name),
                             last_use_unix_ms: modified_ms(&segments, &name),
                             refs,
+                            identity: identity_of(&segments, &name),
                         },
                     );
                 }
@@ -206,6 +255,7 @@ impl Directory {
                         own_bytes: segments.allocated(&name) + segments.allocated(&refs_name),
                         last_use_unix_ms: modified_ms(&segments, &name),
                         refs,
+                        identity: identity_of(&segments, &name),
                     },
                 );
             }
@@ -220,6 +270,7 @@ impl Directory {
                         own_bytes: segments.allocated(&name),
                         last_use_unix_ms: modified_ms(&segments, &name),
                         refs: BTreeSet::new(),
+                        identity: identity_of(&segments, &name),
                     },
                 );
             }
@@ -305,6 +356,14 @@ impl Directory {
                     }
                     State::Sealed | State::Corrupt | State::Unreadable => None,
                 },
+                found: match (segment.state, self.root_identity, segment.identity) {
+                    (
+                        State::Sealed | State::Corrupt | State::Unreadable,
+                        Some(root),
+                        Some(file),
+                    ) => Some(Found { root, file }),
+                    _ => None,
+                },
             })
             .collect();
         let owned: u64 = entries.iter().map(|entry| entry.bytes).sum();
@@ -320,57 +379,151 @@ impl Directory {
                 .max()
                 .unwrap_or(0),
             in_use: Some(SHARED.into()),
+            found: None,
         });
         entries
     }
 }
 
-/// Remove the segment `id` of `root` as `state` names it — a sealed segment with its manifest,
-/// a corrupt one, or another version's directory — relative to the opened directories, never
-/// through a link. A segment that is live now (its `.jsonl` came back under a writer's lock) is
-/// refused. Returns the allocated bytes removed.
-pub fn evict(root: &Path, id: &str, state: State) -> Result<u64, String> {
+/// One entry to evict, as the inventory found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// The segment id, or the other version's directory name.
+    pub id: String,
+    pub state: State,
+    pub found: Found,
+    /// Its last use as inventoried.
+    pub last_use_unix_ms: u64,
+}
+
+/// What [`evict`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Evicted {
+    /// Removed: the allocated bytes it freed.
+    Removed(u64),
+    /// Changed since the inventory, and left in place: why.
+    Changed(String),
+}
+
+fn mtime_ms(identity: &FileIdentity) -> u64 {
+    u64::try_from(identity.mtime_ns.max(0) / 1_000_000).unwrap_or(u64::MAX)
+}
+
+fn unix_ms(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// Remove the entry `target` of `root` as the inventory found it — a sealed segment with its
+/// manifest, a corrupt one, or another version's directory — relative to the opened
+/// directories, never through a link. Immediately before it unlinks it checks again, through
+/// the held descriptors, that the root is the directory inventoried, that the name still holds
+/// the file (or directory) inventoried, that no writer holds its lock (nor a live file of the
+/// segment's), and that it was not used within [`PROTECTED`] of `now`; an entry that fails any
+/// of these is left in place and returned as [`Evicted::Changed`].
+pub fn evict(root: &Path, target: &Target, now: SystemTime) -> Result<Evicted, String> {
     let failed = |error: std::io::Error| format!("{}: {error}", root.display());
-    let root_dir = Confined::open_root(root)
-        .map_err(failed)?
-        .ok_or_else(|| format!("{} is gone", root.display()))?;
-    if state == State::Unreadable {
+    let changed = |why: &str| Ok(Evicted::Changed(why.to_string()));
+    let Some(root_dir) = Confined::open_root(root).map_err(failed)? else {
+        return changed("its telemetry directory is gone");
+    };
+    if root_dir.own_identity().ok() != Some(target.found.root) {
+        return changed("its telemetry directory is another directory than the one inventoried");
+    }
+    let protected_until = |last_use: u64| last_use.saturating_add(PROTECTED.as_millis() as u64);
+    let now_ms = unix_ms(now);
+    let id = target.id.as_str();
+    if target.state == State::Unreadable {
         if !reader::is_other_version(id) {
             return Err(format!("{id} is not another telemetry version's directory"));
         }
+        if root_dir.kind(id) != Some(EntryKind::Directory)
+            || root_dir.entry_identity(id) != Some(target.found.file)
+        {
+            return changed("replaced since the inventory");
+        }
+        if protected_until(root_dir.newest_modified_unix_ms(id)) > now_ms {
+            return changed("used within the last hour");
+        }
         let bytes = root_dir.allocated_tree(id);
         root_dir.remove_tree(id).map_err(failed)?;
-        return Ok(bytes);
+        return Ok(Evicted::Removed(bytes));
     }
-    let segments = root_dir
+    let Some(segments) = root_dir
         .child_dir(layout::VERSION_DIR)
         .map_err(failed)?
         .and_then(|versioned| versioned.child_dir("segments").ok().flatten())
-        .ok_or_else(|| format!("{} has no segments", root.display()))?;
-    let names: Vec<String> = match state {
-        State::Sealed => vec![
+    else {
+        return changed("its segments directory is gone");
+    };
+    let (name, manifest) = match target.state {
+        State::Sealed => (
             format!("{id}{}", layout::SEALED),
-            format!("{id}{}", layout::REFS),
-        ],
-        State::Corrupt => vec![format!("{id}{}", layout::CORRUPT)],
+            Some(format!("{id}{}", layout::REFS)),
+        ),
+        State::Corrupt => (format!("{id}{}", layout::CORRUPT), None),
         State::Live | State::Unsealed | State::Unreadable => {
-            return Err(format!("segment {id} is {}: never evicted", state.as_str()));
+            return Err(format!(
+                "segment {id} is {}: never evicted",
+                target.state.as_str()
+            ));
         }
     };
-    let mut bytes = 0;
-    for name in names {
-        if !matches!(layout::parse_segment_name(&name), Some((ref parsed, kind)) if parsed == id && kind != SegmentFile::Live)
+    for name in std::iter::once(&name).chain(manifest.as_ref()) {
+        if !matches!(layout::parse_segment_name(name), Some((ref parsed, kind)) if parsed == id && kind != SegmentFile::Live)
         {
             return Err(format!("{name} is not a segment file"));
         }
-        let allocated = segments.allocated(&name);
-        match segments.remove_file(&name) {
+    }
+    // The segment came back under a writer, or was left unsealed: in use.
+    let live = format!("{id}{}", layout::LIVE);
+    if segments.kind(&live).is_some() {
+        return changed("its live file is back: a writer holds it or it is unsealed");
+    }
+    // The file under the name, opened without following a link and held locked while it is
+    // judged and unlinked.
+    let file = match segments.open_file(&name) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return changed("gone since the inventory");
+        }
+        Err(_) => return changed("replaced since the inventory by something not a file"),
+    };
+    let opened = FileIdentity::of_file(&file).map_err(failed)?;
+    if (opened.dev, opened.ino) != target.found.file {
+        return changed("replaced since the inventory");
+    }
+    let Ok(held) = layout::try_lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock) else {
+        return changed("locked: in use");
+    };
+    if protected_until(mtime_ms(&opened).max(target.last_use_unix_ms)) > now_ms {
+        return changed("used within the last hour");
+    }
+    // Still the same file under the name at the moment it is unlinked.
+    if segments
+        .identity(&name)
+        .is_none_or(|current| (current.dev, current.ino) != target.found.file)
+    {
+        return changed("replaced since the inventory");
+    }
+    let mut bytes = segments.allocated(&name);
+    segments
+        .unlink(&name)
+        .map_err(|error| format!("{}: {error}", segments.join(&name).display()))?;
+    drop(held);
+    if let Some(manifest) = manifest {
+        let allocated = segments.allocated(&manifest);
+        match segments.remove_file(&manifest) {
             Ok(()) => bytes += allocated,
-            Err(_) if segments.kind(&name).is_none() => {}
-            Err(error) => return Err(format!("{}: {error}", segments.join(&name).display())),
+            Err(_) if segments.kind(&manifest).is_none() => {}
+            Err(error) => {
+                return Err(format!("{}: {error}", segments.join(&manifest).display()));
+            }
         }
     }
-    Ok(bytes)
+    Ok(Evicted::Removed(bytes))
 }
 
 /// What one sweep reclaimed in a directory beyond its evictions, as allocated bytes.
@@ -493,6 +646,7 @@ mod tests {
             own_bytes: own,
             last_use_unix_ms: 0,
             refs: refs.iter().map(|digest| digest.to_string()).collect(),
+            identity: None,
         }
     }
 
@@ -500,6 +654,7 @@ mod tests {
     fn a_shared_blob_is_marginal_only_to_the_last_segment_that_references_it() {
         let mut directory = Directory {
             root: PathBuf::from("/t"),
+            root_identity: None,
             total: 10 + 20 + 1000 + 7 + 3,
             segments: [
                 ("a".to_string(), segment("a", 10, &["blob"])),

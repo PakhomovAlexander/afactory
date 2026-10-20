@@ -110,7 +110,7 @@ fn telemetry_executions_overlap_after_takeover() {
     let [run] = document.runs.as_slice() else {
         panic!("{document:?}");
     };
-    assert_eq!(run.executions, 2);
+    assert_eq!(run.executions.retained, 2);
     assert_eq!(run.active_us, 100_000_000, "the overlap counts once");
     assert_eq!(run.execution_us, 130_000_000, "af.execution.duration_sum");
     assert_eq!(run.elapsed_us, 100_000_000);
@@ -142,7 +142,7 @@ fn telemetry_open_interval_ends_at_the_last_record() {
     );
     let document = runs(temp.path());
     let run = &document.runs[0];
-    let second = &run.execution_list[1];
+    let second = &run.executions.list[1];
     assert!(second.open);
     assert_eq!(second.wall_us, SECOND / 1_000);
     assert_eq!(run.active_us, 11_000_000);
@@ -152,7 +152,7 @@ fn telemetry_open_interval_ends_at_the_last_record() {
     assert_eq!(run.history, "prefix:1");
     review_telemetry::status::reindex(temp.path()).unwrap();
     let recovered = runs(temp.path());
-    assert!(recovered.runs[0].execution_list[1].open);
+    assert!(recovered.runs[0].executions.list[1].open);
     assert_eq!(recovered.runs[0].history, "prefix:2");
 }
 
@@ -225,16 +225,25 @@ fn telemetry_history_partial_after_eviction() {
     let mut index = Index::open(&Layout::new(temp.path())).unwrap();
     index.ingest().unwrap();
     drop(index);
-    review_telemetry::budget::evict(
+    let directory = review_telemetry::budget::Directory::measure(temp.path(), false)
+        .unwrap()
+        .unwrap();
+    // Evicted once the hour that protects a just-sealed segment has passed.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2 * 3_600);
+    let evicted = review_telemetry::budget::evict(
         temp.path(),
-        "1800000000000-1-0000000a",
-        review_telemetry::budget::State::Sealed,
+        &directory.target("1800000000000-1-0000000a").unwrap(),
+        later,
     )
     .unwrap();
+    assert!(matches!(
+        evicted,
+        review_telemetry::budget::Evicted::Removed(_)
+    ));
     let document = runs(temp.path());
     let run = &document.runs[0];
     assert_eq!(run.history, "partial");
     assert_eq!(run.missing_ordinals, vec![1]);
     assert_eq!(run.retained, "partial (missing executions 1)");
-    assert_eq!(run.executions, 1);
+    assert_eq!(run.executions.retained, 1);
 }

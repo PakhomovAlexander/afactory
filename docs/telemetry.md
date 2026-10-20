@@ -42,10 +42,13 @@ threads only append to a buffer and signal it. It waits on one condition with on
 oldest pending record's time plus `flush_latency_ms`) and wakes when a record is appended or the
 deadline passes; there is no timer and no polling. Every record is therefore in the live segment
 within `flush_latency_ms` of its creation while a run is open, whatever its depth and however
-silent the Worker. When the run ends the consumer is stopped within 2 s; one that does not stop —
-a write blocked on the volume — is abandoned: nothing else seals or replaces the segment, the
-command's exit status is its own, the lock ends with the process, `af telemetry status` counts
-the segment `unsealed`, and the next reader recovers what was written. A telemetry-only failure
+silent the Worker. When the run ends the consumer is stopped within 2 s, and when the command
+ends it seals the segment within 2 s — every pending record, the seal, the manifest, the
+compression and the rename, one bound over all of them; a consumer that does not finish either
+in time — a write blocked on the volume — is abandoned: nothing else seals, compresses, replaces
+or writes the segment, the command's exit status is its own, the lock ends with the process,
+`af telemetry status` counts the segment `unsealed`, and the next reader recovers what was
+written. A telemetry-only failure
 (an unwritable directory, a quota, a locked index) is one line on stderr,
 `af: telemetry problem (…), the command is unaffected: …`, recorded in the segment when it can
 be.
@@ -57,24 +60,32 @@ the content blobs arrive with later packages of the design.
 
 A run is one kernel run id within one Store: `af.store_id` is the SHA-256 of the Store
 directory's canonical path, and two Stores holding the same Task are two runs. Each process that
-worked on the run is an execution, numbered by `af.execution.ordinal` — its Task lease's epoch,
-one more than the leases committed before it — with `af.store.sequence_at_start`, the run's
-highest committed Store event sequence when it started.
+worked on the run is an execution, numbered by `af.execution.ordinal` — one more than the
+Task's committed leases before its own that began a kernel run (an Attempt prepared, a run
+report, the Task's result, a Review Integration phase) — with `af.store.sequence_at_start`, the
+run's highest committed Store event sequence when it started. A lease that ran no kernel run
+(planning without `--execute`, a decision, a refresh, a delivery, a recorded sweep) takes no
+ordinal; its epoch, like every lease's, is `af.epoch`.
 
 Executions can overlap: a lease is taken over once it expires, without waiting for the fenced
 writer to exit. `af telemetry` therefore reports a run's **active** time (the union of its
 executions' `af.run` intervals, an overlap counted once), its **execution** time (their sum,
 `af.execution.duration_sum`) and its **elapsed** time (first start to last end, idle gaps
-included). An execution whose segment was never sealed by its writer ends at its segment's last
-record and is marked open.
+included). An execution is **open** while its segment is not sealed (a writer holds it, or one
+that stopped left it unsealed) or its `af.run` has no recorded end; its interval ends at its
+segment's last record.
 
 Retained segments cannot say how many executions a run had: one may have been evicted, found
 corrupt or never written. A run's history is `prefix:k` when executions 1 to k are retained with
 their seals and no ordinal between them is missing, and `partial` — with the missing ordinals —
-when one is; it is never called complete, and every total says `retained executions 1–k` or
-`partial`. An ordinal is a lease epoch, so a lease another command took on the Task (planning
-without `--execute`, a delivery, a recorded sweep) leaves its ordinal missing and the run reads
-`partial`.
+when one is; it is never called complete, and every total says what it covers. Open executions
+are listed beside the sealed ones, never hidden behind the prefix: the label reads
+`retained executions 1–k` only when no listed execution is open, and otherwise names them —
+`retained executions 1–1, open: 2` for a sealed first execution and a live second one,
+`retained executions: none sealed, open: 1` at `prefix:0`, `partial (missing executions 1),
+open: 3` — and the totals of `runs` (active, execution and elapsed time, usage, charge,
+failures) state which executions they cover, each open one marked `open`. A `reindex` changes
+none of this.
 
 ## Levels
 
@@ -267,7 +278,10 @@ Campaign, its retained executions and first start, its active, execution and ela
 latest outcome, the Attempts' exact usage counters and charge as their spans ended (summed
 exactly; a counter some Attempt did not deliver is absent, never zero), failures, coverage
 (`complete` when every retained segment was sealed by its writer with nothing dropped) and its
-history. `--since 14d` keeps runs active within that window (`s`, `m`, `h`, `d`, `w`);
+history. Its `executions` list every retained execution, the sealed ones' ordinals and, beside
+them, every open one (`executions.open`, and one `open:` line each in the text); its label and
+`totals_cover` say which executions every total covers, each open one marked `open`.
+`--since 14d` keeps runs active within that window (`s`, `m`, `h`, `d`, `w`);
 `--kind` keeps one kind. `--json` prints one `af/telemetry-runs@1` document
 ([`schemas/telemetry-runs-v1.json`](../schemas/telemetry-runs-v1.json)): durations in
 microseconds, times as unix nanoseconds in decimal strings. Exit codes: 0; 1 when the directory
@@ -283,7 +297,8 @@ The run's span tree, from each execution's `af.command` down — `af.run`, `af.a
 `af.plan`, every `af.node` and its `af.attempt`, and the command's `af.sweep` — each span with
 its start offset from the run's first record, its total and self time (total less the union of
 its ended children), its status (`ok`, `error`, `unset`, or `open` with no recorded end) and its
-key attributes; the run's executions and history head it. `--attempt ID` keeps that Attempt's
+key attributes; the run's executions, history and label head it, the open executions listed
+beside the sealed ones (`run.executions.open`, `(open)` in the text). `--attempt ID` keeps that Attempt's
 subtree with its ancestors, `--depth N` stops N levels below the root, `--span ID` prints one
 span with every attribute and its events. When two Stores record the run id the command lists
 both and asks for `--store ID` (exit 2). `--json` prints one `af/telemetry-show@1` document
@@ -316,8 +331,10 @@ unchanged: least recently used first (a corrupt segment first among equals) whil
 `[storage] max_bytes` or telemetry over `[telemetry] max_bytes`, and by age past
 `[storage] keep_days`, never an entry in use or used within the last hour. Applied, it then
 reclaims temporary files older than an hour, blobs no remaining segment references and the
-index's free pages, and drops registered directories that no longer exist. Nothing of another
-kind is touched. `--json` prints one `af/telemetry-gc@1` document
+index's free pages, and drops registered directories that no longer exist. An entry found
+changed when it is checked again before it is unlinked is left in place and listed under
+`changed` (below). Nothing of another kind is touched. `--json` prints one `af/telemetry-gc@1`
+document
 ([`schemas/telemetry-gc-v1.json`](../schemas/telemetry-gc-v1.json)).
 
 ## Telemetry in the Storage Budget
@@ -336,7 +353,13 @@ whatever the current level or `dir`, Telemetry `off` included:
   the locks, blobs several segments share, orphaned blobs and temporary files.
 
 The sweep that ends every run, `af storage prune` and `af telemetry gc` evict telemetry under the
-budget's rules (above). Before it measures or collects anything an applied sweep recovers every
+budget's rules (above). Each eviction is bound to what the inventory found: the inventory records
+the telemetry directory's and the entry's own device and inode with its last use, and
+immediately before unlinking, through the directory descriptors it holds, the sweep checks again
+that the directory and the file under the name are still those, that no writer holds its lock (or
+a live file of the segment's) and that it was not used within the last hour. An entry that
+changed — replaced, locked, used — is left in place and reported with what changed
+(`telemetry.changed` in `af/storage-prune@2`, `changed` in `af/telemetry-gc@1`). Before it measures or collects anything an applied sweep recovers every
 unsealed segment whose lock it can take, and reads the flushed prefix of every one it cannot for
 the blobs it references, whether or not Telemetry is on. Every applied sweep then removes
 temporary files under `segments/` and `blobs/` older than an hour, without a lock, and under
@@ -414,8 +437,8 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
     `reader::read_sealed` read one file a caller names (fixtures) and are never called by the
     crate itself.
   - *Functions that hold descriptors* (they take the opened directory, never a path): the
-    writer's `Tree`, `Consumer` (on the consumer thread while a run is open), `publish` and
-    `seal_file`; `index::delete_in`, `Index::forget_segments`; `Index::open_in`,
+    writer's `Tree`, `Consumer` (on the consumer thread while a run is open and for the seal),
+    `publish` and `seal_file` (on the consumer thread); `index::delete_in`, `Index::forget_segments`; `Index::open_in`,
     `Index::direct_in`, `index::replace_in`, `Index::ingest`, `Index::missing_blobs`;
     `reader::list_in`, `read_live_in`, `read_sealed_in`, `recover_in`, `recover_all_in`,
     `manifest_digests_in`; `collect::collect_in`, `collect::roots_in`; `blob::stage_in`,

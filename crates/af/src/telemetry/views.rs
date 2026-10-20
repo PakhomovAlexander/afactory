@@ -142,6 +142,20 @@ pub(crate) fn render_runs(document: &Runs) -> String {
     out
 }
 
+/// One line per open execution: every total includes it up to its segment's last record.
+fn render_open(out: &mut String, executions: &view::Executions) {
+    for open in &executions.open {
+        let _ = writeln!(
+            out,
+            "  open: execution {} ({}, segment {}): its figures run to its last record",
+            open.ordinal
+                .map_or("?".to_string(), |ordinal| ordinal.to_string()),
+            open.execution_id,
+            open.segment
+        );
+    }
+}
+
 fn render_run(out: &mut String, run: &Run) {
     let subject = match (&run.task_id, &run.campaign) {
         (_, Some(campaign)) => format!("Campaign {campaign}"),
@@ -158,11 +172,12 @@ fn render_run(out: &mut String, run: &Run) {
     let _ = writeln!(
         out,
         "  executions {} ({}; history {})  first start {}",
-        run.executions,
+        run.executions.retained,
         run.retained,
         run.history,
         iso_ns(&run.first_start_unix_ns)
     );
+    render_open(out, &run.executions);
     let _ = writeln!(
         out,
         "  active {} · execution {} · elapsed {}{} · outcome {}",
@@ -300,7 +315,7 @@ pub(crate) fn render_show(document: &Show) -> String {
         run.history,
         run.retained
     );
-    for execution in &run.executions {
+    for execution in &run.executions.list {
         let _ = writeln!(
             out,
             "  execution {} ({}) {} → {}{} · wall {} · {}",
@@ -310,7 +325,7 @@ pub(crate) fn render_show(document: &Show) -> String {
             execution.execution_id,
             iso_ns(&execution.start_unix_ns),
             iso_ns(&execution.end_unix_ns),
-            if execution.open { " (open)" } else { "" },
+            if execution.is_open() { " (open)" } else { "" },
             duration(execution.wall_us),
             execution.segment
         );
@@ -483,6 +498,8 @@ pub(crate) struct Gc {
     pub(crate) removals: Vec<Value>,
     pub(crate) reclaimed: Vec<Value>,
     pub(crate) registry_dropped: Vec<String>,
+    /// Entries found changed when checked again before unlinking, left in place.
+    pub(crate) changed: Vec<Value>,
     pub(crate) notes: Vec<String>,
     pub(crate) failures: Vec<String>,
     pub(crate) problems: Vec<Value>,
@@ -542,6 +559,12 @@ pub(crate) fn gc(json: bool, apply: bool) -> Result<i32, String> {
             .iter()
             .map(|path| path.display().to_string())
             .collect(),
+        changed: report
+            .telemetry
+            .changed
+            .iter()
+            .map(|changed| serde_json::to_value(changed).map_err(|error| error.to_string()))
+            .collect::<Result<_, _>>()?,
         notes: report.telemetry.notes.clone(),
         failures: report.failures.clone(),
         problems: problems
@@ -615,6 +638,14 @@ pub(crate) fn render_gc(document: &Gc) -> String {
                 "would drop"
             },
             super::home_relative(dropped)
+        );
+    }
+    for changed in &document.changed {
+        let _ = writeln!(
+            out,
+            "left in place {} ({}: changed since the inventory)",
+            changed["segment_id"].as_str().unwrap_or("-"),
+            changed["reason"].as_str().unwrap_or("-")
         );
     }
     for note in &document.notes {

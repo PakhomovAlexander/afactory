@@ -17,6 +17,13 @@
 //! k are retained with their seals and no ordinal between them is missing, and `partial`, with
 //! the missing ordinals, when one is. Every total is labelled `retained executions 1–k` or
 //! `partial`.
+//!
+//! **Open executions.** An execution is open while its segment is not sealed (a writer holds
+//! it, or one that stopped left it unsealed) or its `af.run` has no recorded end. Open
+//! executions are listed beside the sealed ones (`executions.open`), never hidden: the label
+//! reads `retained executions 1–k` only when no listed execution is open, and otherwise names
+//! them (`retained executions 1–k, open: m`, or `retained executions: none sealed, open: m`),
+//! and `runs` says which executions its totals cover, each open one marked `open`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -170,11 +177,98 @@ pub struct Execution {
 }
 
 impl Execution {
+    /// Its segment is not sealed, or its `af.run` has no recorded end.
+    pub fn is_open(&self) -> bool {
+        self.open || self.segment != "sealed"
+    }
+
     fn interval(&self) -> (i64, i64) {
         let start = self.start_unix_ns.parse().unwrap_or(0);
         let end = self.end_unix_ns.parse().unwrap_or(start);
         (start, end.max(start))
     }
+}
+
+/// One open execution, listed beside the sealed ones: its segment is not sealed, or its
+/// `af.run` has no recorded end (its interval ends at its segment's last record).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenExecution {
+    pub execution_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordinal: Option<u64>,
+    /// The segment's state: `live`, `unsealed`, or `sealed` (recovered with its `af.run`
+    /// never ended).
+    pub segment: String,
+}
+
+/// A run's retained executions: the ordinals of the sealed ones, the open ones beside them,
+/// and every one in full.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Executions {
+    /// How many executions are retained, sealed or open.
+    pub retained: u64,
+    /// The ordinals of the retained executions that are sealed and not open.
+    pub sealed: Vec<u64>,
+    /// Every open execution: never hidden behind the sealed prefix.
+    pub open: Vec<OpenExecution>,
+    /// Every retained execution, oldest first.
+    pub list: Vec<Execution>,
+}
+
+impl Executions {
+    fn of(list: Vec<Execution>) -> Self {
+        let mut sealed: Vec<u64> = list
+            .iter()
+            .filter(|execution| !execution.is_open())
+            .filter_map(|execution| execution.ordinal)
+            .collect();
+        sealed.sort_unstable();
+        sealed.dedup();
+        Self {
+            retained: list.len() as u64,
+            sealed,
+            open: list
+                .iter()
+                .filter(|execution| execution.is_open())
+                .map(|execution| OpenExecution {
+                    execution_id: execution.execution_id.clone(),
+                    ordinal: execution.ordinal,
+                    segment: execution.segment.clone(),
+                })
+                .collect(),
+            list,
+        }
+    }
+
+    /// The history of these executions.
+    fn history(&self) -> History {
+        history(
+            &self
+                .list
+                .iter()
+                .map(|execution| {
+                    (
+                        execution.ordinal,
+                        execution.segment == "sealed",
+                        execution.is_open(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+/// One execution a run's totals cover.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Covered {
+    pub execution_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordinal: Option<u64>,
+    /// Its figures run to its segment's last record: it is still open.
+    pub open: bool,
 }
 
 /// A run's retained history (design §5).
@@ -185,23 +279,53 @@ pub struct History {
     pub history: String,
     /// The ordinals below the highest retained one that no retained execution carries.
     pub missing_ordinals: Vec<u64>,
-    /// How every total over the run is labelled: `retained executions 1–k`, or `partial` with
-    /// the missing ordinals.
+    /// How every total over the run is labelled: `retained executions 1–k` when no execution
+    /// is open, `retained executions 1–k, open: m…` (or `retained executions: none sealed,
+    /// open: m…`) when some are, or `partial` with the missing ordinals (and the open ones).
     pub label: String,
 }
 
+fn joined(ordinals: impl IntoIterator<Item = u64>) -> String {
+    ordinals
+        .into_iter()
+        .map(|ordinal| ordinal.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The retained history of executions with these ordinals, each with whether its segment is
-/// sealed.
-pub fn history(executions: &[(Option<u64>, bool)]) -> History {
+/// sealed and whether it is open.
+pub fn history(executions: &[(Option<u64>, bool, bool)]) -> History {
     let present: BTreeMap<u64, bool> = executions
         .iter()
-        .filter_map(|(ordinal, sealed)| ordinal.map(|ordinal| (ordinal, *sealed)))
+        .filter_map(|(ordinal, sealed, _)| ordinal.map(|ordinal| (ordinal, *sealed)))
         .fold(BTreeMap::new(), |mut present, (ordinal, sealed)| {
             let entry = present.entry(ordinal).or_insert(sealed);
             *entry |= sealed;
             present
         });
-    let unnumbered = executions.iter().any(|(ordinal, _)| ordinal.is_none());
+    let open: BTreeSet<u64> = executions
+        .iter()
+        .filter(|(_, _, open)| *open)
+        .filter_map(|(ordinal, _, _)| *ordinal)
+        .collect();
+    let open_unnumbered = executions
+        .iter()
+        .any(|(ordinal, _, open)| *open && ordinal.is_none());
+    // The open executions, named after whatever the label says of the rest.
+    let open_note = if open.is_empty() && !open_unnumbered {
+        String::new()
+    } else {
+        let mut named = joined(open.iter().copied());
+        if open_unnumbered {
+            if !named.is_empty() {
+                named.push_str(", ");
+            }
+            named.push_str("one without an ordinal");
+        }
+        format!(", open: {named}")
+    };
+    let unnumbered = executions.iter().any(|(ordinal, _, _)| ordinal.is_none());
     let highest = present.keys().next_back().copied().unwrap_or(0);
     let missing: Vec<u64> = (1..highest)
         .filter(|ordinal| !present.contains_key(ordinal))
@@ -210,29 +334,36 @@ pub fn history(executions: &[(Option<u64>, bool)]) -> History {
         let label = if missing.is_empty() {
             "partial (an execution carries no ordinal)".to_string()
         } else {
-            format!(
-                "partial (missing executions {})",
-                missing
-                    .iter()
-                    .map(u64::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
+            format!("partial (missing executions {})", joined(missing.clone()))
         };
         return History {
             history: "partial".into(),
             missing_ordinals: missing,
-            label,
+            label: format!("{label}{open_note}"),
         };
     }
     let prefix = (1..=highest)
         .take_while(|ordinal| present.get(ordinal).copied().unwrap_or(false))
         .last()
         .unwrap_or(0);
-    let label = match prefix {
-        0 => "retained executions: none sealed yet".to_string(),
+    // Sealed, closed executions beyond the prefix (after an open one) are named too.
+    let beyond: Vec<u64> = executions
+        .iter()
+        .filter(|(_, sealed, open)| *sealed && !*open)
+        .filter_map(|(ordinal, _, _)| *ordinal)
+        .filter(|ordinal| *ordinal > prefix)
+        .collect::<BTreeSet<u64>>()
+        .into_iter()
+        .collect();
+    let mut label = match prefix {
+        0 => "retained executions: none sealed".to_string(),
         k => format!("retained executions 1–{k}"),
     };
+    if !beyond.is_empty() {
+        label.push_str(", ");
+        label.push_str(&joined(beyond));
+    }
+    label.push_str(&open_note);
     History {
         history: format!("prefix:{prefix}"),
         missing_ordinals: Vec::new(),
@@ -427,8 +558,9 @@ pub struct Run {
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub campaign: Option<String>,
-    /// Retained executions.
-    pub executions: u64,
+    /// Its retained executions: the sealed ones' ordinals, the open ones beside them, and
+    /// every one in full.
+    pub executions: Executions,
     pub first_start_unix_ns: String,
     pub last_end_unix_ns: String,
     /// Union of the executions' intervals.
@@ -437,7 +569,7 @@ pub struct Run {
     pub execution_us: u64,
     /// First start to last end.
     pub elapsed_us: u64,
-    /// Some interval has no recorded end.
+    /// Some retained execution is open: its interval runs to its segment's last record.
     pub open: bool,
     /// The latest execution's `af.outcome`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -458,9 +590,12 @@ pub struct Run {
     /// `prefix:k` or `partial`.
     pub history: String,
     pub missing_ordinals: Vec<u64>,
-    /// `retained executions 1–k`, or `partial (…)`: what every total here covers.
+    /// `retained executions 1–k` (with `, open: m…` when some are open), or `partial (…)`:
+    /// what every total here covers.
     pub retained: String,
-    pub execution_list: Vec<Execution>,
+    /// The executions every total here — active, execution and elapsed time, tokens, charge,
+    /// Attempts and failures — covers: each retained one, `open` when it is.
+    pub totals_cover: Vec<Covered>,
 }
 
 /// `af/telemetry-runs@1`.
@@ -563,23 +698,22 @@ fn run(
 ) -> Result<Run, String> {
     let executions = executions_in(index, trace_id, states)?;
     let (active_us, execution_us, elapsed_us) = times(&executions);
-    let retained = history(
-        &executions
-            .iter()
-            .map(|execution| (execution.ordinal, execution.segment == "sealed"))
-            .collect::<Vec<_>>(),
-    );
+    let executions = Executions::of(executions);
+    let retained = executions.history();
     let first_start = executions
+        .list
         .iter()
         .map(|execution| execution.interval().0)
         .min()
         .unwrap_or(0);
     let last_end = executions
+        .list
         .iter()
         .map(|execution| execution.interval().1)
         .max()
         .unwrap_or(0);
     let outcome = executions
+        .list
         .iter()
         .rev()
         .find_map(|execution| execution.outcome.clone());
@@ -593,7 +727,16 @@ fn run(
         .map_err(sql)?;
     let failures = u64::try_from(failures).unwrap_or(0);
     let (tokens, charge, attempts) = usage(index, trace_id)?;
-    let coverage = coverage(index, &executions)?;
+    let coverage = coverage(index, &executions.list)?;
+    let totals_cover = executions
+        .list
+        .iter()
+        .map(|execution| Covered {
+            execution_id: execution.execution_id.clone(),
+            ordinal: execution.ordinal,
+            open: execution.is_open(),
+        })
+        .collect();
     Ok(Run {
         task_id: run_attribute(index, trace_id, "af.task_id")?,
         campaign: run_attribute(index, trace_id, "af.campaign")?,
@@ -601,13 +744,12 @@ fn run(
         run_id,
         trace_id: trace_id.to_string(),
         kind,
-        executions: executions.len() as u64,
         first_start_unix_ns: ns_text(first_start),
         last_end_unix_ns: ns_text(last_end),
         active_us,
         execution_us,
         elapsed_us,
-        open: executions.iter().any(|execution| execution.open),
+        open: !executions.open.is_empty(),
         outcome,
         tokens,
         charge,
@@ -617,7 +759,8 @@ fn run(
         history: retained.history,
         missing_ordinals: retained.missing_ordinals,
         retained: retained.label,
-        execution_list: executions,
+        executions,
+        totals_cover,
     })
 }
 
@@ -801,8 +944,11 @@ pub struct ShownRun {
     pub kind: Option<String>,
     pub history: String,
     pub missing_ordinals: Vec<u64>,
+    /// The label of [`History`]: `retained executions 1–k`, naming the open executions when
+    /// some are, or `partial (…)`.
     pub retained: String,
-    pub executions: Vec<Execution>,
+    /// Its retained executions, the open ones listed beside the sealed ones.
+    pub executions: Executions,
     pub first_start_unix_ns: String,
 }
 
@@ -891,13 +1037,8 @@ pub fn show(
     selection: &ShowSelection,
 ) -> Result<Show, String> {
     let (store_id, run_id, trace_id, kind) = run;
-    let executions = executions(index, trace_id)?;
-    let retained = history(
-        &executions
-            .iter()
-            .map(|execution| (execution.ordinal, execution.segment == "sealed"))
-            .collect::<Vec<_>>(),
-    );
+    let executions = Executions::of(executions(index, trace_id)?);
+    let retained = executions.history();
     let mut rows: BTreeMap<String, Row> = span_rows(
         index,
         &format!("SELECT {SPAN_COLUMNS} FROM spans WHERE trace_id = ?1"),
@@ -1234,7 +1375,9 @@ impl Followed {
 /// selected run) and hands every span end and event to `emit` as it is written, from the start
 /// of each segment; returns once at least one followed segment carried what was selected and
 /// every such segment's writer has sealed it (or it was recovered). Without a live segment it
-/// waits for one, looking every `interval`. `stop` ends it early (a fixture's timeout).
+/// waits for one, looking every `interval`. `stop` ends it early (a fixture's timeout). A
+/// followed segment whose sealed file cannot be read fails it, naming the file (the reader
+/// fails closed).
 pub fn tail(
     root: &Path,
     selection: &TailSelection,
@@ -1252,11 +1395,20 @@ pub fn tail(
                     .map_err(|error| format!("{}: {error}", root.display()))?;
             }
             if let Some(root_dir) = &root_dir {
-                segments = root_dir
+                // Absent until the first writer creates it; a directory that cannot be opened is
+                // an error, never waited on.
+                let failed = |path: PathBuf| {
+                    move |error: std::io::Error| format!("{}: {error}", path.display())
+                };
+                segments = match root_dir
                     .child_dir(layout::VERSION_DIR)
-                    .ok()
-                    .flatten()
-                    .and_then(|versioned| versioned.child_dir("segments").ok().flatten());
+                    .map_err(failed(root_dir.join(layout::VERSION_DIR)))?
+                {
+                    Some(versioned) => versioned
+                        .child_dir("segments")
+                        .map_err(failed(versioned.join("segments")))?,
+                    None => None,
+                };
             }
         }
         if let Some(directory) = &segments {
@@ -1284,11 +1436,11 @@ pub fn tail(
                         }
                     }
                 }
-                // Sealed (or recovered) since: the rest is in the sealed file.
+                // Sealed (or recovered) since: the rest is in the sealed file. A sealed file that
+                // cannot be read is the reader's failure, with its path: the segment is never
+                // taken as complete.
                 if listing.sealed.contains(id) || reader::list_in(directory)?.sealed.contains(id) {
-                    let records = reader::read_sealed_in(directory, id)
-                        .map(|(records, _)| records)
-                        .unwrap_or_default();
+                    let (records, _) = reader::read_sealed_in(directory, id)?;
                     let after = state.position.map_or(0, |position| position.seq);
                     let rest: Vec<Record> = records
                         .into_iter()
@@ -1401,24 +1553,45 @@ mod tests {
     #[test]
     fn history_is_a_prefix_or_partial_and_never_complete() {
         assert_eq!(
-            history(&[(Some(1), true), (Some(2), true)]).history,
+            history(&[(Some(1), true, false), (Some(2), true, false)]).history,
             "prefix:2"
         );
         assert_eq!(
-            history(&[(Some(1), true), (Some(2), true)]).label,
+            history(&[(Some(1), true, false), (Some(2), true, false)]).label,
             "retained executions 1–2"
         );
-        let partial = history(&[(Some(2), true), (Some(4), true)]);
+        let partial = history(&[(Some(2), true, false), (Some(4), true, false)]);
         assert_eq!(partial.history, "partial");
         assert_eq!(partial.missing_ordinals, vec![1, 3]);
         assert_eq!(partial.label, "partial (missing executions 1, 3)");
-        // A live execution after the prefix keeps the prefix.
-        assert_eq!(
-            history(&[(Some(1), true), (Some(2), false)]).history,
-            "prefix:1"
-        );
-        assert_eq!(history(&[(None, true)]).history, "partial");
+        // A live execution after the prefix keeps the prefix, and is named open.
+        let live = history(&[(Some(1), true, false), (Some(2), false, true)]);
+        assert_eq!(live.history, "prefix:1");
+        assert_eq!(live.label, "retained executions 1–1, open: 2");
+        assert_eq!(history(&[(None, true, false)]).history, "partial");
         assert_eq!(parse_since("14d"), Some(Duration::from_secs(14 * 86_400)));
+    }
+
+    #[test]
+    fn open_executions_are_named_never_hidden_behind_the_prefix() {
+        // `prefix:0`: the open execution is listed, not hidden.
+        let none = history(&[(Some(1), false, true)]);
+        assert_eq!(none.history, "prefix:0");
+        assert_eq!(none.label, "retained executions: none sealed, open: 1");
+        // A sealed execution after an open one is named beside the prefix.
+        let overlap = history(&[
+            (Some(1), true, false),
+            (Some(2), false, true),
+            (Some(3), true, false),
+        ]);
+        assert_eq!(overlap.history, "prefix:1");
+        assert_eq!(overlap.label, "retained executions 1–1, 3, open: 2");
+        // Recovered with its run never ended: sealed, yet open.
+        let recovered = history(&[(Some(1), true, false), (Some(2), true, true)]);
+        assert_eq!(recovered.history, "prefix:2");
+        assert_eq!(recovered.label, "retained executions 1–2, open: 2");
+        let partial = history(&[(Some(2), true, false), (Some(3), false, true)]);
+        assert_eq!(partial.label, "partial (missing executions 1), open: 3");
         assert_eq!(parse_since("x"), None);
     }
 }

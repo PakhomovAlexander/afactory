@@ -1490,7 +1490,9 @@ them; failures; coverage (`complete` when every retained segment was sealed by i
 nothing dropped); and the retained history: `prefix:k` when executions 1 to k are retained with \
 their seals and no ordinal between them is missing, `partial` with the missing ordinals \
 otherwise. A run's history is never called complete: every total says `retained executions \
-1–k` or `partial`.\n\n\
+1–k` or `partial`, and names the open executions (a live or unsealed segment, or an `af.run` \
+with no recorded end) beside the sealed ones: `retained executions 1–1, open: 2`; \
+`totals_cover` lists every execution the totals cover, each open one marked.\n\n\
 Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the telemetry directory cannot be read or its index is of another \
 schema version, 2 a wrong command line or a refused `[telemetry]` key.",
@@ -1520,7 +1522,7 @@ run's first record, total and self time (total less its ended children's union),
 `error`, `unset`, or `open` when it has no recorded end) and key attributes. `--attempt ID` \
 keeps that Attempt's subtree with its ancestors, `--depth N` stops N levels below the root, and \
 `--span ID` prints one span with every attribute and its events. The run's retained executions \
-and history head the tree. When two Stores record the same run id it lists both and asks for \
+and history head the tree, its open executions listed beside the sealed ones. When two Stores record the same run id it lists both and asks for \
 `--store ID`.\n\n\
 Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the telemetry directory cannot be read or the run, Attempt or span is \
@@ -1590,8 +1592,9 @@ live and unsealed segments in use, another telemetry version's directory, each d
 other accounted state reported `overlapping`, counted once and never evicted. The step is \
 ADR-0144's: least recently used first (corrupt first among equals) while af is over \
 `[storage] max_bytes` or telemetry over `[telemetry] max_bytes`, by age past `[storage] \
-keep_days` too, never an entry in use or used within the last hour. With `--apply` it evicts, \
-then removes temporary files older than an hour, blobs no remaining segment references (under \
+keep_days` too, never an entry in use or used within the last hour. With `--apply` it evicts — \
+each entry checked again just before it is unlinked, and one that changed since the inventory \
+(replaced, locked, used within the hour) left in place and listed under `changed` — then removes temporary files older than an hour, blobs no remaining segment references (under \
 `gc.lock`, skipped when a reader holds it past 2 s) and the index's free pages (`VACUUM`, or the \
 index deleted for the next reader to rebuild when there is no room), measured as allocated \
 bytes; registered directories that no longer exist are dropped from the registry. Without \

@@ -1756,6 +1756,43 @@ impl EventStore {
         })
     }
 
+    /// How many of the Task's committed leases before `epoch` began a kernel run: those under
+    /// which an Attempt was prepared, or the run's own transitions were committed — a run
+    /// report, the Task's result, a resumed recording or a Review Integration phase. A lease
+    /// that only planned (`af task start` without `--execute`), decided, refreshed, recorded a
+    /// storage sweep or cleaned up a gate began none, so it is not counted. Telemetry numbers
+    /// its executions from this (design §5); the lease epoch counts every lease. A read; it
+    /// changes nothing.
+    pub fn task_run_executions_before(
+        &self,
+        cas: &Cas,
+        task_id: &str,
+        epoch: u64,
+    ) -> Result<u64, StoreError> {
+        let mut began: BTreeSet<u64> = self
+            .task_projection(cas, task_id)?
+            .and_then(|state| state.execution)
+            .map(|execution| execution.prepared_epochs())
+            .unwrap_or_default();
+        for event in self.replay(&task_run_id(task_id)?)? {
+            if event.event_type != EventType::TaskTransitionV5 {
+                continue;
+            }
+            let transition = read_task_transition(&event)?;
+            if matches!(
+                transition.change,
+                TaskChangeV1::RunReported { .. }
+                    | TaskChangeV1::Finished { .. }
+                    | TaskChangeV1::RecordingResumed { .. }
+                    | TaskChangeV1::ReviewIntegrationSelected { .. }
+                    | TaskChangeV1::ReviewIntegrationFinished { .. }
+            ) {
+                began.insert(transition.epoch);
+            }
+        }
+        Ok(began.range(..epoch).count() as u64)
+    }
+
     pub fn take_task_lease(
         &mut self,
         cas: &Cas,

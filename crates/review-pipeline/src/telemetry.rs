@@ -16,8 +16,8 @@ use std::sync::Mutex;
 
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_graph::task::{CompiledNode, CompiledTask};
-use review_store::EventStore;
 use review_store::store::task::{TaskLease, TaskProjection, task_run_id};
+use review_store::{Cas, EventStore};
 use review_telemetry::record::Node;
 use review_telemetry::subscriber::{self, Typed};
 use serde_json::Value;
@@ -122,7 +122,7 @@ pub(crate) struct RunTelemetry {
 impl RunTelemetry {
     /// The run of `lease` in the Store `store`: this process's open `af.run` span for it, or a
     /// new one — a disabled span when nothing records.
-    pub(crate) fn open(store: &EventStore, lease: &TaskLease) -> Self {
+    pub(crate) fn open(store: &EventStore, cas: &Cas, lease: &TaskLease) -> Self {
         let disabled = Self {
             run: tracing::Span::none(),
             key: None,
@@ -166,6 +166,19 @@ impl RunTelemetry {
             };
         }
         let sequence = store.latest_run_sequence(&run_id).ok().flatten();
+        // The execution's number among the run's: one more than the committed leases before
+        // this one that began a kernel run. The lease epoch counts every lease — a plan-only
+        // start, a sweep's housekeeping lease — so it stays only in `af.epoch`.
+        let ordinal = match store.task_run_executions_before(cas, lease.task_id(), lease.epoch()) {
+            Ok(before) => before.checked_add(1),
+            Err(_) => {
+                writer.problem(
+                    review_telemetry::record::ProblemWhat::Observer,
+                    "the Task's committed leases cannot be read; the execution carries no ordinal",
+                );
+                None
+            }
+        };
         let campaign = lock(&CAMPAIGN).clone();
         let parent = subscriber::command_span_id();
         let span = tracing::info_span!(
@@ -175,7 +188,7 @@ impl RunTelemetry {
             af.run_id = field(&ids.run),
             af.run.kind = Typed::enumerated(ids.kind).field(),
             af.execution_id = field(&ids.execution),
-            af.execution.ordinal = lease.epoch(),
+            af.execution.ordinal = ordinal,
             af.store.sequence_at_start = sequence,
             af.task_id = ids.task.as_str(),
             af.campaign = campaign.as_ref().map(|(campaign, _)| campaign.as_str()),

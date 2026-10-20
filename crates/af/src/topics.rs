@@ -226,10 +226,12 @@ run, af provider doctor, af self optimize --execute) record af.command > af.run 
 af.authority.load, af.plan (one node record per plan node), af.node > af.attempt, and the
 command's af.sweep; every other command records nothing and opens no telemetry directory. While
 a run is open one consumer thread owns the segment and every record is in it within
-flush_latency_ms; at the run's end it is stopped within 2 s, else abandoned, and the segment is
-left for the next reader to recover. A run's executions (one per process that worked on it) can
-overlap: active time is their union, execution time their sum, elapsed time first start to last
-end. Its history is `prefix:k` or `partial`, never complete.
+flush_latency_ms; at the run's end it is stopped within 2 s and at the command's end it seals
+the segment within 2 s, else it is abandoned and the segment is left for the next reader to
+recover. A run's executions (one per process that worked on it) can overlap: active time is
+their union, execution time their sum, elapsed time first start to last end. Its history is
+`prefix:k` or `partial`, never complete, and its open executions are named beside the sealed
+ones (retained executions 1–1, open: 2).
 
 The [telemetry] table, machine layers only (built-in, system, user, AF_TELEMETRY__<KEY>); a
 repository's .af/af.toml cannot set it, and a value outside its bound refuses the load naming

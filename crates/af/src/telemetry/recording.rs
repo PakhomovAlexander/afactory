@@ -54,14 +54,25 @@ impl Recording {
 
 /// A write hook a debug build installs for fixtures; release binaries never read these settings.
 /// `AF_TEST_TELEMETRY_STALL_AFTER_WRITES=N`: after N writes the consumer thread blocks as a
-/// write blocked on the volume would (the appending thread never does). `AF_TEST_TELEMETRY_QUOTA`:
-/// every write fails as on a full quota.
+/// write blocked on the volume would (the appending thread never does).
+/// `AF_TEST_TELEMETRY_STALL_SEAL`: the consumer's write of the seal record blocks the same way.
+/// `AF_TEST_TELEMETRY_QUOTA`: every write fails as on a full quota.
 fn test_hook() -> Option<review_telemetry::segment::writer::WriteHook> {
     #[cfg(debug_assertions)]
     {
         if std::env::var_os("AF_TEST_TELEMETRY_QUOTA").is_some() {
             return Some(std::sync::Arc::new(|_| {
                 Err(std::io::Error::from_raw_os_error(nix::libc::EDQUOT))
+            }));
+        }
+        if std::env::var_os("AF_TEST_TELEMETRY_STALL_SEAL").is_some() {
+            return Some(std::sync::Arc::new(|_| {
+                if review_telemetry::segment::writer::sealing() {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(3_600));
+                    }
+                }
+                Ok(())
             }));
         }
         let after: u64 = std::env::var("AF_TEST_TELEMETRY_STALL_AFTER_WRITES")

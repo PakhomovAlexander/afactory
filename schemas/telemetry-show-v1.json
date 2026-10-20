@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:telemetry-show:1",
   "title": "af/telemetry-show@1",
-  "description": "`af telemetry show RUN --json` (design §10; ADR-0153): one run's span tree, from each execution's `af.command` through `af.run`, `af.authority.load`, `af.plan`, every `af.node` and its `af.attempt`, to the command's `af.sweep`, in depth-first order with children by start time. Each span carries its start offset from the run's first record, total and self time (total less the union of its ended children, clipped to it) in microseconds, `status` (`ok`, `error`, `unset`, or `open` when it has no recorded end) and its key attributes (every attribute with `--span`, which also lists that span's events). The run carries its retained executions and history (`prefix:k` or `partial`, never complete). Telemetry ids carry no authority.",
+  "description": "`af telemetry show RUN --json` (design §10; ADR-0153): one run's span tree, from each execution's `af.command` through `af.run`, `af.authority.load`, `af.plan`, every `af.node` and its `af.attempt`, to the command's `af.sweep`, in depth-first order with children by start time. Each span carries its start offset from the run's first record, total and self time (total less the union of its ended children, clipped to it) in microseconds, `status` (`ok`, `error`, `unset`, or `open` when it has no recorded end) and its key attributes (every attribute with `--span`, which also lists that span's events). The run carries its retained executions — every one in full (`list`), the sealed ones' ordinals (`sealed`) and, beside them, every open one (`open`: its segment is live or unsealed, or its `af.run` has no recorded end) — its history (`prefix:k` or `partial`, never complete) and its label (`retained executions 1–k` only when none is open, otherwise naming the open ones: `retained executions 1–k, open: m…`). Telemetry ids carry no authority.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -84,71 +84,7 @@
           "minLength": 1
         },
         "executions": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "execution_id",
-              "span_id",
-              "ordinal",
-              "start_unix_ns",
-              "end_unix_ns",
-              "open",
-              "wall_us",
-              "segment"
-            ],
-            "properties": {
-              "execution_id": {
-                "type": "string",
-                "minLength": 1
-              },
-              "span_id": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{16}$"
-              },
-              "ordinal": {
-                "oneOf": [
-                  {
-                    "type": "integer",
-                    "minimum": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "store_sequence_at_start": {
-                "type": "string",
-                "pattern": "^(0|[1-9][0-9]*)$"
-              },
-              "start_unix_ns": {
-                "type": "string",
-                "pattern": "^(0|[1-9][0-9]*)$"
-              },
-              "end_unix_ns": {
-                "type": "string",
-                "pattern": "^(0|[1-9][0-9]*)$"
-              },
-              "open": {
-                "type": "boolean"
-              },
-              "wall_us": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "segment": {
-                "enum": [
-                  "live",
-                  "unsealed",
-                  "sealed"
-                ]
-              },
-              "outcome": {
-                "type": "string"
-              }
-            }
-          }
+          "$ref": "#/$defs/executions"
         },
         "first_start_unix_ns": {
           "type": "string",
@@ -269,6 +205,132 @@
           },
           "reason": {
             "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_id",
+        "span_id",
+        "ordinal",
+        "start_unix_ns",
+        "end_unix_ns",
+        "open",
+        "wall_us",
+        "segment"
+      ],
+      "properties": {
+        "execution_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "ordinal": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "store_sequence_at_start": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "start_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "end_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "open": {
+          "type": "boolean"
+        },
+        "wall_us": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "segment": {
+          "enum": [
+            "live",
+            "unsealed",
+            "sealed"
+          ]
+        },
+        "outcome": {
+          "type": "string"
+        }
+      }
+    },
+    "open_execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_id",
+        "segment"
+      ],
+      "properties": {
+        "execution_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "segment": {
+          "enum": [
+            "live",
+            "unsealed",
+            "sealed"
+          ]
+        }
+      }
+    },
+    "executions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "retained",
+        "sealed",
+        "open",
+        "list"
+      ],
+      "properties": {
+        "retained": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sealed": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "open": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/open_execution"
+          }
+        },
+        "list": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/execution"
           }
         }
       }

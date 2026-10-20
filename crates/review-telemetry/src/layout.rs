@@ -575,6 +575,15 @@ impl Confined {
             .map(|stat| FileIdentity::of(&stat))
     }
 
+    /// The device and inode of the entry `name`, whatever it is, judged without following a
+    /// link; `None` when it is gone.
+    pub fn entry_identity(&self, name: &str) -> Option<(u64, u64)> {
+        self.stat(name).map(|stat| {
+            let identity = FileIdentity::of(&stat);
+            (identity.dev, identity.ino)
+        })
+    }
+
     /// Whether `name` is a regular file last modified at least `age` before `now`.
     pub fn file_older_than(&self, name: &str, age: Duration, now: std::time::SystemTime) -> bool {
         let Some(stat) = self.stat(name) else {

@@ -618,6 +618,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
             reclaimed: Vec::new(),
             notes: Vec::new(),
             registry_dropped: Vec::new(),
+            changed: Vec::new(),
             problems: Vec::new(),
         },
     };

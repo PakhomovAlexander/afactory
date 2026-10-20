@@ -20,10 +20,14 @@
   `flush_latency_ms`; it is stopped within 2 s or abandoned, leaving the segment for the next
   reader to recover. `af telemetry runs`, `show`, `tail` and `gc` (`--json`:
   `af/telemetry-runs@1`, `af/telemetry-show@1`, `af/telemetry-tail@1`, `af/telemetry-gc@1`)
-  report a run's executions — active time as their union, execution time as their sum, elapsed
-  time, history `prefix:k` or `partial`, never complete — its span tree and its live tail.
+  report a run's executions — numbered by the leases that began a kernel run, active time as
+  their union, execution time as their sum, elapsed time, history `prefix:k` or `partial`, never
+  complete, the open ones named beside the sealed ones in every label and total — its span tree
+  and its live tail, which fails naming a sealed segment it cannot read.
   Telemetry is the kind `telemetry` of the Storage Budget (`af/storage@2`,
   `af/storage-prune@2`): every registered directory counted once, one entry per segment by what
   its eviction frees, evicted under ADR-0144's rules past `[telemetry] max_bytes` or the whole
-  budget, with temporaries, unreferenced blobs and free index pages reclaimed by every applied
-  sweep and an overlapping directory reported `overlapping`, never evicted as telemetry.
+  budget, each entry checked again just before it is unlinked and left in place, reported
+  `changed`, when it is no longer what the inventory found, with temporaries, unreferenced blobs
+  and free index pages reclaimed by every applied sweep and an overlapping directory reported
+  `overlapping`, never evicted as telemetry.

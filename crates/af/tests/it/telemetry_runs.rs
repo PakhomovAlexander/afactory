@@ -55,6 +55,8 @@ impl Machine {
             .env_remove("AF_TELEMETRY__LEVEL")
             .env_remove("AF_TEST_FREE_BYTES")
             .env_remove("AF_TEST_TELEMETRY_STALL_AFTER_WRITES")
+            .env_remove("AF_TEST_TELEMETRY_STALL_SEAL")
+            .env_remove("AF_TEST_TELEMETRY_EVICT_PAUSE")
             .env_remove("CARGO_TARGET_DIR")
             .args(args);
         for (key, value) in env {
@@ -455,8 +457,9 @@ fn telemetry_executions_of_a_resume() {
         panic!("one run: {runs}");
     };
     assert_eq!(run["task_id"], "gc-older");
-    assert_eq!(run["executions"], 2, "{run}");
-    let executions = run["execution_list"].as_array().unwrap();
+    assert_eq!(run["executions"]["retained"], 2, "{run}");
+    assert_eq!(run["executions"]["open"], serde_json::json!([]), "{run}");
+    let executions = run["executions"]["list"].as_array().unwrap();
     let ordinals: Vec<u64> = executions
         .iter()
         .map(|execution| execution["ordinal"].as_u64().unwrap())
@@ -487,6 +490,164 @@ fn telemetry_executions_of_a_resume() {
         .parse()
         .unwrap();
     assert!(second_sequence > first_sequence);
+}
+
+/// Each retained execution of the one run of Task `task` in `af telemetry runs --json`, as
+/// (ordinal, the `af.epoch` its `af.run` span carries), oldest first, with the run.
+fn ordinals_and_epochs(machine: &Machine, repo: &Path, task: &str) -> (Vec<(u64, u64)>, Value) {
+    let runs = json(&machine.af(repo, &[], &["telemetry", "runs", "--json"]));
+    crate::schemas::valid(&crate::schemas::validator("telemetry-runs-v1.json"), &runs);
+    let of_task: Vec<&Value> = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|run| run["task_id"] == task)
+        .collect();
+    let [run] = of_task.as_slice() else {
+        panic!("one run of {task}: {runs}");
+    };
+    let shown = json(&machine.af(
+        repo,
+        &[],
+        &[
+            "telemetry",
+            "show",
+            run["run_id"].as_str().unwrap(),
+            "--json",
+        ],
+    ));
+    let epochs: std::collections::BTreeMap<&str, u64> = shown["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|span| span["name"] == "af.run")
+        .map(|span| {
+            (
+                span["span_id"].as_str().unwrap(),
+                span["attributes"]["af.epoch"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let pairs = run["executions"]["list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|execution| {
+            (
+                execution["ordinal"].as_u64().unwrap(),
+                epochs[execution["span_id"].as_str().unwrap()],
+            )
+        })
+        .collect();
+    (pairs, (*run).clone())
+}
+
+/// Design §5: the execution ordinal counts the committed leases that began a kernel run, never
+/// the lease epoch. `af task start` without `--execute` plans under lease epoch 1 and runs
+/// nothing; the `af task run` that follows (epoch 2) is the run's first execution, so its
+/// history is `prefix:1` with no missing execution, and the epoch stays in `af.epoch`.
+#[test]
+fn telemetry_plan_only_start_is_not_a_missing_execution() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let planned = machine.af(
+        &repo,
+        &[],
+        &[
+            "task",
+            "start",
+            "--file",
+            "gc-older.json",
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let planned = json(&planned);
+    assert!(planned["plan_id"].is_string(), "{planned}");
+    assert!(
+        !machine.telemetry().exists(),
+        "planning alone runs no kernel run"
+    );
+    let ran = machine.af(
+        &repo,
+        &[],
+        &[
+            "task",
+            "run",
+            "gc-older",
+            "--execute",
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let (stdout, stderr) = text(&ran);
+    assert!(ran.status.success(), "{stdout}\n{stderr}");
+    let (pairs, run) = ordinals_and_epochs(&machine, &repo, "gc-older");
+    assert_eq!(pairs, [(1, 2)], "ordinal 1 under lease epoch 2: {run}");
+    assert_eq!(run["history"], "prefix:1", "{run}");
+    assert_eq!(run["missing_ordinals"], serde_json::json!([]), "{run}");
+    assert_eq!(run["retained"], "retained executions 1–1", "{run}");
+}
+
+/// Design §5 and ADR-0144: the sweep that ends a resumable run records its removal on the Task
+/// under a housekeeping lease of its own (`storage_sweep`). That lease began no kernel run, so
+/// the resume that follows is execution 2, not 3: ordinals 1 and 2 under lease epochs 1 and 3,
+/// history `prefix:2`, nothing missing.
+#[test]
+fn telemetry_resume_after_a_sweep_removal_keeps_ordinals_contiguous() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    assert!(
+        start(&machine, &repo, &state, "gc-older.json", &[])
+            .status
+            .success()
+    );
+    // The free-disk floor stops gc-newer before its Worker starts, so it stays resumable; the
+    // eager sweep after it collects the finished gc-older and records that removal on gc-newer.
+    let eager = [
+        ("AF_TEST_FREE_BYTES", "1024"),
+        ("AF_STORAGE__AUTO_GC", "true"),
+        ("AF_STORAGE__KEEP_DAYS", "0"),
+        ("AF_STORAGE__KEEP_TASKS", "0"),
+    ];
+    let first = start(&machine, &repo, &state, "gc-newer.json", &eager);
+    assert_eq!(first.status.code(), Some(1), "{}", text(&first).1);
+    let log = events(&state);
+    let sweep = log
+        .iter()
+        .find(|row| row[10].contains("\"storage_sweep\""))
+        .unwrap_or_else(|| panic!("the sweep recorded its removal: {}", text(&first).1));
+    let sweep: Value = serde_json::from_str(&sweep[10]).unwrap();
+    assert_eq!(sweep["epoch"], 2, "the sweep's housekeeping lease: {sweep}");
+    assert!(
+        sweep["writer"]
+            .as_str()
+            .unwrap()
+            .starts_with("af-storage-sweep-"),
+        "{sweep}"
+    );
+    let resumed = machine.af(
+        &repo,
+        &[],
+        &[
+            "task",
+            "run",
+            "gc-newer",
+            "--execute",
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let (stdout, stderr) = text(&resumed);
+    assert!(resumed.status.success(), "{stdout}\n{stderr}");
+    let (pairs, run) = ordinals_and_epochs(&machine, &repo, "gc-newer");
+    assert_eq!(pairs, [(1, 1), (2, 3)], "{run}");
+    assert_eq!(run["history"], "prefix:2", "{run}");
+    assert_eq!(run["missing_ordinals"], serde_json::json!([]), "{run}");
+    assert_eq!(run["retained"], "retained executions 1–2", "{run}");
 }
 
 /// Design §6, §7.3: a consumer that does not stop — its write blocked, as on a stalled volume —
@@ -550,6 +711,102 @@ fn telemetry_stalled_consumer_leaves_recoverable_segment() {
         Some(review_telemetry::record::Record::Seal(seal))
             if seal.exit == review_telemetry::record::SealExit::Recovered
     ));
+}
+
+/// Design §6: the seal is the consumer's, under the one 2 s bound. With the consumer's write
+/// of the seal record held as on a stalled volume, the command still returns within the bound
+/// plus a margin with the run's own outcome; no other thread seals, compresses, replaces or
+/// writes the segment, which stays one unsealed, unlocked `.jsonl`; and the next reader recovers
+/// its complete prefix — every record before the seal, the command's own end included.
+#[test]
+fn telemetry_blocked_terminal_write_leaves_the_segment_unsealed() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let timed = |file: &str, env: &[(&str, &str)]| {
+        let started = std::time::Instant::now();
+        let output = start(&machine, &repo, &state, file, env);
+        (output, started.elapsed())
+    };
+    let (control, normal) = timed("gc-older.json", &[]);
+    assert!(control.status.success(), "{}", text(&control).1);
+    let (held, took) = timed("gc-newer.json", &[("AF_TEST_TELEMETRY_STALL_SEAL", "1")]);
+    let (stdout, stderr) = text(&held);
+    assert!(held.status.success(), "{stdout}\n{stderr}");
+    let document: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(document["result"]["acceptance"], "satisfied", "{document}");
+    assert!(
+        stderr.contains("did not stop within 2 s"),
+        "one telemetry problem: {stderr}"
+    );
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(
+        took < normal + std::time::Duration::from_secs(2 + 8),
+        "the bound plus a margin: {took:?} against {normal:?}"
+    );
+    // Nothing sealed, compressed or replaced it: the held segment is a lone `.jsonl`.
+    let segments = machine.telemetry().join("v1/segments");
+    let names: Vec<String> = std::fs::read_dir(&segments)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    let live: Vec<&String> = names
+        .iter()
+        .filter(|name| name.ends_with(".jsonl"))
+        .collect();
+    let [live] = live.as_slice() else {
+        panic!("one unsealed segment: {names:?}");
+    };
+    let id = live.trim_end_matches(".jsonl").to_string();
+    assert!(
+        names
+            .iter()
+            .all(|name| name == *live || !name.starts_with(&id)),
+        "no manifest or compressed copy of {id}: {names:?}"
+    );
+    let status = json(&machine.af(&repo, &[], &["telemetry", "status", "--json"]));
+    assert_eq!(status["segments"]["unsealed"], 1, "{status}");
+    assert_eq!(
+        status["segments"]["live"], 0,
+        "the lock ended with the process"
+    );
+    let reindexed = json(&machine.af(&repo, &[], &["telemetry", "reindex", "--json"]));
+    let [recovered] = reindexed["recovered"].as_array().unwrap().as_slice() else {
+        panic!("{reindexed}");
+    };
+    assert_eq!(recovered["segment_id"], id.as_str());
+    let records = review_telemetry::segment::reader::read_sealed(
+        &review_telemetry::layout::Layout::new(machine.telemetry()).sealed_segment(&id),
+    )
+    .unwrap();
+    use review_telemetry::record::Record;
+    let started: Vec<(String, String)> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::SpanStart(start) => Some((start.span_id.clone(), start.name.clone())),
+            _ => None,
+        })
+        .collect();
+    let ended = |name: &str| {
+        started.iter().any(|(span, named)| {
+            named == name
+                && records
+                    .iter()
+                    .any(|record| matches!(record, Record::SpanEnd(end) if &end.span_id == span))
+        })
+    };
+    for name in ["af.command", "af.run", "af.attempt", "af.sweep"] {
+        assert!(ended(name), "{name} ended in the recovered prefix");
+    }
+    let Some(Record::Seal(seal)) = records.last() else {
+        panic!("recovered with a seal");
+    };
+    assert_eq!(seal.exit, review_telemetry::record::SealExit::Recovered);
+    assert_eq!(seal.discarded_bytes, 0, "every written line was whole");
+    let seals = records
+        .iter()
+        .filter(|record| matches!(record, Record::Seal(_)))
+        .count();
+    assert_eq!(seals, 1, "the held seal never reached the file");
 }
 
 /// ADR-0153 clause 7 (design §16 item 6): a telemetry-only failure — a read-only telemetry
@@ -768,6 +1025,148 @@ fn telemetry_dirs_registry_reaches_every_directory() {
     let registry: Value =
         serde_json::from_slice(&std::fs::read(machine.registry()).unwrap()).unwrap();
     assert_eq!(registry["dirs"].as_array().unwrap().len(), 1, "{registry}");
+}
+
+/// Run the applied telemetry eviction `args` with every telemetry file aged past collection,
+/// pausing each eviction between the inventory and its check; the first segment it reaches is
+/// replaced meanwhile by a recent regular file of the same name. Returns the command's document,
+/// the replaced segment's id, its path and the bytes now under that name.
+fn evict_with_a_replacement(
+    machine: &Machine,
+    repo: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    replacement: &[u8],
+) -> (Value, String, PathBuf) {
+    age(
+        &machine.telemetry(),
+        std::time::Duration::from_secs(40 * 86_400),
+    );
+    let pauses = machine.root.join("pauses");
+    let _ = std::fs::remove_dir_all(&pauses);
+    std::fs::create_dir_all(&pauses).unwrap();
+    let stdout = machine.root.join("evicting.json");
+    let mut env = env.to_vec();
+    env.push(("AF_TEST_TELEMETRY_EVICT_PAUSE", pauses.to_str().unwrap()));
+    let mut child = machine
+        .command(repo, &env, args)
+        .stdout(std::fs::File::create(&stdout).unwrap())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let segments = machine.telemetry().join("v1/segments");
+    let mut replaced: Option<(String, PathBuf)> = None;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(std::time::Instant::now() < deadline, "the eviction ends");
+        for entry in std::fs::read_dir(&pauses).unwrap().filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(id) = name.strip_suffix(".paused") else {
+                continue;
+            };
+            let resume = pauses.join(format!("{id}.resume"));
+            if resume.exists() {
+                continue;
+            }
+            if replaced.is_none() {
+                // A recent regular file takes the inventoried segment's name.
+                let path = segments.join(format!("{id}.jsonl.gz"));
+                let staged = machine.root.join("replacement");
+                std::fs::write(&staged, replacement).unwrap();
+                std::fs::rename(&staged, &path).unwrap();
+                replaced = Some((id.to_string(), path));
+            }
+            std::fs::write(&resume, b"").unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(status.success());
+    let document: Value = serde_json::from_slice(&std::fs::read(&stdout).unwrap()).unwrap();
+    let (id, path) = replaced.unwrap_or_else(|| panic!("an eviction was reached: {document}"));
+    (document, id, path)
+}
+
+/// ADR-0144: telemetry eviction is bound to what the inventory found. An inventoried old sealed
+/// segment replaced by a recent regular file of the same name before `af storage prune --apply`
+/// — and again before `af telemetry gc --apply` — reaches it is left in place, and the document
+/// reports it as changed; nothing else in the sweep is held back.
+#[test]
+fn telemetry_eviction_refuses_a_replaced_segment() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    for file in ["gc-older.json", "gc-newer.json"] {
+        let output = start(&machine, &repo, &state, file, &[]);
+        assert!(output.status.success(), "{}", text(&output).1);
+    }
+    let off = ("AF_TELEMETRY__LEVEL", "off");
+    let (pruned, id, path) = evict_with_a_replacement(
+        &machine,
+        &repo,
+        &["storage", "prune", "--apply", "--json"],
+        &[off, ("AF_STORAGE__KEEP_DAYS", "14")],
+        b"not the segment the prune inventoried\n",
+    );
+    crate::schemas::valid(&crate::schemas::validator("storage-prune-v2.json"), &pruned);
+    let [changed] = pruned["telemetry"]["changed"]
+        .as_array()
+        .unwrap()
+        .as_slice()
+    else {
+        panic!("one changed entry: {pruned}");
+    };
+    assert_eq!(changed["segment_id"], id.as_str(), "{pruned}");
+    assert_eq!(changed["path"], path.to_str().unwrap());
+    assert!(
+        changed["reason"].as_str().unwrap().contains("replaced"),
+        "{changed}"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"not the segment the prune inventoried\n",
+        "the replacement stays"
+    );
+    let removals: Vec<&Value> = pruned["removals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|removal| removal["kind"] == "telemetry")
+        .collect();
+    let [other] = removals.as_slice() else {
+        panic!("the other segment is collected: {pruned}");
+    };
+    assert_ne!(other["segment_id"], id.as_str());
+    assert_eq!(other["rule"], "collection");
+
+    // `af telemetry gc --apply`, the same replacement under it.
+    let (collected, again, path) = evict_with_a_replacement(
+        &machine,
+        &repo,
+        &["telemetry", "gc", "--apply", "--json"],
+        &[("AF_STORAGE__KEEP_DAYS", "1")],
+        b"not the segment gc inventoried\n",
+    );
+    crate::schemas::valid(
+        &crate::schemas::validator("telemetry-gc-v1.json"),
+        &collected,
+    );
+    assert_eq!(again, id, "the one segment left");
+    let [changed] = collected["changed"].as_array().unwrap().as_slice() else {
+        panic!("one changed entry: {collected}");
+    };
+    assert_eq!(changed["segment_id"], id.as_str(), "{collected}");
+    assert!(
+        changed["reason"].as_str().unwrap().contains("replaced"),
+        "{changed}"
+    );
+    assert_eq!(collected["removals"], serde_json::json!([]), "{collected}");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"not the segment gc inventoried\n",
+        "the replacement stays"
+    );
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1265,6 +1664,86 @@ fn telemetry_commands_match_their_goldens() {
     assert!(text(&unknown).1.contains("unknown run task:none"));
 }
 
+/// Design §5: totals never claim a scope they do not have. Execution 1 sealed, execution 2
+/// live: `runs` and `show` list the live one beside the sealed prefix (`executions.open`), the
+/// label names it (`retained executions 1–1, open: 2`), and `runs` says its totals cover both
+/// executions with the live one marked `open` — the charge includes its Attempt. A `reindex`
+/// changes none of it.
+#[test]
+fn telemetry_totals_name_the_open_execution() {
+    let machine = Machine::new();
+    let root = machine.telemetry();
+    let first = "1700000000000-4242-0a1b2c3d";
+    let second = "1700000100000-4243-0b1c2d3e";
+    golden_execution(&root, first, 1_700_000_000_000, 1, &mut |_| {});
+    let mut looked = false;
+    golden_execution(&root, second, 1_700_000_100_000, 2, &mut |writer| {
+        if looked {
+            return;
+        }
+        looked = true;
+        writer.flush();
+        let read = || {
+            let runs = json(&machine.af(&machine.root, &[], &["telemetry", "runs", "--json"]));
+            let show = json(&machine.af(
+                &machine.root,
+                &[],
+                &["telemetry", "show", GOLDEN_RUN, "--json"],
+            ));
+            let runs_text = text(&machine.af(&machine.root, &[], &["telemetry", "runs"])).0;
+            let show_text =
+                text(&machine.af(&machine.root, &[], &["telemetry", "show", GOLDEN_RUN])).0;
+            (runs, show, runs_text, show_text)
+        };
+        let before = read();
+        let (runs, show, runs_text, show_text) = &before;
+        crate::schemas::valid(&crate::schemas::validator("telemetry-runs-v1.json"), runs);
+        crate::schemas::valid(&crate::schemas::validator("telemetry-show-v1.json"), show);
+        let run = &runs["runs"][0];
+        let open = serde_json::json!([{"execution_id": second, "ordinal": 2, "segment": "live"}]);
+        assert_eq!(run["history"], "prefix:1", "{run}");
+        assert_eq!(run["retained"], "retained executions 1–1, open: 2", "{run}");
+        assert_eq!(run["executions"]["retained"], 2, "{run}");
+        assert_eq!(run["executions"]["sealed"], serde_json::json!([1]), "{run}");
+        assert_eq!(run["executions"]["open"], open, "{run}");
+        assert_eq!(run["open"], true);
+        assert_eq!(
+            run["totals_cover"],
+            serde_json::json!([
+                {"execution_id": first, "ordinal": 1, "open": false},
+                {"execution_id": second, "ordinal": 2, "open": true},
+            ]),
+            "{run}"
+        );
+        // The totals include the open execution's ended Attempt.
+        assert_eq!(run["charge"], "2400", "{run}");
+        assert_eq!(show["run"]["retained"], run["retained"], "{show}");
+        assert_eq!(show["run"]["executions"]["open"], open, "{show}");
+        assert!(
+            runs_text.contains("retained executions 1–1, open: 2"),
+            "{runs_text}"
+        );
+        assert!(
+            runs_text.contains(&format!("open: execution 2 ({second}, segment live)")),
+            "{runs_text}"
+        );
+        assert!(
+            show_text.contains("retained executions 1–1, open: 2"),
+            "{show_text}"
+        );
+        assert!(
+            show_text
+                .lines()
+                .any(|line| line.contains(second) && line.contains("(open)")),
+            "{show_text}"
+        );
+        let reindexed = machine.af(&machine.root, &[], &["telemetry", "reindex", "--json"]);
+        assert!(reindexed.status.success(), "{}", text(&reindexed).1);
+        assert_eq!(read(), before, "identical after a reindex");
+    });
+    assert!(looked);
+}
+
 /// `af telemetry gc` lists exactly what `af storage` lists for the kind `telemetry`, and with
 /// `--apply` removes nothing of another kind.
 #[test]
@@ -1332,7 +1811,7 @@ fn telemetry_task_run_records_its_span_tree() {
     };
     assert_eq!(run["kind"], "task");
     assert_eq!(run["task_id"], "gc-older");
-    assert_eq!(run["executions"], 1);
+    assert_eq!(run["executions"]["retained"], 1);
     assert_eq!(run["outcome"], "finished");
     assert_eq!(run["history"], "prefix:1");
     assert_eq!(run["coverage"], "complete");
@@ -1391,7 +1870,9 @@ fn telemetry_task_run_records_its_span_tree() {
     );
     assert_eq!(run_span["af.pipeline"], "fixture/plain");
     // Every span of the run names its Store, run, kind and execution: read through `--span`.
-    let execution = run["execution_list"][0]["execution_id"].as_str().unwrap();
+    let execution = run["executions"]["list"][0]["execution_id"]
+        .as_str()
+        .unwrap();
     for span in spans
         .iter()
         .skip(1)
@@ -1500,6 +1981,118 @@ fn telemetry_tail_follows_a_live_run_within_the_flush_latency() {
     }
 }
 
+/// Send `signal` (`STOP`, `CONT`) to the process `pid`; a stop is waited for until the process
+/// is stopped.
+fn signal(pid: u32, signal: &str) {
+    let pid = pid.to_string();
+    assert!(
+        Command::new("kill")
+            .args([&format!("-{signal}"), &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    if signal == "STOP" {
+        let started = std::time::Instant::now();
+        loop {
+            let state = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid])
+                .output()
+                .unwrap();
+            if String::from_utf8_lossy(&state.stdout)
+                .trim()
+                .starts_with('T')
+            {
+                break;
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
+/// Design §6 and §10: a reader refuses what it cannot read. `af telemetry tail` follows a live
+/// segment; its writer seals it and the sealed gzip is corrupted before tail's next read (tail
+/// held stopped in between). Tail never takes the segment as complete with nothing more to
+/// say: it fails, exits non-zero and names the sealed file.
+#[test]
+fn telemetry_tail_refuses_an_unreadable_sealed_segment() {
+    use review_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
+    let machine = Machine::new();
+    let writer = review_telemetry::segment::writer::Writer::new(
+        review_telemetry::segment::writer::WriterOptions::new(
+            machine.telemetry(),
+            review_telemetry::level::Level::Spans,
+        ),
+    )
+    .unwrap();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event(&command, "af.note", Attrs::new());
+    writer.flush();
+    let segment = writer.segment_id().unwrap();
+    let mut tail = machine
+        .command(&machine.root, &[], &["telemetry", "tail", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = tail.stdout.take().unwrap();
+    let (sender, received) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let _ = sender.send(line.unwrap());
+        }
+    });
+    // Tail follows the live segment: the event reached it.
+    let first: Value = serde_json::from_str(
+        &received
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("tail prints the live event"),
+    )
+    .unwrap();
+    assert_eq!(first["name"], "af.note", "{first}");
+    signal(tail.id(), "STOP");
+    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    assert_eq!(sealed.segment_id, segment);
+    assert!(
+        !writer.path().unwrap().exists(),
+        "sealed: no live file left"
+    );
+    std::fs::write(&sealed.path, b"\x1f\x8b not a gzip stream any more").unwrap();
+    signal(tail.id(), "CONT");
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = tail.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(60) {
+            let _ = tail.kill();
+            panic!("tail did not end");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut tail.stderr.take().unwrap(), &mut stderr).unwrap();
+    reader.join().unwrap();
+    assert!(!status.success(), "tail fails: {stderr}");
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&sealed.path.display().to_string()),
+        "names the sealed file: {stderr}"
+    );
+    // Nothing after the seal was taken from the unreadable file.
+    assert!(
+        received
+            .try_iter()
+            .all(|line| !line.contains("\"span_end\"")),
+        "no line from the unreadable file"
+    );
+}
+
 /// Design §10: a run id two Stores share is two runs; `show` and `tail` list both Stores and ask
 /// for `--store ID`, and with it read the one named.
 #[test]
@@ -1547,5 +2140,8 @@ fn telemetry_a_run_two_stores_share_asks_for_the_store() {
         &["telemetry", "show", GOLDEN_RUN, "--store", &other, "--json"],
     ));
     assert_eq!(one["run"]["store_id"], other.as_str());
-    assert_eq!(one["run"]["executions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        one["run"]["executions"]["list"].as_array().unwrap().len(),
+        1
+    );
 }
