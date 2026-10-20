@@ -377,7 +377,8 @@ impl<'a> ReviewDomainState<'a> {
                                     .image
                                     .as_deref()
                                     .expect("validated container Gate image"),
-                            ),
+                            )
+                            .with_limits(binding.memory.clone(), binding.cpus.clone()),
                     ),
                 };
                 gate_remaining(self.check_timeout, deadline)?;

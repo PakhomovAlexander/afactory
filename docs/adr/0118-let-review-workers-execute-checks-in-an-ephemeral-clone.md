@@ -1,6 +1,7 @@
 # ADR-0118: Let a review Worker that declares `execute-checks` run in an ephemeral clone
 
-Status: accepted, 2026-09-23.
+Status: accepted, 2026-09-23. Amended 2026-10-20: what holds for a child that leaves the
+Attempt's process group (see [Bounds and children](#bounds-and-children)).
 
 ## Context
 
@@ -103,6 +104,20 @@ The Attempt's wall clock and token reservation are unchanged. `ModelRunner` gain
 cancellation already killed the group. Now the group is also killed when the model process exits,
 before it is reaped, so a background shell child cannot outlive the Attempt or write into the
 tree being sealed.
+
+Amended 2026-10-20. The group kill reaches only the Attempt's process group, and a shell child
+that calls `setsid` (or moves to a group of its own) leaves it. `ModelRunner` now selects
+`ExitPolicy::KillDescendants`. On Linux af makes itself a child subreaper
+(`PR_SET_CHILD_SUBREAPER`), so a descendant the Attempt orphaned becomes af's child, and before
+the leader is reaped af kills and reaps every member of the group, every child of its own that
+started after the leader in another session, and every descendant of either, until none is
+left. A descendant that moved to a group of its own without a new session after its parent had
+already exited is not told from af's other children and is left; that is a deliberate act, not a
+background job. On macOS the policy is the group kill alone: under `trusted_local` a `setsid`
+child can outlive the Attempt and write into its tree, before or while the kernel seals it.
+`trusted_local` is no security boundary; a project that needs one demands container isolation,
+where the container is removed whole. The check runner selects the same policy for every
+host-local check.
 
 ## Consequences
 

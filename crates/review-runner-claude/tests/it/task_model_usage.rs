@@ -47,10 +47,54 @@ printf '%s' '{"is_error":false,"result":"OK","usage":{"input_tokens":0,"output_t
         &[],
     );
     assert!(result.message.is_ok());
+    // The config directory reached the child and is redacted from what was stored (L8).
     assert_eq!(
         cas.get(&result.raw_artifact_ids[1]).unwrap(),
-        format!("1\n1\nsynthetic-user\n{home}\n{config}\nunset\nunset\n").as_bytes()
+        format!("1\n1\nsynthetic-user\n{home}\n[redacted]\nunset\nunset\n").as_bytes()
     );
+}
+
+#[test]
+fn a_config_directory_echoed_in_its_canonical_spelling_is_redacted() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let real = temp.path().join("synthetic-personal-config");
+    std::fs::create_dir(&real).unwrap();
+    let config = temp.path().join("config-link");
+    std::os::unix::fs::symlink(&real, &config).unwrap();
+    let program = temp.path().join("synthetic-echo");
+    std::fs::write(
+        &program,
+        r##"#!/bin/sh
+cat >/dev/null
+printf '%s\n' "$CLAUDE_CONFIG_DIR" >&2
+cd "$CLAUDE_CONFIG_DIR" && pwd -P >&2
+printf '%s' '{"is_error":false,"result":"OK","usage":{"input_tokens":0,"output_tokens":0}}'
+"##,
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), opus()))
+        .unwrap()
+        .with_auth(
+            Some(config.display().to_string()),
+            "synthetic-user".into(),
+            temp.path().display().to_string(),
+        );
+    let result = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"public input".to_vec(),
+        LOAD_SAFE_WALL,
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    assert!(result.message.is_ok());
+    let stored = String::from_utf8(cas.get(&result.raw_artifact_ids[1]).unwrap()).unwrap();
+    assert_eq!(stored, "[redacted]\n[redacted]\n");
+    let canonical = real.canonicalize().unwrap().display().to_string();
+    assert!(!stored.contains(&canonical));
 }
 
 #[test]
