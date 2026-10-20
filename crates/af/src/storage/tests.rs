@@ -907,9 +907,11 @@ fn a_partial_deletion_reports_the_bytes_it_actually_freed() {
     let claim = only_claim(&layout.roots.campaigns);
     let remaining = review_sandbox::storage::allocated_bytes(&claim).unwrap();
     assert!(remaining > 0, "the walk could not reach all of it");
+    let freed = started
+        .checked_sub(remaining)
+        .unwrap_or_else(|| panic!("{remaining} bytes remain of {started} at the start"));
     assert_eq!(
-        failed.bytes,
-        started - remaining,
+        failed.bytes, freed,
         "what the walk unlinked, accounted from the removal's own start"
     );
     assert_eq!(failed.total_after, applied.total_before - failed.bytes);

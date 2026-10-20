@@ -3928,6 +3928,9 @@ mod tests {
         let error = record
             .remove_with(true, |step, inside| {
                 if step == Before::Check {
+                    // Held open across the replacement: ext4 hands a freed inode number to the
+                    // next file at once, and the check must meet another inode.
+                    let _old = std::fs::File::open(inside).unwrap();
                     std::fs::remove_file(inside).unwrap();
                     std::fs::write(inside, b"settled").unwrap();
                 }
@@ -4242,6 +4245,9 @@ mod tests {
                             .find(|file| !file.starts_with("dead/"))
                             .unwrap(),
                     );
+                    // Held open across the replacement: ext4 hands a freed inode number to the
+                    // next file at once, and the check must meet another inode.
+                    let _old = std::fs::File::open(&inside).unwrap();
                     std::fs::remove_file(&inside).unwrap();
                     std::fs::write(&inside, b"one").unwrap();
                 }

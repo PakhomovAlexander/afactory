@@ -196,6 +196,7 @@ impl Machine {
 }
 
 /// Allocated bytes below `path`, links not followed.
+/// The allocated bytes below `path` as the kernel counts them, directories' own blocks included.
 fn allocated(path: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::symlink_metadata(path).unwrap();
@@ -206,6 +207,21 @@ fn allocated(path: &Path) -> u64 {
         }
     }
     bytes
+}
+
+/// The allocated bytes of the regular files below `path`, for a before/after comparison across
+/// a collection pass: the pass leaves a container directory behind, whose own blocks differ by
+/// filesystem (4096 on ext4, none on APFS) and are no part of what a removal reports.
+fn allocated_files(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path).unwrap();
+    if metadata.is_dir() {
+        return std::fs::read_dir(path)
+            .unwrap()
+            .map(|entry| allocated_files(&entry.unwrap().path()))
+            .sum();
+    }
+    metadata.blocks() * 512
 }
 
 fn git(repo: &Path, args: &[&str]) -> String {
@@ -465,7 +481,7 @@ fn an_explicit_collection_beyond_keep_surveys_tombstones_and_frees_the_bytes() {
     assert!(machine.collected().is_empty());
 
     let cas = machine.store().join("cas");
-    let before = allocated(&cas);
+    let before = allocated_files(&cas);
     let pruned = prune(&machine, &repo, &keep);
     let oldest: Vec<String> = surveys[..3]
         .iter()
@@ -479,7 +495,7 @@ fn an_explicit_collection_beyond_keep_surveys_tombstones_and_frees_the_bytes() {
         .map(|removal| removal["bytes"].as_u64().unwrap())
         .sum();
     assert!(freed > 0);
-    let after = allocated(&cas);
+    let after = allocated_files(&cas);
     assert!(
         before - after >= freed,
         "{before} - {after} freed less than the {freed} bytes reported"
@@ -1211,7 +1227,7 @@ fn a_corrupt_survey_is_collected_unreadable_and_an_unreadable_one_is_refused() {
 
     let keep = [("AF_STORAGE__KEEP_SURVEYS", "2")];
     let cas = machine.store().join("cas");
-    let before = allocated(&cas);
+    let before = allocated_files(&cas);
     let tombstones_before = machine.collected();
     let pruned = prune(&machine, &repo, &keep);
     let collected: Vec<&Value> = pruned["removals"]
@@ -1231,7 +1247,7 @@ fn a_corrupt_survey_is_collected_unreadable_and_an_unreadable_one_is_refused() {
     assert_eq!(corrupt_removal["bytes"].as_u64().unwrap(), corrupt_bytes);
     assert!(!corrupt.exists(), "its bytes are deleted");
     assert!(
-        before - allocated(&cas) >= corrupt_bytes,
+        before - allocated_files(&cas) >= corrupt_bytes,
         "the corrupt bytes are freed"
     );
     let tombstone = machine
