@@ -21,14 +21,20 @@
   and `workspace remove LABEL` unregisters one and never removes a Store; `--delete-worktree`
   removes a worktree only when its index and its files both equal its commit, the index through
   delivery's cached-index comparison and the files through the committed capture rather than
-  `git worktree remove`, so no clean filter runs and a staged or unmerged entry is refused; it
-  moves the worktree's administrative entry into a container directory it creates exclusively,
-  `<name>.af-removing-<pid>-<random hex>`, before deleting it, so the move never replaces another
-  directory; when its directory went but its entry could not, the message names where the entry
-  remains, in its container or not, the Workspace stays registered, and the same command
-  recognises the container and finishes it, refusing while an
-  entry's `gitdir` cannot be read. Automatic Workspace labels follow one stated rule within 128
-  bytes. `af
+  `git worktree remove`, so no clean filter runs and a staged or unmerged entry is refused. It
+  goes by identity, never by name: before it moves anything it writes a machine-local removal
+  record in the Project Store (`removals/<workspace id>.toml`) holding the checkout path, the
+  device and inode of the checkout and of its administrative entry, the container it makes for
+  each and the step each reached; it claims each directory into a container it creates
+  exclusively beside it (mode 0700, through that container's own descriptor, never over a taken
+  name), judges the checkout there through descriptors without following a link, deletes only
+  what it claimed and then the container with `rmdir`. A replacement at the checkout's path is
+  kept and reported, a container holding anything else keeps it and is reported with the first
+  such path, and a directory merely named like a container is reported and never touched. An
+  interrupted or failed removal says where what is left remains, keeps the Workspace registered
+  and is finished by the same command from its record, which unregisters the Workspace exactly
+  once, refusing while an entry's `gitdir` cannot be read; a plain `workspace remove` is refused
+  meanwhile. Automatic Workspace labels follow one stated rule within 128 bytes. `af
   onboard --apply`, `af task plan|start`, `af review run` and `af project` register the Project
   and the checkout lazily (`af task plan|start` before resolving `--workspace`), refuse a shallow
   clone with `git fetch --unshallow`, and never change a command's result; every git process they

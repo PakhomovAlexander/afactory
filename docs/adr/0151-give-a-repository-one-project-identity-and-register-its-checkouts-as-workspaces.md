@@ -1,8 +1,8 @@
 # ADR-0151: Give a repository one Project identity and register its checkouts as Workspaces
 
 **Status:** accepted (2026-10-19); clauses 4, 5 and 8 amended (2026-10-20) by PJ1b, clause 5
-again (2026-10-20) by its second round, clauses 3 and 5 by its third, and clause 5 by its
-fifth. Package PJ1 of the
+again (2026-10-20) by its second round, clauses 3 and 5 by its third, clause 5 by its
+fifth, and clauses 3 and 5 by its sixth. Package PJ1 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery makes only a local
 branch and worktree), [ADR-0032](0032-generate-review-authority-with-af-onboard.md),
@@ -68,11 +68,10 @@ directories.
    digits of SHA-256(`af/workspace-id@1\0` ‖ Project ID ‖ `\0` ‖ canonical checkout path); its
    label is unique within the Project and follows the safe-name rule of Task IDs; its origin is
    `adopted`, `created` or `delivered`. Its paths (checkout, Task Store, and optionally bindings
-   file, Task-file directory and `removing_entry`, the administrative entry an unfinished
-   `--delete-worktree` of it began removing) live only in `workspaces.toml` beside the log,
-   machine-written,
-   replaced whole through a temporary file and a rename under the Project Store's lock. The
-   projection `af/project@1` is a function of the log and that file.
+   file and Task-file directory) live only in `workspaces.toml` beside the log, machine-written,
+   replaced whole through a temporary file and a rename under the Project Store's lock; an
+   unfinished `--delete-worktree` of it is held by its removal record beside that file (clause
+   5). The projection `af/project@1` is a function of the log and `workspaces.toml`.
 4. **Lazy, token-free registration.** `af onboard --apply`, `af task plan`, `af task start`,
    `af review run` and every `af project` command register the Project when it is new and the
    invoking checkout as a Workspace when it is new: origin `adopted`, its Store the default Task
@@ -189,41 +188,73 @@ directories.
    (`review_source_git`) against the files on disk, any file the tree lacks, ignored or not,
    other than git's own `.git` making it dirty; no filter, hook, diff driver or other program the
    repository configures runs, and every git call runs under the supervision below. A dirty
-   worktree is refused without moving a byte, naming the first such path. A clean worktree is
+   worktree is refused with the first such path, and nothing is changed. A clean worktree is
    removed by deleting its directory and then that worktree's own administrative entry, nothing
-   else; its branch is kept. Before anything is deleted the entry's path is recorded as the
-   Workspace's `removing_entry` in `workspaces.toml`; `workspaces.toml` stays version 1, since no
-   release has written it (ADR-0145). Before it is deleted the entry is renamed into a container
-   this process created exclusively beside it: `mkdir` of
-   `<name>.af-removing-<pid>-<16 random hex digits>`, which fails when that path exists and is
-   then tried with new randomness, so the rename's destination lies inside a directory only this
-   process owns, and no leftover of an earlier process, whatever its PID, and no directory at the
-   predictable `<name>.af-removing-<pid>` is ever replaced. The deletion then removes the
-   container with the entry in it, so the entry goes whole or stays whole, and an error names
-   where it remains. When the container cannot be made or the rename fails once the directory is
-   gone, the command fails with
+   else; its branch is kept.
+
+   Names prove nothing; a record does. Before `--delete-worktree` moves or deletes anything it
+   writes the Workspace's removal record in the Project Store, beside `workspaces.toml` and never
+   in a repository: `removals/<workspace id>.toml`, `version = 1`, machine-written and replaced
+   whole through a temporary file and a rename under the Project Store's lock. It holds the
+   registered checkout path; the identity (device and inode) of the checkout and of its
+   administrative entry as inspected; for each, the container this removal named and that
+   container's identity once made; and the step each reached (`inspected`, `container`,
+   `contained`, `deleting`, `deleted`, `done`). It is rewritten before each next step and deleted
+   when the removal completes, before the Workspace is unregistered, so the Workspace is
+   unregistered exactly once. `workspaces.toml` holds no removal state and stays version 1, as
+   no release has written either file (ADR-0145).
+
+   Each directory is claimed before it is judged or deleted. The removal names a container
+   beside it, `<name>.af-removing-<pid>-<16 random hex digits>`, records that name, creates it
+   with `mkdir` mode 0700 (a name that exists is drawn again), records its identity, opens it
+   without following a link and, only while `fstat` of that descriptor equals the recorded
+   identity, renames the directory into it with `renameat` relative to that descriptor, never
+   over a name that is taken. It then finds the directory there by its recorded identity. A
+   container replaced between its creation and the rename is never used and is reported; a
+   directory that took the path between the identity check and the rename is put back, never
+   over a name taken again. The checkout's commit is read through its administrative entry as
+   git's directory, never through the checkout, before the claim; the claimed checkout is judged
+   in its container, its index through the cached-index comparison above and its files by a
+   descriptor-based, no-follow traversal against that committed capture. A dirty one is put
+   back at its path and refused with nothing changed; when another directory took that path
+   meanwhile it stays in its container, and the message says where. Only the claimed directory
+   is deleted, through descriptors, a link unlinked and never followed and no permission
+   changed; the container then goes with `rmdir`. A container holding anything else keeps it and
+   is reported with the first such path, and the Workspace stays registered until an operator
+   clears it. A replacement found at the registered path before the claim is kept and the
+   removal refused with nothing changed; one found there after the claim is kept and reported.
+   The administrative entry goes the same way once the checkout is gone, claimed only while its
+   identity is the recorded one and its `gitdir` still names `<path>/.git` as git resolves it,
+   and refused while it is locked. A `gitdir` that cannot be read (permission, or bytes that
+   name no path) is never "no entry": it may name the checkout, so the removal stops with that
+   file and the read error and does not unregister. When the entry's container cannot be made or
+   the move fails once the directory is gone, the command fails with
 
    `removed the worktree <path>; its administrative entry <common dir>/worktrees/<name> remains: <os error>; fix it and run the command again`
 
    (with `; so does the empty directory <container> made to receive it` before `; fix it` when
-   that empty container could not be removed either, the rerun removing it), and when the
-   deletion after the rename fails, never naming the original path, with
+   that empty container could not be removed either), and when the deletion after the move
+   fails, never naming the original path, with
 
-   `removed the worktree <path>; its administrative entry remains at <common dir>/worktrees/<name>.af-removing-<pid>-<hex>/<name>: <os error>; fix it and run the command again`
+   `removed the worktree <path>; its administrative entry remains at <container>/<name>: <os error>; fix it and run the command again`
 
-   and the Workspace stays registered. A rerun whose registered checkout path no longer exists
-   removes each entry whose `gitdir` names `<path>/.git`, at its own path or inside such a
-   container, and the container `<name>.af-removing-<pid>-<hex>` whose entry's `gitdir` is gone
-   while `<name>` is the recorded entry's (refusing a locked one), and only then unregisters and
-   reports both; a name of any other form, the predictable `<name>.af-removing-<pid>` included,
-   is never taken for this removal's; without such an entry it
-   unregisters and says the checkout is already gone. A `gitdir` that cannot be read (permission,
-   or bytes that name no path) is never "no entry": it may name the checkout, so the rerun
-   refuses with that file and the read error, changes nothing and does not unregister. A
-   deletion that fails again is reported where the entry remains, as above, after `the worktree
-   <path> is already gone;`. Only a refusal that changed nothing says "nothing was changed": a
-   dirty worktree, refused with the first differing path, an unknown checkout, the running
-   checkout and a rerun that meets an unreadable `gitdir`. Exit
+   and the Workspace stays registered. A rerun acts only through the record: it finishes each
+   directory from the step recorded, verifying each by identity (an interrupted claim is
+   claimed, judged and deleted; an interrupted deletion is deleted; a container is removed),
+   then deletes the record and unregisters. A recorded container that is not the one made is
+   reported and left, and a name recorded for a container that was never identified proves
+   nothing about a directory found there. A directory that merely looks like a container,
+   beside the checkout or among the entries, whether nobody recorded it or it is a worktree or
+   an entry whose own name has that form, is never touched and is reported as
+   `left <directory>: it is named like a removal's container, but no removal record names it, so it is not this removal's`.
+   A rerun's messages begin `the worktree <path> is already gone;` once the checkout's deletion
+   is recorded. Without a record a removal is fresh: a registered checkout path that no longer
+   exists has each entry at its own path whose `gitdir` names `<path>/.git` recorded and removed
+   as above, and is otherwise unregistered and reported as already gone. `workspace remove
+   LABEL` without `--delete-worktree` is refused while the Workspace has a removal record,
+   naming the command that finishes it. Only a refusal that changed nothing says "nothing was
+   changed": a dirty worktree, refused with the first differing path, a replaced checkout, an
+   unknown checkout, the running checkout and a rerun that meets an unreadable `gitdir`. Exit
    codes are 0, 1 (with `af/error@1` under `--json` and the next action in the message) and 2 for usage. Every
    git process of the Project modules runs through `review_process` with a deadline (30 s for
    plumbing, capture's own for a committed capture) that stops its whole process group, in
@@ -283,8 +314,9 @@ directories.
   `gitdir`, and both entries of a concurrent add of the same basename (one whose `gitdir` names
   another path, one without a `gitdir`), after which the operator's `git worktree prune` and the
   same label succeed; removes a clean worktree and its administrative entry with
-  `--delete-worktree` and refuses a changed, re-moded or untracked file untouched, while a clean
-  filter the repository configures never runs; with a read-only `worktrees/`, reports a
+  `--delete-worktree` and refuses a changed, re-moded or untracked file untouched, leaving no
+  container and no record, while a clean filter the repository configures never runs; with a
+  read-only `worktrees/`, reports a
   `--delete-worktree` that removed the directory but not the entry with the exact message, keeps
   the Workspace, and finishes it on the rerun once the permission is back, and unregisters a
   checkout already gone; reports the locked entry with its recovery line when the undo's final
@@ -301,19 +333,33 @@ directories.
   one that staged a change into the new index; keeps a missing parent another process created
   before the add while removing the one the command created, and leaves and reports a created
   parent a fake `git` removed and recreated; names the entry inside its container
-  `<name>.af-removing-<pid>-<hex>` when it cannot be emptied and finishes it on the rerun, also
-  once its `gitdir` is gone; leaves untouched an empty directory at the predictable
-  `<name>.af-removing-<pid>` of the removing process and recognises the leftover container on
-  the rerun; and refuses,
-  still registered, a rerun that meets an unreadable `gitdir`, finishing once it is readable.
+  `<name>.af-removing-<pid>-<hex>` when it cannot be emptied and finishes it on the rerun by
+  its recorded identity, also once its `gitdir` is gone; leaves untouched an empty directory at
+  the predictable `<name>.af-removing-<pid>` of the removing process; refuses, still
+  registered, a rerun that meets an unreadable `gitdir`, finishing once it is readable; stopped
+  as a crash would (a debug build's `AF_TEST_PROJECT_REMOVAL_STOP`) after each step from the
+  checkout's container to the entry's deletion, among them after the checkout's deletion and
+  before the entry's move, holds both identities and the steps in the record, refuses a plain
+  `workspace remove`, and finishes on the rerun with nothing left and exactly one
+  `WorkspaceRemoved@1`; keeps and reports a checkout another process replaced after the
+  inspection, changing nothing, and a directory another process made at the path after the
+  claim; keeps and reports a foreign file put into a leftover container until the operator
+  removes it; leaves and reports unrecorded directories named like containers, sentinels
+  intact; and removes a worktree whose own name looks like a container, the removal of its
+  sibling leaving it alone.
   Unit tests undo every kind of
   step in reverse order, including a partial worktree whose entry a stopped add left locked,
   delete only the entry whose `gitdir` names the path, report a locked and an unlocked entry
   without one with their exact recovery lines, keep and report a branch that moved, and never
   prune; keep a destination holding an empty directory, a directory inside a submodule's or one
   where the manifest has a file, while the directories above the manifest's paths pass; remove
-  an ancestor only while its identity is unchanged; know a removal's container by its name, pid
-  and randomness and never take the predictable name; test which administrative entries belong
+  an ancestor only while its identity is unchanged; read back a removal record and refuse
+  another version, Workspace, identity form, relative path or step without its container;
+  draw a fresh container name each time; delete a claimed tree through descriptors without
+  following a link or changing a permission, refusing another identity; compare a claimed
+  worktree with its manifest through descriptors, naming the first re-moded, untracked or
+  changed path and skipping only git's own `.git` file; resolve an entry's `gitdir` as git
+  reads it; test which administrative entries belong
   to an add; give the stated automatic
   label for `repo.v2`, a name with spaces, a Unicode name, a leading-punctuation name, a 200-byte
   name and a collision with an explicit label, none over 128 bytes; refuse a version-1
