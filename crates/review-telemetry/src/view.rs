@@ -688,6 +688,15 @@ fn run_attribute(index: &Index, trace_id: &str, key: &str) -> Result<Option<Stri
         .map(Option::flatten)
 }
 
+/// The latest of `executions`: the one with the greatest committed ordinal (the last listed of
+/// equals); `None` when none carries an ordinal.
+fn latest(executions: &[Execution]) -> Option<&Execution> {
+    executions
+        .iter()
+        .filter(|execution| execution.ordinal.is_some())
+        .max_by_key(|execution| execution.ordinal)
+}
+
 fn run(
     index: &Index,
     states: &BTreeMap<String, String>,
@@ -712,12 +721,12 @@ fn run(
         .map(|execution| execution.interval().1)
         .max()
         .unwrap_or(0);
-    // The latest execution's own outcome and nothing else: a live execution whose `af.run` has
-    // no end attributes yet has none, never an earlier execution's.
-    let outcome = executions
-        .list
-        .last()
-        .and_then(|execution| execution.outcome.clone());
+    // The latest execution's own outcome and nothing else: the latest is the one with the
+    // greatest committed ordinal, never the latest start (the clocks of two machines, or a
+    // takeover, can run them opposite); one without an ordinal is listed but never latest. A
+    // live latest execution whose `af.run` has no end attributes yet has none, never an earlier
+    // execution's, and with no ordinal at all there is no outcome.
+    let outcome = latest(&executions.list).and_then(|execution| execution.outcome.clone());
     let failures: i64 = index
         .connection()
         .query_row(

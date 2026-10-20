@@ -1249,6 +1249,9 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
                     .replay(&task_run_id(self.lease.task_id()).unwrap())
                     .unwrap();
                 let started = events.iter().any(|event| {
+                    if review_store::store::task::is_execution_started(event) {
+                        return false;
+                    }
                     let transition: TaskTransitionV1 = serde_json::from_value(event.payload.clone()).unwrap();
                     let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
                         return false;
@@ -1709,8 +1712,9 @@ fn failed_command_and_schema_refusal_exhaust_bounded_attempts_without_publishing
 
 /// ADR-0153 (design §3, §5): the Store never learns the telemetry level. The same Task run once
 /// with nothing recording (`off`) and once with Telemetry recording at `content` commits the
-/// same event sequence, the lease's one `execution_started` marker first among its kernel
-/// records, before any Attempt is reserved; the recording run did open its `af.run` span.
+/// same event sequence, the lease's one execution marker (`TaskExecutionStarted@1`, its own event
+/// of the Task log) first among its kernel records, before any Attempt is reserved; the
+/// recording run did open its `af.run` span.
 #[test]
 fn telemetry_execution_marker_is_identical_at_off_and_content() {
     fn run() -> Vec<(String, String, u64, String)> {
@@ -1769,20 +1773,30 @@ fn telemetry_execution_marker_is_identical_at_off_and_content() {
     ));
     let content = tracing::dispatcher::with_default(&dispatch, run);
     assert_eq!(off, content, "the same event sequence at off and content");
+    let types: Vec<&str> = content
+        .iter()
+        .map(|(event_type, _, _, _)| event_type.as_str())
+        .collect();
     let kinds: Vec<&str> = content
         .iter()
         .map(|(_, kind, _, _)| kind.as_str())
         .collect();
-    let marker = kinds
+    let marker = types
         .iter()
-        .position(|kind| *kind == "execution_started")
+        .position(|event_type| *event_type == "TaskExecutionStarted@1")
         .expect("the lease's marker");
     assert_eq!(
-        kinds
+        types
             .iter()
-            .filter(|kind| **kind == "execution_started")
+            .filter(|event_type| **event_type == "TaskExecutionStarted@1")
             .count(),
         1
+    );
+    assert_eq!(content[marker].2, content[0].2, "the lease's own epoch");
+    assert_eq!(content[marker].3, "test-writer", "the lease's own writer");
+    assert!(
+        !kinds.contains(&"execution_started"),
+        "no TaskTransition@5 carries it"
     );
     let first_record = kinds
         .iter()

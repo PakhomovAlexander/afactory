@@ -509,23 +509,6 @@
               "$ref": "urn:af:schema:task-storage-sweep:1"
             }
           }
-        },
-        {
-          "description": "The lease began kernel execution of the Task (ADR-0153): committed once per lease by the Task runtime before anything else it does under it, inline, referencing no artifact. Telemetry numbers a run's executions by these markers.",
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "execution"
-          ],
-          "properties": {
-            "kind": {
-              "const": "execution_started"
-            },
-            "execution": {
-              "$ref": "urn:af:schema:task-execution-started:1"
-            }
-          }
         }
       ]
     }

@@ -387,10 +387,12 @@ impl EventStore {
                 "Task Review selection requires the trusted Task publication entry point".into(),
             ));
         }
-        if events
-            .iter()
-            .any(|e| matches!(e.event_type, EventType::TaskTransitionV5))
-            && task_permit.is_none()
+        if events.iter().any(|e| {
+            matches!(
+                e.event_type,
+                EventType::TaskTransitionV5 | EventType::TaskExecutionStartedV1
+            )
+        }) && task_permit.is_none()
         {
             return Err(StoreError::Conflict(
                 "Task events require the trusted Task entry point".into(),

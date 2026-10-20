@@ -35,7 +35,7 @@ pub mod review_handoff;
 pub mod review_integration;
 mod review_round;
 pub mod review_round_publication;
-pub use review_handoff::read_task_transition;
+pub use review_handoff::{is_execution_started, read_execution_started, read_task_transition};
 mod source;
 
 fn conflict(message: impl Into<String>) -> StoreError {
@@ -342,8 +342,8 @@ pub struct TaskProjection {
     /// What every Storage Budget sweep that ended a run of this Task removed, in log order
     /// (ADR-0144).
     pub storage_sweeps: Vec<task::storage_sweep::TaskStorageSweepV1>,
-    /// The epoch of every lease that began kernel execution of the Task: one
-    /// `execution_started` marker each (ADR-0153).
+    /// The epoch of every lease that began kernel execution of the Task: one execution marker
+    /// (`TaskExecutionStarted@1`) each (ADR-0153).
     pub execution_epochs: BTreeSet<u64>,
 }
 
@@ -837,17 +837,23 @@ impl TaskProjection {
         self.decisions.get(plan_id).map(|d| d.value.decision)
     }
     fn check_lease(&self, transition: &TaskTransitionV1) -> Result<(), StoreError> {
-        if transition.writer != self.writer || transition.epoch != self.epoch {
+        self.check_lease_of(&transition.writer, transition.epoch, transition.now_unix_ms)
+    }
+
+    /// [`Self::check_lease`] of the lease `writer` at `epoch` acting at `now_unix_ms`: a
+    /// transition's, or an execution marker's.
+    fn check_lease_of(&self, writer: &str, epoch: u64, now_unix_ms: u64) -> Result<(), StoreError> {
+        if writer != self.writer || epoch != self.epoch {
             return Err(conflict(format!(
                 "Task writer lease is expired or fenced: writer {} epoch {} is not the current \
                  writer {} epoch {}",
-                transition.writer, transition.epoch, self.writer, self.epoch
+                writer, epoch, self.writer, self.epoch
             )));
         }
         // The current writer's operation may have read its clock before its own heartbeat
         // appended a later renewal: that is the same writer, not a clock moving backwards. It
         // is judged, and stamped (`writer_time`), at the last recorded time (ADR-0128).
-        let time = self.writer_time(transition);
+        let time = self.lease_time(writer, epoch, now_unix_ms);
         if time >= self.lease_until {
             return Err(conflict(format!(
                 "Task writer lease is expired or fenced: time {time} is not before the lease's \
@@ -863,11 +869,51 @@ impl TaskProjection {
     /// through its other connection while this operation was in flight. Another writer's time
     /// is its own, so a premature takeover is still refused.
     fn writer_time(&self, transition: &TaskTransitionV1) -> u64 {
-        if transition.writer == self.writer && transition.epoch == self.epoch {
-            transition.now_unix_ms.max(self.last_time)
+        self.lease_time(&transition.writer, transition.epoch, transition.now_unix_ms)
+    }
+
+    /// [`Self::writer_time`] of the lease `writer` at `epoch` acting at `now_unix_ms`.
+    fn lease_time(&self, writer: &str, epoch: u64, now_unix_ms: u64) -> u64 {
+        if writer == self.writer && epoch == self.epoch {
+            now_unix_ms.max(self.last_time)
         } else {
-            transition.now_unix_ms
+            now_unix_ms
         }
+    }
+
+    /// Apply a lease's execution marker (`TaskExecutionStarted@1`, ADR-0153): the next event of
+    /// the log, by the current lease, at a time not before the last recorded, never on a
+    /// finished Task and once per lease. It changes nothing of the Task's result; it is folded
+    /// into the projection as the epochs that began execution.
+    fn apply_execution_started(
+        &mut self,
+        event: &RunEvent,
+        marker: &task::execution_started::TaskExecutionStartedV1,
+    ) -> Result<(), StoreError> {
+        if event.sequence != self.next_sequence {
+            return Err(conflict("Task event sequence has a gap or duplicate"));
+        }
+        if !event.artifact_refs.is_empty() {
+            return Err(conflict("An execution marker references no artifact"));
+        }
+        let time = self.lease_time(&marker.writer, marker.epoch, marker.now_unix_ms);
+        if time < self.last_time {
+            return Err(conflict(
+                "Task is finished or its policy clock moved backwards",
+            ));
+        }
+        if matches!(self.phase, TaskPhaseV1::Finished { .. }) {
+            return Err(conflict(
+                "A finished Task begins no execution: its execution marker is refused",
+            ));
+        }
+        self.check_lease_of(&marker.writer, marker.epoch, marker.now_unix_ms)?;
+        if !self.execution_epochs.insert(marker.epoch) {
+            return Err(conflict("A lease begins its execution once"));
+        }
+        self.last_time = time;
+        self.next_sequence = event.sequence + 1;
+        Ok(())
     }
 
     fn apply(
@@ -987,14 +1033,6 @@ impl TaskProjection {
                 TaskChangeV1::StorageSweep { sweep } => {
                     sweep.validate().map_err(conflict)?;
                     self.storage_sweeps.push(sweep.clone());
-                }
-                // A lease began kernel execution (ADR-0153): once per lease, by its own writer,
-                // never part of the Task's result.
-                TaskChangeV1::ExecutionStarted { execution } => {
-                    execution.validate().map_err(conflict)?;
-                    if !self.execution_epochs.insert(transition.epoch) {
-                        return Err(conflict("A lease begins its execution once"));
-                    }
                 }
                 // A projection stops at the tombstone (ADR-0135); no transition ever applies it.
                 TaskChangeV1::TaskCollected { collected } => {
@@ -1526,6 +1564,15 @@ impl EventStore {
         let mut replays = ReviewReplays::default();
         let first = state.as_ref().map_or(0, |state| state.next_sequence);
         for event in self.replay_from(&task_run_id(task_id)?, first)? {
+            // A lease's execution marker, the log's one event kind beside its transitions.
+            if event.event_type == EventType::TaskExecutionStartedV1 {
+                let marker = read_execution_started(&event)?;
+                state
+                    .as_mut()
+                    .ok_or_else(|| conflict("Task execution marker precedes genesis"))?
+                    .apply_execution_started(&event, &marker)?;
+                continue;
+            }
             if !matches!(event.event_type, EventType::TaskTransitionV5) {
                 return Err(conflict("Task log contains a foreign event"));
             }
@@ -1769,7 +1816,7 @@ impl EventStore {
     }
 
     /// How many of the Task's committed leases before `epoch` began kernel execution: the
-    /// `execution_started` markers of earlier epochs. The Task runtime commits one per lease
+    /// execution markers (`TaskExecutionStarted@1`) of earlier epochs. The Task runtime commits one per lease
     /// before anything else it does under it, so an execution refused or interrupted before
     /// its first Attempt is counted too; a lease that only planned (`af task start` without
     /// `--execute`), decided, refreshed, recorded a storage sweep or cleaned up a gate began
@@ -1786,31 +1833,63 @@ impl EventStore {
             .map_or(0, |state| state.execution_epochs.range(..epoch).count()) as u64)
     }
 
-    /// Record that `lease` begins kernel execution of its Task: the one `execution_started`
-    /// marker of the lease (ADR-0153), committed before anything else the Task runtime does
-    /// under it. A lease that already recorded its marker (a second runtime of the same
-    /// execution) records nothing more. Identical at every telemetry level: the Store never
-    /// learns the level.
+    /// Record that `lease` begins kernel execution of its Task: the one execution marker of the
+    /// lease (`TaskExecutionStarted@1`, ADR-0153), its own event of the Task's log, committed
+    /// before anything else the Task runtime does under it and refused on a finished Task. A
+    /// lease that already recorded its marker (a second runtime of the same execution) records
+    /// nothing more. Identical at every telemetry level: the Store never learns the level.
     pub fn begin_task_execution(
         &mut self,
         cas: &Cas,
         lease: &TaskLease,
     ) -> Result<Option<RunEvent>, StoreError> {
-        let state = self
+        let mut state = self
             .task_projection(cas, &lease.task_id)?
             .ok_or_else(|| conflict("Unknown Task"))?;
         if state.execution_epochs.contains(&lease.epoch) {
             return Ok(None);
         }
-        self.task_change(
-            cas,
-            lease,
-            TaskChangeV1::ExecutionStarted {
-                execution: task::execution_started::TaskExecutionStartedV1::new(),
-            },
+        let mut marker = task::execution_started::TaskExecutionStartedV1::new(
+            &lease.writer,
+            lease.epoch,
             now()?,
-        )
-        .map(Some)
+        );
+        // Stamped before it is persisted, so the log stays monotonic and replays unchanged.
+        marker.now_unix_ms = state.lease_time(&marker.writer, marker.epoch, marker.now_unix_ms);
+        let (event_type, value) = review_handoff::encode_execution_started(&marker)?;
+        let run_id = task_run_id(&lease.task_id)?;
+        let first = state.next_sequence;
+        let event = NewEvent::new(event_type, value.clone());
+        state.apply_execution_started(
+            &RunEvent {
+                run_id: run_id.clone(),
+                event_id: super::derive_event_id(&run_id, first as i64),
+                sequence: first,
+                event_type,
+                occurred_at: event.occurred_at.clone(),
+                node_id: None,
+                attempt_id: None,
+                causation_id: None,
+                correlation_id: None,
+                artifact_refs: Vec::new(),
+                payload: value.clone(),
+            },
+            &marker,
+        )?;
+        let permit = WritePermit {
+            run_id: run_id.clone(),
+            first,
+            payloads: vec![value],
+            event_type,
+            valid_until: None,
+            review_round: None,
+            review_prefix: None,
+            bound_tasks: Vec::new(),
+        };
+        self.append_batch_inner(&run_id, cas, &[event], Some(&permit), None)?
+            .pop()
+            .ok_or_else(|| conflict("Task execution marker appended no event"))
+            .map(Some)
     }
 
     pub fn take_task_lease(

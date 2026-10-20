@@ -3284,6 +3284,11 @@ fn inspection(
     let mut runtime_attempt_ids = BTreeSet::new();
     let mut decisions = Vec::new();
     for event in events {
+        // A lease's execution marker is its own event kind, not a `TaskTransition@5`: the
+        // history lists the transitions only.
+        if review_store::store::task::is_execution_started(&event) {
+            continue;
+        }
         let transition =
             review_store::store::task::read_task_transition(&event).map_err(|e| e.to_string())?;
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =

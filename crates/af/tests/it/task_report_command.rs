@@ -942,20 +942,31 @@ fn writer_leases(store: &EventStore) -> Vec<(u64, u64, u64, bool, bool)> {
     let run_id = review_store::store::task::task_run_id(task_interrupt::TASK).unwrap();
     let mut epochs: Vec<(u64, u64, u64, bool, bool)> = Vec::new();
     for event in store.replay(&run_id).unwrap() {
-        let transition = review_store::store::task::read_task_transition(&event).unwrap();
-        let time = transition.now_unix_ms;
-        let index = match epochs.iter().position(|e| e.0 == transition.epoch) {
+        // A lease's execution marker is an event of its epoch that neither refreshes nor
+        // records an execution.
+        let (epoch, time, change) = if review_store::store::task::is_execution_started(&event) {
+            let marker = review_store::store::task::read_execution_started(&event).unwrap();
+            (marker.epoch, marker.now_unix_ms, None)
+        } else {
+            let transition = review_store::store::task::read_task_transition(&event).unwrap();
+            (
+                transition.epoch,
+                transition.now_unix_ms,
+                Some(transition.change),
+            )
+        };
+        let index = match epochs.iter().position(|e| e.0 == epoch) {
             Some(index) => index,
             None => {
-                epochs.push((transition.epoch, time, time, false, false));
+                epochs.push((epoch, time, time, false, false));
                 epochs.len() - 1
             }
         };
         let epoch = &mut epochs[index];
         epoch.1 = epoch.1.min(time);
         epoch.2 = epoch.2.max(time);
-        epoch.3 |= matches!(transition.change, TaskChangeV1::SourceRefreshed { .. });
-        epoch.4 |= matches!(transition.change, TaskChangeV1::ExecutionRecorded { .. });
+        epoch.3 |= matches!(change, Some(TaskChangeV1::SourceRefreshed { .. }));
+        epoch.4 |= matches!(change, Some(TaskChangeV1::ExecutionRecorded { .. }));
     }
     epochs
 }
@@ -1555,6 +1566,9 @@ fn recorded_findings(state: &Path, task_id: &str) -> (u64, [u64; 3]) {
     let run_id = review_store::store::task::task_run_id(task_id).unwrap();
     let mut rounds = Vec::new();
     for event in store.replay(&run_id).unwrap() {
+        if review_store::store::task::is_execution_started(&event) {
+            continue;
+        }
         let transition = review_store::store::task::read_task_transition(&event).unwrap();
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
             transition.change

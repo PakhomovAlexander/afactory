@@ -294,8 +294,8 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         )
     }
 
-    /// The lease begins kernel execution: its one `execution_started` marker is committed
-    /// before anything else, at every telemetry level alike (ADR-0153), then the run's
+    /// The lease begins kernel execution: its one execution marker (`TaskExecutionStarted@1`,
+    /// its own event of the Task log) is committed before anything else, at every telemetry level alike (ADR-0153), then the run's
     /// `af.run` span opens, numbered by the markers before it.
     fn begin_execution(
         store: &SharedEventStore<'store>,

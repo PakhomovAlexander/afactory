@@ -412,13 +412,22 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
             });
         }
     }
-    // A manifest whose segment is gone is reported with the temporaries it is like.
+    // A manifest whose segment is gone, and the stale staging beside a `.jsonl` (a
+    // publication that never completed), are reported with the temporaries they are like.
     let orphans: u64 = listing
         .refs
         .iter()
         .filter(|id| !listing.sealed.contains(id))
         .map(|id| in_segments(&format!("{id}{}", layout::REFS)))
         .sum::<u64>()
+        + listing
+            .stale
+            .iter()
+            .map(|id| {
+                in_segments(&format!("{id}{}", layout::REFS))
+                    + in_segments(&format!("{id}{}", layout::SEALED))
+            })
+            .sum::<u64>()
         + listing
             .temporary
             .iter()

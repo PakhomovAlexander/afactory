@@ -4,8 +4,9 @@
 //! `af storage` and `af telemetry gc`.
 //!
 //! Housekeeping reads only structural metadata: file sizes and times, lock state, the `.refs`
-//! manifest of a sealed segment and the `blob_ref` records in the valid prefix of a `.jsonl`
-//! one, and the index's size. It never reads a span, an event, an attribute or a blob.
+//! manifest and the header and seal records of a sealed segment, the `blob_ref` records in the
+//! valid prefix of a `.jsonl` one, and the index's size. It never reads a span, an event, an
+//! attribute or a blob of a sealed segment.
 //!
 //! **Physical union.** A directory's bytes are every allocated byte beneath it, counted once.
 //! Each sealed or corrupt segment is an entry whose bytes are its **marginal** bytes — what its
@@ -17,10 +18,12 @@
 //! reclaimed by every sweep ([`reclaim`]). A directory of another telemetry version (`v0/`,
 //! `v2/`) is one `unreadable` entry, evicted whole like a segment and never read.
 //!
-//! **Last use.** A sealed segment's last use is its validated seal record's `ended_unix_ns`,
-//! read from the file the inventory identifies; a file's modification time serves only an entry
-//! with no seal to read — a corrupt segment, another version's directory, or a sealed file whose
-//! seal cannot be read, which is reported.
+//! **Last use.** A sealed segment's last use is its seal record's `ended_unix_ns`, read from the
+//! file the inventory identifies by a structural read that decodes its `segment` header and its
+//! `seal` record and nothing between them ([`reader::sealed_frame_in`]; the full record reader
+//! is never called here); a file's modification time serves only an entry with no seal to read
+//! — a corrupt segment, another version's directory, or a sealed file whose header or seal
+//! cannot be read, which is reported.
 //!
 //! **Identity-bound eviction** (ADR-0144). The inventory records where it found each entry —
 //! the telemetry root's device and inode and those of every file the entry owns, the `.refs`
@@ -29,7 +32,11 @@
 //! one inventoried, every file under its name a regular file and the one inventoried, none
 //! modified within [`PROTECTED`], no writer may hold its lock, and the entry must not have been
 //! used within [`PROTECTED`]. When any file of the entry changed, the whole entry is left in
-//! place and reported as changed.
+//! place and reported as changed. A sealed segment's removal is staged so that it is whole or
+//! nothing: each file is checked again immediately before its own step and renamed under a
+//! staging name in the held `segments/`, a change found at the manifest's step restores the
+//! compressed copy, and only once both files are staged, and checked there again, are they
+//! unlinked.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -82,7 +89,7 @@ pub struct Segment {
     pub path: PathBuf,
     /// Allocated bytes of the segment's own files (the segment and its manifest).
     pub own_bytes: u64,
-    /// Seal time: the `ended_unix_ns` of the sealed file's validated seal record; for a
+    /// Seal time: the `ended_unix_ns` of the sealed file's seal record, read structurally; for a
     /// corrupt segment, another version's directory, or a sealed file whose seal cannot be read,
     /// its modification time.
     pub last_use_unix_ms: u64,
@@ -148,22 +155,14 @@ fn identity_of(directory: &Confined, name: &str) -> Option<(u64, u64)> {
     directory.entry_identity(name)
 }
 
-/// The seal time of the sealed segment `id`, in unix milliseconds — its validated seal record's
-/// `ended_unix_ns` — with the device and inode of the file it was read from.
+/// The seal time of the sealed segment `id`, in unix milliseconds — its seal record's
+/// `ended_unix_ns` — with the device and inode of the file it was read from. Read structurally
+/// ([`reader::sealed_frame_in`]): the header and the seal only, never a span, an event, an
+/// attribute or a blob.
 fn sealed_at(segments: &Confined, id: &str) -> Result<(u64, (u64, u64)), String> {
-    let (records, read) = reader::read_sealed_in(segments, id)?;
-    let ended = match records.last() {
-        Some(crate::record::Record::Seal(seal)) => seal.ended_unix_ns.parse::<u128>().ok(),
-        _ => None,
-    }
-    .ok_or_else(|| {
-        format!(
-            "{}: its seal names no end time",
-            segments.join(&format!("{id}{}", layout::SEALED)).display()
-        )
-    })?;
-    let ms = u64::try_from(ended / 1_000_000).unwrap_or(u64::MAX);
-    Ok((ms, (read.dev, read.ino)))
+    let frame = reader::sealed_frame_in(segments, id)?;
+    let ms = u64::try_from(frame.ended_unix_ns / 1_000_000).unwrap_or(u64::MAX);
+    Ok((ms, (frame.identity.dev, frame.identity.ino)))
 }
 
 impl Directory {
@@ -480,7 +479,26 @@ fn unix_ms(time: SystemTime) -> u64 {
 /// writer holds its lock (nor a live file of the segment's), and that its last use — a sealed
 /// segment's seal time — is not within [`PROTECTED`] of `now`; an entry any file of which fails
 /// one of these is left in place whole and returned as [`Evicted::Changed`].
+///
+/// A sealed segment's two files are removed whole or not at all: the compressed copy is
+/// checked and renamed under a staging name in the held `segments/` (the first step), then the
+/// manifest is checked and renamed the same way (the second); a file found changed before its
+/// own step, or under its staging name, restores what was staged under its own name (never over
+/// a file that took the name since) and the entry is [`Evicted::Changed`]. Only once both are
+/// staged, and found there still the files inventoried immediately before the first unlink, are
+/// they unlinked: [`Evicted::Removed`] is returned only when no file of the entry remains.
 pub fn evict(root: &Path, target: &Target, now: SystemTime) -> Result<Evicted, String> {
+    evict_with(root, target, now, &|| {})
+}
+
+/// [`evict`], running `midway` between the first and the second step of a sealed segment's
+/// staged removal: fixtures replace a file there, deterministically.
+pub fn evict_with(
+    root: &Path,
+    target: &Target,
+    now: SystemTime,
+    midway: &dyn Fn(),
+) -> Result<Evicted, String> {
     let failed = |error: std::io::Error| format!("{}: {error}", root.display());
     let changed = |why: &str| Ok(Evicted::Changed(why.to_string()));
     let Some(root_dir) = Confined::open_root(root).map_err(failed)? else {
@@ -561,39 +579,96 @@ pub fn evict(root: &Path, target: &Target, now: SystemTime) -> Result<Evicted, S
     if protected_until(mtime_ms(&opened)) > now_ms {
         return changed("modified within the last hour");
     }
-    // The manifest, before either file goes: the one inventoried, or still none.
-    if let Some(manifest) = &manifest
-        && let Some(why) = manifest_changed(&segments, manifest, target.found.manifest, now_ms)
-    {
+    let is_found = |name: &str, found: (u64, u64)| {
+        segments
+            .identity(name)
+            .is_some_and(|current| (current.dev, current.ino) == found)
+    };
+    let unlink = |name: &str| {
+        segments
+            .unlink(name)
+            .map_err(|error| format!("{}: {error}", segments.join(name).display()))
+    };
+    // A corrupt segment is one file: still the one inventoried at the moment it is unlinked.
+    let Some(manifest) = manifest else {
+        if !is_found(&name, target.found.file) {
+            return changed("replaced since the inventory");
+        }
+        let bytes = segments.allocated(&name);
+        unlink(&name)?;
+        drop(held);
+        return Ok(Evicted::Removed(bytes));
+    };
+    // Put a staged file back under its own name, never over a file that took the name since.
+    let restore = |staged: &str, original: &str, why: &str| -> Result<Evicted, String> {
+        match segments.rename_no_replace(staged, original) {
+            Ok(()) => changed(why),
+            Err(error) => changed(&format!(
+                "{why}; its staged file {} could not be restored ({error}) and is left for the \
+                 sweep's temporaries",
+                segments.join(staged).display()
+            )),
+        }
+    };
+    // The first step: both files checked immediately before it, then the compressed copy
+    // staged and found there still the file inventoried.
+    if let Some(why) = manifest_changed(&segments, &manifest, target.found.manifest, now_ms) {
         return changed(why);
     }
-    // Still the same file under the name at the moment it is unlinked.
-    if segments
-        .identity(&name)
-        .is_none_or(|current| (current.dev, current.ino) != target.found.file)
-    {
+    if !is_found(&name, target.found.file) {
         return changed("replaced since the inventory");
     }
-    let mut bytes = segments.allocated(&name);
+    let staged_segment = layout::temp_name(layout::WRITE_TEMP_LABEL);
     segments
-        .unlink(&name)
+        .rename(&name, &staged_segment)
         .map_err(|error| format!("{}: {error}", segments.join(&name).display()))?;
-    drop(held);
-    // The manifest checked again at the moment it is unlinked: a file that took its name since
-    // is not this entry's and stays.
-    if let Some(manifest) = manifest
-        && target.found.manifest.is_some()
-        && manifest_changed(&segments, &manifest, target.found.manifest, now_ms).is_none()
-    {
-        let allocated = segments.allocated(&manifest);
-        match segments.unlink(&manifest) {
-            Ok(()) => bytes += allocated,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!("{}: {error}", segments.join(&manifest).display()));
-            }
-        }
+    if !is_found(&staged_segment, target.found.file) {
+        return restore(&staged_segment, &name, "replaced since the inventory");
     }
+    midway();
+    // The second step: the manifest checked immediately before it, then staged and found there
+    // still the one inventoried; a change at either restores the compressed copy.
+    if let Some(why) = manifest_changed(&segments, &manifest, target.found.manifest, now_ms) {
+        return restore(&staged_segment, &name, why);
+    }
+    let staged_manifest = match target.found.manifest {
+        Some(found) => {
+            let staged = layout::temp_name(layout::WRITE_TEMP_LABEL);
+            if let Err(error) = segments.rename(&manifest, &staged) {
+                let why = format!("its manifest could not be staged ({error})");
+                return restore(&staged_segment, &name, &why);
+            }
+            if !is_found(&staged, found) {
+                let why = "its manifest was replaced since the inventory";
+                let _ = restore(&staged, &manifest, why);
+                return restore(&staged_segment, &name, why);
+            }
+            Some((staged, found))
+        }
+        None => None,
+    };
+    // Every file of the entry, checked under its staging name immediately before the first
+    // unlink; then the unlinks.
+    let whole = is_found(&staged_segment, target.found.file)
+        && staged_manifest
+            .as_ref()
+            .is_none_or(|(staged, found)| is_found(staged, *found));
+    if !whole {
+        let why = "changed while it was staged for removal";
+        if let Some((staged, _)) = &staged_manifest {
+            let _ = restore(staged, &manifest, why);
+        }
+        return restore(&staged_segment, &name, why);
+    }
+    let mut bytes = segments.allocated(&staged_segment);
+    if let Some((staged, _)) = &staged_manifest {
+        bytes += segments.allocated(staged);
+    }
+    unlink(&staged_segment)?;
+    if let Some((staged, _)) = &staged_manifest {
+        unlink(staged)?;
+    }
+    drop(held);
     Ok(Evicted::Removed(bytes))
 }
 

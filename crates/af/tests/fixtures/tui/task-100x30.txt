@@ -17,7 +17,6 @@ v hub  (project)            |PLAN  ########  configured  STATE done  started hh:
                             |     0  opened                              ########
                             |     1  plan_proposed                       ########
                             |     2  plan_admitted                       ########
-                            |     3  execution_started                   -
                             |     4  execution_recorded invocation       ########
                             |     5  execution_recorded published        ########
                             |     6  execution_recorded invocation       ########
@@ -27,4 +26,5 @@ v hub  (project)            |PLAN  ########  configured  STATE done  started hh:
                             |    10  execution_recorded usage_observed   ########
                             |    11  execution_recorded settled          ########
                             |    12  execution_recorded published        ########
+                            |    13  execution_recorded invocation       ########
 NORMAL  tasks/pagination-cli                j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

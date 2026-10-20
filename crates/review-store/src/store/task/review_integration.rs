@@ -1305,7 +1305,7 @@ pub(super) fn validate_handoff(
         ));
     }
     let task_events = replays.read(store, &task_run_id(&handoff.task_id)?)?;
-    let finishes:Vec<_>=task_events.iter().map(super::read_task_transition).collect::<Result<Vec<_>,_>>()?.into_iter().filter(|t|matches!(&t.change,TaskChangeV1::ReviewIntegrationFinished{phase_id:p,integration_committed_event_id:Some(id),..} if p==phase_id && id==integration_committed_event_id)).collect();
+    let finishes:Vec<_>=task_events.iter().filter(|event| !super::is_execution_started(event)).map(super::read_task_transition).collect::<Result<Vec<_>,_>>()?.into_iter().filter(|t|matches!(&t.change,TaskChangeV1::ReviewIntegrationFinished{phase_id:p,integration_committed_event_id:Some(id),..} if p==phase_id && id==integration_committed_event_id)).collect();
     if finishes.len() != 1 {
         return Err(conflict(
             "Integrated handoff requires one protected common phase completion",

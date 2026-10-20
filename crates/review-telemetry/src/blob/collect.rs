@@ -1,5 +1,6 @@
 //! The collector side of the publication protocol. Temporary files under `segments/` and
-//! `blobs/` older than the minimum age go first, without a lock (their writer holds none); then
+//! `blobs/` older than the minimum age go first, without a lock (their writer holds none), with
+//! the stale staging beside a `.jsonl` (a `.jsonl.gz` or `.refs` of its id); then
 //! it takes `gc.lock` exclusively, waiting at most two seconds, and skips blob collection this
 //! time if it cannot. A blob is a **root**,
 //! never removed, while a sealed segment's `.refs` manifest names it or a `blob_ref` record in
@@ -111,6 +112,27 @@ pub fn collect_in(
                 if segments.remove_file(&name).is_ok() {
                     collected.temporary_bytes += bytes;
                     collected.removed_temporary.push(segments.join(&name));
+                }
+            }
+        }
+        // The stale staging beside a `.jsonl` — a `.jsonl.gz` or `.refs` of a publication that
+        // never completed — goes like a temporary once older than `min_age`, while the `.jsonl`
+        // is still beside it.
+        for id in reader::list_in(&segments)?.stale {
+            let live = format!("{id}{}", layout::LIVE);
+            for name in [
+                format!("{id}{}", layout::SEALED),
+                format!("{id}{}", layout::REFS),
+            ] {
+                if segments.kind(&name) == Some(layout::EntryKind::File)
+                    && segments.file_older_than(&name, min_age, now)
+                    && segments.kind(&live).is_some()
+                {
+                    let bytes = segments.allocated(&name);
+                    if segments.remove_file(&name).is_ok() {
+                        collected.temporary_bytes += bytes;
+                        collected.removed_temporary.push(segments.join(&name));
+                    }
                 }
             }
         }

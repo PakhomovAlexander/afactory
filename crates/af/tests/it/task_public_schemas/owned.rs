@@ -317,7 +317,14 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         );
         assert_eq!(value["attempts"], expected_attempts);
         assert_eq!(value["chargeable_tokens"], "0");
-        assert_eq!(value["history"].as_array().unwrap().len(), before.len());
+        // The history lists the Task log's transitions, never a lease's execution marker.
+        assert_eq!(
+            value["history"].as_array().unwrap().len(),
+            before
+                .iter()
+                .filter(|event| !review_store::store::task::is_execution_started(event))
+                .count()
+        );
     }
     let listed = json_output(cli(&repo, &state, &["task", "list"]), 0);
     let listed = listed["tasks"]

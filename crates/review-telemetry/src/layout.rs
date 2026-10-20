@@ -729,6 +729,15 @@ impl Confined {
         nix::fcntl::renameat(&self.fd, from, &self.fd, to).map_err(std::io::Error::from)
     }
 
+    /// Give the entry `from` the name `to`, both in this directory, only while `to` names
+    /// nothing: a hard link that refuses an existing name, then the unlink of `from`. A file
+    /// that took `to` meanwhile is never replaced.
+    pub fn rename_no_replace(&self, from: &str, to: &str) -> std::io::Result<()> {
+        nix::unistd::linkat(&self.fd, from, &self.fd, to, nix::fcntl::AtFlags::empty())
+            .map_err(std::io::Error::from)?;
+        self.unlink(from)
+    }
+
     /// Write `contents` to a temporary file in this directory and rename it to `name`.
     pub fn write_atomically(&self, name: &str, contents: &[u8]) -> std::io::Result<()> {
         use std::io::Write as _;

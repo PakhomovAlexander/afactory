@@ -122,6 +122,9 @@ fn captured_command_cancellation_retains_both_streams_and_never_retries() {
     let run = review_store::store::task::task_run_id(&f.task.task_id).unwrap();
     let mut retained_stderr = false;
     for event in f.store.replay(&run).unwrap() {
+        if review_store::store::task::is_execution_started(&event) {
+            continue;
+        }
         let transition = review_store::store::task::read_task_transition(&event).unwrap();
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
             transition.change

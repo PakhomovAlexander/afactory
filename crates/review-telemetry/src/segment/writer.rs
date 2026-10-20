@@ -34,10 +34,13 @@
 //! by then — a write blocked on the volume — is abandoned: no other thread writes, seals,
 //! compresses or replaces the segment, the records never written are absent, the lock ends with
 //! the process, and the next reader recovers the flushed prefix. The compressed segment and its
-//! manifest are staged in temporary files; abandonment is checked again after their blocking
-//! write and sync, and the publication is claimed, under the lock [`Writer::finish`] judges the
-//! deadline under, immediately before the first rename into place: a consumer released after
-//! the deadline publishes nothing, removes what it staged and leaves the live segment.
+//! manifest are staged in temporary files; the deadline governs the whole publication and is
+//! checked again after their blocking write and sync and immediately before each publication
+//! step — the manifest's rename, the compressed copy's rename and the unlink of the live
+//! `.jsonl`, the last made under the lock [`Writer::finish`] judges the deadline under. A
+//! consumer that finds the deadline passed at any step publishes nothing further, removes what
+//! it already renamed into place and what it staged, and leaves the live segment, which every
+//! reader treats as unsealed beside any `.jsonl.gz` or `.refs` of its id.
 //!
 //! **Segment limit.** `segment_max_bytes` bounds the file across every record kind. The last
 //! [`TERMINAL_RESERVE_BYTES`] are kept for terminal records (`problem`, `seal`): past the rest no
@@ -230,9 +233,6 @@ struct Pending {
     terminal: bool,
     /// Set by [`Writer::begin_terminal`]: the one bound every wait of the shutdown shares.
     terminal_deadline: Option<Instant>,
-    /// The consumer claimed the publication of the sealed segment before the deadline: the
-    /// renames into place are under way and nothing abandons them.
-    publishing: bool,
     flush_requested: bool,
     /// Bytes of every record accepted, written or buffered.
     accepted_bytes: u64,
@@ -323,6 +323,11 @@ pub enum Phase {
     Seal,
     /// The compressed copy of the segment, staged before it is published.
     Compressed,
+    /// A step of the seal's publication: the manifest's rename, the compressed copy's rename
+    /// and the unlink of the live `.jsonl`, in that order. The hook runs as part of the step:
+    /// after the deadline was checked for a rename, before it is checked (under the lock) for
+    /// the unlink.
+    Publish,
 }
 
 thread_local! {
@@ -351,10 +356,6 @@ fn in_phase<T>(phase: Phase, work: impl FnOnce() -> T) -> T {
 /// The problem an abandoned consumer leaves.
 pub const ABANDONED: &str = "the telemetry consumer did not stop within 2 s; the segment is \
                              left unsealed for the next reader to recover";
-
-/// The problem a seal still being published at the bound leaves.
-pub const PUBLISHING: &str = "the telemetry seal was still being published at the 2 s bound; \
-                              the process does not wait for it";
 
 /// Shared between every handle of one writer.
 pub struct Shared {
@@ -683,7 +684,6 @@ impl Writer {
                     buffer: Vec::new(),
                     terminal: false,
                     terminal_deadline: None,
-                    publishing: false,
                     flush_requested: false,
                     accepted_bytes: 0,
                     exhausted: false,
@@ -1057,6 +1057,19 @@ impl Writer {
                 );
                 return;
             }
+        }
+    }
+
+    /// The write hook before a publication step, with the ordinal of the last write: a step is
+    /// not a write, so it never counts as one.
+    fn publish_hook(&self) -> std::io::Result<()> {
+        match &self.shared.options.write_hook {
+            Some(hook) => hook(
+                self.shared
+                    .writes
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            None => Ok(()),
         }
     }
 
@@ -1949,7 +1962,9 @@ impl Writer {
     /// one is started for it when none runs, and the caller waits for it once, at most
     /// [`layout::LOCK_WAIT`], over all of it. A consumer that has not finished by then is
     /// abandoned: no other thread seals, compresses, replaces or writes the segment, which the
-    /// next reader recovers, and the consumer itself publishes nothing after the deadline.
+    /// next reader recovers, and the consumer itself publishes nothing after the deadline. The
+    /// deadline governs the whole publication: a seal is reported only when the consumer
+    /// unlinked the live `.jsonl` before it, judged under the lock this wait holds.
     pub fn finish(&self, exit: SealExit) -> Result<Option<Sealed>, String> {
         let ended = ns(self.now_unix_ns());
         let deadline;
@@ -1983,16 +1998,17 @@ impl Writer {
         while !pending.consumer_exited {
             let now = Instant::now();
             if now >= deadline {
-                // A publication claimed before the deadline is under way: renames, never a
-                // write, and the process does not wait for them.
-                let reason = if pending.publishing {
-                    PUBLISHING
-                } else {
-                    pending.state = State::Abandoned;
-                    ABANDONED
-                };
-                pending.unwritten.push((ProblemWhat::Write, reason.into()));
-                return Err(reason.into());
+                // The consumer published the seal before the deadline and has not exited yet.
+                if pending.state == State::Sealed
+                    && let Some(sealed) = pending.seal_result.take()
+                {
+                    return sealed;
+                }
+                pending.state = State::Abandoned;
+                pending
+                    .unwritten
+                    .push((ProblemWhat::Write, ABANDONED.into()));
+                return Err(ABANDONED.into());
             }
             pending = self
                 .shared
@@ -2016,7 +2032,8 @@ impl Writer {
     /// The consumer thread's seal: every pending record written first, so a seal write held on
     /// the volume leaves every earlier record in the live file; then the seal record from the
     /// reserve, its write, the `.refs` manifest, the compression and the publication. Nothing
-    /// is published once `deadline` has passed or the caller has abandoned the segment.
+    /// is published once `deadline` has passed or the caller has abandoned the segment, at any
+    /// step of the publication.
     fn seal(
         &self,
         exit: SealExit,
@@ -2070,21 +2087,25 @@ impl Writer {
         let shared = &self.shared;
         let steps = SealSteps {
             write_hook: &|| in_phase(Phase::Compressed, || self.write_hook()),
+            publish_hook: &|| in_phase(Phase::Publish, || self.publish_hook()),
             expired: &|| {
                 Instant::now() >= deadline || lock(&shared.pending).state == State::Abandoned
             },
-            claim: &|| {
+            last: &|unlink, sealed| {
                 let mut pending = lock(&shared.pending);
                 if pending.state == State::Abandoned || Instant::now() >= deadline {
-                    return false;
+                    return None;
                 }
-                pending.publishing = true;
-                true
+                let unlinked = unlink();
+                if unlinked.is_ok() {
+                    pending.state = State::Sealed;
+                    pending.seal_result = Some(Ok(Some(sealed.clone())));
+                }
+                Some(unlinked)
             },
         };
         let result = seal_file(&mut consumer, &segment_id, &referenced, &steps);
         let mut pending = lock(&self.shared.pending);
-        pending.publishing = false;
         if pending.state == State::Abandoned {
             return Err(ABANDONED.into());
         }
@@ -2093,7 +2114,7 @@ impl Writer {
                 pending.state = State::Sealed;
                 Ok(Some(sealed))
             }
-            // The deadline passed before the publication was claimed.
+            // The deadline passed before the publication's last step.
             Ok(None) => {
                 pending.state = State::Abandoned;
                 Err(ABANDONED.into())
@@ -2118,13 +2139,21 @@ pub(crate) fn manifest(referenced: &BTreeSet<String>) -> Vec<u8> {
 }
 
 /// What the seal's file work asks of its writer: the write hook before the compressed copy's
-/// write, whether the deadline has passed or the segment was abandoned, and the claim of the
-/// publication — granted, under the lock the deadline is judged under, only before it.
+/// write, the publish hook before each publication step, whether the deadline has passed or
+/// the segment was abandoned, and the last step — the unlink of the live `.jsonl`, run under
+/// the lock the deadline is judged under and only before it (`None` when it has passed), the
+/// segment recorded sealed in the same critical section when it succeeds.
 struct SealSteps<'a> {
     write_hook: &'a dyn Fn() -> std::io::Result<()>,
+    publish_hook: &'a dyn Fn() -> std::io::Result<()>,
     expired: &'a dyn Fn() -> bool,
-    claim: &'a dyn Fn() -> bool,
+    last: &'a LastStep<'a>,
 }
+
+/// The seal's last step: given the unlink and the segment it seals, the unlink's result, or
+/// `None` when the deadline has passed.
+type LastStep<'a> =
+    dyn Fn(&dyn Fn() -> std::io::Result<()>, &Sealed) -> Option<std::io::Result<()>> + 'a;
 
 /// Stage `contents` in a new temporary file of `segments`, written and synced; its name.
 fn stage(
@@ -2151,10 +2180,12 @@ fn stage(
 /// writer's lock, which ends when the file closes. Every step is relative to the `segments/`
 /// directory the live file was created in, and the live bytes are read back through the held
 /// descriptor: a directory above it renamed or replaced by a link since changes nothing
-/// outside the root. The manifest and the compressed copy are staged in temporary files first;
-/// once the deadline has passed — checked after their blocking writes and syncs, and claimed
-/// immediately before the first rename into place — nothing is published: the staged files are
-/// removed, the live segment stays for the next reader, and `Ok(None)` says so.
+/// outside the root. The manifest and the compressed copy are staged in temporary files first.
+/// The deadline is checked after their blocking writes and syncs and again immediately before
+/// each publication step (the manifest's rename, the compressed copy's rename, the unlink of
+/// the live `.jsonl`); once it has passed, nothing further is published: what was renamed into
+/// place and what was staged are removed, the live segment stays for the next reader, and
+/// `Ok(None)` says so.
 fn seal_file(
     consumer: &mut Consumer,
     segment_id: &str,
@@ -2192,40 +2223,66 @@ fn seal_file(
             return Err(failed(&sealed)(error));
         }
     };
-    let discard = || {
+    // What was renamed into place so far: withdrawn with the staged files when a later step
+    // finds the deadline passed or fails.
+    let mut placed: Vec<&str> = Vec::new();
+    let withdraw = |placed: &[&str]| {
+        for name in placed {
+            let _ = segments.unlink(name);
+        }
         let _ = segments.unlink(&staged_refs);
         let _ = segments.unlink(&staged_sealed);
     };
-    // A write released after the deadline publishes nothing.
-    if (steps.expired)() || !(steps.claim)() {
-        discard();
-        return Ok(None);
-    }
-    let placed = segments
-        .rename(&staged_refs, &refs)
-        .map_err(failed(&refs))
-        .and_then(|()| {
-            segments
-                .rename(&staged_sealed, &sealed)
-                .map_err(failed(&sealed))
-        });
-    if let Err(error) = placed {
-        discard();
-        return Err(error);
+    for (staged, name) in [(&staged_refs, &refs), (&staged_sealed, &sealed)] {
+        // A write or a step released after the deadline publishes nothing further; a rename
+        // that completes after it is withdrawn by the next step's check.
+        if (steps.expired)() {
+            withdraw(&placed);
+            return Ok(None);
+        }
+        if let Err(error) = (steps.publish_hook)().and_then(|()| segments.rename(staged, name)) {
+            withdraw(&placed);
+            return Err(failed(name)(error));
+        }
+        placed.push(name);
     }
     // Only the file this writer created is removed: a name that no longer holds it is left.
-    let opened = FileIdentity::of_file(held).map_err(failed(&live))?;
-    if segments
-        .identity(&live)
-        .is_some_and(|current| current.dev == opened.dev && current.ino == opened.ino)
-    {
-        segments.unlink(&live).map_err(failed(&live))?;
-    }
-    let sealed = Sealed {
+    let opened = match FileIdentity::of_file(held) {
+        Ok(opened) => opened,
+        Err(error) => {
+            withdraw(&placed);
+            return Err(failed(&live)(error));
+        }
+    };
+    let published = Sealed {
         segment_id: segment_id.to_string(),
         path: segments.join(&sealed),
         refs: segments.join(&refs),
     };
+    let hooked = (steps.publish_hook)();
+    let unlink = || {
+        hooked
+            .as_ref()
+            .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))?;
+        if segments
+            .identity(&live)
+            .is_some_and(|current| current.dev == opened.dev && current.ino == opened.ino)
+        {
+            segments.unlink(&live)?;
+        }
+        Ok(())
+    };
+    match (steps.last)(&unlink, &published) {
+        None => {
+            withdraw(&placed);
+            return Ok(None);
+        }
+        Some(Err(error)) => {
+            withdraw(&placed);
+            return Err(failed(&live)(error));
+        }
+        Some(Ok(())) => {}
+    }
     consumer.file = None;
-    Ok(Some(sealed))
+    Ok(Some(published))
 }

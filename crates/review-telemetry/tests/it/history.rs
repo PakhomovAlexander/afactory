@@ -250,3 +250,157 @@ fn telemetry_history_partial_after_eviction() {
     assert_eq!(run.retained, "partial (missing executions 1)");
     assert_eq!(run.executions.retained, 1);
 }
+
+/// One `af.run` of `run_id` in its own segment, its identity attributes `attributes`, started
+/// at `start` seconds and ended at `end` with `outcome` and sealed; or, with `end = None`, left
+/// running with its records flushed: the returned writer holds the segment live.
+fn run_of(
+    root: &std::path::Path,
+    segment: &str,
+    attributes: Attrs,
+    trace_id: &str,
+    start: u64,
+    end: Option<(u64, &str)>,
+) -> Option<Writer> {
+    let clock = Arc::new(AtomicU64::new(BASE + start * SECOND));
+    let writer = clocked(root, segment, &clock);
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let run = writer
+        .span_start(
+            Some(trace_id),
+            Some(&command),
+            "af.run",
+            SpanKind::Internal,
+            attributes.enumerated("af.run.kind", "task"),
+        )
+        .unwrap();
+    let Some((end, outcome)) = end else {
+        clock.store(BASE + (start + 1) * SECOND, Ordering::SeqCst);
+        writer.event(&run, "af.note", Attrs::new());
+        writer.flush();
+        return Some(writer);
+    };
+    clock.store(BASE + end * SECOND, Ordering::SeqCst);
+    writer.span_end(
+        &run,
+        SpanStatus::Ok,
+        Attrs::new().text("af.outcome", outcome),
+        1,
+    );
+    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+    writer.finish(SealExit::Ok).unwrap();
+    None
+}
+
+/// Design §5: the latest execution is the one with the greatest committed ordinal, never the
+/// latest start. Ordinal 1 started later and sealed `finished`; ordinal 2, live, started earlier
+/// (another machine's clock): the run has no outcome, never ordinal 1's. An execution without
+/// an ordinal is listed but never latest, so a run none of whose executions carries one has no
+/// outcome. Identical after a reindex.
+#[test]
+fn telemetry_latest_execution_is_by_ordinal_not_timestamp() {
+    let temp = tempfile::tempdir().unwrap();
+    let identity = |run_id: &str, segment: &str, ordinal: Option<u64>| {
+        let execution = Execution {
+            store_id: "c".repeat(64),
+            run_id: run_id.into(),
+            execution_id: segment.into(),
+            ordinal: ordinal.unwrap_or(0),
+            store_sequence_at_start: 0,
+        };
+        let attributes = match ordinal {
+            Some(_) => execution.attributes(),
+            None => Attrs::new()
+                .id("af.store_id", execution.store_id.clone())
+                .id("af.run_id", execution.run_id.clone())
+                .id("af.execution_id", execution.execution_id.clone()),
+        };
+        (attributes, execution.trace_id())
+    };
+    let first = "1800000100000-1-0000000a";
+    let second = "1800000050000-2-0000000b";
+    let unnumbered = "1800000300000-3-0000000c";
+    let (attributes, trace) = identity("task:run", first, Some(1));
+    run_of(
+        temp.path(),
+        first,
+        attributes,
+        &trace,
+        100,
+        Some((200, "finished")),
+    );
+    let (attributes, trace) = identity("task:run", second, Some(2));
+    let live = run_of(temp.path(), second, attributes, &trace, 50, None).unwrap();
+    // Started last of all and sealed with an outcome, but without an ordinal: never latest.
+    let (attributes, trace) = identity("task:run", unnumbered, None);
+    run_of(
+        temp.path(),
+        unnumbered,
+        attributes,
+        &trace,
+        300,
+        Some((400, "failed")),
+    );
+    // A run none of whose executions carries an ordinal.
+    let alone = "1800000500000-4-0000000d";
+    let (attributes, trace) = identity("task:alone", alone, None);
+    run_of(
+        temp.path(),
+        alone,
+        attributes,
+        &trace,
+        500,
+        Some((600, "finished")),
+    );
+
+    let read = || {
+        let document = runs(temp.path());
+        let run = |run_id: &str| {
+            document
+                .runs
+                .iter()
+                .find(|run| run.run_id == run_id)
+                .unwrap_or_else(|| panic!("{run_id}: {document:?}"))
+                .clone()
+        };
+        (run("task:run"), run("task:alone"))
+    };
+    let before = read();
+    let (run, alone_run) = &before;
+    assert_eq!(run.executions.retained, 3, "{run:?}");
+    let by_segment = |segment: &str| {
+        run.executions
+            .list
+            .iter()
+            .find(|execution| execution.execution_id == segment)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_segment(first).ordinal, Some(1));
+    assert_eq!(by_segment(first).outcome.as_deref(), Some("finished"));
+    assert_eq!(by_segment(second).ordinal, Some(2));
+    assert_eq!(by_segment(second).segment, "live");
+    assert!(by_segment(second).outcome.is_none());
+    assert_eq!(
+        by_segment(unnumbered).ordinal,
+        None,
+        "listed without an ordinal"
+    );
+    assert_eq!(by_segment(unnumbered).outcome.as_deref(), Some("failed"));
+    assert!(
+        run.executions.list.first().unwrap().execution_id == second,
+        "ordinal 2 started first: {run:?}"
+    );
+    assert_eq!(
+        run.outcome, None,
+        "the live ordinal 2 is latest and has no outcome"
+    );
+    assert_eq!(alone_run.executions.retained, 1);
+    assert_eq!(alone_run.outcome, None, "no execution carries an ordinal");
+
+    review_telemetry::status::reindex(temp.path()).unwrap();
+    assert_eq!(read(), before, "identical after a reindex");
+    drop(live);
+}

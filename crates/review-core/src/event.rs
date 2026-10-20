@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 pub enum EventType {
     #[serde(rename = "TaskTransition@5")]
     TaskTransitionV5,
+    #[serde(rename = "TaskExecutionStarted@1")]
+    TaskExecutionStartedV1,
     #[serde(rename = "TaskReviewResultSelected@1")]
     TaskReviewResultSelectedV1,
     #[serde(rename = "CheckCompleted@1")]
@@ -99,8 +101,9 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
         Self::TaskTransitionV5,
+        Self::TaskExecutionStartedV1,
         Self::TaskReviewResultSelectedV1,
         Self::CheckCompletedV1,
         Self::CampaignOpenedV1,
@@ -147,6 +150,7 @@ impl EventType {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::TaskTransitionV5 => "TaskTransition@5",
+            Self::TaskExecutionStartedV1 => "TaskExecutionStarted@1",
             Self::TaskReviewResultSelectedV1 => "TaskReviewResultSelected@1",
             Self::CheckCompletedV1 => "CheckCompleted@1",
             Self::CampaignOpenedV1 => "CampaignOpened@1",
@@ -199,6 +203,7 @@ impl EventType {
     pub const fn typed(self) -> (&'static str, u32) {
         match self {
             Self::TaskTransitionV5 => ("TaskTransition", 5),
+            Self::TaskExecutionStartedV1 => ("TaskExecutionStarted", 1),
             Self::TaskReviewResultSelectedV1 => ("TaskReviewResultSelected", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
             Self::CampaignOpenedV1 => ("CampaignOpened", 1),
@@ -287,6 +292,7 @@ impl std::str::FromStr for EventType {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "TaskTransition@5" => Ok(Self::TaskTransitionV5),
+            "TaskExecutionStarted@1" => Ok(Self::TaskExecutionStartedV1),
             "TaskReviewResultSelected@1" => Ok(Self::TaskReviewResultSelectedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
             "CampaignOpened@1" => Ok(Self::CampaignOpenedV1),
@@ -635,6 +641,12 @@ pub fn validate_event_payload(
                 .map_err(|e| e.to_string())?
                 .validate()
         }
+        EventType::TaskExecutionStartedV1 => serde_json::from_value::<
+            crate::task::execution_started::TaskExecutionStartedV1,
+        >(payload.clone())
+        .map_err(|error| format!("TaskExecutionStarted@1: {error}"))?
+        .validate()
+        .map_err(|error| format!("TaskExecutionStarted@1: {error}")),
         EventType::CheckCompletedV1 => {
             let value: CheckCompletedPayloadV1 = serde_json::from_value(payload.clone())
                 .map_err(|error| format!("CheckCompleted@1: {error}"))?;

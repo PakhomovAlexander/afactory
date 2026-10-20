@@ -121,12 +121,6 @@ pub enum TaskChangeV1 {
     StorageSweep {
         sweep: super::storage_sweep::TaskStorageSweepV1,
     },
-    /// The lease began kernel execution of the Task (ADR-0153): committed once per lease by the
-    /// Task runtime before anything else it does under it, carried inline. It references no
-    /// artifact and never changes the Task's result; Telemetry numbers a run's executions by it.
-    ExecutionStarted {
-        execution: super::execution_started::TaskExecutionStartedV1,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,7 +188,6 @@ impl TaskTransitionV1 {
             ),
             TaskChangeV1::GateCleanup { cleanup } => cleanup.validate_shape(),
             TaskChangeV1::StorageSweep { sweep } => sweep.validate(),
-            TaskChangeV1::ExecutionStarted { execution } => execution.validate(),
             TaskChangeV1::TaskCollected { collected } => {
                 collected.validate()?;
                 require(

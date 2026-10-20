@@ -20,13 +20,13 @@
   every record visible within `flush_latency_ms`; the command's end and the seal are one request
   to it, bounded at 2 s, after which it is abandoned and publishes nothing, leaving the segment
   for the next reader to recover. Every lease that begins kernel execution now commits an
-  `execution_started` transition (`af/TaskExecutionStarted@1`) to its Task's log, at every
-  telemetry level, and `af task show` lists it. `af telemetry runs`, `show`, `tail` and `gc`
+  execution marker to its Task's log, the event `TaskExecutionStarted@1`
+  (`af/TaskExecutionStarted@1`) beside `TaskTransition@5`, at every telemetry level. `af telemetry runs`, `show`, `tail` and `gc`
   (`--json`: `af/telemetry-runs@1`, `af/telemetry-show@1`, `af/telemetry-tail@1`,
   `af/telemetry-gc@1`) report a run's executions — numbered by those markers, active time as
   their union, execution time as their sum, elapsed time, history `prefix:k` or `partial`, never
   complete, the open ones named beside the sealed ones in every label and total, the outcome the
-  latest execution's own — its span tree and its live tail, which fails naming a sealed segment
+  latest execution's own, by ordinal — its span tree and its live tail, which fails naming a sealed segment
   it cannot read.
   Telemetry is the kind `telemetry` of the Storage Budget (`af/storage@2`,
   `af/storage-prune@2`): every registered directory counted once, one entry per segment by what

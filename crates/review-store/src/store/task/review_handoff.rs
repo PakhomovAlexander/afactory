@@ -12,6 +12,32 @@ pub fn read_task_transition(event: &RunEvent) -> Result<TaskTransitionV1, StoreE
     value.validate().map_err(conflict)?;
     Ok(value)
 }
+/// A lease's execution marker, the Task log's one event kind beside its transitions
+/// (`TaskExecutionStarted@1`, ADR-0153).
+pub fn read_execution_started(
+    event: &RunEvent,
+) -> Result<review_core::task::execution_started::TaskExecutionStartedV1, StoreError> {
+    if event.event_type != EventType::TaskExecutionStartedV1 {
+        return Err(conflict("Expected a Task execution marker"));
+    }
+    let value: review_core::task::execution_started::TaskExecutionStartedV1 =
+        serde_json::from_value(event.payload.clone())?;
+    value.validate().map_err(conflict)?;
+    Ok(value)
+}
+/// Whether `event` of a Task log is a lease's execution marker rather than a transition.
+pub fn is_execution_started(event: &RunEvent) -> bool {
+    event.event_type == EventType::TaskExecutionStartedV1
+}
+pub(super) fn encode_execution_started(
+    value: &review_core::task::execution_started::TaskExecutionStartedV1,
+) -> Result<(EventType, serde_json::Value), StoreError> {
+    value.validate().map_err(conflict)?;
+    Ok((
+        EventType::TaskExecutionStartedV1,
+        serde_json::to_value(value)?,
+    ))
+}
 pub(super) fn encode_transition(
     value: &TaskTransitionV1,
 ) -> Result<(EventType, serde_json::Value), StoreError> {
@@ -583,7 +609,9 @@ impl EventStore {
                 .replay(&task_run_id(lease.task_id())?)?
                 .into_iter()
                 .find(|event| {
-                    read_task_transition(event).is_ok_and(|value| value.change == transition.change)
+                    !is_execution_started(event)
+                        && read_task_transition(event)
+                            .is_ok_and(|value| value.change == transition.change)
                 })
                 .ok_or_else(|| conflict("Recorded handoff lost its transition"));
         }

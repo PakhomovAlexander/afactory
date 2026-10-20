@@ -23,6 +23,10 @@ pub(super) fn explain_plan(
         .map_err(|e| e.to_string())?;
     let mut recorded_event_ids = Vec::new();
     for event in &events {
+        // A lease's execution marker names no plan.
+        if review_store::store::task::is_execution_started(event) {
+            continue;
+        }
         let transition = read_task_transition(event).map_err(|e| e.to_string())?;
         let recorded = match &transition.change {
             TaskChangeV1::PlanProposed { plan_id: recorded }

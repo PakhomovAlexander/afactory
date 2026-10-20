@@ -336,3 +336,148 @@ fn telemetry_released_terminal_write_cannot_seal_after_the_deadline() {
     };
     assert_eq!(seal.exit, SealExit::Recovered);
 }
+
+/// Design §6: the deadline governs the whole publication, with no exemption for one already
+/// under way. The consumer's rename of the compressed copy is held until `finish` has given up
+/// at the 2 s bound and then completes; the unlink of the live `.jsonl` is held the same way.
+/// While held, the `.refs` (and then the `.jsonl.gz`) lie beside the live `.jsonl` and no
+/// reader takes them as sealed; once released, the consumer finds the deadline passed before
+/// the unlink, removes what it renamed into place and leaves the live segment, whose complete
+/// prefix a later reader recovers.
+#[test]
+fn telemetry_stalled_rename_cannot_seal_after_the_deadline() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = options(temp.path(), Level::Spans);
+    // One gate per publication step: the manifest's rename (1), the compressed copy's (2) and
+    // the live file's unlink (3); each step's hook waits until its gate opens.
+    let steps = Arc::new(AtomicU64::new(0));
+    let opened = Arc::new(AtomicU64::new(1));
+    let (step, gate) = (steps.clone(), opened.clone());
+    options.write_hook = Some(Arc::new(move |_| {
+        if writer::phase() == writer::Phase::Publish {
+            let this = step.fetch_add(1, Ordering::SeqCst) + 1;
+            while gate.load(Ordering::SeqCst) < this {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        Ok(())
+    }));
+    let writer = Writer::new(options).unwrap();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let run = writer
+        .span_start(
+            None,
+            Some(&command),
+            "af.run",
+            SpanKind::Internal,
+            Attrs::new(),
+        )
+        .unwrap();
+    writer.run_started();
+    writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
+    writer.run_ended();
+    writer.begin_terminal();
+    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+    let id = writer.segment_id().unwrap();
+    let layout = review_telemetry::layout::Layout::new(temp.path());
+    let started = Instant::now();
+    assert_eq!(
+        writer.finish(SealExit::Ok).unwrap_err(),
+        writer::ABANDONED,
+        "finish returns at the deadline and reports the segment unsealed"
+    );
+    assert!(started.elapsed() < Duration::from_secs(4));
+    assert!(writer.abandoned());
+    assert_eq!(
+        steps.load(Ordering::SeqCst),
+        2,
+        "held in the compressed rename"
+    );
+    let unsealed = |what: &str| {
+        let listing = reader::list(&layout).unwrap();
+        assert_eq!(listing.live, [id.clone()], "{what}: {listing:?}");
+        assert!(listing.sealed.is_empty(), "{what}: {listing:?}");
+        assert!(listing.refs.is_empty(), "{what}: {listing:?}");
+        assert_eq!(listing.stale, [id.clone()], "{what}: {listing:?}");
+    };
+    assert!(layout.refs(&id).exists() && layout.live_segment(&id).exists());
+    unsealed("the manifest beside the live segment");
+
+    // The held rename goes through after the deadline; the unlink's check finds it passed.
+    opened.store(2, Ordering::SeqCst);
+    let waiting = Instant::now();
+    while steps.load(Ordering::SeqCst) < 3 {
+        assert!(waiting.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        layout.sealed_segment(&id).exists(),
+        "renamed after the deadline"
+    );
+    unsealed("the compressed copy beside the live segment");
+    opened.store(3, Ordering::SeqCst);
+    let names = || -> Vec<String> {
+        std::fs::read_dir(layout.segments())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    };
+    let waiting = Instant::now();
+    while names().len() != 1 {
+        assert!(
+            waiting.elapsed() < Duration::from_secs(10),
+            "the released consumer withdraws what it renamed: {:?}",
+            names()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(names(), [format!("{id}.jsonl")], "only the live segment");
+    drop(writer);
+    let recovering = Instant::now();
+    let recovery = loop {
+        match reader::recover(&layout, &id).unwrap() {
+            reader::Recovery::Live => {
+                assert!(recovering.elapsed() < Duration::from_secs(10));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            other => break other,
+        }
+    };
+    assert!(
+        matches!(
+            recovery,
+            reader::Recovery::Recovered {
+                discarded_bytes: 0,
+                unended_spans: 0,
+                ..
+            }
+        ),
+        "{recovery:?}"
+    );
+    let records = reader::read_sealed(&layout.sealed_segment(&id)).unwrap();
+    let ended: Vec<&str> = records
+        .iter()
+        .filter_map(|record| match record {
+            review_telemetry::record::Record::SpanEnd(end) if end.end_unix_ns.is_some() => {
+                Some(end.span_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ended,
+        [run.as_str(), command.as_str()],
+        "the complete prefix"
+    );
+    let Some(review_telemetry::record::Record::Seal(seal)) = records.last() else {
+        panic!("recovered with a seal");
+    };
+    assert_eq!(
+        seal.exit,
+        SealExit::Recovered,
+        "the writer's seal superseded"
+    );
+}

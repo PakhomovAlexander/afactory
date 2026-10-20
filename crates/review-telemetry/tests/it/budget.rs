@@ -319,3 +319,148 @@ fn telemetry_reclaim_covers_temporaries_orphans_and_free_index_pages() {
         "a corrupt segment goes by eviction, never by reclamation"
     );
 }
+
+/// Design §3.1, ADR-0153: storage housekeeping reads structural metadata only. A sealed
+/// segment whose span and event records are deliberately unparsable, while its header, its seal
+/// and its manifest are valid, is measured as sealed with its seal time and its manifest's
+/// references, with no problem — the inventory never decodes a record between the header and
+/// the seal — while the full record reader refuses it.
+#[test]
+fn telemetry_housekeeping_never_parses_spans() {
+    use std::io::Write as _;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("telemetry");
+    let id = sealed_with(&root, b"a shared input\n", b"its own output\n");
+    let layout = Layout::new(&root);
+    let path = layout.sealed_segment(&id);
+    let text = String::from_utf8(crate::sealed_bytes(&path)).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let seal: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+    assert_eq!(seal["t"], "seal");
+    let ended_ms = seal["ended_unix_ns"]
+        .as_str()
+        .unwrap()
+        .parse::<u128>()
+        .unwrap()
+        / 1_000_000;
+    // Every record between the header and the seal becomes a line no reader can parse, of the
+    // same kinds it was.
+    let mut broken = vec![lines[0].to_string()];
+    let mut spans = 0;
+    for line in &lines[1..lines.len() - 1] {
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        let kind = value["t"].as_str().unwrap().to_string();
+        spans += usize::from(kind.starts_with("span") || kind == "event");
+        broken.push(format!(
+            r#"{{"seq":{},"t":"{kind}","attributes":{{"unterminated"#,
+            value["seq"]
+        ));
+    }
+    assert!(spans >= 3, "{text}");
+    broken.push(lines.last().unwrap().to_string());
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(format!("{}\n", broken.join("\n")).as_bytes())
+        .unwrap();
+    std::fs::write(&path, encoder.finish().unwrap()).unwrap();
+    let manifest = std::fs::read_to_string(layout.refs(&id)).unwrap();
+    assert_eq!(manifest.lines().count(), 2, "the manifest names both blobs");
+
+    let directory = Directory::measure(&root, false).unwrap().unwrap();
+    assert!(directory.problems.is_empty(), "{:?}", directory.problems);
+    let segment = &directory.segments[&id];
+    assert_eq!(segment.state, State::Sealed);
+    assert_eq!(
+        u128::from(segment.last_use_unix_ms),
+        ended_ms,
+        "the seal time"
+    );
+    assert_eq!(
+        segment.refs,
+        manifest.lines().map(str::to_string).collect(),
+        "the manifest's references"
+    );
+    assert!(directory.target(&id).is_some(), "evictable as sealed");
+    assert!(
+        review_telemetry::segment::reader::read_sealed(&path).is_err(),
+        "the full record reader refuses it"
+    );
+}
+
+/// ADR-0144, design §6: an eviction entry is removed whole or left whole. A deterministic hook
+/// between the first step of a sealed segment's staged removal (its compressed copy) and the
+/// second (its manifest) replaces the manifest: the compressed copy is back in place, the
+/// replacement stays, no staging file is left, and the entry is reported changed, never
+/// removed. Without a change both files go.
+#[test]
+fn telemetry_eviction_keeps_an_entry_whole_when_the_manifest_changes_midway() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("telemetry");
+    let layout = Layout::new(&root);
+    let kept = sealed_with(&root, b"kept's input\n", b"kept's own output\n");
+    let gone = sealed_with(&root, b"gone's input\n", b"gone's own output\n");
+    age(&root, Duration::from_secs(2 * 3_600));
+    let now = SystemTime::now() + Duration::from_secs(2 * 3_600);
+    let directory = Directory::measure(&root, false).unwrap().unwrap();
+    let names = || -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(layout.segments())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+
+    let sealed = layout.sealed_segment(&kept);
+    let compressed = std::fs::read(&sealed).unwrap();
+    let manifest = layout.refs(&kept);
+    let target = directory.target(&kept).unwrap();
+    let reached = std::cell::Cell::new(false);
+    let evicted = budget::evict_with(&root, &target, now, &|| {
+        // Midway: the compressed copy is staged, the manifest not yet.
+        assert!(
+            !sealed.exists(),
+            "the first step staged the compressed copy"
+        );
+        let staged = root.join("replacement");
+        std::fs::write(&staged, b"not the manifest the inventory found\n").unwrap();
+        std::fs::rename(&staged, &manifest).unwrap();
+        reached.set(true);
+    })
+    .unwrap();
+    assert!(reached.get(), "the hook ran between the two steps");
+    let budget::Evicted::Changed(reason) = evicted else {
+        panic!("reported removed: {evicted:?}");
+    };
+    assert!(reason.contains("manifest was replaced"), "{reason}");
+    assert_eq!(
+        std::fs::read(&sealed).unwrap(),
+        compressed,
+        "the compressed copy is in place"
+    );
+    review_telemetry::segment::reader::read_sealed(&sealed).unwrap();
+    assert_eq!(
+        std::fs::read(&manifest).unwrap(),
+        b"not the manifest the inventory found\n"
+    );
+    assert!(
+        names().iter().all(|name| !name.starts_with('.')),
+        "no staging file is left: {:?}",
+        names()
+    );
+    let after = Directory::measure(&root, false).unwrap().unwrap();
+    assert_eq!(after.segments[&kept].state, State::Sealed);
+
+    // Unchanged, the whole entry goes.
+    let target = directory.target(&gone).unwrap();
+    assert!(matches!(
+        budget::evict(&root, &target, now).unwrap(),
+        budget::Evicted::Removed(_)
+    ));
+    assert!(!layout.sealed_segment(&gone).exists() && !layout.refs(&gone).exists());
+    assert_eq!(
+        names(),
+        [format!("{kept}.jsonl.gz"), format!("{kept}.refs")],
+        "only the changed entry is left"
+    );
+}

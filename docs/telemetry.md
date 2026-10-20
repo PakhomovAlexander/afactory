@@ -51,9 +51,15 @@ it; a consumer that has not finished in time — a write blocked on the volume �
 nothing else seals, compresses, replaces or writes the segment, the command's exit status is its
 own, the lock ends with the process, `af telemetry status` counts the segment `unsealed`, and
 the next reader recovers what was written. The compressed segment and its manifest are staged in
-temporary files and placed only while the 2 s have not passed: a consumer whose blocked write is
-released later finds the deadline gone, removes what it staged and publishes no `.jsonl.gz` and
-no `.refs`, so the live segment stays for the next reader. A telemetry-only failure
+temporary files, and the 2 s govern the whole publication: the deadline is checked again
+immediately before each step — the manifest's rename, the compressed copy's rename and the
+unlink of the live `.jsonl`, which happens only while the deadline has not passed — and a
+consumer that finds it gone at any step, a blocked write or rename released later among them,
+publishes nothing further, removes what it already renamed into place and what it staged, and
+leaves the live segment for the next reader. Whatever a consumer leaves, every reader,
+`af telemetry status` and the storage inventory take a `.jsonl` beside a `.jsonl.gz` or `.refs`
+of the same segment id as the unsealed segment: those files are stale staging, never read as
+sealed, replaced by recovery and removed by the sweep after an hour. A telemetry-only failure
 (an unwritable directory, a quota, a locked index) is one line on stderr,
 `af: telemetry problem (…), the command is unaffected: …`, recorded in the segment when it can
 be.
@@ -66,10 +72,11 @@ the content blobs arrive with later packages of the design.
 A run is one kernel run id within one Store: `af.store_id` is the SHA-256 of the Store
 directory's canonical path, and two Stores holding the same Task are two runs. Each process that
 worked on the run is an execution, numbered by `af.execution.ordinal`. Every lease that begins
-kernel execution commits one `execution_started` transition to the Task's log
-(`af/TaskExecutionStarted@1`,
-[`schemas/task-execution-started-v1.json`](../schemas/task-execution-started-v1.json)) before
-its `af.run` span opens, at every level `off` included — the Store never learns the level — and
+kernel execution commits one execution marker to the Task's log, its own event kind
+`TaskExecutionStarted@1` beside `TaskTransition@5` (`af/TaskExecutionStarted@1`, naming the
+lease's writer and epoch,
+[`schemas/task-execution-started-v1.json`](../schemas/task-execution-started-v1.json); the
+Store refuses it on a finished Task), before its `af.run` span opens, at every level `off` included — the Store never learns the level — and
 the ordinal is one more than those markers of the leases before it. An execution the free-disk
 floor refuses, or one interrupted, before any Attempt or run report still has its marker and its
 ordinal, and the resume takes the next one, so two retained executions never share an ordinal.
@@ -286,8 +293,9 @@ af telemetry runs [--since D] [--kind K] [--json] [--dir PATH]
 
 One entry per run, newest activity first: its Store (`af.store_id`), run id, kind, Task or
 Campaign, its retained executions and first start, its active, execution and elapsed time, the
-latest execution's own outcome (none while that execution's `af.run` has not ended, never an
-earlier execution's), the Attempts' exact usage counters and charge as their spans ended (summed
+latest execution's own outcome — the execution with the greatest committed ordinal, never the
+latest start; none while that execution's `af.run` has not ended, never an earlier execution's,
+and none when no execution carries an ordinal — the Attempts' exact usage counters and charge as their spans ended (summed
 exactly; a counter some Attempt did not deliver is absent, never zero), failures, coverage
 (`complete` when every retained segment was sealed by its writer with nothing dropped) and its
 history. Its `executions` list every retained execution, the sealed ones' ordinals and, beside
@@ -359,8 +367,9 @@ whatever the current level or `dir`, Telemetry `off` included:
   eviction frees: the segment, its manifest and the blobs no other retained segment references —
   recomputed after every removal, so a blob two segments share is freed only with the second;
   a sealed segment's last use is its seal time, the `ended_unix_ns` of the seal record read
-  from the file, never the file's modification time, which serves only a corrupt segment (and
-  a sealed file whose seal cannot be read, which is reported);
+  from the file by a structural read that decodes its `segment` header and its `seal` record
+  and nothing between them, never the file's modification time, which serves only a corrupt
+  segment (and a sealed file whose header or seal cannot be read, which is reported);
 - one entry per live segment (a writer holds its lock) or unsealed one, in use;
 - one `unreadable` entry per directory of another telemetry version, evicted whole, never read;
 - one `shared` entry for what no segment owns alone: the index with its WAL and shared memory,
@@ -373,20 +382,26 @@ segment's `.refs` manifest included — and its last use, and before unlinking a
 through the directory descriptors it holds, the sweep checks again that the directory is still
 that one, that every file of the entry is still a regular file under its name with the device
 and inode inventoried and was not modified within the last hour, that no writer holds its lock
-(or a live file of the segment's) and that it was not used within the last hour. An entry any
-file of which changed — replaced, locked, used — is left in place whole and reported with what
-changed
+(or a live file of the segment's) and that it was not used within the last hour. An entry is
+removed whole or left whole: a sealed segment's compressed copy and then its manifest are each
+checked immediately before their own step and renamed under a staging name in the held
+directory, a change found at the manifest restores the compressed copy, and only once both are
+staged, and checked there again, are they unlinked. An entry any file of which changed —
+replaced, locked, used — is left in place whole and reported with what changed, never as
+removed
 (`telemetry.changed` in `af/storage-prune@2`, `changed` in `af/telemetry-gc@1`). Before it measures or collects anything an applied sweep recovers every
 unsealed segment whose lock it can take, and reads the flushed prefix of every one it cannot for
 the blobs it references, whether or not Telemetry is on. Every applied sweep then removes
-temporary files under `segments/` and `blobs/` older than an hour, without a lock, and under
+temporary files under `segments/` and `blobs/` older than an hour, and the stale staging beside a
+`.jsonl` older than an hour, without a lock, and under
 `gc.lock` held exclusively (at most 2 s, else skipped this time) the blobs no retained segment
 references; then it drops the evicted segments' rows from the index and, when its free pages
 exceed 16 MiB and a quarter of the file, runs `VACUUM` — deleting the index under `index.lock`
 when there is no room to vacuum (the next reader rebuilds it), deferring without the lock. What
 it reclaims is measured as allocated bytes (`telemetry.reclaimed` in `af/storage-prune@2`). It
-reads only structural metadata: file sizes and times, lock state, manifests and the `blob_ref`
-records of a live segment, never a span. A telemetry segment it removes after a run is counted
+reads only structural metadata: file sizes and times, lock state, manifests, a sealed segment's
+header and seal records and the `blob_ref` records of a live segment, never a span; a sealed
+segment without its manifest leaves its references unknown and the blob collection refused. A telemetry segment it removes after a run is counted
 among the omitted removals of the Task's `storage_sweep` record.
 
 The overlap of every registered directory is rechecked at every inventory: a directory that lies

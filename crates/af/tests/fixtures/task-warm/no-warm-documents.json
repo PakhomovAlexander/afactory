@@ -317,20 +317,6 @@
         }
       },
       {
-        "sequence": 3,
-        "transition": {
-          "writer": "<run:9>",
-          "epoch": 1,
-          "now_unix_ms": "<ms>",
-          "change": {
-            "kind": "execution_started",
-            "execution": {
-              "schema": "af/TaskExecutionStarted@1"
-            }
-          }
-        }
-      },
-      {
         "sequence": 4,
         "transition": {
           "writer": "<run:9>",

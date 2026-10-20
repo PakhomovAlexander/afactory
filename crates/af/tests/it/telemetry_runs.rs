@@ -507,6 +507,20 @@ fn transitions(state: &Path, kind: &str) -> Vec<u64> {
         .collect()
 }
 
+/// The epochs of the execution markers (`TaskExecutionStarted@1`, the Task log's own event kind
+/// beside its transitions) in the one Task Store under `state`, in log order.
+fn markers(state: &Path) -> Vec<u64> {
+    events(state)
+        .iter()
+        .filter(|row| row[3] == "TaskExecutionStarted@1")
+        .map(|row| {
+            let payload: Value = serde_json::from_str(&row[10]).unwrap();
+            assert_eq!(payload["schema"], "af/TaskExecutionStarted@1");
+            payload["epoch"].as_u64().unwrap()
+        })
+        .collect()
+}
+
 /// The ordinals of the retained executions of the one run of Task `task`, oldest first, with
 /// the run.
 fn ordinals(machine: &Machine, repo: &Path, task: &str) -> (Vec<u64>, Value) {
@@ -530,8 +544,8 @@ fn ordinals(machine: &Machine, repo: &Path, task: &str) -> (Vec<u64>, Value) {
     (ordinals, (*run).clone())
 }
 
-/// Design §5: every lease that begins kernel execution commits its `execution_started` marker
-/// before its `af.run` span opens, and the ordinal counts exactly the markers before it. An
+/// Design §5: every lease that begins kernel execution commits its execution marker
+/// (`TaskExecutionStarted@1`) before its `af.run` span opens, and the ordinal counts exactly the markers before it. An
 /// execution the free-disk floor stops before any Attempt starts still takes ordinal 1, and
 /// the resume takes 2: never a second 1, so `history` never calls a duplicate a prefix.
 #[test]
@@ -548,7 +562,7 @@ fn telemetry_refused_before_an_attempt_keeps_its_ordinal() {
     let (_, stderr) = text(&refused);
     assert_eq!(refused.status.code(), Some(1), "{stderr}");
     assert!(stderr.contains("insufficient_disk"), "{stderr}");
-    assert_eq!(transitions(&state, "execution_started"), [1]);
+    assert_eq!(markers(&state), [1]);
     let resumed = machine.af(
         &repo,
         &[],
@@ -565,7 +579,7 @@ fn telemetry_refused_before_an_attempt_keeps_its_ordinal() {
     let (stdout, stderr) = text(&resumed);
     assert!(resumed.status.success(), "{stdout}\n{stderr}");
     assert_eq!(
-        transitions(&state, "execution_started"),
+        markers(&state),
         [1, 2],
         "one marker per lease that began execution"
     );
@@ -629,7 +643,7 @@ fn telemetry_interrupted_before_an_attempt_keeps_its_ordinal() {
     }
     child.kill().unwrap();
     child.wait().unwrap();
-    assert_eq!(transitions(&state, "execution_started"), [1]);
+    assert_eq!(markers(&state), [1]);
     assert!(
         transitions(&state, "execution_recorded").is_empty()
             && transitions(&state, "run_reported").is_empty(),
@@ -655,7 +669,7 @@ fn telemetry_interrupted_before_an_attempt_keeps_its_ordinal() {
     );
     let (stdout, stderr) = text(&resumed);
     assert!(resumed.status.success(), "{stdout}\n{stderr}");
-    assert_eq!(transitions(&state, "execution_started"), [1, 2]);
+    assert_eq!(markers(&state), [1, 2]);
     let (ordinals, run) = ordinals(&machine, &repo, "gc-older");
     assert_eq!(ordinals, [1, 2], "{run}");
     assert_eq!(run["missing_ordinals"], serde_json::json!([]), "{run}");

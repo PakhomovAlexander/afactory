@@ -229,7 +229,8 @@ the first af.run until the seal one consumer thread is the segment's only writer
 record is in it within flush_latency_ms; at the command's end it writes the command's end and
 seals the segment within one 2 s bound, else it is abandoned, publishes nothing, and the segment
 is left for the next reader to recover. A run's executions (one per process that worked on it,
-numbered by the execution_started markers the Store holds for the leases before it) can
+numbered by the execution markers, TaskExecutionStarted@1 events of the Task's log, the Store
+holds for the leases before it) can
 overlap: active time is their union, execution time their sum, elapsed time first start to last
 end. Its history is
 `prefix:k` or `partial`, never complete, and its open executions are named beside the sealed

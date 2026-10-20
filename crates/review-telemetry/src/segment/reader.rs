@@ -11,7 +11,10 @@
 //! ends with the writer's seal (the writer died before compressing) has that seal superseded by
 //! the recovered one, which keeps the writer's counts; a prefix without it gets a recovered seal
 //! whose `dropped` and `dropped_chunks` are `null`, unknown. An invalid line before a valid one
-//! is interior corruption: the segment is renamed `.corrupt`, never read again.
+//! is interior corruption: the segment is renamed `.corrupt`, never read again. A `.jsonl.gz`
+//! or `.refs` beside a `.jsonl` of the same id is stale staging (the publication's last step
+//! removes the `.jsonl`): every reader treats the segment as unsealed ([`Listing::stale`]) and
+//! recovery replaces those files.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
@@ -24,7 +27,9 @@ use nix::fcntl::FlockArg;
 
 use crate::layout::{self, Confined, EntryKind, FileIdentity, Layout, SegmentFile};
 use crate::level::SEGMENT_MAX_BYTES_BOUND;
-use crate::record::{Attributes, BlobState, Record, Seal, SealExit, SpanEnd, SpanStatus, schema};
+use crate::record::{
+    Attributes, BlobState, RECORD_MAX_BYTES, Record, Seal, SealExit, SpanEnd, SpanStatus, schema,
+};
 
 /// The valid prefix of a segment's bytes.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -222,6 +227,109 @@ pub fn read_sealed_in(
     Ok((sealed_records(file, &path)?, identity))
 }
 
+/// What housekeeping reads of a sealed segment (design §3.1, ADR-0153): its `segment` header
+/// and its `seal` record, and nothing between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedFrame {
+    /// The seal's `ended_unix_ns`.
+    pub ended_unix_ns: u128,
+    /// The identity of the file read (its device, inode, size and modification time).
+    pub identity: FileIdentity,
+}
+
+/// The header and the seal of the sealed segment `segment_id`, opened relative to `segments`,
+/// read structurally: the file is decompressed as a stream (up to the longest segment this
+/// release writes) keeping only its first line and its last, and only those two are decoded —
+/// never a span, an event, an attribute or a blob record, whatever they hold. The first must be
+/// the `segment` header naming `segment_id` at `seq` 1 and the last the `seal` naming its
+/// `.refs` manifest, the stream ending with that line's newline. What housekeeping (`af
+/// storage`, the sweep, `af telemetry gc`) reads instead of [`read_sealed_in`], the full record
+/// reader.
+pub fn sealed_frame_in(segments: &Confined, segment_id: &str) -> Result<SealedFrame, String> {
+    let name = format!("{segment_id}{}", layout::SEALED);
+    let path = segments.join(&name);
+    let failed = |error: std::io::Error| format!("{}: {error}", path.display());
+    let refused = |why: &str| {
+        format!(
+            "{}: not a sealed segment of this release ({why})",
+            path.display()
+        )
+    };
+    let file = segments.open_file(&name).map_err(failed)?;
+    let identity = FileIdentity::of_file(&file).map_err(failed)?;
+    let mut stream = GzDecoder::new(file);
+    let mut chunk = vec![0_u8; 64 * 1024];
+    // The first complete line, the last, and the one being read; a line past the record bound
+    // is kept as `None` (never a header or a seal), so nothing between is judged at all.
+    let (mut first, mut last) = (None::<Option<Vec<u8>>>, None::<Vec<u8>>);
+    let mut current = Some(Vec::new());
+    let mut total: u64 = 0;
+    loop {
+        let read = match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(failed(error)),
+        };
+        total += read as u64;
+        if total > SEGMENT_MAX_BYTES_BOUND {
+            return Err(refused(&format!(
+                "longer than the {SEGMENT_MAX_BYTES_BOUND}-byte segment bound; never read"
+            )));
+        }
+        for piece in chunk[..read].split_inclusive(|byte| *byte == b'\n') {
+            let complete = piece.last() == Some(&b'\n');
+            let piece = if complete {
+                &piece[..piece.len() - 1]
+            } else {
+                piece
+            };
+            if let Some(line) = &mut current {
+                if line.len() + piece.len() > RECORD_MAX_BYTES {
+                    current = None;
+                } else {
+                    line.extend_from_slice(piece);
+                }
+            }
+            if complete {
+                let line = current.replace(Vec::new());
+                if first.is_none() {
+                    first = Some(line.clone());
+                }
+                last = line;
+            }
+        }
+    }
+    if current.is_none_or(|line| !line.is_empty()) {
+        return Err(refused("bytes after the last complete line"));
+    }
+    let first = first
+        .ok_or_else(|| refused("empty"))?
+        .ok_or_else(|| refused("its first line is past the record bound"))?;
+    let last = last.ok_or_else(|| refused("its last line is past the record bound"))?;
+    match Record::parse_line(&first) {
+        Ok(Record::Segment(header)) if header.seq == 1 && header.segment_id == segment_id => {}
+        Ok(_) => return Err(refused("its first line is not its own segment header")),
+        Err(reason) => return Err(refused(&format!("its header: {reason}"))),
+    }
+    let seal = match Record::parse_line(&last) {
+        Ok(Record::Seal(seal)) => seal,
+        Ok(_) => return Err(refused("its last line is not a seal")),
+        Err(reason) => return Err(refused(&format!("its seal: {reason}"))),
+    };
+    if seal.seq <= 1 || seal.refs != format!("{segment_id}{}", layout::REFS) {
+        return Err(refused("its seal is not its own"));
+    }
+    let ended_unix_ns = seal
+        .ended_unix_ns
+        .parse::<u128>()
+        .map_err(|_| refused("its seal names no end time"))?;
+    Ok(SealedFrame {
+        ended_unix_ns,
+        identity,
+    })
+}
+
 /// The digests of every stored occurrence in `records`, sorted.
 pub fn referenced(records: &[Record]) -> BTreeSet<String> {
     records
@@ -242,10 +350,16 @@ pub struct Listing {
     pub live: Vec<String>,
     /// `.jsonl` segments nobody holds: a crashed or abandoned writer's, recoverable.
     pub unsealed: Vec<String>,
+    /// `.jsonl.gz` segments with no `.jsonl` of the same id beside them.
     pub sealed: Vec<String>,
     pub corrupt: Vec<String>,
-    /// `.refs` manifests, by segment id.
+    /// `.refs` manifests, by segment id, with no `.jsonl` of the same id beside them.
     pub refs: Vec<String>,
+    /// Segment ids whose `.jsonl` exists beside a `.jsonl.gz` or `.refs` of the same id: the
+    /// segment is the live or unsealed `.jsonl` (listed there), and those files are stale
+    /// staging of a publication that never completed — never read as sealed, replaced by
+    /// recovery and removed by the sweep after an hour.
+    pub stale: Vec<String>,
     /// Temporary files under `segments/`.
     pub temporary: Vec<PathBuf>,
 }
@@ -291,6 +405,25 @@ pub fn list_in(segments: &Confined) -> Result<Listing, String> {
             None => {}
         }
     }
+    // A `.jsonl` is the segment whatever else of its id lies beside it: the publication's last
+    // step removes it, so a `.jsonl.gz` or `.refs` beside one is stale staging.
+    let unsealed: BTreeSet<String> = listing
+        .live
+        .iter()
+        .chain(&listing.unsealed)
+        .cloned()
+        .collect();
+    let mut stale = BTreeSet::new();
+    for list in [&mut listing.sealed, &mut listing.refs] {
+        list.retain(|id| {
+            let beside = unsealed.contains(id);
+            if beside {
+                stale.insert(id.clone());
+            }
+            !beside
+        });
+    }
+    listing.stale = stale.into_iter().collect();
     for list in [
         &mut listing.live,
         &mut listing.unsealed,
@@ -317,7 +450,7 @@ pub enum Recovery {
     },
     /// Interior corruption, or no valid header: renamed `.corrupt`.
     Corrupt { segment_id: String },
-    /// Its writer sealed it after all (the `.jsonl.gz` exists); the leftover was removed.
+    /// Its writer sealed it after all: the `.jsonl` was gone by the time its lock was had.
     AlreadySealed,
     /// An empty file a writer created and never wrote: removed.
     Empty,
@@ -368,10 +501,9 @@ pub fn recover_in(segments: &Confined, segment_id: &str) -> Result<Recovery, Str
         Some(current) if current.ino == opened.ino && current.dev == opened.dev => {}
         _ => return Ok(Recovery::AlreadySealed),
     }
-    if segments.kind(&sealed_name) == Some(EntryKind::File) {
-        segments.unlink(&name).map_err(io)?;
-        return Ok(Recovery::AlreadySealed);
-    }
+    // A `.jsonl.gz` or `.refs` of the same id beside the `.jsonl` is stale staging of a
+    // publication that never completed (its last step removes the `.jsonl`): the `.jsonl` is
+    // the segment, and the files written below replace them.
     if opened.size > SEGMENT_MAX_BYTES_BOUND {
         return Err(format!(
             "{}: longer than the {SEGMENT_MAX_BYTES_BOUND}-byte segment bound; never read",
@@ -515,7 +647,8 @@ pub fn recover_all_in(segments: &Confined) -> Result<Vec<Recovery>, String> {
 }
 
 /// The digests a sealed segment's `.refs` manifest names, read relative to the opened
-/// `segments/` directory; a missing manifest falls back to the segment's `blob_ref` records.
+/// `segments/` directory. Housekeeping's read: a missing manifest is refused, never replaced by
+/// a read of the segment's records, so the references it would name are unknown.
 pub fn manifest_digests_in(
     segments: &Confined,
     segment_id: &str,
@@ -531,9 +664,10 @@ pub fn manifest_digests_in(
             .filter(|line| !line.is_empty())
             .map(str::to_string)
             .collect()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(referenced(&read_sealed_in(segments, segment_id)?.0))
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(format!(
+            "{}: missing; the blobs its segment references are unknown",
+            segments.join(&name).display()
+        )),
         Err(error) => Err(format!("{}: {error}", segments.join(&name).display())),
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use review_core::task::execution_started::TaskExecutionStartedV1;
 
 #[test]
 fn heartbeat_reads_exact_fresh_writer_and_expiry_without_granting_authority() {
@@ -568,7 +569,8 @@ fn projection_applies_the_same_writers_earlier_time_and_fences_every_other_case(
 }
 
 /// Telemetry numbers a run's executions by the leases that began kernel execution (design §5):
-/// each leaves one `execution_started` marker before anything else it does, so a lease that
+/// each leaves one execution marker (`TaskExecutionStarted@1`, its own event of the Task log)
+/// before anything else it does, so a lease that
 /// stops before any Attempt is counted like one that prepared several; a lease that only
 /// planned, or one a housekeeping command took, leaves none. A second runtime of the same lease
 /// records nothing more.
@@ -627,15 +629,62 @@ fn only_leases_that_began_a_kernel_run_are_counted() {
         .unwrap();
     assert_eq!(count(&f, 4), 1);
     assert_eq!(count(&f, 5), 2, "each execution its own ordinal");
+    // The marker is its own event of the Task log, beside the transitions.
+    let markers: Vec<RunEvent> = f
+        .store
+        .replay(&task_run_id("task-1").unwrap())
+        .unwrap()
+        .into_iter()
+        .filter(crate::store::task::is_execution_started)
+        .collect();
+    assert_eq!(markers.len(), 2);
+    for marker in &markers {
+        assert_eq!(marker.event_type, EventType::TaskExecutionStartedV1);
+        assert!(marker.artifact_refs.is_empty(), "references nothing");
+        crate::store::task::read_execution_started(marker).unwrap();
+    }
     // The marker is the lease's own: a fenced writer cannot record one.
-    let fenced = review_core::task::event::TaskTransitionV1 {
-        writer: "writer-3".into(),
-        epoch: 3,
-        now_unix_ms: crate::store::task::now().unwrap(),
-        change: TaskChangeV1::ExecutionStarted {
-            execution: review_core::task::execution_started::TaskExecutionStartedV1::new(),
-        },
-    };
+    let now = crate::store::task::now().unwrap();
     let state = f.store.task_projection(&f.cas, "task-1").unwrap().unwrap();
-    assert!(apply_unstamped(&f, &state, &fenced).is_err());
+    let fenced = TaskExecutionStartedV1::new("writer-3", 3, now);
+    assert!(apply_marker(&state, &fenced).is_err());
+    let current = TaskExecutionStartedV1::new("writer-4", 4, now);
+    let error = apply_marker(&state, &current).unwrap_err();
+    assert!(error.to_string().contains("once"), "{error}");
+    // A finished Task refuses it, even from its current lease.
+    let mut finished = state.clone();
+    finished.execution_epochs.clear();
+    assert!(apply_marker(&finished, &current).is_ok());
+    finished.phase = TaskPhaseV1::Finished {
+        result_id: "sha256:finished".into(),
+    };
+    let error = apply_marker(&finished, &current).unwrap_err();
+    assert!(error.to_string().contains("finished"), "{error}");
+}
+
+/// Apply the execution marker `marker` to a copy of `state` as the next event of its log.
+fn apply_marker(
+    state: &TaskProjection,
+    marker: &TaskExecutionStartedV1,
+) -> Result<TaskProjection, StoreError> {
+    let (event_type, payload) =
+        crate::store::task::review_handoff::encode_execution_started(marker)?;
+    let mut next = state.clone();
+    next.apply_execution_started(
+        &RunEvent {
+            event_id: String::new(),
+            run_id: task_run_id(&state.task_id)?,
+            sequence: state.next_sequence,
+            event_type,
+            occurred_at: String::new(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload,
+        },
+        marker,
+    )?;
+    Ok(next)
 }
