@@ -552,6 +552,138 @@ fn a_record_that_does_not_parse_stops_the_walk_at_its_commit_never_guessing_an_i
     assert_eq!(stopped_in.as_deref(), Some(A));
 }
 
+#[test]
+fn a_stream_cut_inside_a_record_is_never_a_whole_history() {
+    // Read `log`, returning how it ended, the commit it names and the commits passed on.
+    let read = |log: &str| {
+        let mut commits = Vec::new();
+        let mut stopped_in = None;
+        let ended = read_log(
+            &mut log.as_bytes(),
+            &clock(),
+            &Policy::default(),
+            &mut stopped_in,
+            |commit| {
+                commits.push(commit.id);
+                Ok(())
+            },
+        );
+        (ended, stopped_in, commits)
+    };
+    let first = logged(B, A, 200, "Ada", None, &[], &["1\t0\ta"]);
+    let last = logged(A, "", 100, "Bob", None, &[], &["1\t0\tb"]);
+    let whole = format!("{first}{last}");
+    assert_eq!(
+        read(&whole),
+        (Ended::Done, None, vec![B.to_string(), A.to_string()]),
+        "a stream whose last record ended"
+    );
+    let without = |log: &str, bytes: usize| log[..log.len() - bytes].to_string();
+    let header = |rest: &str| format!("{first}{A}\0{rest}");
+    for (log, why) in [
+        (
+            without(&whole, 1),
+            "the final NUL after a valid numstat item",
+        ),
+        (format!("{first}{A}"), "right after a valid commit ID"),
+        (format!("{first}{A}\0"), "after the commit ID's NUL"),
+        (header("\0"), "after the parents"),
+        (header("\x0010"), "inside the committer time"),
+        (header("\x00100\0Bob\0"), "before the ID repeated"),
+        (
+            header(&format!("\x00100\0Bob\0{A}\0\0{A}")),
+            "inside the third ID",
+        ),
+        (
+            header(&format!("\x00100\0Bob\0{A}\0\0{A}\0")),
+            "before the NUL that ends the fields",
+        ),
+        (
+            header(&format!("\x00100\0Bob\0{A}\0Claude <c@x.invalid>")),
+            "inside a trailer",
+        ),
+    ] {
+        assert_eq!(
+            read(&log),
+            (Ended::Cut, Some(A.to_string()), vec![B.to_string()]),
+            "cut {why}: the commit before it counts, the cut one is named"
+        );
+    }
+    // A record cut before its whole ID: the one before it is named, since nothing proves it
+    // ended (a numstat line cut before its first tab looks the same), and is not passed on.
+    for (log, why) in [
+        (format!("{first}{}", &A[..12]), "inside the next ID"),
+        (format!("{first}\n1"), "inside a numstat line"),
+        (without(&first, 1), "the final NUL of the only record"),
+    ] {
+        assert_eq!(
+            read(&log),
+            (Ended::Cut, Some(B.to_string()), Vec::new()),
+            "cut {why}"
+        );
+    }
+    // The first record cut before its ID names nothing: the caller names the head.
+    assert_eq!(read(&B[..7]), (Ended::Cut, None, Vec::new()));
+}
+
+#[test]
+fn a_malformed_first_record_names_its_commit_and_passes_nothing_on() {
+    use SurveyIdentityPolicyV1::{EmailHash, Name};
+    for identity in [Name, EmailHash] {
+        let policy = Policy {
+            identity,
+            ..Policy::default()
+        };
+        let email = (identity == EmailHash).then_some("a@x.invalid");
+        let email_field = email.map_or(String::new(), |email| format!("{email}\0"));
+        for (log, named, why) in [
+            (
+                format!(
+                    "{A}\0\0soon\0Ada\0{email_field}{A}\0\0{A}\0\0{}",
+                    logged(B, "", 50, "Bob", email, &[], &[])
+                ),
+                Some(A),
+                "a time that is not a number",
+            ),
+            (
+                logged(A, "nope", 100, "Ada", email, &[], &[]),
+                Some(A),
+                "a parent that is not a commit",
+            ),
+            (
+                "1\t0\ta\0".to_string(),
+                None,
+                "a numstat line before any commit",
+            ),
+            (
+                "garbage\0".to_string(),
+                None,
+                "an item that is no commit ID",
+            ),
+        ] {
+            let mut stopped_in = None;
+            let mut commits = 0;
+            let ended = read_log(
+                &mut log.as_bytes(),
+                &clock(),
+                &policy,
+                &mut stopped_in,
+                |_| {
+                    commits += 1;
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                ended,
+                Ended::Bound(SurveyReasonV1::MalformedRecord),
+                "{identity:?}: {why}"
+            );
+            assert_eq!(stopped_in.as_deref(), named, "{identity:?}: {why}");
+            assert_eq!(commits, 0, "{identity:?}: {why}");
+        }
+    }
+}
+
 /// The 16-hex key of the exact author-name bytes, under `identity = "name"`.
 fn measure_key(name: &[u8]) -> String {
     use sha2::{Digest, Sha256};

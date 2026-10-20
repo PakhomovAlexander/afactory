@@ -434,7 +434,7 @@
           "$ref": "#/$defs/commit"
         },
         "stopped_in": {
-          "description": "The commit whose log record stopped the walk unfolded: one over max_paths, a record over 64 KiB or a malformed record.",
+          "description": "The commit whose log record stopped the walk unfolded: one over max_paths, a record over 64 KiB or a malformed record (one cut before its NUL included); the head when the walk stopped in its first record, which history then counts as zero commits.",
           "$ref": "#/$defs/commit"
         },
         "churn_90d": {
@@ -563,6 +563,43 @@
               "churn_90d",
               "hot_paths"
             ]
+          }
+        },
+        {
+          "description": "A malformed log record, the first included, leaves history partial and names its commit; a walk that folded no commit names the one it stopped in.",
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "const": "malformed_record"
+                  }
+                }
+              },
+              {
+                "required": [
+                  "commits"
+                ],
+                "properties": {
+                  "commits": {
+                    "const": "0"
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "stopped_in"
+            ],
+            "properties": {
+              "completeness": {
+                "const": "partial"
+              }
+            }
           }
         }
       ]
@@ -718,6 +755,26 @@
               "top_share_bp",
               "by_identity"
             ]
+          }
+        },
+        {
+          "description": "A malformed log record, the first included, leaves contributors partial with what the walk folded before it, zero counts when nothing.",
+          "if": {
+            "required": [
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "const": "malformed_record"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "completeness": {
+                "const": "partial"
+              }
+            }
           }
         },
         {

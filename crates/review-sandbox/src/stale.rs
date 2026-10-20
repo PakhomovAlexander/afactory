@@ -25,6 +25,7 @@
 //! with its leader on every path short of `SIGKILL`.
 
 use std::path::Path;
+use std::time::Instant;
 
 const PREFIX: &str = "af-sandbox-";
 /// The name prefix of a check's runtime directory (see [`crate::CheckRuntime`]).
@@ -150,15 +151,14 @@ pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
         report.removed += removed.len();
         report.failed += left.len();
     }
-    sweep_owned(root, &SWEPT, &mut report);
+    sweep_owned(root, &SWEPT, None, &mut report);
     report
 }
 
 /// Remove the Tree Digest spill directories (`af-tree-digest-<pid>-<random>`) under this
 /// process's temporary root whose owning process no longer exists, under the rules of
-/// [`sweep_stale_sandboxes`] and touching nothing else: what the Surveyor runs before it spills,
-/// so a refresh killed after a spill leaves its runs only until the next refresh or the next
-/// sweep of review or Task work.
+/// [`sweep_stale_sandboxes`] and touching nothing else, so a refresh killed after a spill leaves
+/// its runs only until the next refresh or the next sweep of review or Task work.
 pub fn sweep_stale_tree_digests() -> SweepReport {
     sweep_stale_tree_digests_in(&std::env::temp_dir())
 }
@@ -166,18 +166,37 @@ pub fn sweep_stale_tree_digests() -> SweepReport {
 /// [`sweep_stale_tree_digests`] against an explicit root.
 pub fn sweep_stale_tree_digests_in(root: &Path) -> SweepReport {
     let mut report = SweepReport::default();
-    sweep_owned(root, &[TREE_DIGEST_PREFIX], &mut report);
+    sweep_owned(root, &[TREE_DIGEST_PREFIX], None, &mut report);
+    report
+}
+
+/// [`sweep_stale_tree_digests_in`] bounded by `deadline`: what every refresh of the Surveyor
+/// runs first, before it decides whether to reuse a Survey. One listing of `root`, and no
+/// removal begun once `deadline` passed, so the sweep outlasts it by at most the one removal
+/// then running; a dead spill it did not reach is left, uncounted, for the next sweep.
+pub fn sweep_stale_tree_digests_before(root: &Path, deadline: Instant) -> SweepReport {
+    let mut report = SweepReport::default();
+    sweep_owned(root, &[TREE_DIGEST_PREFIX], Some(deadline), &mut report);
     report
 }
 
 /// Remove every directory under `root` named with one of `prefixes`, a pid and a random part,
-/// whose owning process no longer exists and that is not preserved, counting into `report`.
-fn sweep_owned(root: &Path, prefixes: &[&str], report: &mut SweepReport) {
+/// whose owning process no longer exists and that is not preserved, counting into `report`,
+/// and none once `deadline` passed.
+fn sweep_owned(
+    root: &Path,
+    prefixes: &[&str],
+    deadline: Option<Instant>,
+    report: &mut SweepReport,
+) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
     let own_pid = std::process::id();
     for entry in entries.flatten() {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return;
+        }
         let Some(pid) = entry
             .file_name()
             .to_str()
@@ -505,6 +524,39 @@ mod tests {
         assert_eq!(report.live, 1, "{report:?}");
         assert!(!dead.exists() && !sandbox.exists());
         assert!(live.join("run-0").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bounded_spill_sweep_removes_nothing_past_its_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let dead = root.path().join("af-tree-digest-2000000000-dead05");
+        std::fs::create_dir_all(&dead).unwrap();
+        std::fs::write(dead.join("run-0"), b"runs").unwrap();
+        let live = root
+            .path()
+            .join(format!("af-tree-digest-{}-live05", std::process::id()));
+        std::fs::create_dir_all(&live).unwrap();
+
+        let passed = Instant::now();
+        assert_eq!(
+            sweep_stale_tree_digests_before(root.path(), passed),
+            SweepReport::default()
+        );
+        assert!(dead.exists(), "a passed deadline begins no removal");
+
+        let ahead = Instant::now() + std::time::Duration::from_secs(60);
+        assert_eq!(
+            sweep_stale_tree_digests_before(root.path(), ahead),
+            SweepReport {
+                removed: 1,
+                failed: 0,
+                live: 1,
+                preserved: 0,
+            }
+        );
+        assert!(!dead.exists());
+        assert!(live.exists());
     }
 
     #[test]

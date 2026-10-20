@@ -30,11 +30,12 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 180] = [
+const SCHEMAS: [&str; 181] = [
     "project-registered-v1.json",
     "project-survey-v1.json",
     "project-survey-recorded-v1.json",
     "project-survey-failed-v1.json",
+    "project-survey-pending-v1.json",
     "project-history-v1.json",
     "project-workspace-registered-v1.json",
     "project-workspace-removed-v1.json",

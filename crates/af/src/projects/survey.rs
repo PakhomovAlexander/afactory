@@ -19,6 +19,7 @@
 //! its tombstone once collected, before any of its fields is printed or used.
 
 mod measure;
+pub(crate) mod pending;
 pub(crate) mod policy;
 #[cfg(test)]
 mod tests;
@@ -51,8 +52,10 @@ use super::{Checkout, Git, Log, ProjectStore, RUN_ID};
 /// before any cut, so a control character past 256 bytes hashes the name. 6: the log read in
 /// NUL-separated fields with the commit ID repeated, so author data never splits a record and a
 /// record that does not parse stops the walk with `malformed_record`, and the stopping point of
-/// a Survey that is not complete.
-pub(crate) const SURVEYOR_VERSION: u64 = 6;
+/// a Survey that is not complete. 7: a log that ends inside a record (its last item without its
+/// NUL) is a malformed record and never whole history, and a walk stopped in its first record
+/// leaves `history` and `contributors` partial with zero counts, naming the commit.
+pub(crate) const SURVEYOR_VERSION: u64 = 7;
 
 /// Why a refresh whose deadline passed before its survey key existed failed.
 const KEY_DEADLINE: &str = "the survey key could not be computed within max_wall_ms";
@@ -565,12 +568,31 @@ impl ProjectStore {
         Ok(())
     }
 
+    /// Publish `survey`, whose canonical bytes are `bytes`, under the Project Store's lock: its
+    /// pending-publication entry first, then its record into the CAS and the object's identity
+    /// into the entry, then `SurveyRecorded@1`, and the entry cleared once that committed, so a
+    /// crash between the CAS and the log leaves an entry naming the record.
     fn record_survey(
         &mut self,
         survey: &ProjectSurveyV1,
         bytes: Vec<u8>,
     ) -> Result<Recorded, String> {
-        let survey_id = self.cas.put(&bytes).map_err(|error| error.to_string())?;
+        let survey_id = review_store::canonical::blob_content_id(&bytes);
+        let length = bytes.len() as u64;
+        pending::begin(&self.directory, &survey_id, length)?;
+        let stored = self.cas.put(&bytes).map_err(|error| error.to_string())?;
+        if stored != survey_id {
+            return Err(format!(
+                "the CAS stored Survey {survey_id} as {stored}; run `af project refresh` again"
+            ));
+        }
+        pending::written(
+            &self.directory,
+            &survey_id,
+            length,
+            &collect::object_path(&self.directory, &survey_id),
+        )?;
+        pending::stop_before_event();
         let identity = survey
             .identity
             .body
@@ -593,8 +615,11 @@ impl ProjectStore {
                 EventType::SurveyRecordedV1,
                 serde_json::to_value(&event).map_err(|error| error.to_string())?,
             )
-            .referencing(vec![survey_id]),
+            .referencing(vec![survey_id.clone()]),
         )?;
+        // The event committed: the record is published. An entry that cannot be removed names
+        // a logged Survey, which its reader tells apart by the log.
+        let _ = pending::clear(&self.directory, &survey_id);
         Ok(Recorded {
             event,
             survey: survey.clone(),
@@ -665,6 +690,9 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
             .as_ref()
             .map_or(Policy::default().max_wall_ms, |policy| policy.max_wall_ms),
     );
+    // The spills of a refresh killed after it spilled, and only those whose process is gone:
+    // swept by every refresh before it decides whether to reuse a Survey, within its deadline.
+    review_sandbox::stale::sweep_stale_tree_digests_before(&std::env::temp_dir(), clock.deadline());
     // The key's reads are no section's: a fixture that slows one section leaves them alone.
     let key_clock = clock.section("key");
     let head = match measure::head(&git, &key_clock) {
@@ -780,7 +808,7 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         vocabulary: sections.vocabulary,
         checks: sections.checks,
     };
-    survey.stopped = stopped(&survey, &clock, sections.stopped_in);
+    survey.stopped = stopped(&survey, &clock);
     let bytes = record_bytes(&survey)?;
     if bytes.len() as u64 > policy.max_survey_bytes.min(MAX_SURVEY_BYTES) {
         let reason = format!(
@@ -797,12 +825,10 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
 }
 
 /// Where `survey` stopped when it is not complete (ADR-0152 clause 1): the stopping point its
-/// sections determine, with the items the Clock charged in that section and, for a `history`
-/// that reached no commit, the commit a record stopped its walk in.
+/// sections determine, with the items the Clock charged in that section.
 fn stopped(
     survey: &ProjectSurveyV1,
     clock: &measure::Clock,
-    stopped_in: Option<String>,
 ) -> Option<review_core::project::SurveyStopV1> {
     let mut stop = survey.stopping_point()?;
     let section = SECTION_NAMES
@@ -810,9 +836,6 @@ fn stopped(
         .find(|name| *name == stop.section)
         .unwrap_or_default();
     stop.item = clock.charged(section).into();
-    if stop.section == "history" && stop.commit.is_none() {
-        stop.commit = stopped_in;
-    }
     Some(stop)
 }
 
