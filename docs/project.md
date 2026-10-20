@@ -183,15 +183,19 @@ The undo deletes only what it can prove this command made
   into it; it counts as made only when that `create_dir` succeeded on a path that did not exist,
   and the command records its identity (device and inode). A path that appears between the
   checks and the add is refused, and nothing of it is deleted. Directory identity and path
-  membership never prove ownership of bytes, so the undo deletes the directory only when its
-  identity is unchanged, every file in it equals the captured commit in path, kind, mode and
-  content (the comparison delivery's rollback makes), its `.git` is absent or a file naming an
-  entry this add owns, and the index this add wrote is unchanged (absent, empty, or the commit's
-  tree). A `.git` naming another entry keeps the directory alone:
+  membership never prove ownership of bytes, and an entry of any kind can be another writer's,
+  so the undo deletes the directory only when its identity is unchanged, every entry in it,
+  directories as well as files and links, is its `.git` (absent or a file naming an entry this
+  add owns), a file or link of the captured commit equal in path, kind, mode and content (the
+  comparison delivery's rollback makes), or a directory above such a path, or a submodule's
+  empty directory, that holds nothing else, and the index this add wrote is unchanged (absent,
+  empty, or the commit's tree). Any other entry, an empty directory included, keeps the
+  directory. A `.git` naming another entry keeps the directory alone:
   `the directory <path>, kept because its .git names <entry>, not an entry of this add; delete it once no add uses it`.
   Anything else keeps the worktree whole, with this add's entry and the branch it is on, and
   names the first differing path, such as
-  ``the directory <path>, kept because it holds `sentinel.txt`, which this add did not write; delete it once no add uses it``,
+  ``the directory <path>, kept because it holds `sentinel.txt`, which this add did not write; delete it once no add uses it``
+  (or `sentinel`, an empty directory),
   ``the directory <path>, kept because `README.md` differs from what this add wrote; delete it once no add uses it``,
   `the directory <path>, kept because it was replaced since this add created it; delete it once no add uses it`
   or
@@ -199,8 +203,11 @@ The undo deletes only what it can prove this command made
   and `the branch refs/heads/<name>, kept because the worktree <path> kept above is on it`.
 - **The directories above it.** The missing parents of a `--path` are created one at a time
   from the deepest that exists, and only those the command's own `create_dir` made are
-  recorded; one another process created meanwhile is never removed. The undo removes the
-  recorded ones deepest first, each only while it is empty.
+  recorded, each with its identity (device and inode); one another process created meanwhile is
+  never removed. The undo removes the recorded ones deepest first, each only while it is still
+  that directory and empty. A directory removed and recreated at the same path by anyone is
+  another directory: it is left and reported as
+  `the directory <path>, kept because it was replaced since this add created it`.
 - **The branch.** It is deleted with `git update-ref -d <ref> <oid>`, giving the commit it was
   created at, so a branch that moved meanwhile is kept and reported as
   `the branch refs/heads/<name> moved since this add created it and is kept`.
@@ -266,20 +273,27 @@ committed capture `workspace new` fills a worktree from, against the files on di
 hook, diff driver or other program the repository configures runs; it never calls `git worktree
 remove`, whose cleanliness check runs the repository's clean filters. A clean worktree is
 removed by deleting its directory and then its own entry under the repository's `worktrees/`,
-nothing else. The entry is recorded in `workspaces.toml` first, then renamed to
-`<name>.af-removing-<pid>` beside itself and deleted, so it goes whole or stays whole, and the
-message says where it remains. When the entry cannot be renamed once the directory is gone, or
-cannot be deleted once renamed, the command fails with
+nothing else. The entry is recorded in `workspaces.toml` first, then renamed into a container
+directory beside it that the command creates exclusively,
+`<name>.af-removing-<pid>-<16 random hex digits>` (a name that exists is never taken; another is
+drawn), and the container is deleted with the entry in it. So the entry goes whole or stays
+whole, the rename never lands on anything the removal does not own (a directory already at
+`<name>.af-removing-<pid>` is left alone), and the message says where the entry remains. When
+the entry cannot be renamed once the directory is gone, or cannot be deleted once renamed, the
+command fails with
 
 ```text
 removed the worktree <path>; its administrative entry <common dir>/worktrees/<name> remains: <os error>; fix it and run the command again
-removed the worktree <path>; its administrative entry remains at <common dir>/worktrees/<name>.af-removing-<pid>: <os error>; fix it and run the command again
+removed the worktree <path>; its administrative entry remains at <common dir>/worktrees/<name>.af-removing-<pid>-<hex>/<name>: <os error>; fix it and run the command again
 ```
 
 and the Workspace stays registered. Run the same command again once the cause is fixed: a
 registered checkout that no longer exists has the entries whose `gitdir` still names it removed,
-renamed or not, and so has the renamed entry recorded at the first run once its `gitdir` is gone
-(a locked one is refused); only then is it unregistered, and both are reported. Without such an
+at their own path or in a removal's container, and so has the container of the entry recorded
+at the first run once that entry's `gitdir` is gone (a locked one is refused); only then is it
+unregistered, and both are reported. Only a container named
+`<name>.af-removing-<pid>-<hex>` is recognised; the predictable `<name>.af-removing-<pid>` is
+never taken for one. Without such an
 entry it is unregistered and reported as already gone. An entry whose `gitdir` cannot be read
 may still name the checkout, so the rerun refuses with that file and the error, changes nothing
 and keeps the Workspace registered. A dirty worktree is refused with the first differing path
