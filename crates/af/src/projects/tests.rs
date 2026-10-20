@@ -431,7 +431,9 @@ fn an_entry_is_claimed_only_while_what_it_holds_now_names_the_checkout() {
     std::fs::create_dir_all(&entry).unwrap();
     std::fs::create_dir_all(&moved).unwrap();
     let own = canonical.join("wt/.git");
-    let unproven = |at: &Path, deleting| removal::entry_unproven(at, &entry, &own, deleting);
+    let identity = |at: &Path| review_sandbox::removal::Identity::of(at).unwrap();
+    let unproven =
+        |at: &Path, deleting| removal::entry_unproven(at, identity(at), &entry, &own, deleting);
     let condition = |at: &Path, deleting| unproven(at, deleting).unwrap_or_default();
 
     // A missing `gitdir` proves nothing, until the entry's own deletion may have removed it.
@@ -502,6 +504,61 @@ fn an_entry_is_claimed_only_while_what_it_holds_now_names_the_checkout() {
         }
     }
     std::fs::set_permissions(&gitdir, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+#[test]
+fn an_entry_is_read_only_while_it_is_the_directory_the_record_holds() {
+    let root = tempfile::tempdir().unwrap();
+    let canonical = std::fs::canonicalize(root.path()).unwrap();
+    let worktrees = canonical.join("repo/.git/worktrees");
+    let entry = worktrees.join("wt");
+    let aside = worktrees.join("wt.aside");
+    std::fs::create_dir_all(&entry).unwrap();
+    let own = canonical.join("wt/.git");
+    std::fs::write(entry.join("gitdir"), format!("{}\n", own.display())).unwrap();
+    let recorded = review_sandbox::removal::Identity::of(&entry).unwrap();
+    let unproven = || removal::entry_unproven(&entry, recorded, &entry, &own, false);
+    let replaced = format!(
+        "its administrative entry was replaced since inspection: {} is not the directory this \
+         removal inspected, so it is left alone",
+        entry.display()
+    );
+    assert_eq!(unproven(), None);
+
+    // Moved aside and replaced by another directory naming the checkout, unlocked: a
+    // replacement, whatever it holds.
+    std::fs::rename(&entry, &aside).unwrap();
+    std::fs::create_dir(&entry).unwrap();
+    std::fs::write(entry.join("gitdir"), format!("{}\n", own.display())).unwrap();
+    assert_eq!(unproven(), Some(replaced.clone()));
+    // Its lock and its `gitdir` are never read: an unreadable one changes nothing.
+    std::fs::write(entry.join("locked"), "").unwrap();
+    std::fs::write(entry.join("gitdir"), "\0").unwrap();
+    assert_eq!(unproven(), Some(replaced.clone()));
+    std::fs::remove_dir_all(&entry).unwrap();
+
+    // A link to the recorded entry is never followed, and nothing there is no proof either.
+    std::os::unix::fs::symlink(&aside, &entry).unwrap();
+    assert_eq!(unproven(), Some(replaced));
+    std::fs::remove_file(&entry).unwrap();
+    assert_eq!(
+        unproven(),
+        Some(format!(
+            "its administrative entry {} is gone since inspection, so it is not known to name \
+             this checkout",
+            entry.display()
+        ))
+    );
+
+    // Back at its path, the recorded entry is read again; a `locked` there keeps it.
+    std::fs::rename(&aside, &entry).unwrap();
+    assert_eq!(unproven(), None);
+    std::fs::write(entry.join("locked"), "").unwrap();
+    assert!(
+        unproven().is_some_and(|reason| reason.contains("is locked, so it is kept")),
+        "{:?}",
+        unproven()
+    );
 }
 
 #[test]

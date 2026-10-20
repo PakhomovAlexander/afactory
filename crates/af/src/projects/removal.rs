@@ -22,10 +22,13 @@
 //!
 //! A recorded step proves nothing by itself: a rerun re-establishes its precondition from the
 //! file system and the record together before it acts. Whatever the step, the first thing the
-//! rerun of a directory does is read the administrative entry now (`Removal::entry_proves`): its
-//! `gitdir` must still name the checkout and it may hold no `locked`, or nothing of that
-//! directory is touched. A directory that is neither in its container nor gone is found by its
-//! identity at its path and claimed again from inspection, and an administrative entry is
+//! rerun of a directory does is check the administrative entry now (`Removal::entry_proves`): it
+//! is opened without following a link and must be the directory whose identity the record holds,
+//! or it is a replacement and is never read; only then must its `gitdir` still name the checkout
+//! and may it hold no `locked`, or nothing of that directory is touched. A failed check never
+//! deletes the record (`Stop::Precondition`): the next run honours the identities it holds
+//! instead of inspecting afresh. A directory that is neither in its container nor gone is found
+//! by its identity at its path and claimed again from inspection, and an administrative entry is
 //! claimed or deleted only while what it holds now still makes it this checkout's
 //! (`entry_unproven`).
 
@@ -556,18 +559,7 @@ pub(super) fn container_name(name: &OsStr) -> OsString {
 pub(super) fn read_gitdir(entry: &Path) -> Result<Option<Vec<u8>>, String> {
     let file = entry.join("gitdir");
     match std::fs::read(&file) {
-        Ok(mut gitdir) => {
-            if gitdir.last() == Some(&b'\n') {
-                gitdir.pop();
-            }
-            if gitdir.is_empty() || gitdir.contains(&0) {
-                return Err(format!(
-                    "{} holds no path, so its entry may name the checkout",
-                    file.display()
-                ));
-            }
-            Ok(Some(gitdir))
-        }
+        Ok(gitdir) => named_path(gitdir, &file).map(Some),
         Err(error)
             if matches!(
                 error.kind(),
@@ -656,22 +648,126 @@ fn locked(entry: &Path) -> bool {
     std::fs::symlink_metadata(entry.join("locked")).is_ok()
 }
 
-/// What the administrative entry now at `at`, inspected at `recorded`, holds that keeps a removal
-/// of the checkout whose `.git` is `own` from claiming or deleting it; `None` when nothing does.
-/// Read from the file system every time, whatever step the record holds: its `gitdir` must name
-/// `own` as git reads it from `recorded`, and it may not be locked. A missing `gitdir` proves
-/// nothing, so it keeps the entry, unless the entry's deletion has begun (`deleting`): that
-/// deletion removes its files in name order, `gitdir` among the first, so then only a `gitdir`
-/// still there must name `own`. A `gitdir` that cannot be read may name the checkout: it keeps
-/// the entry too, with the read error.
+/// The administrative entry at `at`, opened without following a link, while `fstat` of that
+/// descriptor equals `identity`, the one a removal recorded at inspection; else why not. Another
+/// directory, a link or a file at its path is a replacement, never read.
+fn open_entry(at: &Path, identity: Identity) -> Result<OwnedFd, String> {
+    let shown = at.display();
+    let replaced = || {
+        format!(
+            "its administrative entry was replaced since inspection: {shown} is not the directory \
+             this removal inspected, so it is left alone"
+        )
+    };
+    let (Some(parent), Some(name)) = (at.parent(), at.file_name()) else {
+        return Err(format!("{shown} is no administrative entry"));
+    };
+    let unopened = |error: std::io::Error| {
+        format!(
+            "its administrative entry {shown} could not be opened ({error}), so it is not known \
+             to name this checkout"
+        )
+    };
+    let parent = open_anchor(parent).map_err(unopened)?;
+    let entry = match open_directory(&parent, name) {
+        Ok(entry) => entry,
+        Err(error) => {
+            return Err(match rustix::io::Errno::from_io_error(&error) {
+                Some(rustix::io::Errno::NOENT) => format!(
+                    "its administrative entry {shown} is gone since inspection, so it is not \
+                     known to name this checkout"
+                ),
+                Some(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => replaced(),
+                _ => unopened(error),
+            });
+        }
+    };
+    let stat = rustix::fs::fstat(&entry).map_err(|errno| unopened(errno.into()))?;
+    if identity_of(&stat) != identity {
+        return Err(replaced());
+    }
+    Ok(entry)
+}
+
+/// The `gitdir` of the opened administrative entry `entry`, shown as `at`, read through its
+/// descriptor without following a link; `None` when it has none. As `read_gitdir`.
+fn gitdir_in(entry: &OwnedFd, at: &Path) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read as _;
+    let file = at.join("gitdir");
+    let unreadable = |error: std::io::Error| {
+        format!(
+            "{} could not be read ({error}), so its entry may name the checkout",
+            file.display()
+        )
+    };
+    let opened = match rustix::fs::openat(
+        entry,
+        "gitdir",
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(opened) => opened,
+        Err(rustix::io::Errno::NOENT | rustix::io::Errno::NOTDIR) => return Ok(None),
+        Err(errno) => return Err(unreadable(errno.into())),
+    };
+    let mut gitdir = Vec::new();
+    std::fs::File::from(opened)
+        .read_to_end(&mut gitdir)
+        .map_err(unreadable)?;
+    named_path(gitdir, &file).map(Some)
+}
+
+/// The path the bytes of the `gitdir` file `file` name, without its final newline.
+fn named_path(mut gitdir: Vec<u8>, file: &Path) -> Result<Vec<u8>, String> {
+    if gitdir.last() == Some(&b'\n') {
+        gitdir.pop();
+    }
+    if gitdir.is_empty() || gitdir.contains(&0) {
+        return Err(format!(
+            "{} holds no path, so its entry may name the checkout",
+            file.display()
+        ));
+    }
+    Ok(gitdir)
+}
+
+/// Whether the opened administrative entry `entry`, shown as `at`, holds a `locked`; a `locked`
+/// that cannot be looked at may be there, so it is the reason.
+fn locked_in(entry: &OwnedFd, at: &Path) -> Result<bool, String> {
+    match rustix::fs::statat(entry, "locked", AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => Ok(true),
+        Err(rustix::io::Errno::NOENT) => Ok(false),
+        Err(errno) => Err(format!(
+            "{} could not be looked at ({}), so its entry may be locked",
+            at.join("locked").display(),
+            std::io::Error::from(errno)
+        )),
+    }
+}
+
+/// What the administrative entry now at `at`, inspected at `recorded` as `identity`, holds that
+/// keeps a removal of the checkout whose `.git` is `own` from claiming or deleting it; `None`
+/// when nothing does. Read from the file system every time, whatever step the record holds: the
+/// directory at `at`, opened without following a link, must be `identity`, or it is a
+/// replacement and nothing of it is read; only then are its `gitdir` and `locked` read, through
+/// that descriptor. Its `gitdir` must name `own` as git reads it from `recorded`, and it may not
+/// be locked. A missing `gitdir` proves nothing, so it keeps the entry, unless the entry's
+/// deletion has begun (`deleting`): that deletion removes its files in name order, `gitdir`
+/// among the first, so then only a `gitdir` still there must name `own`. A `gitdir` that cannot
+/// be read may name the checkout: it keeps the entry too, with the read error.
 pub(super) fn entry_unproven(
     at: &Path,
+    identity: Identity,
     recorded: &Path,
     own: &Path,
     deleting: bool,
 ) -> Option<String> {
     let shown = at.display();
-    match read_gitdir(at) {
+    let entry = match open_entry(at, identity) {
+        Ok(entry) => entry,
+        Err(reason) => return Some(reason),
+    };
+    match gitdir_in(&entry, at) {
         Err(error) => return Some(error),
         Ok(None) if !deleting => {
             return Some(format!(
@@ -688,8 +784,10 @@ pub(super) fn entry_unproven(
         }
         Ok(_) => {}
     }
-    if !locked(at) {
-        return None;
+    match locked_in(&entry, at) {
+        Ok(false) => return None,
+        Ok(true) => {}
+        Err(error) => return Some(error),
     }
     Some(if at == recorded {
         format!(
@@ -772,6 +870,7 @@ pub(super) fn delete_worktree(
         store,
         notes: unrecorded(Some(&record), path, &administrative),
         record,
+        fresh,
         gone_before,
         changed: false,
     };
@@ -992,9 +1091,24 @@ impl From<std::io::Error> for Fail {
     }
 }
 
+/// Why a removal stops short of done, which decides whether its record may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// The worktree as it is refuses the removal: its changes, its commit or a move the
+    /// operating system refused. While nothing moved the record goes; `advice` adds the ways on.
+    Refused { advice: bool },
+    /// A precondition of what the record holds failed: the entry check, or the identity or state
+    /// a step requires. The record stays exactly as the stop found it, so the next run honours
+    /// the identities it holds instead of inspecting afresh.
+    Precondition,
+}
+
 struct Removal<'a> {
     store: &'a Path,
     record: Record,
+    /// This run inspected afresh and wrote the record itself: no earlier run recorded anything,
+    /// so a failed check refuses what this run inspected rather than what a record holds.
+    fresh: bool,
     /// The checkout was gone before this run.
     gone_before: bool,
     /// This run moved or deleted something.
@@ -1066,22 +1180,42 @@ impl Removal<'_> {
                 .all(|claim| matches!(claim.step, Step::Inspected))
     }
 
-    /// The message of a stop that `reason` explains. While nothing moved the record goes and the
-    /// message says nothing was changed, with the ways on when the worktree's state is the
-    /// reason (`advice`); else the record stays for the rerun.
-    fn abandon(&mut self, reason: &str, advice: bool) -> String {
-        if self.nothing_moved() {
-            return match delete(self.store, &self.record.workspace_id) {
-                Ok(()) if advice => refused(reason),
-                Ok(()) => format!("{reason}; nothing was changed"),
-                Err(error) => format!("{reason}; nothing was moved, but {error}"),
-            };
+    /// How a failed check stops: on a rerun it is a precondition of the record an earlier run
+    /// wrote; on a fresh run it refuses what this run itself just inspected and recorded.
+    fn failed_check(&self) -> Stop {
+        if self.fresh {
+            Stop::Refused { advice: false }
+        } else {
+            Stop::Precondition
         }
-        format!(
-            "{reason}; the removal is recorded in {}, and the same command finishes it once that \
-             is resolved",
-            location(self.store, &self.record.workspace_id).display()
-        )
+    }
+
+    /// The message of a stop that `reason` explains. The record is deleted here only when the
+    /// worktree refused the removal (`Stop::Refused`) while nothing moved, and the message then
+    /// says nothing was changed, with the ways on when its state is the reason (`advice`). A
+    /// failed precondition never deletes it: it stays as it is for the rerun, which a completed
+    /// removal alone deletes it after.
+    fn abandon(&mut self, reason: &str, stop: Stop) -> String {
+        let file = location(self.store, &self.record.workspace_id);
+        match stop {
+            Stop::Refused { advice } if self.nothing_moved() => {
+                match delete(self.store, &self.record.workspace_id) {
+                    Ok(()) if advice => refused(reason),
+                    Ok(()) => format!("{reason}; nothing was changed"),
+                    Err(error) => format!("{reason}; nothing was moved, but {error}"),
+                }
+            }
+            Stop::Precondition if self.nothing_moved() => format!(
+                "{reason}; nothing was changed: the removal stays recorded in {}, and the same \
+                 command finishes it from there once that is resolved",
+                file.display()
+            ),
+            Stop::Refused { .. } | Stop::Precondition => format!(
+                "{reason}; the removal is recorded in {}, and the same command finishes it once \
+                 that is resolved",
+                file.display()
+            ),
+        }
     }
 
     fn with_notes(&self, message: String) -> String {
@@ -1158,7 +1292,7 @@ impl Removal<'_> {
                 Ok(snapshot) => Some(snapshot),
                 Err(error) => {
                     let reason = format!("capturing the HEAD of {}: {error}", path.display());
-                    return Err(self.abandon(&reason, true));
+                    return Err(self.abandon(&reason, Stop::Refused { advice: true }));
                 }
             }
         } else {
@@ -1170,7 +1304,8 @@ impl Removal<'_> {
                     // Its entry is read again before it is judged: a run that moved it may be
                     // an earlier one.
                     if let Some(reason) = self.unproven(Which::Checkout, &path, false) {
-                        return Err(self.restore(&held, &reason, false));
+                        let stop = self.failed_check();
+                        return Err(self.restore(&held, &reason, stop));
                     }
                     // Captured before the claim, unless the checkout came back out of its
                     // container since an earlier run judged it.
@@ -1184,7 +1319,7 @@ impl Removal<'_> {
                             .and_then(|snapshot| judge(git, &entry, &held, &snapshot, &path)),
                     };
                     if let Some(reason) = verdict.unwrap_or_else(Some) {
-                        return Err(self.restore(&held, &reason, true));
+                        return Err(self.restore(&held, &reason, Stop::Refused { advice: true }));
                     }
                     self.reach(Which::Checkout, Step::Deleting, None)
                         .map_err(|fail| self.checkout_failure(&fail, &entry))?;
@@ -1198,13 +1333,14 @@ impl Removal<'_> {
                 // Neither in its container nor at its path: its empty container goes, and the
                 // claim is only inspected, never done.
                 let _ = self.remove_container(Which::Checkout, Step::Inspected);
+                let stop = self.failed_check();
                 return Err(self.abandon(
                     &format!(
                         "the worktree {} was replaced since this removal inspected it: the \
                          directory there now is another one, so it is kept",
                         path.display()
                     ),
-                    false,
+                    stop,
                 ));
             }
             Err(fail) => return Err(self.checkout_failure(&fail, &entry)),
@@ -1235,7 +1371,7 @@ impl Removal<'_> {
                         container.display()
                     ));
                 }
-                self.abandon(&reason, false)
+                self.abandon(&reason, Stop::Refused { advice: false })
             }
             Fail::Remains { at, error } => format!(
                 "removing the worktree {path}: {error}; what is left of it is at {}, its \
@@ -1245,12 +1381,21 @@ impl Removal<'_> {
                 entry.display()
             ),
             // It stays where it is, and the record holds the step it had.
-            Fail::Kept(reason) => self.abandon(reason, false),
+            Fail::Kept(reason) => {
+                let stop = self.failed_check();
+                self.abandon(reason, stop)
+            }
             Fail::Foreign { .. } | Fail::ContainerReplaced { .. } | Fail::Other(_) => {
                 let reason = fail.describe("the worktree", self.path());
                 let deleted = self.claim(Which::Checkout).step >= Step::Deleted;
                 if !deleted && self.nothing_moved() {
-                    return self.abandon(&reason, false);
+                    // A container that is not as this removal made it fails the step's own
+                    // precondition; anything else is the operating system's refusal.
+                    let stop = match fail {
+                        Fail::Other(_) => Stop::Refused { advice: false },
+                        _ => self.failed_check(),
+                    };
+                    return self.abandon(&reason, stop);
                 }
                 let prefix = if deleted {
                     format!("removed the worktree {path}; ")
@@ -1268,7 +1413,7 @@ impl Removal<'_> {
 
     /// Put a refused checkout back at its path, never over one that is taken, and say why, with
     /// the ways on when its changes are the reason (`advice`).
-    fn restore(&mut self, held: &Held, reason: &str, advice: bool) -> String {
+    fn restore(&mut self, held: &Held, reason: &str, stop: Stop) -> String {
         trace(Which::Checkout, "restore");
         match rename_free(&held.container, &held.name, &held.parent, &held.name) {
             Ok(()) => {
@@ -1276,7 +1421,7 @@ impl Removal<'_> {
                 let left = self
                     .remove_container(Which::Checkout, Step::Inspected)
                     .err();
-                let mut message = self.abandon(reason, advice);
+                let mut message = self.abandon(reason, stop);
                 if let Some(left) = left {
                     message.push('\n');
                     message.push_str(&left.describe("the worktree", self.path()));
@@ -1385,11 +1530,18 @@ impl Removal<'_> {
         let own = self.path().join(".git");
         match which {
             Which::Entry(index) => {
-                entry_unproven(at, &self.record.entries[index].path, &own, deleting)
+                let entry = &self.record.entries[index];
+                let Some(identity) = decode(&entry.identity) else {
+                    return Some("a removal record without identity".into());
+                };
+                entry_unproven(at, identity, &entry.path, &own, deleting)
             }
             Which::Checkout => {
-                let entry = &self.record.entries.first()?.path;
-                entry_unproven(entry, entry, &own, false).map(|reason| {
+                let entry = self.record.entries.first()?;
+                let Some(identity) = decode(&entry.identity) else {
+                    return Some("a removal record without identity".into());
+                };
+                entry_unproven(&entry.path, identity, &entry.path, &own, false).map(|reason| {
                     format!(
                         "the worktree {} is not claimed, because {reason}",
                         self.path().display()
@@ -1400,29 +1552,41 @@ impl Removal<'_> {
     }
 
     /// The entry check the rerun of every step makes first, before anything touches `which`:
-    /// the administrative entry, read now, must name the checkout in its `gitdir` and hold no
-    /// `locked`; the reason it does not, `None` when it does. The checkout's entry is read at its
-    /// own path, where it stays until the checkout is done; an entry is read where its recorded
-    /// identity is found now, at its path or in its container, and an entry found in neither has
-    /// nothing left to act on, which its claim then finds.
+    /// the administrative entry, opened now without following a link, must be the one the record
+    /// holds by identity, and only then is it read: its `gitdir` must name the checkout and it
+    /// may hold no `locked`; the reason it does not, `None` when it does. The checkout's entry is
+    /// opened at its own path, where it stays until the checkout is done, and another directory
+    /// there is a replacement. An entry is read where its recorded identity is found now, at its
+    /// path or in its container; one found in neither while another directory holds its path
+    /// before its deletion was recorded is a replacement too, and one that left nothing at all
+    /// has nothing left to act on, which its claim then finds.
     fn entry_proves(&self, which: Which) -> Option<String> {
         trace(which, &format!("check-{}", self.claim(which).step.name()));
         let own = self.path().join(".git");
+        let entry = match which {
+            Which::Checkout => self.record.entries.first(),
+            Which::Entry(index) => self.record.entries.get(index),
+        };
+        let Some(entry) = entry else {
+            return Some("the removal record names no administrative entry of the checkout".into());
+        };
+        let Some(identity) = decode(&entry.identity) else {
+            return Some("a removal record without identity".into());
+        };
         match which {
-            Which::Checkout => {
-                let Some(entry) = self.record.entries.first() else {
-                    return Some(
-                        "the removal record names no administrative entry of the checkout".into(),
-                    );
-                };
-                entry_unproven(&entry.path, &entry.path, &own, false)
-            }
-            Which::Entry(index) => {
-                let claim = &self.record.entries[index];
-                let at = found(claim)?;
-                let deleting = at != claim.path && claim.step == Step::Deleting;
-                entry_unproven(&at, &claim.path, &own, deleting)
-            }
+            Which::Checkout => entry_unproven(&entry.path, identity, &entry.path, &own, false),
+            Which::Entry(_) => match found(entry) {
+                Some(at) => {
+                    let deleting = at != entry.path && entry.step == Step::Deleting;
+                    entry_unproven(&at, identity, &entry.path, &own, deleting)
+                }
+                None if entry.step < Step::Deleted
+                    && std::fs::symlink_metadata(&entry.path).is_ok() =>
+                {
+                    entry_unproven(&entry.path, identity, &entry.path, &own, false)
+                }
+                None => None,
+            },
         }
     }
 
@@ -1442,7 +1606,8 @@ impl Removal<'_> {
             ),
             _ => format!("the worktree {path} is not claimed, because {reason}"),
         };
-        self.abandon(&message, false)
+        let stop = self.failed_check();
+        self.abandon(&message, stop)
     }
 
     fn entry_failure(&self, fail: &Fail, entry: &Path) -> String {

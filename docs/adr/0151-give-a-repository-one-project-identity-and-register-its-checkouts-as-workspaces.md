@@ -2,7 +2,8 @@
 
 **Status:** accepted (2026-10-19); clauses 4, 5 and 8 amended (2026-10-20) by PJ1b, clause 5
 again (2026-10-20) by its second round, clauses 3 and 5 by its third, clause 5 by its
-fifth, clauses 3 and 5 by its sixth, and clause 5 by its seventh and eighth. Package PJ1 of the
+fifth, clauses 3 and 5 by its sixth, and clause 5 by its seventh, eighth and ninth. Package PJ1
+of the
 [Project design note](../design/project.md). Builds on
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery makes only a local
 branch and worktree), [ADR-0032](0032-generate-review-authority-with-af-onboard.md),
@@ -252,20 +253,38 @@ directories.
    and the Workspace stays registered. A rerun acts through the record and the file system
    together; the recorded step alone proves nothing. Whatever step the record holds, the first
    thing the rerun of a directory does, before it claims, judges, deletes or moves anything of
-   it or reads the commit, is one entry check: the administrative entry is read now, at its
-   own path for the checkout's rerun and wherever its recorded identity is found for its own,
-   and its `gitdir` must name `<path>/.git` and it may hold no `locked`. A failed check stops
-   the removal with that condition and leaves everything as found: the checkout at its path,
-   or in its container, reported there by its claim name as
+   it or reads the commit, is one entry check, bound to the entry the record holds and never
+   to whatever sits at its path. The administrative entry is opened without following a link,
+   at its own path for the checkout's rerun and wherever its recorded identity is found for its
+   own, and `fstat` of that descriptor must equal the identity the record holds for it. A
+   directory, link or file of another identity at the entry's path, its recorded identity in
+   neither its path nor its container, is a replacement: it is never read, and the check fails
+   as
+   `its administrative entry was replaced since inspection: <entry> is not the directory this removal inspected, so it is left alone`.
+   Only an identity match goes on to read its `gitdir` and `locked`, through that same
+   descriptor: its `gitdir` must name `<path>/.git` and it may hold no `locked`. A failed
+   check stops the removal with that condition and leaves everything as found: the checkout
+   at its path, or in its container, reported there by its claim name as
 
    `the worktree <path> is kept at <container>/<name>, where this removal moved it, because <condition>; the Workspace stays registered; move it back to <path> to keep it`
 
    so an operator can restore it or finish with the same command, the entry, the record and the
-   registration untouched. Only then does it re-establish the precondition of the step recorded
-   for the directory, and a precondition that fails never advances the step:
+   registration untouched. A failed precondition, the entry check's or a step's own below,
+   never deletes the removal record, whatever the step and also when nothing has moved yet: a
+   failed entry check leaves it byte for byte as it was, and a step's own leaves it holding at
+   most that step taken back to `inspected` where what it named was never used, so the next run
+   finishes from the identities it holds instead of inspecting afresh. Apart from a completed
+   removal, the record is deleted only while nothing has moved and the worktree itself refuses
+   the removal (its changes, a commit that cannot be read, a move the operating system
+   refuses), or when the run that wrote it, inspecting afresh, finds a failed check of what it
+   has just inspected: then nothing of that run is left behind. Only after the entry check does
+   the rerun re-establish the precondition of the step recorded for the directory, and a
+   precondition that fails never advances the step:
 
    | Step | What the rerun verifies on the file system before acting, after the entry check |
    |---|---|
+   | every step | The entry check: the administrative entry, opened at its path without following a link (or found by identity in its container, for its own rerun), has the identity the record holds; another identity there is a replacement, never read, and the removal stops with nothing deleted, moved or unregistered. Only then are its `gitdir` and `locked` read. |
+   | every step | A failed precondition, the entry check's or the step's own, leaves the removal record: never deleted, byte for byte as it was after a failed entry check, so the next run acts on the recorded identities. |
    | `inspected` | The registered path holds the recorded identity: nothing there is a directory gone without this removal, another identity a replacement, kept. The entry's `gitdir` names `<path>/.git` and it holds no `locked`, for the checkout's claim as for the entry's own. Only then is a container named. |
    | `container` | Nothing is proved: the name was recorded before the container was made, so a directory found there is reported and left, and the directory is `inspected` again. |
    | `contained` | The container at the recorded name has the recorded identity, or it is reported and kept. The directory is found in it by identity, or at its path by identity, and then moved in only while the container is empty and its entry passes the reading above. In the container the checkout is judged (its entry's `gitdir` and lock, its index, its files) and an entry read again before either is deleted. With the container gone, the registered path decides as for `deleting`. |
@@ -286,7 +305,9 @@ directories.
    LABEL` without `--delete-worktree` is refused while the Workspace has a removal record,
    naming the command that finishes it. Only a refusal that changed nothing says "nothing was
    changed": a dirty worktree, refused with the first differing path, a replaced checkout, an
-   unknown checkout, the running checkout and a rerun that meets an unreadable `gitdir`. Exit
+   unknown checkout, the running checkout, a rerun that meets an unreadable `gitdir`, and a rerun
+   stopped by a failed precondition before anything moved, which adds where its record stays:
+   `<condition>; nothing was changed: the removal stays recorded in <record>, and the same command finishes it from there once that is resolved`. Exit
    codes are 0, 1 (with `af/error@1` under `--json` and the next action in the message) and 2 for usage. Every
    git process of the Project modules runs through `review_process` with a deadline (30 s for
    plumbing, capture's own for a committed capture) that stops its whole process group, in
