@@ -47,6 +47,27 @@ fn allocated(metadata: &std::fs::Metadata, _: &mut BTreeSet<(u64, u64)>) -> u64 
     metadata.len()
 }
 
+/// The error [`allocated_bytes_and_depth`] returns for a tree nested deeper than its walk
+/// reaches: told apart from every other failure by [`is_nested_too_deep`].
+#[derive(Debug)]
+struct NestedTooDeep(String);
+
+impl std::fmt::Display for NestedTooDeep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NestedTooDeep {}
+
+/// Whether `error`, from [`allocated_bytes_and_depth`], says the tree is nested deeper than the
+/// measurement walk reaches, rather than that something in it could not be read.
+pub fn is_nested_too_deep(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.downcast_ref::<NestedTooDeep>().is_some())
+}
+
 /// The allocated bytes below `path` and the level of its deepest directory, `path` at `depth`.
 fn walk(
     path: &Path,
@@ -60,10 +81,10 @@ fn walk(
     }
     let mut deepest = depth;
     if depth > MAX_DEPTH {
-        return Err(std::io::Error::other(format!(
+        return Err(std::io::Error::other(NestedTooDeep(format!(
             "{} is nested deeper than {MAX_DEPTH} directories",
             path.display()
-        )));
+        ))));
     }
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
@@ -156,6 +177,21 @@ mod tests {
             .unwrap();
         assert!(newest >= file);
         assert!(newest_write(&root.path().join("absent")).is_none());
+    }
+
+    #[test]
+    fn a_tree_deeper_than_the_walk_is_told_apart_from_an_unreadable_one() {
+        let root = tempfile::tempdir().unwrap();
+        let mut deep = root.path().join("deep");
+        for _ in 0..=MAX_DEPTH + 1 {
+            deep = deep.join("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        let error = allocated_bytes_and_depth(&root.path().join("deep")).unwrap_err();
+        assert!(is_nested_too_deep(&error), "{error}");
+        assert!(!is_nested_too_deep(&std::io::Error::other(
+            "permission denied"
+        )));
     }
 
     #[test]

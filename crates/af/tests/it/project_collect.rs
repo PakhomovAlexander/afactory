@@ -906,10 +906,13 @@ fn a_file_at_a_moved_surveys_name_is_foreign_and_only_the_moved_record_is_delete
         b"not af's",
         "the foreign file is left"
     );
+    // The pass recorded that the Survey's record left the CAS: `settled.json`, af's own record
+    // beside the lock, written by the pass and measured by the next inventory.
+    let settled = allocated(&machine.store().join("settled.json"));
     let after = storage_total(&machine, &repo);
-    assert_eq!(applied["total_after"].as_u64().unwrap(), after);
+    assert_eq!(applied["total_after"].as_u64().unwrap() + settled, after);
     assert_eq!(
-        before - after,
+        before + settled - after,
         moved_bytes + container_bytes,
         "the directory freed what was said: the moved record and its planned container"
     );
@@ -2200,4 +2203,358 @@ fn a_forged_cutoff_is_never_used_and_its_survey_is_refused_and_kept() {
         "no tombstone for it"
     );
     assert!(machine.held(target), "its record is kept");
+}
+
+/// Design review 16's blocker: a collected Survey whose record a dead pass moved into its
+/// container, and a byte-identical replacement that took its CAS name since. The first sweep
+/// settles the moved record and lists the replacement `foreign`; it records that the Survey's
+/// record left the CAS, so the next sweep, which finds no moved record and a file whose bytes
+/// hash to the Survey's ID, lists it `foreign` again and deletes nothing of it. Every sweep
+/// after that does the same.
+#[test]
+fn a_byte_identical_replacement_at_a_settled_surveys_name_survives_two_sweeps_as_foreign() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..4)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let keep = ("AF_STORAGE__KEEP_SURVEYS", "3");
+    prune(
+        &machine,
+        &repo,
+        &[keep, ("AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES", "1")],
+    );
+    let target = &surveys[0];
+    assert_eq!(machine.collected(), vec![target.clone()]);
+    let object = machine.object(target);
+    let record = std::fs::read(&object).unwrap();
+    let dead = machine.store().join("cas/removing").join(DEAD_PASS);
+    std::fs::create_dir_all(&dead).unwrap();
+    std::fs::rename(&object, dead.join(target)).unwrap();
+    std::fs::write(&object, &record).unwrap();
+    let replacement = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::symlink_metadata(&object).unwrap().ino()
+    };
+
+    for sweep in [
+        "the sweep that settles the moved record",
+        "the sweep after it",
+    ] {
+        let applied = prune(&machine, &repo, &[keep, ("AF_STORAGE__MAX_BYTES", "1")]);
+        let foreign = left(&applied, "foreign");
+        assert_eq!(foreign.len(), 1, "{sweep}: {applied}");
+        assert_eq!(foreign[0]["path"], path_of(&machine, target).as_str());
+        assert_eq!(foreign[0]["kind"], "survey");
+        assert_eq!(foreign[0]["bytes"].as_u64().unwrap(), allocated(&object));
+        assert!(
+            applied["removals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|removal| removal["path"] == path_of(&machine, target).as_str())
+                .all(|removal| removal["kind"] == "survey" && removal["rule"] == "recovery"),
+            "{sweep}: only the moved record is ever planned: {applied}"
+        );
+        assert_eq!(
+            std::fs::read(&object).unwrap(),
+            record,
+            "{sweep}: the replacement is left"
+        );
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::symlink_metadata(&object).unwrap().ino(),
+            replacement,
+            "{sweep}: the same file"
+        );
+        assert!(!dead.exists(), "{sweep}: the moved record is settled");
+    }
+    let settled: Value =
+        serde_json::from_slice(&std::fs::read(machine.store().join("settled.json")).unwrap())
+            .unwrap();
+    assert_eq!(settled["schema"], "af/ProjectSurveysSettled@1");
+    assert!(
+        settled["survey_ids"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::String(target.clone())),
+        "{settled}"
+    );
+    schemas::valid(
+        &schemas::validator("project-surveys-settled-v1.json"),
+        &settled,
+    );
+    assert_eq!(
+        machine
+            .collected()
+            .iter()
+            .filter(|id| *id == target)
+            .count(),
+        1,
+        "no tombstone twice"
+    );
+}
+
+/// The digest af names the bytes `bytes` by in a CAS.
+fn digest_of(bytes: &[u8]) -> String {
+    review_store::canonical::blob_content_id(bytes)
+}
+
+/// Put `bytes` into the Project Store's CAS at their digest, as a writer that crashed before its
+/// `SurveyRecorded@1` committed leaves them, and return that digest.
+fn unrecorded_object(machine: &Machine, bytes: &[u8]) -> String {
+    let survey_id = digest_of(bytes);
+    let object = machine.object(&survey_id);
+    std::fs::create_dir_all(object.parent().unwrap()).unwrap();
+    std::fs::write(&object, bytes).unwrap();
+    survey_id
+}
+
+/// The pending-publication entry a writer keeps for `survey_id` (ADR-0152 clause 13), naming
+/// `object` by device and inode when given. Returns its path.
+fn pending_entry(
+    machine: &Machine,
+    survey_id: &str,
+    length: usize,
+    object: Option<&Path>,
+) -> PathBuf {
+    let directory = machine.store().join("pending");
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut entry = serde_json::json!({
+        "schema": "af/ProjectPendingPublication@1",
+        "survey_id": survey_id,
+        "length": length.to_string(),
+        "recorded_unix_ms": (old_cutoff() * 1000).to_string(),
+    });
+    if let Some(object) = object {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(object).unwrap();
+        entry["object"] = serde_json::json!({
+            "device": metadata.dev().to_string(),
+            "inode": metadata.ino().to_string(),
+        });
+    }
+    schemas::valid(
+        &schemas::validator("project-pending-publication-v1.json"),
+        &entry,
+    );
+    let path = directory.join(format!("{}.json", survey_id.trim_start_matches("sha256:")));
+    std::fs::write(&path, entry.to_string()).unwrap();
+    path
+}
+
+/// A Survey published to the CAS whose `SurveyRecorded@1` never committed, its pending entry
+/// naming the object: `af storage` counts it as a Survey `pending`, in use; preview and apply
+/// plan, alike, its reclamation and then its entry's under `recovery`, and only the applied
+/// sweep removes them. Nothing else is touched.
+#[test]
+fn an_unrecorded_object_its_pending_entry_describes_is_reclaimed_through_the_entry() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let kept = refresh(&machine, &repo, &at(0), true);
+    let bytes = vec![b'x'; 8 * 1024];
+    let survey_id = unrecorded_object(&machine, &bytes);
+    let object = machine.object(&survey_id);
+    let entry = pending_entry(&machine, &survey_id, bytes.len(), Some(&object));
+
+    let (shown, entries) = survey_entries(&machine, &repo);
+    let pending = &entries[&path_of(&machine, &survey_id)];
+    assert_eq!(pending["state"], "pending", "{shown}");
+    assert_eq!(pending["bytes"].as_u64().unwrap(), allocated(&object));
+    assert!(
+        pending["in_use"].as_str().unwrap().starts_with("pending: "),
+        "{pending}"
+    );
+
+    let previewed = preview(&machine, &repo, &[]);
+    let planned = removals_of(&previewed, "survey");
+    assert_eq!(planned.len(), 2, "{previewed}");
+    assert_eq!(planned[0]["path"], path_of(&machine, &survey_id).as_str());
+    assert_eq!(planned[0]["rule"], "recovery");
+    assert_eq!(planned[0]["bytes"].as_u64().unwrap(), allocated(&object));
+    assert_eq!(planned[1]["path"], entry.to_str().unwrap());
+    assert_eq!(planned[1]["rule"], "recovery");
+    assert_eq!(planned[1]["bytes"].as_u64().unwrap(), allocated(&entry));
+    assert!(
+        object.is_file() && entry.is_file(),
+        "a preview removes nothing"
+    );
+
+    let applied = prune(&machine, &repo, &[]);
+    assert_eq!(removals_of(&applied, "survey"), planned, "entry for entry");
+    assert!(
+        !object.exists(),
+        "the object the entry describes is reclaimed"
+    );
+    assert!(!entry.exists(), "and then its entry");
+    assert!(machine.held(&kept), "the recorded Survey is kept");
+    assert!(machine.collected().is_empty(), "no tombstone");
+    let (_, entries) = survey_entries(&machine, &repo);
+    assert_eq!(entries.len(), 1);
+}
+
+/// An object no event and no pending-publication entry names is `foreign`: listed with its
+/// bytes by preview and apply alike, never planned, never deleted, not even by a budget that
+/// wants every byte. So is one at the CAS name a pending entry names but whose identity the
+/// entry does not record; that entry is cleared, the object left.
+#[test]
+fn an_unreferenced_object_without_an_entry_describing_it_is_foreign_and_kept() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    refresh(&machine, &repo, &at(0), true);
+    let alone = unrecorded_object(&machine, b"no entry names these bytes");
+    let undescribed = unrecorded_object(&machine, b"an entry names these, not their inode");
+    let entry = pending_entry(&machine, &undescribed, 37, None);
+    let squeeze = [("AF_STORAGE__MAX_BYTES", "1")];
+    for document in [
+        preview(&machine, &repo, &squeeze),
+        prune(&machine, &repo, &squeeze),
+    ] {
+        let foreign: BTreeMap<String, u64> = left(&document, "foreign")
+            .iter()
+            .map(|left| {
+                (
+                    left["path"].as_str().unwrap().to_string(),
+                    left["bytes"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        for survey_id in [&alone, &undescribed] {
+            assert_eq!(
+                foreign.get(&path_of(&machine, survey_id)),
+                Some(&allocated(&machine.object(survey_id))),
+                "{document}"
+            );
+            assert!(
+                document["removals"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|removal| removal["path"] != path_of(&machine, survey_id).as_str()),
+                "{document}"
+            );
+            assert!(machine.object(survey_id).is_file(), "never deleted");
+        }
+    }
+    assert!(
+        !entry.exists(),
+        "the entry that describes no object is cleared"
+    );
+    // Without the entry, the next sweep finds the object foreign all the same.
+    let again = prune(&machine, &repo, &squeeze);
+    assert_eq!(left(&again, "foreign").len(), 2, "{again}");
+    assert!(machine.object(&undescribed).is_file());
+}
+
+/// A pending-publication entry whose `SurveyRecorded@1` committed is cleared, and nothing is
+/// deleted: the Survey it names is recorded and stays.
+#[test]
+fn a_pending_entry_whose_event_committed_is_cleared_without_deletion() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let survey_id = refresh(&machine, &repo, &at(0), true);
+    let object = machine.object(&survey_id);
+    let length = std::fs::metadata(&object).unwrap().len() as usize;
+    let entry = pending_entry(&machine, &survey_id, length, Some(&object));
+    let previewed = preview(&machine, &repo, &[]);
+    let planned = removals_of(&previewed, "survey");
+    assert_eq!(planned.len(), 1, "{previewed}");
+    assert_eq!(planned[0]["path"], entry.to_str().unwrap());
+    assert_eq!(planned[0]["rule"], "recovery");
+    let applied = prune(&machine, &repo, &[]);
+    assert_eq!(removals_of(&applied, "survey"), planned);
+    assert!(!entry.exists(), "the entry is cleared");
+    assert!(machine.held(&survey_id), "its Survey is kept");
+    assert!(machine.collected().is_empty());
+    let (_, entries) = survey_entries(&machine, &repo);
+    assert!(
+        entries[&path_of(&machine, &survey_id)]
+            .get("state")
+            .is_none()
+    );
+}
+
+/// A dead claim nested deeper than the 256-level measurement walk cannot be measured: the
+/// inventory records it with no bytes, preview and apply list it `too_deep` alike and never plan
+/// it, and nothing inside it is deleted.
+#[test]
+fn an_unmeasurable_dead_claim_is_left_and_reported_by_preview_and_apply() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    refresh(&machine, &repo, &at(0), true);
+    let claim = machine
+        .root()
+        .join("state/af/review/campaigns/.af-removing-999999999-8-0");
+    let mut deep = claim.clone();
+    for _ in 0..300 {
+        deep = deep.join("d");
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("file"), b"x").unwrap();
+    std::fs::write(claim.join("top"), vec![1_u8; 64 * 1024]).unwrap();
+
+    let (shown, _) = survey_entries(&machine, &repo);
+    let listed: Vec<&Value> = shown["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "claim")
+        .collect();
+    assert_eq!(listed.len(), 1, "{shown}");
+    assert_eq!(listed[0]["bytes"], 0, "no bytes it could not measure");
+    assert_eq!(listed[0]["state"], "abandoned");
+    assert!(
+        listed[0]["in_use"].as_str().unwrap().starts_with("left: "),
+        "{}",
+        listed[0]
+    );
+    for document in [preview(&machine, &repo, &[]), prune(&machine, &repo, &[])] {
+        assert!(removals_of(&document, "claim").is_empty(), "{document}");
+        let deep_left = left(&document, "too_deep");
+        assert_eq!(deep_left.len(), 1, "{document}");
+        assert_eq!(deep_left[0]["kind"], "claim");
+        assert_eq!(deep_left[0]["path"], claim.to_str().unwrap());
+        assert_eq!(deep_left[0]["bytes"], 0);
+        assert!(deep.join("file").is_file(), "nothing inside it is deleted");
+        assert!(claim.join("top").is_file(), "nothing inside it is deleted");
+    }
+}
+
+/// `af storage` counts an abandoned claim no entry holds: one `claim` entry, `abandoned`, with
+/// its measured bytes, in `kinds` and `total_bytes`, equal to what the prune preview counts and
+/// plans, so the listing and the sweep agree on what the directory holds.
+#[test]
+fn af_storage_counts_an_abandoned_claim_as_the_preview_does() {
+    let machine = Machine::new();
+    let directory = machine.root().join("home");
+    let claim = machine
+        .root()
+        .join("state/af/review/campaigns/.af-removing-999999999-9-0");
+    let claim_bytes = dead_claim(&claim, 96 * 1024);
+    let shown = machine.json(&directory, &[], &["storage", "--json"]);
+    schemas::valid(&schemas::validator("storage-v3.json"), &shown);
+    let entries = shown["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{shown}");
+    assert_eq!(entries[0]["kind"], "claim");
+    assert_eq!(entries[0]["state"], "abandoned");
+    assert_eq!(entries[0]["path"], claim.to_str().unwrap());
+    assert_eq!(entries[0]["bytes"].as_u64().unwrap(), claim_bytes);
+    let kind = shown["kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|kind| kind["kind"] == "claim")
+        .unwrap();
+    assert_eq!(kind["entries"], 1);
+    assert_eq!(kind["bytes"].as_u64().unwrap(), claim_bytes);
+    assert_eq!(shown["total_bytes"].as_u64().unwrap(), claim_bytes);
+    let (text, _) = machine.expect(&directory, &[], &["storage"], 0);
+    assert!(text.contains("abandoned removals"), "{text}");
+
+    let previewed = preview(&machine, &directory, &[]);
+    assert_eq!(previewed["total_before"], shown["total_bytes"]);
+    let planned = removals_of(&previewed, "claim");
+    assert_eq!(planned.len(), 1, "{previewed}");
+    assert_eq!(planned[0]["bytes"], entries[0]["bytes"]);
+    assert_eq!(planned[0]["total_after"], 0);
 }

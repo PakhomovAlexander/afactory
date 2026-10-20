@@ -2072,3 +2072,179 @@ mod collected_tests {
         assert!(serde_json::from_value::<SurveyCollectedPayloadV1>(unknown).is_err());
     }
 }
+
+/// Schema of the machine-local record a Survey's writer keeps while it publishes (ADR-0152
+/// clause 13).
+pub const PROJECT_PENDING_PUBLICATION_V1: &str = "af/ProjectPendingPublication@1";
+
+/// Upper bound on one `af/ProjectPendingPublication@1` file.
+pub const MAX_PENDING_PUBLICATION_BYTES: u64 = 4096;
+
+/// The device and inode a CAS object was written as: what a recovery compares the object at
+/// the Survey's CAS name with before it reclaims anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectObjectIdentityV1 {
+    pub device: DecimalU64,
+    pub inode: DecimalU64,
+}
+
+/// `af/ProjectPendingPublication@1` (ADR-0152 clause 13): the entry the Surveyor's writer keeps
+/// beside `project.lock`, in `pending/<hex of the Survey ID>.json` of its Project Store, while it
+/// publishes one Survey. Written under the Store's lock before the record's bytes enter the CAS,
+/// `object` added once they are written, and removed once `SurveyRecorded@1` commits, so a crash
+/// between the two leaves an entry collection reads: it counts the pending bytes, and recovery
+/// either finds the event committed and clears the entry, or reclaims only the object the entry
+/// describes (the Survey's CAS name, `length` bytes, `object`'s device and inode) and then the
+/// entry. Machine-local: it names no path, and is never in a log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectPendingPublicationV1 {
+    pub schema: String,
+    /// The Survey ID the record's bytes have: their CAS digest.
+    pub survey_id: String,
+    /// The length of the record's bytes, at most [`MAX_SURVEY_BYTES`].
+    pub length: DecimalU64,
+    /// The object as it was written; absent until it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<ProjectObjectIdentityV1>,
+    pub recorded_unix_ms: DecimalU64,
+}
+
+impl ProjectPendingPublicationV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema != PROJECT_PENDING_PUBLICATION_V1 {
+            return Err(format!(
+                "a pending-publication entry is {PROJECT_PENDING_PUBLICATION_V1}, not `{}`",
+                self.schema
+            ));
+        }
+        if !crate::is_digest(&self.survey_id) {
+            return Err("a pending-publication entry names its Survey by digest".into());
+        }
+        if self.length.get() > MAX_SURVEY_BYTES {
+            return Err(format!(
+                "a pending-publication entry announces more than the {MAX_SURVEY_BYTES} bytes a \
+                 Survey can hold"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Schema of the machine-local record of the collected Surveys whose records have left the CAS
+/// (ADR-0152 clause 13).
+pub const PROJECT_SURVEYS_SETTLED_V1: &str = "af/ProjectSurveysSettled@1";
+
+/// Upper bound on the `af/ProjectSurveysSettled@1` file: some 230 000 Survey IDs.
+pub const MAX_SURVEYS_SETTLED_BYTES: u64 = 16 << 20;
+
+/// `af/ProjectSurveysSettled@1` (ADR-0152 clause 13): `settled.json` beside `project.lock`, the
+/// collected Surveys whose own records have left the CAS, deleted at their name or settled from
+/// a dead pass's container. Collection adds a Survey under the Store's lock once its record has
+/// left its CAS name and before it is unlinked, and every later inventory reads it: a file at a
+/// settled Survey's CAS name is foreign even when its bytes hash to the Survey ID, sweep after
+/// sweep. `survey_ids` is sorted and holds each ID once. Machine-local: it names no path, and is
+/// never in a log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectSurveysSettledV1 {
+    pub schema: String,
+    pub survey_ids: Vec<String>,
+}
+
+impl ProjectSurveysSettledV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema != PROJECT_SURVEYS_SETTLED_V1 {
+            return Err(format!(
+                "the settled record is {PROJECT_SURVEYS_SETTLED_V1}, not `{}`",
+                self.schema
+            ));
+        }
+        if self.survey_ids.iter().any(|id| !crate::is_digest(id)) {
+            return Err("the settled record names its Surveys by digest".into());
+        }
+        if self.survey_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err("the settled record lists its Surveys sorted, each once".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod machine_local_tests {
+    use super::*;
+
+    fn id(digit: char) -> String {
+        format!("sha256:{}", digit.to_string().repeat(64))
+    }
+
+    #[test]
+    fn a_pending_publication_names_its_survey_its_length_and_once_written_its_object() {
+        let entry = ProjectPendingPublicationV1 {
+            schema: PROJECT_PENDING_PUBLICATION_V1.into(),
+            survey_id: id('a'),
+            length: 2048.into(),
+            object: Some(ProjectObjectIdentityV1 {
+                device: 16_777_220.into(),
+                inode: 42.into(),
+            }),
+            recorded_unix_ms: 1_800_000_000_000.into(),
+        };
+        entry.validate().unwrap();
+        let value = serde_json::to_value(&entry).unwrap();
+        assert_eq!(value["object"]["inode"], "42");
+        assert_eq!(
+            serde_json::from_value::<ProjectPendingPublicationV1>(value.clone()).unwrap(),
+            entry
+        );
+        ProjectPendingPublicationV1 {
+            object: None,
+            ..entry.clone()
+        }
+        .validate()
+        .unwrap();
+        for broken in [
+            ProjectPendingPublicationV1 {
+                schema: "af/ProjectPendingPublication@2".into(),
+                ..entry.clone()
+            },
+            ProjectPendingPublicationV1 {
+                survey_id: "survey".into(),
+                ..entry.clone()
+            },
+            ProjectPendingPublicationV1 {
+                length: (MAX_SURVEY_BYTES + 1).into(),
+                ..entry.clone()
+            },
+        ] {
+            assert!(broken.validate().is_err(), "{broken:?}");
+        }
+        let mut unknown = value;
+        unknown["path"] = serde_json::json!("/home/me/afactory");
+        assert!(serde_json::from_value::<ProjectPendingPublicationV1>(unknown).is_err());
+    }
+
+    #[test]
+    fn the_settled_record_lists_each_survey_once_in_order() {
+        let settled = ProjectSurveysSettledV1 {
+            schema: PROJECT_SURVEYS_SETTLED_V1.into(),
+            survey_ids: vec![id('a'), id('b')],
+        };
+        settled.validate().unwrap();
+        for survey_ids in [
+            vec![id('b'), id('a')],
+            vec![id('a'), id('a')],
+            vec!["a".into()],
+        ] {
+            assert!(
+                ProjectSurveysSettledV1 {
+                    survey_ids,
+                    ..settled.clone()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+    }
+}

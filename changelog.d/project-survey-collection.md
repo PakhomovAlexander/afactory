@@ -12,19 +12,22 @@
   deletes the record. A sweep plans once over one inventory snapshot: `af storage prune` prints
   that plan, every removal in order with the bytes it frees, its rule (`recovery`, `collection`,
   `keep_surveys`, `budget`) and the total after it, and under `left` what it leaves (`held`,
-  `foreign`, `oversize`, `unreadable_name`, `too_deep`); `--apply` runs the same plan entry by
+  `foreign`, `oversize`, `unreadable_name`, `too_deep`, `unmeasurable`); `--apply` runs the same plan entry by
   entry, keeps an entry of any kind whose removal failed (the lock lost, what it names replaced
   or gone since the inventory, an I/O error) in its place as `outcome` `failed: <reason>` with
   nothing freed and the running total unchanged instead of choosing again, while a deletion that
-  stopped part way reports the bytes that actually left the disk (what the inventory measured less
-  what its claim still holds), and so stops where its preview stops, a pending recovery's bytes
+  stopped part way, a failed final `rmdir` included, reports the bytes that actually left the disk,
+  accounted from the removal's own start (what the directory held immediately before anything was
+  unlinked less what its claim still holds), and so stops where its preview stops, a pending recovery's bytes
   counted once and its totals what af then holds. A directory nested deeper than the removal
   walk's 128 levels is left `too_deep` by preview and apply alike and listed in use by `af
   storage`. The claims dead processes left (`.af-removing-*`) and the containers of dead passes
   are in that one inventory, `claim` entries under `recovery` that the preview and the applied
   sweep list alike with the same bytes, a container that held a moved record planned after it,
   and nothing is removed beside the plan; a claim inside a Project Store is counted once, in the
-  Store's bytes. A registration whose path holds no Store is dropped by the plan
+  Store's bytes, and every other one is an `af storage` entry of kind `claim`, `state`
+  `abandoned`, counted in its kinds and total as the preview counts it, while one the inventory
+  cannot measure is left `too_deep` or `unmeasurable` with no bytes and never touched. A registration whose path holds no Store is dropped by the plan
   (`registry_dropped`, the same in preview and apply), after the inventory reached its parent's
   claims, so a registered Store a dead process renamed into its claim is recovered alike by
   both. Each uncollected Survey's `SurveyRecorded@1` is verified against its record once, in the
@@ -38,7 +41,14 @@
   and the Survey reported `refused (replaced during collection)`; the next sweep collects it. The
   next sweep also settles a dead pass's container the same way: a file that took a collected
   Survey's CAS name after its record was moved, or that holds bytes other than the record's, is
-  `foreign`, listed with its bytes, never counted as the Survey's and never deleted, and a
+  `foreign`, listed with its bytes, never counted as the Survey's and never deleted; once a
+  Survey's record has left the CAS the Project Store's `settled.json`
+  (`af/ProjectSurveysSettled@1`) says so, so a byte-identical file at its name stays `foreign`
+  sweep after sweep. A crash between a Survey's bytes and its `SurveyRecorded@1` leaves a
+  pending-publication entry (`pending/<hex>.json`, `af/ProjectPendingPublication@1`) that
+  `af storage` counts as a Survey `pending` and recovery settles: cleared when the event
+  committed, otherwise only the object it describes is reclaimed, and any object nothing names is
+  `foreign`; and a
   leftover whose name, or whose container's name, is not UTF-8 is walked with its raw name, listed
   `unreadable_name` (its `--json` path percent-encoded) and left with its container. A CAS prefix directory replaced by a symbolic link
   refuses its Survey, which is reported and keeps its record and its place in the log; the

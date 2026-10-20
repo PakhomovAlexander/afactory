@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 181] = [
+const SCHEMAS: [&str; 183] = [
     "project-registered-v1.json",
     "project-survey-v1.json",
     "project-survey-recorded-v1.json",
@@ -212,6 +212,8 @@ const SCHEMAS: [&str; 181] = [
     "source-snapshot-v1.json",
     "subject-v1.json",
     "project-survey-collected-v1.json",
+    "project-pending-publication-v1.json",
+    "project-surveys-settled-v1.json",
 ];
 
 fn workspace_root() -> PathBuf {

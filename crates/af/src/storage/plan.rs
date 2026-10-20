@@ -1,7 +1,8 @@
 //! A sweep's one plan (ADR-0144, ADR-0152 clause 13). [`make`] takes one inventory snapshot and
 //! returns, in order, every entry the sweep removes with the bytes it frees, its rule
 //! (`recovery`, `collection`, `keep_surveys`, `budget`) and the total after it, and every file
-//! or Survey it leaves with its reason (`held`, `foreign`, `oversize`, `unreadable_name`). It
+//! or Survey it leaves with its reason (`held`, `foreign`, `oversize`, `unreadable_name`,
+//! `too_deep`, `unmeasurable`). It
 //! reads nothing itself but the Surveys it picks, each compared with the identity the snapshot
 //! measured: it works over an in-memory model of the snapshot that its own removals update, so
 //! the bytes of a record an interruption moved under `cas/removing` are subtracted once, from
@@ -11,7 +12,8 @@
 //! the snapshot measured whole (a Project Store) is counted once, in that entry, and a dead
 //! pass's container is an entry of its own after the records it holds. A registration whose path
 //! holds no Store is dropped by the plan too, after the inventory reached its claims, never
-//! before. A directory nested deeper than the removal walk is left `too_deep`. The preview prints
+//! before. A directory nested deeper than the removal walk is left `too_deep`, and a claim the
+//! snapshot could not measure `unmeasurable`. The preview prints
 //! the plan; the applied sweep runs it entry by entry with [`run`] and reports what each entry
 //! actually did, an entry that failed (the lock lost, what it names replaced or gone) kept in its
 //! place as `failed: <reason>` with what it actually freed (nothing, unless a deletion stopped
@@ -212,7 +214,7 @@ pub(crate) type Judge<'a> =
 /// The entry of the snapshot that measured a claim's bytes as part of its own, when one did: the
 /// deepest directory entry (a Project Store, chiefly) whose path holds the claim. Its bytes are
 /// taken out of that entry, never counted again as a claim's.
-fn holder<'a>(entries: &'a [Entry], claim: &Path) -> Option<&'a Entry> {
+pub(crate) fn holder<'a>(entries: &'a [Entry], claim: &Path) -> Option<&'a Entry> {
     entries
         .iter()
         .filter(|entry| {
@@ -241,6 +243,23 @@ fn too_deep(entry: &Entry) -> Left {
     }
 }
 
+/// The plan's entry for a claim the snapshot's walk could not measure: it holds no bytes the
+/// plan could account for, so it is left, never planned.
+fn unmeasurable(entry: &Entry, why: &str) -> Left {
+    Left {
+        kind: entry.kind,
+        left: collect::Left {
+            path: entry.path.clone(),
+            bytes: entry.bytes,
+            reason: LeftReason::Unmeasurable,
+            detail: format!(
+                "unmeasurable: {why}; what its removal would free cannot be said, so it is left \
+                 for the operator"
+            ),
+        },
+    }
+}
+
 /// Plan one sweep over one snapshot: first what interruptions left (`recovery`), the claims of
 /// dead processes and then the deletions in Project Stores; then, when `collection`, the
 /// finished Tasks the Stores' rules take, the campaigns beyond `keep_campaigns` and the
@@ -250,7 +269,8 @@ fn too_deep(entry: &Entry) -> Left {
 /// reads a Survey the plan picks against the identity the snapshot measured; nothing else is
 /// read. The Surveys of a Store whose lock is held are left `held`, a record over the ceiling
 /// `oversize`, and what a Store's look found foreign or unreadably named is left as it was found;
-/// an entry or a claim nested deeper than the removal walk is left `too_deep`. The registrations
+/// an entry or a claim nested deeper than the removal walk is left `too_deep`, and a claim the
+/// snapshot could not measure `unmeasurable`. The registrations
 /// the snapshot found holding no Store are the plan's to drop.
 pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
     let claims = std::mem::take(&mut inputs.claims);
@@ -287,6 +307,10 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
     for (claim, held) in claims.iter().zip(&held_by) {
         if claim.too_deep {
             plan.left.push(too_deep(claim));
+            continue;
+        }
+        if let Some(why) = &claim.unmeasurable {
+            plan.left.push(unmeasurable(claim, why));
             continue;
         }
         let step = removal(
@@ -642,6 +666,8 @@ mod tests {
             reason: None,
             identity: None,
             too_deep: false,
+            unmeasurable: None,
+            state: None,
         }
     }
 
@@ -1240,6 +1266,57 @@ mod tests {
         );
         assert_eq!(plan.total_after, 50);
         assert_eq!(plan.stop, Stop::NothingEvictable);
+    }
+
+    /// A claim the snapshot's walk could not measure holds no bytes the plan could account for:
+    /// it is left `unmeasurable` with why, never planned, whatever the budget wants.
+    #[test]
+    fn an_unmeasurable_claim_is_left_and_never_planned() {
+        let claim = Entry {
+            unmeasurable: Some("permission denied".into()),
+            identity: Some(identity(7)),
+            ..entry(
+                Kind::Claim,
+                "/state/af/review/campaigns/.af-removing-9-4-0",
+                0,
+                0,
+            )
+        };
+        let plan = make(
+            Inputs {
+                entries: vec![entry(Kind::WarmKey, "/cache/af/warm/a/1", 10, 3)],
+                claims: vec![claim],
+                projects: &[],
+                tasks: Vec::new(),
+                registrations: Vec::new(),
+                collection: true,
+                max_bytes: 0,
+                keep_campaigns: 0,
+                keep_surveys: 50,
+                idle_ms: 0,
+                now: NOW,
+            },
+            &mut |_, _, _| unreachable!("no Survey is picked"),
+        );
+        let taken: Vec<&Path> = plan
+            .steps
+            .iter()
+            .map(|planned| planned.removal.path.as_path())
+            .collect();
+        assert_eq!(taken, [Path::new("/cache/af/warm/a/1")]);
+        let [left] = plan.left.as_slice() else {
+            panic!("{:?}", plan.left);
+        };
+        assert_eq!(left.kind, Kind::Claim);
+        assert_eq!(left.left.reason, LeftReason::Unmeasurable);
+        assert_eq!(left.left.bytes, 0);
+        assert!(
+            left.left
+                .detail
+                .starts_with("unmeasurable: permission denied"),
+            "{}",
+            left.left.detail
+        );
     }
 
     /// A deletion that stopped part way is failed with what left the disk: the running total

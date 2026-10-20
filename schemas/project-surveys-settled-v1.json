@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-surveys-settled:1",
+  "title": "af/ProjectSurveysSettled@1",
+  "description": "The machine-local record `settled.json` beside `project.lock` of a Project Store (ADR-0152 clause 13): the collected Surveys whose own records have left the CAS, deleted at their name or settled from a dead pass's container. Collection adds a Survey under the Store's lock once its record has left its CAS name and before it is unlinked; every later inventory reads it, so a file at a settled Survey's CAS name is `foreign` even when its bytes hash to the Survey ID, sweep after sweep. Sorted, each Survey once; no path.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "survey_ids"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ProjectSurveysSettled@1"
+    },
+    "survey_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      }
+    }
+  }
+}

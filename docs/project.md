@@ -770,9 +770,13 @@ entry says what it freed and the total after it. An entry of any kind whose remo
 lock lost, what it names replaced or gone since it was measured, an I/O error) keeps its place
 with nothing freed, the total after it unchanged and `outcome` `failed: <reason>`, for the next
 sweep to plan again. A deletion that stopped part way (a tree grown deeper than the removal walk,
-a child that cannot be unlinked) is failed too, and its `bytes` are what actually left the disk:
-what the inventory measured less what its claim still holds. So the document's totals are what
-af then holds. A directory nested deeper than the removal walk's 128 levels is never planned: the
+a child that cannot be unlinked, a final `rmdir` that failed because a child appeared meanwhile)
+is failed too, and its `bytes` are what actually left the disk, accounted from the removal's own
+start: what the directory held when its removal began, stated through its own descriptor
+immediately before anything was unlinked, less what its claim still holds. A directory that grew
+since the inventory never reports nothing for what the walk did unlink, and the running total
+moves by exactly those bytes. So the document's totals are what af then holds, but for the
+records a pass itself writes (a tombstone, `settled.json`), which the next inventory measures. A directory nested deeper than the removal walk's 128 levels is never planned: the
 inventory lists it in use (`left: deeper than the removal walk`) and the preview and the applied
 sweep both leave it under `left` as `too_deep`, whole, for the operator. So the bytes of a deletion an
 interruption left count once: a preview that frees them first and then fits the budget stops
@@ -781,7 +785,13 @@ exactly where the applied sweep stops.
 The snapshot is the only thing a sweep reads. A removal a process that died left half done (a
 `.af-removing-<pid>-…` claim) and a container a dead Survey collection left are in it, each a
 `claim` entry under `recovery` with the bytes it measured, so the preview lists them and the
-applied sweep removes nothing it did not list. A claim inside a Project Store (a Workspace's
+applied sweep removes nothing it did not list. `af storage` lists every such claim no other entry
+holds as a `claim` entry with `state` `abandoned` and counts its bytes in `kinds` and
+`total_bytes`, so the listing, the preview and the applied sweep agree on what the directory
+holds. A claim the inventory's walk cannot measure (nested deeper than its 256 levels, or
+unreadable) holds no bytes it could account for: it is listed in use with no bytes, and the
+preview and the applied sweep leave it, `too_deep` or `unmeasurable` with why, and never touch
+it. A claim inside a Project Store (a Workspace's
 `state` renamed into one) is counted once, in the Store's bytes, and its recovery takes them out
 of the Store's. The snapshot is taken over the Store registrations as they are: a registered Store
 a dead process renamed into its claim is reached through its parent, the claim planned as
@@ -814,7 +824,26 @@ after it, removed with its bytes only through that entry. A file at that Survey'
 then somebody else's: listed under `left` as `foreign` with its bytes, counted in the Project
 Store's bytes and never the Survey's, and never deleted by any sweep. Without a moved record, the
 file at a collected Survey's name is deleted only when its bytes are the record's (they hash to
-its ID), and is `foreign` otherwise. Anything else under `cas/removing` is listed and left; names
+its ID) and its record has not left the CAS already, and is `foreign` otherwise. Once a collected
+Survey's own record has left its CAS name, deleted there or settled from a dead pass's container,
+the pass records so in `settled.json` beside `project.lock`
+([`af/ProjectSurveysSettled@1`](../schemas/project-surveys-settled-v1.json)), under the lock,
+after the check found the record's inode and before it is unlinked. Every later inventory reads
+it: a file at that name is `foreign` even when its bytes hash to the Survey's ID, sweep after
+sweep, and no sweep deletes it.
+
+The Surveyor's writer keeps a pending-publication entry while it publishes a Survey,
+`pending/<hex of the Survey ID>.json` beside `project.lock`
+([`af/ProjectPendingPublication@1`](../schemas/project-pending-publication-v1.json)): the Survey
+ID and the length it is about to write, recorded under the lock before the bytes enter the CAS,
+then the object's device and inode once they are there, and removed once `SurveyRecorded@1`
+commits. A sweep reads what a crash between the two left. An entry whose event committed is
+cleared under `recovery`, and nothing is deleted. Otherwise the object at its Survey's CAS name
+that is the one the entry describes (that device, inode and length) is listed by `af storage` as
+a Survey with `state` `pending`, in use, and reclaimed under `recovery` before its entry is
+cleared, by the preview and the applied sweep alike; any other file at that name is `foreign`.
+Any object of the Project Store's CAS that no `SurveyRecorded@1`, tombstone or pending entry
+names is `foreign` too: listed with its bytes, counted in the Project Store's, never reclaimed. Anything else under `cas/removing` is listed and left; names
 are read raw, so one that is not UTF-8 is `unreadable_name`, shown lossily in text and in its
 percent-encoded spelling with `path_encoded` in `--json`. A container's own name is read the same
 way: only one named by a pass ID (32 lowercase hex digits) is a dead pass's, and anything in a
