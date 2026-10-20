@@ -180,6 +180,10 @@ recorded resumes it from its container without the `gitdir` that deletion may ha
 one gone from its container and its path, or recorded deleted, advances to done once its recorded
 container is verified, so a crash after the entry's unlink, part way through its deletion or
 after its container's removal finishes on the rerun and unregisters once (ADR-0157 clause 5).
+The completed record outlives the unregistration: it is deleted only once `WorkspaceRemoved@1`
+is appended and the paths dropped, and a rerun, or a registration again at the same path,
+reconciles a completed record with the log and the paths idempotently before it deletes it, so a
+worktree created at the path after such a crash is never inspected or deleted by the retry.
 
 `--workspace LABEL` on every `af task` subcommand that takes `--state` resolves `--state` (and,
 for `plan` and `start`, an absent `--bindings`) against the Workspace; `--workspace` together with
@@ -590,7 +594,8 @@ container, any later file at that name is foreign as well: the settlement is rec
 record and every later sweep reads it, so a byte-identical replacement survives sweep after
 sweep, listed `foreign`. The tombstone is appended after the selection and before the bytes go,
 so an interruption between the two leaves a record the next sweep finishes, and only the selected
-inode. Both collection paths, the count and the budget, protect the newest complete Survey and any
+inode; a record collected `unreadable`, whose bytes never hash to its ID, is finished by that
+selection alone. Both collection paths, the count and the budget, protect the newest complete Survey and any
 held one. Under the machine budget (ADR-0144 clause 4)
 every Survey is besides an inventoried entry of kind `survey`, sized by its CAS bytes and last
 used at its cutoff, that the budget pass may reclaim oldest first through the same tombstone and
@@ -604,7 +609,9 @@ claim that grew since inventory: what its removal measured it to hold when it st
 place of the inventoried bytes before what left the disk is subtracted, so a claim inventoried at
 10 MiB that grew to 20 MiB and freed 8 MiB leaves 12 MiB in the total; when what a removal that
 stopped part way left cannot be measured, the total is reported `unknown` and `fits` is not
-claimed. PJ2 ships the inventory, the byte accounting and the budget-driven tombstone and
+claimed, and the sweep that ends a Task's run is still recorded on the Task, as
+`af/TaskStorageSweep@2` with its removals, failures, freed bytes and its total and stop `unknown`
+(`@1`, numbers only, refused). PJ2 ships the inventory, the byte accounting and the budget-driven tombstone and
 deletion with the first Survey writer, which records a machine-local pending-publication entry
 under the Project Store lock before any byte of a Survey is written, stages the bytes in its own
 directory beside the entry, records the staged object's identity in the entry, and only then
@@ -663,7 +670,10 @@ layout test still passes; `af --help` and `af project --help` stay under 50 ms; 
 (its `gitdir` gone) or after its container's removal completes on the rerun and unregisters once,
 while a live checkout or entry is still checked for identity, `gitdir` and lock before any step;
 an identity carries the directory's birth time beside its device and inode, so one at the same
-inode born later is refused, and a file system without birth times refuses the removal.
+inode born later is refused, and a file system without birth times refuses the removal; a crash
+between the completed removal and its unregistration, or between the unregistration and the
+record's deletion, followed by a clean worktree at the same path, leaves that worktree untouched
+and records exactly one `WorkspaceRemoved@1` on the retry.
 
 ### PJ2 — Survey and Surveyor
 
@@ -692,7 +702,10 @@ a Survey's bytes and before its event leaves a pending entry inventory counts an
 settles, and a crash before its identity is recorded leaves staged bytes, nothing at the CAS
 name, that a later prune reclaims; a replacement at the same inode born later is refused by its
 birth time, and a file system without birth times refuses collection; a grown claim's partial
-deletion reports the bytes it retains, and an unmeasurable remainder reports the total `unknown`;
+deletion reports the bytes it retains, and an unmeasurable remainder reports the total `unknown`
+and still leaves a replayable `af/TaskStorageSweep@2` receipt on the Task; a corrupt record
+collected `unreadable` and interrupted before its move is reclaimed by its selection while a
+replacement at its name survives;
 two forced
 complete refreshes at a fixed cutoff differ only in `previous_survey_id`; af killed after a
 manifest spill leaves a directory the next sweep removes while a live refresh's survives; an early deadline leaves the Tree Digest absent

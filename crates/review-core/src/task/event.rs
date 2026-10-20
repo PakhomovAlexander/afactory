@@ -115,11 +115,12 @@ pub enum TaskChangeV1 {
     GateCleanup {
         cleanup: super::remote_check::TaskGateCleanupV1,
     },
-    /// What the Storage Budget's sweep at the end of `af task run` removed (ADR-0144), carried
-    /// inline as an observation of the Task that run executed. It references no artifact and
-    /// never changes the Task's result.
+    /// What the Storage Budget's sweep at the end of `af task run` removed and failed to remove
+    /// (ADR-0144), `af/TaskStorageSweep@2`, carried inline as an observation of the Task that run
+    /// executed, its total after it `unknown` when it cannot be measured. It references no
+    /// artifact and never changes the Task's result; a superseded `@1` does not replay.
     StorageSweep {
-        sweep: super::storage_sweep::TaskStorageSweepV1,
+        sweep: super::storage_sweep::TaskStorageSweepV2,
     },
 }
 

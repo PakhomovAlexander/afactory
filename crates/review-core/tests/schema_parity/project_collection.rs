@@ -1,7 +1,7 @@
 //! Survey collection (ADR-0158 clause 13): `SurveyCollected@1`, the tombstone a collected
 //! Survey leaves in its Project Store's log and that binds every identity field of its record,
 //! against its own schema, inside `run-event-v1.json` and through the Rust validator alike; and
-//! `af/TaskStorageSweep@1`, whose kind set Survey collection leaves unchanged, so a Survey's
+//! `af/TaskStorageSweep@2`, whose kind set Survey collection leaves unchanged, so a Survey's
 //! removal is counted and never listed; and `af/ProjectSurveysSettled@2`, the machine-local
 //! record of each collection's selected object and of the settled Surveys that collection keeps
 //! beside a Project Store's lock, against its schema and its typed contract alike. The
@@ -174,28 +174,29 @@ fn a_survey_tombstone_binds_the_records_identity_keeps_its_totals_and_never_a_pa
 }
 
 /// ADR-0145 clause 2 for the sweep record: Survey collection adds no kind to
-/// `af/TaskStorageSweep@1`. A sweep that took a Survey counts it in `omitted_removals` and still
+/// `af/TaskStorageSweep@2`. A sweep that took a Survey counts it in `omitted_removals` and still
 /// validates; a removal of kind `survey` is a shape the record does not have, refused by its
 /// schema, inside `TaskTransition@5` and by the typed contract alike.
 #[test]
 fn the_sweep_record_counts_a_survey_and_has_no_survey_kind() {
     use review_core::task::storage_sweep::{
-        StorageSweepStopV1, TASK_STORAGE_SWEEP_V1, TaskStorageSweepV1,
+        StorageSweepStopV2, TASK_STORAGE_SWEEP_V2, TaskStorageSweepV2,
     };
-    let counted = TaskStorageSweepV1 {
-        schema: TASK_STORAGE_SWEEP_V1.into(),
+    let counted = TaskStorageSweepV2 {
+        schema: TASK_STORAGE_SWEEP_V2.into(),
         removals: Vec::new(),
         omitted_removals: 1,
         failures: Vec::new(),
         omitted_failures: 0,
-        stop: StorageSweepStopV1::Fits,
+        freed_bytes: 4096,
+        stop: StorageSweepStopV2::Fits,
         max_bytes: 1 << 30,
         total_before: 1 << 30,
-        total_after: (1 << 30) - 4096,
+        total_after: Some((1 << 30) - 4096),
     };
     counted.validate().unwrap();
     let value = serde_json::to_value(&counted).unwrap();
-    assert_valid("task-storage-sweep-v1.json", &value);
+    assert_valid("task-storage-sweep-v2.json", &value);
     let mut listed = value.clone();
     listed["removals"] = json!([{
         "kind": "survey",
@@ -204,11 +205,11 @@ fn the_sweep_record_counts_a_survey_and_has_no_survey_kind() {
         "rule": "collection",
     }]);
     assert_invalid(
-        "task-storage-sweep-v1.json",
+        "task-storage-sweep-v2.json",
         &listed,
         "a Survey is no kind of the sweep record",
     );
-    assert!(serde_json::from_value::<TaskStorageSweepV1>(listed.clone()).is_err());
+    assert!(serde_json::from_value::<TaskStorageSweepV2>(listed.clone()).is_err());
     let transition = json!({
         "writer": "af-storage-sweep-1",
         "epoch": 3,

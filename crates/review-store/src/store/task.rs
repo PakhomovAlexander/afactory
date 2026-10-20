@@ -338,7 +338,7 @@ pub struct TaskProjection {
     pub gate_cleanups: Vec<task::remote_check::TaskGateCleanupV1>,
     /// What every Storage Budget sweep that ended a run of this Task removed, in log order
     /// (ADR-0144).
-    pub storage_sweeps: Vec<task::storage_sweep::TaskStorageSweepV1>,
+    pub storage_sweeps: Vec<task::storage_sweep::TaskStorageSweepV2>,
 }
 
 /// The light optimizer's final DAG node can only know trial accounting. After every Attempt has

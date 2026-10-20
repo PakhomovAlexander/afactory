@@ -679,6 +679,10 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
     let failures: Vec<String> = (0..70).map(|index| format!("failure {index}")).collect();
     let sweep = observation(&report(many, failures, true)).unwrap();
     sweep.validate().unwrap();
+    assert_eq!(
+        sweep.freed_bytes, 3000,
+        "every removal's bytes, listed or not"
+    );
     assert_eq!(sweep.removals.len(), 256);
     assert_eq!(sweep.omitted_removals, 44);
     assert_eq!(sweep.failures.len(), 64);
@@ -690,7 +694,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
     let sweep = observation(&report(vec![removal(0), odd], vec![], true)).unwrap();
     assert_eq!(sweep.removals.len(), 1);
     assert_eq!(sweep.omitted_removals, 1);
-    // A Survey's removal, `unreadable` or not, has no kind in `af/TaskStorageSweep@1`: counted.
+    // A Survey's removal, `unreadable` or not, has no kind in `af/TaskStorageSweep@2`: counted.
     let survey = |unreadable: Option<&str>| Removal {
         kind: Kind::Survey,
         path: PathBuf::from("/state/af/project/ab/cas/objects/cd/ef"),
@@ -855,6 +859,12 @@ fn a_planned_campaign_replaced_before_its_removal_stays_as_failed_with_the_total
     // Not recorded as a removal on a Task: it freed nothing.
     let recorded = observation(&applied).unwrap();
     assert_eq!(recorded.removals.len(), 1);
+    assert_eq!(recorded.failures.len(), 1);
+    assert_eq!(
+        recorded.freed_bytes, done.bytes,
+        "the failed one freed nothing"
+    );
+    assert_eq!(recorded.total_after, applied.total_after);
 }
 
 /// A planned campaign that grew between the plan and its removal, as another process could make
@@ -1119,7 +1129,8 @@ fn a_grown_claims_partial_deletion_reports_the_bytes_it_retains() {
 
 /// A claim whose remainder cannot be walked once its removal stopped part way leaves af's
 /// total unknown: the entry and the document say `unknown`, `fits` is not claimed, the schema
-/// accepts it, and no Task record claims a number.
+/// accepts it, and the Task record still says what failed and what left the disk, its total
+/// after it and its stop `unknown`, never a number (ADR-0144 clause 4).
 #[test]
 fn a_partial_deletion_whose_remainder_cannot_be_walked_reports_the_total_unknown() {
     use std::os::unix::fs::PermissionsExt;
@@ -1158,7 +1169,18 @@ fn a_partial_deletion_whose_remainder_cannot_be_walked_reports_the_total_unknown
     assert_eq!(document["total_after"], "unknown");
     assert_eq!(document["stop"], "unknown");
     assert_eq!(document["removals"][0]["total_after"], "unknown");
-    assert!(observation(&applied).is_none(), "no record claims a number");
+    let recorded = observation(&applied).expect("a sweep that failed is recorded");
+    recorded.validate().unwrap();
+    assert_eq!(recorded.total_after, None, "no record claims a number");
+    assert_eq!(
+        recorded.stop,
+        review_core::task::storage_sweep::StorageSweepStopV2::Unknown
+    );
+    assert_eq!(recorded.failures.len(), 1);
+    assert!(outcome.ends_with(recorded.failures[0].as_str()));
+    assert_eq!(recorded.freed_bytes, 0, "what was measured to leave");
+    let value = serde_json::to_value(&recorded).unwrap();
+    assert_eq!(value["total_after"], "unknown");
     std::fs::remove_dir_all(only_claim(&layout.roots.campaigns)).unwrap();
 }
 

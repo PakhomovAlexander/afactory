@@ -1,13 +1,13 @@
 - Surveys join the Storage Budget: every Survey is an `af storage` entry of kind `survey` with its
   allocated CAS bytes, last used at its cutoff (`af/storage@3`, `af/storage-prune@2`; the
-  superseded `af/storage@2` schema is gone and both earlier versions are refused, while
-  `af/TaskStorageSweep@1` keeps its shape and kinds and counts a Survey's removal without listing
-  it, so it needs no new version). An explicit `af storage prune --apply`, or the sweep after a
-  run when `[storage] auto_gc = true`, collects the Surveys of each Project beyond the newest
-  `[storage] keep_surveys` (50, `AF_STORAGE__KEEP_SURVEYS`), oldest first and idle at least
-  `keep_days`, and the budget may take any Survey, oldest first, while af is over `max_bytes`;
-  neither takes the newest complete Survey, one the Project Store's lock holds or one used within
-  the hour, and `af project refresh` collects nothing. Collection appends a `SurveyCollected@1`
+  superseded `af/storage@2` schema is gone and both earlier versions are refused, while the Task
+  sweep record keeps its kinds and counts a Survey's removal without listing it). An explicit `af
+  storage prune --apply`, or the sweep after a run when `[storage] auto_gc = true`, collects the
+  Surveys of each Project beyond the newest `[storage] keep_surveys` (50,
+  `AF_STORAGE__KEEP_SURVEYS`), oldest first and idle at least `keep_days`, and the budget may
+  take any Survey, oldest first, while af is over `max_bytes`; neither takes the newest complete
+  Survey, one the Project Store's lock holds or one used within the hour, and `af project
+  refresh` collects nothing. Collection appends a `SurveyCollected@1`
   tombstone with the Survey's head, cutoff, completeness and tree and history totals before it
   deletes the record. A sweep plans once over one inventory snapshot: `af storage prune` prints
   that plan, every removal in order with the bytes it frees, its rule (`recovery`, `collection`,
@@ -113,5 +113,19 @@
   and reports the total and `stop` `unknown` when what a partial deletion left cannot be measured
   (`a_partial_deletion_whose_remainder_cannot_be_walked_reports_the_total_unknown`), so its
   document is now `af/storage-prune@3` (`schemas/storage-prune-v3.json`) and `@2` is refused
+  ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  13).
+- Third close-out, collection: a corrupt record collected `unreadable` whose pass stopped after
+  its tombstone and before the record's move is reclaimed by the next sweep under `recovery` by
+  the object its collection selected (device, inode, birth time and length) alone, since its
+  bytes never hash to its Survey ID, while a file that took its name since, the same bytes and
+  length included, stays `foreign`
+  (`a_corrupt_record_interrupted_after_its_tombstone_is_reclaimed_by_its_selection`). The sweep
+  that ends a Task's run is now recorded on the Task whenever it removed or failed anything, its
+  total after it unknown included: `af/TaskStorageSweep@2` (`schemas/task-storage-sweep-v2.json`)
+  spells `total_after` as its bytes or `unknown`, adds the stop `unknown` and `freed_bytes`, the
+  bytes that left the disk, and `af task show` prints `→ unknown`; `af/TaskStorageSweep@1` is
+  refused as a superseded version, so a Task log holding one does not replay
+  (`a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its_task`)
   ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
   13).

@@ -2969,19 +2969,18 @@ fn evidence_seconds(text: &str) -> Option<i64> {
 /// unsuccessful steps, the kept log excerpt and the refusal reason; then the latest gate cleanup
 /// (ADR-0144), and the two commands that clean up after the gate whenever af has not.
 /// One line for the latest Storage Budget sweep recorded on the Task (ADR-0144): what the sweep
-/// that ended a run of it removed, how much, what failed, and the totals against the budget.
+/// that ended a run of it removed, the bytes that left the disk, what failed, and the totals
+/// against the budget, the total after it `unknown` when af could not measure it.
 fn storage_sweep_line(inspection: &serde_json::Value) -> Option<String> {
     let sweep = inspection["storage_sweeps"].as_array()?.last()?;
     let count = |field: &str| sweep[field].as_array().map_or(0, Vec::len) as u64;
     let removed = count("removals") + sweep["omitted_removals"].as_u64().unwrap_or(0);
     let failed = count("failures") + sweep["omitted_failures"].as_u64().unwrap_or(0);
-    let bytes = sweep["removals"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|removal| removal["bytes"].as_u64())
-        .fold(0_u64, u64::saturating_add);
-    let total = |field: &str| crate::storage::human_bytes(sweep[field].as_u64().unwrap_or(0));
+    let bytes = sweep["freed_bytes"].as_u64().unwrap_or(0);
+    let total = |field: &str| match sweep[field].as_u64() {
+        Some(bytes) => crate::storage::human_bytes(bytes),
+        None => "unknown".into(),
+    };
     Some(format!(
         "storage sweep: removed {removed} entr{} ({}){}; {} → {} of a {} budget{}",
         if removed == 1 { "y" } else { "ies" },
@@ -2997,10 +2996,15 @@ fn storage_sweep_line(inspection: &serde_json::Value) -> Option<String> {
         total("total_before"),
         total("total_after"),
         total("max_bytes"),
-        if sweep["stop"] == "nothing_evictable" {
-            ", still over: the rest is in use or was used within the hour"
-        } else {
-            ""
+        match sweep["stop"].as_str() {
+            Some("nothing_evictable") => {
+                ", still over: the rest is in use or was used within the hour"
+            }
+            Some("unknown") => {
+                ", what is left unknown: a removal stopped part way and what it left cannot be \
+                 measured"
+            }
+            _ => "",
         }
     ))
 }
@@ -3843,21 +3847,40 @@ mod remote_check_line_tests {
     #[test]
     fn the_latest_storage_sweep_is_one_line() {
         assert_eq!(storage_sweep_line(&serde_json::json!({})), None);
-        let inspection = serde_json::json!({"storage_sweeps": [
-            {"schema": "af/TaskStorageSweep@1", "removals": [], "omitted_removals": 0,
-             "failures": ["removing /x: it changed"], "omitted_failures": 0, "stop": "fits",
-             "max_bytes": 1024, "total_before": 0, "total_after": 0},
-            {"schema": "af/TaskStorageSweep@1", "removals": [
+        let mut inspection = serde_json::json!({"storage_sweeps": [
+            {"schema": "af/TaskStorageSweep@2", "removals": [], "omitted_removals": 0,
+             "failures": ["removing /x: it changed"], "omitted_failures": 0, "freed_bytes": 0,
+             "stop": "fits", "max_bytes": 1024, "total_before": 0, "total_after": 0},
+            {"schema": "af/TaskStorageSweep@2", "removals": [
                 {"kind": "task", "path": "/s", "task_id": "gc-older", "bytes": 2048,
                  "rule": "collection"}],
              "omitted_removals": 0, "failures": [], "omitted_failures": 0,
-             "stop": "nothing_evictable", "max_bytes": 1024, "total_before": 4096,
-             "total_after": 2048}]});
+             "freed_bytes": 2048, "stop": "nothing_evictable", "max_bytes": 1024,
+             "total_before": 4096, "total_after": 2048}]});
         assert_eq!(
             storage_sweep_line(&inspection).as_deref(),
             Some(
                 "storage sweep: removed 1 entry (2.0 KiB); 4.0 KiB → 2.0 KiB of a 1.0 KiB \
                  budget, still over: the rest is in use or was used within the hour"
+            )
+        );
+        // A removal that stopped part way, 1 KiB of it freed, what it left unmeasured.
+        inspection["storage_sweeps"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!(
+            {"schema": "af/TaskStorageSweep@2", "removals": [
+                {"kind": "task", "path": "/s", "task_id": "gc-older", "bytes": 2048,
+                 "rule": "collection"}],
+             "omitted_removals": 0, "failures": ["removing /c: only partly removed"],
+             "omitted_failures": 0, "freed_bytes": 3072, "stop": "unknown", "max_bytes": 1024,
+             "total_before": 4096, "total_after": "unknown"}));
+        assert_eq!(
+            storage_sweep_line(&inspection).as_deref(),
+            Some(
+                "storage sweep: removed 1 entry (3.0 KiB), 1 removal failed; 4.0 KiB → unknown \
+                 of a 1.0 KiB budget, what is left unknown: a removal stopped part way and what \
+                 it left cannot be measured"
             )
         );
     }

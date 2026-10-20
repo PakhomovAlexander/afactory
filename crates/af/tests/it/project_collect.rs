@@ -24,8 +24,9 @@
 //!
 //! A record is reached and deleted only through descriptors: a prefix directory replaced by a
 //! link to a directory outside the Store refuses its Survey, touches nothing outside and adds no
-//! tombstone. A corrupt record is collected `unreadable` and its bytes freed, while one the file
-//! system will not let af read is refused and keeps its record and its place in the log, and one
+//! tombstone. A corrupt record is collected `unreadable` and its bytes freed, and one interrupted
+//! after its tombstone is reclaimed by its selection alone, a replacement at its name kept; one
+//! the file system will not let af read is refused and keeps its record and its place in the log, and one
 //! a byte over the shared ceiling is left `oversize`. A record replaced between its identity read
 //! and its rename is `refused (replaced during collection)`, its entry kept as `failed: …` with
 //! the running total unchanged: nothing else is deleted and a rerun collects it. One replaced
@@ -1302,6 +1303,92 @@ fn a_corrupt_survey_is_collected_unreadable_and_an_unreadable_one_is_refused() {
         "{text}"
     );
     assert_consistent(&machine);
+}
+
+/// A corrupt record collected `unreadable`, the pass then stopped after its tombstone and before
+/// the record's move: its bytes never hash to its ID, so the next sweep reclaims it by the object
+/// its collection selected (device, inode, birth time and length) alone. A file that took such
+/// a record's name since, with the same bytes and length, is another inode and stays `foreign`.
+#[test]
+fn a_corrupt_record_interrupted_after_its_tombstone_is_reclaimed_by_its_selection() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..4)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let corrupt = |survey_id: &str| {
+        let object = machine.object(survey_id);
+        std::fs::set_permissions(&object, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(&object, vec![b'x'; 64 * 1024]).unwrap();
+        object
+    };
+    let stop = ("AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES", "1");
+
+    // The oldest record corrupt, collected `unreadable`, its pass stopped before the move.
+    let object = corrupt(&surveys[0]);
+    let keep = ("AF_STORAGE__KEEP_SURVEYS", "3");
+    prune(&machine, &repo, &[keep, stop]);
+    assert_eq!(machine.collected(), vec![surveys[0].clone()]);
+    let tombstone = machine
+        .events()
+        .into_iter()
+        .find(|(_, kind, _)| kind == "SurveyCollected@1")
+        .unwrap()
+        .2;
+    assert_eq!(tombstone["unreadable"], "its bytes do not match its digest");
+    assert!(machine.held(&surveys[0]), "stopped before the move");
+    let corrupt_bytes = allocated(&object);
+    assert!(corrupt_bytes >= 64 * 1024);
+
+    // The next sweep reclaims it under `recovery`, never `foreign`, preview and apply alike.
+    let previewed = preview(&machine, &repo, &[keep]);
+    assert_eq!(
+        removed(&previewed, "recovery"),
+        vec![path_of(&machine, &surveys[0])],
+        "{previewed}"
+    );
+    assert!(left(&previewed, "foreign").is_empty(), "{previewed}");
+    assert!(object.is_file(), "a preview deletes nothing");
+    let applied = prune(&machine, &repo, &[keep]);
+    let recovered: Vec<&Value> = applied["removals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|removal| removal["kind"] == "survey" && removal["rule"] == "recovery")
+        .collect();
+    assert_eq!(recovered.len(), 1, "{applied}");
+    assert!(recovered[0].get("outcome").is_none(), "{applied}");
+    assert_eq!(recovered[0]["bytes"].as_u64().unwrap(), corrupt_bytes);
+    assert!(!object.exists(), "its bytes are deleted");
+    assert_eq!(machine.collected().len(), 1, "no tombstone twice");
+    assert_consistent(&machine);
+
+    // The next record corrupt and interrupted alike; then a file with its very bytes takes its
+    // name, born later: not the object the collection selected, so it is left, sweep after
+    // sweep, whatever its bytes and length.
+    let object = corrupt(&surveys[1]);
+    let keep = ("AF_STORAGE__KEEP_SURVEYS", "2");
+    prune(&machine, &repo, &[keep, stop]);
+    assert_eq!(machine.collected().len(), 2);
+    assert!(machine.held(&surveys[1]));
+    let bytes = std::fs::read(&object).unwrap();
+    let staged = object.with_extension("replacement");
+    std::fs::write(&staged, &bytes).unwrap();
+    std::fs::rename(&staged, &object).unwrap();
+    for _ in 0..2 {
+        let pruned = prune(&machine, &repo, &[keep]);
+        assert!(removed(&pruned, "recovery").is_empty(), "{pruned}");
+        let foreign = left(&pruned, "foreign");
+        assert_eq!(foreign.len(), 1, "{pruned}");
+        assert_eq!(foreign[0]["path"], path_of(&machine, &surveys[1]).as_str());
+        assert_eq!(
+            std::fs::read(&object).unwrap(),
+            bytes,
+            "the replacement stays"
+        );
+    }
+    assert_eq!(machine.collected().len(), 2, "no tombstone twice");
 }
 
 #[test]

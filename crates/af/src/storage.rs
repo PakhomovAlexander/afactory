@@ -1216,8 +1216,25 @@ fn before_execute(planned: &plan::Planned) {
             hook(planned);
         }
     });
-    #[cfg(not(test))]
+    #[cfg(debug_assertions)]
+    seal_before_removal(planned);
+    #[cfg(not(any(test, debug_assertions)))]
     let _ = planned;
+}
+
+/// A debug build's fixture may name a directory (`AF_TEST_STORAGE_SEAL_BEFORE_REMOVAL`) that is
+/// made unreadable, mode 0, just before the applied sweep removes the entry it lies in, as
+/// another process could: that removal stops part way and what it left cannot be measured, so
+/// the sweep's total after it is unknown. Release binaries never read it.
+#[cfg(debug_assertions)]
+fn seal_before_removal(planned: &plan::Planned) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(sealed) = std::env::var_os("AF_TEST_STORAGE_SEAL_BEFORE_REMOVAL").map(PathBuf::from)
+        && sealed.starts_with(&planned.removal.path)
+        && sealed != planned.removal.path
+    {
+        let _ = std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000));
+    }
 }
 
 /// Tell the snapshot's readable Task Stores apart into their finished Tasks and the rest, in
@@ -1842,14 +1859,16 @@ fn is_run_task(state: &Path, task_id: &str) -> bool {
 }
 
 /// What a sweep removed and failed, as the bounded record a Task keeps: `None` for a preview,
-/// and for a sweep that removed nothing and failed nothing.
+/// and for a sweep that removed nothing and failed nothing. Every other sweep is recorded, one
+/// whose total after it is unknown included: `af/TaskStorageSweep@2` spells that total and its
+/// stop `unknown` and still says what left the disk (ADR-0144 clause 4).
 pub(crate) fn observation(
     report: &SweepReport,
-) -> Option<review_core::task::storage_sweep::TaskStorageSweepV1> {
+) -> Option<review_core::task::storage_sweep::TaskStorageSweepV2> {
     use review_core::task::storage_sweep::{
         MAX_SWEEP_FAILURE_BYTES, MAX_SWEEP_FAILURES, MAX_SWEEP_PATH_BYTES, MAX_SWEEP_REMOVALS,
-        StorageSweepKindV1, StorageSweepRemovalV1, StorageSweepRuleV1, StorageSweepStopV1,
-        TASK_STORAGE_SWEEP_V1, TaskStorageSweepV1,
+        StorageSweepKindV1, StorageSweepRemovalV1, StorageSweepRuleV1, StorageSweepStopV2,
+        TASK_STORAGE_SWEEP_V2, TaskStorageSweepV2,
     };
     // What failed freed nothing: a failure of the record, never a removal.
     let removed: Vec<&Removal> = report
@@ -1860,9 +1879,12 @@ pub(crate) fn observation(
     if !report.applied || (removed.is_empty() && report.failures.is_empty()) {
         return None;
     }
-    // A total that is unknown has no number the record could hold: the sweep's own warning says
-    // so, and the record is not written (its shape keeps its version).
-    let total_after = report.total_after?;
+    // What left the disk: every applied entry's bytes, a removal that failed part way with what
+    // it freed before it stopped, one that failed outright with nothing.
+    let freed_bytes = report
+        .removals
+        .iter()
+        .fold(0_u64, |freed, removal| freed.saturating_add(removal.bytes));
     let listable: Vec<StorageSweepRemovalV1> = removed
         .iter()
         .filter_map(|removal| {
@@ -1874,7 +1896,7 @@ pub(crate) fn observation(
                 Kind::UnreadableStore => StorageSweepKindV1::UnreadableStore,
                 Kind::Version => StorageSweepKindV1::Version,
                 Kind::Claim => StorageSweepKindV1::Claim,
-                // A Survey's removal has no kind in `af/TaskStorageSweep@1`: counted, not listed.
+                // A Survey's removal has no kind in `af/TaskStorageSweep@2`: counted, not listed.
                 Kind::TaskStore | Kind::ProjectStore | Kind::Survey => return None,
             };
             let path = removal.path.to_str()?.to_string();
@@ -1911,8 +1933,8 @@ pub(crate) fn observation(
         })
         .collect();
     let omitted_failures = report.failures.len().saturating_sub(MAX_SWEEP_FAILURES) as u64;
-    let sweep = TaskStorageSweepV1 {
-        schema: TASK_STORAGE_SWEEP_V1.into(),
+    let sweep = TaskStorageSweepV2 {
+        schema: TASK_STORAGE_SWEEP_V2.into(),
         omitted_removals,
         removals,
         omitted_failures: if failures.len() == MAX_SWEEP_FAILURES {
@@ -1921,14 +1943,16 @@ pub(crate) fn observation(
             0
         },
         failures,
-        stop: match report.stop {
-            Stop::Fits => StorageSweepStopV1::Fits,
-            Stop::NothingEvictable => StorageSweepStopV1::NothingEvictable,
-            Stop::Unknown => return None,
+        freed_bytes,
+        // A total af cannot vouch for is `unknown`, and so is its stop, together.
+        stop: match (report.stop, report.total_after) {
+            (_, None) | (Stop::Unknown, _) => StorageSweepStopV2::Unknown,
+            (Stop::Fits, Some(_)) => StorageSweepStopV2::Fits,
+            (Stop::NothingEvictable, Some(_)) => StorageSweepStopV2::NothingEvictable,
         },
         max_bytes: report.max_bytes,
         total_before: report.total_before,
-        total_after,
+        total_after: report.total_after.filter(|_| report.stop != Stop::Unknown),
     };
     sweep.validate().is_ok().then_some(sweep)
 }

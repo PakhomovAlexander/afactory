@@ -5,7 +5,9 @@ close-out, which adds clause 15, and clauses 2, 13 and 15 by the second close-ou
 the writer stages a record before its CAS name, every recorded identity carries its birth time,
 collection records the object it selects before its tombstone, the prune running total
 reconciles a claim that grew and says `unknown` when it cannot, and every byte count is of
-regular files alone). Package PJ2 of the
+regular files alone), and clause 13 by the third close-out (2026-10-21: a record collected
+`unreadable` is recovered by its selection alone, and a Task sweep whose total is unknown is
+recorded as `af/TaskStorageSweep@2`). Package PJ2 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0157](0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
 (the Project, its Project Store and every git process of `projects/git.rs`),
@@ -502,9 +504,9 @@ email first of all.
     `af/storage@3` ([schema](../../schemas/storage-v3.json)) and `af/storage-prune@3`
     ([schema](../../schemas/storage-prune-v3.json)), each gaining the kind `survey` (`@2` of the
     prune document did; `@3` adds its `unknown` total, below), and their earlier versions are
-    refused; a sweep's `af/TaskStorageSweep@1` counts a Survey's removal in
-    `omitted_removals` without listing it, so its shape and its kinds are unchanged and it keeps
-    its version. Surveys are collected
+    refused; a sweep's `af/TaskStorageSweep@2` counts a Survey's removal in
+    `omitted_removals` without listing it, its kinds those of `@1` (its version is `@2` for its
+    `unknown` total, below). Surveys are collected
     only in the Storage Budget's own passes, under ADR-0144's protections, and `af project
     refresh` collects nothing. The collection pass (`af storage prune --apply`, or the sweep after
     a run when `auto_gc = true`) takes, per Project, the Surveys beyond the newest `[storage]
@@ -602,8 +604,16 @@ email first of all.
     total, and its entry reports the 8 MiB. When what a removal that stopped part way left cannot
     be measured, the applied document's total after it, and after the sweep, is `unknown`, and
     `stop` is `unknown`, never `fits`: `af/storage-prune@3` spells a total as its bytes or
-    `unknown`, and `af/TaskStorageSweep@1`, whose totals are numbers, is not recorded for such a
-    sweep, whose warning says so. So the document's totals are what the directory holds, but for
+    `unknown`. The sweep that ends a Task's run is recorded on that Task all the same, as ADR-0144
+    clause 4 requires of every sweep that removed or failed anything: `af/TaskStorageSweep@2`
+    ([schema](../../schemas/task-storage-sweep-v2.json)) spells `total_after` as its bytes or
+    `unknown`, adds the stop `unknown` (the two together, or neither), and carries
+    `freed_bytes`, the allocated bytes that left the disk in the sweep (every removal's, listed
+    or not, and what a removal that stopped part way measured it freed), beside its removals and
+    failures; `af task show` prints the total as `unknown`. `af/TaskStorageSweep@1`, whose
+    totals were numbers only, is refused as a superseded version (ADR-0145 clause 2): the
+    `storage_sweep` transition, its admission, the Task's replay, the transition and inspection
+    schemas and their parity fixtures carry `@2` alone. So the document's totals are what the directory holds, but for
     the records a pass itself writes (a tombstone, `settled.json`), which the next inventory
     measures.
     The tombstone binds the
@@ -683,7 +693,12 @@ email first of all.
     total and never as the Survey's, and never deleted by any path. Without a moved record, the
     file at a tombstoned Survey's name is its record, deleted as above, only when it is the
     object the collection selected, its bytes are the record's (they hash to its ID) and the
-    Survey is not settled; any other is `foreign` in the same way, a byte-identical copy at
+    Survey is not settled, or, for a Survey whose tombstone says `unreadable`, when it is the
+    object the collection selected and the Survey is not settled, its bytes never compared with
+    the ID they never hashed to: a corrupt record selected, tombstoned and interrupted before its
+    move is reclaimed under `recovery` by its device, inode, birth time and length, no digest of
+    its bytes persisted or needed, since a file another writer puts at that name is another
+    inode, or the same inode number born later; any other is `foreign` in the same way, a byte-identical copy at
     another inode, or born later at a reused one, included, and so is any file at the name of a
     Survey whose collection selected nothing (its record was gone from the CAS when it was
     collected). The selection and the settlement are persisted machine-locally, in one record
