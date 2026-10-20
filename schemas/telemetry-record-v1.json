@@ -1,0 +1,950 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-record:1",
+  "title": "af/Telemetry*@1 segment records",
+  "description": "One line of a telemetry segment under `v1/segments/` (design \u00a75, ADR-0153): `seq` (1 for the header, one more per appended record; a derived segment keeps it with gaps), `t` (the record kind) and `schema` (its versioned type). One encoded record is at most 16 KiB; attributes are at most 64, keys 128 bytes, strings 1 KiB, arrays 32 elements and 4 KiB. Timestamps are unix nanoseconds as decimal strings; exact counters are canonical decimal strings. A record of another schema version is refused by the reader, never migrated (ADR-0145).",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "segment_id",
+        "af_version",
+        "af_commit",
+        "pid",
+        "parent_pid",
+        "argv",
+        "cwd",
+        "host",
+        "started_unix_ns",
+        "mono_origin_unix_ns",
+        "level"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "segment"
+        },
+        "schema": {
+          "const": "af/TelemetrySegment@1"
+        },
+        "segment_id": {
+          "$ref": "#/$defs/segment_id"
+        },
+        "af_version": {
+          "type": "string"
+        },
+        "af_commit": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "parent_pid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "argv": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "host": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "os",
+            "arch",
+            "cpus",
+            "memory_bytes",
+            "load1",
+            "free_bytes"
+          ],
+          "properties": {
+            "os": {
+              "type": "string"
+            },
+            "arch": {
+              "type": "string"
+            },
+            "cpus": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "memory_bytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "load1": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "free_bytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        },
+        "started_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "mono_origin_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "level": {
+          "enum": [
+            "metrics",
+            "spans",
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "trace_id",
+        "span_id",
+        "parent_span_id",
+        "name",
+        "kind",
+        "start_unix_ns",
+        "attributes"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "span_start"
+        },
+        "schema": {
+          "const": "af/TelemetrySpan@1"
+        },
+        "trace_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "parent_span_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{16}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "internal",
+            "process",
+            "client"
+          ]
+        },
+        "start_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "attributes": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "array",
+                "maxItems": 32,
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "span_id",
+        "end_unix_ns",
+        "status",
+        "attributes"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "span_end"
+        },
+        "schema": {
+          "const": "af/TelemetrySpan@1"
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "end_unix_ns": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error",
+            "unset"
+          ]
+        },
+        "attributes": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "array",
+                "maxItems": 32,
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "span_id",
+        "time_unix_ns",
+        "name",
+        "attributes"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "event"
+        },
+        "schema": {
+          "const": "af/TelemetryEvent@1"
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "time_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attributes": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "array",
+                "maxItems": 32,
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        },
+        "blob": {
+          "$ref": "#/$defs/occurrence_id"
+        },
+        "blob_media_type": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "execution_id",
+        "part",
+        "parts",
+        "complete",
+        "rows"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "config"
+        },
+        "schema": {
+          "const": "af/TelemetryConfig@1"
+        },
+        "execution_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "part": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "parts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "value",
+              "layer",
+              "origin"
+            ],
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "string"
+              },
+              "layer": {
+                "type": "string",
+                "minLength": 1
+              },
+              "origin": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "af.redacted": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many values of this part's rows the redaction withheld: a row whose key matches the secret-name rule has its value withheld whatever its shape; absent when none was."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "execution_id",
+        "plan_digest",
+        "node_id",
+        "kind",
+        "package",
+        "depends_on",
+        "expected_nodes"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "node"
+        },
+        "schema": {
+          "const": "af/TelemetryNode@1"
+        },
+        "execution_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plan_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "package": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "depends_on": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "expected_nodes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "span_id",
+        "key",
+        "severity",
+        "effective_severity",
+        "status",
+        "scope",
+        "file",
+        "line",
+        "title",
+        "report_artifact_id",
+        "node_id",
+        "worker",
+        "model",
+        "round",
+        "epoch"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "finding"
+        },
+        "schema": {
+          "const": "af/TelemetryFinding@1"
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effective_severity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "report_artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "worker": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "round": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "epoch": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "span_id",
+        "demand_id",
+        "kind",
+        "required",
+        "subject_id",
+        "snapshot_id",
+        "status"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "demand"
+        },
+        "schema": {
+          "const": "af/TelemetryDemand@1"
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "demand_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "subject_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "snapshot_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "digest",
+        "bytes",
+        "stored_bytes",
+        "redaction"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "blob"
+        },
+        "schema": {
+          "const": "af/TelemetryBlob@1"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stored_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "redaction": {
+          "const": "af-redact/1"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "occurrence_id",
+        "digest",
+        "span_id",
+        "event_seq",
+        "source_digest",
+        "original_bytes",
+        "truncated",
+        "state",
+        "media_type",
+        "redaction"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "blob_ref"
+        },
+        "schema": {
+          "const": "af/TelemetryBlobRef@1"
+        },
+        "occurrence_id": {
+          "$ref": "#/$defs/occurrence_id"
+        },
+        "digest": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "span_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "event_seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "original_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "stored",
+            "dropped"
+          ]
+        },
+        "media_type": {
+          "enum": [
+            "text/plain; charset=utf-8",
+            "application/json"
+          ],
+          "description": "How this occurrence's source was judged (per line, or as one JSON document) and how its retained bytes read. It belongs to the occurrence, never to the shared object: two sources of different media types may retain identical bytes."
+        },
+        "redaction": {
+          "const": "af-redact/1"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "time_unix_ns",
+        "what",
+        "reason"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "problem"
+        },
+        "schema": {
+          "const": "af/TelemetryProblem@1"
+        },
+        "time_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "what": {
+          "enum": [
+            "write",
+            "blob",
+            "receiver",
+            "budget",
+            "redaction",
+            "sink",
+            "observer"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "t",
+        "schema",
+        "ended_unix_ns",
+        "exit",
+        "spans",
+        "events",
+        "blobs",
+        "dropped",
+        "dropped_chunks",
+        "discarded_bytes",
+        "refs"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "t": {
+          "const": "seal"
+        },
+        "schema": {
+          "const": "af/TelemetrySeal@1"
+        },
+        "ended_unix_ns": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "exit": {
+          "enum": [
+            "ok",
+            "error",
+            "signal",
+            "recovered"
+          ]
+        },
+        "spans": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blobs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dropped": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Null means unknown: only in a seal with `exit = recovered` that a recovering reader wrote for a prefix without the writer's seal (the writer's in-memory counters died with it); such a capture is incomplete. A writer's seal, and a recovered seal that superseded a stranded writer's seal, carry the count."
+        },
+        "dropped_chunks": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Null means unknown: only in a seal with `exit = recovered` that a recovering reader wrote for a prefix without the writer's seal (the writer's in-memory counters died with it); such a capture is incomplete. A writer's seal, and a recovered seal that superseded a stranded writer's seal, carry the count."
+        },
+        "discarded_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "refs": {
+          "type": "string",
+          "pattern": "^[0-9]+-[0-9]+-[0-9a-f]+\\.refs$"
+        }
+      },
+      "if": {
+        "not": {
+          "properties": {
+            "exit": {
+              "const": "recovered"
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "dropped": {
+            "type": "integer"
+          },
+          "dropped_chunks": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "segment_id": {
+      "type": "string",
+      "pattern": "^[0-9]+-[0-9]+-[0-9a-f]+$"
+    },
+    "occurrence_id": {
+      "type": "string",
+      "pattern": "^[0-9]+-[0-9]+-[0-9a-f]+:[1-9][0-9]*$"
+    }
+  }
+}

@@ -228,6 +228,27 @@ repository's `.af/af.toml` cannot change it. See `af help storage`.",
         #[command(subcommand)]
         command: Option<StorageCommand>,
     },
+    /// Show what Telemetry recorded on this machine, and rebuild its index
+    #[command(
+        subcommand_required = true,
+        arg_required_else_help = true,
+        long_about = "Show what Telemetry recorded on this machine, and rebuild its index.\n\n\
+Telemetry records what af does while it works — spans, events and, at `content`, redacted \
+content blobs — in its own store under the state root's `telemetry/`, never in a Task or \
+Campaign Store. The kernel never reads it: identity, replay, the Ledger, budgets, admission and \
+every Worker input are the same whether it is on, off or deleted (ADR-0153). `[telemetry] \
+level` is `off`, `metrics`, `spans` (the default) or `content`, set from machine layers only; \
+see `af help telemetry`.\n\n\
+`status` reads; `reindex` recovers crashed writers' segments and rebuilds the index. Neither \
+records telemetry, contacts a network or reads a Store. Exit codes: 0 success, 1 the telemetry \
+directory cannot be read or the index is in use, 2 a wrong command line or a refused \
+`[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry status\n  af telemetry status --json | jq .segments\n  af telemetry reindex\n  af telemetry status --dir ./copied-telemetry\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID"
+    )]
+    Telemetry {
+        #[command(subcommand)]
+        command: TelemetryCommand,
+    },
     /// Print a shell completion script (values complete live from the binary)
     #[command(
         long_about = "Print a shell completion script.\n\n\
@@ -242,10 +263,11 @@ directory.",
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Explain a topic (config, layers, environment, exit-codes, json, self, storage) or a command
+    /// Explain a topic (config, layers, environment, exit-codes, json, self, storage, telemetry) or a command
     #[command(
         long_about = "Explain a topic or a command.\n\n\
-Topics: config, layers, environment, exit-codes, json, self, storage. Anything else is treated \
+Topics: config, layers, environment, exit-codes, json, self, storage, telemetry. Anything else \
+is treated \
 as a command path, so `af help review run` equals `af review run --help`.",
         after_long_help = "Examples:\n  af help layers\n  af help exit-codes\n  af help review ledger"
     )]
@@ -1386,6 +1408,72 @@ Finished Tasks go through the Store's own collection, so each keeps its tombston
         /// Machine-readable af/storage-prune@1
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum TelemetryCommand {
+    /// The level, the directory, its bytes, segments, runs, the index and every problem
+    #[command(
+        long_about = "The level, the directory, its bytes, segments, runs, the index and every problem.\n\n\
+Prints the configured `[telemetry] level`; the telemetry directory and its allocated bytes, in \
+total against `[telemetry] max_bytes` and per entry (each segment with its manifest, the blobs, \
+the index with its WAL and shared memory, temporary files, locks, and `unrecognized`: every \
+other path beneath the directory, a symbolic link included, counted once, named up to 16, never \
+read, followed or removed, so the total is every allocated byte beneath it), each sealed segment \
+with its \
+seal's `exit` and its capture (`complete`, or why not: `recovered, drops unknown`); the segments \
+by state — `live` (a writer holds its lock), `unsealed` (nobody does: a crashed writer's, \
+recovered by the next `reindex`), `sealed` and `corrupt` (interior corruption, never read); the \
+runs the index knows, the Attempts whose content was withheld, and stored occurrences whose blob \
+file is missing (`content unavailable: missing blob`), looked for under `gc.lock` shared or \
+reported `deferred` when a sweep holds it past 2 s; the index after ingesting every new segment \
+byte (`fresh`, or `direct` when another command is replacing it and the segments were read \
+directly, said on stderr); the distinct problems recorded; what cannot be read (a directory of \
+another telemetry version such as `v0/`, never read; a segment with an invalid line before a \
+valid one or a line over the 16 KiB record bound, never indexed); and every telemetry directory \
+registered on this machine, with its overlap rechecked: `none`, `overlapping`, or `unknown` when \
+the Store registry cannot be read (the problem is named among the problems and the exit code is \
+unchanged).\n\n\
+Never: recovers or removes a segment, records telemetry, reads a Store, reads around an index of \
+another schema version, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or its index is of another \
+schema version (`af telemetry reindex` replaces it), 2 a refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry status\n  af telemetry status --json\n  af telemetry status --dir /backup/telemetry --json | jq .bytes.total"
+    )]
+    Status {
+        /// Machine-readable af/telemetry-status@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// Recover crashed writers' segments and rebuild the index from every segment
+    #[command(
+        long_about = "Recover crashed writers' segments and rebuild the index from every segment.\n\n\
+Every `.jsonl` segment whose lock nobody holds is recovered to its last complete line: the \
+discarded bytes are recorded in its seal (`exit = recovered`; the writer's drop counts `null`, \
+unknown, unless the writer's own seal was already written, which the recovered seal then \
+supersedes), spans it never ended are marked with no end, and it is compressed; an invalid line \
+before a valid one renames it `.corrupt`. Then the index is replaced under `index.lock` — taken \
+exclusively within 2 s, checkpointed, closed, its database, WAL and shared-memory files unlinked \
+— and rebuilt from every segment, and every blob file's digest is verified with `gc.lock` held \
+shared (`blob_verification = deferred`, no blob file opened, when the lock is not had within \
+2 s). Every query answers the same before and after: the \
+index is derived state, never evidence.\n\n\
+Never: removes a sealed segment or a blob, reads a Store, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the directory cannot be read or another command holds the index, 2 a \
+refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry reindex\n  af telemetry reindex --json\n  af telemetry reindex --dir ./copied-telemetry"
+    )]
+    Reindex {
+        /// Machine-readable af/telemetry-reindex@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Rebuild this telemetry directory's index instead of the configured one
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
     },
 }
 

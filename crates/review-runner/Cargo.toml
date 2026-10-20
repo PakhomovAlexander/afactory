@@ -16,6 +16,7 @@ doctest = false
 review-core = { path = "../review-core" }
 review-process = { path = "../review-process" }
 review-store = { path = "../review-store" }
+review-telemetry = { path = "../review-telemetry" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 jsonschema = { version = "0.58.4", default-features = false }

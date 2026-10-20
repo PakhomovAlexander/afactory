@@ -134,63 +134,11 @@ impl NativeFailureKind {
 }
 
 /// Whether native output carries credential or login-challenge material, so that no part of it
-/// may be quoted in a diagnostic.
-pub fn carries_auth_material(bytes: &[u8]) -> bool {
-    auth_material(bytes)
-}
+/// may be quoted in a diagnostic. The rule lives in the one redaction implementation (ADR-0153).
+pub use review_telemetry::redact::carries_auth_material;
 
 fn auth_material(bytes: &[u8]) -> bool {
-    // This is a conservative privacy filter, not endpoint authorization. On a failed
-    // invocation even a query-free official device URL can travel beside a one-time code.
-    // Ignore case and terminal whitespace/wrapping; the capture is replaced as a whole,
-    // never reconstructed into a URL or treated as a usable challenge.
-    let text: String = String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_ascii_whitespace())
-        .map(|character| character.to_ascii_lowercase())
-        .collect();
-    [
-        "auth.openai.com",
-        "claude.ai",
-        "claude.com",
-        "console.anthropic.com",
-        "/codex/device",
-        "usercode",
-        "user_code",
-        "user-code",
-        "devicecode",
-        "device_code",
-        "device-code",
-        "verificationurl",
-        "verification_url",
-        "verificationuri",
-        "verification_uri",
-        "authurl",
-        "auth_url",
-        "authorizationurl",
-        "authorization_url",
-        "authorizationuri",
-        "authorization_uri",
-        "accesstoken",
-        "access_token",
-        "refreshtoken",
-        "refresh_token",
-        "idtoken",
-        "id_token",
-        "codeverifier",
-        "code_verifier",
-        "codechallenge",
-        "code_challenge",
-        "authorization:bearer",
-        "token=",
-        "/oauth/authorize",
-        "/oauth/authorization",
-        "/authorize?",
-        "?code=",
-        "&code=",
-    ]
-    .iter()
-    .any(|marker| text.contains(marker))
+    carries_auth_material(bytes)
 }
 
 /// Claude Code's own words, lower-cased, when the bound model's safety classifier flagged a

@@ -275,3 +275,5 @@ future readers need.
   Markdown](0151-export-a-human-presentation-of-a-report-beside-its-canonical-markdown.md)
 - [0152 — Push the release pin with a deploy key that bypasses main's
   ruleset](0152-push-the-release-pin-with-a-deploy-key-that-bypasses-mains-ruleset.md)
+- [0153 — Record telemetry in its own store, and never let it
+  steer](0153-record-telemetry-in-its-own-store-and-never-let-it-steer.md)
