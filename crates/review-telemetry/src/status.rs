@@ -370,11 +370,7 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
             .iter()
             .map(|path| allocated(path))
             .sum::<u64>();
-    entries.push(Entry::new(
-        "blobs",
-        "blobs",
-        allocated_tree(&layout.blobs()),
-    ));
+    entries.push(Entry::new("blobs", "blobs", blob_bytes(&layout)));
     entries.push(Entry::new(
         "index",
         "index.sqlite",
@@ -459,6 +455,11 @@ enum Place {
     Root,
     Versioned,
     Segments,
+    /// `v1/blobs/`: only two-hex prefix directories are known here.
+    Blobs,
+    /// `v1/blobs/<aa>/`: only the objects whose digest starts with `aa` and the publisher's
+    /// temporary files are known here.
+    BlobPrefix([u8; 2]),
     /// Inside a path no known kind names as a directory: nothing beneath it is known.
     Foreign,
 }
@@ -477,7 +478,14 @@ fn known(place: Place, name: &str, is_dir: bool, layout: &Layout) -> Known {
         Place::Root if name == layout::VERSION_DIR && is_dir => Known::Own(Place::Versioned),
         Place::Root if reader::is_other_version(name) => Known::Tree,
         Place::Versioned if name == "segments" && is_dir => Known::Own(Place::Segments),
-        Place::Versioned if name == "blobs" => Known::Tree,
+        Place::Versioned if name == "blobs" && is_dir => Known::Own(Place::Blobs),
+        Place::Blobs if is_dir && name.len() == 2 && crate::redact::is_lower_hex(name) => {
+            let prefix = name.as_bytes();
+            Known::Own(Place::BlobPrefix([prefix[0], prefix[1]]))
+        }
+        Place::BlobPrefix(prefix) if !is_dir && is_blob_file(prefix, name) => {
+            Known::Own(Place::Foreign)
+        }
         Place::Versioned
             if [layout.gc_lock(), layout.index_lock(), layout.index_intent()]
                 .iter()
@@ -494,6 +502,48 @@ fn known(place: Place, name: &str, is_dir: bool, layout: &Layout) -> Known {
         }
         _ => Known::Unrecognized,
     }
+}
+
+/// A file a publisher leaves in `blobs/<aa>/`: the object `<64 hex>.gz` whose digest starts
+/// with `aa`, or a temporary file the collector removes.
+fn is_blob_file(prefix: [u8; 2], name: &str) -> bool {
+    if name.starts_with(layout::TEMP_PREFIX) {
+        return true;
+    }
+    name.strip_suffix(".gz").is_some_and(|hex| {
+        hex.len() == 64 && crate::redact::is_lower_hex(hex) && hex.as_bytes()[..2] == prefix
+    })
+}
+
+/// The `blobs` entry: the `blobs/` directory itself, its prefix directories, the objects and
+/// the temporaries in them; any other path beneath `blobs/` is [`unrecognized`].
+fn blob_bytes(layout: &Layout) -> u64 {
+    let blobs = layout.blobs();
+    if !std::fs::symlink_metadata(&blobs).is_ok_and(|metadata| metadata.is_dir()) {
+        return 0;
+    }
+    let mut bytes = allocated(&blobs);
+    let mut pending = vec![(blobs, Place::Blobs)];
+    while let Some((directory, place)) = pending.pop() {
+        let Ok(children) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for child in children.filter_map(Result::ok) {
+            let path = child.path();
+            let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir());
+            match known(place, &child.file_name().to_string_lossy(), is_dir, layout) {
+                Known::Tree => bytes += allocated_tree(&path),
+                Known::Own(inner) => {
+                    bytes += allocated(&path);
+                    if is_dir {
+                        pending.push((path, inner));
+                    }
+                }
+                Known::Unrecognized => {}
+            }
+        }
+    }
+    bytes
 }
 
 /// Every path beneath the root that matches no known kind, counted once with everything

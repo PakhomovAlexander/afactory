@@ -820,25 +820,28 @@ impl Writer {
         let mut contents = Vec::new();
         let mut named = Vec::new();
         let keep = options.level.keeps_content();
+        let judged = Redactor::new();
         let (attributes, counters) =
             record::bound_attributes(attrs, &options.redactor, &mut |key, value| {
                 if !keep {
                     return None;
                 }
-                // Already judged whole and replaced: the blob keeps exactly this value, an
-                // array as one JSON document.
-                let (bytes, media) = match value {
-                    Oversized::Text(text) => (text.as_bytes().to_vec(), Media::Text),
+                // Text was already judged whole and replaced: the blob keeps exactly that
+                // value. An array arrives as the writer gave it: its source is the original
+                // array as one JSON document, redacted as one document before it is retained.
+                let (bytes, media, redactor) = match value {
+                    Oversized::Text(text) => (text.as_bytes().to_vec(), Media::Text, &judged),
                     Oversized::Texts(values) => (
                         serde_json::to_vec(values).expect("strings serialize"),
                         Media::Json,
+                        &options.redactor,
                     ),
                 };
                 contents.push(blob::prepare(
                     &bytes,
                     media,
                     options.content_max_blob_bytes,
-                    &Redactor::new(),
+                    redactor,
                 ));
                 named.push(key.to_string());
                 Some(String::new())

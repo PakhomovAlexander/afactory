@@ -744,3 +744,86 @@ fn telemetry_content_level_array_values_become_blobs() {
         }
     }
 }
+
+#[test]
+fn telemetry_array_blob_occurrences_keep_source_identity() {
+    // Two over-bound arrays that differ only in a credential: both redact to one document.
+    let long = "w".repeat(2048);
+    let first = vec![long.clone(), "API_KEY=hunter2".to_string()];
+    let second = vec![long.clone(), "API_KEY=swordfish".to_string()];
+    let temp = tempfile::tempdir().unwrap();
+    let writer = writer(temp.path(), Level::Content);
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event(
+        &span,
+        "af.arrays",
+        Attrs::new()
+            .texts("af.first", first.clone())
+            .texts("af.second", second.clone()),
+    );
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let records = sealed_records(&sealed.path);
+    let text = String::from_utf8(crate::sealed_bytes(&sealed.path)).unwrap();
+    assert!(!text.contains("hunter2") && !text.contains("swordfish"));
+    let objects: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::Blob(object) => Some(object.clone()),
+            _ => None,
+        })
+        .collect();
+    let occurrences: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::BlobRef(occurrence) => Some(occurrence.clone()),
+            _ => None,
+        })
+        .collect();
+    // One retained object, two occurrences naming it.
+    assert_eq!(objects.len(), 1, "{objects:?}");
+    assert_eq!(occurrences.len(), 2, "{occurrences:?}");
+    let lines = crate::sealed_lines(&sealed.path);
+    let event = lines
+        .iter()
+        .find(|line| line["t"] == "event" && line["name"] == "af.arrays")
+        .unwrap();
+    let layout = Layout::new(temp.path());
+    for (key, original) in [("af.first", &first), ("af.second", &second)] {
+        let id = event["attributes"][key]
+            .as_str()
+            .unwrap()
+            .strip_prefix(OCCURRENCE_PREFIX)
+            .unwrap();
+        let occurrence = occurrences
+            .iter()
+            .find(|occurrence| occurrence.occurrence_id == id)
+            .unwrap_or_else(|| panic!("{key}: no occurrence {id}"));
+        assert_eq!(occurrence.state, BlobState::Stored);
+        assert_eq!(
+            occurrence.digest.as_deref(),
+            Some(objects[0].digest.as_str())
+        );
+        // The source identity is the original serialized array, before any redaction.
+        let source = serde_json::to_vec(original).unwrap();
+        assert_eq!(
+            occurrence.source_digest,
+            review_telemetry::trace::sha256_digest(&source),
+            "{key}"
+        );
+        assert_eq!(occurrence.original_bytes, source.len() as u64, "{key}");
+        // Only the redacted bytes are retained.
+        let Content::Bytes(bytes) = blob_reader::content(&layout, occurrence) else {
+            panic!("{key}: content unavailable");
+        };
+        let array: Vec<String> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            array,
+            vec![long.clone(), review_telemetry::redact::WITHHELD.to_string()],
+            "{key}"
+        );
+    }
+    assert_ne!(occurrences[0].source_digest, occurrences[1].source_digest);
+}

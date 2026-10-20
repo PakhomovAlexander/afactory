@@ -253,6 +253,8 @@ fn telemetry_status_accounts_every_byte_under_the_root() {
         ("v1/stray/deeper/file.txt", vec![1_u8; 5_000]),
         ("notes.txt", b"left here".to_vec()),
         ("v0/segments/old.jsonl", b"not read\n".to_vec()),
+        ("v1/blobs/unknown.bin", vec![3_u8; 6_000]),
+        ("v1/blobs/ab/stray.txt", vec![4_u8; 7_000]),
     ];
     for (path, bytes) in &planted {
         let path = root.join(path);
@@ -262,6 +264,58 @@ fn telemetry_status_accounts_every_byte_under_the_root() {
     let (document, _) = status::status(&input(root.clone())).unwrap();
     assert_valid(&schema, &serde_json::to_value(&document).unwrap());
     assert_eq!(document.bytes.total, allocated_beneath(&root));
+    // One shape, one version: the document with its `unrecognized` entry validates against
+    // `af/telemetry-status@1`, and a field the schema does not name is rejected wherever it is
+    // added, in the schema and in the reader.
+    let value = serde_json::to_value(&document).unwrap();
+    let position = value["bytes"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|entry| entry["kind"] == "unrecognized")
+        .unwrap();
+    for pointer in ["", "/bytes", &format!("/bytes/entries/{position}")] {
+        let mut extended = value.clone();
+        extended
+            .pointer_mut(pointer)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("unnamed".into(), Value::from(1));
+        assert!(
+            !schema.is_valid(&extended),
+            "{pointer}: an unnamed field passed"
+        );
+        assert!(
+            serde_json::from_value::<status::Status>(extended).is_err(),
+            "{pointer}: the reader accepted an unnamed field"
+        );
+    }
+    // The schema names exactly the fields an entry carries.
+    let every_field = serde_json::to_value(status::Entry {
+        kind: "unrecognized".into(),
+        name: "unrecognized".into(),
+        state: Some("sealed".into()),
+        exit: Some("ok".into()),
+        capture: Some("complete".into()),
+        count: Some(1),
+        names: Some(vec!["notes.txt".into()]),
+        bytes: 1,
+    })
+    .unwrap();
+    let schema_document: Value = serde_json::from_slice(
+        &std::fs::read(workspace_root().join("schemas/telemetry-status-v1.json")).unwrap(),
+    )
+    .unwrap();
+    let named: std::collections::BTreeSet<&String> =
+        schema_document["properties"]["bytes"]["properties"]["entries"]["items"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect();
+    let carried: std::collections::BTreeSet<&String> =
+        every_field.as_object().unwrap().keys().collect();
+    assert_eq!(named, carried);
     let unrecognized: Vec<_> = document
         .bytes
         .entries
@@ -270,12 +324,40 @@ fn telemetry_status_accounts_every_byte_under_the_root() {
         .collect();
     assert_eq!(unrecognized.len(), 1, "{:?}", document.bytes.entries);
     let entry = unrecognized[0];
-    assert_eq!(entry.count, Some(3));
+    assert_eq!(entry.count, Some(5));
     assert_eq!(
         entry.names.as_deref().unwrap(),
-        ["notes.txt", "v1/segments/unknown.bin", "v1/stray"]
+        [
+            "notes.txt",
+            "v1/blobs/ab/stray.txt",
+            "v1/blobs/unknown.bin",
+            "v1/segments/unknown.bin",
+            "v1/stray"
+        ]
     );
     assert!(entry.bytes > 0);
+    // A file beneath `blobs/` that is neither a prefix directory, an object nor a temporary is
+    // charged to `unrecognized` once, never to `blobs`.
+    let allocated = |path: &str| {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::symlink_metadata(root.join(path)).unwrap().blocks() * 512
+    };
+    let blobs = document
+        .bytes
+        .entries
+        .iter()
+        .find(|entry| entry.kind == "blobs")
+        .unwrap();
+    assert_eq!(
+        blobs.bytes,
+        allocated("v1/blobs") + allocated_beneath(&root.join("v1/blobs"))
+            - allocated("v1/blobs/unknown.bin")
+            - allocated("v1/blobs/ab/stray.txt")
+    );
+    assert!(
+        blobs.bytes > allocated("v1/blobs"),
+        "the objects are counted"
+    );
     // Never read as a segment, never removed.
     assert_eq!(document.segments.sealed, 1);
     for (path, bytes) in &planted {

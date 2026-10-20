@@ -181,8 +181,31 @@ fn telemetry_status_validates_on_every_directory_shape() {
         b"{\"t\":\"from another version\"}\n",
     )
     .unwrap();
+    // A file beneath `blobs/` that is no object: the `unrecognized` entry of the same shape.
+    std::fs::write(machine.telemetry().join("v1/blobs/unknown.bin"), b"stray").unwrap();
     let document = json(&machine.af(&[], &["telemetry", "status", "--json"]));
     schemas::valid(&schema, &document);
+    let entries = document["bytes"]["entries"].as_array().unwrap();
+    let unrecognized = entries
+        .iter()
+        .position(|entry| entry["kind"] == "unrecognized")
+        .unwrap_or_else(|| panic!("{entries:?}"));
+    assert_eq!(entries[unrecognized]["count"], 1);
+    assert_eq!(
+        entries[unrecognized]["names"],
+        serde_json::json!(["v1/blobs/unknown.bin"])
+    );
+    // A field `af/telemetry-status@1` does not name is rejected, in an entry or at the top.
+    for pointer in [String::new(), format!("/bytes/entries/{unrecognized}")] {
+        let mut extended = document.clone();
+        extended
+            .pointer_mut(&pointer)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("unnamed".into(), Value::from(1));
+        assert!(!schema.is_valid(&extended), "{pointer}");
+    }
     assert_eq!(document["segments"]["live"], 1);
     assert_eq!(document["segments"]["sealed"], 1);
     assert_eq!(document["segments"]["corrupt"], 1);

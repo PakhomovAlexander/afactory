@@ -102,12 +102,13 @@ af telemetry status [--json] [--dir PATH]
 ```
 
 Prints the configured level; the telemetry directory and its allocated bytes, in total against
-`[telemetry] max_bytes` and per entry (each segment with its manifest, the blobs, the index with
-its WAL and shared-memory files, temporary files, locks, and `unrecognized`: every other file or
-directory beneath the telemetry directory, counted once with its count, its allocated bytes and
-up to 16 of its names, never read and never removed, so the total is every allocated byte
-beneath the directory), each sealed segment with its seal's
-`exit` and whether its capture is `complete` or why not (`recovered, drops unknown` for a
+`[telemetry] max_bytes` and per entry (each segment with its manifest; the blobs, which are only
+the two-hex prefix directories under `v1/blobs/` and the digest-named objects and publishers'
+temporary files in them; the index with its WAL and shared-memory files; temporary files; locks;
+and `unrecognized`: every other file or directory beneath the telemetry directory, `v1/blobs/`
+included, counted once with its count, its allocated bytes and up to 16 of its names, never read
+and never removed, so the total is every allocated byte beneath the directory), each sealed
+segment with its seal's `exit` and whether its capture is `complete` or why not (`recovered, drops unknown` for a
 segment recovered without its writer's seal, `recovered`, `12 dropped`); the segments by state —
 `live` (a writer holds its lock), `unsealed` (nobody holds it: a crashed writer's, recoverable),
 `sealed` and `corrupt` (interior corruption, never read); the runs the index knows; the Attempts

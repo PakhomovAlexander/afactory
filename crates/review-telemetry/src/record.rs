@@ -776,8 +776,9 @@ fn bound_text(
 
 /// Bound one untrusted string array: each element redacted whole, then, when an element is over
 /// [`MAX_STRING_BYTES`] or the array over [`MAX_ARRAY_ELEMENTS`] or [`MAX_ARRAY_BYTES`], either
-/// named as one blob occurrence holding the whole redacted array by `oversized` (at `content`),
-/// or cut at the bound with the trailing marker element.
+/// offered whole and unredacted to `oversized`, which at `content` names one blob occurrence
+/// holding the array redacted as one document, or cut at the bound with the trailing marker
+/// element.
 fn bound_texts(
     key: &str,
     values: &[String],
@@ -798,7 +799,7 @@ fn bound_texts(
     let over = redacted.len() > MAX_ARRAY_ELEMENTS
         || redacted.iter().any(|value| value.len() > MAX_STRING_BYTES)
         || redacted.iter().map(String::len).sum::<usize>() > MAX_ARRAY_BYTES;
-    if over && let Some(occurrence) = oversized(key, Oversized::Texts(&redacted)) {
+    if over && let Some(occurrence) = oversized(key, Oversized::Texts(values)) {
         return Value::String(format!("{OCCURRENCE_PREFIX}{occurrence}"));
     }
     let mut kept = Vec::new();
@@ -831,13 +832,14 @@ fn bound_texts(
     Value::Array(kept.into_iter().map(Value::String).collect())
 }
 
-/// A value over its bound, offered for a blob at `content`; already redacted.
+/// A value over its bound, offered for a blob at `content`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Oversized<'a> {
     /// A text value, judged whole and replaced: the blob is that text.
     Text(&'a str),
-    /// A string array, each element judged whole and replaced: the blob is the whole array as
-    /// one JSON document.
+    /// A string array as the writer gave it, before any redaction: the blob's source is the
+    /// whole array as one JSON document, redacted as one document before it is retained, so
+    /// the occurrence's `source_digest` and `original_bytes` describe the original array.
     Texts(&'a [String]),
 }
 
@@ -855,8 +857,10 @@ pub fn bound_attributes(
     let mut out = Attributes::new();
     let room = MAX_ATTRIBUTES - COUNTERS.len();
     for (key, value) in attrs.0 {
-        // A name is untrusted text too: a credential-shaped one is never written, at any level.
-        if redact::name_is_credential(&key) {
+        // A name is untrusted text too, judged as a value is (an assignment such as
+        // `API_KEY=hunter2`, a token prefix, a JWT, a long secret run): a credential-shaped one
+        // is never written, at any level.
+        if redact::looks_like_credential(&key) {
             counters.redacted += 1;
             continue;
         }

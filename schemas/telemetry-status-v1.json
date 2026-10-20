@@ -80,7 +80,7 @@
                   "locks",
                   "unrecognized"
                 ],
-                "description": "`locks` carries the lock files and the `v1/` and `segments/` directories themselves; `unrecognized` every path beneath the root that matches no known kind, each counted once with everything beneath it, never read and never removed, so the entries (with another version's directories) add up to `total`, the allocated bytes of everything beneath the root."
+                "description": "`locks` carries the lock files and the `v1/` and `segments/` directories themselves; `blobs` the `v1/blobs/` directory, its two-hex prefix directories and only the digest-named objects and publishers' temporary files in them; `unrecognized` every path beneath the root that matches no known kind, each counted once with everything beneath it, never read and never removed, so the entries (with another version's directories) add up to `total`, the allocated bytes of everything beneath the root."
               },
               "name": {
                 "type": "string",

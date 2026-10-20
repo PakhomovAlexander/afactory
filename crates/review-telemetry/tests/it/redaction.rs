@@ -450,40 +450,59 @@ fn telemetry_config_rows_withhold_secret_named_keys() {
 
 #[test]
 fn telemetry_credential_shaped_attribute_names_are_withheld() {
-    for level in [Level::Spans, Level::Content] {
+    // Every name the value rules judge a credential: a token prefix, a JWT, a long secret run,
+    // and assignment-shaped names (`API_KEY=hunter2`, `password: hunter2`).
+    let credential_names = [
+        "sk-proj-Abc123",
+        JWT,
+        HEX_RUN,
+        "API_KEY=hunter2",
+        "password: hunter2",
+    ];
+    let attrs = || {
+        credential_names.iter().fold(
+            Attrs::new()
+                .text("af.failure.reason", "plain words")
+                .id("af.context.manifest", DIGEST)
+                .int("af.count", 3),
+            |attrs, name| attrs.text(name, "ok"),
+        )
+    };
+    for level in [Level::Metrics, Level::Spans, Level::Content] {
         let temp = tempfile::tempdir().unwrap();
         let writer = crate::writer(temp.path(), level);
         let span = writer
-            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .span_start(None, None, "af.command", SpanKind::Internal, attrs())
             .unwrap();
-        writer.event(
-            &span,
-            "af.note",
-            Attrs::new()
-                .text("af.failure.reason", "plain words")
-                .text("sk-proj-Abc123", "ok")
-                .id("af.context.manifest", DIGEST)
-                .text(JWT, "ok")
-                .text(HEX_RUN, "ok")
-                .int("af.count", 3),
-        );
+        writer.event(&span, "af.note", attrs());
         writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
         let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
         let text = String::from_utf8(crate::sealed_bytes(&sealed.path)).unwrap();
-        for name in ["sk-proj-Abc123", JWT, HEX_RUN] {
-            assert!(!text.contains(name), "{level:?}: {name} written");
+        for name in credential_names {
+            let encoded = serde_json::to_string(name).unwrap();
+            assert!(!text.contains(&encoded), "{level:?}: {name} written");
         }
+        assert!(!text.contains("hunter2"), "{level:?}: hunter2 written");
         let lines = sealed_lines(&sealed.path);
-        let event = lines
-            .iter()
-            .find(|line| line["t"] == "event" && line["name"] == "af.note")
-            .unwrap();
-        let attributes = event["attributes"].as_object().unwrap();
-        // The other attributes, the typed identity included, are kept.
-        assert_eq!(attributes["af.failure.reason"], "plain words", "{level:?}");
-        assert_eq!(attributes["af.context.manifest"], DIGEST, "{level:?}");
-        assert_eq!(attributes["af.count"], 3, "{level:?}");
-        assert_eq!(attributes["af.redacted"], 3, "{level:?}");
-        assert_eq!(attributes.len(), 4, "{level:?}: {attributes:?}");
+        let mut judged = 0;
+        for line in lines.iter().filter(|line| {
+            (line["t"] == "span_start" && line["name"] == "af.command")
+                || (line["t"] == "event" && line["name"] == "af.note")
+        }) {
+            let attributes = line["attributes"].as_object().unwrap();
+            // The other attributes, the typed identity included, are kept; every
+            // credential-shaped name is omitted and counted alike.
+            assert_eq!(attributes["af.failure.reason"], "plain words", "{level:?}");
+            assert_eq!(attributes["af.context.manifest"], DIGEST, "{level:?}");
+            assert_eq!(attributes["af.count"], 3, "{level:?}");
+            assert_eq!(
+                attributes["af.redacted"],
+                credential_names.len(),
+                "{level:?}: {line}"
+            );
+            assert_eq!(attributes.len(), 4, "{level:?}: {attributes:?}");
+            judged += 1;
+        }
+        assert!(judged >= 1, "{level:?}: no record carried the attributes");
     }
 }
