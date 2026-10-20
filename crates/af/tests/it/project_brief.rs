@@ -1041,3 +1041,232 @@ fn a_node_over_the_request_cap_with_its_brief_is_refused_at_plan_time() {
         "no Attempt was dispatched"
     );
 }
+
+impl Fixture {
+    /// The fixture's one Project Store directory, once a command registered it.
+    fn project_store(&self) -> PathBuf {
+        let stores: Vec<PathBuf> = std::fs::read_dir(self.state_home().join("af/project"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.join("events.sqlite").is_file())
+            .collect();
+        assert_eq!(stores.len(), 1, "{stores:?}");
+        stores[0].clone()
+    }
+
+    /// Every event type of the Project Store's log, in order.
+    fn project_events(&self) -> Vec<String> {
+        let log = rusqlite::Connection::open(self.project_store().join("events.sqlite")).unwrap();
+        log.prepare("SELECT type FROM events ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// Commit `name` as the author `author` with the address `email`.
+    fn commit_by(&self, author: &str, email: &str, name: &str) {
+        std::fs::write(self.repo.join(name), format!("{name}\n")).unwrap();
+        git(&self.repo, &["add", "-A"]);
+        let user = format!("user.name={author}");
+        let address = format!("user.email={email}");
+        git(
+            &self.repo,
+            &["-c", &user, "-c", &address, "commit", "-qm", name],
+        );
+    }
+}
+
+/// Every file beneath `directory` with its length: what a command that records nothing leaves
+/// as it found it. SQLite's shared-memory index is a reader's, not a record.
+fn listing(directory: &Path) -> Vec<(PathBuf, u64)> {
+    let mut found = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next).unwrap() {
+            let entry = entry.unwrap();
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if !entry.file_name().to_string_lossy().ends_with("-shm") {
+                found.push((entry.path(), entry.metadata().unwrap().len()));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// `af project brief` reads and records nothing: run before any Survey it registers no Project
+/// and creates no Project Store, and after one it appends no event and writes no file there.
+#[test]
+fn af_project_brief_registers_and_records_nothing() {
+    let f = Fixture::new();
+    assert_eq!(f.af(&["project", "brief"]).status.code(), Some(1));
+    assert_eq!(f.preview(&[])["reason"], "no_survey");
+    assert!(
+        !f.state_home().join("af/project").exists(),
+        "af project brief created a Project Store"
+    );
+    assert!(!f.state_home().join("af/stores.toml").exists());
+
+    f.refresh();
+    let events = f.project_events();
+    let before = listing(&f.project_store());
+    f.ok(&["project", "brief"]);
+    f.preview(&["--variant", "orient"]);
+    f.preview(&["--variant", "none"]);
+    assert_eq!(f.project_events(), events);
+    assert_eq!(listing(&f.project_store()), before);
+}
+
+/// No Brief document (the Brief, its pin, the capture, the receipt, the preview) holds an author
+/// email or a host path, under either identity policy, a variant that renders every section
+/// included: authors whose name is an email and whose name carries one among them.
+#[test]
+fn no_brief_document_holds_an_email_or_a_host_path_under_either_identity_policy() {
+    let f = Fixture::with(|repo| {
+        let path = repo.join(".af/task-packages/fixture/oriented/pipeline.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            &path,
+            text.replace("brief = \"orient\"", "brief = \"team\""),
+        )
+        .unwrap();
+    });
+    f.commit_by("someone@example.org", "someone@example.org", "one.txt");
+    f.commit_by("Ada ada@example.net", "ada@example.net", "two.txt");
+    let root = f.root.path().to_str().unwrap().to_owned();
+    let resolved = std::fs::canonicalize(f.root.path()).unwrap();
+    let mut forbidden = vec![
+        "example.org".to_owned(),
+        "example.net".to_owned(),
+        "example.invalid".to_owned(),
+        root,
+        resolved.to_str().unwrap().to_owned(),
+    ];
+    forbidden.dedup();
+    for (index, identity) in ["name", "email_hash"].into_iter().enumerate() {
+        f.write_policy(&format!(
+            "[survey]\nidentity = \"{identity}\"\n\n[brief.team]\nsections = [\"identity\", \
+             \"tree\", \"history\", \"contributors\", \"decisions\", \"vocabulary\", \"checks\", \
+             \"hot_paths\", \"activity\"]\nmax_bytes = 262144\n"
+        ));
+        f.refresh();
+        let preview = f.preview(&["--variant", "team"]);
+        let contributors = &preview["brief"]["sections"]["contributors"]["by_identity"];
+        assert!(
+            contributors.as_array().is_some_and(|all| all.len() >= 3),
+            "{preview}"
+        );
+        let id = format!("team-{index}");
+        let file = f.task_file(&id, "fixture/oriented", None);
+        let planned = f.task(&["task", "plan", "--file", &file], 0);
+        let cas = f.cas();
+        let brief_id = f.port(&planned).unwrap();
+        assert_eq!(preview["brief_id"], brief_id.as_str());
+        let brief = cas.get_json(&brief_id).unwrap();
+        let pin = cas
+            .get_json(brief["input_artifacts"][0].as_str().unwrap())
+            .unwrap();
+        assert_eq!(pin["type"], "af/ProjectSurveyPin@1");
+        let revision = cas
+            .get_json(planned["revision_id"].as_str().unwrap())
+            .unwrap();
+        let mut documents = vec![preview.clone(), brief, pin];
+        for id in revision["payload"]["provenance"]["input_artifact_ids"]
+            .as_array()
+            .unwrap()
+        {
+            let Ok(envelope) = cas.get_json(id.as_str().unwrap()) else {
+                continue;
+            };
+            if ["af/ProjectBriefCapture@1", "af/ProjectBriefReceipt@1"]
+                .contains(&envelope["type"].as_str().unwrap_or_default())
+            {
+                documents.push(envelope);
+            }
+        }
+        assert_eq!(documents.len(), 5, "{documents:?}");
+        for document in &documents {
+            let text = document.to_string();
+            for needle in &forbidden {
+                assert!(!text.contains(needle.as_str()), "{needle} in {text}");
+            }
+        }
+    }
+}
+
+/// A Survey record of the superseded `af/ProjectSurvey@1` (ADR-0145) never feeds a Brief:
+/// `af project brief` refuses it naming the version, a plan pins nothing and previews the empty
+/// port, and the next refresh records a Survey of this release that renders again.
+#[test]
+fn a_superseded_survey_record_never_feeds_a_brief() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.refresh();
+    let store = f.project_store();
+    let log = rusqlite::Connection::open(store.join("events.sqlite")).unwrap();
+    let (sequence, payload): (i64, String) = log
+        .query_row(
+            "SELECT sequence, payload FROM events WHERE type = 'SurveyRecorded@1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let mut payload: Value = serde_json::from_str(&payload).unwrap();
+    let object = |id: &str| {
+        let hex = id.trim_start_matches("sha256:");
+        store.join("cas/objects").join(&hex[..2]).join(&hex[2..])
+    };
+    let current = object(payload["survey_id"].as_str().unwrap());
+    let text = std::fs::read_to_string(&current).unwrap();
+    assert!(text.contains("\"schema\":\"af/ProjectSurvey@2\""), "{text}");
+    let old = text.replace("af/ProjectSurvey@2", "af/ProjectSurvey@1");
+    let old_id = review_store::canonical::blob_content_id(old.as_bytes());
+    std::fs::create_dir_all(object(&old_id).parent().unwrap()).unwrap();
+    std::fs::write(object(&old_id), &old).unwrap();
+    std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::remove_file(&current).unwrap();
+    payload["survey_id"] = json!(old_id);
+    log.execute(
+        "UPDATE events SET payload = ?1, artifact_refs = ?2 WHERE sequence = ?3",
+        rusqlite::params![payload.to_string(), json!([old_id]).to_string(), sequence],
+    )
+    .unwrap();
+    drop(log);
+
+    let refused = f.af(&["project", "brief"]);
+    assert_eq!(refused.status.code(), Some(1), "{}", shown(&refused));
+    assert!(
+        shown(&refused).contains("it is af/ProjectSurvey@1, a superseded version"),
+        "{}",
+        shown(&refused)
+    );
+    let file = f.task_file("superseded", "fixture/oriented", None);
+    let planned = f.af(&[
+        "task",
+        "plan",
+        "--file",
+        &file,
+        "--state",
+        f.state.to_str().unwrap(),
+    ]);
+    assert_eq!(planned.status.code(), Some(0), "{}", shown(&planned));
+    let said = String::from_utf8(planned.stdout.clone()).unwrap();
+    assert_eq!(
+        port_line(&said),
+        "project: none (no Survey recorded; run af project refresh)"
+    );
+    assert!(
+        String::from_utf8_lossy(&planned.stderr).contains("af/ProjectSurvey@1"),
+        "{}",
+        shown(&planned)
+    );
+
+    f.refresh();
+    let preview = f.preview(&[]);
+    assert_eq!(preview["outcome"], "brief", "{preview}");
+    assert_ne!(preview["brief"]["survey_id"], old_id.as_str());
+}
