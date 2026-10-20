@@ -1125,10 +1125,10 @@ fn telemetry_usage_counters_are_canonical_decimal_strings() {
     }
 
     // The documentation prints the one declared list.
-    let docs = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/telemetry.md"),
-    )
-    .unwrap();
+    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let docs = std::fs::read_to_string(workspace.join("docs/telemetry.md")).unwrap();
     let bullet: String = docs
         .split("\n- ")
         .find(|bullet| bullet.starts_with("Token and charge counters"))
