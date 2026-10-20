@@ -1561,8 +1561,10 @@ Like `tail -f`: every live segment (or, with RUN, those that carry that run) is 
 start and followed; each span end (with its duration and status) and each event is printed as \
 the writer writes it, within `[telemetry] flush_latency_ms` of its creation while a run is open. \
 It exits when every followed writer has sealed its segment; with no live segment it waits for \
-one. With `--json` each line is one `af/telemetry-tail@1` object. When two Stores record the \
-run id it asks for `--store ID`.\n\n\
+one. With `--json` each line is one `af/telemetry-tail@1` object. With RUN it follows the run \
+in one Store for its whole lifetime: the one `--store` names, else the one that records it \
+first. When two Stores record the run id, at the start or once a second one starts it while \
+it is followed, it asks for `--store ID` before printing anything of the second.\n\n\
 Never: reads a Store, records telemetry, removes or recovers anything, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the telemetry directory cannot be read, 2 a wrong command line, a run \
 two Stores share without `--store`, or a refused `[telemetry]` key.",

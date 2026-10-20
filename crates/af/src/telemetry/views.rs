@@ -7,7 +7,9 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use review_telemetry::view::{self, Resolved, Run, Runs, Show, ShowSelection, TailSelection};
+use review_telemetry::view::{
+    self, Resolved, Run, Runs, Show, ShowSelection, TailSelection, Tailed,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -233,17 +235,20 @@ fn resolve(
             kind,
         } => Ok(Ok((store_id, trace_id, kind))),
         Resolved::Unknown => Err(format!("unknown run {run}")),
-        Resolved::Ambiguous(stores) => {
-            eprintln!(
-                "{command}: run {run} is recorded by {} Stores; name one with --store ID:",
-                stores.len()
-            );
-            for store in stores {
-                eprintln!("  --store {store}");
-            }
-            Ok(Err(2))
-        }
+        Resolved::Ambiguous(stores) => Ok(Err(ambiguous(command, run, &stores))),
     }
+}
+
+/// A run id two Stores record, without `--store`: both Stores on stderr, exit 2.
+fn ambiguous(command: &str, run: &str, stores: &[String]) -> i32 {
+    eprintln!(
+        "{command}: run {run} is recorded by {} Stores; name one with --store ID:",
+        stores.len()
+    );
+    for store in stores {
+        eprintln!("  --store {store}");
+    }
+    2
 }
 
 /// `af telemetry show`.
@@ -404,23 +409,21 @@ pub(crate) fn tail(
         Err(refusal) => return Ok(super::refused(COMMAND, json, &refusal)),
     };
     let root = super::chosen(dir, &settings)?;
-    // A run two Stores share needs `--store`; the index knows the runs ingested so far.
+    // A run two Stores share needs `--store`; the index knows the runs ingested so far. The
+    // one Store it knows the run in is the Store followed: a second one arriving later is
+    // refused as the same ambiguity.
+    let store_named = store.is_some();
+    let mut store = store;
     if let Some(run) = &run
         && store.is_none()
         && root.is_dir()
     {
         let (index, _, _) = view::open(&root)?;
-        let stores = view::stores_of(&index, run)?;
+        let mut stores = view::stores_of(&index, run)?;
         if stores.len() > 1 {
-            eprintln!(
-                "{COMMAND}: run {run} is recorded by {} Stores; name one with --store ID:",
-                stores.len()
-            );
-            for store in stores {
-                eprintln!("  --store {store}");
-            }
-            return Ok(2);
+            return Ok(ambiguous(COMMAND, run, &stores));
         }
+        store = stores.pop();
     }
     // Looking for new bytes a quarter of the flush latency apart, a record the consumer wrote is
     // printed well within `flush_latency_ms` of its creation.
@@ -429,8 +432,9 @@ pub(crate) fn tail(
     let selection = TailSelection {
         run_id: run,
         store_id: store,
+        store_named,
     };
-    view::tail(&root, &selection, interval, &|| false, &mut |line| {
+    let tailed = view::tail(&root, &selection, interval, &|| false, &mut |line| {
         let mut handle = stdout.lock();
         if json {
             serde_json::to_writer(&mut handle, line).map_err(std::io::Error::other)?;
@@ -440,7 +444,10 @@ pub(crate) fn tail(
         }
         handle.flush()
     })?;
-    Ok(0)
+    match (tailed, &selection.run_id) {
+        (Tailed::Ambiguous(stores), Some(run)) => Ok(ambiguous(COMMAND, run, &stores)),
+        _ => Ok(0),
+    }
 }
 
 pub(crate) fn render_tail_line(line: &view::TailLine) -> String {

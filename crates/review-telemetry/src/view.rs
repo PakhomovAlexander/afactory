@@ -1250,9 +1250,32 @@ pub struct TailLine {
 /// What `tail` follows.
 #[derive(Debug, Clone, Default)]
 pub struct TailSelection {
-    /// Only this run's records (its `af.run_id`, and `af.store_id` with `--store`).
+    /// Only this run's records (its `af.run_id`, in the one Store `store_id` binds).
     pub run_id: Option<String>,
+    /// The Store the run is followed in for the whole tail: the one `--store` names, or the one
+    /// the index knew the run in when following began. `None` binds the Store of the first
+    /// `af.run` of the run that arrives.
     pub store_id: Option<String>,
+    /// `store_id` was named with `--store`: another Store's run of this id is passed over.
+    /// Otherwise a second Store recording the run ends the tail as [`Tailed::Ambiguous`] before
+    /// any of its records is emitted.
+    pub store_named: bool,
+}
+
+/// How `tail` ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tailed {
+    /// Every followed segment that carried the selection was sealed, or `stop` said so.
+    Done,
+    /// A second Store recorded the selected run id while it was followed, without `--store`:
+    /// both Store ids, in order. Nothing of the second Store was emitted.
+    Ambiguous(Vec<String>),
+}
+
+/// The Store a followed run is bound to, and the second one that made it ambiguous.
+struct Binding {
+    store_id: Option<String>,
+    conflict: Option<String>,
 }
 
 /// One followed segment.
@@ -1275,9 +1298,13 @@ impl Followed {
         segment_id: &str,
         records: Vec<Record>,
         selection: &TailSelection,
+        binding: &mut Binding,
         out: &mut Vec<TailLine>,
     ) {
         for record in records {
+            if binding.conflict.is_some() {
+                return;
+            }
             self.position = Some(Position {
                 seq: record.seq(),
                 sealed: matches!(record, Record::Seal(_)),
@@ -1293,12 +1320,25 @@ impl Followed {
                                 .and_then(Value::as_str)
                                 .map(str::to_string)
                         };
-                        let matches = selection.run_id.as_ref().is_none_or(|run| {
-                            text("af.run_id").as_deref() == Some(run.as_str())
-                                && selection.store_id.as_ref().is_none_or(|store| {
-                                    text("af.store_id").as_deref() == Some(store)
-                                })
-                        });
+                        let matches = match &selection.run_id {
+                            None => true,
+                            Some(run) if text("af.run_id").as_deref() == Some(run.as_str()) => {
+                                let store = text("af.store_id").unwrap_or_default();
+                                match &binding.store_id {
+                                    None => {
+                                        binding.store_id = Some(store);
+                                        true
+                                    }
+                                    Some(bound) if *bound == store => true,
+                                    Some(_) if selection.store_named => false,
+                                    Some(_) => {
+                                        binding.conflict = Some(store);
+                                        return;
+                                    }
+                                }
+                            }
+                            Some(_) => false,
+                        };
                         if matches && let Some(trace) = &start.trace_id {
                             self.run_traces.insert(trace.clone());
                         }
@@ -1387,15 +1427,21 @@ impl Followed {
 /// every such segment's writer has sealed it (or it was recovered). Without a live segment it
 /// waits for one, looking every `interval`. `stop` ends it early (a fixture's timeout). A
 /// followed segment whose sealed file cannot be read fails it, naming the file (the reader
-/// fails closed).
+/// fails closed). The selected run stays in one Store for the whole tail (see
+/// [`TailSelection::store_id`]); a second Store recording it ends the tail as
+/// [`Tailed::Ambiguous`] once the bound Store's lines read so far are emitted.
 pub fn tail(
     root: &Path,
     selection: &TailSelection,
     interval: Duration,
     stop: &dyn Fn() -> bool,
     emit: &mut dyn FnMut(&TailLine) -> std::io::Result<()>,
-) -> Result<(), String> {
+) -> Result<Tailed, String> {
     let mut followed: BTreeMap<String, Followed> = BTreeMap::new();
+    let mut binding = Binding {
+        store_id: selection.store_id.clone(),
+        conflict: None,
+    };
     let mut root_dir: Option<Confined> = None;
     let mut segments: Option<Confined> = None;
     loop {
@@ -1434,7 +1480,10 @@ pub fn tail(
                             let offset = state.offset.min(bytes.len());
                             let prefix = reader::scan_from(&bytes, offset, state.position);
                             state.offset = prefix.kept_bytes;
-                            state.take(id, prefix.records, selection, &mut lines);
+                            state.take(id, prefix.records, selection, &mut binding, &mut lines);
+                            if binding.conflict.is_some() {
+                                break;
+                            }
                             continue;
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1456,8 +1505,11 @@ pub fn tail(
                         .into_iter()
                         .filter(|record| record.seq() > after)
                         .collect();
-                    state.take(id, rest, selection, &mut lines);
+                    state.take(id, rest, selection, &mut binding, &mut lines);
                     state.sealed = true;
+                    if binding.conflict.is_some() {
+                        break;
+                    }
                 } else if !listing.live.contains(id) && !listing.unsealed.contains(id) {
                     // Gone without a sealed file (corrupt, or removed): nothing more to follow.
                     state.sealed = true;
@@ -1474,14 +1526,19 @@ pub fn tail(
             for line in &lines {
                 emit(line).map_err(|error| format!("writing the tail: {error}"))?;
             }
+            if let (Some(bound), Some(second)) = (&binding.store_id, &binding.conflict) {
+                let mut stores = vec![bound.clone(), second.clone()];
+                stores.sort();
+                return Ok(Tailed::Ambiguous(stores));
+            }
             let carrying: Vec<&Followed> =
                 followed.values().filter(|state| state.carries).collect();
             if !carrying.is_empty() && carrying.iter().all(|state| state.sealed) {
-                return Ok(());
+                return Ok(Tailed::Done);
             }
         }
         if stop() {
-            return Ok(());
+            return Ok(Tailed::Done);
         }
         std::thread::sleep(interval);
     }

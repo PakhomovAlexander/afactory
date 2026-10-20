@@ -152,6 +152,116 @@ fn telemetry_visibility_latency_holds() {
     );
 }
 
+/// A live segment of `run-1` in the Store `store`: its command, its `af.run` and one ended
+/// `af.authority.load`, flushed. Returns the writer, the command and run span ids and the
+/// segment id.
+fn live_run_in(root: &std::path::Path, store: &str) -> (Writer, String, String, String) {
+    let writer = Writer::new(options(root, Level::Spans)).unwrap();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.flush();
+    let segment = writer.segment_id().unwrap();
+    let execution = Execution {
+        store_id: store.into(),
+        ..execution(&segment)
+    };
+    let trace = execution.trace_id();
+    let run = writer
+        .span_start(
+            Some(&trace),
+            Some(&command),
+            "af.run",
+            SpanKind::Internal,
+            execution.attributes(),
+        )
+        .unwrap();
+    let load = writer
+        .span_start(
+            Some(&trace),
+            Some(&run),
+            "af.authority.load",
+            SpanKind::Internal,
+            Attrs::new(),
+        )
+        .unwrap();
+    writer.span_end(&load, SpanStatus::Ok, Attrs::new(), 2);
+    writer.flush();
+    (writer, command, run, segment)
+}
+
+/// `tail RUN` follows one Store for its whole lifetime. With no Store known when it begins, the
+/// first `af.run` of the run binds it, and a second Store starting the same run id ends the
+/// tail as ambiguous, naming both Stores, before any record of the second is emitted; with the
+/// Store named (`--store`) the other Store's run is passed over and the tail ends at the seal.
+#[test]
+fn telemetry_tail_binds_the_store_of_the_run_it_follows() {
+    let first = "a".repeat(64);
+    let second = "b".repeat(64);
+    for named in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let (a, a_command, a_run, a_segment) = live_run_in(temp.path(), &first);
+        let (sender, received) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let root = temp.path().to_path_buf();
+        let stopping = stop.clone();
+        let selection = TailSelection {
+            run_id: Some("run-1".into()),
+            store_id: named.then(|| first.clone()),
+            store_named: named,
+        };
+        let tail = std::thread::spawn(move || {
+            view::tail(
+                &root,
+                &selection,
+                Duration::from_millis(5),
+                &|| stopping.load(Ordering::Relaxed),
+                &mut |line| {
+                    let _ = sender.send(line.clone());
+                    Ok(())
+                },
+            )
+        });
+        let line = received
+            .recv_timeout(Duration::from_secs(10))
+            .expect("tail prints the first Store's record");
+        assert_eq!(line.segment_id, a_segment);
+        let (b, b_command, b_run, _) = live_run_in(temp.path(), &second);
+        if named {
+            a.span_end(&a_run, SpanStatus::Ok, Attrs::new(), 1);
+            a.span_end(&a_command, SpanStatus::Ok, Attrs::new(), 0);
+            a.finish(SealExit::Ok).unwrap().unwrap();
+        }
+        let started = Instant::now();
+        while !tail.is_finished() && started.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        stop.store(true, Ordering::Relaxed);
+        let tailed = tail.join().unwrap().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10), "tail ended");
+        let lines: Vec<_> = std::iter::once(line).chain(received.try_iter()).collect();
+        assert!(
+            lines.iter().all(|line| line.segment_id == a_segment),
+            "only the bound Store's records: {lines:?}"
+        );
+        if named {
+            assert_eq!(tailed, view::Tailed::Done);
+            assert!(lines.iter().any(|line| line.span == "af.run"), "{lines:?}");
+        } else {
+            assert_eq!(
+                tailed,
+                view::Tailed::Ambiguous(vec![first.clone(), second.clone()])
+            );
+            a.span_end(&a_run, SpanStatus::Ok, Attrs::new(), 1);
+            a.span_end(&a_command, SpanStatus::Ok, Attrs::new(), 0);
+            a.finish(SealExit::Ok).unwrap().unwrap();
+        }
+        b.span_end(&b_run, SpanStatus::Ok, Attrs::new(), 1);
+        b.span_end(&b_command, SpanStatus::Ok, Attrs::new(), 0);
+        b.finish(SealExit::Ok).unwrap().unwrap();
+    }
+}
+
 /// A consumer blocked in a write is abandoned at the seal within the 2 s bound: ending the run
 /// waits for nothing, and no other thread writes, seals or replaces the segment, which stays
 /// `.jsonl` with what was flushed.

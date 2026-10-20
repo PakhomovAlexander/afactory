@@ -27,7 +27,8 @@
   their union, execution time as their sum, elapsed time, history `prefix:k` or `partial`, never
   complete, the open ones named beside the sealed ones in every label and total, the outcome the
   latest execution's own, by ordinal — its span tree and its live tail, which fails naming a sealed segment
-  it cannot read.
+  it cannot read and follows a run in one Store, refusing with `--store` guidance a second
+  Store that starts the same run id while it is followed.
   Telemetry is the kind `telemetry` of the Storage Budget (`af/storage@2`,
   `af/storage-prune@2`): every registered directory counted once, one entry per segment by what
   its eviction frees, a sealed one last used at its seal time, evicted under ADR-0144's rules

@@ -598,7 +598,6 @@ fn telemetry_interrupted_before_an_attempt_keeps_its_ordinal() {
     let (repo, state) = task_gc::fixture(&machine.root);
     let pauses = machine.root.join("pauses");
     std::fs::create_dir_all(&pauses).unwrap();
-    let spawned = std::time::Instant::now();
     let mut child = machine
         .command(
             &repo,
@@ -649,24 +648,32 @@ fn telemetry_interrupted_before_an_attempt_keeps_its_ordinal() {
             && transitions(&state, "run_reported").is_empty(),
         "killed before any Attempt or run report"
     );
-    // The dead writer's lease (15 s from its opening) expires before the resume takes over.
-    let expired = std::time::Duration::from_secs(16);
-    if let Some(left) = expired.checked_sub(spawned.elapsed()) {
-        std::thread::sleep(left);
-    }
-    let resumed = machine.af(
-        &repo,
-        &[],
-        &[
-            "task",
-            "run",
-            "gc-older",
-            "--execute",
-            "--state",
-            state.to_str().unwrap(),
-            "--json",
-        ],
-    );
+    // The resume takes over only once the dead writer's lease (15 s from its last renewal) has
+    // observably expired: a takeover the Store refuses as premature is retried, nothing else.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let resumed = loop {
+        let resumed = machine.af(
+            &repo,
+            &[],
+            &[
+                "task",
+                "run",
+                "gc-older",
+                "--execute",
+                "--state",
+                state.to_str().unwrap(),
+                "--json",
+            ],
+        );
+        let (stdout, stderr) = text(&resumed);
+        let premature = !resumed.status.success()
+            && format!("{stdout}\n{stderr}")
+                .contains("Task lease takeover is premature or has a stale epoch");
+        if !premature || std::time::Instant::now() >= deadline {
+            break resumed;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    };
     let (stdout, stderr) = text(&resumed);
     assert!(resumed.status.success(), "{stdout}\n{stderr}");
     assert_eq!(markers(&state), [1, 2]);
@@ -2642,5 +2649,93 @@ fn telemetry_a_run_two_stores_share_asks_for_the_store() {
     assert_eq!(
         one["run"]["executions"]["list"].as_array().unwrap().len(),
         1
+    );
+}
+
+/// Design §10: `tail RUN` binds the Store it follows for its whole lifetime. Started while Store
+/// A alone records RUN (live), it follows A; when Store B starts the same run id before A seals,
+/// tail emits A's records only and then refuses the ambiguity as a run two Stores share at the
+/// start is refused: exit 2, both Stores named, `--store` asked for.
+#[test]
+fn telemetry_tail_refuses_a_second_store_that_appears_while_following() {
+    let machine = Machine::new();
+    let root = machine.telemetry();
+    let other = "6".repeat(64);
+    let a_segment = "1700000000000-4242-0a1b2c3d";
+    let mut tailed: Option<(std::process::ExitStatus, String, Vec<Value>)> = None;
+    golden_execution(&root, a_segment, 1_700_000_000_000, 1, &mut |a| {
+        if tailed.is_some() {
+            return;
+        }
+        a.flush();
+        let mut tail = machine
+            .command(
+                &machine.root,
+                &[],
+                &["telemetry", "tail", GOLDEN_RUN, "--json"],
+            )
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = tail.stdout.take().unwrap();
+        let (sender, received) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            use std::io::BufRead as _;
+            for line in std::io::BufReader::new(stdout).lines() {
+                let _ = sender.send(line.unwrap());
+            }
+        });
+        // Tail follows A: its first record reached it.
+        let first = received
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("tail prints A's record");
+        // B starts the same run id while A is still live, and stays live until tail has ended.
+        let mut b_tailed = None;
+        execution_in_store(
+            &root,
+            &other,
+            "1700000200000-4244-0c1d2e3f",
+            1_700_000_200_000,
+            1,
+            &mut |b| {
+                if b_tailed.is_some() {
+                    return;
+                }
+                b.flush();
+                let started = std::time::Instant::now();
+                let status = loop {
+                    if let Some(status) = tail.try_wait().unwrap() {
+                        break status;
+                    }
+                    if started.elapsed() > std::time::Duration::from_secs(60) {
+                        let _ = tail.kill();
+                        panic!("tail did not refuse the second Store");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                };
+                b_tailed = Some(status);
+            },
+        );
+        let mut stderr = String::new();
+        std::io::Read::read_to_string(&mut tail.stderr.take().unwrap(), &mut stderr).unwrap();
+        reader.join().unwrap();
+        let lines = std::iter::once(first)
+            .chain(received.try_iter())
+            .map(|line| serde_json::from_str::<Value>(&line).unwrap())
+            .collect();
+        tailed = Some((b_tailed.unwrap(), stderr, lines));
+    });
+    let (status, stderr, lines) = tailed.unwrap();
+    assert_eq!(status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("--store"), "{stderr}");
+    assert!(
+        stderr.contains(GOLDEN_STORE) && stderr.contains(&other),
+        "names both Stores: {stderr}"
+    );
+    assert!(!lines.is_empty());
+    assert!(
+        lines.iter().all(|line| line["segment_id"] == a_segment),
+        "A's records only: {lines:?}"
     );
 }

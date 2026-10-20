@@ -342,8 +342,12 @@ Like `tail -f`: every live segment (with `RUN`, those that carry that run) is re
 and followed, and each span end (with its duration and status) and each event is printed as its
 writer writes it. It exits once every followed writer has sealed its segment; with no live
 segment it waits for one. `--json` prints one `af/telemetry-tail@1` object per line
-([`schemas/telemetry-tail-v1.json`](../schemas/telemetry-tail-v1.json)). It never recovers or
-removes a segment.
+([`schemas/telemetry-tail-v1.json`](../schemas/telemetry-tail-v1.json)). With `RUN` it follows
+that run in one Store for its whole lifetime: the one `--store ID` names, else the one Store
+that records it when tail starts or, when none does yet, the first whose `af.run` arrives. When
+two Stores record the run id without `--store`, at the start or once a second Store starts it
+while it is followed, tail lists both and asks for `--store ID` (exit 2) before it prints
+anything of the second. It never recovers or removes a segment.
 
 ## `af telemetry gc`
 
