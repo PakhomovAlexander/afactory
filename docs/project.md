@@ -342,9 +342,18 @@ change no count.
 The record is canonical JSON: every map sorted by key, every list in the order stated below, and
 every number a decimal string of an integer (counts, bytes, lines, Unix seconds, and shares in
 basis points of their population rounded down: `3333` for one third of three, `0` for an empty
-population). It is byte-identical for the same head, refs, policy, cutoff,
-Surveyor version and git version. `cutoff_unix_s`, the clock when the Survey started, is the only
-field that depends on when it was taken.
+population). A complete Survey is byte-identical for the same head, `refs_digest`,
+`policy_digest`, Surveyor version, git version, cutoff and `previous_survey_id`, so two forced
+refreshes of an unchanged checkout at one cutoff differ only in `previous_survey_id`.
+`cutoff_unix_s`, the clock when the Survey started, is the only field that depends on when it was
+taken. A Survey that is not complete records where it stopped, under `stopped`, so a replay of
+its record reproduces it: the `section` the deadline cut first, or, when no deadline cut one, the
+first section that is not complete; that section's `reason`; `item`, how many items of that
+section the Survey's clock charged (the one that found the deadline and the section's last check
+included, `0` for a section the deadline left unstarted); under `history` the `commit` its walk
+stopped in, or else the oldest commit it reached; and under `max_file_bytes` the `path` of the
+first declaration of the section that was not read. `af project survey` prints it as `stopped
+history at item 9, commit 219207013596 (max_commits)`. A complete Survey has no `stopped`.
 
 | Section | Holds |
 |---|---|
@@ -361,8 +370,9 @@ A line is a newline of a text blob, one with no NUL in its first 8 KiB, at or un
 its bytes only; symlinks and submodules are of language `other`. Each section carries
 `completeness`: `complete`, `partial` with what it reached, or `unavailable`, and the bound it
 reached as `reason` when it is not complete: `max_wall_ms`, `max_record_bytes`,
-`manifest_bytes`, `temp_bytes` (these two `identity`'s alone), `max_paths`, `max_commits`,
-`max_entries` or `max_file_bytes`, the first that holds in that order. A section
+`malformed_record` (`history`'s and `contributors`' alone), `manifest_bytes`, `temp_bytes` (these
+two `identity`'s alone), `max_paths`, `max_commits`, `max_entries` or `max_file_bytes`, the first
+that holds in that order. A section
 is never `complete` when it cut a list or left a value unmeasured. The record's own `completeness` is `unavailable` only when every section is,
 otherwise `partial` when any section is not complete.
 
@@ -370,10 +380,24 @@ The measurement policy, so the same inputs give the same bytes: commits are walk
 in `git rev-list --date-order` order, newest first, and cut at `max_commits`, which makes
 `history` and `contributors` partial and records the oldest commit reached; a window holds a
 commit when `cutoff - window < committer time <= cutoff`, so a commit authored long before it
-was committed counts by its committer date; a merge counts as a commit and a merge and adds no
+was committed counts by its committer date; the walk includes merges and runs `--numstat` with
+`--diff-merges=off`, so a merge counts as a commit and a merge and diffs nothing, adding no
 churn; renames are not detected, so a rename is a removal and an addition; a binary change is
 one file touched and zero lines; ties break by path, then by commit ID. `identity.git_version`
 is the exact `git --version` stdout, trimmed, because git decides these numbers.
+
+`git log -z` writes each commit's fields ended by NUL, a byte no author name, email, trailer or
+subject can hold, never by a byte an author can write: the commit ID, the parents, the committer
+time, the author name, the author email under `identity = "email_hash"` alone, the commit ID
+again, the `Co-Authored-By` values and the commit ID a third time. A commit cannot hold its own
+ID, so the second proves the fields before it were read whole and the third ends the trailers.
+An author name holding 0x1f, or a subject holding 0x1f and a newline, is read whole like any
+other. A record that still does not parse (a field that holds a NUL, a parent or time that is
+not one, a numstat line that is not one) stops the walk there: `history` and `contributors` are
+`partial` (or `unavailable` when it was the first commit) with reason `malformed_record`,
+`history.stopped_in` and the stopping point name the commit, and no identity is guessed from
+it. A record over 64 KiB or a commit over `max_paths` names the commit it stopped in the same
+way.
 
 `max_wall_ms` is one absolute deadline for the whole Survey, its start plus `max_wall_ms`, from
 before `rev-parse HEAD` to the last section. Every git process the Surveyor starts runs under the
@@ -399,7 +423,13 @@ any CAS and no listing is buffered whole; each blob streams through the hash in 
 the listing is held in at most 16 MiB of manifest buffering and spilled in sorted runs to at most
 256 MiB of temporary manifest data, fixed ceilings no project may raise, and the runs are merged
 in the canonical path order the capture's digest hashes, so the two digests are equal. When it
-does not finish it is absent, never the digest of a part, and its temporary storage is removed:
+does not finish it is absent, never the digest of a part, and its temporary storage is removed.
+The runs live in one directory `af-tree-digest-<pid>-<random>` under `$TMPDIR`, a name the crash
+sweep of sandbox and check runtime directories knows: when a refresh is killed after it spilled,
+the next refresh, before its own digest, and the sweep of the next review or Task run remove the
+directory once no process has that pid, under the same rules (a directory whose process still
+runs is kept, a `preserved` one is left for the operator, and the tree is removed through
+directory descriptors without following a link). On every other way out:
 `tree_digest_reason` is `deadline` when the deadline passed first (every later section is then
 `unavailable`), `max_record_bytes` for a listing record over 64 KiB, and `manifest_bytes` or
 `temp_bytes` when a ceiling stopped it, which makes `identity` partial with that reason and stops
@@ -559,7 +589,7 @@ over 64 KiB, records `SurveyFailed@1`. Then nothing beyond `rev-parse HEAD`, tha
 the newest Survey's summary, and nothing is recorded:
 
 ```text
-unchanged: head 219207013596, refs df39bc03fecd7f04, policy f9da720b696edb5a, surveyor 5
+unchanged: head 219207013596, refs df39bc03fecd7f04, policy f9da720b696edb5a, surveyor 6
 ```
 
 A new commit, even one with the same tree, a new tag or branch, a policy change or a newer
@@ -743,7 +773,7 @@ and 14).
 | `workspaces/LABEL/` with `state/`, `tasks/`, `bindings.toml` | in the Project Store | `workspace new` |
 | A worktree and a branch | beside the checkout, never inside it; in the repository's git directory | `workspace new` |
 | A Survey and `SurveyRecorded@1`, or `SurveyFailed@1` | in the Project Store's `cas/` and log | `af project refresh`, `af onboard --apply` |
-| The Tree Digest's spilled manifest runs (no blob, at most 256 MiB, only when the manifest exceeds 16 MiB) and the history's private bare repository (no object, attached to the checkout's object database) | `af-tree-digest-*` and `review-kernel-tree-diff-*` under `$TMPDIR`, each removed when its step ends, a stopped one included | `af project refresh`, `af onboard --apply` |
+| The Tree Digest's spilled manifest runs (no blob, at most 256 MiB, only when the manifest exceeds 16 MiB) and the history's private bare repository (no object, attached to the checkout's object database) | `af-tree-digest-<pid>-*` and `review-kernel-tree-diff-*` under `$TMPDIR`, each removed when its step ends, a stopped one included; a spill a killed process left, by the next refresh or review or Task run once that pid is gone | `af project refresh`, `af onboard --apply` |
 
 Nothing is ever written inside a checkout: `.af/` holds declarations only
 ([ADR-0032](adr/0032-generate-review-authority-with-af-onboard.md),

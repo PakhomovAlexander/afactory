@@ -60,7 +60,8 @@ pub use removal::{
 pub use seal::{MutationSet, SealedSandbox};
 pub use stale::{
     SweepReport, attempt_directory, is_af_directory_name, remove_tree_nofollow,
-    sweep_stale_sandboxes, sweep_stale_sandboxes_in,
+    sweep_stale_sandboxes, sweep_stale_sandboxes_in, sweep_stale_tree_digests,
+    sweep_stale_tree_digests_in,
 };
 pub use task_build_cache::{
     Ensured, KEY_LOCK, TaskBuildCacheKeyLock, TaskBuildCacheLock, Uninspectable, WARM_KINDS,

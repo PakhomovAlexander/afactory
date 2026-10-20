@@ -23,6 +23,12 @@ use crate::capture::CaptureError;
 use crate::git::{GitError, Repo};
 use crate::manifest::{EntryKind, ManifestDigest, digest_reader_with_buffer, encode_path};
 
+/// The name prefix of the directory that holds one digest's spilled runs:
+/// `af-tree-digest-<pid>-<random>` in the temporary root, so the crash sweep of
+/// `review_sandbox::stale` attributes a directory a killed process left to that process and
+/// removes it once no process has that pid, under the rules of the sandbox and check runtime
+/// directories.
+pub const SPILL_PREFIX: &str = "af-tree-digest-";
 /// Memory the manifest may take before a sorted run is spilled: 16 MiB.
 pub const MANIFEST_BUFFER_BYTES: u64 = 16 * 1024 * 1024;
 /// Temporary storage the spilled runs may take: 256 MiB.
@@ -192,7 +198,7 @@ impl<'a> Runs<'a> {
         if self.directory.is_none() {
             self.directory = Some(
                 tempfile::Builder::new()
-                    .prefix("af-tree-digest-")
+                    .prefix(&format!("{SPILL_PREFIX}{}-", std::process::id()))
                     .tempdir_in(self.temp_parent)?,
             );
         }
@@ -506,6 +512,16 @@ mod tests {
         assert!(
             runs.runs.len() >= 2,
             "runs spilled, the last one still held"
+        );
+        // The runs live in one directory named for this process, which the crash sweep knows.
+        let names: Vec<String> = std::fs::read_dir(parent.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        let owned = format!("{SPILL_PREFIX}{}-", std::process::id());
+        assert!(
+            names.len() == 1 && names[0].starts_with(&owned) && names[0].len() > owned.len(),
+            "{names:?}"
         );
         let (mut order, spilled) = runs.into_order().ok().unwrap();
         assert_eq!(drained(&mut order), ["a%20b", "a-b", "a/c", "b", "d", "e"]);

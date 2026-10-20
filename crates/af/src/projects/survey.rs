@@ -48,8 +48,11 @@ use super::{Checkout, Git, Log, ProjectStore, RUN_ID};
 /// statistics, history from objects alone, the digest-only Tree Digest, calendar dates, the
 /// clock through every finishing step and every declaration, and name hashing of blank names
 /// under both identity policies. 5: the blank-or-control check over the whole author name
-/// before any cut, so a control character past 256 bytes hashes the name.
-pub(crate) const SURVEYOR_VERSION: u64 = 5;
+/// before any cut, so a control character past 256 bytes hashes the name. 6: the log read in
+/// NUL-separated fields with the commit ID repeated, so author data never splits a record and a
+/// record that does not parse stops the walk with `malformed_record`, and the stopping point of
+/// a Survey that is not complete.
+pub(crate) const SURVEYOR_VERSION: u64 = 6;
 
 /// Why a refresh whose deadline passed before its survey key existed failed.
 const KEY_DEADLINE: &str = "the survey key could not be computed within max_wall_ms";
@@ -738,7 +741,7 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         git_version: &git_version,
     };
     measure::hand_over(observed);
-    let measured = collect::measure(&git, &basis, started, clock);
+    let measured = collect::measure(&git, &basis, started, clock.clone());
     let mut store = open(checkout)?;
     let sections = match measured {
         Ok(sections) => sections,
@@ -764,10 +767,11 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         sections.vocabulary.completeness,
         sections.checks.completeness,
     ]);
-    let survey = ProjectSurveyV1 {
+    let mut survey = ProjectSurveyV1 {
         schema: PROJECT_SURVEY_V1.into(),
         completeness,
         previous_survey_id: log.newest_survey().map(|newest| newest.survey_id.clone()),
+        stopped: None,
         identity: sections.identity,
         tree: sections.tree,
         history: sections.history,
@@ -776,6 +780,7 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         vocabulary: sections.vocabulary,
         checks: sections.checks,
     };
+    survey.stopped = stopped(&survey, &clock, sections.stopped_in);
     let bytes = record_bytes(&survey)?;
     if bytes.len() as u64 > policy.max_survey_bytes.min(MAX_SURVEY_BYTES) {
         let reason = format!(
@@ -789,6 +794,26 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         return Err(reason);
     }
     store.record_survey(&survey, bytes).map(Refreshed::Recorded)
+}
+
+/// Where `survey` stopped when it is not complete (ADR-0152 clause 1): the stopping point its
+/// sections determine, with the items the Clock charged in that section and, for a `history`
+/// that reached no commit, the commit a record stopped its walk in.
+fn stopped(
+    survey: &ProjectSurveyV1,
+    clock: &measure::Clock,
+    stopped_in: Option<String>,
+) -> Option<review_core::project::SurveyStopV1> {
+    let mut stop = survey.stopping_point()?;
+    let section = SECTION_NAMES
+        .into_iter()
+        .find(|name| *name == stop.section)
+        .unwrap_or_default();
+    stop.item = clock.charged(section).into();
+    if stop.section == "history" && stop.commit.is_none() {
+        stop.commit = stopped_in;
+    }
+    Some(stop)
 }
 
 /// The newest recorded Survey of the Project while it is uncollected (ADR-0152 clause 13): a
@@ -854,6 +879,18 @@ pub(crate) fn summary_of(recorded: &Recorded, only: &[String]) -> Vec<String> {
     lines
 }
 
+/// `  stopped       <section> at item <n>[, commit <12 hex>][, <path>] (<reason>)`.
+fn stop_line(stop: &review_core::project::SurveyStopV1) -> String {
+    let mut at = format!("{} at item {}", stop.section, stop.item.get());
+    if let Some(commit) = &stop.commit {
+        at.push_str(&format!(", commit {}", short(commit)));
+    }
+    if let Some(path) = &stop.path {
+        at.push_str(&format!(", {path}"));
+    }
+    format!("  stopped       {at} ({})", stop.reason.as_str())
+}
+
 fn all_lines(recorded: &Recorded) -> Vec<String> {
     let survey = &recorded.survey;
     let mut lines = vec![
@@ -865,6 +902,9 @@ fn all_lines(recorded: &Recorded) -> Vec<String> {
         ),
         format!("  completeness  {}", survey.completeness.as_str()),
     ];
+    if let Some(stop) = &survey.stopped {
+        lines.push(stop_line(stop));
+    }
     let state = |completeness: SurveyCompletenessV1,
                  reason: Option<review_core::project::SurveyReasonV1>| {
         match (completeness, reason) {

@@ -64,14 +64,27 @@ email first of all.
    `tree`, `history`, `contributors`, `decisions`, `vocabulary` and `checks`; `activity` is
    PJ5's. Each section carries `completeness` (`complete`, `partial` or `unavailable`) and, when
    not complete, the bound it reached as `reason` (`max_wall_ms`, `max_record_bytes`,
-   `manifest_bytes`, `temp_bytes`, `max_paths`, `max_commits`, `max_entries` or
-   `max_file_bytes`, the first that holds in that order; `manifest_bytes` and `temp_bytes` are
-   `identity`'s alone, the ceilings that stopped its Tree Digest); an unavailable section holds
-   nothing else, and a section that cut a list, or left a value unmeasured, is never complete. A list cut at its maximum, or stopped
+   `malformed_record`, `manifest_bytes`, `temp_bytes`, `max_paths`, `max_commits`, `max_entries`
+   or `max_file_bytes`, the first that holds in that order; `manifest_bytes` and `temp_bytes` are
+   `identity`'s alone, the ceilings that stopped its Tree Digest, and `malformed_record` is
+   `history`'s and `contributors`', a log record that does not parse, clause 7); an unavailable
+   section holds nothing else, and a section that cut a list, or left a value unmeasured, is never complete. A list cut at its maximum, or stopped
    by the deadline, records how many items it saw under `seen`, by list name. The
    record's `completeness` folds them: `unavailable` only when every section is, otherwise
    `partial` when any section is not complete. `previous_survey_id` names the Survey before it
-   in the same Project Store. The record holds no host path, Provider ID or author email.
+   in the same Project Store. A Survey that is not complete records its exact stopping point,
+   `stopped`, so a replay of its record reproduces it: the `section` the deadline cut first, or,
+   when no deadline cut one, the first section that is not complete; that section's `reason`;
+   `item`, how many items of that section the Survey's clock charged (clause 9's items, the one
+   that found the deadline and the section's last check included, `0` for a section the deadline
+   left unstarted); under `history` the `commit` its walk stopped in (`history.stopped_in`, which
+   names the commit a record over 64 KiB, a commit over `max_paths` or a malformed record stopped
+   the walk in), else the oldest commit it reached; and under `max_file_bytes` the `path` of the
+   first declaration of the section, in its order, that was not read. A complete Survey has no
+   `stopped`, and the validator and the schema refuse a record whose `stopped` is absent, present
+   when complete, or names another section, reason, commit or path than its sections do. `af
+   project survey` prints it on its own line, `stopped <section> at item <n>[, commit <12
+   hex>][, <path>] (<reason>)`. The record holds no host path, Provider ID or author email.
 2. **Storage.** The record goes into the Project Store's CAS; its ID is the CAS digest of its
    canonical bytes. `SurveyRecorded@1` {`survey_id`, `head`, `cutoff_unix_s`, `completeness`,
    `policy_digest`, `surveyor_version`, `refs_digest`, `previous_survey_id` when any,
@@ -110,7 +123,7 @@ email first of all.
 3. **Reuse on an unchanged survey key.** The survey key is the head commit, `refs_digest` =
    `sha256:` + hex(SHA-256 of the exact stdout of the one ref observation, `git for-each-ref
    --format=%(refname)%09%(objectname)%09%(objecttype)%09%(creatordate:unix) refs/heads
-   refs/tags`), the `policy_digest` and the `surveyor_version` (now 5); `activity`'s watermark
+   refs/tags`), the `policy_digest` and the `surveyor_version` (now 6); `activity`'s watermark
    joins it in PJ5. That observation is the Survey's only read of ref names: its lines, each a
    name, a target, the target's object type and the creator date git resolves through that
    target (an annotated tag's tagger time, a commit's committer time, none for another object),
@@ -124,7 +137,7 @@ email first of all.
    answer, since the event names a head). Before any work beyond `rev-parse HEAD`, that `for-each-ref`,
    reading the policy and reading the log, a newest uncollected Survey whose record is
    `complete` and carries an unchanged survey key is reused: the command prints one line,
-   `unchanged: head <12 hex>, refs <16 hex>, policy <16 hex>, surveyor 5`, with that Survey's
+   `unchanged: head <12 hex>, refs <16 hex>, policy <16 hex>, surveyor 6`, with that Survey's
    summary and records nothing. A new commit, tag or branch, a policy
    change or a newer Surveyor records a new Survey; a newest Survey that is `partial` or
    `unavailable` is measured again; `af project refresh --force` records one regardless of the
@@ -139,8 +152,12 @@ email first of all.
    lasts past the deadline, and `AF_TEST_SURVEY_DIGEST_MANIFEST_BYTES` and
    `AF_TEST_SURVEY_DIGEST_TEMP_BYTES` lower the Tree Digest's ceilings (clause 9); a release
    build reads none of them. A window holds a commit when `cutoff - window < committer time <= cutoff`, for windows
-   of 30, 90 and 365 days. So a Survey is byte-identical for the same head, refs, policy,
-   cutoff, Surveyor version and git version.
+   of 30, 90 and 365 days. So a complete Survey is byte-identical for the same head,
+   `refs_digest`, `policy_digest`, Surveyor version, git version, cutoff and
+   `previous_survey_id`, the last being the one field two forced refreshes of an unchanged
+   checkout at one cutoff differ in; and a Survey that is not complete records where it stopped
+   (clause 1), the one input the clock alone decides, so a replay of its record reproduces that
+   stopping point.
 5. **Policy.** The `[survey]` table of `.af/af.toml` sits in the project layer and deep-merges
    like every other table; every key is typed and an unknown one is refused, `refresh` included
    until PJ4. The keys and defaults are `max_wall_ms = 60000`, `max_commits = 100000`,
@@ -203,9 +220,9 @@ email first of all.
    files and bytes only, and `files_without_lines` says how many there were. Symlinks and
    submodules are language `other`; root-level entries group under the directory `.`. The
    measurement policy: commits are walked from the head in `git rev-list --date-order` order,
-   newest first, and cut at `max_commits` (beyond it `partial`, with `oldest_reached`); a merge
-   counts as a commit and a merge and contributes no churn (the walk prints no diff for a
-   merge, `--diff-merges=off`, which is what `--numstat --no-merges` would count); renames are
+   newest first, and cut at `max_commits` (beyond it `partial`, with `oldest_reached`); the
+   walk includes merges and runs `--numstat` with `--diff-merges=off`, so a merge counts as a
+   commit and a merge and diffs nothing, contributing no churn; renames are
    not detected (`--no-renames`), so a rename is a removal and an addition; a binary numstat
    entry (`-` `-`) is one file touched and zero lines; ties break by path, then by commit ID.
    `history` comes from `git rev-list --count`, that `git log --numstat` and one `git ls-tree
@@ -237,7 +254,19 @@ email first of all.
    --diff-algorithm=myers` and `log.showRoot=true`, so neither a
    checkout's configuration nor a program it names changes or computes a count, and
    `identity.git_version` records the exact `git --version` stdout, trimmed, because git
-   decides these numbers.
+   decides these numbers. The log is `-z` and its format ends every field with `%x00`, a byte
+   no author name, email, trailer or subject git writes can hold, never with a byte an author
+   can write (0x1f split a name of 256 printable bytes and 0x1f, and the fields after it, into
+   another identity): the commit ID, the parents, the committer time, the author name, the
+   author email under `email_hash` alone, the commit ID again, the `Co-Authored-By` values and
+   the commit ID a third time. A commit cannot hold its own ID, so the second proves the fields
+   before it were read whole and the third ends the trailers, however many there are; a numstat
+   line is told from a commit by its tabs. A record that still does not parse (a field that
+   holds a NUL, so the ID is not where the format repeats it, a parent or a time that is not
+   one, a numstat line or an item that is neither) stops the walk at that commit: `history` and
+   `contributors` are `partial` with reason `malformed_record` (`unavailable` when it was the
+   first commit), the commits before it counted, and `history.stopped_in` and the stopping
+   point name it; no identity is ever taken from such a record.
 8. **Decisions, vocabulary, checks.** `decisions` holds every decision record (clause 5) up to
    `max_entries`, sorted by number, then path, with `count` and `by_status`; a Brief variant
    picks the newest N in PJ3. Each has the number (the four leading digits), the path, the
@@ -297,7 +326,15 @@ email first of all.
    listing is read once into sorted runs held in at most 16 MiB of manifest buffering, each run
    beyond it spilled to at most 256 MiB of temporary manifest data in the system's temporary
    directory, fixed ceilings no project may raise, and the runs are merged into one `cat-file
-   --batch` in canonical order, under the Survey's deadline. Its digest equals
+   --batch` in canonical order, under the Survey's deadline. The runs live beneath a
+   process-owned temporary root the crash sweeper reaps: one directory
+   `af-tree-digest-<pid>-<random>` (`review_source_git::digest::SPILL_PREFIX`) that
+   `review_sandbox::stale` recognises beside `af-sandbox-<pid>-*` and `af-check-<pid>-*`, under
+   the same rules: kept while a process with that pid exists, left for the operator when marked
+   `preserved`, and otherwise removed through directory descriptors opened without following a
+   link. The sweep of review and Task work takes such a directory, and the Surveyor sweeps the
+   `af-tree-digest-` directories alone before each digest, so a refresh killed after it spilled
+   leaves its runs only until the next refresh or run. Its digest equals
    `Manifest::content_digest` of the committed capture of the same tree: both hash the entry
    count first and then every entry in the byte order of its encoded path through one framing,
    `ManifestDigest`. When it does not finish it is absent with `tree_digest_reason`: `deadline`
@@ -549,7 +586,17 @@ is 4,572 bytes plus the length of `git --version` less 11 (4,595 bytes with
   2-second deadline with the Survey partial and the refresh within 2 s more; digests a blob
   over `max_file_bytes`, a tree beyond `max_paths` and spilled manifest runs equal to the
   committed capture's digest, and leaves the digest absent with `manifest_bytes` or
-  `temp_bytes` and no `af-tree-digest-` directory behind; refuses `--section` with `--json`
+  `temp_bytes` and no `af-tree-digest-` directory behind; kills one refresh after its spill and
+  sweeps its directory at the next refresh while a live refresh's is kept; reads a name of 256
+  printable bytes and 0x1f as its `h:` key under both identity policies and a subject holding
+  0x1f and a newline as one agent-assisted commit; leaves `history` and `contributors`
+  partial with `malformed_record`, `stopped_in` and the stopping point naming the commit, when a
+  git writes a commit's time as no number, under both identity policies; counts a four-commit history with one merge
+  at `max_commits` 4, 3 and 1 (four commits, a merge and three authors; three, the merge and
+  three; the merge alone and its author, no churn); finds two forced complete refreshes at one
+  cutoff equal but for `previous_survey_id`, and a partial one at `max_commits` 7 recorded twice
+  with the same stopping point, printed by `af project survey`, and a deadline in the decisions'
+  finishing step stopping at its fourth item; refuses `--section` with `--json`
   with exit 2 while `--json` prints the complete record; refuses a 65-pattern language map;
   leaves the history counts unchanged under an untracked `.gitattributes`, a
   `.git/info/attributes` and a local diff driver that each turn the checkout's own `2 0` into
@@ -584,11 +631,17 @@ is 4,572 bytes plus the length of `git --version` less 11 (4,595 bytes with
   65-pattern language map, hash blank and control-character names under both policies, a
   control character past the 256-byte cut included, refuse an unreadable record naming the
   sequence and the error, bind a tombstone to every identity field of its record and refuse an
-  event that differs, fold the ref observation into tags and branches, and check the clock
-  after a finishing step.
+  event that differs, fold the ref observation into tags and branches, check the clock
+  after a finishing step, read a 0x1f name whole under both policies and a trailer holding 0x1f
+  and a newline as one, and stop at a NUL in a name (under both policies), a time, a parent, a
+  numstat count or an item that is no record with `malformed_record` naming the commit and
+  passing on the commits before it. `review_sandbox::stale` sweeps a dead `af-tree-digest-`
+  directory and keeps a live and a preserved one.
   `crates/review-source-git/tests/it/tree_digest.rs` proves the digest-only path equal to the
   committed capture held and spilled, its typed stops with nothing left in temporary storage,
   and the private object repository reading `2 0` where the checkout reads `- -`.
   `crates/review-core/tests/schema_parity/project.rs` pins
-  the record, both events and the history document, and `crates/af/tests/it/cli_surface.rs` the
+  the record, its stopping point (required exactly when not complete, the deadline's section
+  over an earlier bound, `history`'s commit, the first declaration not read, `malformed_record`
+  in the walk's sections alone), both events and the history document, and `crates/af/tests/it/cli_surface.rs` the
   help.

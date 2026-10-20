@@ -329,6 +329,9 @@ pub enum SurveyReasonV1 {
     /// A streamed record (a tree entry, a numstat line, a ref) is longer than
     /// [`MAX_SURVEY_RECORD_BYTES`].
     MaxRecordBytes,
+    /// `history` and `contributors` only: a commit's `log` record does not parse, so the walk
+    /// stopped at it rather than guess its identity.
+    MalformedRecord,
     /// `identity` only: the Tree Digest stopped at the fixed manifest buffer of 16 MiB.
     ManifestBytes,
     /// `identity` only: the Tree Digest stopped at the fixed 256 MiB of temporary manifest data.
@@ -344,6 +347,7 @@ impl SurveyReasonV1 {
             Self::MaxEntries => "max_entries",
             Self::MaxFileBytes => "max_file_bytes",
             Self::MaxRecordBytes => "max_record_bytes",
+            Self::MalformedRecord => "malformed_record",
             Self::ManifestBytes => "manifest_bytes",
             Self::TempBytes => "temp_bytes",
         }
@@ -685,9 +689,13 @@ pub struct SurveyHistoryV1 {
     pub windows: SurveyWindowsV1,
     pub first_commit_unix_s: DecimalU64,
     pub last_commit_unix_s: DecimalU64,
-    /// The oldest commit reached, when `max_commits` stopped the walk.
+    /// The oldest commit reached, when the walk did not reach every reachable commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oldest_reached: Option<String>,
+    /// The commit whose record stopped the walk unfolded: one over `max_paths`, a record over
+    /// [`MAX_SURVEY_RECORD_BYTES`] or a malformed record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_in: Option<String>,
     pub churn_90d: BTreeMap<String, SurveyChurnV1>,
     /// Most commits first, ties by path.
     pub hot_paths: Vec<SurveyHotPathV1>,
@@ -883,6 +891,30 @@ pub struct SurveyChecksV1 {
     pub seen: SurveySeenV1,
 }
 
+/// Where a Survey that is not complete stopped (ADR-0152 clause 1), so a replay of its record
+/// reproduces it: the section the deadline cut first, or, when no deadline cut one, the first
+/// section that is not complete; that section's reason; how many of its items the Survey's
+/// clock charged; and the commit or the path the stop names, when it names one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurveyStopV1 {
+    /// One of the section names, in record order.
+    pub section: String,
+    pub reason: SurveyReasonV1,
+    /// The items of the section the Survey's clock charged before the section was recorded: the
+    /// one that found the deadline and the section's last check included, `0` for a section the
+    /// deadline left unstarted.
+    pub item: DecimalU64,
+    /// `history` only: the commit whose record stopped the walk (`stopped_in`), else the oldest
+    /// commit reached when the walk did not reach every commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Under `max_file_bytes`: the first declaration of the section, in its order, that was not
+    /// read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
 /// `af/ProjectSurvey@1`: one immutable, kernel-measured description of a Project at one head.
 /// Canonical JSON; every number a decimal string; no host path, Provider ID or email.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -893,6 +925,9 @@ pub struct ProjectSurveyV1 {
     /// The Survey before this one in the same Project Store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_survey_id: Option<String>,
+    /// Where the Survey stopped: present exactly when it is not complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<SurveyStopV1>,
     pub identity: SurveySectionV1<SurveyIdentityV1>,
     pub tree: SurveySectionV1<SurveyTreeV1>,
     pub history: SurveySectionV1<SurveyHistoryV1>,
@@ -960,6 +995,99 @@ impl ProjectSurveyV1 {
         ]
     }
 
+    /// The stopping point the sections determine, without its `item`, which only the clock
+    /// knew: the section the deadline cut first, else the first section that is not complete,
+    /// with its reason, `history`'s commit when its measurement names one, and under
+    /// `max_file_bytes` the first declaration of the section that was not read. `None` for a
+    /// complete Survey.
+    pub fn stopping_point(&self) -> Option<SurveyStopV1> {
+        let sections = self.sections();
+        let (section, _, reason) = sections
+            .iter()
+            .find(|(_, _, reason)| *reason == Some(SurveyReasonV1::MaxWallMs))
+            .or_else(|| {
+                sections
+                    .iter()
+                    .find(|(_, completeness, _)| *completeness != SurveyCompletenessV1::Complete)
+            })?;
+        let reason = (*reason)?;
+        let commit = match *section {
+            "history" => self.history.body.as_ref().and_then(|history| {
+                history
+                    .stopped_in
+                    .clone()
+                    .or_else(|| history.oldest_reached.clone())
+            }),
+            _ => None,
+        };
+        let path = match (*section, reason) {
+            ("decisions", SurveyReasonV1::MaxFileBytes) => {
+                self.decisions.body.as_ref().and_then(|decisions| {
+                    decisions
+                        .records
+                        .iter()
+                        .find(|record| record.status.as_deref() == Some(SURVEY_UNREADABLE))
+                        .map(|record| record.path.clone())
+                })
+            }
+            ("vocabulary", SurveyReasonV1::MaxFileBytes) => self
+                .vocabulary
+                .body
+                .as_ref()
+                .map(|vocabulary| vocabulary.file.clone()),
+            ("checks", SurveyReasonV1::MaxFileBytes) => self
+                .checks
+                .body
+                .as_ref()
+                .and_then(|checks| checks.unreadable.first().cloned()),
+            _ => None,
+        };
+        Some(SurveyStopV1 {
+            section: (*section).to_string(),
+            reason,
+            item: 0.into(),
+            commit,
+            path,
+        })
+    }
+
+    /// Whether `stopped` is the stopping point the sections determine: present exactly when the
+    /// Survey is not complete, on the section, reason and path they name, and on the commit
+    /// `history` names, which only a `history` without a measurement may name alone.
+    fn validate_stop(&self) -> Result<(), String> {
+        let (stopped, expected) = match (&self.stopped, self.stopping_point()) {
+            (None, None) => return Ok(()),
+            (Some(stopped), Some(expected)) => (stopped, expected),
+            (Some(_), None) => return Err("a complete Survey names no stopping point".into()),
+            (None, Some(_)) => {
+                return Err("a Survey that is not complete names where it stopped".into());
+            }
+        };
+        if stopped.section != expected.section || stopped.reason != expected.reason {
+            return Err(format!(
+                "the Survey stopped in `{}` with {}, not in `{}` with {}",
+                expected.section,
+                expected.reason.as_str(),
+                stopped.section,
+                stopped.reason.as_str()
+            ));
+        }
+        if stopped.path != expected.path {
+            return Err("the stopping point's path is the first declaration not read".into());
+        }
+        let commit_holds = match (&expected.commit, &stopped.commit) {
+            (Some(expected), stopped) => stopped.as_ref() == Some(expected),
+            (None, None) => true,
+            (None, Some(commit)) => {
+                expected.section == "history" && self.history.body.is_none() && is_commit_id(commit)
+            }
+        };
+        if !commit_holds {
+            return Err("the stopping point's commit is the one `history` stopped in".into());
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.schema != PROJECT_SURVEY_V1 {
             return Err(format!("a Survey's schema is {PROJECT_SURVEY_V1}"));
@@ -993,6 +1121,16 @@ impl ProjectSurveyV1 {
                 reason.as_str()
             ));
         }
+        // A malformed log record stops the walk, and only the sections it folds.
+        if let Some((name, _, _)) = self.sections().into_iter().find(|(name, _, reason)| {
+            *reason == Some(SurveyReasonV1::MalformedRecord)
+                && !matches!(*name, "history" | "contributors")
+        }) {
+            return Err(format!(
+                "the Survey section `{name}` cannot stop at malformed_record: a log record"
+            ));
+        }
+        self.validate_stop()?;
         self.identity.validate_with("identity", validate_identity)?;
         self.tree.validate_with("tree", validate_tree)?;
         self.history.validate_with("history", validate_history)?;
@@ -1207,12 +1345,12 @@ fn validate_history(history: &SurveyHistoryV1) -> Result<(), String> {
     {
         return Err("the counts and windows are ordered".into());
     }
-    if history
-        .oldest_reached
-        .as_deref()
-        .is_some_and(|commit| !is_commit_id(commit))
+    if [&history.oldest_reached, &history.stopped_in]
+        .into_iter()
+        .flatten()
+        .any(|commit| !is_commit_id(commit))
     {
-        return Err("the oldest commit reached is a commit ID".into());
+        return Err("the oldest commit reached and the one stopped in are commit IDs".into());
     }
     if history.hot_paths.len() > MAX_SURVEY_HOT_PATHS
         || !history.hot_paths.iter().all(|hot| {
