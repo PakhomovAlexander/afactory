@@ -145,10 +145,7 @@ pub fn read_manifest(cas: &Cas, id: &str) -> Result<Manifest, String> {
         .map_err(|e| e.to_string())?;
     manifest.validate().map_err(|e| e.to_string())?;
     for entry in &manifest.entries {
-        if crate::decode_path(&entry.path)
-            .split(|byte| *byte == b'/')
-            .any(|part| part.eq_ignore_ascii_case(b".git"))
-        {
+        if crate::git_refuses_path(&crate::decode_path(&entry.path), entry.kind) {
             return Err("Task tree contains Git administration paths".into());
         }
         if cas.verify(&entry.content).map_err(|e| e.to_string())? != entry.size {
@@ -371,6 +368,44 @@ mod origin_tests {
         assert_eq!(task.task_id, "layout-l3b");
         assert_eq!(task.port, "snapshot");
         task.validate().unwrap();
+    }
+
+    /// Task trees refuse Git administration through the predicate materialization uses.
+    #[test]
+    fn a_task_manifest_naming_git_administration_is_refused_in_every_spelling() {
+        let (_directory, cas) = cas();
+        let content = cas.put(b"x").unwrap();
+        let manifest = |path: &str, kind: crate::EntryKind| {
+            let entry = crate::Entry {
+                path: path.into(),
+                kind,
+                content: content.clone(),
+                size: 1,
+            };
+            let manifest = Manifest::new(vec![entry]).unwrap();
+            cas.put_json(&serde_json::to_value(manifest).unwrap())
+                .unwrap()
+        };
+        let refused = [
+            (".git/config", crate::EntryKind::File),
+            (".GIT/HEAD", crate::EntryKind::File),
+            (".git./x", crate::EntryKind::File),
+            ("git~1/x", crate::EntryKind::File),
+            (".gitmodules", crate::EntryKind::Symlink),
+        ];
+        for (path, kind) in refused {
+            let error = read_manifest(&cas, &manifest(path, kind)).unwrap_err();
+            assert_eq!(
+                error, "Task tree contains Git administration paths",
+                "{path}"
+            );
+        }
+        for (path, kind) in [
+            (".gitmodules", crate::EntryKind::File),
+            (".github/ci.yml", crate::EntryKind::File),
+        ] {
+            read_manifest(&cas, &manifest(path, kind)).unwrap();
+        }
     }
 
     #[test]

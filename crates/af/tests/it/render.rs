@@ -432,3 +432,72 @@ fn review_plan_prints_each_model_line_and_refuses_an_effort_level_codex_does_not
         assert!(message.contains(part), "{part}:\n{message}");
     }
 }
+
+/// File names are repository-authored: `af review plan` shows one holding ESC, BEL or a newline
+/// with every control character escaped visibly in text mode, while `--json` carries the names
+/// exactly as before, escaped by JSON itself.
+#[test]
+fn review_plan_text_output_shows_control_characters_in_changed_paths_escaped() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded_repo_with_a_change(root.path());
+    let hostile = ["esc\u{1b}]0;PWNED\u{7}name", "new\nline"];
+    for name in hostile {
+        std::fs::write(repo.join(name), "hostile name\n").unwrap();
+    }
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "hostile names"]);
+    let state_home = root.path().join("state");
+    let repo_arg = repo.to_str().unwrap();
+    let mut plan_args = vec![
+        "review",
+        "plan",
+        "--repo",
+        repo_arg,
+        "--pipeline",
+        ".af/pipelines/review.toml",
+        "--policy-rev",
+        "HEAD~2",
+        "--base",
+        "HEAD~1",
+        "--candidate",
+        "HEAD",
+    ];
+    let planned = af(&state_home, &plan_args);
+    assert!(planned.status.success(), "{}", stderr(&planned));
+    let raw_controls: Vec<u8> = planned
+        .stdout
+        .iter()
+        .copied()
+        .filter(|byte| (*byte < 0x20 && *byte != b'\n') || *byte == 0x7f)
+        .collect();
+    assert!(
+        raw_controls.is_empty(),
+        "raw control bytes {raw_controls:?}"
+    );
+    let text = String::from_utf8(planned.stdout).unwrap();
+    assert!(!text.chars().any(|c| c.is_control() && c != '\n'), "{text}");
+    for line in [
+        "  change  esc\\u{1b}]0;PWNED\\u{7}name",
+        "  change  new\\u{a}line",
+    ] {
+        assert!(text.lines().any(|row| row == line), "{line}:\n{text}");
+    }
+    assert!(
+        !text.lines().any(|row| row == "line"),
+        "a forged line:\n{text}"
+    );
+
+    plan_args.push("--json");
+    let planned = af(&state_home, &plan_args);
+    assert!(planned.status.success(), "{}", stderr(&planned));
+    let plan: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    let changed: Vec<&str> = plan["subject"]["changed_paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|path| path.as_str().unwrap())
+        .collect();
+    assert_eq!(changed, ["esc\u{1b}]0;PWNED\u{7}name", "new\nline"]);
+    let json = String::from_utf8(planned.stdout).unwrap();
+    assert!(json.contains(r#""esc\u001b]0;PWNED\u0007name""#), "{json}");
+}

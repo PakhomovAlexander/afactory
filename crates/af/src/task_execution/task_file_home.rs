@@ -67,24 +67,38 @@ fn toplevel(directory: &Path) -> Option<std::path::PathBuf> {
     std::fs::canonicalize(text.trim_end_matches(['\n', '\r'])).ok()
 }
 
-/// A bounded, prompt-free git invocation in `directory` that still sees the user's own
-/// configuration: an advisory check that ignored their excludes would contradict the
-/// `git check-ignore` it names. Only prompting and lock taking are switched off.
+/// A bounded, prompt-free git invocation in `directory`, isolated as capture isolates it
+/// ([`review_source_git::git::isolated_command`]): a checkout's `.git/config` is as untrusted as
+/// its tree, so no fsmonitor, hook or filter it configures runs for advice, and no global or
+/// system configuration is read. The one piece of the user's own setup it keeps is their global
+/// excludes file at git's default place, so the advice still agrees with the
+/// `git check-ignore` it names.
 fn git_command(directory: &Path) -> std::process::Command {
-    let mut command = std::process::Command::new("git");
-    command.env_clear();
-    for name in ["PATH", "HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"] {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
+    let mut command = review_source_git::git::isolated_command(directory, Path::new("/dev/null"));
+    let excludes = global_excludes(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    );
+    if let Some(excludes) = excludes {
+        let mut setting = std::ffi::OsString::from("core.excludesFile=");
+        setting.push(excludes);
+        command.arg("-c").arg(setting);
     }
     command
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("LC_ALL", "C")
-        .current_dir(directory)
-        .arg("--no-optional-locks");
-    command
+}
+
+/// Git's default global excludes file, `$XDG_CONFIG_HOME/git/ignore` or else
+/// `$HOME/.config/git/ignore`, when it is a file. Patterns only: it can name nothing to run.
+fn global_excludes(
+    xdg_config_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    let base = match xdg_config_home.filter(|value| !value.is_empty()) {
+        Some(xdg) => std::path::PathBuf::from(xdg),
+        None => std::path::PathBuf::from(home.filter(|value| !value.is_empty())?).join(".config"),
+    };
+    let file = base.join("git/ignore");
+    file.is_file().then_some(file)
 }
 
 /// Whether git ignores `path`. `None` when git could not answer — a missing binary, a directory
@@ -157,5 +171,60 @@ mod tests {
         let from_sub = advisory(&inside, &sub).expect("no advice from a subdirectory");
         assert!(from_sub.contains("`ticket.json`"), "{from_sub}");
         assert_eq!(advisory(&held, &sub), None);
+    }
+
+    /// A repository's own `.git/config` cannot run its fsmonitor (or a hook) through the
+    /// advisory `check-ignore`, which reads the index.
+    #[test]
+    fn the_advice_never_runs_a_repository_configured_fsmonitor() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("tracked.txt"), b"tracked\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        let marker = root.join("MARKER");
+        let script = root.join("fsmonitor.sh");
+        let body = format!("#!/bin/sh\necho ran >> '{}'\n", marker.display());
+        std::fs::write(&script, body).unwrap();
+        let permissions = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        git(
+            &repo,
+            &["config", "core.fsmonitor", script.to_str().unwrap()],
+        );
+        git(&repo, &["config", "core.hooksPath", root.to_str().unwrap()]);
+
+        let inside = repo.join("ticket.json");
+        std::fs::write(&inside, b"{}").unwrap();
+        let warning = advisory(&inside, &repo).expect("no advice given");
+        assert!(warning.contains("ticket.json"), "{warning}");
+        assert!(
+            !marker.exists(),
+            "the repository's fsmonitor ran: {}",
+            std::fs::read_to_string(&marker).unwrap_or_default()
+        );
+    }
+
+    #[test]
+    fn the_global_excludes_file_is_found_where_git_looks_by_default() {
+        let root = tempfile::tempdir().unwrap();
+        let xdg = root.path().join("xdg");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(xdg.join("git")).unwrap();
+        std::fs::create_dir_all(home.join(".config/git")).unwrap();
+        assert_eq!(global_excludes(Some(xdg.clone().into()), None), None);
+        std::fs::write(xdg.join("git/ignore"), "*.json\n").unwrap();
+        std::fs::write(home.join(".config/git/ignore"), "*.json\n").unwrap();
+        assert_eq!(
+            global_excludes(Some(xdg.clone().into()), Some(home.clone().into())),
+            Some(xdg.join("git/ignore"))
+        );
+        assert_eq!(
+            global_excludes(Some("".into()), Some(home.clone().into())),
+            Some(home.join(".config/git/ignore"))
+        );
+        assert_eq!(global_excludes(None, None), None);
     }
 }

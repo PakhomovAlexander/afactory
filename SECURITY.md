@@ -58,9 +58,15 @@ replaced with a closed summary before capture; exact parsed usage remains separa
 bounded auth-error policy, not a promise to identify every secret in arbitrary successful output.
 
 **Git never runs your hooks or your config.** Snapshot capture invokes `git` with
-`env_clear()`, `core.hooksPath=/dev/null`, `core.fsmonitor=false`, and
-`GIT_CONFIG_GLOBAL=/dev/null`, so a hostile checkout or a global config cannot execute code
-through capture.
+`env_clear()`, an empty `HOME`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and
+`-c` overrides that include `core.hooksPath=/dev/null` and `core.fsmonitor=false`, and only
+plumbing that applies no filter, so a hostile checkout or a global config cannot execute code
+through capture. The browser that bare `af` opens and the advice about a Task file inside the
+checkout run `git` the same way, and the browser compares working-tree files with `HEAD` itself
+rather than through `git diff` or `git hash-object`. A tree that names a path git refuses to check
+out (`.git` in any case or NTFS/HFS+ spelling, a symlinked `.gitmodules`) is refused at capture,
+materialization and Task binding, so no sandbox receives a `.git/config` from the tree under
+review.
 
 **`trusted_local` is a filesystem boundary, not security isolation.** A `trusted_local`
 sandbox is a materialised copy of a snapshot in a temporary directory. It keeps the input

@@ -1248,3 +1248,71 @@ fn tree_listed(screen: &Screen) -> bool {
         .iter()
         .any(|row| row.contains("providers/"))
 }
+
+/// The checkout's `.git/config` is as untrusted as its tree (SECURITY.md): an fsmonitor and a
+/// clean filter it configures, with a committed `* filter=pwn` and edited declarations in the
+/// working tree, never run while bare `af` loads every pane and marks the drift.
+#[test]
+fn the_browser_runs_nothing_a_hostile_git_config_names() {
+    let (_temp, root) = temp_root();
+    let repo = hub(&root);
+    std::fs::write(repo.join(".gitattributes"), "* filter=pwn\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(
+        &repo,
+        &["commit", "-qm", "every path through the pwn filter"],
+    );
+    for edited in [
+        ".af/pipelines/review.toml",
+        ".af/task-packages/fixture/implementation/pipeline.toml",
+        ".af/task-packages/fixture/implementer/worker.toml",
+    ] {
+        let path = repo.join(edited);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{text}\n# edited in the working tree\n")).unwrap();
+    }
+    let marker = root.join("MARKER");
+    let script = root.join("pwn.sh");
+    let body = format!("#!/bin/sh\necho \"$0 $*\" >> '{}'\ncat\n", marker.display());
+    std::fs::write(&script, body).unwrap();
+    let permissions = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&script, permissions).unwrap();
+    let script = script.to_str().unwrap();
+    for (key, value) in [
+        ("core.fsmonitor", script),
+        ("core.hooksPath", root.to_str().unwrap()),
+        ("filter.pwn.clean", script),
+        ("filter.pwn.smudge", script),
+        ("filter.pwn.required", "true"),
+    ] {
+        git(&repo, &["config", key, value]);
+    }
+    assert!(!marker.exists(), "the fixture itself ran the filter");
+
+    let mut browser = Browser::launch(&repo, &root.join("home"));
+    // Every pane has loaded once no folder of the bar carries a discovery spinner.
+    let loaded = |screen: &Screen| {
+        let bar = bar_rows(screen);
+        ["  v pipelines/", "  v workers/", "  v tasks/"]
+            .iter()
+            .all(|folder| bar.iter().any(|row| row == folder))
+            && screen.text().contains("SETTINGS  project: hub")
+    };
+    browser.wait_for("every pane loaded", loaded);
+    // The Workers pane reads `HEAD` and its drift once its folder is opened (ADR-0122).
+    browser.keys(b"]]]]");
+    browser.keys(b"\r");
+    let listed = |screen: &Screen| {
+        let bar = bar_rows(screen);
+        let shown = |name: &str| bar.iter().any(|row| row.starts_with(name));
+        shown("      fixture/evaluator") && shown("      fixture/implementer")
+    };
+    browser.wait_for("the Workers in the bar", listed);
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+    assert!(
+        !marker.exists(),
+        "checkout-configured code ran: {}",
+        std::fs::read_to_string(&marker).unwrap_or_default()
+    );
+}

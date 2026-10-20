@@ -93,7 +93,7 @@ pub fn apply_tree_diff(
         let decoded: Vec<PathBuf> = manifest
             .entries
             .iter()
-            .map(|entry| checked_relative_path(&entry.path))
+            .map(|entry| checked_relative_path(&entry.path, entry.kind))
             .collect::<Result<_, _>>()?;
         refuse_symlink_ancestors(manifest, &decoded)?;
     }
@@ -111,7 +111,7 @@ pub fn apply_tree_diff(
         .chain(changes.modified.iter().map(|index| &to.entries[*index]));
     let mut parents: BTreeSet<PathBuf> = BTreeSet::new();
     for entry in removals {
-        let relative = checked_relative_path(&entry.path)?;
+        let relative = checked_relative_path(&entry.path, entry.kind)?;
         remove_entry(root, &relative, &entry.path)?;
         let mut ancestor = relative.parent();
         while let Some(directory) = ancestor {

@@ -81,3 +81,12 @@ as the kernel now does, hears nothing.
 The kernel's own Task files under `.af/tasks/warm-layers/` are captured in the Store and belong
 outside the checkout; `docs/design/worker-warm-layers-plan.md` keeps its historical commands and
 says so. Their removal from git is a plain deletion and carries no further decision.
+
+**Amended 2026-10-20.** The advisory `git check-ignore` and `git rev-parse --show-toplevel` run
+isolated as capture runs git (`review_source_git::git::isolated_command`): the environment
+cleared, `HOME=/dev/null`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and every
+capture `-c` override, so a checkout-configured fsmonitor or hook never runs for advice. Of the
+user's own setup only the global excludes file at git's default place
+(`$XDG_CONFIG_HOME/git/ignore`, else `~/.config/git/ignore`) is still named, so the warning keeps
+agreeing with `git check-ignore` in the usual setup; a `core.excludesFile` set elsewhere in a
+global config is no longer consulted.

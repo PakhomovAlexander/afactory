@@ -668,6 +668,14 @@ pub(crate) fn listed(
 
 /// The blobs of a `git ls-tree -z` listing, path to object id.
 fn entries(listing: &[u8]) -> BTreeMap<String, String> {
+    blob_entries(listing)
+        .into_iter()
+        .map(|(path, (_, object))| (path, object))
+        .collect()
+}
+
+/// The blobs of a `git ls-tree -z` listing, path to mode and object id.
+fn blob_entries(listing: &[u8]) -> BTreeMap<String, (String, String)> {
     let mut found = BTreeMap::new();
     for entry in listing.split(|byte| *byte == 0) {
         // `<mode> SP <type> SP <object> TAB <path>`
@@ -677,9 +685,11 @@ fn entries(listing: &[u8]) -> BTreeMap<String, String> {
         let (meta, path) = (&entry[..tab], &entry[tab + 1..]);
         let meta = String::from_utf8_lossy(meta);
         let mut fields = meta.split(' ');
-        let (_, kind, object) = (fields.next(), fields.next(), fields.next());
-        if let (Some("blob"), Some(object), Ok(path)) = (kind, object, std::str::from_utf8(path)) {
-            found.insert(path.to_owned(), object.to_owned());
+        let (mode, kind, object) = (fields.next(), fields.next(), fields.next());
+        if let (Some(mode), Some("blob"), Some(object), Ok(path)) =
+            (mode, kind, object, std::str::from_utf8(path))
+        {
+            found.insert(path.to_owned(), (mode.to_owned(), object.to_owned()));
         }
     }
     found
@@ -749,117 +759,93 @@ pub(crate) fn blobs(root: &Path, objects: &[&str]) -> Result<BTreeMap<String, Ve
     Ok(found)
 }
 
-/// Which of `paths` differ between the working tree and `commit` in bytes, mode or existence,
-/// as git judges it, by one `git diff`. A git that cannot answer marks every path, as
-/// `differs` would each.
+/// Which of `paths` differ between the working tree and `commit` in bytes, mode or existence.
+/// A git that cannot answer marks every path, as `differs` would each.
+///
+/// Never `git diff` against the working tree, and never `git hash-object`: both hash working-tree
+/// files through the clean filter a checkout's own `.gitattributes` and `.git/config` select, and
+/// a worktree diff refreshes the index through its fsmonitor. The committed side is read as
+/// capture reads it (`ls-tree` and `cat-file --batch`, which apply no filter), the working-tree
+/// side straight from the filesystem, and the two compared here, as a dirty capture would see
+/// them. Index flags (`skip-worktree`, `assume-unchanged`) hide nothing from that comparison.
 pub(crate) fn differing(root: &Path, commit: &str, paths: &[&str]) -> BTreeSet<String> {
     if paths.is_empty() {
         return BTreeSet::new();
     }
-    // Paths, not patterns: a `*` or `[` in a file name matches only itself.
-    let mut args = vec![
-        "--literal-pathspecs",
-        "diff",
-        "--name-only",
-        "-z",
-        commit,
-        "--",
-    ];
-    args.extend_from_slice(paths);
     let everything = || paths.iter().map(|path| (*path).to_owned()).collect();
-    let Ok(listing) = git(root, &args) else {
+    let Ok(committed) = listed_paths(root, commit, paths) else {
         return everything();
     };
-    let mut differ: BTreeSet<String> = nul_separated(&listing);
-    // `git diff` trusts the index flags: a `skip-worktree` or `assume-unchanged` file is never
-    // compared. Such files, and only those, are hashed as the working tree holds them.
-    match flagged_differing(root, commit, paths) {
-        Ok(flagged) => differ.extend(flagged),
-        Err(()) => return everything(),
+    let mut objects: Vec<&str> = committed.values().map(|(_, id)| id.as_str()).collect();
+    objects.sort_unstable();
+    objects.dedup();
+    let Ok(read) = blobs(root, &objects) else {
+        return everything();
+    };
+    let mut differ = BTreeSet::new();
+    for path in paths {
+        let same = match committed.get(*path) {
+            Some((mode, id)) => {
+                let bytes = read.get(id).map(Vec::as_slice).unwrap_or_default();
+                holds(&root.join(path), mode, bytes)
+            }
+            // Not a file at `commit`: the same only while the working tree has nothing there.
+            None => std::fs::symlink_metadata(root.join(path)).is_err(),
+        };
+        if !same {
+            differ.insert((*path).to_owned());
+        }
     }
     differ
 }
 
-/// The NUL-separated names git printed.
-fn nul_separated(listing: &[u8]) -> BTreeSet<String> {
-    listing
-        .split(|byte| *byte == 0)
-        .filter(|name| !name.is_empty())
-        .map(|name| String::from_utf8_lossy(name).into_owned())
-        .collect()
+/// Whether the working-tree entry at `full` is the blob `bytes` with `mode`: the same kind
+/// (a link, a file, an executable as a dirty capture classifies it) and the same bytes.
+fn holds(full: &Path, mode: &str, bytes: &[u8]) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::symlink_metadata(full) else {
+        return false;
+    };
+    match review_source_git::EntryKind::from_mode(mode) {
+        Some(review_source_git::EntryKind::Symlink) if meta.file_type().is_symlink() => {
+            std::fs::read_link(full).is_ok_and(|target| target.as_os_str().as_bytes() == bytes)
+        }
+        Some(kind) if meta.is_file() => {
+            let executable = meta.permissions().mode() & 0o111 != 0;
+            executable == (kind == review_source_git::EntryKind::Executable)
+                && meta.len() == bytes.len() as u64
+                && std::fs::read(full).is_ok_and(|read| read == bytes)
+        }
+        _ => false,
+    }
 }
 
-/// Of `paths`, those the index marks `skip-worktree` (`S`) or `assume-unchanged` (a lowercase
-/// tag) whose working-tree copy is not the blob `commit` holds, or is gone. Nothing flagged
-/// costs one `git ls-files`.
-fn flagged_differing(root: &Path, commit: &str, paths: &[&str]) -> Result<Vec<String>, ()> {
-    let mut args = vec!["--literal-pathspecs", "ls-files", "-v", "-z", "--"];
-    args.extend_from_slice(paths);
-    let listing = git(root, &args).map_err(|_| ())?;
-    let mut flagged = Vec::new();
-    for entry in listing.split(|byte| *byte == 0) {
-        let (Some(tag), Some(path)) = (entry.first(), entry.get(2..)) else {
-            continue;
-        };
-        if *tag == b'S' || tag.is_ascii_lowercase() {
-            flagged.push(String::from_utf8_lossy(path).into_owned());
-        }
-    }
-    if flagged.is_empty() {
-        return Ok(Vec::new());
-    }
-    let (mut differ, mut present) = (Vec::new(), Vec::new());
-    for path in flagged {
-        match std::fs::symlink_metadata(root.join(&path)) {
-            Ok(meta) if meta.is_file() => present.push(path),
-            // Gone, or no longer a plain file: not what the commit holds.
-            _ => differ.push(path),
-        }
-    }
-    if present.is_empty() {
-        return Ok(differ);
-    }
-    let names: Vec<&str> = present.iter().map(String::as_str).collect();
-    let committed = listed_paths(root, commit, &names)?;
-    let mut hash = vec!["hash-object", "--"];
-    hash.extend_from_slice(&names);
-    let hashes = git(root, &hash).map_err(|_| ())?;
-    let hashes = String::from_utf8_lossy(&hashes).into_owned();
-    let hashes: Vec<&str> = hashes.lines().collect();
-    if hashes.len() != names.len() {
-        return Err(());
-    }
-    for (path, hashed) in names.iter().zip(hashes) {
-        if committed.get(*path).map(String::as_str) != Some(hashed) {
-            differ.push((*path).to_owned());
-        }
-    }
-    Ok(differ)
-}
-
-/// The blob ids `commit` holds at exactly `paths`.
-fn listed_paths(root: &Path, commit: &str, paths: &[&str]) -> Result<BTreeMap<String, String>, ()> {
+/// The mode and blob id `commit` holds at exactly `paths`.
+fn listed_paths(
+    root: &Path,
+    commit: &str,
+    paths: &[&str],
+) -> Result<BTreeMap<String, (String, String)>, ()> {
     let mut args = vec!["--literal-pathspecs", "ls-tree", "-z", commit, "--"];
     args.extend_from_slice(paths);
     let listing = git(root, &args).map_err(|_| ())?;
-    Ok(entries(&listing))
+    Ok(blob_entries(&listing))
 }
 
-/// One git command against exactly this repository: the environment is cleared, so an inherited
-/// `GIT_DIR` or `GIT_WORK_TREE` cannot point it at another repository, and only what git needs
-/// to run is passed back in.
+/// The HOME every browser git runs with: no `.gitconfig` can ever exist below `/dev/null`.
+const GIT_HOME: &str = "/dev/null";
+
+/// One git command against exactly this repository, isolated as capture isolates it
+/// ([`review_source_git::git::isolated_command`]): the environment cleared, so an inherited
+/// `GIT_DIR` or `GIT_WORK_TREE` cannot point it at another repository, no global or system
+/// configuration, and every capture override ahead of the subcommand, so the checkout's own
+/// `.git/config` cannot run a hook, an fsmonitor or a filter.
 fn git_command(root: &Path, args: &[&str]) -> Command {
     #[cfg(test)]
     spawned::note(root);
-    let mut command = Command::new("git");
-    command
-        .current_dir(root)
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("LC_ALL", "C")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .args(args);
+    let mut command = review_source_git::git::isolated_command(root, Path::new(GIT_HOME));
+    command.args(args);
     command
 }
 
@@ -888,6 +874,8 @@ fn relative(root: &Path, path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use super::*;
     use crate::config;
 
@@ -946,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn git_runs_with_a_cleared_environment_and_an_allowlist() {
+    fn git_runs_with_a_cleared_environment_and_every_capture_override() {
         let command = git_command(Path::new("/"), &["rev-parse", "HEAD"]);
         assert_eq!(command.get_program(), "git");
         let set: Vec<String> = command
@@ -956,14 +944,52 @@ mod tests {
         assert_eq!(
             set,
             [
+                "GIT_ATTR_NOSYSTEM=true",
                 "GIT_CONFIG_GLOBAL=true",
                 "GIT_CONFIG_NOSYSTEM=true",
+                "GIT_OPTIONAL_LOCKS=true",
+                "GIT_TERMINAL_PROMPT=true",
+                "HOME=true",
                 "LC_ALL=true",
-                "PATH=true"
+                "PATH=true",
+                "TZ=true",
             ]
         );
         // `env_clear` leaves nothing inherited: an outer GIT_DIR cannot reach the child.
         assert!(command.get_envs().all(|(key, _)| key != "GIT_DIR"));
+        let home = command.get_envs().find(|(key, _)| *key == "HOME");
+        assert_eq!(
+            home.and_then(|(_, value)| value),
+            Some(OsStr::new(GIT_HOME))
+        );
+        // The checkout's own configuration cannot select a hook, an fsmonitor or a filter: every
+        // capture override precedes the subcommand.
+        let args: Vec<&OsStr> = command.get_args().collect();
+        let overrides = review_source_git::git::CAPTURE_OVERRIDES;
+        assert_eq!(
+            args[..overrides.len()],
+            *overrides.iter().map(OsStr::new).collect::<Vec<_>>()
+        );
+        assert!(overrides.contains(&"core.fsmonitor=false"));
+        assert!(overrides.contains(&"core.hooksPath=/dev/null"));
+        assert_eq!(
+            args[overrides.len()..],
+            [OsStr::new("rev-parse"), OsStr::new("HEAD")]
+        );
+    }
+
+    /// No browser read runs a command that hashes working-tree files through a filter.
+    #[test]
+    fn the_browser_never_runs_a_worktree_diff_or_hash_object() {
+        let source = include_str!("pipelines.rs");
+        let production = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        for refused in ["\"diff\"", "\"hash-object\"", "\"status\""] {
+            assert!(!production.contains(refused), "{refused} in pipelines.rs");
+        }
+        let workers = include_str!("workers.rs");
+        for refused in ["\"diff\"", "\"hash-object\"", "\"status\""] {
+            assert!(!workers.contains(refused), "{refused} in workers.rs");
+        }
     }
 
     #[test]
@@ -1035,6 +1061,50 @@ mod tests {
         assert!(pane.entries.is_empty());
         assert!(pane.selected.is_none());
         assert!(pane.error.is_some());
+    }
+
+    /// The checkout's `.git/config` is as untrusted as its tree: an fsmonitor and a clean filter
+    /// it configures, with a committed `* filter=pwn`, never run while the bar reads `HEAD` and
+    /// marks a changed working tree.
+    #[test]
+    fn a_hostile_checkout_runs_nothing_while_drift_is_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        package(&root, "p", "fixture/p");
+        std::fs::write(root.join(".gitattributes"), "* filter=pwn\n").unwrap();
+        commit_all(&root, "package");
+        let marker = temp.path().join("MARKER");
+        let script = temp.path().join("pwn.sh");
+        let body = format!("#!/bin/sh\necho ran >> '{}'\ncat\n", marker.display());
+        std::fs::write(&script, body).unwrap();
+        let permissions = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        let mut config = std::fs::OpenOptions::new()
+            .append(true)
+            .open(root.join(".git/config"))
+            .unwrap();
+        let script = script.display();
+        write!(
+            config,
+            "[core]\n\tfsmonitor = {script}\n\thooksPath = {}\n[filter \"pwn\"]\n\tclean = {script}\n\tsmudge = {script}\n\trequired = true\n",
+            temp.path().display()
+        )
+        .unwrap();
+        drop(config);
+        let file = root.join(".af/task-packages/p/pipeline.toml");
+        let text = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, format!("{text}# edited\n")).unwrap();
+
+        let found = discover(&root).unwrap();
+        assert!(found.entries[0].modified, "the edit is still marked");
+        let paths = [".af/task-packages/p/pipeline.toml", ".gitattributes"];
+        let differ = differing(&root, &found.commit, &paths);
+        assert_eq!(differ.len(), 1);
+        assert!(
+            !marker.exists(),
+            "checkout-configured code ran: {}",
+            std::fs::read_to_string(&marker).unwrap_or_default()
+        );
     }
 
     #[test]

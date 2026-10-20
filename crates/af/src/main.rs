@@ -1733,7 +1733,7 @@ fn print_render(options: &Options) -> Result<(), String> {
     if let Some(package) = &view.package {
         eprintln!(
             "package   {} {} {}",
-            package["name"].as_str().unwrap_or("?"),
+            terminal_text(package["name"].as_str().unwrap_or("?")),
             package["version"].as_str().unwrap_or("?"),
             package["digest"].as_str().unwrap_or("?")
         );
@@ -1755,11 +1755,13 @@ fn print_render(options: &Options) -> Result<(), String> {
     for entry in &view.manifest.entries {
         eprintln!(
             "context   {} {} bytes ({})",
-            entry.name, entry.rendered_bytes, entry.required_by
+            terminal_text(&entry.name),
+            entry.rendered_bytes,
+            terminal_text(&entry.required_by)
         );
     }
     for item in &view.not_rendered {
-        eprintln!("omitted   {item}");
+        eprintln!("omitted   {}", terminal_text(item));
     }
     eprintln!("effects   no state, Gates, Provider calls, Workers, or token spend");
     let mut stdout = std::io::stdout().lock();
@@ -1826,28 +1828,35 @@ fn print_plan(options: &Options) -> Result<(), String> {
         .into_iter()
         .flatten()
     {
-        println!("  change  {}", path.as_str().unwrap_or("?"));
+        println!("  change  {}", terminal_text(path.as_str().unwrap_or("?")));
     }
     if let Some(route) = plan["route"].as_object() {
         println!(
             "route    {} => {}{}{}",
-            route
-                .get("policy")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("?"),
-            route
-                .get("pipeline_path")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("?"),
+            terminal_text(
+                route
+                    .get("policy")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?")
+            ),
+            terminal_text(
+                route
+                    .get("pipeline_path")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?")
+            ),
             route
                 .get("name")
                 .and_then(serde_json::Value::as_str)
-                .map(|name| format!(" ({name})"))
+                .map(|name| format!(" ({})", terminal_text(name)))
                 .unwrap_or_default(),
             route
                 .get("replaced")
                 .and_then(serde_json::Value::as_str)
-                .map(|replaced| format!("; replaced {replaced}: its Worker input exceeded the cap"))
+                .map(|replaced| format!(
+                    "; replaced {}: its Worker input exceeded the cap",
+                    terminal_text(replaced)
+                ))
                 .unwrap_or_default()
         );
     }
@@ -1879,7 +1888,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
     for gate in plan["pipeline"]["gates"].as_array().into_iter().flatten() {
         println!(
             "gate     {} ({})",
-            gate["name"].as_str().unwrap_or("?"),
+            terminal_text(gate["name"].as_str().unwrap_or("?")),
             if gate["required"].as_bool() == Some(true) {
                 "required"
             } else {
@@ -1950,7 +1959,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
         );
     }
     for line in &models {
-        println!("{line}");
+        println!("{}", terminal_text(line));
     }
     let bound = plan["providers"]
         .as_array()
@@ -1968,11 +1977,14 @@ fn print_plan(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// One progress line of `af review run`: findings, nodes and reasons a reviewer or the
+/// repository authored included, so it is shown through [`terminal_text`].
 fn run_progress(options: &Options, arguments: fmt::Arguments<'_>) {
+    let line = terminal_text(&arguments.to_string());
     if options.json {
-        eprintln!("{arguments}");
+        eprintln!("{line}");
     } else {
-        println!("{arguments}");
+        println!("{line}");
     }
 }
 
@@ -2027,9 +2039,9 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
                 .convergence_severity
                 .map(|severity| format!("{severity:?}").to_lowercase())
                 .unwrap_or_else(|| "-".to_string()),
-            finding.file,
+            terminal_text(&finding.file),
             finding.line.map_or("-".to_string(), |l| l.to_string()),
-            finding.title
+            terminal_text(&finding.title)
         );
         if !finding.aliases.is_empty() {
             print_indented("aliases", &finding.aliases.join(", "));
@@ -2089,7 +2101,7 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
 }
 
 fn print_indented(label: &str, value: &str) {
-    let mut lines = value.lines();
+    let mut lines = value.lines().map(terminal_text);
     println!("  {label}: {}", lines.next().unwrap_or_default());
     for line in lines {
         println!("    {line}");
@@ -2263,9 +2275,9 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     let proposals = campaign_proposals(&store, &cas, &run_id)?;
     let (finding_ids, report_ids) = finding_claim_ids(&finding, &cas)?;
 
-    println!("{} [{}]", finding.title, finding.key);
+    println!("{} [{}]", terminal_text(&finding.title), finding.key);
     if !finding.aliases.is_empty() {
-        println!("aliases={}", finding.aliases.join(","));
+        println!("aliases={}", terminal_text(&finding.aliases.join(",")));
     }
     println!(
         "severity={} effective_severity={} status={} scope={} location={}:{}",
@@ -2276,7 +2288,7 @@ fn show(options: &ShowOptions) -> Result<(), String> {
             .unwrap_or_else(|| "-".to_string()),
         finding.status.as_str(),
         finding.convergence_scope_label(),
-        finding.file,
+        terminal_text(&finding.file),
         finding
             .line
             .map_or("-".to_string(), |line| line.to_string())
@@ -2285,11 +2297,11 @@ fn show(options: &ShowOptions) -> Result<(), String> {
         println!(
             "\nreport {}: reviewer={} round={} severity={} scope={} location={}:{} id={}",
             index + 1,
-            attached.source,
+            terminal_text(&attached.source),
             attached.round,
             format!("{:?}", attached.severity).to_lowercase(),
             attached.scope_label(),
-            attached.file,
+            terminal_text(&attached.file),
             attached
                 .line
                 .map_or("-".to_string(), |line| line.to_string()),
@@ -2313,13 +2325,13 @@ fn show(options: &ShowOptions) -> Result<(), String> {
             transition
                 .note
                 .as_deref()
-                .map(|note| format!(" - {note}"))
+                .map(|note| format!(" - {}", one_line(note)))
                 .unwrap_or_default()
         );
     }
     println!(
         "current note: {}",
-        finding.current_note().unwrap_or("(none)")
+        one_line(finding.current_note().unwrap_or("(none)"))
     );
     println!("\nproposals:");
     let linked = proposals
@@ -3159,7 +3171,7 @@ fn print_report_text(report: &ReviewReportView) {
             "    suggested method: {}",
             one_line(&demand.suggested_method)
         );
-        println!("    source: {}", demand.source);
+        println!("    source: {}", terminal_text(&demand.source));
     }
     println!("Findings:");
     if report.findings.is_empty() {
@@ -3177,7 +3189,7 @@ fn print_report_text(report: &ReviewReportView) {
                 .unwrap_or("-"),
             one_line(&finding.title),
             finding.key,
-            finding.file,
+            terminal_text(&finding.file),
             finding
                 .line
                 .map_or("-".to_string(), |line| line.to_string())
@@ -3242,7 +3254,7 @@ fn print_report_markdown(report: &ReviewReportView) {
             "- **[{}, {}] {}** (`{}`)",
             demand_requirement_label(demand.requirement),
             demand_status_label(demand.status),
-            demand.claim,
+            markdown_line(&demand.claim),
             demand.demand_id
         );
         println!("  - Why: {}", markdown_line(&demand.why));
@@ -3250,7 +3262,7 @@ fn print_report_markdown(report: &ReviewReportView) {
             "  - Suggested method: {}",
             markdown_line(&demand.suggested_method)
         );
-        println!("  - Source: {}", demand.source);
+        println!("  - Source: {}", terminal_text(&demand.source));
     }
     println!();
     println!("## Findings");
@@ -3291,9 +3303,9 @@ fn print_report_markdown(report: &ReviewReportView) {
                     .convergence_severity
                     .map(severity_label)
                     .unwrap_or("-"),
-                finding.title,
+                one_line(&finding.title),
                 finding.key,
-                finding.file,
+                terminal_text(&finding.file),
                 finding
                     .line
                     .map_or("-".to_string(), |line| line.to_string())
@@ -3306,10 +3318,10 @@ fn print_report_markdown(report: &ReviewReportView) {
                 .map(|attached| {
                     format!(
                         "{} round {} scope={} at {}:{} `{}`",
-                        attached.source,
+                        terminal_text(&attached.source),
                         attached.round,
                         attached.scope_label(),
-                        attached.file,
+                        terminal_text(&attached.file),
                         attached
                             .line
                             .map_or("-".to_string(), |line| line.to_string()),
@@ -3394,7 +3406,26 @@ fn last_closed_summary(
 }
 
 fn one_line(value: &str) -> String {
-    value.lines().collect::<Vec<_>>().join(" ")
+    terminal_text(&value.lines().collect::<Vec<_>>().join(" "))
+}
+
+/// A repository- or model-authored string made safe for text-mode output: every control
+/// character (C0, DEL and C1, so ESC, BEL, a newline and a tab too) is shown as a visible
+/// `\u{…}` escape instead of reaching the terminal, so a changed path or a finding title can
+/// neither drive the terminal nor forge an output line. The control set is the one
+/// `review_runner::cli::bounded_cli_line` removes; unlike that line, nothing here is dropped,
+/// collapsed, bounded or withheld, so two distinct paths stay two distinct lines. `--json`
+/// documents never pass through it: JSON escapes them itself.
+fn terminal_text(value: &str) -> String {
+    let mut shown = String::with_capacity(value.len());
+    for c in value.chars() {
+        if c.is_control() {
+            shown.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+        } else {
+            shown.push(c);
+        }
+    }
+    shown
 }
 
 fn run_report(event: &review_core::RunEvent) -> Result<RunReportPayloadV6, String> {
@@ -3423,7 +3454,7 @@ fn render_verdict_v3(verdict: RunVerdictV3) -> String {
 }
 
 fn markdown_line(value: &str) -> String {
-    value.lines().collect::<Vec<_>>().join(" ")
+    one_line(value)
 }
 
 fn print_scope_authority_warnings(ledger: &Ledger) {
@@ -3949,6 +3980,38 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
     review_task::require_common_campaign(&cas, &store, &campaign)?;
     review_task::run(options, &cas, &mut store, &repo, &campaign)
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::{markdown_line, one_line, terminal_text};
+
+    #[test]
+    fn every_control_character_is_shown_not_sent() {
+        assert_eq!(
+            terminal_text("esc\x1b]0;PWNED\x07name"),
+            "esc\\u{1b}]0;PWNED\\u{7}name"
+        );
+        assert_eq!(
+            terminal_text("new\nline\ttab\r"),
+            "new\\u{a}line\\u{9}tab\\u{d}"
+        );
+        assert_eq!(
+            terminal_text("del\x7f c1\u{9b}31m"),
+            "del\\u{7f} c1\\u{9b}31m"
+        );
+        // Printable text, Unicode included, is untouched: nothing is dropped or bounded.
+        let plain = "src/caf\u{e9}.rs \u{2014} a title with `code` and 100% of it";
+        assert_eq!(terminal_text(plain), plain);
+        let long = "x".repeat(10_000);
+        assert_eq!(terminal_text(&long), long);
+        for value in ["esc\x1b[2J", "bell\x07", "a\nb", "c1\u{85}", "\x00"] {
+            for shown in [terminal_text(value), one_line(value), markdown_line(value)] {
+                assert!(!shown.chars().any(char::is_control), "{shown:?}");
+            }
+        }
+        assert_eq!(one_line("two\nlines\x1b"), "two lines\\u{1b}");
+    }
 }
 
 #[cfg(test)]

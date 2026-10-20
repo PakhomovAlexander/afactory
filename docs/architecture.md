@@ -169,6 +169,16 @@ disables an in-tree filter driver by name, because the name is attacker-chosen. 
 `worktree_state` was rebuilt from the index plus a direct filesystem walk. A control test runs
 plain `git status` over the same repository first, proving the marker *would* have fired.
 
+The same premise holds wherever af runs git against a checkout, not only in capture. The
+browser that bare `af` opens and the Task file advice run git through
+`review_source_git::git::isolated_command`, the cleared environment and full `-c` override set
+capture uses. The browser marks drift by comparing `ls-tree`/`cat-file` blobs with working-tree
+bytes itself, never through `git diff` or `git hash-object`. `crates/af/tests/it/tui.rs` pins
+it with an fsmonitor and a required clean filter configured in `.git/config`. A tree that names a
+path git itself refuses (`.git` in any ASCII case or NTFS/HFS+ spelling, a symlinked
+`.gitmodules`) is refused at capture, materialization and Task binding through one predicate,
+`git_refuses_path`. Otherwise its `.git/config` would configure every `git` run in the sandbox.
+
 ## Check nodes
 
 Two properties. `crates/review-check/tests/check_runner.rs` pins them against real processes;
