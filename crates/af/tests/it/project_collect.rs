@@ -1171,12 +1171,18 @@ fn a_corrupt_survey_is_collected_unreadable_and_an_unreadable_one_is_refused() {
     );
     assert_eq!(tombstone["unreadable"], "its bytes do not match its digest");
     assert!(tombstone.get("tree").is_none() && tombstone.get("history").is_none());
-    let (history, _) = machine.expect(&repo, &[], &["project", "history"], 0);
-    let line = history
-        .lines()
-        .find(|line| line.starts_with(surveys[0].as_str()))
-        .unwrap();
-    assert!(line.contains("  collected (unreadable) "), "{line}");
+    // An uncollected record af cannot read refuses replay (ADR-0152 clause 2) until it can.
+    let (history, refused) =
+        machine.expect(&repo, &[], &["project", "history"], i32::from(enforced));
+    if enforced {
+        assert!(refused.contains("whose record cannot be read"), "{refused}");
+    } else {
+        let line = history
+            .lines()
+            .find(|line| line.starts_with(surveys[0].as_str()))
+            .unwrap();
+        assert!(line.contains("  collected (unreadable) "), "{line}");
+    }
 
     if enforced {
         // Refused and reported; its record and the log are as they were.

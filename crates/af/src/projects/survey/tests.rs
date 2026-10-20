@@ -1324,3 +1324,275 @@ fn a_replay_refusal_names_the_sequence_the_field_and_what_it_differs_from() {
          sequence 9 does not record"
     );
 }
+
+#[test]
+fn a_control_character_past_the_display_bound_hashes_the_whole_name_under_both_policies() {
+    use SurveyIdentityPolicyV1::{EmailHash, Name};
+    // 256 printable bytes, then a control character: the cut would keep only the printable part.
+    for tail in ["\u{7}", "\u{7}more", "\n"] {
+        let name = format!("{}{tail}", "n".repeat(256));
+        let hashed = format!("h:{}", hash16(&name));
+        assert_eq!(
+            identity_of(name.as_bytes(), "", Name),
+            (hashed.clone(), Some(hashed.clone()), false),
+            "{tail:?}"
+        );
+        assert_eq!(
+            identity_of(name.as_bytes(), "n@x.invalid", EmailHash),
+            (hashed, None, false),
+            "{tail:?}"
+        );
+    }
+    // Without the control character the same name is its own and is cut, never hashed.
+    let printable = "n".repeat(257);
+    let (key, cut, truncated) = identity_of(printable.as_bytes(), "", Name);
+    assert!(!key.starts_with("h:") && truncated);
+    assert_eq!(cut.as_deref(), Some(&printable[..256]));
+}
+
+/// A recorded Survey's record as the fixture's expected record holds it, with `previous`.
+fn fixture_survey(previous: Option<&str>) -> ProjectSurveyV1 {
+    let text = include_str!("../../../tests/fixtures/project-survey/expected.json")
+        .replace("GIT_VERSION", "git version 2.0.0");
+    let mut survey: ProjectSurveyV1 = serde_json::from_str(&text).unwrap();
+    survey.previous_survey_id = previous.map(str::to_string);
+    survey.validate().unwrap();
+    survey
+}
+
+/// A Project Store below `home` holding two recorded Surveys, oldest first.
+fn store_with_two_surveys(home: &std::path::Path) -> (ProjectStore, [Recorded; 2]) {
+    let mut store =
+        ProjectStore::open_unrecorded(home, &format!("sha256:{}", "e".repeat(64))).unwrap();
+    let first = fixture_survey(None);
+    let first = store
+        .record_survey(&first, record_bytes(&first).unwrap())
+        .unwrap();
+    let second = fixture_survey(Some(&first.event.survey_id));
+    let second = store
+        .record_survey(&second, record_bytes(&second).unwrap())
+        .unwrap();
+    (store, [first, second])
+}
+
+/// The CAS file of `survey_id`, made writable.
+fn object_of(store: &ProjectStore, survey_id: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let object = collect::object_path(&store.directory, survey_id);
+    std::fs::set_permissions(&object, std::fs::Permissions::from_mode(0o644)).unwrap();
+    object
+}
+
+#[test]
+fn an_unreadable_record_refuses_replay_naming_the_sequence_and_the_error_and_no_field() {
+    let home = tempfile::tempdir().unwrap();
+    let (store, [first, second]) = store_with_two_surveys(home.path());
+    let sequence_of = |recorded: &Recorded| store.recorded_sequence(&recorded.event).unwrap();
+    let (first_at, second_at) = (sequence_of(&first), sequence_of(&second));
+    assert!(first_at < second_at);
+
+    // The newest record corrupt and the older one gone, neither collected.
+    let newest_object = object_of(&store, &second.event.survey_id);
+    std::fs::write(&newest_object, b"{\"schema\":\"not a survey\"}").unwrap();
+    std::fs::remove_file(object_of(&store, &first.event.survey_id)).unwrap();
+    let corrupt = format!(
+        "SurveyRecorded@1 at sequence {second_at} names Survey {}, whose record cannot be read: \
+         its bytes do not match its digest",
+        second.event.survey_id
+    );
+    let log = store.log().unwrap();
+    for refused in [
+        newest(&store, &log).map(|_| ()).unwrap_err(),
+        store.verify_chain().unwrap_err(),
+    ] {
+        assert!(refused.contains(&corrupt), "{refused}");
+        assert!(!refused.contains(&second.event.head[..12]), "{refused}");
+        assert!(!refused.contains("not a survey"), "{refused}");
+    }
+
+    // The newest readable again: the history still refuses the older one, gone from the CAS,
+    // while the newest Survey is read.
+    std::fs::write(&newest_object, &second.bytes).unwrap();
+    let refused = store.verify_chain().unwrap_err();
+    assert!(
+        refused.contains(&format!(
+            "SurveyRecorded@1 at sequence {first_at} names Survey {}, whose record cannot be \
+             read: it is not in the CAS",
+            first.event.survey_id
+        )),
+        "{refused}"
+    );
+    assert_eq!(
+        newest(&store, &log).unwrap().unwrap().event,
+        second.event,
+        "the newest Survey is read"
+    );
+}
+
+#[test]
+fn a_parse_error_names_its_place_and_never_the_bytes() {
+    let said = parse_record(b"{\"schema\": \"carol@example.invalid\"}").unwrap_err();
+    assert!(
+        said.starts_with("its bytes are not a Survey record: a data error at line 1"),
+        "{said}"
+    );
+    assert!(!said.contains("carol"), "{said}");
+    let said = parse_record(b"not json").unwrap_err();
+    assert!(
+        said.contains("a syntax error at line 1, column 2"),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_tombstone_binds_the_records_identity_and_refuses_an_event_that_disagrees() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut store, [first, second]) = store_with_two_surveys(home.path());
+    // Collection copies the identity from the record once the event is verified against it.
+    let identity = TombstoneIdentity::of_record(&second.event, &second.bytes)
+        .unwrap()
+        .unwrap();
+    let recorded = second.survey.identity.body.as_ref().unwrap();
+    assert_eq!(
+        identity,
+        TombstoneIdentity {
+            head: recorded.head.clone(),
+            cutoff_unix_s: recorded.cutoff_unix_s,
+            completeness: second.survey.completeness,
+            refs_digest: recorded.refs_digest.clone(),
+            policy_digest: recorded.policy_digest.clone(),
+            surveyor_version: recorded.surveyor_version,
+            previous_survey_id: Some(first.event.survey_id.clone()),
+        }
+    );
+    // An event that disagrees with its record is refused at collection, naming the field.
+    let digest = format!("sha256:{}", "0".repeat(64));
+    let other = SurveyRecordedPayloadV1 {
+        refs_digest: digest.clone(),
+        ..second.event.clone()
+    };
+    assert_eq!(
+        TombstoneIdentity::of_record(&other, &second.bytes).unwrap(),
+        Err("refs_digest")
+    );
+    // Bytes that are no Survey vouch for nothing.
+    assert!(TombstoneIdentity::of_record(&second.event, b"[]").is_err());
+
+    // Every identity field the tombstone binds is compared with the event.
+    let tombstone = SurveyCollectedPayloadV1 {
+        survey_id: second.event.survey_id.clone(),
+        head: identity.head.clone(),
+        cutoff_unix_s: identity.cutoff_unix_s,
+        completeness: identity.completeness,
+        refs_digest: identity.refs_digest.clone(),
+        policy_digest: identity.policy_digest.clone(),
+        surveyor_version: identity.surveyor_version,
+        previous_survey_id: identity.previous_survey_id.clone(),
+        tree: None,
+        history: None,
+        unreadable: None,
+        collected_unix_ms: 1.into(),
+    };
+    tombstone.validate().unwrap();
+    assert_eq!(untombstoned_field(&second.event, &tombstone), None);
+    let event = &second.event;
+    for (changed, field) in [
+        (
+            SurveyRecordedPayloadV1 {
+                head: A.into(),
+                ..event.clone()
+            },
+            "head",
+        ),
+        (
+            SurveyRecordedPayloadV1 {
+                refs_digest: digest.clone(),
+                ..event.clone()
+            },
+            "refs_digest",
+        ),
+        (
+            SurveyRecordedPayloadV1 {
+                cutoff_unix_s: 1.into(),
+                ..event.clone()
+            },
+            "cutoff_unix_s",
+        ),
+        (
+            SurveyRecordedPayloadV1 {
+                completeness: SurveyCompletenessV1::Partial,
+                ..event.clone()
+            },
+            "completeness",
+        ),
+        (
+            SurveyRecordedPayloadV1 {
+                policy_digest: digest.clone(),
+                ..event.clone()
+            },
+            "policy_digest",
+        ),
+        (
+            SurveyRecordedPayloadV1 {
+                surveyor_version: 99.into(),
+                ..event.clone()
+            },
+            "surveyor_version",
+        ),
+        (
+            SurveyRecordedPayloadV1 {
+                previous_survey_id: None,
+                ..event.clone()
+            },
+            "previous_survey_id",
+        ),
+    ] {
+        assert_eq!(untombstoned_field(&changed, &tombstone), Some(field));
+    }
+
+    // Collected, the newest Survey is none once its event is bound to its tombstone; an event
+    // whose head differs from its tombstone is refused before the head is used.
+    store
+        .events
+        .append(
+            collect::COLLECTION_RUN,
+            &store.cas,
+            review_store::NewEvent::new(
+                EventType::SurveyCollectedV1,
+                serde_json::to_value(&tombstone).unwrap(),
+            )
+            .at(review_core::task::collection::collected_time(1)),
+        )
+        .unwrap();
+    let mut log = store.log().unwrap();
+    assert!(newest(&store, &log).unwrap().is_none());
+    assert_eq!(store.collected(&second.event).unwrap(), Some(tombstone));
+    store.verify_chain().unwrap();
+    let Some(Outcome::Recorded(newest_event)) = log.surveys.last_mut() else {
+        panic!("the newest Survey");
+    };
+    newest_event.head = A.into();
+    let refused = newest(&store, &log).map(|_| ()).unwrap_err();
+    assert!(
+        refused.contains("names a head its tombstone SurveyCollected@1 at sequence"),
+        "{refused}"
+    );
+    assert_eq!(store.collected(&first.event).unwrap(), None);
+}
+
+#[test]
+fn an_unreadable_record_refusal_names_the_sequence_the_survey_and_the_error() {
+    let unreadable = Unreadable {
+        sequence: 4,
+        survey_id: format!("sha256:{}", "a".repeat(64)),
+        error: "its bytes do not match its digest".into(),
+    };
+    assert_eq!(
+        unreadable.to_string(),
+        format!(
+            "SurveyRecorded@1 at sequence 4 names Survey sha256:{}, whose record cannot be read: \
+             its bytes do not match its digest",
+            "a".repeat(64)
+        )
+    );
+}

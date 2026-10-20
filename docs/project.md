@@ -528,8 +528,8 @@ key = hex(SHA-256(lowercase(trim(author email))))[..16]
 with no `name`, and the email is dropped as soon as it is hashed. An author name any
 whitespace-separated token of which is an email address (an `@` between non-empty parts), such
 as `carol@fixture.invalid` or `Alice alice@example.org`, or that is blank or holds a control
-character, is replaced whole, before any cut and under both policies, by `h:` and the same
-16-hex rule applied to the name, as its key and, under `name`, its name, and is grouped by that
+character anywhere in the whole name, past the 256-byte cut included, is replaced whole,
+before any cut and under both policies, by `h:` and the same 16-hex rule applied to the name, as its key and, under `name`, its name, and is grouped by that
 key under `email_hash` too; its email is not used. The
 no-email rule covers author identities only: under either policy no author email appears in a
 record, an event, a document, a text output or an error message, while repository text
@@ -559,7 +559,7 @@ over 64 KiB, records `SurveyFailed@1`. Then nothing beyond `rev-parse HEAD`, tha
 the newest Survey's summary, and nothing is recorded:
 
 ```text
-unchanged: head 219207013596, refs df39bc03fecd7f04, policy f9da720b696edb5a, surveyor 4
+unchanged: head 219207013596, refs df39bc03fecd7f04, policy f9da720b696edb5a, surveyor 5
 ```
 
 A new commit, even one with the same tree, a new tag or branch, a policy change or a newer
@@ -600,11 +600,18 @@ before it as `previous_survey_id`.
 
 No Survey event's fields are printed or used unverified. Before it prints anything, `af project
 history` binds every `SurveyRecorded@1` of the chain to the record it names, or a collected
-Survey's to the tombstone that kept its head, cutoff and completeness, and `af project survey`,
-`af project show` and `af project refresh` bind the newest one the same way; an event that
+Survey's to the tombstone that copied every identity field of its record (head, refs, cutoff,
+completeness, policy, Surveyor version and previous Survey), and `af project survey` with and
+without `--section`, `af project show` and `af project refresh` bind the newest one the same
+way before any of its fields is used, the head an error names included; an event that
 disagrees, an older one included, is refused with `SurveyRecorded@1 at sequence <n> names a
-<field> its Survey <id> does not record` and exit 1. A record af cannot read back is the Storage
-Budget's to collect: the history lists its event, and every reader of the record refuses it.
+<field> its Survey <id> does not record` (or `its tombstone SurveyCollected@1 at sequence <m>`)
+and exit 1. The fold refuses before it reads: a record of an uncollected Survey that af cannot
+read back (gone, unreadable, corrupt) refuses replay with `SurveyRecorded@1 at sequence <n>
+names Survey <id>, whose record cannot be read: <error>`, naming no other field of the event,
+in `af project history` wherever it stands and in every reader of the newest Survey for the
+newest. A corrupt record is still the Storage Budget's to collect, and `af project refresh
+--force` records a new newest Survey without reading the old one.
 
 ```sh
 af project survey --section tree --section history

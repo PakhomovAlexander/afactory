@@ -1101,14 +1101,56 @@ pub(crate) fn judge(store: &Path, survey_id: &str) -> Judged {
         Ok(bytes) if bytes.len() as u64 > MAX_SURVEY_BYTES => {
             Judged::Left(LeftReason::Oversize, oversize(bytes.len() as u64))
         }
-        Ok(bytes) => Judged::Take {
-            unreadable: totals(survey_id, &bytes).err(),
-            identity: Some(record.identity),
+        Ok(bytes) => match totals(survey_id, &bytes) {
+            Err(why) => Judged::Take {
+                unreadable: Some(why),
+                identity: Some(record.identity),
+            },
+            // The event it names is verified against the record before the plan selects it,
+            // as the pass verifies it before its tombstone (ADR-0152 clause 13): a Survey whose
+            // event disagrees with its record is refused by preview and pass alike.
+            Ok(_) => {
+                let recorded = match recorded_of(store, survey_id) {
+                    Ok(recorded) => recorded,
+                    Err(why) => return Judged::Refused(format!("refused: {why}")),
+                };
+                match super::TombstoneIdentity::of_record(&recorded, &bytes) {
+                    Ok(Ok(_)) => Judged::Take {
+                        unreadable: None,
+                        identity: Some(record.identity),
+                    },
+                    Ok(Err(field)) => Judged::Refused(format!(
+                        "refused: its SurveyRecorded@1 names a {field} its record does not \
+                         record, so it is kept"
+                    )),
+                    Err(why) => Judged::Take {
+                        unreadable: Some(why),
+                        identity: Some(record.identity),
+                    },
+                }
+            }
         },
         Err(error) => Judged::Refused(format!(
             "refused: its record cannot be read, so it is kept: {error}"
         )),
     }
+}
+
+/// The `SurveyRecorded@1` naming `survey_id` in the log of the Project Store at `store`, read
+/// without its lock, for the plan's judgement of the Survey.
+fn recorded_of(store: &Path, survey_id: &str) -> Result<SurveyRecordedPayloadV1, String> {
+    let events = EventStore::open_read_only(store.join("events.sqlite"))
+        .map_err(|error| format!("its Project Store's log cannot be read: {error}"))?;
+    let log = Log::fold(
+        &events
+            .replay(RUN_ID)
+            .map_err(|error| format!("its Project Store's log cannot be read: {error}"))?,
+    )?;
+    log.chain()
+        .into_iter()
+        .find(|recorded| recorded.survey_id == survey_id)
+        .cloned()
+        .ok_or_else(|| "not recorded in its Project Store".to_string())
 }
 
 /// The lock of the Project Store at `store`, taken without waiting and opened with the flags
@@ -1281,7 +1323,10 @@ fn take(
                 Ok(bytes) if bytes.len() as u64 > MAX_SURVEY_BYTES => {
                     return Err(oversize(bytes.len() as u64));
                 }
-                Ok(bytes) => totals(survey_id, &bytes),
+                Ok(bytes) => totals(survey_id, &bytes).and_then(|totals| {
+                    super::TombstoneIdentity::of_record(&recorded, &bytes)
+                        .map(|identity| (identity, totals))
+                }),
                 Err(error) => {
                     return Err(format!(
                         "refused: its record cannot be read, so it is kept: {error}"
@@ -1290,18 +1335,36 @@ fn take(
             }
         }
     };
-    let (tree, history, unreadable) = match read {
-        Ok((tree, history)) => (tree, history, None),
-        Err(why) => (None, None, Some(why)),
+    // The tombstone binds the record's identity, copied after the event was verified against
+    // the record; an event that disagrees with its record is refused and the Survey kept. A
+    // record that is no Survey vouches for nothing, and its tombstone says `unreadable`.
+    let (identity, tree, history, unreadable) = match read {
+        Ok((Ok(identity), (tree, history))) => (identity, tree, history, None),
+        Ok((Err(field), _)) => {
+            return Err(format!(
+                "refused: its SurveyRecorded@1 names a {field} its record does not record, so \
+                 it is kept"
+            ));
+        }
+        Err(why) => (
+            super::TombstoneIdentity::of_event(&recorded),
+            None,
+            None,
+            Some(why),
+        ),
     };
     let tombstone = SurveyCollectedPayloadV1 {
         survey_id: survey_id.to_string(),
-        head: recorded.head.clone(),
-        cutoff_unix_s: recorded.cutoff_unix_s,
-        completeness: recorded.completeness,
         tree,
         history,
         unreadable: unreadable.clone(),
+        head: identity.head,
+        cutoff_unix_s: identity.cutoff_unix_s,
+        completeness: identity.completeness,
+        refs_digest: identity.refs_digest,
+        policy_digest: identity.policy_digest,
+        surveyor_version: identity.surveyor_version,
+        previous_survey_id: identity.previous_survey_id,
         collected_unix_ms: crate::storage::now_unix_ms().into(),
     };
     tombstone
