@@ -1260,6 +1260,59 @@ pub struct TailSelection {
     /// Otherwise a second Store recording the run ends the tail as [`Tailed::Ambiguous`] before
     /// any of its records is emitted.
     pub store_named: bool,
+    /// The sealed segments listed before the index lookup that resolved the run
+    /// ([`tail_start`]): the index read every one of them. With a run selected, every other
+    /// sealed segment is inspected for it, those of the first listing included. `None` takes
+    /// the first listing's sealed segments as the baseline.
+    pub sealed_baseline: Option<BTreeSet<String>>,
+}
+
+/// How `tail` starts: the selection to follow, or why there is nothing to follow.
+#[derive(Debug, Clone)]
+pub enum TailStart {
+    Follow(TailSelection),
+    /// No Store records the run (in the Store named, when one is): nothing is followed.
+    Unknown,
+    /// Two Stores record the run and none is named: both store ids, for `--store ID`.
+    Ambiguous(Vec<String>),
+}
+
+/// Resolve what `tail` follows before it follows anything (design §10). Without a run, every
+/// live segment. With one, the sealed segments are listed first (the baseline carried into
+/// [`tail`]), then the index ingests every new segment byte and resolves the run, within
+/// `store` when given: an unknown run or one two Stores share without `store` starts no follow
+/// loop. A segment sealed after the baseline was listed is not in it, so `tail` inspects it.
+pub fn tail_start(
+    root: &Path,
+    run_id: Option<&str>,
+    store: Option<&str>,
+) -> Result<TailStart, String> {
+    let Some(run_id) = run_id else {
+        return Ok(TailStart::Follow(TailSelection {
+            run_id: None,
+            store_id: store.map(str::to_string),
+            store_named: store.is_some(),
+            sealed_baseline: None,
+        }));
+    };
+    if !root.is_dir() {
+        return Ok(TailStart::Unknown);
+    }
+    let baseline: BTreeSet<String> = reader::list(&Layout::new(root))?
+        .sealed
+        .into_iter()
+        .collect();
+    let (index, _, _) = open(root)?;
+    Ok(match resolve(&index, run_id, store)? {
+        Resolved::Run { store_id, .. } => TailStart::Follow(TailSelection {
+            run_id: Some(run_id.to_string()),
+            store_id: Some(store_id),
+            store_named: store.is_some(),
+            sealed_baseline: Some(baseline),
+        }),
+        Resolved::Unknown => TailStart::Unknown,
+        Resolved::Ambiguous(stores) => TailStart::Ambiguous(stores),
+    })
 }
 
 /// How `tail` ended.
@@ -1405,7 +1458,8 @@ impl Followed {
                         attributes: event.attributes,
                     });
                 }
-                Record::Seal(_) => self.sealed = true,
+                // A seal read from the live `.jsonl` completes nothing: the segment is sealed
+                // once its published file validates, or once it is recovered.
                 _ => {}
             }
         }
@@ -1424,15 +1478,20 @@ impl Followed {
 /// `af telemetry tail`: follows the live segments of `root` (every one, or those that carry the
 /// selected run) and hands every span end and event to `emit` as it is written, from the start
 /// of each segment; returns once at least one followed segment carried what was selected and
-/// every such segment's writer has sealed it (or it was recovered). Without a live segment it
-/// waits for one, looking every `interval`. `stop` ends it early (a fixture's timeout). A
-/// followed segment whose sealed file cannot be read fails it, naming the file (the reader
-/// fails closed). The selected run stays in one Store for the whole tail (see
-/// [`TailSelection::store_id`]); a second Store recording it ends the tail as
-/// [`Tailed::Ambiguous`] once every pending line of the bound Store in every followed segment
-/// is emitted, whatever order the segments sort in. With a run selected, every segment first
-/// observed after the first listing is inspected for it, a sealed one included (one created
-/// and sealed between two looks): a second Store there is refused the same way.
+/// every such segment is sealed: its published sealed file read and valid, or it was
+/// recovered. A seal record read from a live `.jsonl` completes nothing while the writer still
+/// compresses or publishes. An unlocked `.jsonl` (a writer that crashed, or abandoned its
+/// publication) is recovered before it is followed, as the reader able to lock it (design §6),
+/// and its recovered sealed file read. Without a live segment it waits for one, looking every
+/// `interval`. `stop` ends it early (a fixture's timeout). A followed segment whose sealed file
+/// cannot be read, or whose live bytes hold interior corruption, fails it, naming the file and
+/// emitting nothing of that read (the reader fails closed). The selected run stays in one Store
+/// for the whole tail (see [`TailSelection::store_id`]); a second Store recording it ends the
+/// tail as [`Tailed::Ambiguous`] once every pending line of the bound Store in every followed
+/// segment is emitted, whatever order the segments sort in. With a run selected, every sealed
+/// segment outside [`TailSelection::sealed_baseline`] is inspected for it, those of the first
+/// listing included (one created and sealed between the run's lookup and the first look, or
+/// between two looks): a second Store there is refused the same way.
 pub fn tail(
     root: &Path,
     selection: &TailSelection,
@@ -1447,9 +1506,9 @@ pub fn tail(
     };
     let mut root_dir: Option<Confined> = None;
     let mut segments: Option<Confined> = None;
-    // The sealed segments of the first listing, which the index read before following began;
-    // every other sealed segment is new.
-    let mut preexisting: Option<BTreeSet<String>> = None;
+    // The sealed segments the index read before following began (the baseline carried from the
+    // run's lookup, else the first listing's); every other sealed segment is new.
+    let mut preexisting: Option<BTreeSet<String>> = selection.sealed_baseline.clone();
     let mut first = true;
     loop {
         if segments.is_none() {
@@ -1497,33 +1556,81 @@ pub fn tail(
             }
             let mut lines = Vec::new();
             for (id, state) in followed.iter_mut().filter(|(_, state)| !state.sealed) {
-                if listing.live.contains(id) || listing.unsealed.contains(id) {
+                let live_path = || directory.join(&format!("{id}{}", layout::LIVE));
+                let mut published = listing.sealed.contains(id);
+                if listing.unsealed.contains(id) {
+                    // Nobody holds it: its writer crashed or abandoned its publication, and its
+                    // prefix never changes again. Recovered here, then read sealed.
+                    match reader::recover_in(directory, id)? {
+                        // Locked since the listing (by a reader recovering it): followed live.
+                        // Gone since: what replaced it is found by listing again below.
+                        reader::Recovery::Live | reader::Recovery::AlreadySealed => {}
+                        reader::Recovery::Recovered { .. } => published = true,
+                        reader::Recovery::Corrupt { .. } => {
+                            return Err(format!(
+                                "{}: an unreadable segment (interior corruption); renamed {id}{}, \
+                                 never read",
+                                live_path().display(),
+                                layout::CORRUPT
+                            ));
+                        }
+                        reader::Recovery::Empty => {
+                            state.sealed = true;
+                            continue;
+                        }
+                    }
+                }
+                if !published && (listing.live.contains(id) || listing.unsealed.contains(id)) {
+                    if state.position.is_some_and(|position| position.sealed) {
+                        // The writer's seal is read; it is still compressing or publishing.
+                        // Nothing may follow a seal, so the live bytes are not read again.
+                        continue;
+                    }
                     match reader::read_live_in(directory, id) {
                         Ok(bytes) => {
                             let offset = state.offset.min(bytes.len());
                             let prefix = reader::scan_from(&bytes, offset, state.position);
+                            if prefix.interior_corruption {
+                                // An invalid line before a valid one: nothing of this read is
+                                // emitted and the offset is never read again.
+                                return Err(format!(
+                                    "{}: an unreadable segment (interior corruption after byte \
+                                     {}{}); never read",
+                                    live_path().display(),
+                                    prefix.kept_bytes,
+                                    prefix
+                                        .invalid
+                                        .as_deref()
+                                        .map(|reason| format!(": {reason}"))
+                                        .unwrap_or_default()
+                                ));
+                            }
                             state.offset = prefix.kept_bytes;
                             state.take(id, prefix.records, selection, &mut binding, &mut lines);
                             continue;
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                         Err(error) => {
-                            return Err(format!(
-                                "{}: {error}",
-                                directory.join(&format!("{id}{}", layout::LIVE)).display()
-                            ));
+                            return Err(format!("{}: {error}", live_path().display()));
                         }
                     }
                 }
                 // Sealed (or recovered) since: the rest is in the sealed file. A sealed file that
                 // cannot be read is the reader's failure, with its path: the segment is never
                 // taken as complete.
-                if listing.sealed.contains(id) || reader::list_in(directory)?.sealed.contains(id) {
+                if published || reader::list_in(directory)?.sealed.contains(id) {
                     let (records, _) = reader::read_sealed_in(directory, id)?;
-                    let after = state.position.map_or(0, |position| position.seq);
                     let rest: Vec<Record> = records
                         .into_iter()
-                        .filter(|record| record.seq() > after)
+                        .filter(|record| match state.position {
+                            None => true,
+                            Some(Position { seq, sealed: false }) => record.seq() > seq,
+                            // After the writer's seal: a recovery that superseded it ended the
+                            // spans it left open from that `seq` on.
+                            Some(Position { seq, sealed: true }) => {
+                                record.seq() >= seq && !matches!(record, Record::Seal(_))
+                            }
+                        })
                         .collect();
                     state.take(id, rest, selection, &mut binding, &mut lines);
                     state.sealed = true;

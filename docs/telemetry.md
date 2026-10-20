@@ -340,15 +340,23 @@ af telemetry tail [RUN] [--store ID] [--json] [--dir PATH]
 
 Like `tail -f`: every live segment (with `RUN`, those that carry that run) is read from its start
 and followed, and each span end (with its duration and status) and each event is printed as its
-writer writes it. It exits once every followed writer has sealed its segment; with no live
-segment it waits for one. `--json` prints one `af/telemetry-tail@1` object per line
-([`schemas/telemetry-tail-v1.json`](../schemas/telemetry-tail-v1.json)). With `RUN` it follows
-that run in one Store for its whole lifetime: the one `--store ID` names, else the one Store
-that records it when tail starts or, when none does yet, the first whose `af.run` arrives. When
-two Stores record the run id without `--store`, at the start or once a second Store starts it
-while it is followed (also in a segment created and sealed between two of tail's looks), tail
-prints every pending record of the followed Store, then lists both and asks for `--store ID`
-(exit 2); it prints nothing of the second. It never recovers or removes a segment.
+writer writes it. It exits once every followed segment is sealed — its sealed file published
+and readable, not merely the seal line written to the live file while the writer still
+compresses or publishes — or recovered; with no live segment it waits for one. A `.jsonl`
+segment no writer holds (a writer that crashed before its seal, or abandoned its publication)
+is recovered by tail as by any reader able to lock it, and its recovered sealed file read; tail
+never waits on a prefix that cannot change. A followed segment that cannot be read — a sealed
+file, or live bytes with an invalid line before a valid one (interior corruption) — fails tail,
+naming the file, with nothing of that read printed (exit 1). `--json` prints one
+`af/telemetry-tail@1` object per line
+([`schemas/telemetry-tail-v1.json`](../schemas/telemetry-tail-v1.json)). With `RUN` tail first
+looks the run up, within `--store ID` when given: a run no Store records there exits 1 naming
+it, and nothing is followed. It then follows that run in one Store for its whole lifetime: the
+one `--store ID` names, else the one Store that records it when tail starts. When two Stores
+record the run id without `--store`, at the start or once a second Store starts it while it is
+followed (also in a segment created and sealed during tail's startup or between two of its
+looks), tail prints every pending record of the followed Store, then lists both and asks for
+`--store ID` (exit 2); it prints nothing of the second. It never removes a segment.
 
 ## `af telemetry gc`
 
@@ -481,7 +489,7 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
     (`Writer::open_file`), `status::status`, `status::reindex`, `Index::open`,
     `Index::direct`, `index::replace`, `reader::list`, `reader::recover`,
     `reader::recover_all`, `collect::collect`, `collect::roots`, `blob::stage`,
-    `blob::reader::{exists, read, content}`, `view::open`, `view::tail`,
+    `blob::reader::{exists, read, content}`, `view::open`, `view::tail_start`, `view::tail`,
     `budget::Directory::measure`, `budget::evict` and `budget::reclaim`; `reader::read_live` and
     `reader::read_sealed` read one file a caller names (fixtures) and are never called by the
     crate itself.

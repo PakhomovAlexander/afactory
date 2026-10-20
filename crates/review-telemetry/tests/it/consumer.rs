@@ -209,6 +209,7 @@ fn telemetry_tail_binds_the_store_of_the_run_it_follows() {
             run_id: Some("run-1".into()),
             store_id: named.then(|| first.clone()),
             store_named: named,
+            sealed_baseline: None,
         };
         let tail = std::thread::spawn(move || {
             view::tail(
@@ -260,6 +261,184 @@ fn telemetry_tail_binds_the_store_of_the_run_it_follows() {
         b.span_end(&b_command, SpanStatus::Ok, Attrs::new(), 0);
         b.finish(SealExit::Ok).unwrap().unwrap();
     }
+}
+
+/// `tail` follows `root` with `selection` on a thread, every line on the channel; `stop` ends it.
+fn following(
+    root: &std::path::Path,
+    selection: TailSelection,
+) -> (
+    std::thread::JoinHandle<Result<view::Tailed, String>>,
+    mpsc::Receiver<view::TailLine>,
+    Arc<AtomicBool>,
+) {
+    let (sender, received) = mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (root, stopping) = (root.to_path_buf(), stop.clone());
+    let tail = std::thread::spawn(move || {
+        view::tail(
+            &root,
+            &selection,
+            Duration::from_millis(5),
+            &|| stopping.load(Ordering::Relaxed),
+            &mut |line| {
+                let _ = sender.send(line.clone());
+                Ok(())
+            },
+        )
+    });
+    (tail, received, stop)
+}
+
+/// Design §6 and §10: a seal record read from the live `.jsonl` completes nothing. The writer's
+/// seal line is flushed to the live file and its publication held by the hook: `tail` has read
+/// the seal and has not exited. The publication completes: `tail` exits, with every record.
+#[test]
+fn telemetry_tail_waits_for_the_published_seal() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = options(temp.path(), Level::Spans);
+    let held = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let steps = Arc::new(AtomicU64::new(0));
+    let (entered, gate, step) = (held.clone(), release.clone(), steps.clone());
+    options.write_hook = Some(Arc::new(move |_| {
+        // The first publication hook runs before the manifest's rename, after the seal line.
+        if writer::phase() == writer::Phase::Publish && step.fetch_add(1, Ordering::SeqCst) == 0 {
+            entered.store(true, Ordering::SeqCst);
+            while !gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        Ok(())
+    }));
+    let writer = Writer::new(options).unwrap();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let run = writer
+        .span_start(
+            None,
+            Some(&command),
+            "af.run",
+            SpanKind::Internal,
+            Attrs::new(),
+        )
+        .unwrap();
+    writer.run_started();
+    writer.event(&run, "af.note", Attrs::new());
+    writer.flush();
+    let id = writer.segment_id().unwrap();
+    let (tail, received, stop) = following(temp.path(), TailSelection::default());
+    let first = received
+        .recv_timeout(Duration::from_secs(10))
+        .expect("tail follows the live segment");
+    assert_eq!(first.name.as_deref(), Some("af.note"));
+
+    writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
+    writer.run_ended();
+    writer.begin_terminal();
+    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+    let sealing = writer.clone();
+    let finished = std::thread::spawn(move || sealing.finish(SealExit::Ok));
+    let waiting = Instant::now();
+    while !held.load(Ordering::SeqCst) {
+        assert!(
+            waiting.elapsed() < Duration::from_secs(5),
+            "publication held"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let live = reader::read_live(&writer.path().unwrap()).unwrap();
+    assert!(live.sealed(), "the seal line is in the live file");
+    // Many looks of tail, well inside the 2 s publication deadline.
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        !tail.is_finished(),
+        "tail does not exit on a seal record while the publication is held"
+    );
+    let layout = review_telemetry::layout::Layout::new(temp.path());
+    assert!(!layout.sealed_segment(&id).exists());
+
+    release.store(true, Ordering::SeqCst);
+    finished.join().unwrap().unwrap().unwrap();
+    let started = Instant::now();
+    while !tail.is_finished() && started.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    stop.store(true, Ordering::Relaxed);
+    assert!(tail.is_finished(), "tail exits once the seal is published");
+    assert_eq!(tail.join().unwrap().unwrap(), view::Tailed::Done);
+    let lines: Vec<_> = std::iter::once(first).chain(received.try_iter()).collect();
+    let ended: Vec<&str> = lines
+        .iter()
+        .filter(|line| line.record == "span_end")
+        .map(|line| line.span.as_str())
+        .collect();
+    assert_eq!(ended, ["af.run", "af.command"], "every record: {lines:?}");
+    assert!(lines.iter().all(|line| line.segment_id == id));
+}
+
+/// Design §10: a second Store that seals during tail's startup is still detected. Barrier
+/// controlled: the run's lookup ([`view::tail_start`]) knows Store A alone; at the barrier
+/// Store B starts the same run id and seals its segment; only then does `tail` list the
+/// directory for the first time. B's sealed segment is absent from the lookup's baseline, so it
+/// is inspected: the tail is refused as ambiguous, naming both Stores, with A's records only.
+#[test]
+fn telemetry_tail_refuses_a_second_store_sealed_during_startup() {
+    let first = "a".repeat(64);
+    let second = "b".repeat(64);
+    let temp = tempfile::tempdir().unwrap();
+    let (a, a_command, a_run, a_segment) = live_run_in(temp.path(), &first);
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let (sender, received) = mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (root, stopping, gate) = (temp.path().to_path_buf(), stop.clone(), barrier.clone());
+    let tail = std::thread::spawn(move || {
+        let selection = match view::tail_start(&root, Some("run-1"), None)? {
+            view::TailStart::Follow(selection) => selection,
+            other => return Err(format!("{other:?}")),
+        };
+        // The lookup is done; B is created and sealed before the first listing.
+        gate.wait();
+        gate.wait();
+        view::tail(
+            &root,
+            &selection,
+            Duration::from_millis(5),
+            &|| stopping.load(Ordering::Relaxed),
+            &mut |line| {
+                let _ = sender.send(line.clone());
+                Ok(())
+            },
+        )
+    });
+    barrier.wait();
+    let (b, b_command, b_run, b_segment) = live_run_in(temp.path(), &second);
+    b.span_end(&b_run, SpanStatus::Ok, Attrs::new(), 1);
+    b.span_end(&b_command, SpanStatus::Ok, Attrs::new(), 0);
+    b.finish(SealExit::Ok).unwrap().unwrap();
+    let layout = review_telemetry::layout::Layout::new(temp.path());
+    assert!(layout.sealed_segment(&b_segment).exists(), "B is sealed");
+    barrier.wait();
+    let started = Instant::now();
+    while !tail.is_finished() && started.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    stop.store(true, Ordering::Relaxed);
+    let tailed = tail.join().unwrap().unwrap();
+    assert_eq!(
+        tailed,
+        view::Tailed::Ambiguous(vec![first.clone(), second.clone()])
+    );
+    let lines: Vec<_> = received.try_iter().collect();
+    assert!(!lines.is_empty(), "A's pending record is printed");
+    assert!(
+        lines.iter().all(|line| line.segment_id == a_segment),
+        "nothing of B: {lines:?}"
+    );
+    a.span_end(&a_run, SpanStatus::Ok, Attrs::new(), 1);
+    a.span_end(&a_command, SpanStatus::Ok, Attrs::new(), 0);
+    a.finish(SealExit::Ok).unwrap().unwrap();
 }
 
 /// A consumer blocked in a write is abandoned at the seal within the 2 s bound: ending the run

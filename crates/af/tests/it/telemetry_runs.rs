@@ -2818,3 +2818,282 @@ fn telemetry_tail_refuses_a_second_store_that_appears_while_following() {
     let (status, stderr, lines) = tailed.unwrap();
     refused(&status, &stderr, &lines);
 }
+
+/// Wait for `child` to exit on its own within `within`, else kill it and fail with `what`; its
+/// status and stderr.
+fn exited(
+    child: &mut std::process::Child,
+    within: std::time::Duration,
+    what: &str,
+) -> (std::process::ExitStatus, String) {
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > within {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{what}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr).unwrap();
+    (status, stderr)
+}
+
+/// `af telemetry tail --json` spawned on `machine`, its stdout lines on a channel.
+fn spawn_plain_tail(machine: &Machine, args: &[&str]) -> Following {
+    let mut tail = machine
+        .command(&machine.root, &[], args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = tail.stdout.take().unwrap();
+    let (sender, received) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let _ = sender.send(line.unwrap());
+        }
+    });
+    (tail, received, reader)
+}
+
+/// Design §6: tail is the reader able to lock an unlocked unsealed segment, so it recovers it
+/// before following it, never waiting on a prefix that cannot change. A writer flushes an
+/// ended span and an event and is killed before its seal (its lock ends with it), once while
+/// tail already follows its segment and once before tail starts: tail prints the complete
+/// flushed prefix and exits 0, the segment recovered — sealed with `exit = "recovered"`.
+#[test]
+fn telemetry_tail_recovers_a_crashed_writer() {
+    use review_telemetry::record::{Attrs, Record, SealExit, SpanKind, SpanStatus};
+    for started_first in [true, false] {
+        let machine = Machine::new();
+        let writer = review_telemetry::segment::writer::Writer::new(
+            review_telemetry::segment::writer::WriterOptions::new(
+                machine.telemetry(),
+                review_telemetry::level::Level::Spans,
+            ),
+        )
+        .unwrap();
+        let command = writer
+            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        let load = writer
+            .span_start(
+                None,
+                Some(&command),
+                "af.authority.load",
+                SpanKind::Internal,
+                Attrs::new(),
+            )
+            .unwrap();
+        writer.event(&load, "af.note", Attrs::new());
+        writer.span_end(&load, SpanStatus::Ok, Attrs::new(), 1);
+        writer.flush();
+        let segment = writer.segment_id().unwrap();
+        let layout = review_telemetry::layout::Layout::new(machine.telemetry());
+        let mut lines = Vec::new();
+        let (mut tail, received, reader) = if started_first {
+            let following = spawn_plain_tail(&machine, &["telemetry", "tail", "--json"]);
+            lines.push(
+                following
+                    .1
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .expect("tail follows the live segment"),
+            );
+            // Killed after its flush and before its seal.
+            writer.abandon();
+            following
+        } else {
+            writer.abandon();
+            spawn_plain_tail(&machine, &["telemetry", "tail", "--json"])
+        };
+        let (status, stderr) = exited(
+            &mut tail,
+            std::time::Duration::from_secs(60),
+            "tail waited on a crashed writer's segment",
+        );
+        reader.join().unwrap();
+        assert!(status.success(), "{started_first}: {stderr}");
+        lines.extend(received.try_iter());
+        let lines: Vec<Value> = lines
+            .iter()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        for (record, name) in [("event", "af.note"), ("span_end", "af.authority.load")] {
+            assert!(
+                lines.iter().any(|line| line["record"] == record
+                    && (line["name"] == name || line["span"] == name)),
+                "{started_first}: {name} printed: {lines:?}"
+            );
+        }
+        assert!(
+            lines
+                .iter()
+                .all(|line| line["segment_id"] == segment.as_str()),
+            "{lines:?}"
+        );
+        assert!(!layout.live_segment(&segment).exists(), "{started_first}");
+        let records =
+            review_telemetry::segment::reader::read_sealed(&layout.sealed_segment(&segment))
+                .unwrap();
+        let Some(Record::Seal(seal)) = records.last() else {
+            panic!("recovered with a seal");
+        };
+        assert_eq!(seal.exit, SealExit::Recovered, "{started_first}");
+    }
+}
+
+/// Design §6 and §10: interior corruption in a live segment fails closed in tail. Tail follows
+/// a live segment and is held stopped while its writer flushes one more event, an invalid line
+/// is written, and the writer flushes another event after it. Tail refuses the segment naming
+/// its file, exits non-zero, and prints nothing of that read — not even the valid event before
+/// the invalid line.
+#[test]
+fn telemetry_tail_refuses_interior_corruption_of_a_live_segment() {
+    use review_telemetry::record::{Attrs, SpanKind};
+    let machine = Machine::new();
+    let writer = review_telemetry::segment::writer::Writer::new(
+        review_telemetry::segment::writer::WriterOptions::new(
+            machine.telemetry(),
+            review_telemetry::level::Level::Spans,
+        ),
+    )
+    .unwrap();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event(&command, "af.first", Attrs::new());
+    writer.flush();
+    let path = writer.path().unwrap();
+    let (mut tail, received, reader) = spawn_plain_tail(&machine, &["telemetry", "tail", "--json"]);
+    let first: Value = serde_json::from_str(
+        &received
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("tail prints the live event"),
+    )
+    .unwrap();
+    assert_eq!(first["name"], "af.first", "{first}");
+    signal(tail.id(), "STOP");
+    writer.event(&command, "af.second", Attrs::new());
+    writer.flush();
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"{\"t\":\"event\",\"not\":\"a record\"}\n")
+            .unwrap();
+    }
+    writer.event(&command, "af.third", Attrs::new());
+    writer.flush();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(
+        review_telemetry::segment::reader::scan(&bytes).interior_corruption,
+        "an invalid line before a valid one"
+    );
+    signal(tail.id(), "CONT");
+    let (status, stderr) = exited(
+        &mut tail,
+        std::time::Duration::from_secs(60),
+        "tail went on following a corrupt segment",
+    );
+    reader.join().unwrap();
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    // With `--json` the refusal is the `af/error@1` document on stdout.
+    let rest: Vec<Value> = received
+        .try_iter()
+        .map(|line| serde_json::from_str(&line).unwrap())
+        .collect();
+    let [refusal] = rest.as_slice() else {
+        panic!("only the refusal, nothing of the corrupt read: {rest:?}");
+    };
+    assert_eq!(refusal["schema"], "af/error@1", "{refusal}");
+    assert_eq!(refusal["exit_code"], 1, "{refusal}");
+    let error = refusal["error"].as_str().unwrap();
+    assert!(
+        error.contains(&path.display().to_string()) && error.contains("interior corruption"),
+        "names the segment: {error}"
+    );
+    writer.abandon();
+}
+
+/// Design §10: `tail RUN` of a run no Store records exits 1 naming it, before following
+/// anything: with no telemetry directory, and over a directory that records another run, with
+/// and without `--store` (a Store that does not record the run is the same unknown run).
+#[test]
+fn telemetry_tail_of_an_unknown_run_exits_1() {
+    let unknown = |machine: &Machine, args: &[&str], run: &str| {
+        let mut tail = machine
+            .command(&machine.root, &[], args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (status, stderr) = exited(
+            &mut tail,
+            std::time::Duration::from_secs(60),
+            "tail followed an unknown run",
+        );
+        let mut stdout = String::new();
+        std::io::Read::read_to_string(&mut tail.stdout.take().unwrap(), &mut stdout).unwrap();
+        assert_eq!(status.code(), Some(1), "{args:?}: {stderr}");
+        if args.contains(&"--json") {
+            // The refusal is the `af/error@1` document, and nothing else.
+            let refusal: Value = serde_json::from_str(stdout.trim()).unwrap();
+            assert_eq!(refusal["schema"], "af/error@1", "{refusal}");
+            assert_eq!(refusal["exit_code"], 1, "{refusal}");
+            assert!(
+                refusal["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("unknown run {run}")),
+                "{refusal}"
+            );
+        } else {
+            assert!(
+                stderr.contains(&format!("unknown run {run}")),
+                "{args:?}: {stderr}"
+            );
+            assert!(stdout.is_empty(), "{args:?}: {stdout}");
+        }
+    };
+    let machine = Machine::new();
+    for args in [
+        &["telemetry", "tail", "task:none"][..],
+        &["telemetry", "tail", "task:none", "--store", GOLDEN_STORE],
+    ] {
+        unknown(&machine, args, "task:none");
+    }
+    assert!(!machine.telemetry().exists(), "nothing was created");
+    golden_execution(
+        &machine.telemetry(),
+        "1700000000000-4242-0a1b2c3d",
+        1_700_000_000_000,
+        1,
+        &mut |_| {},
+    );
+    let other = "6".repeat(64);
+    for (args, run) in [
+        (&["telemetry", "tail", "task:none"][..], "task:none"),
+        (
+            &["telemetry", "tail", "task:none", "--store", GOLDEN_STORE][..],
+            "task:none",
+        ),
+        (
+            &["telemetry", "tail", GOLDEN_RUN, "--store", &other][..],
+            GOLDEN_RUN,
+        ),
+        (
+            &["telemetry", "tail", "task:none", "--json"][..],
+            "task:none",
+        ),
+    ] {
+        unknown(&machine, args, run);
+    }
+}

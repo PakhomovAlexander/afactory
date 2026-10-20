@@ -7,9 +7,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use review_telemetry::view::{
-    self, Resolved, Run, Runs, Show, ShowSelection, TailSelection, Tailed,
-};
+use review_telemetry::view::{self, Resolved, Run, Runs, Show, ShowSelection, Tailed};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -409,31 +407,31 @@ pub(crate) fn tail(
         Err(refusal) => return Ok(super::refused(COMMAND, json, &refusal)),
     };
     let root = super::chosen(dir, &settings)?;
-    // A run two Stores share needs `--store`; the index knows the runs ingested so far. The
-    // one Store it knows the run in is the Store followed: a second one arriving later is
-    // refused as the same ambiguity.
-    let store_named = store.is_some();
-    let mut store = store;
-    if let Some(run) = &run
-        && store.is_none()
-        && root.is_dir()
-    {
-        let (index, _, _) = view::open(&root)?;
-        let mut stores = view::stores_of(&index, run)?;
-        if stores.len() > 1 {
-            return Ok(ambiguous(COMMAND, run, &stores));
+    // RUN is resolved, within `--store` when given, before anything is followed: an unknown
+    // run exits 1 and a run two Stores share asks for `--store`. The one Store the index knows
+    // the run in is the Store followed: a second one arriving later, or sealed since the
+    // lookup's baseline, is refused as the same ambiguity.
+    let selection = match view::tail_start(&root, run.as_deref(), store.as_deref())? {
+        view::TailStart::Follow(selection) => selection,
+        view::TailStart::Unknown => {
+            let run = run.unwrap_or_default();
+            return Err(match &store {
+                Some(store) => format!("unknown run {run} in store {store}"),
+                None => format!("unknown run {run}"),
+            });
         }
-        store = stores.pop();
-    }
+        view::TailStart::Ambiguous(stores) => {
+            return Ok(ambiguous(
+                COMMAND,
+                run.as_deref().unwrap_or_default(),
+                &stores,
+            ));
+        }
+    };
     // Looking for new bytes a quarter of the flush latency apart, a record the consumer wrote is
     // printed well within `flush_latency_ms` of its creation.
     let interval = Duration::from_millis((settings.flush_latency_ms / 4).clamp(10, 250));
     let stdout = std::io::stdout();
-    let selection = TailSelection {
-        run_id: run,
-        store_id: store,
-        store_named,
-    };
     let tailed = view::tail(&root, &selection, interval, &|| false, &mut |line| {
         let mut handle = stdout.lock();
         if json {

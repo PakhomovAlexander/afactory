@@ -26,10 +26,13 @@
   `af/telemetry-gc@1`) report a run's executions — numbered by those markers, active time as
   their union, execution time as their sum, elapsed time, history `prefix:k` or `partial`, never
   complete, the open ones named beside the sealed ones in every label and total, the outcome the
-  latest execution's own, by ordinal — its span tree and its live tail, which fails naming a sealed segment
-  it cannot read and follows a run in one Store, refusing with `--store` guidance, once the
-  followed Store's pending records are printed, a second Store that starts the same run id
-  while it is followed, even in a segment sealed between two of its looks.
+  latest execution's own, by ordinal — its span tree and its live tail, which ends only at a
+  published seal or a recovery, recovers a crashed writer's segment itself, fails naming a
+  sealed segment it cannot read or a live one with interior corruption, exits 1 for an unknown
+  run before following anything, and follows a run in one Store, refusing with `--store`
+  guidance, once the followed Store's pending records are printed, a second Store that starts
+  the same run id while it is followed, even in a segment sealed during its startup or between
+  two of its looks.
   Telemetry is the kind `telemetry` of the Storage Budget (`af/storage@2`,
   `af/storage-prune@2`): every registered directory counted once, one entry per segment by what
   its eviction frees, a sealed one last used at its seal time, evicted under ADR-0144's rules
