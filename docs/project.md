@@ -300,11 +300,17 @@ removed the worktree <path>; its administrative entry remains at <container>/<na
 and the Workspace stays registered. Run the same command again once the cause is fixed: it
 finishes from the record, step by step, acting only on directories whose identity the record
 holds, then unregisters the Workspace and reports what it removed; its messages begin `the
-worktree <path> is already gone;`. The step a record holds proves nothing by itself: before the
-rerun acts on a directory it checks that step's precondition on the file system, and a check
-that fails never moves the step on.
+worktree <path> is already gone;`. The step a record holds proves nothing by itself. Whatever
+the step, the rerun of a directory first reads the administrative entry as it is now, before it
+touches the checkout or the entry at all: its `gitdir` must name the checkout and it may hold no
+`locked`. When it does not, the command stops with that condition and leaves everything where it
+found it, the entry, the record and the registration untouched; a checkout an earlier run moved
+into its container stays there and is reported by its claim name, as `the worktree <path> is
+kept at <container>/<name>, where this removal moved it, because <condition>`, so you can move
+it back or clear the entry and run the command again. Only then does the rerun check the step's
+own precondition on the file system, and a check that fails never moves the step on.
 
-| Step | What the rerun checks before it acts |
+| Step | What the rerun checks before it acts, after the entry check |
 |---|---|
 | `inspected` | The checkout's path holds the recorded identity (nothing there: gone; another directory: kept, and the command refused). The entry's `gitdir` names the checkout and the entry holds no `locked`, before the checkout is claimed and before the entry is. |
 | `container` | Nothing is proved: a directory found under the recorded name is reported and left, and the directory counts as `inspected` again. |

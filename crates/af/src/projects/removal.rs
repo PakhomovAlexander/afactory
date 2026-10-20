@@ -21,10 +21,13 @@
 //! replacement at the registered path is never touched and is reported.
 //!
 //! A recorded step proves nothing by itself: a rerun re-establishes its precondition from the
-//! file system and the record together before it acts. A directory that is neither in its
-//! container nor gone is found by its identity at its path and claimed again from inspection,
-//! and an administrative entry is claimed or deleted only while what it holds now, its `gitdir`
-//! and its lock, still makes it this checkout's (`entry_unproven`).
+//! file system and the record together before it acts. Whatever the step, the first thing the
+//! rerun of a directory does is read the administrative entry now (`Removal::entry_proves`): its
+//! `gitdir` must still name the checkout and it may hold no `locked`, or nothing of that
+//! directory is touched. A directory that is neither in its container nor gone is found by its
+//! identity at its path and claimed again from inspection, and an administrative entry is
+//! claimed or deleted only while what it holds now still makes it this checkout's
+//! (`entry_unproven`).
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -58,6 +61,11 @@ const MAX_DEPTH: usize = 128;
 /// Release binaries never read it.
 #[cfg(debug_assertions)]
 const TEST_STOP: &str = "AF_TEST_PROJECT_REMOVAL_STOP";
+
+/// A debug build's fixture may name a file to which a removal appends, one line each, the entry
+/// check and every action it takes on a directory, in order. Release binaries never read it.
+#[cfg(debug_assertions)]
+const TEST_TRACE: &str = "AF_TEST_PROJECT_REMOVAL_TRACE";
 
 /// How far the removal of one directory got.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1136,11 +1144,16 @@ impl Removal<'_> {
             .map(|entry| entry.path.clone())
             .ok_or("the removal record names no administrative entry of the checkout")?;
         let path = self.path().to_path_buf();
+        // Before any step touches the checkout, wherever it is: a failed check leaves it there.
+        if let Some(reason) = self.entry_proves(Which::Checkout) {
+            return Err(self.checkout_kept(&reason));
+        }
         // The commit and its tree, read through the administrative entry, never the checkout.
         let snapshot = if matches!(
             self.claim(Which::Checkout).step,
             Step::Inspected | Step::Container | Step::Contained
         ) {
+            trace(Which::Checkout, "capture");
             match capture(git, &entry) {
                 Ok(snapshot) => Some(snapshot),
                 Err(error) => {
@@ -1161,6 +1174,7 @@ impl Removal<'_> {
                     }
                     // Captured before the claim, unless the checkout came back out of its
                     // container since an earlier run judged it.
+                    trace(Which::Checkout, "judge");
                     let verdict = match &snapshot {
                         Some(snapshot) => judge(git, &entry, &held, snapshot, &path),
                         None => capture(git, &entry)
@@ -1255,6 +1269,7 @@ impl Removal<'_> {
     /// Put a refused checkout back at its path, never over one that is taken, and say why, with
     /// the ways on when its changes are the reason (`advice`).
     fn restore(&mut self, held: &Held, reason: &str, advice: bool) -> String {
+        trace(Which::Checkout, "restore");
         match rename_free(&held.container, &held.name, &held.parent, &held.name) {
             Ok(()) => {
                 self.changed = false;
@@ -1282,6 +1297,10 @@ impl Removal<'_> {
     /// from, `None` when nothing of it was left to delete.
     fn entry(&mut self, index: usize) -> Result<Option<PathBuf>, String> {
         let which = Which::Entry(index);
+        // Before any step touches the entry, wherever it is: a failed check leaves it there.
+        if let Some(reason) = self.entry_proves(which) {
+            return Err(self.entry_refusal(&reason));
+        }
         let claim = self.claim(which).clone();
         if claim.step == Step::Done {
             return Ok(None);
@@ -1380,6 +1399,52 @@ impl Removal<'_> {
         }
     }
 
+    /// The entry check the rerun of every step makes first, before anything touches `which`:
+    /// the administrative entry, read now, must name the checkout in its `gitdir` and hold no
+    /// `locked`; the reason it does not, `None` when it does. The checkout's entry is read at its
+    /// own path, where it stays until the checkout is done; an entry is read where its recorded
+    /// identity is found now, at its path or in its container, and an entry found in neither has
+    /// nothing left to act on, which its claim then finds.
+    fn entry_proves(&self, which: Which) -> Option<String> {
+        trace(which, &format!("check-{}", self.claim(which).step.name()));
+        let own = self.path().join(".git");
+        match which {
+            Which::Checkout => {
+                let Some(entry) = self.record.entries.first() else {
+                    return Some(
+                        "the removal record names no administrative entry of the checkout".into(),
+                    );
+                };
+                entry_unproven(&entry.path, &entry.path, &own, false)
+            }
+            Which::Entry(index) => {
+                let claim = &self.record.entries[index];
+                let at = found(claim)?;
+                let deleting = at != claim.path && claim.step == Step::Deleting;
+                entry_unproven(&at, &claim.path, &own, deleting)
+            }
+        }
+    }
+
+    /// What a checkout whose entry failed the check is told: it is left where it was found, in
+    /// its container by its claim name when a run moved it there.
+    fn checkout_kept(&mut self, reason: &str) -> String {
+        let claim = self.claim(Which::Checkout).clone();
+        if claim.step >= Step::Deleted {
+            return self.entry_refusal(reason);
+        }
+        let path = self.path().display().to_string();
+        let message = match found(&claim) {
+            Some(at) if at != claim.path => format!(
+                "the worktree {path} is kept at {}, where this removal moved it, because \
+                 {reason}; the Workspace stays registered; move it back to {path} to keep it",
+                at.display()
+            ),
+            _ => format!("the worktree {path} is not claimed, because {reason}"),
+        };
+        self.abandon(&message, false)
+    }
+
     fn entry_failure(&self, fail: &Fail, entry: &Path) -> String {
         format!(
             "{}; {}; fix it and run the command again",
@@ -1391,6 +1456,7 @@ impl Removal<'_> {
     /// Bring `which` into its container: through the steps its record holds, each recorded
     /// before the next is taken.
     fn claim_directory(&mut self, which: Which) -> Result<Claimed, Fail> {
+        trace(which, "claim");
         let claim = self.claim(which).clone();
         let identity = decode(&claim.identity)
             .ok_or_else(|| Fail::Other("a removal record without identity".into()))?;
@@ -1605,6 +1671,7 @@ impl Removal<'_> {
 
     /// Delete what `which` holds in its container, then record that.
     fn delete_held(&mut self, which: Which, held: &Held) -> Result<(), Fail> {
+        trace(which, "delete");
         self.changed = true;
         remove_tree(&held.container, &held.name, held.identity).map_err(|error| Fail::Remains {
             at: held.container_path.join(&held.name),
@@ -1617,6 +1684,7 @@ impl Removal<'_> {
     /// made and empty, and record `which` at `after`: done, or only inspected when it was never
     /// deleted. Anything in it is somebody else's: kept, and the first such path is the failure.
     fn remove_container(&mut self, which: Which, after: Step) -> Result<(), Fail> {
+        trace(which, "rmdir");
         let claim = self.claim(which).clone();
         let (Some(container_path), Some(expected)) = (
             claim.container.clone(),
@@ -1683,6 +1751,25 @@ impl Removal<'_> {
     }
 }
 
+/// Where the directory `claim` holds is now by its recorded identity, without following a link:
+/// its own path, or its name in its recorded container; `None` when it is in neither.
+fn found(claim: &Claim) -> Option<PathBuf> {
+    let identity = decode(&claim.identity)?;
+    let inside = claim
+        .container
+        .as_ref()
+        .zip(claim.path.file_name())
+        .map(|(container, name)| container.join(name));
+    std::iter::once(claim.path.clone())
+        .chain(inside)
+        .find(|at| {
+            std::fs::symlink_metadata(at).is_ok_and(|metadata| {
+                let (device, inode) = super::commands::identity(&metadata);
+                Identity { device, inode } == identity
+            })
+        })
+}
+
 /// Move the directory `name` of `parent` into `container` under the same name, never over a
 /// name that is taken; on a file system without that guarantee, the container this removal just
 /// made and holds open is the only place it can land.
@@ -1747,6 +1834,21 @@ fn judge(
             review_source_git::fs_path(&differing).display()
         )
     }))
+}
+
+/// Append `<which>-<event>` to the file a debug build's fixture names.
+fn trace(which: Which, event: &str) {
+    #[cfg(debug_assertions)]
+    if let Some(file) = std::env::var_os(TEST_TRACE)
+        && let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file)
+    {
+        let _ = writeln!(file, "{}-{event}", which.name());
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (which, event);
 }
 
 /// Stop here, as a crash would, when a debug build's fixture asks for `<which>-<point>`.
