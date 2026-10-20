@@ -491,18 +491,26 @@ pub fn recover_in(segments: &Confined, segment_id: &str) -> Result<Recovery, Str
     })
 }
 
-/// Recover every unsealed segment whose lock can be taken; returns what happened to each.
+/// Recover every unsealed segment whose lock can be taken; returns what happened to each. The
+/// root is opened once and everything beneath it reached through it ([`recover_all_in`]).
 pub fn recover_all(layout: &Layout) -> Result<Vec<Recovery>, String> {
     let failed = |error: std::io::Error| format!("{}: {error}", layout.segments().display());
-    let Some(segments) = Confined::versioned(layout, "segments").map_err(failed)? else {
-        return Ok(Vec::new());
-    };
-    let listing = list_in(&segments)?;
+    match Confined::versioned(layout, "segments").map_err(failed)? {
+        Some(segments) => recover_all_in(&segments),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// [`recover_all`] in the opened `segments/` directory: every segment, manifest and lock
+/// handle is derived from it, so a root swapped after it was opened recovers nothing and writes
+/// nothing outside it.
+pub fn recover_all_in(segments: &Confined) -> Result<Vec<Recovery>, String> {
+    let listing = list_in(segments)?;
     listing
         .unsealed
         .iter()
         .chain(&listing.live)
-        .map(|id| recover_in(&segments, id))
+        .map(|id| recover_in(segments, id))
         .collect()
 }
 

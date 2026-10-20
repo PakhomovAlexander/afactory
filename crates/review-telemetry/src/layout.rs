@@ -66,13 +66,9 @@ impl Layout {
         self.root.join(VERSION_DIR)
     }
 
-    /// Whether `v1/` is a real directory: a link in its place is never entered (it is what
-    /// `status` reports as unrecognized).
-    pub fn has_versioned(&self) -> bool {
-        self.open_versioned().is_some()
-    }
-
-    /// The opened root's `v1/`, when it is a real directory.
+    /// The opened root's `v1/`, when it is a real directory: the root is opened once by its
+    /// pathname, and `v1/` relative to it without following a link (a link in its place is
+    /// what `status` reports as unrecognized).
     pub fn open_versioned(&self) -> Option<Confined> {
         Confined::root(&self.root)
             .ok()
@@ -272,6 +268,19 @@ fn not_a_file(path: &Path) -> std::io::Error {
     )
 }
 
+/// The refusal of a file system with no path naming an open directory itself.
+#[cfg(not(target_os = "linux"))]
+fn no_anchored_path(path: &Path) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!(
+            "{}: this file system offers no stable inode path for the opened directory; the \
+             telemetry index is never opened by pathname",
+            path.display()
+        ),
+    )
+}
+
 /// The allocated bytes a `stat` reports (what eviction would free), never the apparent length.
 fn stat_allocated(stat: &nix::sys::stat::FileStat) -> u64 {
     u64::try_from(stat.st_blocks)
@@ -334,6 +343,30 @@ impl Confined {
         }
     }
 
+    /// Open the telemetry root `path` for a command that reads it: `None` when nothing is
+    /// there, an error naming it when it is not a directory. The one pathname operation of the
+    /// command; everything after is relative to what this returns.
+    pub fn open_root(path: &Path) -> std::io::Result<Option<Self>> {
+        let flags = directory_flags() & !nix::fcntl::OFlag::O_NOFOLLOW;
+        match nix::fcntl::openat(
+            nix::fcntl::AT_FDCWD,
+            path,
+            flags,
+            nix::sys::stat::Mode::empty(),
+        ) {
+            Ok(fd) => Ok(Some(Self {
+                fd,
+                path: path.to_path_buf(),
+            })),
+            Err(nix::errno::Errno::ENOENT) => Ok(None),
+            Err(nix::errno::Errno::ENOTDIR) => Err(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                format!("{} is not a directory", path.display()),
+            )),
+            Err(errno) => Err(errno.into()),
+        }
+    }
+
     /// Create the telemetry root `path` when it is absent (through whatever the user's path
     /// names) and open it.
     pub fn create_root(path: &Path) -> std::io::Result<Self> {
@@ -372,53 +405,51 @@ impl Confined {
         Ok((identity.dev, identity.ino))
     }
 
-    /// A path naming this opened directory itself, for a library that opens files only by
-    /// path (SQLite). On macOS it is the directory's inode path `/.vol/<dev>/<ino>`, which no
-    /// rename and no link put in its place can redirect, valid as long as this descriptor keeps
-    /// the directory alive. Elsewhere, or on a file system without one, it is the directory's
-    /// current path read back from the descriptor (`F_GETPATH`, `/proc/self/fd`), so a
-    /// directory renamed since it was opened is named where it now is. Either is checked to
-    /// name this directory before it is returned.
+    /// A path naming this opened directory itself, never a pathname looked up again, for a
+    /// library that opens files only by path (SQLite); valid while this descriptor is open.
+    ///
+    /// On macOS it is the directory's inode path `/.vol/<dev>/<ino>`, which no rename and no
+    /// link put in its place can redirect; a file system that offers none refuses (fail
+    /// closed), never falling back to the directory's pathname. On Linux it is the descriptor's
+    /// own entry `/proc/self/fd/<fd>`, which the kernel resolves to this open directory wherever
+    /// it now is. Anywhere else there is none, and the request is refused.
+    #[cfg(target_vendor = "apple")]
     pub fn anchored_path(&self) -> std::io::Result<PathBuf> {
         use std::os::unix::fs::MetadataExt as _;
         let (dev, ino) = self.own_identity()?;
-        let names_this = |path: &Path| {
-            std::fs::symlink_metadata(path).is_ok_and(|metadata| {
-                metadata.is_dir() && metadata.dev() == dev && metadata.ino() == ino
-            })
-        };
-        #[cfg(target_vendor = "apple")]
-        {
-            let inode = PathBuf::from(format!("/.vol/{dev}/{ino}"));
-            if names_this(&inode) {
-                return Ok(inode);
-            }
-        }
-        let current = self.current_path()?;
-        if names_this(&current) {
-            Ok(current)
+        let inode = PathBuf::from(format!("/.vol/{dev}/{ino}"));
+        // Looked up by inode, never by name: what it reaches is this directory or nothing.
+        let names_this = std::fs::symlink_metadata(&inode).is_ok_and(|metadata| {
+            metadata.is_dir() && metadata.dev() == dev && metadata.ino() == ino
+        });
+        if names_this {
+            Ok(inode)
         } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!(
-                    "{}: the opened directory has no path that names it",
-                    self.path.display()
-                ),
-            ))
+            Err(no_anchored_path(&self.path))
         }
     }
 
-    #[cfg(target_vendor = "apple")]
-    fn current_path(&self) -> std::io::Result<PathBuf> {
-        let mut path = PathBuf::new();
-        nix::fcntl::fcntl(&self.fd, nix::fcntl::FcntlArg::F_GETPATH(&mut path))?;
-        Ok(path)
+    /// See the macOS variant.
+    #[cfg(target_os = "linux")]
+    pub fn anchored_path(&self) -> std::io::Result<PathBuf> {
+        use std::os::fd::AsRawFd as _;
+        Ok(PathBuf::from(format!(
+            "/proc/self/fd/{}",
+            self.fd.as_raw_fd()
+        )))
     }
 
-    #[cfg(not(target_vendor = "apple"))]
-    fn current_path(&self) -> std::io::Result<PathBuf> {
-        use std::os::fd::AsRawFd as _;
-        std::fs::read_link(format!("/proc/self/fd/{}", self.fd.as_raw_fd()))
+    /// See the macOS variant.
+    #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+    pub fn anchored_path(&self) -> std::io::Result<PathBuf> {
+        Err(no_anchored_path(&self.path))
+    }
+
+    /// Where the kernel says this open directory now is, read from its descriptor (Linux): the
+    /// text a library expanding [`Self::anchored_path`] reaches, compared, never opened.
+    #[cfg(target_os = "linux")]
+    pub fn descriptor_path(&self) -> std::io::Result<PathBuf> {
+        std::fs::read_link(self.anchored_path()?)
     }
 
     /// The directory's path, for messages and reports.
@@ -723,24 +754,17 @@ pub fn try_lock(file: File, arg: FlockArg) -> Result<Held, File> {
     Flock::lock(file, arg).map_err(|(file, _)| file)
 }
 
-/// Take `gc.lock` or `index.lock` shared without waiting.
-pub fn shared_now(path: &Path) -> std::io::Result<Option<Held>> {
-    let file = open_lock_file(path)?;
-    Ok(try_lock(file, FlockArg::LockSharedNonblock).ok())
-}
-
-/// Take a lock file shared, waiting at most `wait`.
-pub fn shared_within(path: &Path, wait: Duration) -> std::io::Result<Option<Held>> {
-    within(path, wait, FlockArg::LockSharedNonblock)
-}
-
-/// Take a lock file exclusively, waiting at most `wait`.
+/// Take the lock file at `path` exclusively, waiting at most `wait`, for a holder that has no
+/// opened directory: the directory registry's lock beside the registry, or a fixture holding a
+/// root's `gc.lock` from outside as a sweep would. The file's directory is opened once by its
+/// pathname ([`open_lock_file`]); the crate's own code under a telemetry root takes its locks
+/// through the directory it holds ([`lock_in`]).
 pub fn exclusive_within(path: &Path, wait: Duration) -> std::io::Result<Option<Held>> {
-    within(path, wait, FlockArg::LockExclusiveNonblock)
-}
-
-fn within(path: &Path, wait: Duration, arg: FlockArg) -> std::io::Result<Option<Held>> {
-    Ok(wait_for(open_lock_file(path)?, wait, arg))
+    Ok(wait_for(
+        open_lock_file(path)?,
+        wait,
+        FlockArg::LockExclusiveNonblock,
+    ))
 }
 
 /// Try `arg` on `file` until `wait` has passed.

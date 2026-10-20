@@ -68,8 +68,13 @@ Provider's own words, and before any bound can cut it:
   `segment_id:seq`, or a decimal ordinal. Every other value, an identity-shaped one included
   (`af.run_id = "sk-proj-…"`), is judged as untrusted text, so a credential is withheld there as
   anywhere; a digest outside an identity position is a long hex run and is withheld too.
-- Token and charge counters (`af.usage.*_tokens`, `af.charge*`, `gen_ai.usage.*`,
-  `af.store.sequence_at_start`) are exact decimal strings only: any other value under such a
+- Token and charge counters are exact decimal strings only. They are, by name and then by
+  family (`*` is any text): `af.usage.input_tokens`, `af.usage.output_tokens`,
+  `af.usage.cache_read_tokens`, `af.usage.cache_write_tokens`, `af.usage.reasoning_tokens`,
+  `af.usage.chargeable_tokens`, `af.admission.reserved_tokens`, `af.context.estimated_tokens`,
+  `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.client.token.usage`,
+  `af.store.sequence_at_start`, `af.usage.*_tokens`, `gen_ai.usage.*`, `af.charge*`. Any
+  other value under such a
   name (text, even `"42"`, an identity, an enumeration, a boolean, an integer, a negative, a
   float, a list or a non-canonical decimal) is dropped and counted in `af.dropped_fields`
   before any other rule runs, so it is never withheld under the secret-name rule and never
@@ -233,21 +238,48 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
   are real directories and regular files, relative to the opened directory, and never follows
   a symbolic link out of the telemetry directory; readers never open a segment, blob, lock or
   index file through one.
-- **Confinement.** Every file beneath the telemetry directory is opened, created, renamed,
-  measured and removed relative to an opened descriptor of its directory, each directory
-  opened from its parent without following a symbolic link (the telemetry directory itself may
-  be reached through one you chose). A writer keeps the telemetry directory and its `v1/` open
-  from its first write on: it seals its segment in the `segments/` directory it opened, reading
-  the live bytes back through its own descriptor, and stages, places and locks for every blob
-  through the `blobs/` and prefix directories it derived from them, so a directory renamed or
-  replaced by a link while it runs, the telemetry directory itself included, changes nothing
-  outside the telemetry directory it opened. `status` and `reindex` open `v1/` once and keep
-  it open: the index locks are taken through it, and the database with its WAL and
-  shared-memory files is opened and created through a path that names that open directory
-  (its inode path `/.vol/<device>/<inode>` on macOS; elsewhere its current path read back from
-  the descriptor, refused where it meets a link) and checked to be its own; a blob
-  whose prefix directory is a link reads as `content unavailable: missing blob` and `status`
-  counts it missing.
+- **Confinement.** Beneath a telemetry directory the only pathname operation is the first
+  open of the telemetry directory itself, once per command or writer (it may be reached
+  through a symbolic link you chose); every file and directory beneath it is opened, created,
+  locked, renamed, measured and removed relative to a descriptor held from that open, each
+  directory opened from its parent without following a symbolic link. A directory renamed or
+  replaced, by a link or by another directory, after it was opened therefore changes nothing
+  outside the telemetry directory that was opened, and nothing is read from the replacement.
+  - *First opens* (one pathname open of the root, then descriptors): `Confined::root`,
+    `Confined::open_root`, `Confined::create_root`, `Layout::open_versioned`,
+    `Confined::versioned`, `layout::create_versioned`, `layout::exclusive_within` (a lock file
+    named by path: the registry's, or a fixture's sweep), the writer's first write
+    (`Writer::open_file`), `status::status`, `status::reindex`, `Index::open`,
+    `Index::direct`, `index::replace`, `reader::list`, `reader::recover`,
+    `reader::recover_all`, `collect::collect`, `collect::roots`, `blob::stage` and
+    `blob::reader::{exists, read, content}`; `reader::read_live` and `reader::read_sealed` read
+    one file a caller names (fixtures) and are never called by the crate itself.
+  - *Functions that hold descriptors* (they take the opened directory, never a path): the
+    writer's `Tree`, `Consumer`, `publish` and `seal_file`; `Index::open_in`,
+    `Index::direct_in`, `index::replace_in`, `Index::ingest`, `Index::missing_blobs`;
+    `reader::list_in`, `read_live_in`, `read_sealed_in`, `recover_in`, `recover_all_in`,
+    `manifest_digests_in`; `collect::collect_in`, `collect::roots_in`; `blob::stage_in`,
+    `blob::place`, `blob::reader::exists_in`, `blob::reader::read_in`; `layout::lock_in`; and
+    `status`'s `verify_blobs`, `blob_bytes` and `unrecognized`. `status` and `reindex` open
+    `v1/` once and hand it to the index, to recovery, to the blob checks and to direct reading
+    when `index.lock` is not had in time.
+  - *The index database.* SQLite opens files only by path, so it is given a path that names
+    the held `v1/` itself, never its pathname: on macOS its inode path
+    `/.vol/<device>/<inode>/index.sqlite` with `SQLITE_OPEN_NOFOLLOW`, and where the file
+    system offers no inode path the open is refused with an error naming the index (fail
+    closed); on Linux the descriptor's own entry `/proc/self/fd/<fd>/index.sqlite`, which
+    SQLite expands itself inside its open (it treats that entry as a link, so
+    `SQLITE_OPEN_NOFOLLOW` cannot be set there), and the connection is refused unless the
+    file SQLite resolved is in the directory the descriptor names now; on any other system the
+    open is refused. The database, WAL and shared-memory files are opened together and must be
+    regular files of the held `v1/`.
+  - *Outside the telemetry directory*, by path: the directory registry, its lock and the
+    canonical paths it records (each registered directory's existence as `status` reports it), a Store's canonical path for
+    `af.store_id`, and the free-space figure a segment header reads before the writer's first
+    open.
+
+  A blob whose prefix directory is a link reads as `content unavailable: missing blob` and
+  `status` counts it missing.
 - **Registry.** Before its first write a process registers its telemetry directory
   (`af/TelemetryDirs@1`, [`schemas/telemetry-dirs-v1.json`](../schemas/telemetry-dirs-v1.json)).
   A directory inside or containing a Store, the warm check cache, a release installation or

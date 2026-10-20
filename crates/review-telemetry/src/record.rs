@@ -919,16 +919,47 @@ pub fn is_identity_position(name: &str) -> bool {
     IDENTITY_POSITIONS.contains(&name)
 }
 
-/// The exact counters (ADR-0078): token counts (`af.usage.*_tokens`, `gen_ai.usage.*`), charges
-/// (`af.charge*`) and the Store sequence an execution started at. Each is recorded only as a
-/// canonical decimal string ([`Attr::Decimal`]); an integer, a float, a negative or a
+/// Every exact counter the crate declares (ADR-0078): the token counts, the charges and the
+/// Store sequence an execution started at, each by name, then the families a later package
+/// extends (`*` stands for any text). The one list [`is_exact_counter`] checks and
+/// `docs/telemetry.md` prints; a fixture compares the two.
+pub const EXACT_COUNTERS: [&str; 15] = [
+    "af.usage.input_tokens",
+    "af.usage.output_tokens",
+    "af.usage.cache_read_tokens",
+    "af.usage.cache_write_tokens",
+    "af.usage.reasoning_tokens",
+    "af.usage.chargeable_tokens",
+    "af.admission.reserved_tokens",
+    "af.context.estimated_tokens",
+    "gen_ai.usage.input_tokens",
+    "gen_ai.usage.output_tokens",
+    "gen_ai.client.token.usage",
+    "af.store.sequence_at_start",
+    "af.usage.*_tokens",
+    "gen_ai.usage.*",
+    "af.charge*",
+];
+
+/// Whether `name` matches `pattern`, an entry of [`EXACT_COUNTERS`]: exactly, or around its one
+/// `*`.
+fn matches_counter(pattern: &str, name: &str) -> bool {
+    match pattern.split_once('*') {
+        Some((head, tail)) => {
+            name.len() >= head.len() + tail.len() && name.starts_with(head) && name.ends_with(tail)
+        }
+        None => name == pattern,
+    }
+}
+
+/// Whether `name` is one of the [`EXACT_COUNTERS`]. Each is recorded only as a canonical
+/// decimal string ([`Attr::Decimal`]); an integer, a float, a negative, text or a
 /// non-canonical value under one of these names is dropped and counted in
 /// [`DROPPED_FIELDS`], never written as a JSON number.
 pub fn is_exact_counter(name: &str) -> bool {
-    (name.starts_with("af.usage.") && name.ends_with("_tokens"))
-        || name.starts_with("gen_ai.usage.")
-        || name.starts_with("af.charge")
-        || name == "af.store.sequence_at_start"
+    EXACT_COUNTERS
+        .iter()
+        .any(|pattern| matches_counter(pattern, name))
 }
 
 /// The attribute names of design §5 that hold a secret-name part (`token`, `auth`) yet are typed
@@ -953,8 +984,7 @@ pub const TYPED_SECRET_NAMED: [(&str, TypedName); 13] = [
 /// How af's schema types an attribute of [`TYPED_SECRET_NAMED`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypedName {
-    /// A canonical decimal string; an integer too, unless the name is an exact counter
-    /// ([`is_exact_counter`]), which only a canonical decimal string may hold.
+    /// An exact counter ([`is_exact_counter`]): a canonical decimal string only.
     Counter,
     /// A value of a closed enumeration.
     Enumeration,
@@ -962,14 +992,18 @@ pub enum TypedName {
 
 /// Whether a secret-named `key` is one af's schema types and `value` is that typed field.
 fn typed_secret_named(key: &str, value: &Attr) -> bool {
+    // Every exact counter, a family member included, holds only its validated decimal here.
+    if is_exact_counter(key) {
+        return matches!(value, Attr::Decimal(_));
+    }
     TYPED_SECRET_NAMED
         .iter()
         .find(|(name, _)| *name == key)
-        .is_some_and(|(_, typed)| match (typed, value) {
-            (TypedName::Counter, Attr::Decimal(_)) => true,
-            (TypedName::Counter, Attr::Int(_)) => !is_exact_counter(key),
-            (TypedName::Enumeration, Attr::Enum(_)) => true,
-            _ => false,
+        .is_some_and(|(_, typed)| {
+            matches!(
+                (typed, value),
+                (TypedName::Counter, Attr::Decimal(_)) | (TypedName::Enumeration, Attr::Enum(_))
+            )
         })
 }
 
@@ -1141,6 +1175,23 @@ mod tests {
         assert!(!attributes.contains_key("af.usage.output_tokens"));
         assert_eq!(counters.redacted, 1);
         assert_eq!(counters.dropped, 1);
+    }
+
+    #[test]
+    fn every_typed_counter_is_an_exact_counter() {
+        for (name, typed) in TYPED_SECRET_NAMED {
+            assert_eq!(
+                is_exact_counter(name),
+                typed == TypedName::Counter,
+                "{name}"
+            );
+        }
+        assert!(is_exact_counter("af.usage.future_tokens"));
+        assert!(is_exact_counter("af.charge"));
+        assert!(!is_exact_counter("af.usage.observation"));
+        assert!(!is_exact_counter("af.usage.sequence"));
+        assert!(!is_exact_counter("af.context.bytes"));
+        assert!(!matches_counter("af.usage.*_tokens", "af.usage_tokens"));
     }
 
     #[test]

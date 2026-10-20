@@ -126,10 +126,14 @@ under the state root's `telemetry/`. These eight clauses bind every package of t
    total byte limit of its own with a fixed terminal reserve for its seal. Collection never
    leaves the telemetry directory: it acts only on names of the layout's exact grammar that are
    real directories and regular files, relative to the opened directory, never through a
-   symbolic link, and readers never open a file through one. A writer, `status` and `reindex`
-   hold the directories they opened for their lifetime and reach blobs, locks and the index
-   database (with its WAL and shared-memory files) through those descriptors, so a directory
-   renamed and replaced by a link after it was opened takes nothing outside it. Every directory
+   symbolic link, and readers never open a file through one. Beneath a telemetry directory the
+   only pathname operation is its first open: a writer, `status` and `reindex` hold the
+   directories they opened for their lifetime and reach segments, blobs, locks and the index
+   database (with its WAL and shared-memory files) through those descriptors, recovery and
+   direct reading included, so a directory renamed and replaced, by a link or by another
+   directory, after it was opened takes nothing outside it. The index database is opened
+   through a path naming the held directory itself, never its pathname, and refused where the
+   file system offers none. Every directory
    Telemetry has written is registered (`af/TelemetryDirs@1`), and a directory that overlaps a
    Store, a cache, a release installation or another telemetry directory is refused before its
    first write; when the Store registry cannot be read the overlap is unknown, never assumed

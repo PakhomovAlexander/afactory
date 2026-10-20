@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
+use nix::fcntl::FlockArg;
 use serde::{Deserialize, Serialize};
 
 use crate::dirs::{self, Registered};
@@ -345,20 +346,17 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         segments: 0,
     });
     status.problems.extend(registry_problem.clone());
-    match std::fs::metadata(root) {
-        Ok(metadata) if metadata.is_dir() => status.exists = true,
-        Ok(_) => return Err(format!("{} is not a directory", root.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((status, None));
-        }
-        Err(error) => return Err(format!("{}: {error}", root.display())),
-    }
-    // Every path beneath the root is judged, measured and read relative to the opened root
-    // and the directories opened beneath it, never through a link.
-    let failed = |error: std::io::Error| format!("{}: {error}", root.display());
-    let root_dir = Confined::root(root)
-        .map_err(failed)?
-        .ok_or_else(|| format!("{} is not a directory", root.display()))?;
+    // The root is opened once, its one pathname operation: every path beneath it is judged,
+    // measured and read relative to it and the directories opened beneath it, never through a
+    // link and never by pathname again.
+    let failed = |error: std::io::Error| match error.kind() {
+        std::io::ErrorKind::NotADirectory => error.to_string(),
+        _ => format!("{}: {error}", root.display()),
+    };
+    let Some(root_dir) = Confined::open_root(root).map_err(failed)? else {
+        return Ok((status, None));
+    };
+    status.exists = true;
     root_dir.names().map_err(failed)?;
     for other in reader::other_versions(&root_dir) {
         status.unreadable.push(Unreadable {
@@ -675,16 +673,22 @@ fn unrecognized(root: &Confined, layout: &Layout) -> Option<Entry> {
 }
 
 /// Verify every blob file's digest, holding `gc.lock` shared for the whole scan; returns the
-/// digests that fail. `None` when the lock was not had within two seconds: then no blob file is
-/// opened and the verification is deferred.
-fn verify_blobs(layout: &Layout) -> Option<Vec<String>> {
-    let _shared = layout::shared_within(&layout.gc_lock(), layout::LOCK_WAIT)
-        .ok()
-        .flatten()?;
+/// digests that fail. The lock and the blob directories are reached through the held `v1/`
+/// `versioned`, never through a pathname. `None` when the lock was not had within two seconds:
+/// then no blob file is opened and the verification is deferred.
+fn verify_blobs(versioned: &Confined) -> Option<Vec<String>> {
+    let _shared = layout::lock_in(
+        versioned,
+        layout::GC_LOCK,
+        layout::LOCK_WAIT,
+        FlockArg::LockSharedNonblock,
+    )
+    .ok()
+    .flatten()?;
     let mut corrupt = Vec::new();
     // The collector's grammar and confinement: only real prefix directories and regular files
     // named by their digest are opened, relative to the opened directory, never through a link.
-    let Ok(Some(blobs)) = Confined::versioned(layout, "blobs") else {
+    let Ok(Some(blobs)) = versioned.child_dir("blobs") else {
         return Some(corrupt);
     };
     for prefix_name in blobs.names().unwrap_or_default() {
@@ -721,15 +725,38 @@ fn verify_blobs(layout: &Layout) -> Option<Vec<String>> {
     Some(corrupt)
 }
 
+thread_local! {
+    static REINDEX_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `body` with `hook` called on this thread once `reindex` holds the root and its `v1/`,
+/// before it recovers anything, where a test renames and replaces the root.
+#[doc(hidden)]
+pub fn with_reindex_hook<R>(hook: impl FnMut() + 'static, body: impl FnOnce() -> R) -> R {
+    REINDEX_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    let result = body();
+    REINDEX_HOOK.with(|slot| *slot.borrow_mut() = None);
+    result
+}
+
 /// `af telemetry reindex`. `Err` when the directory cannot be read or the index cannot be
 /// replaced (another command holds it); the caller exits 1.
 pub fn reindex(root: &Path) -> Result<Reindex, String> {
     let layout = Layout::new(root);
-    match std::fs::metadata(root) {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => return Err(format!("{} is not a directory", root.display())),
-        Err(error) => return Err(format!("{}: {error}", root.display())),
-    }
+    // The root is opened once, its one pathname operation; everything after is relative to it.
+    let root_dir = Confined::open_root(root)
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotADirectory => error.to_string(),
+            _ => format!("{}: {error}", root.display()),
+        })?
+        .ok_or_else(|| {
+            format!(
+                "{}: {}",
+                root.display(),
+                std::io::Error::from(nix::errno::Errno::ENOENT)
+            )
+        })?;
     let mut document = Reindex {
         schema: REINDEX_SCHEMA.into(),
         directory: root.display().to_string(),
@@ -744,24 +771,33 @@ pub fn reindex(root: &Path) -> Result<Reindex, String> {
         missing_blobs: 0,
         corrupt_blobs: Vec::new(),
         blob_verification: BlobVerification::Verified,
-        unreadable: Confined::root(root)
-            .map_err(|error| format!("{}: {error}", root.display()))?
-            .map(|root_dir| {
-                reader::other_versions(&root_dir)
-                    .into_iter()
-                    .map(|name| Unreadable {
-                        path: root_dir.join(&name).display().to_string(),
-                        reason: "written under another telemetry version; never read".into(),
-                    })
-                    .collect()
+        unreadable: reader::other_versions(&root_dir)
+            .into_iter()
+            .map(|name| Unreadable {
+                path: root_dir.join(&name).display().to_string(),
+                reason: "written under another telemetry version; never read".into(),
             })
-            .unwrap_or_default(),
+            .collect(),
     };
-    // `v1/` is opened once: the index is replaced and read through this one descriptor.
-    let Some(versioned) = layout.open_versioned() else {
+    // `v1/` is opened once from the opened root: the segments are recovered, the index replaced
+    // and read, and the blobs verified through this one descriptor.
+    let failed = |error: std::io::Error| format!("{}: {error}", layout.versioned().display());
+    let Some(versioned) = root_dir.child_dir(layout::VERSION_DIR).map_err(failed)? else {
         return Ok(document);
     };
-    for recovery in reader::recover_all(&layout)? {
+    REINDEX_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+    let recoveries = match versioned
+        .child_dir("segments")
+        .map_err(|error| format!("{}: {error}", layout.segments().display()))?
+    {
+        Some(segments) => reader::recover_all_in(&segments)?,
+        None => Vec::new(),
+    };
+    for recovery in recoveries {
         match recovery {
             Recovery::Recovered {
                 segment_id,
@@ -776,23 +812,18 @@ pub fn reindex(root: &Path) -> Result<Reindex, String> {
             Recovery::Live | Recovery::AlreadySealed | Recovery::Empty => {}
         }
     }
-    let replaced = index::replace_in(
-        &layout,
-        versioned
-            .try_clone()
-            .map_err(|error| format!("{}: {error}", layout.versioned().display()))?,
-    )?;
+    let replaced = index::replace_in(&layout, versioned.try_clone().map_err(failed)?)?;
     for (path, reason) in replaced.refused {
         document.unreadable.push(Unreadable { path, reason });
     }
-    let index = Index::open_in(&layout, versioned)?;
+    let index = Index::open_in(&layout, versioned.try_clone().map_err(failed)?)?;
     document.segments = index.count("SELECT count(*) FROM segments")?;
     document.records = replaced.ingested.records;
     document.spans = index.count("SELECT count(*) FROM spans")?;
     document.events = index.count("SELECT count(*) FROM events")?;
     document.blobs = index.count("SELECT count(*) FROM blobs")?;
     document.blob_refs = index.count("SELECT count(*) FROM blob_refs")?;
-    let verified = match verify_blobs(&layout) {
+    let verified = match verify_blobs(&versioned) {
         Some(corrupt) => index.missing_blobs()?.map(|missing| (missing, corrupt)),
         None => None,
     };

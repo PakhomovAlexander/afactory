@@ -16,16 +16,16 @@
 //! so on stderr.
 //!
 //! **Confinement.** An index opens `v1/` once, without following a link, and keeps that
-//! descriptor for the connection's lifetime: `index.intent` and `index.lock` are taken, and the
-//! database with its WAL and shared-memory files opened, created and removed, through it. SQLite
-//! opens files only by path, so it is given a path that names the held directory itself
-//! ([`Confined::anchored_path`]: the directory's inode path on macOS) with
-//! `SQLITE_OPEN_NOFOLLOW`, and the database it opened is checked to be the held directory's
-//! `index.sqlite`; never `layout.index()` as a plain pathname after a separate check.
+//! descriptor for the connection's lifetime, in direct mode too: `index.intent`, `index.lock`
+//! and `gc.lock` are taken, the segments read, the blob files looked for, and the database with
+//! its WAL and shared-memory files opened, created and removed, through it. SQLite opens files
+//! only by path, so it is given a path that names the held directory itself
+//! ([`Confined::anchored_path`]: the inode path on macOS, the descriptor's own entry on Linux),
+//! never `layout.index()` or any other pathname; where there is none the open is refused.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use nix::fcntl::FlockArg;
@@ -291,12 +291,53 @@ fn open_versioned(layout: &Layout) -> Result<Confined, String> {
         .map_err(|error| format!("{}: {error}", layout.versioned().display()))
 }
 
-/// Open the index file of the held `v1/` `versioned`, never through a link: a database, WAL or
-/// shared-memory file that is not a regular file in its place is refused (`reindex` removes the
-/// link itself, never what it points to). The path SQLite is given names the held directory
-/// itself, with `SQLITE_OPEN_NOFOLLOW`, so a `v1/` renamed and replaced by a link since it was
-/// opened leads SQLite nowhere outside it; the WAL and shared-memory files are opened at once,
-/// and the database SQLite opened is checked to be the held directory's own.
+/// How SQLite opens the anchored database path. On macOS the inode path has no link in it, so
+/// `SQLITE_OPEN_NOFOLLOW` refuses any link SQLite meets. On Linux the path is the descriptor's
+/// own `/proc/self/fd/<fd>` entry, which SQLite's unix VFS treats as a link (it `lstat`s every
+/// component and expands each link itself, refusing all of them under `SQLITE_OPEN_NOFOLLOW`),
+/// so the flag cannot be set there: SQLite expands the descriptor's entry inside its own open,
+/// and [`connect`] then compares what it expanded with where the descriptor is.
+fn anchored_flags() -> OpenFlags {
+    if cfg!(target_os = "linux") {
+        OpenFlags::default()
+    } else {
+        OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW
+    }
+}
+
+/// Whether the database `connection` opened at `anchored` is in the held `v1/` `versioned`,
+/// judged without looking any pathname up: the filename SQLite resolved is the anchored path
+/// itself (macOS: the inode path has no link to expand), or, on Linux, what the kernel says the
+/// held descriptor names now, so a `v1/` moved while SQLite expanded its entry is refused.
+fn opened_in_held(connection: &Connection, anchored: &Path, versioned: &Confined) -> bool {
+    connection.path().is_some_and(|opened| {
+        expected_database(anchored, versioned).is_some_and(|expected| expected == Path::new(opened))
+    })
+}
+
+/// The filename SQLite resolves for the database of the held `v1/` (see [`opened_in_held`]).
+#[cfg(target_os = "linux")]
+fn expected_database(_anchored: &Path, versioned: &Confined) -> Option<PathBuf> {
+    versioned
+        .descriptor_path()
+        .ok()
+        .map(|directory| directory.join(layout::INDEX))
+}
+
+/// The filename SQLite resolves for the database of the held `v1/` (see [`opened_in_held`]).
+#[cfg(not(target_os = "linux"))]
+fn expected_database(anchored: &Path, _versioned: &Confined) -> Option<PathBuf> {
+    Some(anchored.to_path_buf())
+}
+
+/// Open the index file of the held `v1/` `versioned`, never through a link and never through
+/// its pathname: a database, WAL or shared-memory file that is not a regular file in its place
+/// is refused (`reindex` removes the link itself, never what it points to). SQLite is given a
+/// path that names the held directory itself ([`Confined::anchored_path`]; where the file system
+/// offers none the open is refused, a named reader error), so a `v1/` renamed and replaced by a
+/// link or by another directory since it was opened leads SQLite nowhere outside it. The WAL
+/// and shared-memory files are opened at once beside the database, and the database is checked
+/// to be the held directory's own regular file.
 fn connect(layout: &Layout, versioned: &Confined) -> Result<Connection, String> {
     let path = layout.index();
     for name in index_names(layout) {
@@ -319,11 +360,8 @@ fn connect(layout: &Layout, versioned: &Confined) -> Result<Connection, String> 
             hook();
         }
     });
-    let connection = Connection::open_with_flags(
-        &anchored,
-        OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(|error| format!("{}: {error}", path.display()))?;
+    let connection = Connection::open_with_flags(&anchored, anchored_flags())
+        .map_err(|error| format!("{}: {error}", path.display()))?;
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(sql)?;
@@ -332,14 +370,9 @@ fn connect(layout: &Layout, versioned: &Confined) -> Result<Connection, String> 
     connection
         .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
         .map_err(|error| format!("{}: {error}", path.display()))?;
-    let opened = std::fs::symlink_metadata(&anchored).ok().map(|metadata| {
-        use std::os::unix::fs::MetadataExt as _;
-        (metadata.dev(), metadata.ino())
-    });
-    let held = versioned
-        .identity(layout::INDEX)
-        .map(|identity| (identity.dev, identity.ino));
-    if opened.is_none() || opened != held {
+    if !opened_in_held(&connection, &anchored, versioned)
+        || versioned.kind(layout::INDEX) != Some(EntryKind::File)
+    {
         return Err(format!(
             "{}: the opened database is not the telemetry directory's own; it is never used",
             path.display()
@@ -425,8 +458,9 @@ impl Index {
         };
         drop(intent);
         let Some(lock) = lock else {
-            return Self::direct(
+            return Self::direct_in(
                 layout,
+                Some(versioned),
                 "the telemetry index is being replaced; reading the segments directly",
             );
         };
@@ -440,8 +474,20 @@ impl Index {
         })
     }
 
-    /// An in-memory index over the segments, read without the index file.
+    /// An in-memory index over the segments, read without the index file: the telemetry root
+    /// is opened once, and its `v1/`, when it is a real directory, is held and read through.
     pub fn direct(layout: &Layout, note: &str) -> Result<Self, String> {
+        Self::direct_in(layout, layout.open_versioned(), note)
+    }
+
+    /// [`Self::direct`] through `versioned`, the `v1/` the caller holds (`None`: there is none,
+    /// and nothing is read): every segment and blob file is reached through it, whatever has
+    /// since become of the root's path.
+    pub fn direct_in(
+        layout: &Layout,
+        versioned: Option<Confined>,
+        note: &str,
+    ) -> Result<Self, String> {
         let connection = Connection::open_in_memory().map_err(sql)?;
         create(&connection)?;
         Ok(Self {
@@ -450,7 +496,7 @@ impl Index {
             mode: Mode::Direct,
             note: Some(note.to_string()),
             _lock: None,
-            versioned: None,
+            versioned,
         })
     }
 
@@ -472,12 +518,13 @@ impl Index {
     /// file replaced or rewritten since is read and validated again, its earlier rows
     /// forgotten, and on refusal it is listed unreadable, exactly as a rebuild would answer.
     pub fn ingest(&mut self) -> Result<(Ingested, Vec<(String, String)>), String> {
-        // The segments of the `v1/` the connection was opened through, when it holds one.
+        // The segments of the `v1/` the index holds, never looked up by pathname again.
         let directory = match &self.versioned {
-            Some(versioned) => versioned.child_dir("segments"),
-            None => Confined::versioned(&self.layout, "segments"),
-        }
-        .map_err(|error| format!("{}: {error}", self.layout.segments().display()))?;
+            Some(versioned) => versioned
+                .child_dir("segments")
+                .map_err(|error| format!("{}: {error}", self.layout.segments().display()))?,
+            None => None,
+        };
         let listing = match &directory {
             Some(directory) => reader::list_in(directory)?,
             None => reader::Listing::default(),
@@ -738,8 +785,10 @@ impl Index {
     }
 
     /// Stored occurrences whose blob file is missing: `(occurrence_id, digest)`, looked for
-    /// under `gc.lock` shared. `None` when the lock was not had within two seconds (a sweep
-    /// holds it): the check is deferred, never answered while files may be collected.
+    /// under `gc.lock` shared, the lock and every blob directory reached through the `v1/` this
+    /// index holds, never through the saved pathname. `None` when the lock was not had within
+    /// two seconds (a sweep holds it): the check is deferred, never answered while files may be
+    /// collected.
     pub fn missing_blobs(&self) -> Result<Option<Vec<(String, String)>>, String> {
         let mut statement = self
             .connection
@@ -753,25 +802,38 @@ impl Index {
             .map_err(sql)?
             .collect::<Result<_, _>>()
             .map_err(sql)?;
-        if all.is_empty() {
+        // Without a held `v1/` there is no blob directory: every referenced file is missing.
+        let Some(versioned) = self.versioned.as_ref().filter(|_| !all.is_empty()) else {
             return Ok(Some(all));
-        }
-        let Some(_shared) = layout::shared_within(&self.layout.gc_lock(), layout::LOCK_WAIT)
-            .ok()
-            .flatten()
-        else {
+        };
+        let Some(_shared) = layout::lock_in(
+            versioned,
+            layout::GC_LOCK,
+            layout::LOCK_WAIT,
+            FlockArg::LockSharedNonblock,
+        )
+        .ok()
+        .flatten() else {
             return Ok(None);
         };
+        let blobs = versioned.child_dir("blobs").ok().flatten();
         let mut present = BTreeMap::new();
         Ok(Some(
             all.into_iter()
                 .filter(|(_, digest)| {
-                    !*present
-                        .entry(digest.clone())
-                        .or_insert_with(|| crate::blob::reader::exists(&self.layout, digest))
+                    !*present.entry(digest.clone()).or_insert_with(|| {
+                        blobs
+                            .as_ref()
+                            .is_some_and(|blobs| crate::blob::reader::exists_in(blobs, digest))
+                    })
                 })
                 .collect(),
         ))
+    }
+
+    /// The `v1/` this index holds, for the checks that follow an ingest (blob verification).
+    pub fn versioned(&self) -> Option<&Confined> {
+        self.versioned.as_ref()
     }
 
     /// The occurrence record of `occurrence_id`, as the index holds it.

@@ -4,7 +4,7 @@
 use review_telemetry::blob::{self, Media};
 use review_telemetry::layout::Layout;
 use review_telemetry::level::Level;
-use review_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
+use review_telemetry::record::{Attrs, EXACT_COUNTERS, SealExit, SpanKind, SpanStatus};
 use review_telemetry::redact::{
     OVERSIZED_LINE, Redactor, WITHHELD, WITHHELD_LINE, redact_json, redact_text,
 };
@@ -1073,4 +1073,75 @@ fn telemetry_usage_counters_are_canonical_decimal_strings() {
     assert_eq!(start["attributes"]["af.usage.input_tokens"], "42");
     assert!(start["attributes"].get("af.usage.output_tokens").is_none());
     assert_eq!(start["attributes"]["af.dropped_fields"], 1);
+
+    // Every declared exact counter, each name and one member of each family: the integer, the
+    // text and the negative shapes are dropped and counted, the canonical decimal is kept.
+    let declared: Vec<String> = EXACT_COUNTERS
+        .iter()
+        .map(|pattern| pattern.replace('*', "future"))
+        .collect();
+    let temp = tempfile::tempdir().unwrap();
+    let writer =
+        review_telemetry::segment::writer::Writer::new(options(temp.path(), Level::Spans)).unwrap();
+    let span = writer
+        .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    type Shape = fn(Attrs, &str) -> Attrs;
+    let shapes: [(&str, Shape); 5] = [
+        ("integer", |attrs, name| attrs.int(name, 42)),
+        ("negative integer", |attrs, name| attrs.int(name, -1)),
+        ("text", |attrs, name| attrs.text(name, "42")),
+        ("negative decimal", |attrs, name| attrs.decimal(name, "-1")),
+        ("decimal", |attrs, name| attrs.decimal(name, "42")),
+    ];
+    for (shape, add) in shapes {
+        let attrs = declared
+            .iter()
+            .fold(Attrs::new(), |attrs, name| add(attrs, name));
+        writer.event(&span, shape, attrs);
+    }
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let lines = sealed_lines(&sealed.path);
+    for (shape, _) in shapes {
+        let event = lines
+            .iter()
+            .find(|line| line["t"] == "event" && line["name"] == shape)
+            .unwrap();
+        let attributes = event["attributes"].as_object().unwrap();
+        for name in &declared {
+            if shape == "decimal" {
+                assert_eq!(attributes[name.as_str()], "42", "{shape} {name}");
+            } else {
+                assert!(!attributes.contains_key(name.as_str()), "{shape} {name}");
+            }
+        }
+        if shape == "decimal" {
+            assert!(attributes.get("af.dropped_fields").is_none(), "{event}");
+        } else {
+            assert_eq!(attributes["af.dropped_fields"], declared.len(), "{shape}");
+        }
+        assert!(attributes.get("af.redacted").is_none(), "{shape}: {event}");
+    }
+
+    // The documentation prints the one declared list.
+    let docs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/telemetry.md"),
+    )
+    .unwrap();
+    let bullet: String = docs
+        .split("\n- ")
+        .find(|bullet| bullet.starts_with("Token and charge counters"))
+        .expect("the counter bullet")
+        .split("Any")
+        .next()
+        .unwrap()
+        .to_string();
+    let documented: Vec<&str> = bullet
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|name| *name != "*")
+        .collect();
+    assert_eq!(documented, EXACT_COUNTERS);
 }
