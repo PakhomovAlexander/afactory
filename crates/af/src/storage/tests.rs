@@ -808,11 +808,12 @@ fn a_planned_campaign_replaced_before_its_removal_stays_as_failed_with_the_total
     assert_eq!(recorded.removals.len(), 1);
 }
 
-/// A planned campaign that grew deeper than the removal walk between the plan and its removal,
-/// as another process could make it: the walk unlinks what it reaches and leaves the rest under
-/// its claim. The applied sweep keeps the entry as failed with the bytes that actually left the
-/// disk, what inventory measured less what the claim still holds, so the running total is what
-/// the directory then holds.
+/// A planned campaign that grew between the plan and its removal, as another process could make
+/// it: a large file, and a child deeper than the removal walk. The walk unlinks what it reaches
+/// and leaves the rest under its claim. The applied sweep keeps the entry as failed with the
+/// bytes that actually left the disk, accounted from what the campaign held when its removal
+/// started, never from what inventory measured: what grew since is counted when the walk
+/// unlinked it, so the running total moves by exactly what left the disk.
 #[test]
 fn a_partial_deletion_reports_the_bytes_it_actually_freed() {
     let layout = layout();
@@ -821,6 +822,8 @@ fn a_partial_deletion_reports_the_bytes_it_actually_freed() {
         std::fs::write(target.join(format!("blob-{n:02}")), vec![6_u8; CHUNK]).unwrap();
     }
     std::fs::create_dir(target.join("grows")).unwrap();
+    // The lock the removal holds exists already, so nothing but the hook changes the campaign.
+    std::fs::write(target.join(RUNNING_LOCK), b"").unwrap();
     age(&target, 30 * DAY);
     let mut keep_none = policy(20 << 30);
     keep_none.keep_campaigns = 0;
@@ -831,21 +834,28 @@ fn a_partial_deletion_reports_the_bytes_it_actually_freed() {
     assert_eq!(planned.path, target);
     let measured = planned.bytes;
 
-    // Just before its removal a child grows past the walk: a chain of directories, each with an
-    // empty file of its own, deeper than `REMOVAL_MAX_DEPTH`.
+    // Just before its removal the campaign grows: a large file, and a chain of directories, each
+    // with an empty file of its own, deeper than `REMOVAL_MAX_DEPTH`.
     let grows = target.join("grows");
+    let started = std::rc::Rc::new(std::cell::Cell::new(0_u64));
+    let seen = std::rc::Rc::clone(&started);
+    let at = target.clone();
     BEFORE_EXECUTE.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move |_: &plan::Planned| {
+            std::fs::write(at.join("grown"), vec![8_u8; 4 * CHUNK]).unwrap();
             let mut level = grows.clone();
             for n in 0..=review_sandbox::REMOVAL_MAX_DEPTH + 1 {
                 level = level.join("d");
                 std::fs::create_dir(&level).unwrap();
                 std::fs::write(level.join(format!("f{n}")), b"").unwrap();
             }
+            seen.set(review_sandbox::storage::allocated_bytes(&at).unwrap());
         }));
     });
     let applied = sweep(&layout.roots, &keep_none, true, true);
     BEFORE_EXECUTE.with(|hook| *hook.borrow_mut() = None);
+    let started = started.get();
+    assert!(started >= measured + 4 * CHUNK as u64, "it grew: {started}");
 
     let [failed] = applied.removals.as_slice() else {
         panic!("{applied:?}");
@@ -854,7 +864,32 @@ fn a_partial_deletion_reports_the_bytes_it_actually_freed() {
     assert!(outcome.starts_with("failed: removing "), "{outcome}");
     assert!(outcome.contains("only partly removed"), "{outcome}");
     assert!(!target.exists(), "claimed, never renamed back");
-    let claims: Vec<PathBuf> = std::fs::read_dir(&layout.roots.campaigns)
+    let claim = only_claim(&layout.roots.campaigns);
+    let remaining = review_sandbox::storage::allocated_bytes(&claim).unwrap();
+    assert!(remaining > 0, "the walk could not reach all of it");
+    assert_eq!(
+        failed.bytes,
+        started - remaining,
+        "what the walk unlinked, accounted from the removal's own start"
+    );
+    assert_eq!(failed.total_after, applied.total_before - failed.bytes);
+    assert_eq!(applied.total_after, failed.total_after);
+    // The schema accepts a failed entry that freed bytes.
+    let mut document = serde_json::to_value(&applied).unwrap();
+    document["schema"] = serde_json::json!("af/storage-prune@2");
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../schemas/storage-prune-v2.json")).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&document), "{document}");
+    let line = removal_line(failed, true);
+    assert!(line.contains("partly removed"), "{line}");
+    // Left for the walk to finish once this process is gone; here, the test's own cleanup.
+    std::fs::remove_dir_all(claim).unwrap();
+}
+
+/// The one claim a removal that stopped part way left in `parent`.
+fn only_claim(parent: &Path) -> PathBuf {
+    let claims: Vec<PathBuf> = std::fs::read_dir(parent)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| {
@@ -866,30 +901,52 @@ fn a_partial_deletion_reports_the_bytes_it_actually_freed() {
     let [claim] = claims.as_slice() else {
         panic!("one claim holds what is left: {claims:?}");
     };
-    let remaining = review_sandbox::storage::allocated_bytes(claim).unwrap();
-    assert!(remaining > 0, "the walk could not reach all of it");
-    assert_eq!(
-        failed.bytes,
-        measured.saturating_sub(remaining),
-        "what left the disk, never all or nothing"
+    claim.clone()
+}
+
+/// A planned campaign whose children were all unlinked but whose final `rmdir` failed, since a
+/// child appeared in its claim meanwhile: a partial removal too, its entry failed with the bytes
+/// of the children it removed, never a failure that freed nothing.
+#[cfg(debug_assertions)]
+#[test]
+fn a_failure_at_the_final_rmdir_is_a_partial_removal_with_what_it_freed() {
+    let layout = layout();
+    let target = campaign(&layout, 'c', 30 * DAY);
+    std::fs::write(target.join(RUNNING_LOCK), b"").unwrap();
+    age(&target, 30 * DAY);
+    let mut keep_none = policy(20 << 30);
+    keep_none.keep_campaigns = 0;
+    let started = std::rc::Rc::new(std::cell::Cell::new(0_u64));
+    let seen = std::rc::Rc::clone(&started);
+    let at = target.clone();
+    BEFORE_EXECUTE.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |_: &plan::Planned| {
+            seen.set(review_sandbox::storage::allocated_bytes(&at).unwrap());
+        }));
+    });
+    let parent = layout.roots.campaigns.clone();
+    review_sandbox::removal::set_before_final_unlink(Some(Box::new(move |claim: &str| {
+        std::fs::write(parent.join(claim).join("late"), b"").unwrap();
+    })));
+    let applied = sweep(&layout.roots, &keep_none, true, true);
+    review_sandbox::removal::set_before_final_unlink(None);
+    BEFORE_EXECUTE.with(|hook| *hook.borrow_mut() = None);
+
+    let [failed] = applied.removals.as_slice() else {
+        panic!("{applied:?}");
+    };
+    let outcome = failed.outcome.as_deref().unwrap();
+    assert!(outcome.contains("removing its claim"), "{outcome}");
+    let claim = only_claim(&layout.roots.campaigns);
+    assert!(claim.join("late").is_file());
+    let remaining = review_sandbox::storage::allocated_bytes(&claim).unwrap();
+    assert_eq!(failed.bytes, started.get() - remaining);
+    assert!(
+        failed.bytes >= CHUNK as u64,
+        "the children it removed: {}",
+        failed.bytes
     );
     assert_eq!(failed.total_after, applied.total_before - failed.bytes);
-    assert_eq!(applied.total_after, failed.total_after);
-    // The document's total is what the directory holds: the claim's bytes are still on disk.
-    assert_eq!(
-        applied.total_after,
-        applied.total_before - measured + remaining.min(measured)
-    );
-    // The schema accepts a failed entry that freed bytes.
-    let mut document = serde_json::to_value(&applied).unwrap();
-    document["schema"] = serde_json::json!("af/storage-prune@2");
-    let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../schemas/storage-prune-v2.json")).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
-    assert!(validator.is_valid(&document), "{document}");
-    let line = removal_line(failed, true);
-    assert!(line.contains("partly removed"), "{line}");
-    // Left for the walk to finish once this process is gone; here, the test's own cleanup.
     std::fs::remove_dir_all(claim).unwrap();
 }
 

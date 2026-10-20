@@ -409,7 +409,7 @@ email first of all.
     each with the bytes it frees, its rule (`recovery` for what an interruption left, then
     `collection` and, for Surveys beyond `keep_surveys`, `keep_surveys`, then `budget`) and the
     total after it, and the entries it leaves with their reasons (`held`, `foreign`, `oversize`,
-    `unreadable_name`, `too_deep`), computed over an in-memory model of the snapshot that its own removals
+    `unreadable_name`, `too_deep`, `unmeasurable`), computed over an in-memory model of the snapshot that its own removals
     update and never over a second inventory, so the bytes of a record an interruption moved
     under `cas/removing` are subtracted once, from the Project Store entry that holds them, and
     never restored (Task Stores are told apart into their finished Tasks, in place, only when
@@ -418,7 +418,15 @@ email first of all.
     `.af-removing-<pid>-…` (ADR-0144) and the containers dead passes left empty, each with the
     identity and bytes the listing stated, are planned first as `recovery` entries of kind
     `claim`, so the applied sweep removes nothing before the inventory and nothing the plan does
-    not list. The inventory is taken over the Store registrations as they are: no registration
+    not list. `af storage` counts the same claims: each one no other entry measured as part of its
+    own is an entry of kind `claim` with `state` `abandoned` and its measured bytes, in `kinds`,
+    `entries` and `total_bytes` (`af/storage@3` gains the kind `claim` and `state`), so the
+    listing, the preview and the applied document agree on what the directory holds. A dead
+    claim the listing's walk cannot measure (nested deeper than its 256 levels, or any error) has
+    no bytes the plan could account for, and no `(0, 0)` stands in for them: the inventory records
+    it in use with no bytes (`left: deeper than the removal walk`, or `left: unmeasurable:
+    <reason>`), the preview and the applied sweep list it under `left` as `too_deep` or
+    `unmeasurable` with why, and nothing removes it. The inventory is taken over the Store registrations as they are: no registration
     is dropped before it, so a registered Store a dead process renamed into its claim is
     inventoried through that claim and its parent, and the plan lists the claim as `recovery` and
     the registration's removal as an entry of its own (`registry_dropped`), which the applied
@@ -445,11 +453,20 @@ email first of all.
     next one does. A planned object that is not there when its job runs (a container, a record at
     its name or in a dead pass's container, a record between its tombstone and its unlink) is
     such a failure, `failed: … gone since the inventory`, never a removal of nothing. A deletion
-    that stops part way (`review_sandbox::remove_tree_at` failing after it unlinked some of a tree
-    that grew deeper than its walk or holds a child it cannot unlink) is failed too, and its
-    bytes are what actually left the disk: the bytes the inventory measured less the allocated
-    bytes of what the claim it leaves still holds, stated after the failure (nothing, when that
-    cannot be measured). So the document's totals are what the directory holds.
+    that stops part way (`review_sandbox::remove_tree_measured_at` failing after it unlinked some
+    of a tree that grew deeper than its walk or holds a child it cannot unlink) is failed too,
+    and its bytes are what actually left the disk, accounted from the removal's own start: once
+    the directory is claimed, its allocated bytes are stated through the claim's own descriptor,
+    within the walk's reach (its 128 levels and their entries), immediately before anything is
+    unlinked, and the `PartlyRemoved` failure carries `freed`, those bytes less what the claim
+    still holds, stated the same way after the walk stopped (nothing, when either cannot be
+    measured). A claim that grew since the inventory therefore never reports zero for files the
+    walk did unlink, and the running total moves by exactly `freed`. A failure at the final
+    `rmdir`, once the claim's children were unlinked (a child appeared meanwhile, the claim's
+    name holds another directory, any error), is such a partial removal too, with the bytes freed
+    so far, never a failure that freed nothing. So the document's totals are what the directory
+    holds, but for the records a pass itself writes (a tombstone, `settled.json`), which the next
+    inventory measures.
     The tombstone binds the
     event: every field but `survey_id` and `collected_unix_ms` is copied from the record after
     the event was verified against it on every field clause 2 compares, never from the event,
@@ -520,7 +537,40 @@ email first of all.
     object: it is left in place and listed as `foreign` with its bytes, counted in the Store's
     total and never as the Survey's, and never deleted by any path. Without a moved record, the
     file at a tombstoned Survey's name is its record, deleted as above, only when its bytes are
-    the record's (they hash to its ID); any other is `foreign` in the same way. A container's
+    the record's (they hash to its ID) and the Survey is not settled; any other is `foreign` in
+    the same way. The settlement is persisted machine-locally, in a `settled` record beside the
+    lock (chosen over a field of a follow-up event, so the log keeps only the Surveyor's and the
+    tombstones' events): `settled.json` of the Project Store,
+    `af/ProjectSurveysSettled@1` ([schema](../../schemas/project-surveys-settled-v1.json)), the
+    sorted Survey IDs whose own records have left the CAS. A pass adds a Survey under the Store's
+    lock once the inode off its CAS name (renamed into its own container, or the moved record in
+    a dead pass's) is checked to be the record and before it is unlinked, and once a tombstoned
+    record is found gone from the CAS; the file is rewritten whole through a fresh temporary file
+    renamed over it, and a record that cannot be written puts the inode back and deletes
+    nothing. Every inventory reads it: once a Survey is settled, any later occupant of its CAS
+    name is `foreign` even when its bytes hash to the Survey ID, sweep after sweep, and an
+    applied `recovery` that finds the Survey settled since its plan deletes nothing. A
+    `settled.json` that cannot be read settles every tombstoned Survey for that sweep, so nothing
+    at a tombstoned name is deleted, and is reported.
+    The Surveyor's writer keeps a pending-publication entry while it publishes one Survey:
+    `pending/<hex of the Survey ID>.json` beside the lock, `af/ProjectPendingPublication@1`
+    ([schema](../../schemas/project-pending-publication-v1.json)) {`schema`, `survey_id`,
+    `length`, the record's byte length, at most `MAX_SURVEY_BYTES`, `object` {`device`,
+    `inode`} once the bytes are written, absent before, and `recorded_unix_ms`, every number
+    decimal text}, at most 4 KiB, written under the Store's lock before the record's bytes enter
+    the CAS, `object` added once they are there, and removed once `SurveyRecorded@1` commits;
+    the writer follows this shape. Collection reads it in the Store's one read: an entry whose
+    Survey a `SurveyRecorded@1` names is cleared as a planned `recovery` entry and nothing is
+    deleted; for any other, only the object at the Survey's CAS name with the entry's device,
+    inode and length is counted, a `survey` entry of `af storage` with `state` `pending`, in use,
+    its bytes out of the Project Store's, and reclaimed as a planned `recovery` entry before the
+    entry is cleared, preview and apply alike, each job checking again under the lock that the
+    event did not commit, the entry still describes that inode and the name still holds it. A
+    file at that name the entry does not describe is `foreign`, and the entry is cleared; an
+    entry of a held Store is the writer's and is left `held`, and one that cannot be read is
+    reported and left with its object. Any object of the Project Store's CAS that no
+    `SurveyRecorded@1`, tombstone or pending entry names is `foreign`: listed with its bytes,
+    counted in the Store's total, never reclaimed. A container's
     own name is checked as the names inside it are: only a container named by a pass ID (32
     lowercase hex digits) is a dead pass's. Everything else under `cas/removing` is left and
     listed: a name that is not UTF-8, a file's or its container's, as `unreadable_name`, its

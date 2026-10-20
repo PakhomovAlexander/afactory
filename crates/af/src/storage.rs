@@ -125,14 +125,15 @@ pub(crate) enum Kind {
     Survey,
     UnreadableStore,
     Version,
-    /// A removal a process that died left claimed under a private name, or a container a dead
-    /// Survey collection left empty: never an `af storage` entry, but in the sweep's snapshot
-    /// and finished by its plan under `recovery`.
+    /// A removal a process that died left claimed under a private name (`state` `abandoned`,
+    /// listed by `af storage` unless an entry measured it as part of its own), or a container a
+    /// dead Survey collection left: in the sweep's snapshot and finished by its plan under
+    /// `recovery`.
     Claim,
 }
 
 impl Kind {
-    const ALL: [Kind; 9] = [
+    const ALL: [Kind; 10] = [
         Kind::WarmKey,
         Kind::Workspace,
         Kind::Campaign,
@@ -142,6 +143,7 @@ impl Kind {
         Kind::Survey,
         Kind::UnreadableStore,
         Kind::Version,
+        Kind::Claim,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -170,7 +172,7 @@ impl Kind {
             Kind::Survey => "Surveys",
             Kind::UnreadableStore => "unreadable Stores",
             Kind::Version => "installed versions",
-            Kind::Claim => "finished removals",
+            Kind::Claim => "abandoned removals",
         }
     }
 }
@@ -199,6 +201,15 @@ pub(crate) struct Entry {
     /// the walk that measured its bytes found it: in use, and left `too_deep` by every plan.
     #[serde(skip)]
     pub(crate) too_deep: bool,
+    /// A claim the walk could not measure (nested deeper than it reaches, or unreadable): why.
+    /// It holds no bytes the inventory knows of, and every plan leaves it.
+    #[serde(skip)]
+    pub(crate) unmeasurable: Option<String>,
+    /// What an entry that is not yet or no longer one af keeps is: `abandoned` for a removal a
+    /// dead process left claimed, `pending` for a Survey published to its Project Store's CAS
+    /// whose `SurveyRecorded@1` never committed (ADR-0152 clause 13).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) state: Option<&'static str>,
 }
 
 /// Why an entry nested deeper than the removal walk is never removed.
@@ -225,8 +236,8 @@ pub(crate) struct Inventory {
     /// sweep's plan needs of its Surveys, in inventory order.
     pub(crate) projects: Vec<(PathBuf, crate::projects::survey::collect::Look)>,
     /// The removals dead processes left claimed, entries of kind `claim` with the identity and
-    /// bytes listed: the sweep's plan finishes them first. Not in [`Inventory::total`], which is
-    /// what `af storage` shows.
+    /// bytes listed: the sweep's plan finishes them first. Those no entry measured as part of
+    /// its own ([`Inventory::listed_claims`]) are in [`Inventory::total`] and `af storage`.
     pub(crate) claims: Vec<Entry>,
     /// The registered paths that held no Store when inventory read the registry. Inventory is
     /// taken over every registration as it is, so such a path (renamed into a dead process's
@@ -250,11 +261,22 @@ impl Inventory {
         }
     }
 
+    /// What af holds: every entry and every claim no entry measured as part of its own, the
+    /// total a sweep's plan starts from.
     pub(crate) fn total(&self) -> u64 {
         self.entries
             .iter()
+            .chain(self.listed_claims())
             .map(|entry| entry.bytes)
             .fold(0, u64::saturating_add)
+    }
+
+    /// The claims that are entries of their own: those no entry measured whole holds (a claim
+    /// under a Project Store is in that Store's bytes already), as the plan counts them.
+    pub(crate) fn listed_claims(&self) -> impl Iterator<Item = &Entry> {
+        self.claims
+            .iter()
+            .filter(|claim| plan::holder(&self.entries, &claim.path).is_none())
     }
 }
 
@@ -646,6 +668,8 @@ fn measure_into(
                 reason: None,
                 identity: review_sandbox::Identity::of(path).ok(),
                 too_deep,
+                unmeasurable: None,
+                state: None,
             });
         }
         Err(error) => inventory.problems.push(Problem {
@@ -702,6 +726,8 @@ fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
                     in_use,
                     reason: None,
                     too_deep: false,
+                    unmeasurable: None,
+                    state: None,
                 }),
                 Err(error) => inventory.problems.push(Problem {
                     path: key,
@@ -816,6 +842,8 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
                 reason: None,
                 identity: None,
                 too_deep: false,
+                unmeasurable: None,
+                state: None,
             });
             inventory.problems.push(Problem {
                 path: state.to_path_buf(),
@@ -863,6 +891,8 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
             reason: None,
             identity: None,
             too_deep: false,
+            unmeasurable: None,
+            state: None,
         });
     }
     inventory.entries.push(Entry {
@@ -875,6 +905,8 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
         reason: None,
         identity: None,
         too_deep: false,
+        unmeasurable: None,
+        state: None,
     });
     record_store(inventory, roots, state.to_path_buf());
 }
@@ -941,7 +973,7 @@ pub(crate) struct Left {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) path_encoded: bool,
     pub(crate) bytes: u64,
-    /// `held`, `foreign`, `oversize` or `unreadable_name`.
+    /// `held`, `foreign`, `oversize`, `unreadable_name`, `too_deep` or `unmeasurable`.
     pub(crate) reason: &'static str,
     pub(crate) detail: String,
     /// The raw path, for the text output's lossy display.
@@ -1332,17 +1364,32 @@ fn abandoned_claims(roots: &Roots, registered: &[registry::Registered], inventor
     parents.dedup();
     for parent in parents {
         for claim in review_sandbox::abandoned_claims(&parent) {
-            let too_deep = review_sandbox::deeper_than_removal_walk(claim.depth);
+            // A claim the walk cannot measure holds no bytes the plan could account for: it is
+            // left, never planned, and said.
+            let (bytes, too_deep, unmeasurable) = match claim.measured {
+                Ok(size) => (
+                    size.bytes,
+                    review_sandbox::deeper_than_removal_walk(size.depth),
+                    None,
+                ),
+                Err(review_sandbox::Unmeasured::TooDeep(_)) => (0, true, None),
+                Err(review_sandbox::Unmeasured::Unreadable(why)) => (0, false, Some(why)),
+            };
             inventory.claims.push(Entry {
                 kind: Kind::Claim,
                 path: parent.join(&claim.name),
                 task_id: None,
-                bytes: claim.bytes,
+                bytes,
                 last_use_unix_ms: 0,
-                in_use: too_deep.then(|| TOO_DEEP.into()),
+                in_use: match &unmeasurable {
+                    Some(why) => Some(format!("left: unmeasurable: {why}")),
+                    None => too_deep.then(|| TOO_DEEP.into()),
+                },
                 reason: None,
                 identity: Some(claim.identity),
                 too_deep,
+                unmeasurable,
+                state: Some("abandoned"),
             });
         }
     }
@@ -1613,11 +1660,14 @@ fn remove_entry(roots: &Roots, entry: &Entry) -> Result<u64, plan::Failed> {
 }
 
 /// Remove `path`, strictly below `anchor`, and everything below it through descriptors opened
-/// from `anchor` without following a link, refusing any directory but `identity`. The measured
-/// bytes are what was removed. A removal that stopped part way (a tree grown deeper than the
-/// removal walk since `measured` was taken, a child that cannot be unlinked) fails with what
-/// left the disk: `measured`, the bytes inventory counted, less the allocated bytes of what its
-/// claim still holds, so the sweep's totals stay what the directory holds; when what is left
+/// from `anchor` without following a link, refusing any directory but `identity`. What was
+/// removed is what the directory held when its removal started, stated through its own
+/// descriptor immediately before anything was unlinked (`measured`, the bytes inventory
+/// counted, when that cannot be stated). A removal that stopped part way (a tree grown deeper
+/// than the removal walk since inventory, a child that cannot be unlinked, a final `rmdir` that
+/// failed) fails with what left the disk, accounted from that same start: its bytes then less
+/// what its claim still holds, so a tree that grew since inventory never reports nothing for
+/// what the walk unlinked and the sweep's totals stay what the directory holds. When either
 /// cannot be measured, nothing is counted freed.
 fn remove_directory(
     anchor: &Path,
@@ -1625,32 +1675,25 @@ fn remove_directory(
     identity: Option<review_sandbox::Identity>,
     measured: u64,
 ) -> Result<u64, plan::Failed> {
-    let bytes = review_sandbox::storage::allocated_bytes(path).unwrap_or(0);
-    let error = match review_sandbox::remove_beneath(anchor, path, identity) {
-        Ok(()) => return Ok(bytes),
+    let error = match review_sandbox::remove_beneath_measured(anchor, path, identity) {
+        Ok(started) => return Ok(started.unwrap_or(measured)),
         Err(error) => error,
     };
-    let Some(claim) = review_sandbox::partly_removed(&error) else {
-        return Err(format!("{error}; it is left, and the next sweep tries again").into());
-    };
-    let left = path.parent().map(|parent| parent.join(claim));
-    match left.map(|left| review_sandbox::storage::allocated_bytes(&left)) {
-        Some(Ok(remaining)) => {
-            let freed = measured.saturating_sub(remaining);
-            Err(plan::Failed {
+    match review_sandbox::partial(&error) {
+        None => Err(format!("{error}; it is left, and the next sweep tries again").into()),
+        Some(partly) => match partly.freed {
+            Some(freed) => Err(plan::Failed {
                 reason: format!(
-                    "{error}; {freed} bytes of it were freed and {remaining} are left under its \
-                     claim"
+                    "{error}; {freed} bytes of it were freed and the rest is left under its claim"
                 ),
                 freed,
-            })
-        }
-        Some(Err(measuring)) => Err(format!(
-            "{error}; what is left under its claim cannot be measured ({measuring}), so nothing \
-             of it is counted freed"
-        )
-        .into()),
-        None => Err(format!("{error}; it has no parent to measure what is left in").into()),
+            }),
+            None => Err(format!(
+                "{error}; what it held when its removal started or what is left under its claim \
+                 cannot be measured, so nothing of it is counted freed"
+            )
+            .into()),
+        },
     }
 }
 
@@ -2222,9 +2265,12 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
         .iter()
         .filter_map(|volume| volume.free.as_ref().ok().map(|free| (*free, &volume.path)))
         .min_by_key(|(free, _)| *free);
+    // Every entry the total counts: the abandoned claims no entry holds included, as the plan
+    // of a sweep counts them.
+    let listed: Vec<&Entry> = stock.entries.iter().chain(stock.listed_claims()).collect();
     let mut kinds = Vec::new();
     for kind in Kind::ALL {
-        let of: Vec<&Entry> = stock.entries.iter().filter(|e| e.kind == kind).collect();
+        let of: Vec<&&Entry> = listed.iter().filter(|e| e.kind == kind).collect();
         let bytes = of.iter().map(|e| e.bytes).fold(0, u64::saturating_add);
         kinds.push(json!({
             "kind": kind.as_str(),
@@ -2243,7 +2289,7 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
             "min_free_bytes": policy.min_free_bytes,
             "free_bytes": free.as_ref().map(|(free, _)| *free),
             "kinds": kinds,
-            "entries": stock.entries,
+            "entries": listed,
             "problems": stock.problems,
         });
         println!(
@@ -2257,7 +2303,7 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
         "KIND", "ENTRIES", "BYTES", "OLDEST USE", "NEWEST USE"
     );
     for kind in Kind::ALL {
-        let of: Vec<&Entry> = stock.entries.iter().filter(|e| e.kind == kind).collect();
+        let of: Vec<&&Entry> = listed.iter().filter(|e| e.kind == kind).collect();
         let bytes = of.iter().map(|e| e.bytes).fold(0, u64::saturating_add);
         let when = |value: Option<u64>| value.filter(|ms| *ms > 0).map_or("-".to_string(), iso);
         println!(
@@ -2378,9 +2424,11 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
 
 /// The Surveys of the readable Project Store at `path` (ADR-0152 clause 13), from its one look:
 /// one entry of kind `survey` each, its record's CAS bytes, last used at its cutoff and stated
-/// by device and inode, taken out of the Project Store's own bytes; a record an interruption
-/// moved under `cas/removing`, and a foreign file at a collected Survey's name, stay in the
-/// Project Store's bytes, never a Survey's. The Store's identity is recorded as a registered Task
+/// by device and inode, taken out of the Project Store's own bytes; an object a
+/// pending-publication entry describes whose `SurveyRecorded@1` never committed is one too, its
+/// `state` `pending`, in use, last used when its entry was written. A record an interruption
+/// moved under `cas/removing`, a foreign file at a collected Survey's name and an object no
+/// event or entry names stay in the Project Store's bytes, never a Survey's. The Store's identity is recorded as a registered Task
 /// Store's is, so a Survey's collection reaches only the directory inventory measured.
 fn surveys_into(inventory: &mut Inventory, path: &Path) {
     let look = match crate::projects::survey::collect::look(path) {
@@ -2433,6 +2481,8 @@ fn surveys_into(inventory: &mut Inventory, path: &Path) {
             reason: None,
             identity: survey.identity,
             too_deep: false,
+            unmeasurable: None,
+            state: survey.pending.then_some("pending"),
         });
     }
     if reached.is_ok() {
