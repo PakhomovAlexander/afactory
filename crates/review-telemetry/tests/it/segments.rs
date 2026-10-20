@@ -393,12 +393,15 @@ fn telemetry_record_bound_holds() {
         );
         assert!(attributes.get("af.usage.input_tokens").is_none());
         assert!(attributes["af.dropped_fields"].as_u64().unwrap() >= 2);
-        assert!(attributes["af.list"].as_array().unwrap().last().unwrap() == "…");
         let reason = attributes["af.failure.reason"].as_str().unwrap();
         if level == Level::Content {
             assert!(reason.starts_with(OCCURRENCE_PREFIX), "{reason}");
+            // An array over its bound becomes a blob occurrence at `content` too.
+            let list = attributes["af.list"].as_str().unwrap();
+            assert!(list.starts_with(OCCURRENCE_PREFIX), "{list}");
             assert!(lines.iter().any(|line| line["t"] == "blob_ref"));
         } else {
+            assert!(attributes["af.list"].as_array().unwrap().last().unwrap() == "…");
             assert!(reason.ends_with('…'), "{reason}");
             assert!(attributes["af.truncated_fields"].as_u64().unwrap() >= 2);
             assert!(!lines.iter().any(|line| line["t"] == "blob_ref"));

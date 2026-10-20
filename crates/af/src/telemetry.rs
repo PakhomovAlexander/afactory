@@ -174,12 +174,25 @@ fn render_status(status: &Status) -> String {
                 _ => format!(" ({state})"),
             })
             .unwrap_or_default();
+        // Unrecognized paths are named, never read and never removed.
+        let name = match (&entry.count, &entry.names) {
+            (Some(count), Some(names)) => format!(
+                "{count} path{}: {}{}",
+                if *count == 1 { "" } else { "s" },
+                names.join(", "),
+                if *count > names.len() as u64 {
+                    ", …"
+                } else {
+                    ""
+                }
+            ),
+            _ => entry.name.clone(),
+        };
         let _ = writeln!(
             out,
-            "  {:<10} {:>10}  {}{state}",
+            "  {:<12} {:>10}  {name}{state}",
             entry.kind,
             human_bytes(entry.bytes),
-            entry.name
         );
     }
     let segments = &status.segments;

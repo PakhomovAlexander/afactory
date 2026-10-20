@@ -83,7 +83,9 @@ under the state root's `telemetry/`. These eight clauses bind every package of t
    truncation; a line or document too long to be judged whole is withheld whole, never cut. JSON
    is redacted key-aware: a member named like a secret loses its value, and an object holding a
    member whose name itself passes for a credential becomes the string `[withheld]`, so every
-   document still parses. Kernel-produced, validated identity fields and counters are typed
+   document still parses. A record attribute's name is judged by the same rule: one that passes
+   for a credential is never written, the attribute is omitted and counted in `af.redacted`, and
+   the record's other attributes stay. Kernel-produced, validated identity fields and counters are typed
    fields the heuristic never sees; environment values are never recorded; Provider grants and
    the home prefix are replaced by placeholders. A harness's untrusted content, from its streams
    or its native telemetry, is published only after Telemetry's own whole-capture release
@@ -100,7 +102,9 @@ under the state root's `telemetry/`. These eight clauses bind every package of t
    writer's counts lost with the writer are `null`, the capture incomplete, and a writer's seal
    stranded before compression is superseded, never shown as a clean exit.
 8. **Bounded disk, under the budget's rules.** Every physical byte under a telemetry directory
-   is counted once in the Storage Budget as the kind `telemetry`, and evicted under ADR-0144's
+   is counted once in the Storage Budget as the kind `telemetry` (`af telemetry status` accounts
+   each one, a path that matches no known kind under an `unrecognized` entry it never reads or
+   removes), and evicted under ADR-0144's
    rules only: by sealed segment, least recently used first, never an entry in use or used within
    the last hour, by age only under `[storage] auto_gc` or an applied prune. A live segment has a
    total byte limit of its own with a fixed terminal reserve for its seal. Every directory

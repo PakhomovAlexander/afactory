@@ -32,7 +32,8 @@ pub const REINDEX_SCHEMA: &str = "af/telemetry-reindex@1";
 #[serde(deny_unknown_fields)]
 pub struct Entry {
     /// `segment` (with its manifest), `blobs`, `index` (with WAL and shared memory),
-    /// `temporary`, `locks`.
+    /// `temporary`, `locks` (with the `v1/` and `segments/` directories themselves), and
+    /// `unrecognized`: whatever else lies beneath the root, counted and never read or removed.
     pub kind: String,
     /// The segment id, or the entry's name.
     pub name: String,
@@ -47,8 +48,34 @@ pub struct Entry {
     /// (`recovered, drops unknown`, `recovered, 3 dropped`, `12 dropped`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<String>,
+    /// For `unrecognized`: how many paths beneath the root match no known kind, each counted
+    /// once with everything beneath it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
+    /// For `unrecognized`: the first [`UNRECOGNIZED_NAMES`] of those paths, relative to the
+    /// root, in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub names: Option<Vec<String>>,
     pub bytes: u64,
 }
+
+impl Entry {
+    fn new(kind: &str, name: &str, bytes: u64) -> Self {
+        Self {
+            kind: kind.into(),
+            name: name.into(),
+            state: None,
+            exit: None,
+            capture: None,
+            count: None,
+            names: None,
+            bytes,
+        }
+    }
+}
+
+/// The most unrecognized paths `status` names; its count and bytes cover every one.
+pub const UNRECOGNIZED_NAMES: usize = 16;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -300,6 +327,10 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         status.bytes.total += allocated_tree(&other);
     }
     if !layout.versioned().is_dir() {
+        if let Some(entry) = unrecognized(&layout) {
+            status.bytes.total += entry.bytes;
+            status.bytes.entries.push(entry);
+        }
         return Ok((status, None));
     }
     let listing = reader::list(&layout)?;
@@ -322,12 +353,8 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
                 bytes += allocated(&layout.refs(id));
             }
             entries.push(Entry {
-                kind: "segment".into(),
-                name: id.clone(),
                 state: Some(state.into()),
-                exit: None,
-                capture: None,
-                bytes,
+                ..Entry::new("segment", id, bytes)
             });
         }
     }
@@ -343,46 +370,30 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
             .iter()
             .map(|path| allocated(path))
             .sum::<u64>();
-    entries.push(Entry {
-        kind: "blobs".into(),
-        name: "blobs".into(),
-        state: None,
-        exit: None,
-        capture: None,
-        bytes: allocated_tree(&layout.blobs()),
-    });
-    entries.push(Entry {
-        kind: "index".into(),
-        name: "index.sqlite".into(),
-        state: None,
-        exit: None,
-        capture: None,
-        bytes: layout
+    entries.push(Entry::new(
+        "blobs",
+        "blobs",
+        allocated_tree(&layout.blobs()),
+    ));
+    entries.push(Entry::new(
+        "index",
+        "index.sqlite",
+        layout
             .index_files()
             .iter()
             .map(|path| allocated(path))
             .sum(),
-    });
-    entries.push(Entry {
-        kind: "temporary".into(),
-        name: "temporary".into(),
-        state: None,
-        exit: None,
-        capture: None,
-        bytes: orphans,
-    });
-    entries.push(Entry {
-        kind: "locks".into(),
-        name: "locks".into(),
-        state: None,
-        exit: None,
-        capture: None,
-        bytes: allocated(&layout.gc_lock())
+    ));
+    entries.push(Entry::new("temporary", "temporary", orphans));
+    entries.push(Entry::new(
+        "locks",
+        "locks",
+        allocated(&layout.gc_lock())
             + allocated(&layout.index_lock())
             + allocated(&layout.index_intent())
             + allocated(&layout.segments())
             + allocated(&layout.versioned()),
-    });
+    ));
     let mut index = Index::open(&layout)?;
     let (ingested, refused) = index.ingest()?;
     status.index = IndexState {
@@ -436,9 +447,96 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
             .map(|path| allocated(path))
             .sum();
     }
+    entries.extend(unrecognized(&layout));
     status.bytes.total += entries.iter().map(|entry| entry.bytes).sum::<u64>();
     status.bytes.entries = entries;
     Ok((status, note))
+}
+
+/// Where a path beneath the root lies, for [`unrecognized`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    Root,
+    Versioned,
+    Segments,
+    /// Inside a path no known kind names as a directory: nothing beneath it is known.
+    Foreign,
+}
+
+/// How [`status`] accounts one path beneath the root.
+enum Known {
+    /// Counted by an entry with everything beneath it.
+    Tree,
+    /// Its own blocks counted by an entry; what lies beneath it is judged in `Place`.
+    Own(Place),
+    Unrecognized,
+}
+
+fn known(place: Place, name: &str, is_dir: bool, layout: &Layout) -> Known {
+    match place {
+        Place::Root if name == layout::VERSION_DIR && is_dir => Known::Own(Place::Versioned),
+        Place::Root if reader::is_other_version(name) => Known::Tree,
+        Place::Versioned if name == "segments" && is_dir => Known::Own(Place::Segments),
+        Place::Versioned if name == "blobs" => Known::Tree,
+        Place::Versioned
+            if [layout.gc_lock(), layout.index_lock(), layout.index_intent()]
+                .iter()
+                .chain(layout.index_files().iter())
+                .any(|path| path.file_name().is_some_and(|known| known == name)) =>
+        {
+            Known::Own(Place::Foreign)
+        }
+        Place::Segments
+            if name.starts_with(layout::TEMP_PREFIX)
+                || layout::parse_segment_name(name).is_some() =>
+        {
+            Known::Own(Place::Foreign)
+        }
+        _ => Known::Unrecognized,
+    }
+}
+
+/// Every path beneath the root that matches no known kind, counted once with everything
+/// beneath it by allocated bytes, never read and never removed: with it the entries add up to
+/// the physical total of the tree (ADR-0153 clause 8). `None` when there is none.
+fn unrecognized(layout: &Layout) -> Option<Entry> {
+    let mut count = 0;
+    let mut bytes = 0;
+    let mut names = Vec::new();
+    let mut pending = vec![(layout.root().to_path_buf(), Place::Root)];
+    while let Some((directory, place)) = pending.pop() {
+        let Ok(children) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for child in children.filter_map(Result::ok) {
+            let path = child.path();
+            let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir());
+            match known(place, &child.file_name().to_string_lossy(), is_dir, layout) {
+                Known::Tree => {}
+                Known::Own(inner) => {
+                    if is_dir {
+                        pending.push((path, inner));
+                    }
+                }
+                Known::Unrecognized => {
+                    count += 1;
+                    bytes += allocated_tree(&path);
+                    let relative = path.strip_prefix(layout.root()).unwrap_or(&path);
+                    names.push(relative.display().to_string());
+                }
+            }
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    names.sort();
+    names.truncate(UNRECOGNIZED_NAMES);
+    Some(Entry {
+        count: Some(count),
+        names: Some(names),
+        ..Entry::new("unrecognized", "unrecognized", bytes)
+    })
 }
 
 /// Verify every blob file's digest, holding `gc.lock` shared for the whole scan; returns the

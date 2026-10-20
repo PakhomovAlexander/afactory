@@ -12,7 +12,9 @@ use review_telemetry::blob::{self, Media};
 use review_telemetry::index::{self, Index};
 use review_telemetry::layout::Layout;
 use review_telemetry::level::Level;
-use review_telemetry::record::{Attrs, BlobState, Record, SealExit, SpanKind};
+use review_telemetry::record::{
+    Attrs, BlobState, OCCURRENCE_PREFIX, Record, SealExit, SpanKind, SpanStatus,
+};
 use review_telemetry::redact::Redactor;
 use review_telemetry::segment::reader;
 use review_telemetry::segment::writer::{HookAction, PublishStep, Writer};
@@ -667,4 +669,78 @@ fn telemetry_blob_read_requires_shared_lock() {
         blob_reader::content(&layout, &occurrence),
         Content::Bytes(b"read only under the lock\n".to_vec())
     );
+}
+
+#[test]
+fn telemetry_content_level_array_values_become_blobs() {
+    let long = vec!["w".repeat(2048), "short".to_string()];
+    let many: Vec<String> = (0..40).map(|n| format!("item {n}")).collect();
+    let small = vec!["a".to_string(), "b".to_string()];
+    for level in [Level::Spans, Level::Content] {
+        let temp = tempfile::tempdir().unwrap();
+        let writer = writer(temp.path(), level);
+        let span = writer
+            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        writer.event(
+            &span,
+            "af.arrays",
+            Attrs::new()
+                .texts("af.long", long.clone())
+                .texts("af.many", many.clone())
+                .texts("af.small", small.clone()),
+        );
+        writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let records = sealed_records(&sealed.path);
+        let lines = crate::sealed_lines(&sealed.path);
+        let event = lines
+            .iter()
+            .find(|line| line["t"] == "event" && line["name"] == "af.arrays")
+            .unwrap();
+        let attributes = &event["attributes"];
+        assert_eq!(
+            attributes["af.small"],
+            serde_json::json!(small),
+            "{level:?}"
+        );
+        let occurrences: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                Record::BlobRef(occurrence) => Some(occurrence.clone()),
+                _ => None,
+            })
+            .collect();
+        if level == Level::Content {
+            let layout = Layout::new(temp.path());
+            for (key, expected) in [("af.long", &long), ("af.many", &many)] {
+                let named = attributes[key].as_str().unwrap();
+                let id = named.strip_prefix(OCCURRENCE_PREFIX).unwrap();
+                let occurrence = occurrences
+                    .iter()
+                    .find(|occurrence| occurrence.occurrence_id == id)
+                    .unwrap_or_else(|| panic!("{key}: no occurrence {id}"));
+                assert_eq!(occurrence.state, BlobState::Stored);
+                assert!(!occurrence.truncated);
+                // The reader returns the whole array through the occurrence.
+                let Content::Bytes(bytes) = blob_reader::content(&layout, occurrence) else {
+                    panic!("{key}: content unavailable");
+                };
+                let array: Vec<String> = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(&array, expected, "{key}");
+            }
+            assert_eq!(occurrences.len(), 2);
+            assert!(attributes.get("af.truncated_fields").is_none());
+        } else {
+            let cut = attributes["af.long"].as_array().unwrap();
+            assert_eq!(cut.len(), 2);
+            let first = cut[0].as_str().unwrap();
+            assert!(first.len() <= 1024 && first.ends_with('…'), "{first}");
+            let cut = attributes["af.many"].as_array().unwrap();
+            assert_eq!(cut.len(), 32);
+            assert_eq!(cut[31], "…");
+            assert_eq!(attributes["af.truncated_fields"], 2);
+            assert!(occurrences.is_empty());
+        }
+    }
 }

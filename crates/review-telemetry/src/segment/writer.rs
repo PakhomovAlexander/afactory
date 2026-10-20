@@ -40,8 +40,8 @@ use crate::level::{Level, Settings};
 use crate::record::{
     self, Attributes, Attrs, BlobObject, BlobRef, BlobState, ConfigPart, ConfigRow, Counters,
     Demand, Event, Finding, Host, MAX_KEY_BYTES, MAX_STRING_BYTES, Node, OCCURRENCE_PREFIX,
-    Problem, ProblemWhat, RECORD_MAX_BYTES, Record, Seal, SealExit, SegmentHeader, SpanEnd,
-    SpanKind, SpanStart, SpanStatus, schema,
+    Oversized, Problem, ProblemWhat, RECORD_MAX_BYTES, Record, Seal, SealExit, SegmentHeader,
+    SpanEnd, SpanKind, SpanStart, SpanStatus, schema,
 };
 use crate::redact::{self, Redactor};
 use crate::trace;
@@ -813,8 +813,8 @@ impl Writer {
         consumer.file = None;
     }
 
-    /// Bound `attrs`; at `content`, a string over its bound becomes a pending blob whose
-    /// occurrence id the attribute will name.
+    /// Bound `attrs`; at `content`, a string or string array over its bound becomes a pending
+    /// blob whose occurrence id the attribute will name.
     fn bound(&self, attrs: Attrs) -> Bounded {
         let options = &self.shared.options;
         let mut contents = Vec::new();
@@ -825,10 +825,18 @@ impl Writer {
                 if !keep {
                     return None;
                 }
-                // Already judged whole and replaced: the blob keeps exactly this value.
+                // Already judged whole and replaced: the blob keeps exactly this value, an
+                // array as one JSON document.
+                let (bytes, media) = match value {
+                    Oversized::Text(text) => (text.as_bytes().to_vec(), Media::Text),
+                    Oversized::Texts(values) => (
+                        serde_json::to_vec(values).expect("strings serialize"),
+                        Media::Json,
+                    ),
+                };
                 contents.push(blob::prepare(
-                    value.as_bytes(),
-                    Media::Text,
+                    &bytes,
+                    media,
                     options.content_max_blob_bytes,
                     &Redactor::new(),
                 ));

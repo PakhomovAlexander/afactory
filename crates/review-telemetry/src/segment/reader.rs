@@ -421,6 +421,14 @@ pub fn manifest_digests(layout: &Layout, segment_id: &str) -> Result<BTreeSet<St
     }
 }
 
+/// Whether `name`, beside `v1/` under a telemetry root, is another version's directory.
+pub fn is_other_version(name: &str) -> bool {
+    name != layout::VERSION_DIR
+        && name.len() > 1
+        && name.starts_with('v')
+        && name[1..].bytes().all(|byte| byte.is_ascii_digit())
+}
+
 /// Other version directories beside `v1/`: listed unreadable, never read.
 pub fn other_versions(root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -428,13 +436,7 @@ pub fn other_versions(root: &Path) -> Vec<PathBuf> {
     };
     let mut other: Vec<PathBuf> = entries
         .filter_map(Result::ok)
-        .filter(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            name != layout::VERSION_DIR
-                && name.starts_with('v')
-                && name[1..].bytes().all(|byte| byte.is_ascii_digit())
-                && name.len() > 1
-        })
+        .filter(|entry| is_other_version(&entry.file_name().to_string_lossy()))
         .map(|entry| entry.path())
         .collect();
     other.sort();

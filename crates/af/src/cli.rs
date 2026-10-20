@@ -1418,7 +1418,9 @@ pub(crate) enum TelemetryCommand {
         long_about = "The level, the directory, its bytes, segments, runs, the index and every problem.\n\n\
 Prints the configured `[telemetry] level`; the telemetry directory and its allocated bytes, in \
 total against `[telemetry] max_bytes` and per entry (each segment with its manifest, the blobs, \
-the index with its WAL and shared memory, temporary files, locks), each sealed segment with its \
+the index with its WAL and shared memory, temporary files, locks, and `unrecognized`: every \
+other path beneath the directory, counted once, named up to 16, never read or removed, so the \
+total is every allocated byte beneath it), each sealed segment with its \
 seal's `exit` and its capture (`complete`, or why not: `recovered, drops unknown`); the segments \
 by state — `live` (a writer holds its lock), `unsealed` (nobody does: a crashed writer's, \
 recovered by the next `reindex`), `sealed` and `corrupt` (interior corruption, never read); the \

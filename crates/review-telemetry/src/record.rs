@@ -758,7 +758,7 @@ fn bound_text(
     text: &str,
     redactor: &Redactor,
     counters: &mut Counters,
-    oversized: &mut dyn FnMut(&str, &str) -> Option<String>,
+    oversized: &mut dyn FnMut(&str, Oversized<'_>) -> Option<String>,
 ) -> String {
     let (value, withheld) = redactor.value(text);
     if withheld {
@@ -767,26 +767,99 @@ fn bound_text(
     if value.len() <= MAX_STRING_BYTES {
         return value;
     }
-    if let Some(occurrence) = oversized(key, &value) {
+    if let Some(occurrence) = oversized(key, Oversized::Text(&value)) {
         return format!("{OCCURRENCE_PREFIX}{occurrence}");
     }
     counters.truncated += 1;
     cut(&value, MAX_STRING_BYTES)
 }
 
+/// Bound one untrusted string array: each element redacted whole, then, when an element is over
+/// [`MAX_STRING_BYTES`] or the array over [`MAX_ARRAY_ELEMENTS`] or [`MAX_ARRAY_BYTES`], either
+/// named as one blob occurrence holding the whole redacted array by `oversized` (at `content`),
+/// or cut at the bound with the trailing marker element.
+fn bound_texts(
+    key: &str,
+    values: &[String],
+    redactor: &Redactor,
+    counters: &mut Counters,
+    oversized: &mut dyn FnMut(&str, Oversized<'_>) -> Option<String>,
+) -> Value {
+    let redacted: Vec<String> = values
+        .iter()
+        .map(|text| {
+            let (value, withheld) = redactor.value(text);
+            if withheld {
+                counters.redacted += 1;
+            }
+            value
+        })
+        .collect();
+    let over = redacted.len() > MAX_ARRAY_ELEMENTS
+        || redacted.iter().any(|value| value.len() > MAX_STRING_BYTES)
+        || redacted.iter().map(String::len).sum::<usize>() > MAX_ARRAY_BYTES;
+    if over && let Some(occurrence) = oversized(key, Oversized::Texts(&redacted)) {
+        return Value::String(format!("{OCCURRENCE_PREFIX}{occurrence}"));
+    }
+    let mut kept = Vec::new();
+    let mut bytes = 0;
+    let mut cut_any = false;
+    let count = redacted.len();
+    for (index, value) in redacted.into_iter().enumerate() {
+        let value = if value.len() > MAX_STRING_BYTES {
+            cut_any = true;
+            cut(&value, MAX_STRING_BYTES)
+        } else {
+            value
+        };
+        // Room for the marker element when more follow.
+        let last = index + 1 == count;
+        let reserve = if last { 0 } else { ELLIPSIS.len() };
+        if kept.len() + usize::from(!last) >= MAX_ARRAY_ELEMENTS
+            || bytes + value.len() + reserve > MAX_ARRAY_BYTES
+        {
+            kept.push(ELLIPSIS.to_string());
+            cut_any = true;
+            break;
+        }
+        bytes += value.len();
+        kept.push(value);
+    }
+    if cut_any {
+        counters.truncated += 1;
+    }
+    Value::Array(kept.into_iter().map(Value::String).collect())
+}
+
+/// A value over its bound, offered for a blob at `content`; already redacted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Oversized<'a> {
+    /// A text value, judged whole and replaced: the blob is that text.
+    Text(&'a str),
+    /// A string array, each element judged whole and replaced: the blob is the whole array as
+    /// one JSON document.
+    Texts(&'a [String]),
+}
+
 /// Bound a writer's attributes: redact untrusted text whole, validate typed values, apply the
-/// per-value bounds and the count bound. `oversized` is offered each string value over its bound
-/// and returns the occurrence id of a blob that now holds it, or `None` to cut it; outside
-/// `content` the writer passes a function that always returns `None`.
+/// per-value bounds and the count bound. An attribute whose name passes for a credential is
+/// omitted and counted in `af.redacted`. `oversized` is offered each string value and each
+/// string array over its bound and returns the occurrence id of a blob that now holds it, or
+/// `None` to cut it; outside `content` the writer passes a function that always returns `None`.
 pub fn bound_attributes(
     attrs: Attrs,
     redactor: &Redactor,
-    oversized: &mut dyn FnMut(&str, &str) -> Option<String>,
+    oversized: &mut dyn FnMut(&str, Oversized<'_>) -> Option<String>,
 ) -> (Attributes, Counters) {
     let mut counters = Counters::default();
     let mut out = Attributes::new();
     let room = MAX_ATTRIBUTES - COUNTERS.len();
     for (key, value) in attrs.0 {
+        // A name is untrusted text too: a credential-shaped one is never written, at any level.
+        if redact::name_is_credential(&key) {
+            counters.redacted += 1;
+            continue;
+        }
         if key.len() > MAX_KEY_BYTES || COUNTERS.contains(&key.as_str()) || out.len() >= room {
             counters.dropped += 1;
             continue;
@@ -814,39 +887,7 @@ pub fn bound_attributes(
                 }
             },
             Attr::Bool(value) => Value::Bool(value),
-            Attr::Texts(values) => {
-                let mut kept = Vec::new();
-                let mut bytes = 0;
-                let mut cut_any = false;
-                for (index, text) in values.iter().enumerate() {
-                    let (value, withheld) = redactor.value(text);
-                    if withheld {
-                        counters.redacted += 1;
-                    }
-                    let value = if value.len() > MAX_STRING_BYTES {
-                        cut_any = true;
-                        cut(&value, MAX_STRING_BYTES)
-                    } else {
-                        value
-                    };
-                    // Room for the marker element when more follow.
-                    let last = index + 1 == values.len();
-                    let reserve = if last { 0 } else { ELLIPSIS.len() };
-                    if kept.len() + usize::from(!last) >= MAX_ARRAY_ELEMENTS
-                        || bytes + value.len() + reserve > MAX_ARRAY_BYTES
-                    {
-                        kept.push(ELLIPSIS.to_string());
-                        cut_any = true;
-                        break;
-                    }
-                    bytes += value.len();
-                    kept.push(value);
-                }
-                if cut_any {
-                    counters.truncated += 1;
-                }
-                Value::Array(kept.into_iter().map(Value::String).collect())
-            }
+            Attr::Texts(values) => bound_texts(&key, &values, redactor, &mut counters, oversized),
         };
         out.insert(key, value);
     }

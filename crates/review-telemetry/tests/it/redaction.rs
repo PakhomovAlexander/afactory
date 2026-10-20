@@ -447,3 +447,43 @@ fn telemetry_config_rows_withhold_secret_named_keys() {
         }
     }
 }
+
+#[test]
+fn telemetry_credential_shaped_attribute_names_are_withheld() {
+    for level in [Level::Spans, Level::Content] {
+        let temp = tempfile::tempdir().unwrap();
+        let writer = crate::writer(temp.path(), level);
+        let span = writer
+            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        writer.event(
+            &span,
+            "af.note",
+            Attrs::new()
+                .text("af.failure.reason", "plain words")
+                .text("sk-proj-Abc123", "ok")
+                .id("af.context.manifest", DIGEST)
+                .text(JWT, "ok")
+                .text(HEX_RUN, "ok")
+                .int("af.count", 3),
+        );
+        writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let text = String::from_utf8(crate::sealed_bytes(&sealed.path)).unwrap();
+        for name in ["sk-proj-Abc123", JWT, HEX_RUN] {
+            assert!(!text.contains(name), "{level:?}: {name} written");
+        }
+        let lines = sealed_lines(&sealed.path);
+        let event = lines
+            .iter()
+            .find(|line| line["t"] == "event" && line["name"] == "af.note")
+            .unwrap();
+        let attributes = event["attributes"].as_object().unwrap();
+        // The other attributes, the typed identity included, are kept.
+        assert_eq!(attributes["af.failure.reason"], "plain words", "{level:?}");
+        assert_eq!(attributes["af.context.manifest"], DIGEST, "{level:?}");
+        assert_eq!(attributes["af.count"], 3, "{level:?}");
+        assert_eq!(attributes["af.redacted"], 3, "{level:?}");
+        assert_eq!(attributes.len(), 4, "{level:?}: {attributes:?}");
+    }
+}

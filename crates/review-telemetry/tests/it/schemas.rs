@@ -214,3 +214,81 @@ fn the_registry_document_matches_its_schema() {
     std::fs::write(&location, br#"{"schema":"af/TelemetryDirs@2","dirs":[]}"#).unwrap();
     assert!(dirs::read(&location).is_err());
 }
+
+/// The allocated bytes of every path beneath `root`, the root itself excluded.
+fn allocated_beneath(root: &std::path::Path) -> u64 {
+    use std::os::unix::fs::MetadataExt as _;
+    let mut total = 0;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+        {
+            let metadata = std::fs::symlink_metadata(entry.path()).unwrap();
+            total += metadata.blocks() * 512;
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    total
+}
+
+#[test]
+fn telemetry_status_accounts_every_byte_under_the_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = |root: PathBuf| StatusInput {
+        root,
+        level: Level::Spans,
+        max_bytes: 4 << 30,
+        registry: Some(dirs::location(&temp.path().join("state"))),
+        accounted: Vec::new(),
+    };
+    let schema = validator("telemetry-status-v1.json");
+    let root = temp.path().join("telemetry");
+    every_kind(&root);
+    let planted = [
+        ("v1/segments/unknown.bin", vec![7_u8; 10_000]),
+        ("v1/stray/deeper/file.txt", vec![1_u8; 5_000]),
+        ("notes.txt", b"left here".to_vec()),
+        ("v0/segments/old.jsonl", b"not read\n".to_vec()),
+    ];
+    for (path, bytes) in &planted {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+    }
+    let (document, _) = status::status(&input(root.clone())).unwrap();
+    assert_valid(&schema, &serde_json::to_value(&document).unwrap());
+    assert_eq!(document.bytes.total, allocated_beneath(&root));
+    let unrecognized: Vec<_> = document
+        .bytes
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == "unrecognized")
+        .collect();
+    assert_eq!(unrecognized.len(), 1, "{:?}", document.bytes.entries);
+    let entry = unrecognized[0];
+    assert_eq!(entry.count, Some(3));
+    assert_eq!(
+        entry.names.as_deref().unwrap(),
+        ["notes.txt", "v1/segments/unknown.bin", "v1/stray"]
+    );
+    assert!(entry.bytes > 0);
+    // Never read as a segment, never removed.
+    assert_eq!(document.segments.sealed, 1);
+    for (path, bytes) in &planted {
+        assert_eq!(&std::fs::read(root.join(path)).unwrap(), bytes, "{path}");
+    }
+
+    // A directory with no `v1/` at all is accounted the same way.
+    let bare = temp.path().join("bare");
+    std::fs::create_dir_all(bare.join("stray")).unwrap();
+    std::fs::write(bare.join("stray/file"), vec![2_u8; 9_000]).unwrap();
+    let (document, _) = status::status(&input(bare.clone())).unwrap();
+    assert_valid(&schema, &serde_json::to_value(&document).unwrap());
+    assert_eq!(document.bytes.total, allocated_beneath(&bare));
+    assert_eq!(document.bytes.entries.len(), 1);
+    assert_eq!(document.bytes.entries[0].count, Some(1));
+}

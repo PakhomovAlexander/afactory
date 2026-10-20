@@ -47,6 +47,9 @@ Provider's own words, and before any bound can cut it:
   (`{"password":"[withheld]"}`); an object holding a member whose name itself looks like a
   credential becomes the string `"[withheld]"`. The document still parses.
 - A line or JSON document too long to be judged whole is withheld whole, never cut.
+- A record attribute whose name itself looks like a credential (a token prefix, a JSON Web
+  Token, a long secret run) is never written: the attribute is omitted and counted in
+  `af.redacted`, and the record's other attributes stay.
 - Identities and counters `af` produced (digests, run, Attempt, segment and span ids, token
   counts as exact decimal strings, timestamps) are typed fields and stay intact.
 - A configuration row whose key is named like a secret (`provider.password`, `sink.auth_token`)
@@ -100,7 +103,10 @@ af telemetry status [--json] [--dir PATH]
 
 Prints the configured level; the telemetry directory and its allocated bytes, in total against
 `[telemetry] max_bytes` and per entry (each segment with its manifest, the blobs, the index with
-its WAL and shared-memory files, temporary files, locks), each sealed segment with its seal's
+its WAL and shared-memory files, temporary files, locks, and `unrecognized`: every other file or
+directory beneath the telemetry directory, counted once with its count, its allocated bytes and
+up to 16 of its names, never read and never removed, so the total is every allocated byte
+beneath the directory), each sealed segment with its seal's
 `exit` and whether its capture is `complete` or why not (`recovered, drops unknown` for a
 segment recovered without its writer's seal, `recovered`, `12 dropped`); the segments by state —
 `live` (a writer holds its lock), `unsealed` (nobody holds it: a crashed writer's, recoverable),
@@ -172,8 +178,11 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
   `af/TelemetryConfig@1`, `af/TelemetryNode@1`, `af/TelemetryFinding@1`, `af/TelemetryDemand@1`,
   `af/TelemetryBlob@1`, `af/TelemetryBlobRef@1`, `af/TelemetryProblem@1`, `af/TelemetrySeal@1`;
   [`schemas/telemetry-record-v1.json`](../schemas/telemetry-record-v1.json)) of at most 16 KiB,
-  carrying `seq`, `t` and `schema`. The lock, never the PID in the name, says whether a writer
-  is alive.
+  carrying `seq`, `t` and `schema`. An attribute value over its bound (1 KiB for a string, 32
+  elements or 4 KiB for an array of strings) becomes, at `content`, a blob occurrence the
+  attribute names (an array as one JSON document); at every other level it is cut at the bound
+  with a trailing `…`, counted in `af.truncated_fields`. The lock, never the PID in the name,
+  says whether a writer is alive.
 - **Blobs.** A blob's identity is the digest of the redacted, bounded bytes it keeps; each
   capture of it is its own occurrence record, so two sources that redact to the same bytes share
   one file and keep two occurrences.

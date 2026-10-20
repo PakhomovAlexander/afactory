@@ -77,8 +77,10 @@
                   "blobs",
                   "index",
                   "temporary",
-                  "locks"
-                ]
+                  "locks",
+                  "unrecognized"
+                ],
+                "description": "`locks` carries the lock files and the `v1/` and `segments/` directories themselves; `unrecognized` every path beneath the root that matches no known kind, each counted once with everything beneath it, never read and never removed, so the entries (with another version's directories) add up to `total`, the allocated bytes of everything beneath the root."
               },
               "name": {
                 "type": "string",
@@ -105,6 +107,20 @@
                 "type": "string",
                 "minLength": 1,
                 "description": "For a sealed segment the index read: `complete` (a writer's seal, nothing dropped), or why the capture is incomplete, such as `recovered, drops unknown` (recovered without the writer's seal: its drop counters are unknown), `recovered, 3 dropped` or `12 dropped`."
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "For `unrecognized`: how many paths beneath the root match no known kind."
+              },
+              "names": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "For `unrecognized`: the first 16 of those paths, relative to the root, sorted."
               },
               "bytes": {
                 "$ref": "#/$defs/count"
