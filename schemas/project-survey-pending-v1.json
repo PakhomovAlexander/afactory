@@ -16,7 +16,7 @@
     },
     "survey_id": {
       "description": "The Survey: the CAS digest of its record's canonical bytes.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "bytes": {
       "description": "The length of the record's canonical bytes, 1 to 1048576.",
@@ -33,10 +33,10 @@
       ],
       "properties": {
         "device": {
-          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
         },
         "inode": {
-          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
         }
       }
     }

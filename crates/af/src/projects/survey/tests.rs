@@ -1947,10 +1947,10 @@ fn a_control_character_past_the_display_bound_hashes_the_whole_name_under_both_p
 }
 
 /// A recorded Survey's record as the fixture's expected record holds it, with `previous`.
-fn fixture_survey(previous: Option<&str>) -> ProjectSurveyV1 {
+fn fixture_survey(previous: Option<&str>) -> ProjectSurveyV2 {
     let text = include_str!("../../../tests/fixtures/project-survey/expected.json")
         .replace("GIT_VERSION", "git version 2.0.0");
-    let mut survey: ProjectSurveyV1 = serde_json::from_str(&text).unwrap();
+    let mut survey: ProjectSurveyV2 = serde_json::from_str(&text).unwrap();
     survey.previous_survey_id = previous.map(str::to_string);
     survey.validate().unwrap();
     survey
@@ -2025,15 +2025,41 @@ fn an_unreadable_record_refuses_replay_naming_the_sequence_and_the_error_and_no_
     );
 }
 
+/// A record of the superseded `af/ProjectSurvey@1` is recognised by its label alone and refused
+/// as such, never decoded; the same bytes labelled `@2` are no valid record either way, and a
+/// current record whose content is no Survey is an ordinary parse error.
+#[test]
+fn a_superseded_record_is_refused_by_its_label() {
+    let survey = fixture_survey(None);
+    let mut value = serde_json::to_value(&survey).unwrap();
+    value["schema"] = Value::from("af/ProjectSurvey@1");
+    let bytes = serde_json::to_vec(&value).unwrap();
+    assert_eq!(parse_record(&bytes), Err(ReadError::Superseded));
+    let said = ReadError::Superseded.to_string();
+    assert!(
+        said.starts_with("it is af/ProjectSurvey@1, a superseded version another af release"),
+        "{said}"
+    );
+    assert!(parse_record(br#"{"schema":"af/ProjectSurvey@1"}"#) == Err(ReadError::Superseded));
+    assert!(matches!(
+        parse_record(br#"{"schema":"af/ProjectSurvey@2"}"#),
+        Err(ReadError::Other(_))
+    ));
+    let current = record_bytes(&survey).unwrap();
+    assert_eq!(parse_record(&current), Ok(survey));
+}
+
 #[test]
 fn a_parse_error_names_its_place_and_never_the_bytes() {
-    let said = parse_record(b"{\"schema\": \"carol@example.invalid\"}").unwrap_err();
+    let said = parse_record(b"{\"schema\": \"carol@example.invalid\"}")
+        .unwrap_err()
+        .to_string();
     assert!(
         said.starts_with("its bytes are not a Survey record: a data error at line 1"),
         "{said}"
     );
     assert!(!said.contains("carol"), "{said}");
-    let said = parse_record(b"not json").unwrap_err();
+    let said = parse_record(b"not json").unwrap_err().to_string();
     assert!(
         said.contains("a syntax error at line 1, column 2"),
         "{said}"

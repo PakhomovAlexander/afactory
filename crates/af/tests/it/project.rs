@@ -3979,3 +3979,130 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
         assert!(named(&machine.root(), &name).is_empty(), "{point}");
     }
 }
+
+/// Every `*-moved` step checks its original path (ADR-0151 clause 5): stopped right after the
+/// checkout or its administrative entry moved into its container, a directory found at the
+/// original path on the rerun is a replacement that stops the removal. The recorded directory
+/// stays in its container, nothing is deleted, the record stays byte for byte and the Workspace
+/// stays registered, the report naming the path and the ways on; cleared, or with the recorded
+/// directory moved back in its place, the same command finishes the removal.
+#[test]
+fn a_directory_at_the_original_path_after_any_moved_step_stops_the_removal() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let cases = ["checkout-moved", "entry-moved"]
+        .into_iter()
+        .flat_map(|point| ["cleared", "moved back"].map(|resolution| (point, resolution)));
+    for (index, (point, resolution)) in cases.enumerate() {
+        let label = format!("appear{index}");
+        let created = machine.json(&repo, &["project", "workspace", "new", &label, "--json"]);
+        let id = workspace(&created, &label)["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let name = format!("fixture-wt-{label}");
+        let worktree = machine.root().join(&name);
+        let worktrees = repo.join(".git/worktrees");
+        let entry = worktrees.join(&name);
+        let record = removal_record(&machine, &repo, &id);
+        let remove = [
+            "project",
+            "workspace",
+            "remove",
+            label.as_str(),
+            "--delete-worktree",
+        ];
+        let what = format!("{point}/{resolution}");
+        let stopped = af_stopped_at(&machine, &repo, point, &remove);
+        assert_eq!(
+            stopped.status.code(),
+            Some(86),
+            "{what}: {}",
+            text(&stopped).1
+        );
+
+        // Where the recorded directory now is, in its container, and the path it left.
+        let (original, claimed, expected) = if point == "checkout-moved" {
+            let (_, claimed) = claimed_checkout(&machine, &name);
+            let expected = format!(
+                "the worktree {} is kept at {}, where this removal moved it, and the Workspace \
+                 stays registered: a new directory appeared at {} since this removal moved the \
+                 recorded worktree; clear it or move the recorded worktree back, then run the \
+                 command again",
+                worktree.display(),
+                claimed.display(),
+                worktree.display()
+            );
+            (worktree.clone(), claimed, expected)
+        } else {
+            let made = named(&worktrees, &format!("{name}.af-removing-"));
+            assert_eq!(made.len(), 1, "{what}: {made:?}");
+            let claimed = worktrees.join(&made[0]).join(&name);
+            assert!(claimed.join("gitdir").is_file(), "{what}");
+            let expected = format!(
+                "a new administrative entry appeared at {} since this removal moved the recorded \
+                 one; clear it or move the recorded entry back, then run the command again",
+                entry.display()
+            );
+            (entry.clone(), claimed, expected)
+        };
+        assert!(!original.exists(), "{what}: moved off its path");
+        std::fs::create_dir(&original).unwrap();
+        std::fs::write(original.join("sentinel"), "appeared\n").unwrap();
+        let recorded = std::fs::read(&record).unwrap();
+
+        let refused = machine.af(&repo, &remove);
+        let (_, stderr) = text(&refused);
+        assert_eq!(refused.status.code(), Some(1), "{what}: {stderr}");
+        assert!(stderr.contains(&expected), "{what}: {stderr}");
+        assert!(
+            stderr.contains(&claimed.display().to_string()),
+            "{what}: {stderr}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(original.join("sentinel")).unwrap(),
+            "appeared\n",
+            "{what}: the new directory is never touched"
+        );
+        assert!(
+            claimed.is_dir(),
+            "{what}: the recorded one stays in its container"
+        );
+        if point == "checkout-moved" {
+            assert!(
+                claimed.join("README.md").is_file(),
+                "{what}: nothing is deleted"
+            );
+            assert!(entry.join("gitdir").is_file(), "{what}: its entry stays");
+        } else {
+            assert!(
+                claimed.join("gitdir").is_file(),
+                "{what}: nothing is deleted"
+            );
+        }
+        assert_eq!(std::fs::read(&record).unwrap(), recorded, "{what}");
+        assert_eq!(removals_of(&machine, &repo, &id), 0, "{what}");
+        let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+        assert!(labels(&listed).contains(&label), "{what}: {listed}");
+
+        std::fs::remove_dir_all(&original).unwrap();
+        if resolution == "moved back" {
+            std::fs::rename(&claimed, &original).unwrap();
+        }
+        let finished = machine.af(&repo, &remove);
+        let (stdout, stderr) = text(&finished);
+        assert_eq!(
+            finished.status.code(),
+            Some(0),
+            "{what}: {stdout}\n{stderr}"
+        );
+        assert!(!worktree.exists() && !entry.exists(), "{what}");
+        assert!(named(&machine.root(), &name).is_empty(), "{what}");
+        assert!(
+            named(&worktrees, &format!("{name}.af-removing-")).is_empty(),
+            "{what}"
+        );
+        assert!(!record.exists(), "{what}");
+        assert_eq!(removals_of(&machine, &repo, &id), 1, "{what}");
+    }
+}

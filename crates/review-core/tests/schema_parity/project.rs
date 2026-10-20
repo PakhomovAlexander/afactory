@@ -332,7 +332,7 @@ fn digest(fill: char) -> String {
 }
 
 /// A Survey with every section measured, as the Surveyor writes one.
-fn full_survey() -> review_core::project::ProjectSurveyV1 {
+fn full_survey() -> review_core::project::ProjectSurveyV2 {
     use review_core::project::*;
     use std::collections::BTreeMap;
     let identity = SurveyIdentityV1 {
@@ -540,8 +540,8 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
         unreadable: Vec::new(),
         seen: BTreeMap::new(),
     };
-    ProjectSurveyV1 {
-        schema: PROJECT_SURVEY_V1.into(),
+    ProjectSurveyV2 {
+        schema: PROJECT_SURVEY_V2.into(),
         completeness: SurveyCompletenessV1::Partial,
         previous_survey_id: Some(digest('c')),
         stopped: Some(SurveyStopV1 {
@@ -563,8 +563,8 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
 
 /// `survey` naming the stopping point its sections determine, at item 7.
 fn restopped(
-    mut survey: review_core::project::ProjectSurveyV1,
-) -> review_core::project::ProjectSurveyV1 {
+    mut survey: review_core::project::ProjectSurveyV2,
+) -> review_core::project::ProjectSurveyV2 {
     survey.stopped = survey.stopping_point().map(|mut stop| {
         stop.item = 7.into();
         stop
@@ -575,9 +575,9 @@ fn restopped(
 /// `malformed`, whose walk stopped at a malformed record, stopped in its first record instead:
 /// `history` and `contributors` partial with zero counts under `identity`, the commit named.
 fn malformed_first(
-    malformed: &review_core::project::ProjectSurveyV1,
+    malformed: &review_core::project::ProjectSurveyV2,
     identity: review_core::project::SurveyIdentityPolicyV1,
-) -> review_core::project::ProjectSurveyV1 {
+) -> review_core::project::ProjectSurveyV2 {
     use review_core::project::*;
     let mut first = malformed.clone();
     if let Some(history) = first.history.body.as_mut() {
@@ -618,17 +618,48 @@ fn malformed_first(
     restopped(first)
 }
 
+/// The Survey record is `af/ProjectSurvey@2` (ADR-0145): the superseded `@1` label is refused
+/// by the schema and by type, with the message that another af release wrote it, and is
+/// recognised by its label alone; the `@1` schema file is gone.
+#[test]
+fn the_superseded_survey_label_is_refused_by_type_and_schema() {
+    use review_core::project::*;
+    let value = serde_json::to_value(full_survey()).unwrap();
+    assert_eq!(value["schema"], PROJECT_SURVEY_V2);
+    assert_eq!(PROJECT_SURVEY_V2, "af/ProjectSurvey@2");
+    let superseded = with(&value, "schema", json!(PROJECT_SURVEY_V1_SUPERSEDED));
+    assert_invalid(
+        "project-survey-v2.json",
+        &superseded,
+        "the superseded label is not this version",
+    );
+    let error = serde_json::from_value::<ProjectSurveyV2>(superseded.clone())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(SUPERSEDED_SURVEY), "{error}");
+    assert!(error.contains("another af release wrote it"), "{error}");
+    let bytes = serde_json::to_vec(&superseded).unwrap();
+    assert!(is_superseded_survey(&bytes));
+    assert!(!is_superseded_survey(&serde_json::to_vec(&value).unwrap()));
+    assert!(!is_superseded_survey(b"not json"));
+    let other = with(&value, "schema", json!("af/ProjectSurvey@3"));
+    assert!(serde_json::from_value::<ProjectSurveyV2>(other).is_err());
+    let schemas = super::workspace_root().join("schemas");
+    assert!(schemas.join("project-survey-v2.json").is_file());
+    assert!(!schemas.join("project-survey-v1.json").exists());
+}
+
 /// The record, its schema and the Rust validator agree on what a Survey is.
 #[test]
 fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
     use review_core::project::*;
-    const SCHEMA: &str = "project-survey-v1.json";
+    const SCHEMA: &str = "project-survey-v2.json";
     let survey = full_survey();
     survey.validate().unwrap();
     let value = serde_json::to_value(&survey).unwrap();
     assert_valid(SCHEMA, &value);
     assert_eq!(
-        serde_json::from_value::<ProjectSurveyV1>(value.clone()).unwrap(),
+        serde_json::from_value::<ProjectSurveyV2>(value.clone()).unwrap(),
         survey
     );
     assert_eq!(value["tree"]["files"], "3");
@@ -723,7 +754,7 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
         &section_reason,
         "the Tree Digest's reasons are the digest-only path's",
     );
-    assert!(serde_json::from_value::<ProjectSurveyV1>(section_reason).is_err());
+    assert!(serde_json::from_value::<ProjectSurveyV2>(section_reason).is_err());
     for (broken, why) in [
         {
             let mut both = cut_short.clone();
@@ -768,7 +799,7 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
     let mut named_hash = hashed_value.clone();
     named_hash["contributors"]["by_identity"][0]["name"] = json!("Ada");
     assert_invalid(SCHEMA, &named_hash, "email_hash records no name");
-    let typed = serde_json::from_value::<ProjectSurveyV1>(named_hash).unwrap();
+    let typed = serde_json::from_value::<ProjectSurveyV2>(named_hash).unwrap();
     assert!(typed.validate().is_err(), "email_hash records no name");
 
     let pointer = |path: &str, replacement: Value| {
@@ -887,7 +918,7 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
             "a program is never a host path",
         ),
         (
-            pointer("/schema", json!("af/ProjectSurvey@2")),
+            pointer("/schema", json!("af/ProjectSurvey@3")),
             "the record names its version",
         ),
         (
@@ -896,7 +927,7 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
         ),
     ] {
         assert_invalid(SCHEMA, &broken, why);
-        let typed = serde_json::from_value::<ProjectSurveyV1>(broken.clone());
+        let typed = serde_json::from_value::<ProjectSurveyV2>(broken.clone());
         assert!(
             typed.is_err() || typed.unwrap().validate().is_err(),
             "the Rust type accepted it ({why})"
@@ -951,7 +982,7 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
 #[test]
 fn a_survey_that_is_not_complete_names_its_stopping_point() {
     use review_core::project::*;
-    const SCHEMA: &str = "project-survey-v1.json";
+    const SCHEMA: &str = "project-survey-v2.json";
     let survey = full_survey();
     let value = serde_json::to_value(&survey).unwrap();
     assert_eq!(
@@ -983,7 +1014,7 @@ fn a_survey_that_is_not_complete_names_its_stopping_point() {
     let unstopped = without(&value, "stopped");
     assert_invalid(SCHEMA, &unstopped, "a partial Survey names its stop");
     assert!(
-        serde_json::from_value::<ProjectSurveyV1>(unstopped)
+        serde_json::from_value::<ProjectSurveyV2>(unstopped)
             .unwrap()
             .validate()
             .is_err(),
@@ -1036,14 +1067,14 @@ fn a_survey_that_is_not_complete_names_its_stopping_point() {
     // exactly with `stopped_in` and whenever a record stopped `contributors`.
     for (change, why) in [
         (
-            (|survey: &mut ProjectSurveyV1| {
+            (|survey: &mut ProjectSurveyV2| {
                 if let Some(history) = survey.history.body.as_mut() {
                     history.stopped_record = Some(4.into());
                 }
                 if let Some(contributors) = survey.contributors.body.as_mut() {
                     contributors.stopped_record = Some(4.into());
                 }
-            }) as fn(&mut ProjectSurveyV1),
+            }) as fn(&mut ProjectSurveyV2),
             "the record after the commits counted",
         ),
         (
@@ -1275,7 +1306,7 @@ fn a_survey_that_is_not_complete_names_its_stopping_point() {
         ),
     ] {
         assert_invalid(SCHEMA, &broken, why);
-        let typed = serde_json::from_value::<ProjectSurveyV1>(broken.clone());
+        let typed = serde_json::from_value::<ProjectSurveyV2>(broken.clone());
         assert!(
             typed.is_err() || typed.unwrap().validate().is_err(),
             "the Rust type accepted it ({why})"
@@ -1384,19 +1415,32 @@ fn the_history_document_lists_the_chain_newest_first() {
         "survey_id": digest('a'), "recorded_unix_ms": "2", "head": HEAD,
         "cutoff_unix_s": "1792000000", "completeness": "partial"
     });
-    let document = json!({
-        "schema": "af/project-history@1",
-        "project_id": project_id(),
-        "surveys": [entry.clone(), with(&entry, "survey_id", json!(digest('b')))],
+    // A Survey whose record is of a superseded version: its ID, its time and why, nothing of
+    // its event this release cannot verify.
+    let superseded = json!({
+        "survey_id": digest('c'), "recorded_unix_ms": "1", "unreadable": "superseded version"
     });
-    assert_valid("project-history-v1.json", &document);
+    let document = json!({
+        "schema": "af/project-history@2",
+        "project_id": project_id(),
+        "surveys": [
+            entry.clone(),
+            with(&entry, "survey_id", json!(digest('b'))),
+            superseded.clone(),
+        ],
+    });
+    assert_valid("project-history-v2.json", &document);
     assert_valid(
-        "project-history-v1.json",
+        "project-history-v2.json",
         &with(&document, "surveys", json!([])),
     );
     for (broken, why) in [
         (
-            with(&document, "schema", json!("af/project-history@2")),
+            with(&document, "schema", json!("af/project-history@1")),
+            "the superseded version is refused",
+        ),
+        (
+            with(&document, "schema", json!("af/project-history@3")),
             "the document names its version",
         ),
         (
@@ -1415,10 +1459,36 @@ fn the_history_document_lists_the_chain_newest_first() {
             ),
             "an entry is closed",
         ),
+        (
+            with(
+                &document,
+                "surveys",
+                json!([with(&superseded, "head", json!(HEAD))]),
+            ),
+            "a superseded entry carries no unverified field",
+        ),
+        (
+            with(
+                &document,
+                "surveys",
+                json!([with(&superseded, "unreadable", json!("corrupt"))]),
+            ),
+            "a superseded entry says why in one fixed phrase",
+        ),
+        (
+            with(
+                &document,
+                "surveys",
+                json!([with(&entry, "unreadable", json!("superseded version"))]),
+            ),
+            "a verified entry is never marked unreadable",
+        ),
         (without(&document, "surveys"), "the chain is listed"),
     ] {
-        assert_invalid("project-history-v1.json", &broken, why);
+        assert_invalid("project-history-v2.json", &broken, why);
     }
+    let schemas = super::workspace_root().join("schemas");
+    assert!(!schemas.join("project-history-v1.json").exists());
 }
 
 /// A pending-publication entry names its Survey, the length of its bytes and, once they were

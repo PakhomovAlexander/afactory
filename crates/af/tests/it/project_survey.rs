@@ -492,11 +492,11 @@ fn the_fixture_repository_yields_the_checked_in_survey_byte_for_byte() {
     let (stdout, _) = machine.expect(&repo, &[], &["project", "survey", "--json"], 0);
     assert_eq!(stdout, expected);
     let survey: Value = serde_json::from_str(&stdout).unwrap();
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
 
     // The record in the CAS is those bytes, and its ID is what the log names.
     let history = machine.json(&repo, &[], &["project", "history", "--json"]);
-    schemas::valid(&schemas::validator("project-history-v1.json"), &history);
+    schemas::valid(&schemas::validator("project-history-v2.json"), &history);
     let survey_id = history["surveys"][0]["survey_id"].as_str().unwrap();
     let hex = survey_id.trim_start_matches("sha256:");
     let object = machine
@@ -651,7 +651,7 @@ fn the_max_commits_boundary_cuts_the_walk_in_date_order() {
         0,
     );
     let cut = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &cut);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &cut);
     for section in ["history", "contributors"] {
         assert_eq!(cut[section]["completeness"], "partial", "{section}");
         assert_eq!(cut[section]["reason"], "max_commits", "{section}");
@@ -819,7 +819,7 @@ fn max_wall_ms_records_a_partial_survey_without_a_partial_tree_digest() {
         "a Survey cut by its deadline is recorded"
     );
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     assert_eq!(survey["completeness"], "partial");
     let identity = &survey["identity"];
     assert_eq!(identity["completeness"], "partial");
@@ -872,7 +872,7 @@ fn a_slow_tree_stops_at_the_deadline_inside_its_section() {
         "the refresh took {took:?}"
     );
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     let tree = &survey["tree"];
     assert_eq!(tree["completeness"], "partial", "{tree}");
     assert_eq!(tree["reason"], "max_wall_ms");
@@ -906,7 +906,7 @@ fn the_fixed_maxima_cut_with_their_reasons_and_identity_strings_stay_exact() {
         0,
     );
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     assert_eq!(survey["tree"]["completeness"], "partial");
     assert_eq!(survey["tree"]["reason"], "max_paths");
     assert_eq!(survey["tree"]["files"], "3");
@@ -924,7 +924,7 @@ fn the_fixed_maxima_cut_with_their_reasons_and_identity_strings_stay_exact() {
         0,
     );
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     let history = &survey["history"];
     assert_eq!(history["reason"], "max_entries");
     assert_eq!(history["hot_paths"].as_array().unwrap().len(), 2);
@@ -1031,7 +1031,7 @@ fn a_long_author_name_is_cut_and_marked_and_seven_roots_stay_exact() {
 
     machine.expect(&repo, &[], &["project", "refresh"], 0);
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     assert_eq!(survey["identity"]["repository_id"], repository_id.as_str());
     let contributors = &survey["contributors"];
     let cut: Vec<&Value> = contributors["by_identity"]
@@ -1098,7 +1098,7 @@ fn an_oversized_vocabulary_decision_or_declaration_leaves_its_section_partial() 
     let env = [("AF_SURVEY__MAX_FILE_BYTES", "128")];
     machine.expect(&repo, &env, &["project", "refresh"], 0);
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
 
     let vocabulary = &survey["vocabulary"];
     assert_eq!(vocabulary["completeness"], "partial", "{vocabulary}");
@@ -1461,7 +1461,7 @@ fn a_deadline_inside_any_sections_post_processing_leaves_it_partial_and_the_rest
             took < std::time::Duration::from_millis(max_wall_ms + 2000),
             "{slowed}: the refresh took {took:?}"
         );
-        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
         let at = SECTIONS
             .iter()
             .position(|section| *section == slowed)
@@ -1569,7 +1569,7 @@ fn the_status_grammar_shares_ranking_checks_discovery_and_languages_are_stated()
     );
     machine.expect(&repo, &[], &["project", "refresh"], 0);
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
 
     // Status and date from the first status line; `amended` a flag; unknown when absent.
     let decisions = &survey["decisions"];
@@ -1672,7 +1672,7 @@ fn the_status_grammar_shares_ranking_checks_discovery_and_languages_are_stated()
         0,
     );
     let cut = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &cut);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &cut);
     let contributors = &cut["contributors"];
     assert_eq!(names(contributors), ["Ada"], "more commits, fewer lines");
     assert_eq!(contributors["seen"]["by_identity"], "2");
@@ -1713,7 +1713,7 @@ fn a_historical_commit_over_max_paths_leaves_history_partial_and_the_survey_reco
     );
     assert!(stdout.starts_with("recorded\n"), "{stdout}");
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     assert_eq!(survey["tree"]["completeness"], "complete", "a small head");
     for section in ["history", "contributors"] {
         assert_eq!(survey[section]["completeness"], "partial", "{section}");
@@ -1743,7 +1743,7 @@ fn every_list_of_checks_is_bounded_and_a_non_utf8_declaration_is_unreadable() {
     ];
     machine.expect(&repo, &env, &["project", "refresh"], 0);
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     let checks = &survey["checks"];
     assert_eq!(
         checks["unreadable"],
@@ -1775,7 +1775,7 @@ fn every_list_of_checks_is_bounded_and_a_non_utf8_declaration_is_unreadable() {
     );
     machine.expect(&repo, &[], &["project", "refresh"], 0);
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     for section in ["decisions", "vocabulary", "checks"] {
         assert_eq!(survey[section]["completeness"], "partial", "{section}");
         assert_eq!(survey[section]["reason"], "max_file_bytes", "{section}");
@@ -1809,7 +1809,7 @@ fn an_author_name_carrying_an_email_is_its_hash_under_both_identity_policies() {
         let env = [("AF_SURVEY__IDENTITY", identity)];
         let (said, _) = machine.expect(&repo, &env, &["project", "refresh", "--json"], 0);
         let survey: Value = serde_json::from_str(&said).unwrap();
-        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
         let contributors = &survey["contributors"];
         // The email field is never used for such a name: both keys are the names' hashes.
         assert_eq!(
@@ -2095,7 +2095,7 @@ fn a_deadline_in_any_sections_finishing_step_leaves_it_partial_and_the_rest_unav
             took < std::time::Duration::from_millis(max_wall_ms + 2000),
             "{slowed}: the refresh took {took:?}"
         );
-        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
         let at = SECTIONS
             .iter()
             .position(|section| *section == slowed)
@@ -2173,7 +2173,7 @@ fn every_declaration_charges_the_clock_oversized_ones_included() {
         "the refresh took {took:?}"
     );
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     let decisions = &survey["decisions"];
     assert_eq!(decisions["completeness"], "partial", "{decisions}");
     assert_eq!(decisions["reason"], "max_wall_ms");
@@ -2213,7 +2213,7 @@ fn an_impossible_calendar_date_is_unknown() {
     );
     machine.expect(&repo, &[], &["project", "refresh"], 0);
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     let dates: Vec<(&str, Option<&str>)> = survey["decisions"]["records"]
         .as_array()
         .unwrap()
@@ -2287,7 +2287,7 @@ fn a_blank_or_control_character_name_is_its_hash_under_both_identity_policies() 
         let env = [("AF_SURVEY__IDENTITY", identity)];
         let (said, _) = machine.expect(&repo, &env, &["project", "refresh", "--json"], 0);
         let survey: Value = serde_json::from_str(&said).unwrap();
-        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
         let contributors = &survey["contributors"];
         // Both blank names are one identity, by the hash of the name, never by either email.
         assert_eq!(
@@ -2368,7 +2368,7 @@ fn a_silent_git_ends_with_its_process_group_at_the_survey_deadline() {
         .success();
     assert!(!alive, "the silent git {pid} still runs");
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     assert_eq!(survey["completeness"], "partial");
     assert_eq!(survey["identity"]["completeness"], "complete");
     for section in [
@@ -2439,7 +2439,7 @@ fn the_tree_digest_is_the_committed_captures_and_a_ceiling_leaves_it_absent_and_
     ] {
         machine.expect(&repo, env, &["project", "refresh", "--force"], 0);
         let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
         let identity = &survey["identity"];
         assert!(identity.get("tree_digest").is_none(), "{identity}");
         assert_eq!(identity["tree_digest_reason"], reason);
@@ -2754,7 +2754,7 @@ fn an_unreadable_or_corrupt_record_refuses_replay_naming_the_sequence_and_the_er
     // Neither collected: the newest record's bytes corrupt, the older one's gone.
     let corrupt = survey_object(&machine, &id(newest));
     let bytes = std::fs::read(&corrupt).unwrap();
-    std::fs::write(&corrupt, b"{\"schema\":\"af/ProjectSurvey@1\"}").unwrap();
+    std::fs::write(&corrupt, b"{\"schema\":\"af/ProjectSurvey@2\"}").unwrap();
     std::fs::remove_file(survey_object(&machine, &id(older))).unwrap();
     let named = format!(
         "SurveyRecorded@1 at sequence {newest_at} names Survey {}, whose record cannot be read: \
@@ -3017,7 +3017,7 @@ fn a_0x1f_in_a_name_or_a_subject_never_splits_a_log_record() {
         let env = [("AF_SURVEY__IDENTITY", identity)];
         let (said, _) = machine.expect(&repo, &env, &["project", "refresh", "--json"], 0);
         let survey: Value = serde_json::from_str(&said).unwrap();
-        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
         assert_eq!(survey["completeness"], "complete", "{identity}: {said}");
         assert!(survey.get("stopped").is_none(), "{identity}");
         let history = &survey["history"];
@@ -3086,7 +3086,7 @@ fn a_merge_at_the_max_commits_boundary_counts_as_a_commit_and_a_merge_without_ch
             0,
         );
         let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
         survey
     };
     let whole = refresh("4");
@@ -3191,7 +3191,7 @@ fn forced_refreshes_at_one_cutoff_differ_only_in_the_chain_and_a_partial_one_in_
         "a partial Survey replays to the same stopping point"
     );
     let survey: Value = serde_json::from_str(&partial).unwrap();
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     let stopped = &survey["stopped"];
     let oldest = git(&repo, &["rev-parse", "v1.0.0^{commit}"]);
     assert_eq!(stopped["section"], "history", "{stopped}");
@@ -3225,7 +3225,7 @@ fn forced_refreshes_at_one_cutoff_differ_only_in_the_chain_and_a_partial_one_in_
         0,
     );
     let survey: Value = serde_json::from_str(&newest_record(&machine, &repo)).unwrap();
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     let stopped = &survey["stopped"];
     assert_eq!(stopped["section"], "decisions", "{stopped}");
     assert_eq!(stopped["reason"], "max_wall_ms");
@@ -3404,7 +3404,7 @@ fn a_log_record_that_does_not_parse_leaves_history_partial_naming_its_commit() {
                 String::from_utf8_lossy(&output.stderr)
             );
             let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-            schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+            schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
             // Partial, never unavailable: the walk names the commit it stopped in.
             for section in ["history", "contributors"] {
                 assert_eq!(survey[section]["completeness"], "partial", "{why}");
@@ -3518,7 +3518,7 @@ fn a_log_stream_cut_before_its_final_nul_is_partial_history_naming_the_cut_commi
             String::from_utf8_lossy(&output.stderr)
         );
         let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
         assert_eq!(survey["completeness"], "partial", "{name}: never complete");
         for section in ["history", "contributors"] {
             assert_eq!(survey[section]["completeness"], "partial", "{name}");
@@ -3625,7 +3625,7 @@ fn a_gitlink_is_one_file_of_no_bytes_or_lines_never_fetched_and_digests_as_the_m
     );
 
     let after = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &after);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &after);
     for section in ["identity", "tree"] {
         assert_eq!(after[section]["completeness"], "complete", "{section}");
     }
@@ -4089,7 +4089,7 @@ fn every_streamed_record_over_64_kib_stops_at_max_record_bytes() {
         String::from_utf8_lossy(&output.stderr)
     );
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     for section in ["history", "contributors"] {
         assert_eq!(survey[section]["completeness"], "partial", "{section}");
         assert_eq!(survey[section]["reason"], "max_record_bytes", "{section}");
@@ -4124,7 +4124,7 @@ fn every_streamed_record_over_64_kib_stops_at_max_record_bytes() {
         String::from_utf8_lossy(&output.stderr)
     );
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
-    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    schemas::valid(&schemas::validator("project-survey-v2.json"), &survey);
     assert_eq!(survey["tree"]["completeness"], "partial");
     assert_eq!(survey["tree"]["reason"], "max_record_bytes");
     assert_eq!(
@@ -4163,5 +4163,197 @@ fn every_streamed_record_over_64_kib_stops_at_max_record_bytes() {
         last["reason"],
         "the survey key could not be computed: a ref is longer than 65536 bytes \
          (max_record_bytes)"
+    );
+}
+
+/// The `reason` of every `SurveyFailed@1` of the Project Store, in order.
+fn failure_reasons(machine: &Machine) -> Vec<String> {
+    let log = rusqlite::Connection::open(machine.store().join("events.sqlite")).unwrap();
+    log.prepare("SELECT payload FROM events WHERE type = 'SurveyFailed@1' ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|payload| {
+            let payload: Value = serde_json::from_str(&payload.unwrap()).unwrap();
+            payload["reason"].as_str().unwrap().to_string()
+        })
+        .collect()
+}
+
+/// The Project Store's lock honours the Survey deadline (ADR-0152 clause 2): while another
+/// process holds `project.lock`, a refresh tries it until its `max_wall_ms` deadline and then
+/// stops with the bounded failure `store_locked`, recorded in the log while the holder still
+/// holds the lock, and never hangs. Released, the next refresh records a Survey.
+#[test]
+fn a_held_project_store_lock_stops_a_refresh_with_store_locked_within_its_deadline() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root(), "locked", &[("README.md", b"# Locked\n")]);
+    machine.expect(&repo, &[], &["project", "show"], 0);
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .open(machine.store().join("project.lock"))
+        .unwrap();
+    let held = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusiveNonblock)
+        .map_err(|(_, errno)| errno)
+        .unwrap();
+    let max_wall_ms: u64 = 1500;
+    for force in [false, true] {
+        let mut args = vec!["project", "refresh"];
+        if force {
+            args.push("--force");
+        }
+        let started = std::time::Instant::now();
+        let output = machine.af(
+            &repo,
+            &[("AF_SURVEY__MAX_WALL_MS", &max_wall_ms.to_string())],
+            &args,
+        );
+        let took = started.elapsed();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("(store_locked)"), "{stderr}");
+        assert!(
+            took >= std::time::Duration::from_millis(max_wall_ms)
+                && took < std::time::Duration::from_millis(max_wall_ms + 2000),
+            "the refresh took {took:?}"
+        );
+        // Recorded while the holder still holds the lock.
+        assert_eq!(machine.events().last().unwrap(), "SurveyFailed@1");
+        assert!(
+            failure_reasons(&machine)
+                .last()
+                .unwrap()
+                .starts_with("the Project Store is locked (store_locked)"),
+            "{:?}",
+            failure_reasons(&machine)
+        );
+    }
+    assert_eq!(machine.surveys(), 0);
+    drop(held);
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    assert_eq!(machine.surveys(), 1);
+}
+
+/// The writer opens `pending-surveys` as collection's reader does, never through a link: one
+/// replaced by a symbolic link to a writable directory outside the Store refuses the refresh,
+/// naming the path, records `SurveyFailed@1`, and nothing is written where the link points.
+#[test]
+fn a_pending_directory_replaced_by_a_link_refuses_the_refresh_and_nothing_is_written_outside() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root(), "linked", &[("README.md", b"# Linked\n")]);
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    let pending = machine.store().join("pending-surveys");
+    assert!(!pending.exists(), "a published Survey leaves no entry");
+    let outside = machine.root().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &pending).unwrap();
+
+    let (_, stderr) = machine.expect(&repo, &[], &["project", "refresh", "--force"], 1);
+    assert!(
+        stderr.contains(&format!(
+            "{} is refused: it is a symbolic link or not a directory",
+            pending.display()
+        )),
+        "{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_dir(&outside).unwrap().count(),
+        0,
+        "nothing outside"
+    );
+    assert!(
+        std::fs::symlink_metadata(&pending)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(machine.surveys(), 1);
+    assert_eq!(machine.events().last().unwrap(), "SurveyFailed@1");
+}
+
+/// A Survey record of the superseded `af/ProjectSurvey@1` (ADR-0145) in a Project Store, as an
+/// earlier build wrote it: `af project history` lists it, text and `--json`
+/// (`af/project-history@2`), by its ID and time as `unreadable: superseded version` and none of
+/// its event's fields; `af project survey` refuses it naming the version, `af project show`
+/// says it, a refresh never reuses it and records a Survey of this release after it, and its
+/// record is never deleted.
+#[test]
+fn a_superseded_survey_record_is_listed_unreadable_kept_and_never_reused() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root(), "superseded", &[("README.md", b"# Old\n")]);
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    let (sequence, event) = recorded_events(&machine).pop().unwrap();
+    let current = event["survey_id"].as_str().unwrap().to_string();
+    let bytes = std::fs::read(survey_object(&machine, &current)).unwrap();
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(text.contains("\"schema\":\"af/ProjectSurvey@2\""), "{text}");
+    let old = text.replace("af/ProjectSurvey@2", "af/ProjectSurvey@1");
+    let old_id = review_store::canonical::blob_content_id(old.as_bytes());
+    let hex = old_id.trim_start_matches("sha256:");
+    let object = machine
+        .store()
+        .join("cas/objects")
+        .join(&hex[..2])
+        .join(&hex[2..]);
+    std::fs::create_dir_all(object.parent().unwrap()).unwrap();
+    std::fs::write(&object, &old).unwrap();
+    std::fs::remove_file(survey_object(&machine, &current)).unwrap();
+    rewrite_event(
+        &machine,
+        sequence,
+        "survey_id",
+        &Value::from(old_id.clone()),
+    );
+    let log = rusqlite::Connection::open(machine.store().join("events.sqlite")).unwrap();
+    log.execute(
+        "UPDATE events SET artifact_refs = ?1 WHERE sequence = ?2 AND type = 'SurveyRecorded@1'",
+        rusqlite::params![serde_json::json!([old_id]).to_string(), sequence],
+    )
+    .unwrap();
+
+    let (listed, _) = machine.expect(&repo, &[], &["project", "history"], 0);
+    assert!(
+        listed.lines().any(|line| line.starts_with(old_id.as_str())
+            && line.ends_with("unreadable: superseded version")
+            && !line.contains("head")),
+        "{listed}"
+    );
+    let history = machine.json(&repo, &[], &["project", "history", "--json"]);
+    schemas::valid(&schemas::validator("project-history-v2.json"), &history);
+    assert_eq!(
+        history["surveys"][0],
+        serde_json::json!({
+            "survey_id": old_id,
+            "recorded_unix_ms": event["recorded_unix_ms"],
+            "unreadable": "superseded version",
+        })
+    );
+    let refused = refusal(&machine, &repo, &[], &["project", "survey"]);
+    assert!(
+        refused.contains("it is af/ProjectSurvey@1, a superseded version another af release wrote"),
+        "{refused}"
+    );
+    let (shown, _) = machine.expect(&repo, &[], &["project", "show"], 0);
+    assert!(
+        shown.contains(&format!(
+            "The newest Survey {old_id} is unreadable: superseded version"
+        )),
+        "{shown}"
+    );
+
+    // Never reused: the unchanged key records a Survey of this release, chained after it.
+    let (refreshed, _) = machine.expect(&repo, &[], &["project", "refresh"], 0);
+    assert!(refreshed.starts_with("recorded"), "{refreshed}");
+    let newest = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    assert_eq!(newest["schema"], "af/ProjectSurvey@2");
+    assert_eq!(newest["previous_survey_id"], old_id.as_str());
+    let history = machine.json(&repo, &[], &["project", "history", "--json"]);
+    schemas::valid(&schemas::validator("project-history-v2.json"), &history);
+    assert_eq!(history["surveys"].as_array().unwrap().len(), 2);
+    assert_eq!(history["surveys"][1]["unreadable"], "superseded version");
+    assert_eq!(
+        std::fs::read_to_string(&object).unwrap(),
+        old,
+        "never deleted"
     );
 }

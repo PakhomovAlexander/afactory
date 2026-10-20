@@ -29,7 +29,7 @@ use std::time::Instant;
 
 use review_core::EventType;
 use review_core::project::{
-    MAX_SURVEY_BYTES, MAX_SURVEY_TEXT_BYTES, PROJECT_SURVEY_V1, ProjectSurveyV1,
+    MAX_SURVEY_BYTES, MAX_SURVEY_TEXT_BYTES, PROJECT_SURVEY_V2, ProjectSurveyV2,
     SurveyCollectedPayloadV1, SurveyCompletenessV1, SurveyFailedPayloadV1, SurveyRecordedPayloadV1,
 };
 use review_core::task::usage::DecimalU64;
@@ -38,7 +38,7 @@ use serde_json::Value;
 
 use policy::Policy;
 
-use super::{Checkout, Git, Log, ProjectStore, RUN_ID};
+use super::{Checkout, Git, Log, ProjectStore, RUN_ID, Unopened, Wait};
 
 /// The Surveyor's measurement rules. Bumped whenever a rule changes, so a head measured under
 /// the old rules is surveyed again. 2: the survey key's refs, the fixed maxima, one pattern
@@ -111,7 +111,7 @@ pub(crate) fn canonical_bytes(value: &Value) -> Result<Vec<u8>, String> {
 }
 
 /// The canonical bytes of `survey`, refused unless it validates.
-pub(crate) fn record_bytes(survey: &ProjectSurveyV1) -> Result<Vec<u8>, String> {
+pub(crate) fn record_bytes(survey: &ProjectSurveyV2) -> Result<Vec<u8>, String> {
     survey.validate()?;
     canonical_bytes(&serde_json::to_value(survey).map_err(|error| error.to_string())?)
 }
@@ -120,7 +120,7 @@ pub(crate) fn record_bytes(survey: &ProjectSurveyV1) -> Result<Vec<u8>, String> 
 #[derive(Debug, Clone)]
 pub(crate) struct Recorded {
     pub(crate) event: SurveyRecordedPayloadV1,
-    pub(crate) survey: ProjectSurveyV1,
+    pub(crate) survey: ProjectSurveyV2,
     pub(crate) bytes: Vec<u8>,
 }
 
@@ -214,7 +214,7 @@ impl Log {
 /// refuses, so an event can never stand for a Survey it does not describe.
 pub(crate) fn unbound_field(
     event: &SurveyRecordedPayloadV1,
-    survey: &ProjectSurveyV1,
+    survey: &ProjectSurveyV2,
 ) -> Option<&'static str> {
     let Some(identity) = survey.identity.body.as_ref() else {
         return Some("head");
@@ -297,7 +297,7 @@ impl TombstoneIdentity {
         recorded: &SurveyRecordedPayloadV1,
         bytes: &[u8],
     ) -> Result<Result<Self, &'static str>, String> {
-        let survey = parse_record(bytes).map_err(|why| cut_text(&why))?;
+        let survey = parse_record(bytes).map_err(|why| cut_text(&why.to_string()))?;
         if let Some(field) = unbound_field(recorded, &survey) {
             return Ok(Err(field));
         }
@@ -339,10 +339,43 @@ fn cut_text(text: &str) -> String {
     text[..end].to_string()
 }
 
+/// Why a Survey's record was not read back as one of this release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReadError {
+    /// A record of the superseded `af/ProjectSurvey@1`, which another af release wrote: refused
+    /// by its label, never decoded and never deleted for it (ADR-0145).
+    Superseded,
+    /// Gone, unreadable, corrupt or no valid Survey: af's own words.
+    Other(String),
+}
+
+/// How `af project history` lists a Survey whose record is of a superseded version.
+pub(crate) const SUPERSEDED_LINE: &str = "unreadable: superseded version";
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadError::Superseded => write!(
+                f,
+                "it is af/ProjectSurvey@1, a superseded version another af release wrote; run \
+                 `af project refresh` to record a Survey of this release"
+            ),
+            ReadError::Other(error) => f.write_str(error),
+        }
+    }
+}
+
 /// A Survey record's bytes parsed and validated. A parse error is said by its category and
-/// place, never with the bytes it met.
-fn parse_record(bytes: &[u8]) -> Result<ProjectSurveyV1, String> {
-    let survey: ProjectSurveyV1 = serde_json::from_slice(bytes).map_err(|error| {
+/// place, never with the bytes it met; a record of the superseded `@1` is [`ReadError::Superseded`].
+fn parse_record(bytes: &[u8]) -> Result<ProjectSurveyV2, ReadError> {
+    if review_core::project::is_superseded_survey(bytes) {
+        return Err(ReadError::Superseded);
+    }
+    parse_current(bytes).map_err(ReadError::Other)
+}
+
+fn parse_current(bytes: &[u8]) -> Result<ProjectSurveyV2, String> {
+    let survey: ProjectSurveyV2 = serde_json::from_slice(bytes).map_err(|error| {
         let category = match error.classify() {
             serde_json::error::Category::Io => "a read",
             serde_json::error::Category::Syntax => "a syntax",
@@ -406,18 +439,29 @@ impl ProjectStore {
     /// Survey can hold: the ceiling the writer and collection share. The error is af's own: the
     /// record is gone, its bytes do not match its digest, it cannot be read, or its bytes are no
     /// valid Survey.
-    fn read_survey(&self, survey_id: &str) -> Result<(ProjectSurveyV1, Vec<u8>), String> {
-        let bytes =
-            self.cas
-                .get_bounded(survey_id, MAX_SURVEY_BYTES)
-                .map_err(|error| match error {
+    fn read_survey(&self, survey_id: &str) -> Result<(ProjectSurveyV2, Vec<u8>), ReadError> {
+        let bytes = self
+            .cas
+            .get_bounded(survey_id, MAX_SURVEY_BYTES)
+            .map_err(|error| {
+                ReadError::Other(match error {
                     review_store::CasError::NotFound { .. } => "it is not in the CAS".to_string(),
                     review_store::CasError::Corrupt { .. } => {
                         "its bytes do not match its digest".to_string()
                     }
                     other => other.to_string(),
-                })?;
+                })
+            })?;
         Ok((parse_record(&bytes)?, bytes))
+    }
+
+    /// Whether the record `recorded` names is of the superseded `af/ProjectSurvey@1`: kept, never
+    /// reused, listed by `af project history` as [`SUPERSEDED_LINE`].
+    pub(crate) fn superseded(&self, recorded: &SurveyRecordedPayloadV1) -> bool {
+        matches!(
+            self.read_survey(&recorded.survey_id),
+            Err(ReadError::Superseded)
+        )
     }
 
     fn does_not_replay(&self, refusal: &dyn std::fmt::Display) -> String {
@@ -441,7 +485,7 @@ impl ProjectStore {
                 return Err(self.does_not_replay(&Unreadable {
                     sequence: self.recorded_sequence(recorded)?,
                     survey_id: recorded.survey_id.clone(),
-                    error,
+                    error: error.to_string(),
                 }));
             }
         };
@@ -534,7 +578,12 @@ impl ProjectStore {
     /// identity at collection, every other one to its record, and the first that disagrees, or
     /// whose record the CAS cannot hand over (gone, unreadable, corrupt), is the replay error,
     /// so no event's fields reach the history unverified. The fold refuses before it reads.
-    pub(crate) fn verify_chain(&self) -> Result<(), String> {
+    ///
+    /// A record of the superseded `af/ProjectSurvey@1` is no refusal: nothing of this release can
+    /// verify its event, so the history prints none of the event's fields but its Survey ID and
+    /// when it was recorded, marked [`SUPERSEDED_LINE`]. Returns those Surveys.
+    pub(crate) fn verify_chain(&self) -> Result<std::collections::BTreeSet<String>, String> {
+        let mut superseded = std::collections::BTreeSet::new();
         let tombstones = self.tombstones()?;
         for (sequence, recorded) in self.recorded_events()?.into_iter().rev() {
             let refusal: Option<Box<dyn std::fmt::Display>> = match tombstones
@@ -555,10 +604,14 @@ impl ProjectStore {
                             against: format!("Survey {}", recorded.survey_id),
                         }) as Box<dyn std::fmt::Display>
                     }),
+                    Err(ReadError::Superseded) => {
+                        superseded.insert(recorded.survey_id.clone());
+                        None
+                    }
                     Err(error) => Some(Box::new(Unreadable {
                         sequence,
                         survey_id: recorded.survey_id.clone(),
-                        error,
+                        error: error.to_string(),
                     })),
                 },
             };
@@ -566,7 +619,7 @@ impl ProjectStore {
                 return Err(self.does_not_replay(&*refusal));
             }
         }
-        Ok(())
+        Ok(superseded)
     }
 
     /// Publish `survey`, whose canonical bytes are `bytes`, under the Project Store's lock, in
@@ -578,12 +631,15 @@ impl ProjectStore {
     /// same bytes is this publication's, which finishes it.
     fn record_survey(
         &mut self,
-        survey: &ProjectSurveyV1,
+        survey: &ProjectSurveyV2,
         bytes: Vec<u8>,
     ) -> Result<Recorded, String> {
         let survey_id = review_store::canonical::blob_content_id(&bytes);
         let length = bytes.len() as u64;
-        pending::begin(&self.directory, &survey_id, length)?;
+        let object = collect::object_path(&self.directory, &survey_id);
+        // An entry an earlier attempt of these bytes left keeps the object it names.
+        let kept = pending::begin(&self.directory, &survey_id, length, &object)?;
+        pending::fail_put()?;
         let stored = self.cas.put(&bytes).map_err(|error| error.to_string())?;
         if stored != survey_id {
             return Err(format!(
@@ -593,12 +649,7 @@ impl ProjectStore {
         // The bytes and their name durable before the entry names the object.
         self.cas.flush().map_err(|error| error.to_string())?;
         pending::stop_before_identity();
-        pending::written(
-            &self.directory,
-            &survey_id,
-            length,
-            &collect::object_path(&self.directory, &survey_id),
-        )?;
+        pending::written(&self.directory, &survey_id, length, &object, kept)?;
         pending::stop_before_event();
         let identity = survey
             .identity
@@ -674,12 +725,59 @@ fn public_reason(reason: &str) -> String {
     line
 }
 
-fn open(checkout: &Checkout) -> Result<ProjectStore, String> {
-    let store = ProjectStore::open(&crate::xdg_state_root()?, &checkout.project_id)?;
+/// The registered Project's Store, its lock taken by `deadline` (at least one try): a holder
+/// that keeps it past the Survey's deadline never holds a refresh beyond it.
+fn open(checkout: &Checkout, deadline: Instant) -> Result<ProjectStore, Unopened> {
+    let store = ProjectStore::open_waiting(
+        &crate::xdg_state_root()?,
+        &checkout.project_id,
+        Wait::Until(deadline),
+    )?;
     if store.log()?.project.is_none() {
-        return Err("the Project is not registered; run `af project show` first".into());
+        return Err(Unopened::Failed(
+            "the Project is not registered; run `af project show` first".into(),
+        ));
     }
     Ok(store)
+}
+
+/// Why a refresh whose Project Store's lock another process held until its deadline recorded
+/// no Survey: the bounded failure `store_locked`.
+const STORE_LOCKED: &str = "the Project Store is locked (store_locked): another af process held \
+                            its lock until max_wall_ms passed; run `af project refresh` again \
+                            once it ends";
+
+/// Append `SurveyFailed@1` to the log of the registered Project Store at `directory` without
+/// its lock, which another process holds: what a refresh that could not take it in time
+/// records. The log orders its own appends; the event names no CAS object and changes nothing
+/// the holder reads or writes.
+fn record_failure_unlocked(directory: &Path, head: &str, reason: &str) -> Result<(), String> {
+    let payload = SurveyFailedPayloadV1 {
+        head: head.to_string(),
+        reason: public_reason(reason),
+        recorded_unix_ms: crate::storage::now_unix_ms().into(),
+    };
+    payload.validate()?;
+    let mut events = review_store::EventStore::open(directory.join("events.sqlite"))
+        .map_err(|error| error.to_string())?;
+    let registered = Log::fold(&events.replay(RUN_ID).map_err(|error| error.to_string())?)?
+        .project
+        .is_some();
+    if !registered {
+        return Err("the Project is not registered".into());
+    }
+    let cas = review_store::Cas::open(directory.join("cas")).map_err(|error| error.to_string())?;
+    let event = NewEvent::new(
+        EventType::SurveyFailedV1,
+        serde_json::to_value(&payload).map_err(|error| error.to_string())?,
+    )
+    .at(review_core::task::collection::collected_time(
+        crate::storage::now_unix_ms(),
+    ));
+    events
+        .append(RUN_ID, &cas, event)
+        .map(|_| ())
+        .map_err(|error| format!("recording SurveyFailed@1: {error}"))
 }
 
 /// Why a refresh recorded no Survey: what its `SurveyFailed@1` says and what the command
@@ -742,10 +840,35 @@ const FAILURE_HEAD_MS: u64 = 1_000;
 /// Project Store always holds a record of the attempt; the one exception is a head no
 /// `rev-parse` names, even within [`FAILURE_HEAD_MS`] of its own after the deadline, since the
 /// event names a head.
-pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, String> {
-    let started = Instant::now();
+///
+/// With `register`, the checkout is first registered as `af project` registers it, the Project
+/// Store's lock tried for at most `max_wall_ms` before the Survey's clock starts. A holder that
+/// keeps the lock past either deadline (the registration's, or the Survey's at either of its
+/// two openings) stops the refresh with the bounded failure `store_locked`, which is recorded
+/// without the lock.
+pub(crate) fn refresh(
+    checkout: &Checkout,
+    force: bool,
+    register: bool,
+) -> Result<Refreshed, String> {
     let git = Git::open(&checkout.toplevel)?;
-    let unrecorded = match attempt(checkout, &git, started, force) {
+    let attempted = if register {
+        // Registration is no part of the Survey, but its wait for the lock is bounded the
+        // same way; the Survey's clock starts once it is done.
+        let max_wall_ms = Policy::load(&checkout.toplevel)
+            .map_or(Policy::default().max_wall_ms, |policy| policy.max_wall_ms);
+        let deadline = Instant::now() + std::time::Duration::from_millis(max_wall_ms);
+        // Released before the head is measured: the Surveyor opens the Store again.
+        let registered = super::adopt_waiting(checkout, None, Wait::Until(deadline)).map(drop);
+        match registered {
+            Ok(()) => attempt(checkout, &git, Instant::now(), force),
+            Err(Unopened::Locked) => Err(Unrecorded::new(None, STORE_LOCKED, STORE_LOCKED)),
+            Err(Unopened::Failed(error)) => return Err(error),
+        }
+    } else {
+        attempt(checkout, &git, Instant::now(), force)
+    };
+    let unrecorded = match attempted {
         Ok(refreshed) => return Ok(refreshed),
         Err(unrecorded) => unrecorded,
     };
@@ -759,11 +882,22 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
             .join("events.sqlite")
             .is_file()
     });
-    if let Some(head) = head
-        && logged
-        && let Ok(mut store) = open(checkout)
-        && let Err(error) = store.record_failure(&head, &unrecorded.reason)
-    {
+    // One try for the lock: a holder that keeps it gets the failure through the log alone.
+    let recorded = match (head, logged) {
+        (Some(head), true) => match open(checkout, Instant::now()) {
+            Ok(mut store) => store.record_failure(&head, &unrecorded.reason),
+            Err(Unopened::Locked) => crate::xdg_state_root().and_then(|state_home| {
+                record_failure_unlocked(
+                    &super::store_directory(&state_home, &checkout.project_id),
+                    &head,
+                    &unrecorded.reason,
+                )
+            }),
+            Err(Unopened::Failed(_)) => Ok(()),
+        },
+        _ => Ok(()),
+    };
+    if let Err(error) = recorded {
         return Err(format!(
             "{}; recording SurveyFailed@1 failed too: {error}",
             unrecorded.error
@@ -834,10 +968,14 @@ fn attempt(
         Err(failure) => return Err(Unrecorded::of(&head, &failure)),
     };
     let refs_digest = observed.digest.clone();
-    // A Project Store that cannot be opened (an unregistered Project) holds no failure either.
-    let unopened = |error: String| Unrecorded::new(None, error.clone(), error);
+    // A Project Store that cannot be opened (an unregistered Project) holds no failure either;
+    // one whose lock another process holds until the deadline records `store_locked`.
+    let unopened = |unopened: Unopened| match unopened {
+        Unopened::Locked => Unrecorded::said(&head, STORE_LOCKED),
+        Unopened::Failed(error) => Unrecorded::new(None, error.clone(), error),
+    };
     let replayed = |error: String| Unrecorded::new(Some(&head), REPLAY_REFUSED, error);
-    let store = open(checkout).map_err(unopened)?;
+    let store = open(checkout, clock.deadline()).map_err(unopened)?;
     let key = Key {
         head: head.clone(),
         refs_digest: refs_digest.clone(),
@@ -847,7 +985,7 @@ fn attempt(
         surveyor_version: SURVEYOR_VERSION,
     };
     if !force
-        && let Some(newest) = newest(&store, &store.log().map_err(replayed)?).map_err(replayed)?
+        && let Some(newest) = reusable(&store, &store.log().map_err(replayed)?).map_err(replayed)?
         && key.reuses(&newest)
     {
         return Ok(Refreshed::Unchanged(newest));
@@ -880,10 +1018,10 @@ fn attempt(
     measure::hand_over(observed);
     let sections = collect::measure(git, &basis, started, clock.clone())
         .map_err(|failure| Unrecorded::of(&head, &failure))?;
-    let mut store = open(checkout).map_err(unopened)?;
+    let mut store = open(checkout, clock.deadline()).map_err(unopened)?;
     let log = store.log().map_err(replayed)?;
     if !force
-        && let Some(newest) = newest(&store, &log).map_err(replayed)?
+        && let Some(newest) = reusable(&store, &log).map_err(replayed)?
         && key.reuses(&newest)
     {
         // Another refresh recorded this head while this one measured it.
@@ -898,8 +1036,8 @@ fn attempt(
         sections.vocabulary.completeness,
         sections.checks.completeness,
     ]);
-    let mut survey = ProjectSurveyV1 {
-        schema: PROJECT_SURVEY_V1.into(),
+    let mut survey = ProjectSurveyV2 {
+        schema: PROJECT_SURVEY_V2.into(),
         completeness,
         previous_survey_id: log.newest_survey().map(|newest| newest.survey_id.clone()),
         stopped: None,
@@ -938,7 +1076,7 @@ fn attempt(
 /// Where `survey` stopped when it is not complete (ADR-0152 clause 1): the stopping point its
 /// sections determine, with the items the Clock charged in that section.
 fn stopped(
-    survey: &ProjectSurveyV1,
+    survey: &ProjectSurveyV2,
     clock: &measure::Clock,
 ) -> Option<review_core::project::SurveyStopV1> {
     let mut stop = survey.stopping_point()?;
@@ -962,6 +1100,18 @@ pub(crate) fn newest(store: &ProjectStore, log: &Log) -> Result<Option<Recorded>
         return Ok(None);
     }
     store.survey(newest).map(Some)
+}
+
+/// The newest Survey a refresh may reuse: [`newest`], but none when its record is of a
+/// superseded version, which is kept and measured again, never reused.
+fn reusable(store: &ProjectStore, log: &Log) -> Result<Option<Recorded>, String> {
+    if let Some(newest) = log.newest_survey()
+        && store.collected(newest)?.is_none()
+        && store.superseded(newest)
+    {
+        return Ok(None);
+    }
+    newest(store, log)
 }
 
 fn short(commit: &str) -> &str {
@@ -1184,7 +1334,7 @@ pub(crate) fn after_onboard(repo: &Path, json: bool) {
             println!("{line}");
         }
     };
-    match refresh(&checkout, false) {
+    match refresh(&checkout, false, false) {
         Ok(Refreshed::Recorded(recorded)) => {
             say(format!("af onboard: recorded {}", summary_line(&recorded)))
         }
@@ -1207,12 +1357,7 @@ pub(crate) mod collect;
 pub(crate) fn run(command: crate::cli::ProjectCommand, sections: &[String]) -> Result<i32, String> {
     use crate::cli::ProjectCommand;
     match command {
-        ProjectCommand::History { json } => {
-            if let Some(store) = existing_store_here()? {
-                store.verify_chain()?;
-            }
-            collect::run(ProjectCommand::History { json })
-        }
+        ProjectCommand::History { json } => history(json),
         ProjectCommand::Survey { json: false } if !sections.is_empty() => survey_sections(sections),
         ProjectCommand::Survey { json } => {
             // A collected newest Survey's event is bound to its tombstone before `collect::run`
@@ -1226,6 +1371,17 @@ pub(crate) fn run(command: crate::cli::ProjectCommand, sections: &[String]) -> R
         }
         other => collect::run(other),
     }
+}
+
+/// `af project history`: every Survey event of the chain verified against its record or its
+/// tombstone before any of it is printed, a Survey whose record is of a superseded version
+/// listed as [`SUPERSEDED_LINE`] with none of its event's other fields.
+pub(crate) fn history(json: bool) -> Result<i32, String> {
+    let superseded = match existing_store_here()? {
+        Some(store) => store.verify_chain()?,
+        None => std::collections::BTreeSet::new(),
+    };
+    collect::history(json, &superseded)
 }
 
 /// The invoking checkout's Project Store, when it holds a log already; opening it creates

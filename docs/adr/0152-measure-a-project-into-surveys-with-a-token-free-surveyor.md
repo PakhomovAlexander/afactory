@@ -1,6 +1,7 @@
 # ADR-0152: Measure a Project into Surveys with a token-free Surveyor
 
-**Status:** accepted (2026-10-20). Package PJ2 of the
+**Status:** accepted (2026-10-20); clauses 1, 2, 10, 12 and 13 amended (2026-10-20) by the PJ2
+close-out, which adds clause 15. Package PJ2 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0151](0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
 (the Project, its Project Store and every git process of `projects/git.rs`),
@@ -51,7 +52,8 @@ email first of all.
 
 ## Decision
 
-1. **The record.** A Survey is `af/ProjectSurvey@1` ([schema](../../schemas/project-survey-v1.json)):
+1. **The record.** A Survey is `af/ProjectSurvey@2` ([schema](../../schemas/project-survey-v2.json);
+   `@1`, which an earlier build wrote before `stopped_record`, is superseded, clause 15):
    RFC 8785 canonical JSON, every map sorted by key, every list in a stated order, and every
    number a decimal string of an integer (counts, bytes, lines, Unix seconds, basis points), a
    share being its population's basis points rounded down (`3333` for one third of three, `0`
@@ -109,7 +111,9 @@ email first of all.
    only writes, updates and clears them. A debug build stops at the two crash points, as a
    crash would, exiting 86: `AF_TEST_SURVEY_STOP_BEFORE_IDENTITY=1` after the bytes are linked
    and before `object` is recorded, and `AF_TEST_SURVEY_STOP_BEFORE_EVENT=1` after `object` is
-   recorded and before the event; `survey/pending.rs` states the order and both stops. `SurveyRecorded@1` {`survey_id`, `head`, `cutoff_unix_s`, `completeness`,
+   recorded and before the event; `survey/pending.rs` states the order and both stops. Clause 15
+   bounds the writer's wait for the lock, keeps an earlier attempt's `object` through (d) and
+   refuses a `pending-surveys` that is no real directory of the Store. `SurveyRecorded@1` {`survey_id`, `head`, `cutoff_unix_s`, `completeness`,
    `policy_digest`, `surveyor_version`, `refs_digest`, `previous_survey_id` when any,
    `recorded_unix_ms`} and
    `SurveyFailed@1` {`head`, `reason`, `recorded_unix_ms`} go into its log, each with a schema and
@@ -429,15 +433,17 @@ email first of all.
    refusal itself, which names sequences and the Store's path, is what the command prints), and
    a record the Project Store cannot take records `the Survey could not be published in the
    Project Store`, its pending entry left to collection. A Survey never calls a Provider and never takes a writer lease on a Task
-   Store; it holds the Project Store's lock only to read the log and to record.
+   Store; it holds the Project Store's lock only to read the log and to record, and waits for
+   it no longer than its deadline (clause 15).
 10. **Commands.** `af project survey [--section NAME…] [--json]` prints the newest Survey's
     summary or its record, and exits 1 with one line naming `af project refresh` when there is
     none. `--section` is an option of the text alone: it picks the named sections' lines of the
-    summary, in record order; `--json` prints the complete recorded `af/ProjectSurvey@1`
+    summary, in record order; `--json` prints the complete recorded `af/ProjectSurvey@2`
     unchanged, and `--section` with `--json` is usage error 2. `af project refresh
     [--json] [--force]` records a Survey now and prints `recorded`, or the `unchanged:` line of
-    clause 3, with the summary (`--json`: the record, and the `unchanged:` line on stderr). `af project history [--json]` lists the chain newest first (`af/project-history@1`,
-    [schema](../../schemas/project-history-v1.json)). `af project show` gains, in text only, the
+    clause 3, with the summary (`--json`: the record, and the `unchanged:` line on stderr). `af project history [--json]` lists the chain newest first (`af/project-history@2`,
+    [schema](../../schemas/project-history-v2.json); `@2` lists a superseded record by its ID and
+    time alone, clause 15). `af project show` gains, in text only, the
     newest Survey's summary, or the newest `SurveyFailed@1`'s reason when no Survey was recorded
     after it; `af/project@1` is unchanged, since a changed shape would be `@2`. Exit codes are
     PJ1's. Nothing of the Surveyor runs on the help path.
@@ -447,11 +453,12 @@ email first of all.
     nor anything else onboarding does; `af onboard` without `--apply` records nothing, and a
     second `--apply` with an unchanged survey key records nothing.
 12. **Not here.** Project Briefs (PJ3); the detached after-run refresh, the single-flight lock and
-    `[survey] refresh` (PJ4); and the `activity` section (PJ5), with what bounds it: the
-    discovery ceilings (1,000 Stores, 100,000 rows per Store, 1 MiB per row, 16 MiB of buffered
-    projection state) and the 64 MiB per-Store CAS-read budget of validated accounting, its
-    deadline checked between 64 KiB chunks and before each artifact is decoded, each with its
-    fixture in PJ5. This package's one CAS read, a Survey record read back by replay or reuse,
+    `[survey] refresh` (PJ4); and the `activity` section (PJ5), with what bounds it: the 64 MiB
+    per-Store CAS-read budget of validated accounting, its deadline checked between 64 KiB
+    chunks and before each artifact is decoded, with its fixture in PJ5. The Store discovery
+    ceilings (1,000 Stores, 100,000 rows per Store, 1 MiB per row, 16 MiB of buffered
+    projection state) are enforced now where the inventory walks Stores (clause 15), and PJ5's
+    discovery set reads under the same ceilings. This package's one CAS read, a Survey record read back by replay or reuse,
     is bounded before it is decoded: `get_bounded` at `MAX_SURVEY_BYTES` by its stated length,
     and only then parsed. PJ4 also adds collection: until
     then every Survey stays in the Project Store, which ADR-0151 already never evicts, and
@@ -676,14 +683,14 @@ email first of all.
     `AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES=1` to stop after the tombstones,
     `AF_TEST_SURVEY_STOP_BEFORE_UNLINK=1` to stop a removal after its rename into its pass's
     container and before its unlink, `AF_TEST_SURVEY_FAIL_SETTLED_SYNC=1` to fail the sync after
-    `settled.json`'s rename, and
+    `settled.json`'s rename (`=2` the put-back's sync too, clause 15), and
     `AF_TEST_SURVEY_REPLACE_BEFORE_RENAME=<directory>` and
     `AF_TEST_SURVEY_REPLACE_BEFORE_JUDGE=<directory>` to replace a record by a byte-identical
     copy between its identity read and its rename, or between inventory and the plan's
     judgement. Replay
     treats a `SurveyRecorded@1` whose Survey a tombstone names as collected: `af project history`
-    answers for it from the tombstone and marks it `collected` in text (`af/project-history@1`
-    is unchanged, since a marked entry would be `@2`), and `af project survey` shows the newest
+    answers for it from the tombstone and marks it `collected` in text (`af/project-history@2`
+    carries no such mark, which would be another version), and `af project survey` shows the newest
     Survey only while it is uncollected and otherwise exits 1 saying it was collected and naming
     `af project refresh`; `af project show` then prints no Survey. `previous_survey_id` is a
     name, never a reachability edge: a collected predecessor keeps nothing alive, and a chain that
@@ -714,6 +721,71 @@ email first of all.
     built-in fallback of a language is an exact lookup of a name or an extension, not a pattern
     match, and `decisions` and `release_tags` are single patterns applied once per streamed
     item.
+15. **The close-out.** This clause amends clauses 1, 2, 10, 12 and 13 where they say otherwise.
+    *The record's version.* The record gained `stopped_record` without a new version, so it is
+    `af/ProjectSurvey@2` ([schema](../../schemas/project-survey-v2.json)); its writer, reader,
+    validator, schema and parity fixtures moved together and `project-survey-v1.json` is gone
+    (ADR-0145). `ProjectSurveyV2` refuses the label `af/ProjectSurvey@1` by type, `af/ProjectSurvey@1
+    is a superseded version of the Survey record; another af release wrote it`, and a reader
+    recognises such a record by its `schema` label alone, never decoding a field of it.
+    `SurveyRecorded@1`, `SurveyFailed@1`, `SurveyCollected@1` and the pending entry name no record
+    version and keep theirs; their schemas reference the `@2` record's definitions. `af project
+    history` lists a Survey whose record is superseded, text and `--json` alike, by its ID and
+    recording time as `unreadable: superseded version`, printing none of its event's other fields,
+    which nothing of this release can verify, so its `--json` document is `af/project-history@2`
+    ([schema](../../schemas/project-history-v2.json): such an entry holds `survey_id`,
+    `recorded_unix_ms` and `unreadable`, and `af/project-history@1` is refused). `af project
+    show` says the newest Survey is so, `af project survey` refuses it naming the version, a
+    refresh never reuses it and records a Survey of this release after it, and nothing deletes it
+    for its version: the Storage Budget collects it, as any record within the ceiling that is no
+    Survey, with an `unreadable` tombstone, under clause 13's rules.
+    *The writer's lock.* A refresh takes `project.lock` with a bounded wait: it tries the lock
+    without blocking, every 10 ms, until its `max_wall_ms` deadline and at least once, at the
+    registration `af project refresh` makes before the Survey's clock starts and at both
+    openings of the Survey (the reuse check and the publication). A lock another process holds
+    past that deadline stops the refresh with the bounded failure `store_locked`, ``the Project
+    Store is locked (store_locked): another af process held its lock until max_wall_ms passed;
+    run `af project refresh` again once it ends``, exit 1, and that `SurveyFailed@1` is appended
+    through the log alone, without the lock: SQLite orders the log's appends, and the event names
+    no CAS object and changes nothing the holder reads or writes. Registration, `af project show`
+    and the other readers still wait for the lock.
+    *The pending entry.* A retry never discards a pending object's identity: (d) of clause 2 keeps
+    an entry of the same Survey that already names an `object` unrewritten and goes on only while
+    the file at the Survey's CAS name is a regular file of that device, inode and `bytes`, and
+    otherwise refuses the publication, the entry left for collection to reclaim the object it
+    names; the entry is rewritten with an identity only after the bytes are linked, made durable
+    and stated to be that same file. An entry that cannot be read, or that names another Survey,
+    is never replaced by the writer either. The writer opens `pending-surveys` as collection's
+    reader does: beneath the Project Store, without following a link
+    (`review_sandbox::open_beneath`), and only a directory on the Store's device owned by the
+    Store's owner; anything else (a symbolic link, a file, another device or owner) refuses the
+    refresh naming the path, `<store>/pending-surveys is refused: …`, and every entry is written,
+    renamed and removed relative to that directory's descriptor, so nothing is ever written through
+    a link. A debug build's `AF_TEST_SURVEY_FAIL_PUT=1` fails the CAS write after the entry, as a
+    CAS that refuses the bytes would.
+    *Clearing an entry.* Collection clears an entry whose event did not commit only once no file
+    with the inode it describes remains, at its Survey's CAS name or in any pass's container under
+    `cas/removing`; the inode decides, never the length. While a file with that inode is there at
+    another length (truncated or grown in place, or moved so), the entry stays, the applied
+    document saying `failed: … kept: object changed, still present: …`, and the object is listed
+    `foreign`, never reclaimed; once it is gone, the next pass clears the entry.
+    *A durable rollback.* When the directory sync after `settled.json` is installed fails, the put-back
+    (the earlier record restored, or the new one removed when there was none) is synced too before
+    `record_settled` returns its error. When the put-back or its sync fails as well, both failures
+    are the error and the Survey is left `unverified settlement`: its record is not unlinked, and
+    only a later sweep that reads a consistent `settled.json` decides what holds its name.
+    `AF_TEST_SURVEY_FAIL_SETTLED_SYNC=1` fails the install's sync and `=2` the put-back's as well.
+    *The Store discovery ceilings.* Where the inventory walks Stores it reads the Surveys of at most
+    1,000 Project Stores, in path order, and each Project Store's log, its runs `project` and
+    `survey-collection` together, through one cursor of at most 100,000 rows, 1 MiB per row (its
+    payload and artifact references) and 16 MiB over every row, each row charged before it is
+    decoded (`review_store::EventStore::replay_within`). A Project Store past the first ceiling is
+    measured and kept, its Surveys not read, and `af storage` reports it naming `max_stores`; a
+    log past another is not read and is reported naming `max_rows`, `max_row_bytes` or
+    `max_buffered_bytes`, so none of its Surveys is listed, planned or collected. These are fixed
+    ceilings; a debug build may lower each (`AF_TEST_SURVEY_DISCOVERY_STORES`, `_ROWS`,
+    `_ROW_BYTES`, `_BUFFERED_BYTES`). The 64 MiB per-Store CAS-read budget stays PJ5's, with the
+    `activity` section it bounds.
 
 ## Measured on this repository
 
@@ -864,6 +936,29 @@ is 4,572 bytes plus the length of `git --version` less 11 (4,595 bytes with
   `crates/review-source-git/tests/it/tree_digest.rs` proves the digest-only path equal to the
   committed capture held and spilled, its typed stops with nothing left in temporary storage,
   and the private object repository reading `2 0` where the checkout reads `- -`.
+  The close-out (clause 15) adds, end to end:
+  `a_held_project_store_lock_stops_a_refresh_with_store_locked_within_its_deadline` (a holder
+  keeps `project.lock`; a refresh at `max_wall_ms = 1500` stops within the deadline, with and
+  without `--force`, and its `store_locked` failure is in the log while the lock is still held),
+  `a_retry_whose_put_fails_keeps_the_first_objects_identity_for_collection`,
+  `a_pending_directory_replaced_by_a_link_refuses_the_refresh_and_nothing_is_written_outside`,
+  `a_superseded_survey_record_is_listed_unreadable_kept_and_never_reused`,
+  `a_pending_entry_stays_while_its_changed_object_is_present_and_goes_once_it_is_deleted`
+  (truncated in place, grown in place, moved into a container, then deleted by the operator),
+  `a_failed_settlement_sync_deletes_nothing_and_the_next_sweep_retries` and
+  `a_settlement_whose_rollback_sync_fails_too_is_left_unverified_and_deletes_nothing`, and one
+  fixture per discovery ceiling:
+  `project_stores_beyond_the_store_discovery_ceiling_are_reported_and_their_surveys_kept`,
+  `a_project_store_log_beyond_the_row_ceiling_keeps_its_surveys`,
+  `a_project_store_row_beyond_the_row_bytes_ceiling_keeps_its_surveys` and
+  `a_project_store_log_beyond_the_buffered_bytes_ceiling_keeps_its_surveys`; and beside the
+  code, `review_store`'s `a_bounded_replay_stops_at_each_discovery_ceiling`, the pending
+  writer's `a_retry_keeps_the_object_an_earlier_attempt_recorded` and
+  `a_pending_directory_that_is_a_link_is_refused_and_nothing_is_written_through_it`,
+  collection's `an_entry_stays_while_its_inode_is_present_at_any_length` and
+  `a_settlement_whose_rollback_sync_fails_too_is_an_unverified_settlement`, and the parity
+  tests `the_superseded_survey_label_is_refused_by_type_and_schema` and the history document's
+  superseded entry.
   `crates/review-core/tests/schema_parity/project.rs` pins
   the record, its stopping point (required exactly when not complete, the deadline's section
   over an earlier bound, `history`'s commit, the first declaration not read, `malformed_record`

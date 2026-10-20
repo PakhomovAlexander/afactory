@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:project-survey:1",
-  "title": "af/ProjectSurvey@1",
+  "$id": "urn:af:schema:project-survey:2",
+  "title": "af/ProjectSurvey@2",
   "description": "One kernel-measured description of a Project at one head (ADR-0152), recorded in the Project Store's CAS. Canonical JSON, every number decimal text, every map sorted by key; a complete one byte-identical for the same head, refs digest, policy digest, Surveyor version, git version, cutoff and previous_survey_id, and one that is not complete names where it stopped. Display strings are at most 256 bytes and marked `truncated` when cut; identity strings and paths are exact. No host path, Provider ID or author email.",
   "type": "object",
   "additionalProperties": false,
@@ -37,7 +37,7 @@
   },
   "properties": {
     "schema": {
-      "const": "af/ProjectSurvey@1"
+      "const": "af/ProjectSurvey@2"
     },
     "completeness": {
       "description": "The sections folded: unavailable only when every section is, partial when any is not complete.",

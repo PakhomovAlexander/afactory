@@ -2,7 +2,8 @@
 
 **Status:** accepted (2026-10-19); clauses 4, 5 and 8 amended (2026-10-20) by PJ1b, clause 5
 again (2026-10-20) by its second round, clauses 3 and 5 by its third, clause 5 by its
-fifth, clauses 3 and 5 by its sixth, and clause 5 by its seventh, eighth and ninth. Package PJ1
+fifth, clauses 3 and 5 by its sixth, clause 5 by its seventh, eighth and ninth, and clause 5
+by the PJ2 close-out (2026-10-20: every `*-moved` step checks its original path). Package PJ1
 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery makes only a local
@@ -288,6 +289,7 @@ directories.
    | `inspected` | The registered path holds the recorded identity: nothing there is a directory gone without this removal, another identity a replacement, kept. The entry's `gitdir` names `<path>/.git` and it holds no `locked`, for the checkout's claim as for the entry's own. Only then is a container named. |
    | `container` | Nothing is proved: the name was recorded before the container was made, so a directory found there is reported and left, and the directory is `inspected` again. |
    | `contained` | The container at the recorded name has the recorded identity, or it is reported and kept. The directory is found in it by identity, or at its path by identity, and then moved in only while the container is empty and its entry passes the reading above. In the container the checkout is judged (its entry's `gitdir` and lock, its index, its files) and an entry read again before either is deleted. With the container gone, the registered path decides as for `deleting`. |
+   | `contained`, moved (`checkout-moved`, `entry-moved`) | The directory found in its container by identity, moved there by an earlier run or by this one, leaves its original path free. A directory at that path now is a replacement that stops the removal before anything is judged or deleted: the recorded directory stays in its container, nothing is deleted, the record stays as it is and the Workspace stays registered, reported for an entry as `a new administrative entry appeared at <path> since this removal moved the recorded one; clear it or move the recorded entry back, then run the command again` (prefixed with where the recorded entry is kept), and for the checkout as `the worktree <path> is kept at <container>/<name>, where this removal moved it, and the Workspace stays registered: a new directory appeared at <path> since this removal moved the recorded worktree; clear it or move the recorded worktree back, then run the command again`. Cleared, or with the recorded directory moved back to its path, the same command finishes the removal. |
    | `deleting` | The directory is found in its container by identity, an entry there holding no `locked` and naming `<path>/.git` by any `gitdir` still there, and its deletion finishes. Otherwise the registered path decides: the recorded identity there is the directory moved back, claimed again from `inspected` and judged again; another identity is a replacement, kept and reported, the Workspace registered; only when neither the container nor the path holds the recorded identity is it `deleted`. |
    | `deleted` | The directory went by its identity. Its container goes only while it has its recorded identity and is empty; a directory at the checkout's path is kept and reported. |
    | `done` | Nothing; the next directory. |
@@ -401,6 +403,11 @@ directories.
   entry; stopped after every step at which the entry exists, with the entry moved back to its
   path and then locked, pointed at another checkout or stripped of its `gitdir`, leaves it so,
   names the condition, keeps the Workspace registered, and finishes once the operator clears it;
+  stopped after `checkout-moved` or `entry-moved` with a new directory at the original path,
+  keeps the recorded directory in its container, deletes nothing, keeps the record and the
+  Workspace and names the path, and finishes once the new directory is cleared or the recorded
+  one moved back
+  (`a_directory_at_the_original_path_after_any_moved_step_stops_the_removal`);
   keeps and reports a checkout another process replaced after the
   inspection, changing nothing, and a directory another process made at the path after the
   claim; keeps and reports a foreign file put into a leftover container until the operator

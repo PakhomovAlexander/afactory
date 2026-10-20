@@ -1,5 +1,5 @@
 - `af project survey|refresh|history`: the token-free Surveyor measures a Project's head into a
-  Survey, `af/ProjectSurvey@1` in the Project Store, with the sections identity, tree, history,
+  Survey, `af/ProjectSurvey@2` in the Project Store, with the sections identity, tree, history,
   contributors, decisions, vocabulary and checks, every number decimal text, shares basis points
   rounded down (`3333` for one third of three), and each section complete, partial or unavailable
   with the bound it reached. A complete Survey is reused only while its survey key is unchanged (the
@@ -101,3 +101,24 @@
   the record's length, the 4 KiB bound and the second stop
   (`the_writers_pending_entry_is_what_collection_reads_at_either_crash_point`), and every early stop
   now records `SurveyFailed@1` (`every_refresh_that_stops_without_a_survey_records_its_failure`).
+- PJ2 close-out, the writer: the Survey record is `af/ProjectSurvey@2`, since round 9 added
+  `stopped_record` to `@1` without a new version; `ProjectSurveyV2`, its schema
+  (`schemas/project-survey-v2.json`) and parity fixtures replace `@1`, whose schema is gone, and
+  the label `af/ProjectSurvey@1` is refused by type with ADR-0145's message
+  (`the_superseded_survey_label_is_refused_by_type_and_schema`). A record of it already in a
+  Project Store is never deleted for its version: `af project history` lists it by ID and time as
+  `unreadable: superseded version` (`--json` is now `af/project-history@2` for that entry),
+  `af project show` says so, `af project survey` refuses it naming the version, and a refresh
+  never reuses it (`a_superseded_survey_record_is_listed_unreadable_kept_and_never_reused`). A
+  refresh tries `project.lock` only until its `max_wall_ms` deadline and stops with the bounded
+  failure `store_locked`, recorded while the holder still holds the lock
+  (`a_held_project_store_lock_stops_a_refresh_with_store_locked_within_its_deadline`). A retry of
+  a Survey whose pending entry already names an object keeps that identity and goes on only while
+  its CAS name holds that object, so a retry whose CAS write fails leaves the entry naming the
+  first object for collection to reclaim
+  (`a_retry_whose_put_fails_keeps_the_first_objects_identity_for_collection`), and the writer
+  refuses a `pending-surveys` that is a symbolic link or no directory of the Store, naming it and
+  writing nothing through it
+  (`a_pending_directory_replaced_by_a_link_refuses_the_refresh_and_nothing_is_written_outside`)
+  ([ADR-0152](docs/adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  15).

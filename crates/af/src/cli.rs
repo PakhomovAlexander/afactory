@@ -185,15 +185,15 @@ clone is refused until `git fetch --unshallow`; a repository without commits has
 `af task deliver` registers the worktree it creates (origin `delivered`, labelled by the Task \
 ID). `--workspace LABEL` on the `af task` commands that take `--state` selects a Workspace's \
 Store, and on `plan` and `start` its bindings file.\n\n\
-A Survey (`af/ProjectSurvey@1`) is one kernel-measured description of the Project at its head: \
+A Survey (`af/ProjectSurvey@2`) is one kernel-measured description of the Project at its head: \
 identity, tree, history, contributors, decisions, vocabulary and checks, every number decimal \
 text, bounded by the `[survey]` table of `.af/af.toml`. The token-free Surveyor records one at \
 `af onboard --apply` and on `af project refresh`, in the Project Store, and reuses a complete \
 Survey while its survey key (head, refs, policy digest, Surveyor version) is unchanged. It calls \
 no Provider, runs no hook or project code, and never stores an author email.\n\n\
 Never: writes inside a checkout, commits, pushes, or removes a Store. Results go to stdout \
-(`--json` prints `af/project@1`, `af/project-workspaces@1`, `af/ProjectSurvey@1` or \
-`af/project-history@1`); warnings go to stderr. Exit codes: 0 success, 1 failure (the message \
+(`--json` prints `af/project@1`, `af/project-workspaces@1`, `af/ProjectSurvey@2` or \
+`af/project-history@2`); warnings go to stderr. Exit codes: 0 success, 1 failure (the message \
 names the next action; `af/error@1` under --json), 2 usage error.",
         after_long_help = "Examples:\n  af project show\n  af project refresh\n  af project survey --json | jq .tree.files\n  af project history\n  af project workspaces --json\n  af project workspace new research --branch agent/research\n  af project workspace add ../afactory-wt-research --label research --state \"$W/state\"\n  af project workspace remove research\n  af project workspace remove research --delete-worktree\n  af task plan --workspace research --file ticket.json"
     )]
@@ -1492,7 +1492,7 @@ Task-file directory. A path this machine's `workspaces.toml` does not know is sh
     /// Show the newest Survey of the Project
     #[command(
         long_about = "Show the newest Survey of this checkout's Project: one kernel-measured \
-description of the head (`af/ProjectSurvey@1`) with the sections identity, tree, history, \
+description of the head (`af/ProjectSurvey@2`) with the sections identity, tree, history, \
 contributors, decisions, vocabulary and checks, each complete, partial or unavailable with the \
 bound it reached. Text is one line per section, and --section picks sections of the text only; \
 --json prints the complete record unchanged, its canonical bytes, every number decimal text, \
@@ -1503,7 +1503,7 @@ which; `af project refresh` records one.",
         arg = survey_section_arg()
     )]
     Survey {
-        /// The `af/ProjectSurvey@1` record on stdout instead of text
+        /// The `af/ProjectSurvey@2` record on stdout instead of text
         #[arg(long)]
         json: bool,
     },
@@ -1527,7 +1527,7 @@ is over `max_survey_bytes`, records SurveyFailed@1, which `af project show` prin
         after_long_help = "Examples:\n  af project refresh\n  af project refresh --force\n  af project refresh --json | jq .completeness\n  AF_SURVEY__MAX_COMMITS=1000 af project refresh"
     )]
     Refresh {
-        /// The recorded (or unchanged) `af/ProjectSurvey@1` record on stdout instead of text
+        /// The recorded (or unchanged) `af/ProjectSurvey@2` record on stdout instead of text
         #[arg(long)]
         json: bool,
         /// Record a Survey even when the survey key is unchanged
@@ -1539,11 +1539,13 @@ is over `max_survey_bytes`, records SurveyFailed@1, which `af project show` prin
         long_about = "List the Survey chain of this checkout's Project, newest first: each \
 Survey's ID, when it was recorded, its head, its cutoff and its completeness; a Survey the \
 Storage Budget collected is answered from its SurveyCollected@1 tombstone and marked \
-`collected`. --json prints `af/project-history@1`. Records nothing.",
+`collected`, and one whose record is of a superseded version (`af/ProjectSurvey@1`, another af \
+release's) is listed by its ID and time as `unreadable: superseded version` and kept. --json \
+prints `af/project-history@2`. Records nothing.",
         after_long_help = "Examples:\n  af project history\n  af project history --json | jq -r '.surveys[0].survey_id'"
     )]
     History {
-        /// One `af/project-history@1` document on stdout instead of text
+        /// One `af/project-history@2` document on stdout instead of text
         #[arg(long)]
         json: bool,
     },

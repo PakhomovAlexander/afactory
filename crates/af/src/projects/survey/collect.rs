@@ -31,10 +31,14 @@
 //! whose `SurveyRecorded@1` committed is cleared and nothing deleted, and otherwise only the
 //! object it describes (its device, inode and length), at its Survey's CAS name or moved into a
 //! dead pass's container by a recovery that was interrupted, is reclaimed, by recovery, before
-//! the entry, which is cleared only once that object is gone; any other object no event and no
+//! the entry, which is cleared only once no file with that inode remains, whatever its length
+//! (one changed in place is `foreign` and keeps the entry); any other object no event and no
 //! entry names is `foreign` and never reclaimed. A settlement that cannot be made durable (the
-//! directory's sync after the rename fails) puts the earlier `settled.json` back and deletes
-//! nothing.
+//! directory's sync after the rename fails) puts the earlier `settled.json` back, synced, and
+//! deletes nothing; when that fails too, the Survey is left an unverified settlement.
+//!
+//! [`look`] reads a Project Store's log under the Store discovery ceilings ([`Discovery`]), and
+//! the inventory reads the Surveys of at most so many Project Stores.
 //!
 //! A record is reached, read and deleted through directory descriptors, ADR-0144's removal
 //! boundary: the Project Store from `/`, then `cas`, `objects` and the digest-prefix directory,
@@ -75,7 +79,7 @@ use std::time::{Duration, Instant};
 
 use review_core::EventType;
 use review_core::project::{
-    MAX_SURVEY_BYTES, MAX_SURVEYS_SETTLED_BYTES, PROJECT_SURVEYS_SETTLED_V1, ProjectSurveyV1,
+    MAX_SURVEY_BYTES, MAX_SURVEYS_SETTLED_BYTES, PROJECT_SURVEYS_SETTLED_V1, ProjectSurveyV2,
     ProjectSurveysSettledV1, SURVEY_PENDING_V1, SurveyCollectedHistoryV1, SurveyCollectedPayloadV1,
     SurveyCollectedTreeV1, SurveyCompletenessV1, SurveyPendingV1, SurveyReasonV1,
     SurveyRecordedPayloadV1,
@@ -89,6 +93,69 @@ use super::policy::Policy;
 
 /// The run of a Project Store's log that holds its Surveys' tombstones.
 pub(crate) const COLLECTION_RUN: &str = "survey-collection";
+/// The Store discovery ceilings (design note §3.3, ADR-0152 clause 13): where the inventory
+/// walks Stores, it reads the Surveys of at most `stores` Project Stores, in path order, and
+/// each Store's log through one cursor of at most `rows` rows of at most `row_bytes` bytes each
+/// and `buffered_bytes` over all of them; beyond a ceiling the Store's Surveys are not read,
+/// so they are kept, and the inventory reports the ceiling. The activity section's 64 MiB
+/// per-Store CAS-read budget is PJ5's, with the section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Discovery {
+    pub(crate) stores: usize,
+    pub(crate) rows: u64,
+    pub(crate) row_bytes: u64,
+    pub(crate) buffered_bytes: u64,
+}
+
+/// The fixed discovery ceilings.
+pub(crate) const DISCOVERY: Discovery = Discovery {
+    stores: 1_000,
+    rows: 100_000,
+    row_bytes: 1 << 20,
+    buffered_bytes: 16 << 20,
+};
+
+/// How a Project Store whose log is beyond a discovery ceiling is reported, before the ceiling.
+const BEYOND_DISCOVERY: &str = "its log is beyond a Store discovery ceiling, so it is not read";
+
+impl Discovery {
+    /// The ceilings in force: [`DISCOVERY`], each of which a debug build's fixture may lower,
+    /// never raise (`AF_TEST_SURVEY_DISCOVERY_STORES`, `_ROWS`, `_ROW_BYTES` and
+    /// `_BUFFERED_BYTES`). Release binaries never read them.
+    pub(crate) fn current() -> Self {
+        #[allow(unused_mut)]
+        let mut discovery = DISCOVERY;
+        #[cfg(debug_assertions)]
+        {
+            let lowered = |name: &str, ceiling: u64| {
+                std::env::var(format!("AF_TEST_SURVEY_DISCOVERY_{name}"))
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .map_or(ceiling, |value| value.min(ceiling))
+            };
+            discovery.stores = lowered("STORES", discovery.stores as u64) as usize;
+            discovery.rows = lowered("ROWS", discovery.rows);
+            discovery.row_bytes = lowered("ROW_BYTES", discovery.row_bytes);
+            discovery.buffered_bytes = lowered("BUFFERED_BYTES", discovery.buffered_bytes);
+        }
+        discovery
+    }
+
+    /// One Store's read budget.
+    fn budget(self) -> review_store::ReplayBudget {
+        review_store::ReplayBudget::new(self.rows, self.row_bytes, self.buffered_bytes)
+    }
+
+    /// Why the Surveys of a Project Store beyond the first `stores` are not read.
+    pub(crate) fn beyond_stores(self) -> String {
+        format!(
+            "its Surveys are not listed, so they are kept: the inventory reads the Surveys of at \
+             most {} Project Stores (a Store discovery ceiling, max_stores)",
+            self.stores
+        )
+    }
+}
+
 /// The lock every writer of a Project Store holds: a refresh while it reads and records, a plan
 /// while it builds a Brief, and collection while it tombstones and deletes.
 const LOCK: &str = "project.lock";
@@ -361,27 +428,47 @@ fn read_settled(cas: &CasDirectories) -> Result<BTreeSet<String>, String> {
 /// file created exclusively beside it and renamed over it, so a reader sees the old record or
 /// the new one, never part of one, and the Store's directory synced so the rename is durable.
 /// Any failure is the error, and the caller then unlinks nothing: a sync that fails after the
-/// rename puts the earlier record back, so the Survey stays unsettled and the next sweep tries
-/// again.
+/// rename puts the earlier record back (removes the new one, when there was none) and syncs that
+/// too before it returns, so the Survey stays unsettled and the next sweep tries again; when
+/// the put-back or its sync fails as well, both failures are the error and the Survey is left
+/// [`UNVERIFIED_SETTLEMENT`]: its record is not deleted, and only a later sweep that reads a
+/// consistent `settled.json` decides what holds its name.
 fn record_settled(cas: &CasDirectories, survey_id: &str) -> Result<(), String> {
     record_settled_with(cas, survey_id, sync_store)
 }
 
+/// What a Survey whose settlement could neither be made durable nor durably undone is left as.
+const UNVERIFIED_SETTLEMENT: &str = "unverified settlement";
+
+/// Which sync of the Project Store's directory a settlement makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncOf {
+    /// The one after the new `settled.json` was renamed into place.
+    Install,
+    /// The one after a failed install's put-back.
+    Rollback,
+}
+
 /// Sync the Project Store's directory, which holds `settled.json`. A debug build's fixture may
-/// make it fail (`AF_TEST_SURVEY_FAIL_SETTLED_SYNC=1`), as a directory the file system will not
-/// sync does; release binaries never read it.
-fn sync_store(cas: &CasDirectories) -> Result<(), String> {
+/// make it fail, as a directory the file system will not sync does:
+/// `AF_TEST_SURVEY_FAIL_SETTLED_SYNC=1` fails the install's sync alone, `=2` the put-back's
+/// too. Release binaries never read it.
+fn sync_store(cas: &CasDirectories, of: SyncOf) -> Result<(), String> {
     #[cfg(debug_assertions)]
-    if std::env::var_os("AF_TEST_SURVEY_FAIL_SETTLED_SYNC").is_some_and(|value| value == "1") {
+    if let Some(value) = std::env::var_os("AF_TEST_SURVEY_FAIL_SETTLED_SYNC")
+        && (value == "2" || (value == "1" && of == SyncOf::Install))
+    {
         return Err("an injected failure (AF_TEST_SURVEY_FAIL_SETTLED_SYNC)".into());
     }
+    #[cfg(not(debug_assertions))]
+    let _ = of;
     nix::unistd::fsync(&cas.store).map_err(|errno| errno.to_string())
 }
 
 fn record_settled_with(
     cas: &CasDirectories,
     survey_id: &str,
-    sync: impl FnOnce(&CasDirectories) -> Result<(), String>,
+    sync: impl Fn(&CasDirectories, SyncOf) -> Result<(), String>,
 ) -> Result<(), String> {
     let before = read_settled(cas)?;
     let mut settled = before.clone();
@@ -389,25 +476,29 @@ fn record_settled_with(
         return Ok(());
     }
     write_settled(cas, settled)?;
-    let Err(why) = sync(cas) else {
+    let Err(why) = sync(cas, SyncOf::Install) else {
         return Ok(());
     };
-    // The new record is in place but not durable: the earlier one goes back, so no reader
-    // takes the Survey for settled while its record is still at its name.
+    // The new record is in place but not durable: the earlier one goes back, durably, so no
+    // reader takes the Survey for settled while its record is still at its name.
     let restored = if before.is_empty() {
         nix::unistd::unlinkat(&cas.store, SETTLED, nix::unistd::UnlinkatFlags::NoRemoveDir)
-            .map_err(|errno| errno.to_string())
+            .map_err(|errno| format!("removing the new record: {errno}"))
     } else {
         write_settled(cas, before)
-    };
+    }
+    .and_then(|()| {
+        sync(cas, SyncOf::Rollback).map_err(|again| format!("syncing the put-back: {again}"))
+    });
     Err(match restored {
         Ok(()) => format!(
-            "syncing `{SETTLED}`: {why}; the earlier record is put back, so the Survey stays \
-             unsettled and the next pass tries again"
+            "syncing `{SETTLED}`: {why}; the earlier record is put back and synced, so the Survey \
+             stays unsettled and the next pass tries again"
         ),
         Err(again) => format!(
             "syncing `{SETTLED}`: {why}; putting the earlier record back failed too ({again}), \
-             so whatever holds its CAS name is left as foreign"
+             so the Survey is left {UNVERIFIED_SETTLEMENT}: its record is not deleted, and a \
+             later pass reads `{SETTLED}` again before anything at its name is"
         ),
     })
 }
@@ -1252,10 +1343,23 @@ fn judge_leftovers(
 /// every later step compares against. Writes nothing but the lock file every holder of the
 /// Store creates.
 pub(crate) fn look(store: &Path) -> Result<Look, String> {
+    look_within(store, Discovery::current())
+}
+
+/// [`look`] with its log read under `discovery`'s row ceilings, both runs through one budget:
+/// a log beyond one is the error, naming the ceiling, and nothing of the Store is planned.
+fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
     let events = EventStore::open_read_only(store.join("events.sqlite"))
         .map_err(|error| error.to_string())?;
-    let log = Log::fold(&events.replay(RUN_ID).map_err(|error| error.to_string())?)?;
-    let order: Vec<String> = tombstones(&events)?
+    let mut budget = discovery.budget();
+    let mut replay = |run: &str| {
+        events
+            .replay_within(run, &mut budget)
+            .map_err(|error| error.to_string())?
+            .map_err(|ceiling| format!("{BEYOND_DISCOVERY}: {ceiling}"))
+    };
+    let log = Log::fold(&replay(RUN_ID)?)?;
+    let order: Vec<String> = tombstones_of(replay(COLLECTION_RUN)?)?
         .into_iter()
         .map(|tombstone| tombstone.survey_id)
         .collect();
@@ -2542,35 +2646,59 @@ fn moved_unrecorded(
     }
 }
 
-/// Whether the held Store still holds the object `entry` describes, at its Survey's CAS name or
-/// moved into a pass's container: the same device, inode and length. An entry is cleared only
-/// once it does not.
+/// What of the object a pending-publication entry describes the held Store still holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Present {
+    /// No file with its device and inode is at its Survey's CAS name or in a pass's container.
+    Gone,
+    /// It is there, with the length the entry records: recovery reclaims it first.
+    Described,
+    /// It is there, but no longer that length: truncated or grown in place, or moved so. It is
+    /// listed `foreign`, never reclaimed, and the entry stays as long as it is there.
+    Changed,
+}
+
+/// Whether the held Store still holds a file with the inode `entry` describes, at its Survey's
+/// CAS name or moved into a pass's container under `cas/removing`, whatever its length now: the
+/// inode decides, never the length, so an object grown or truncated in place is still the
+/// entry's. An entry is cleared only once no such file remains.
 fn still_holds(
     store: &ProjectStore,
     survey_id: &str,
     entry: &SurveyPendingV1,
-) -> Result<bool, String> {
+) -> Result<Present, String> {
     let Some((identity, length)) = described(entry) else {
-        return Ok(false);
+        return Ok(Present::Gone);
     };
-    let at_name = locate(&store.directory, survey_id)
+    let judged = |size: u64| {
+        if size == length {
+            Present::Described
+        } else {
+            Present::Changed
+        }
+    };
+    if let Some(record) = locate(&store.directory, survey_id)
         .map_err(|why| format!("refused: {why}"))?
-        .is_some_and(|record| (record.identity, record.size) == (identity, length));
-    if at_name {
-        return Ok(true);
+        .filter(|record| record.identity == identity)
+    {
+        return Ok(judged(record.size));
     }
     let (found, _) = walk_removing(&open_cas(&store.directory)?)
         .map_err(|why| format!("refused: what is under `cas/{REMOVING}` cannot be read: {why}"))?;
-    Ok(found.iter().any(|file| {
-        file.kind == FoundKind::File && (file.identity, file.size) == (identity, length)
-    }))
+    Ok(found
+        .iter()
+        .find(|file| file.kind == FoundKind::File && file.identity == identity)
+        .map_or(Present::Gone, |file| judged(file.size)))
 }
 
+/// How the entry of an object that is still there, but changed, is kept.
+const STILL_PRESENT: &str = "kept: object changed, still present";
+
 /// Clear, under the held Store's lock, the pending-publication entry of `survey_id` the plan
-/// stated as `planned`: when its `SurveyRecorded@1` committed, or when the object it describes
-/// (its device, inode and length) is gone, from its Survey's CAS name and from every pass's
-/// container under `cas/removing`; an entry whose object is still there to reclaim is kept, so
-/// an interrupted reclamation keeps its recovery. Returns the allocated bytes of the entry's
+/// stated as `planned`: when its `SurveyRecorded@1` committed, or when no file with the inode it
+/// describes is left, at its Survey's CAS name or in any pass's container under `cas/removing`;
+/// an entry whose object is still there to reclaim is kept, so an interrupted reclamation keeps
+/// its recovery, and so is one whose object changed length in place and stays ([`STILL_PRESENT`]). Returns the allocated bytes of the entry's
 /// file.
 fn clear_publication(
     store: &ProjectStore,
@@ -2586,12 +2714,24 @@ fn clear_publication(
             "{REPLACED_SINCE_INVENTORY}: another file holds its name, so it is left"
         ));
     }
-    if !committed(store, survey_id)? && still_holds(store, survey_id, &entry)? {
-        return Err(
-            "kept: the object it describes is still in its Project Store's CAS, so the next \
-             pass reclaims it first"
-                .into(),
-        );
+    if !committed(store, survey_id)? {
+        match still_holds(store, survey_id, &entry)? {
+            Present::Gone => {}
+            Present::Described => {
+                return Err(
+                    "kept: the object it describes is still in its Project Store's CAS, so the \
+                     next pass reclaims it first"
+                        .into(),
+                );
+            }
+            Present::Changed => {
+                return Err(format!(
+                    "{STILL_PRESENT}: a file with the inode it describes is still in its \
+                     Project Store's CAS at another length, listed foreign and never \
+                     reclaimed, so the entry stays until that file is gone"
+                ));
+            }
+        }
     }
     let cas = open_cas(&store.directory)?;
     let directory = review_sandbox::open_beneath(&cas.store, Path::new(PENDING))
@@ -2755,7 +2895,7 @@ fn totals(
 
 /// A Survey's record of at most [`MAX_SURVEY_BYTES`] parsed, when its bytes hash to its ID:
 /// what it vouches for. Otherwise why its bytes are no Survey, in af's own words.
-fn parse_survey(survey_id: &str, bytes: &[u8]) -> Result<ProjectSurveyV1, String> {
+fn parse_survey(survey_id: &str, bytes: &[u8]) -> Result<ProjectSurveyV2, String> {
     if review_store::canonical::blob_content_id(bytes) != survey_id {
         return Err("its bytes do not match its digest".into());
     }
@@ -2776,9 +2916,18 @@ fn parse_survey(survey_id: &str, bytes: &[u8]) -> Result<ProjectSurveyV1, String
 
 /// The tombstones of a Project Store's log, in order.
 pub(crate) fn tombstones(events: &EventStore) -> Result<Vec<SurveyCollectedPayloadV1>, String> {
+    tombstones_of(
+        events
+            .replay(COLLECTION_RUN)
+            .map_err(|error| format!("the Survey tombstones: {error}"))?,
+    )
+}
+
+/// The tombstones among the events of the run `survey-collection`, in order.
+fn tombstones_of(
+    events: Vec<review_core::RunEvent>,
+) -> Result<Vec<SurveyCollectedPayloadV1>, String> {
     events
-        .replay(COLLECTION_RUN)
-        .map_err(|error| format!("the Survey tombstones: {error}"))?
         .into_iter()
         .map(|event| match event.event_type {
             EventType::SurveyCollectedV1 => serde_json::from_value(event.payload)
@@ -2868,23 +3017,35 @@ pub(crate) fn run(command: crate::cli::ProjectCommand) -> Result<i32, String> {
             }
             super::super::commands::run(ProjectCommand::Survey { json })
         }
-        ProjectCommand::History { json: false } => match read_here()? {
-            Some((log, tombstones)) if !tombstones.is_empty() => {
-                for line in history_lines(&log, &tombstones) {
-                    println!("{line}");
-                }
-                Ok(0)
-            }
-            _ => super::super::commands::run(ProjectCommand::History { json: false }),
-        },
+        ProjectCommand::History { json } => super::history(json),
         other => super::super::commands::run(other),
+    }
+}
+
+/// `af project history` once its chain is verified, `superseded` the Surveys whose records are
+/// of a superseded version: in text, while any Survey is collected, the lines of
+/// [`history_lines`]; otherwise `projects::commands`'s.
+pub(crate) fn history(json: bool, superseded: &BTreeSet<String>) -> Result<i32, String> {
+    match read_here()? {
+        Some((log, tombstones)) if !json && !tombstones.is_empty() => {
+            for line in history_lines(&log, &tombstones, superseded) {
+                println!("{line}");
+            }
+            Ok(0)
+        }
+        _ => super::super::commands::history(json, superseded),
     }
 }
 
 /// `af project history` in text: the chain newest first, a collected Survey answered from its
 /// tombstone and marked `collected`, or `collected (unreadable)` when its record's bytes were no
-/// Survey.
-fn history_lines(log: &Log, tombstones: &[SurveyCollectedPayloadV1]) -> Vec<String> {
+/// Survey, and an uncollected one whose record is of a superseded version marked
+/// `unreadable: superseded version`, with none of its event's fields but its ID and time.
+fn history_lines(
+    log: &Log,
+    tombstones: &[SurveyCollectedPayloadV1],
+    superseded: &BTreeSet<String>,
+) -> Vec<String> {
     let chain = log.chain();
     let mut lines = vec![format!(
         "{} Survey{}",
@@ -2896,6 +3057,12 @@ fn history_lines(log: &Log, tombstones: &[SurveyCollectedPayloadV1]) -> Vec<Stri
             .iter()
             .find(|tombstone| tombstone.survey_id == recorded.survey_id);
         let line = match tombstone {
+            None if superseded.contains(&recorded.survey_id) => format!(
+                "{}  {}  {}",
+                recorded.survey_id,
+                time(recorded.recorded_unix_ms.get()),
+                super::SUPERSEDED_LINE
+            ),
             None => format!(
                 "{}  {}  head {}  cutoff {}  {}",
                 recorded.survey_id,
@@ -3788,7 +3955,10 @@ mod tests {
     fn a_settlement_whose_sync_fails_puts_the_earlier_record_back() {
         let (_root, store, survey_id) = store_with(b"settled");
         let cas = open_cas(&store).unwrap();
-        let fail = |_: &CasDirectories| Err("injected".to_string());
+        let fail = |cas: &CasDirectories, of: SyncOf| match of {
+            SyncOf::Install => Err("injected".to_string()),
+            SyncOf::Rollback => sync_store(cas, of),
+        };
         let error = record_settled_with(&cas, &survey_id, fail).unwrap_err();
         assert!(
             error.starts_with("syncing `settled.json`: injected") && error.contains("put back"),
@@ -3809,6 +3979,33 @@ mod tests {
         assert!(names.is_empty(), "{names:?}");
     }
 
+    /// A settlement whose install and put-back both fail to sync reports both failures and
+    /// leaves the Survey an unverified settlement: the error says so, and nothing claims the
+    /// Survey settled durably; the earlier record is what the directory holds.
+    #[test]
+    fn a_settlement_whose_rollback_sync_fails_too_is_an_unverified_settlement() {
+        let (_root, store, survey_id) = store_with(b"settled");
+        let cas = open_cas(&store).unwrap();
+        let earlier = format!("sha256:{}", "0".repeat(64));
+        record_settled(&cas, &earlier).unwrap();
+        let both = |_: &CasDirectories, of: SyncOf| Err(format!("injected at {of:?}"));
+        let error = record_settled_with(&cas, &survey_id, both).unwrap_err();
+        assert!(
+            error.starts_with("syncing `settled.json`: injected at Install")
+                && error.contains("syncing the put-back: injected at Rollback")
+                && error.contains(UNVERIFIED_SETTLEMENT)
+                && error.contains("its record is not deleted"),
+            "{error}"
+        );
+        assert_eq!(settled_in(&store), [earlier.clone()], "put back, unsynced");
+        // Without an earlier record, the new one is removed and the same failure is reported.
+        let (_root, store, survey_id) = store_with(b"unsettled");
+        let cas = open_cas(&store).unwrap();
+        let error = record_settled_with(&cas, &survey_id, both).unwrap_err();
+        assert!(error.contains(UNVERIFIED_SETTLEMENT), "{error}");
+        assert!(!store.join(SETTLED).exists());
+    }
+
     /// A Project Store whose CAS holds `bytes` as the object of a Survey the writer published
     /// and never recorded: its log empty, its pending entry naming the object by device, inode
     /// and length, as the Surveyor writes it.
@@ -3816,14 +4013,9 @@ mod tests {
         let (root, store, survey_id) = store_with(bytes);
         EventStore::open(store.join("events.sqlite")).unwrap();
         let length = bytes.len() as u64;
-        super::super::pending::begin(&store, &survey_id, length).unwrap();
-        super::super::pending::written(
-            &store,
-            &survey_id,
-            length,
-            &object_path(&store, &survey_id),
-        )
-        .unwrap();
+        let object = object_path(&store, &survey_id);
+        let kept = super::super::pending::begin(&store, &survey_id, length, &object).unwrap();
+        super::super::pending::written(&store, &survey_id, length, &object, kept).unwrap();
         (root, store, survey_id)
     }
 
@@ -3890,6 +4082,63 @@ mod tests {
         assert!(execute(unrecorded).unwrap().bytes > 0);
         assert!(!object.exists());
         assert!(execute(clear).unwrap().bytes > 0);
+        assert!(!entry.exists());
+    }
+
+    /// An entry is cleared only once no file with its inode is left: the inode decides, never
+    /// the length. Truncated in place, grown in place and then moved into a pass's container
+    /// at its new length, the object is still present, so the clear keeps the entry with
+    /// [`STILL_PRESENT`] and the look lists the object `foreign`; once the operator deletes it,
+    /// the clear goes through.
+    #[test]
+    fn an_entry_stays_while_its_inode_is_present_at_any_length() {
+        let (_root, store, survey_id) = unrecorded_store(&[b'r'; 80]);
+        let object = object_path(&store, &survey_id);
+        let entry = super::super::pending::location(&store, &survey_id);
+        let resize = |at: &Path, length: u64| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(at)
+                .unwrap()
+                .set_len(length)
+                .unwrap();
+        };
+        let dead = store.join("cas/removing").join(P1);
+        for (case, at) in [
+            ("truncated", object.clone()),
+            ("grown", object.clone()),
+            ("moved", dead.join(&survey_id)),
+        ] {
+            match case {
+                "truncated" => resize(&object, 40),
+                "grown" => resize(&object, 120),
+                _ => {
+                    std::fs::create_dir_all(&dead).unwrap();
+                    std::fs::rename(&object, &at).unwrap();
+                }
+            }
+            let looked = look(&store).unwrap();
+            let foreign: Vec<&Path> = looked
+                .left
+                .iter()
+                .filter(|left| left.reason == LeftReason::Foreign)
+                .map(|left| left.path.as_path())
+                .collect();
+            assert_eq!(foreign, [at.as_path()], "{case}: {looked:?}");
+            let clear = planned(&looked, |job| matches!(job, Job::Publication { .. }));
+            assert_eq!(clear.len(), 1, "{case}: {looked:?}");
+            let error = execute(clear[0]).unwrap_err();
+            assert!(error.contains(STILL_PRESENT), "{case}: {error}");
+            assert!(
+                entry.is_file() && at.is_file(),
+                "{case}: nothing is removed"
+            );
+        }
+        // The operator deletes it: no file with its inode is left, and the entry goes.
+        std::fs::remove_file(dead.join(&survey_id)).unwrap();
+        let looked = look(&store).unwrap();
+        let clear = planned(&looked, |job| matches!(job, Job::Publication { .. }));
+        assert!(execute(clear[0]).unwrap().bytes > 0);
         assert!(!entry.exists());
     }
 

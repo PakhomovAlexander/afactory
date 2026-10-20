@@ -18,29 +18,29 @@
   "properties": {
     "survey_id": {
       "description": "The CAS digest of the record's canonical bytes.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "head": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/commit"
     },
     "cutoff_unix_s": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
     },
     "completeness": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/completeness"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/completeness"
     },
     "policy_digest": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "surveyor_version": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
     },
     "refs_digest": {
       "description": "The Survey's `identity.refs_digest`.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "previous_survey_id": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "recorded_unix_ms": {
       "$ref": "urn:af:schema:project-registered:1#/$defs/unix_ms"

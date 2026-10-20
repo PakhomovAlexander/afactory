@@ -184,7 +184,7 @@ unchanged.
 
 ### 3.3 Surveys
 
-A Survey is `af/ProjectSurvey@1` (`@2` once PJ5 adds `activity`): one canonical JSON record, numbers as decimal strings like
+A Survey is `af/ProjectSurvey@2` (`@1`, written before `stopped_record`, is refused as a superseded version; `@3` once PJ5 adds `activity`): one canonical JSON record, numbers as decimal strings like
 every other kernel record, a share being its population's basis points rounded down (`3333`
 for one third, `0` for an empty population), with these sections. Every section carries `completeness`
 (`complete`, `partial`, `unavailable`) and a reason when it is not complete; the Survey's own
@@ -472,7 +472,7 @@ A rendered `orient` for afactory at bf027de6, abridged:
 | Command | Does |
 |---|---|
 | `af project show [--json]` | Identity, name, the Workspaces, the newest Survey's summary and age, the last refresh outcome. `--json` is `af/project@1` while the Survey summary, age and refresh outcome are text only, and `af/project@2` the day they enter the document (ADR-0145). |
-| `af project survey [--id ID] [--section NAME…] [--json]` | The newest Survey, or the one named; text renders one table per section and `--section` picks sections of the text form only. `--json` is the complete `af/ProjectSurvey@1` record unchanged; `--section` with `--json` is usage error 2. |
+| `af project survey [--id ID] [--section NAME…] [--json]` | The newest Survey, or the one named; text renders one table per section and `--section` picks sections of the text form only. `--json` is the complete `af/ProjectSurvey@2` record unchanged; `--section` with `--json` is usage error 2. |
 | `af project refresh [--json]` | Run the Surveyor now and wait. `--detached` is the internal form the post-run spawn uses. |
 | `af project history [--json]` | The Survey chain: ID, head, cutoff, completeness, bytes. |
 | `af project brief [--variant NAME] [--survey ID] [--json]` | The exact bytes the `project` port would carry, token-free; `--json` prints `af/project-brief-preview@1`: the Brief's artifact ID, the Brief payload unchanged and the manifest entry, or the `none` outcome with its reason (variant `none`, no Survey). |
@@ -496,9 +496,9 @@ ADR-0145: a later shape change is a new version.
 | `ProjectRegistered@1` | Project Store | Project ID, `repository_id`, name, `min_af` |
 | `WorkspaceRegistered@1`, `WorkspaceRemoved@1` | Project Store | Workspace ID, label, origin; never a path |
 | `SurveyRecorded@1`, `SurveyFailed@1`, `SurveyCollected@1` | Project Store | Survey artifact ID, head, cutoff, completeness; or the failure reason; or the tombstone summary |
-| `af/ProjectSurvey@1` | Project Store CAS | §3.3 |
+| `af/ProjectSurvey@2` | Project Store CAS | §3.3 |
 | `af/ProjectBrief@1` | Task Store CAS | §3.5 |
-| `af/project@N`, `af/project-workspaces@N`, `af/project-tasks@1` | `--json` documents | the projections `af project` prints; every package that changes a typed shape bumps its version (ADR-0145 clause 2), writers, readers, schemas and parity fixtures moving together and the superseded version refused: `af/project` when Survey fields enter it, `af/project-workspaces` to `@2` when PJ5 adds Tasks and spend, `af/ProjectSurvey` to `@2` when PJ5 adds `activity`, and `af/storage` to `@3` and the prune document to `@2` when PJ2 adds the `survey` entry kind, while `af/TaskStorageSweep@1` keeps its kinds and counts Survey removals in `omitted_removals` (ADR-0152 clause 13) |
+| `af/project@N`, `af/project-workspaces@N`, `af/project-tasks@1` | `--json` documents | the projections `af project` prints; every package that changes a typed shape bumps its version (ADR-0145 clause 2), writers, readers, schemas and parity fixtures moving together and the superseded version refused: `af/project` when Survey fields enter it, `af/project-workspaces` to `@2` when PJ5 adds Tasks and spend, `af/ProjectSurvey` to `@3` when PJ5 adds `activity` (`@2` since PJ2 added `stopped_record`), and `af/storage` to `@3` and the prune document to `@2` when PJ2 adds the `survey` entry kind, while `af/TaskStorageSweep@1` keeps its kinds and counts Survey removals in `omitted_removals` (ADR-0152 clause 13) |
 | `workspaces.toml` | beside the Project Store | machine-local paths, best effort, like `stores.toml` |
 
 ### 3.8 Configuration
@@ -635,7 +635,7 @@ layout test still passes; `af --help` and `af project --help` stay under 50 ms.
 
 ### PJ2 — Survey and Surveyor
 
-Deliverables: `af/ProjectSurvey@1` with `identity`, `tree`, `history`, `contributors`,
+Deliverables: `af/ProjectSurvey@2` with `identity`, `tree`, `history`, `contributors`,
 `decisions`, `vocabulary` and `checks`; the Surveyor operator with its bounds, every git subprocess under the
 minimum of its own limit and the remaining Survey time with its process group terminated at the
 deadline, the digest-only capture path for the Tree Digest (ADR-0152 clause 9 amended to it),

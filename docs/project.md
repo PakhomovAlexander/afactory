@@ -326,6 +326,7 @@ deletes the record either.
 | `inspected` | The checkout's path holds the recorded identity (nothing there: gone; another directory: kept, and the command refused). The entry's `gitdir` names the checkout and the entry holds no `locked`, before the checkout is claimed and before the entry is. |
 | `container` | Nothing is proved: a directory found under the recorded name is reported and left, and the directory counts as `inspected` again. |
 | `contained` | The container is still the one made. The directory is in it by identity, or at its path by identity and moved in only while the container is empty and the entry passes the check above. In the container the checkout is judged again (its entry, its index, its files), and an entry is checked again before it is deleted. With the container gone, as `deleting`. |
+| `contained`, moved (`checkout-moved`, `entry-moved`) | The directory is in its container and its original path is free. A directory found there since the move, after an earlier run's or this one's, is a replacement that stops the removal: the recorded directory stays in its container, nothing is deleted, the record is unchanged and the Workspace stays registered. For an entry: `a new administrative entry appeared at <path> since this removal moved the recorded one; clear it or move the recorded entry back, then run the command again`; for the checkout the same with `a new directory` and `the recorded worktree`. |
 | `deleting` | The directory is in its container by identity (an entry there holding no `locked`, and any `gitdir` still there naming the checkout) and its deletion finishes. Otherwise its path decides: the recorded identity there is the directory moved back, claimed and judged again from the start; another directory is a replacement, kept and reported, and the Workspace stays registered; only when neither holds the recorded identity is it deleted. |
 | `deleted` | Its container goes only while it is the one made and empty; a directory at the checkout's path is kept and reported. |
 | `done` | Nothing. |
@@ -369,7 +370,7 @@ af task deliver TASK_ID --workspace research --branch af/TASK_ID --worktree ../T
 ## Surveys
 
 A **Survey** is one kernel-measured description of the Project at its head, the record
-`af/ProjectSurvey@1` ([schema](../schemas/project-survey-v1.json)) in the Project Store's CAS. The
+`af/ProjectSurvey@2` ([schema](../schemas/project-survey-v2.json)) in the Project Store's CAS. The
 **Surveyor** records one at `af onboard --apply` and on `af project refresh`, synchronously, and
 spends no token: the kernel counts, and a model never writes a number
 ([ADR-0132](adr/0132-measure-and-compare-source-candidates-in-the-kernel.md)). It reads the head
@@ -680,7 +681,22 @@ names a record of at most `max_survey_bytes`' ceiling. A crash between the bytes
 leaves the entry, with the object's identity once it was recorded, so the record no event names
 is never lost to inventory. The next refresh that measures the same bytes (the same Survey ID)
 finishes that publication and clears the entry; an entry of another Survey is left for
-collection. The entry is never in the repository or the log.
+collection. The entry is never in the repository or the log. A retry never discards the
+identity an earlier attempt recorded: an entry that already names an object is kept unrewritten,
+and the publication goes on only while the file at the Survey's CAS name is that object (its
+device, inode and length), else it is refused and the entry left for collection to reclaim that
+object; the entry is rewritten only once the bytes are linked and verified to be that file. The
+writer opens `pending-surveys` as collection's reader does, beneath the Project Store without
+following a link, and refuses one that is a symbolic link, not a directory, on another device or
+owned by another user than the Store, naming its path (`<store>/pending-surveys is refused: it is
+a symbolic link or not a directory, …`); it never writes through a link.
+
+The refresh takes `project.lock` with a bounded wait: it tries the lock until the Survey's
+`max_wall_ms` deadline (at least once), at the registration `af project refresh` makes first and
+at both openings of the Survey, and a lock another process holds past it stops the refresh with
+the bounded failure `store_locked` (`the Project Store is locked (store_locked): …`), exit 1.
+That `SurveyFailed@1` is appended through the log alone, without the lock, since the holder
+keeps it; the event names no CAS object and changes nothing the holder reads or writes.
 
 An example, from the integration test's fixture repository
 (`crates/af/tests/it/project_survey.rs`), not from afactory:
@@ -709,8 +725,18 @@ option of the text alone, printing the summary's first lines and the named secti
 record order, and `--section` with `--json` is usage error 2. It exits 1, naming `af project
 refresh`, when the Project has none. `af project history` lists the Survey chain newest first,
 each Survey's ID, recording time, head, cutoff and completeness; `--json` prints
-`af/project-history@1` ([schema](../schemas/project-history-v1.json)). Each Survey names the one
+`af/project-history@2` ([schema](../schemas/project-history-v2.json)). Each Survey names the one
 before it as `previous_survey_id`.
+
+A record of the superseded `af/ProjectSurvey@1`, which an earlier build wrote before the record
+gained `stopped_record`, is refused by its label and never read
+([ADR-0145](adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)):
+`af project history` lists it by its ID and recording time as `unreadable: superseded version`,
+with none of its event's other fields (`--json`: `"unreadable": "superseded version"` in place of
+`head`, `cutoff_unix_s` and `completeness`), `af project show` says the newest Survey is so, `af
+project survey` refuses it naming the version, and a refresh never reuses it and records a Survey
+of this release after it. Nothing deletes it for its version; the Storage Budget collects it like
+any record that is no Survey, with an `unreadable` tombstone, under its usual rules.
 
 No Survey event's fields are printed or used unverified. Before it prints anything, `af project
 history` binds every `SurveyRecorded@1` of the chain to the record it names, or a collected
@@ -734,8 +760,8 @@ af project history --json | jq -r '.surveys[].survey_id'
 ```
 
 `af project show` prints the newest Survey's summary below the Workspaces, or the reason of the
-newest `SurveyFailed@1` when no Survey was recorded after it. Its `--json` document,
-`af/project@1`, is unchanged.
+newest `SurveyFailed@1` when no Survey was recorded after it, or that the newest Survey is
+`unreadable: superseded version`. Its `--json` document, `af/project@1`, is unchanged.
 
 ### At onboarding
 
@@ -767,6 +793,16 @@ however often it runs. Surveys go only in the Storage Budget's own passes
 Neither takes the newest complete Survey, a Survey of a Project Store whose `project.lock` cannot
 be taken now (a refresh or a plan holds it, or af cannot open it), or a Survey used within the
 hour, so the protected Surveys may exceed `keep_surveys`. The Project's log, `workspaces.toml` and operator files are never reclaimed.
+
+Where the inventory walks Stores it holds to the Store discovery ceilings: it reads the Surveys
+of at most 1,000 Project Stores, in path order, and each Project Store's log through one cursor
+of at most 100,000 rows, 1 MiB per row and 16 MiB over all its rows, each row charged before it
+is decoded. A Project Store past the first ceiling is still measured and kept, and `af storage`
+reports it (`… at most 1000 Project Stores (a Store discovery ceiling, max_stores)`); a log past
+another is not read at all and is reported with that ceiling's name (`max_rows`,
+`max_row_bytes`, `max_buffered_bytes`), so none of its Surveys is listed or collected and every
+one is kept. The 64 MiB per-Store CAS-read budget belongs to the `activity` section, which a
+later package adds.
 
 A collected Survey leaves a `SurveyCollected@1` tombstone in the Project Store's log, the run
 `survey-collection` ([schema](../schemas/project-survey-collected-v1.json)): its ID, head, cutoff,
@@ -850,9 +886,12 @@ the pass records so in `settled.json` beside `project.lock`
 ([`af/ProjectSurveysSettled@1`](../schemas/project-surveys-settled-v1.json)), under the lock,
 after the check found the record's inode and before it is unlinked: the file is replaced whole
 and the Store's directory synced. When that fails, the sync after the rename included, the
-earlier `settled.json` is put back, the record is not unlinked (it goes back to its name, or
-stays where the dead pass left it), and the entry fails with the reason; the Survey stays
-unsettled and the next sweep retries. Every later inventory reads it: a file at that name is
+earlier `settled.json` is put back (the new one removed, when there was none) and that is synced
+too before the pass goes on, the record is not unlinked (it goes back to its name, or stays where
+the dead pass left it), and the entry fails with the reason; the Survey stays unsettled and the
+next sweep retries. When the put-back or its sync fails as well, both failures are reported and
+the Survey is left `unverified settlement`: its record is not deleted, and only a later sweep
+that reads a consistent `settled.json` decides what holds its name. Every later inventory reads it: a file at that name is
 `foreign` even when its bytes hash to the Survey's ID, sweep after sweep, and no sweep deletes
 it.
 
@@ -866,10 +905,15 @@ written, and reclaimed under `recovery` before its entry is cleared, by the prev
 applied sweep alike; any other file at that name is `foreign`. The applied sweep checks the
 device, the inode and the length again under the lock before it deletes, and an object grown,
 truncated or replaced since the inventory fails as `skipped: object changed`, nothing deleted.
-The entry is cleared only once the object it describes is gone: a reclamation stopped after the
-object was renamed into its pass's container and before its unlink leaves the entry, and the
+The entry is cleared only once no file with the inode it describes remains, at its Survey's CAS
+name or in any pass's container; the inode decides, never the length. A reclamation stopped after
+the object was renamed into its pass's container and before its unlink leaves the entry, and the
 next sweep finds the object in that dead pass's container (the same device, inode and length),
-reclaims it under `recovery`, never as `foreign`, then the container, then the entry.
+reclaims it under `recovery`, never as `foreign`, then the container, then the entry. An object
+truncated or grown in place, or moved into a pass's container at another length, is still the
+entry's inode: it is listed `foreign` and never reclaimed, and the entry stays, its clearing
+`failed: … kept: object changed, still present`, until the file is gone; once you delete it, the
+next sweep clears the entry.
 Any object of the Project Store's CAS that no `SurveyRecorded@1`, tombstone or pending entry
 names is `foreign` too: listed with its bytes, counted in the Project Store's, never reclaimed. Anything else under `cas/removing` is listed and left; names
 are read raw, so one that is not UTF-8 is `unreadable_name`, shown lossily in text and in its

@@ -104,7 +104,7 @@ pub use patch::{
 };
 pub use path::{contains_report_path, decode_path, encode_path, is_valid_repo_path};
 pub use project::{
-    ProjectRegisteredPayloadV1, ProjectSurveyV1, SurveyCompletenessV1, SurveyFailedPayloadV1,
+    ProjectRegisteredPayloadV1, ProjectSurveyV2, SurveyCompletenessV1, SurveyFailedPayloadV1,
     SurveyRecordedPayloadV1, WorkspaceOriginV1, WorkspaceRegisteredPayloadV1,
     WorkspaceRemovedPayloadV1,
 };

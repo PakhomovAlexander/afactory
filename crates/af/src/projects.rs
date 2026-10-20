@@ -270,11 +270,98 @@ pub(crate) struct ProjectStore {
     _lock: nix::fcntl::Flock<std::fs::File>,
 }
 
+/// How long a bounded wait for `project.lock` sleeps between two tries.
+const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// How an opening of a Project Store waits for its lock.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Wait {
+    /// Until the holder releases it: registration and the commands that read the Store.
+    Blocking,
+    /// Trying without blocking until this instant, and at least once: a refresh, whose one
+    /// Survey deadline a holder never extends (ADR-0152 clause 2).
+    Until(std::time::Instant),
+}
+
+/// Why a Project Store was not opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Unopened {
+    /// Another process held its lock until the deadline of a bounded wait.
+    Locked,
+    /// Anything else, in af's words.
+    Failed(String),
+}
+
+impl Unopened {
+    /// The message of a failure that is not a bounded wait's.
+    pub(crate) fn message(self) -> String {
+        match self {
+            Unopened::Locked => {
+                "another af process holds the Project Store's lock; run the command again once \
+                 it ends"
+                    .into()
+            }
+            Unopened::Failed(message) => message,
+        }
+    }
+}
+
+impl From<String> for Unopened {
+    fn from(message: String) -> Self {
+        Unopened::Failed(message)
+    }
+}
+
+/// Take `project.lock`, held open as `file`, exclusively: waiting for it, or trying until a
+/// deadline.
+fn take_lock(
+    file: std::fs::File,
+    wait: Wait,
+) -> Result<nix::fcntl::Flock<std::fs::File>, Unopened> {
+    use nix::fcntl::{Flock, FlockArg};
+    let deadline = match wait {
+        Wait::Blocking => {
+            return Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, errno)| {
+                Unopened::Failed(format!("locking the Project Store: {errno}"))
+            });
+        }
+        Wait::Until(deadline) => deadline,
+    };
+    let mut file = file;
+    loop {
+        match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+            Ok(lock) => return Ok(lock),
+            Err((back, nix::errno::Errno::EWOULDBLOCK)) => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return Err(Unopened::Locked);
+                }
+                std::thread::sleep(LOCK_RETRY.min(deadline - now));
+                file = back;
+            }
+            Err((_, errno)) => {
+                return Err(Unopened::Failed(format!(
+                    "locking the Project Store: {errno}"
+                )));
+            }
+        }
+    }
+}
+
 impl ProjectStore {
     /// Open (creating when absent) the Project Store of `project_id` below `state_home`, and
     /// record it in the Store registry so the Storage Budget reaches it.
     pub(crate) fn open(state_home: &Path, project_id: &str) -> Result<Self, String> {
-        let store = Self::open_unrecorded(state_home, project_id)?;
+        Self::open_waiting(state_home, project_id, Wait::Blocking).map_err(Unopened::message)
+    }
+
+    /// [`ProjectStore::open`], waiting for its lock as `wait` says.
+    pub(crate) fn open_waiting(
+        state_home: &Path,
+        project_id: &str,
+        wait: Wait,
+    ) -> Result<Self, Unopened> {
+        let store = Self::open_unrecorded_waiting(state_home, project_id, wait)?;
         crate::storage::registry::record(
             &store.directory,
             crate::storage::registry::StoreKind::Project,
@@ -283,7 +370,17 @@ impl ProjectStore {
     }
 
     /// [`ProjectStore::open`] without the registry, which lives in the machine's own state home.
+    #[cfg(test)]
     fn open_unrecorded(state_home: &Path, project_id: &str) -> Result<Self, String> {
+        Self::open_unrecorded_waiting(state_home, project_id, Wait::Blocking)
+            .map_err(Unopened::message)
+    }
+
+    fn open_unrecorded_waiting(
+        state_home: &Path,
+        project_id: &str,
+        wait: Wait,
+    ) -> Result<Self, Unopened> {
         let directory = store_directory(state_home, project_id);
         std::fs::create_dir_all(&directory)
             .map_err(|error| format!("creating {}: {error}", directory.display()))?;
@@ -293,8 +390,7 @@ impl ProjectStore {
             .write(true)
             .open(directory.join("project.lock"))
             .map_err(|error| error.to_string())?;
-        let lock = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive)
-            .map_err(|(_, errno)| format!("locking the Project Store: {errno}"))?;
+        let lock = take_lock(lock, wait)?;
         let cas = Cas::open(directory.join("cas")).map_err(|error| error.to_string())?;
         let events = EventStore::open(directory.join("events.sqlite"))
             .map_err(|error| format!("the Project Store {}: {error}", directory.display()))?;
@@ -526,7 +622,21 @@ pub(crate) fn register(
     exact: bool,
     paths: WorkspacePaths,
 ) -> Result<(ProjectStore, Registration), String> {
-    let mut store = ProjectStore::open(&crate::xdg_state_root()?, &checkout.project_id)?;
+    register_waiting(checkout, origin, label, exact, paths, Wait::Blocking)
+        .map_err(Unopened::message)
+}
+
+/// [`register`], waiting for the Project Store's lock as `wait` says.
+fn register_waiting(
+    checkout: &Checkout,
+    origin: WorkspaceOriginV1,
+    label: &str,
+    exact: bool,
+    paths: WorkspacePaths,
+    wait: Wait,
+) -> Result<(ProjectStore, Registration), Unopened> {
+    let mut store =
+        ProjectStore::open_waiting(&crate::xdg_state_root()?, &checkout.project_id, wait)?;
     let registration = register_in(&mut store, checkout, origin, label, exact, paths)?;
     Ok((store, registration))
 }
@@ -563,6 +673,15 @@ pub(crate) fn adopt(
     checkout: &Checkout,
     state: Option<&Path>,
 ) -> Result<(ProjectStore, Registration), String> {
+    adopt_waiting(checkout, state, Wait::Blocking).map_err(Unopened::message)
+}
+
+/// [`adopt`], waiting for the Project Store's lock as `wait` says.
+pub(crate) fn adopt_waiting(
+    checkout: &Checkout,
+    state: Option<&Path>,
+    wait: Wait,
+) -> Result<(ProjectStore, Registration), Unopened> {
     let state = match state {
         Some(state) => {
             let state = crate::resolve_filesystem_path(state)?;
@@ -583,7 +702,14 @@ pub(crate) fn adopt(
         bindings: None,
         tasks: None,
     };
-    register(checkout, WorkspaceOriginV1::Adopted, &label, false, paths)
+    register_waiting(
+        checkout,
+        WorkspaceOriginV1::Adopted,
+        &label,
+        false,
+        paths,
+        wait,
+    )
 }
 
 /// What a command that registers lazily registers: the checkout of `repo`, with an explicit
