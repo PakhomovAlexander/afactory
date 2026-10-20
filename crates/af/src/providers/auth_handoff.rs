@@ -7,6 +7,7 @@ use super::*;
 use std::os::unix::fs::FileTypeExt;
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 mod adapter;
 mod guard;
@@ -170,7 +171,8 @@ enum Response {
     Code {
         recovery_id: String,
         requester_ref: String,
-        code: String,
+        /// Zeroed when dropped, on every path: queued, submitted or refused.
+        code: Zeroizing<String>,
     },
     Cancel {
         recovery_id: String,
@@ -549,7 +551,7 @@ impl Host {
         })
     }
 
-    fn send(&mut self, value: &serde_json::Value) -> Result<(), State> {
+    fn send(&mut self, value: &impl Serialize) -> Result<(), State> {
         let mut data = serde_json::to_vec(value).map_err(|_| State::PrivateRouteUnavailable)?;
         data.push(b'\n');
         if data.len() > MAX_MESSAGE {
@@ -576,7 +578,8 @@ impl Host {
 
     fn read<T: for<'de> Deserialize<'de>>(&mut self) -> Result<Option<T>, State> {
         if let Some(end) = self.input.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<u8> = self.input.drain(..=end).collect();
+            // A frame may carry the user's code: its bytes are zeroed once parsed.
+            let line = Zeroizing::new(self.input.drain(..=end).collect::<Vec<u8>>());
             return serde_json::from_slice(&line)
                 .map(Some)
                 .map_err(|_| State::InvalidResponse);
@@ -620,6 +623,9 @@ pub fn begin(
     if !(30..=900).contains(&timeout_secs) {
         return Err("auth timeout must be between 30 and 900 seconds".into());
     }
+    // This owner holds the challenge and the code in memory, and its native login inherits the
+    // core limit.
+    protect_login_memory()?;
     let spec = resolve(id, kind, auth, true)?;
     let auth = spec.auth_dir.as_deref().expect("explicit auth context");
     let storage = Storage::open(auth, spec.kind, true)?;
@@ -746,7 +752,7 @@ fn own(
     let mut native = adapter::NativeLogin::start(spec, lock).map_err(native_failure)?;
     let mut challenge_sent = false;
     let mut completed = false;
-    let mut queued_code: Option<String> = None;
+    let mut queued_code: Option<Zeroizing<String>> = None;
     loop {
         control(spec, lock, storage, session)?;
         if !completed && let Some(event) = native.poll().map_err(native_failure)? {
@@ -759,12 +765,19 @@ fn own(
                         adapter::Mode::DeviceCode => "device_code",
                         adapter::Mode::CodeOrCallback => "code_or_callback",
                     };
-                    host.send(&serde_json::json!({
-                        "schema":HOST_SCHEMA, "action":"challenge", "recovery_id":session.recovery_id,
-                        "provider":session.provider, "requester_ref":session.requester_ref,
-                        "mode":mode, "url":challenge.url, "user_code":challenge.user_code,
-                        "host_deadline":session.host_deadline,
-                    }))?;
+                    // Serialized from borrows, so no copy of the challenge outlives the zeroed
+                    // frame `send` writes and the zeroed `challenge` itself.
+                    host.send(&ChallengeMessage {
+                        schema: HOST_SCHEMA,
+                        action: "challenge",
+                        recovery_id: &session.recovery_id,
+                        provider: &session.provider,
+                        requester_ref: session.requester_ref.as_deref(),
+                        mode,
+                        url: &challenge.url,
+                        user_code: challenge.user_code.as_deref().map(String::as_str),
+                        host_deadline: session.host_deadline,
+                    })?;
                     challenge_sent = true;
                     session.state = State::AwaitingUser;
                     storage.save(session).map_err(|_| State::ContextChanged)?;
@@ -828,6 +841,20 @@ fn own(
         }
         thread::sleep(POLL);
     }
+}
+
+/// The `challenge` frame for the private host, in the field order of the host contract.
+#[derive(Serialize)]
+struct ChallengeMessage<'a> {
+    schema: &'a str,
+    action: &'a str,
+    recovery_id: &'a str,
+    provider: &'a str,
+    requester_ref: Option<&'a str>,
+    mode: &'a str,
+    url: &'a str,
+    user_code: Option<&'a str>,
+    host_deadline: u64,
 }
 
 fn finish(
@@ -935,4 +962,48 @@ fn control(
         return Err(State::Expired);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The code a private host returns is zeroed when dropped, whether it is queued, submitted
+    /// or refused (audit L15); the challenge frame, serialized from borrows so that no copy of
+    /// the challenge is left unzeroed, keeps the host contract's fields and order.
+    #[test]
+    fn the_returned_code_is_zeroed_and_the_challenge_frame_keeps_its_shape() {
+        fn zeroed_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        let response: Response = serde_json::from_str(
+            r#"{"action":"code","recovery_id":"r","requester_ref":"q","code":"ABCD-EFGH"}"#,
+        )
+        .unwrap();
+        let Response::Code { code, .. } = response else {
+            panic!("a code response");
+        };
+        zeroed_on_drop(&code);
+        assert_eq!(code.as_str(), "ABCD-EFGH");
+
+        let frame = ChallengeMessage {
+            schema: HOST_SCHEMA,
+            action: "challenge",
+            recovery_id: "r",
+            provider: "claude-main",
+            requester_ref: Some("q"),
+            mode: "device_code",
+            url: "https://auth.openai.com/codex/device",
+            user_code: None,
+            host_deadline: 7,
+        };
+        assert_eq!(
+            serde_json::to_string(&frame).unwrap(),
+            serde_json::json!({
+                "schema": HOST_SCHEMA, "action": "challenge", "recovery_id": "r",
+                "provider": "claude-main", "requester_ref": "q", "mode": "device_code",
+                "url": "https://auth.openai.com/codex/device", "user_code": null,
+                "host_deadline": 7,
+            })
+            .to_string()
+        );
+    }
 }

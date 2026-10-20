@@ -189,18 +189,20 @@ const TELEMETRY: &str = "\
 Telemetry records what af does while it works, in its own store, never in a Task or Campaign
 Store (ADR-0153). The kernel's execution authority never reads it: identity, replay, the Ledger,
 budgets, admission and every Worker input are the same whether it is on, off or deleted, and
-nothing it captures reaches a prompt. Nothing leaves the machine unless `sink = \"otlp\"` is set.
+nothing it captures reaches a prompt. Nothing leaves the machine: this release has no sink.
 
 Levels
   off       nothing: no directory, no subscriber
   metrics   command, run, gate, check, node, Attempt, harness and sweep spans with identity and
-            numeric attributes; failures; resource use
+            numeric attributes; failures; resource use; the segment header keeps argv[0] and
+            the subcommand path only, and no working directory
   spans     every span and event, the configuration record, the Store commit mirror and Finding
             summaries; sizes and digests of content, never the content (the default)
   content   spans plus content blobs: Worker inputs, assistant text, reasoning, tool arguments
-            and results, check output (perturbing: not bounded by the overhead gate)
+            and results, check output (perturbing: it keeps that content)
 
-Credential-looking material is withheld at every level, before any bound cuts it: a line that
+Credential-looking material is withheld at every level by a bounded heuristic (not a promise to
+recognise every secret), before any bound cuts it: a line that
 looks like a credential becomes `[line withheld: looks like credential material]`, a JSON member
 named like a secret keeps its key and loses its value (`[withheld]`), a configuration row whose
 key is named like a secret or itself looks like a credential loses its value and origin (and
@@ -226,7 +228,8 @@ the key:
   dir = \"\"                             default $XDG_STATE_HOME/af/telemetry; an absolute path
                                        that neither contains nor lies inside a Store, a cache
                                        or another telemetry directory
-  max_bytes = \"4GiB\"                   256MiB to [storage] max_bytes; counted in the budget
+  max_bytes = \"4GiB\"                   256MiB to [storage] max_bytes; advisory on this release:
+                                       status warns when over, nothing removes telemetry
   flush_bytes = \"64KiB\"                4KiB to 16MiB: the buffer written in one write
   flush_latency_ms = 1000              50 to 10000: the longest a record waits while a run is open
   observer_queue_bytes = \"4MiB\"        256KiB to 64MiB: the stream queue; full, it drops chunks
@@ -241,10 +244,11 @@ the key:
   content_model_bodies = true          keep raw API bodies at content
   content_index = true                 maintain the full-text index over text blobs
   harness_native = false               receive the harness's own telemetry on loopback
-  sink = \"none\"                        none | otlp: push after each run
-  sink_endpoint = \"\"                   an http:// or https:// URL; required with otlp only
-  sink_headers_file = \"\"               one `Name: value` per line, read at push time
-  sink_timeout_ms = 5000               100 to 60000
+  sink = \"none\"                        none: no sink exists; otlp is refused, not implemented
+                                       in this release
+  sink_endpoint = \"\"                   reserved: a value is refused, not implemented
+  sink_headers_file = \"\"               reserved: a value is refused, not implemented
+  sink_timeout_ms = 5000               100 to 60000; reserved
 
 Layout
   $XDG_STATE_HOME/af/telemetry/v1/segments/   one JSONL segment per process: live under its

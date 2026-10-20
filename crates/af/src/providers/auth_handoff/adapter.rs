@@ -7,6 +7,8 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
+use zeroize::Zeroizing;
+
 use super::super::{
     BoundDirectoryLock, ProviderKind, ProviderSpec, sanitized_path, set_nonblocking, stop_probe,
     validate_private_auth_directory,
@@ -22,10 +24,11 @@ pub(super) enum Mode {
     CodeOrCallback,
 }
 
+/// Login challenge material, zeroed when dropped (audit L15).
 pub(super) struct Challenge {
     pub mode: Mode,
-    pub url: String,
-    pub user_code: Option<String>,
+    pub url: Zeroizing<String>,
+    pub user_code: Option<Zeroizing<String>>,
 }
 
 pub(super) enum Event {
@@ -379,8 +382,8 @@ impl Codex {
         self.challenge = true;
         Ok(Some(Event::Challenge(Challenge {
             mode: Mode::DeviceCode,
-            url: CODEX_DEVICE_URL.into(),
-            user_code: Some(code),
+            url: Zeroizing::new(CODEX_DEVICE_URL.into()),
+            user_code: Some(Zeroizing::new(code)),
         })))
     }
 }
@@ -445,7 +448,7 @@ struct Claude {
     native_success: bool,
     challenge: bool,
     submitted: bool,
-    pending_url: Option<String>,
+    pending_url: Option<Zeroizing<String>>,
     pending_ready: bool,
 }
 
@@ -577,7 +580,7 @@ impl Claude {
             return Ok(None);
         }
         self.native_success = !tail.is_empty();
-        let url = url.to_owned();
+        let url = Zeroizing::new(url.to_owned());
         output.fill(0);
         output.clear();
         self.challenge = true;
@@ -613,7 +616,7 @@ impl Claude {
                 return Err(Failure::InvalidChallenge);
             }
             validate_url(ProviderKind::Claude, url)?;
-            self.pending_url = Some((*url).to_string());
+            self.pending_url = Some(Zeroizing::new((*url).to_string()));
             self.pending_ready = hyperlink;
         } else if code_prompt(record) {
             self.pending_ready = self.pending_url.is_some();
@@ -855,8 +858,14 @@ mod tests {
             panic!("expected a challenge");
         };
         assert!(challenge.mode == Mode::DeviceCode);
-        assert_eq!(challenge.url, "https://auth.openai.com/codex/device");
-        assert_eq!(challenge.user_code.as_deref(), Some("TEST-CODE"));
+        assert_eq!(
+            challenge.url.as_str(),
+            "https://auth.openai.com/codex/device"
+        );
+        assert_eq!(
+            challenge.user_code.as_deref().map(String::as_str),
+            Some("TEST-CODE")
+        );
         assert!(output.is_empty());
         assert!(matches!(protocol.consume(&mut output, None), Ok(None)));
         assert!(matches!(
@@ -969,7 +978,10 @@ mod tests {
             else {
                 panic!("expected a bounded code");
             };
-            assert_eq!(challenge.user_code.as_deref(), Some(code));
+            assert_eq!(
+                challenge.user_code.as_deref().map(String::as_str),
+                Some(code)
+            );
         }
     }
 
@@ -1062,7 +1074,7 @@ mod tests {
             };
             assert!(challenge.mode == Mode::CodeOrCallback);
             assert_eq!(
-                challenge.url,
+                challenge.url.as_str(),
                 "https://claude.ai/oauth/authorize?state=synthetic"
             );
             assert!(challenge.user_code.is_none());
@@ -1204,7 +1216,7 @@ mod tests {
         assert!(challenge.mode == Mode::CodeOrCallback);
         assert!(challenge.user_code.is_none());
         assert_eq!(
-            challenge.url,
+            challenge.url.as_str(),
             "https://claude.ai/oauth/authorize?state=synthetic&challenge=sms"
         );
         assert!(output.is_empty());
@@ -1224,7 +1236,7 @@ mod tests {
                 panic!("expected a complete hyperlink");
             };
             assert_eq!(
-                challenge.url,
+                challenge.url.as_str(),
                 "https://claude.com/oauth/authorize?state=synthetic"
             );
         }
@@ -1312,7 +1324,7 @@ mod tests {
             panic!("expected a complete URL");
         };
         assert_eq!(
-            challenge.url,
+            challenge.url.as_str(),
             "https://claude.ai/oauth/authorize?state=partial-complete"
         );
     }
@@ -1476,5 +1488,22 @@ mod tests {
         assert!(login.stopped);
         assert!(login.output.is_empty());
         assert_eq!(format!("{:?}", Failure::OutputLimit), "OutputLimit");
+    }
+
+    /// Challenge material is zeroed when dropped (audit L15): both strings are `Zeroizing`, and
+    /// zeroing one, as its drop does, leaves nothing of the material.
+    #[test]
+    fn challenge_material_is_zeroed_on_drop() {
+        fn zeroed_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        let challenge = Challenge {
+            mode: Mode::DeviceCode,
+            url: Zeroizing::new(CODEX_DEVICE_URL.into()),
+            user_code: Some(Zeroizing::new("ABCD-EFGH".into())),
+        };
+        zeroed_on_drop(&challenge.url);
+        zeroed_on_drop(challenge.user_code.as_ref().unwrap());
+        let mut code = challenge.user_code.unwrap();
+        zeroize::Zeroize::zeroize(&mut *code);
+        assert!(code.is_empty());
     }
 }

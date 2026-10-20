@@ -1417,7 +1417,8 @@ pub(crate) enum TelemetryCommand {
     #[command(
         long_about = "The level, the directory, its bytes, segments, runs, the index and every problem.\n\n\
 Prints the configured `[telemetry] level`; the telemetry directory and its allocated bytes, in \
-total against `[telemetry] max_bytes` and per entry (each segment with its manifest, the blobs, \
+total against `[telemetry] max_bytes` (advisory on this release: a warning on stderr when over \
+it, and nothing removes telemetry to meet it) and per entry (each segment with its manifest, the blobs, \
 the index with its WAL and shared memory, temporary files, locks, and `unrecognized`: every \
 other path beneath the directory, a symbolic link included, counted once, named up to 16, never \
 read, followed or removed, so the total is every allocated byte beneath it), each sealed segment \
@@ -1434,7 +1435,7 @@ another telemetry version such as `v0/`, never read; a segment with an invalid l
 valid one or a line over the 16 KiB record bound, never indexed); and every telemetry directory \
 registered on this machine, with its overlap rechecked: `none`, `overlapping`, or `unknown` when \
 the Store registry cannot be read (the problem is named among the problems and the exit code is \
-unchanged).\n\n\
+unchanged). Paths under the home directory are written `~/…`, under `--json` too.\n\n\
 Never: recovers or removes a segment, records telemetry, reads a Store, reads around an index of \
 another schema version, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the telemetry directory cannot be read or its index is of another \

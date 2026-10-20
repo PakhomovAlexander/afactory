@@ -51,11 +51,19 @@ bounded memory. A separate lifetime guard retains the native auth-context lock u
 process group is stopped, including when the coordinating af process dies. Durable recovery
 state contains no challenges or account identities. The host is responsible for authenticating
 the requesting human and private delivery; same-user host compromise is outside this boundary.
-Generic `setup --login` remains terminal-only. See [the host contract](docs/provider-auth-host.md).
+Generic `setup --login` remains terminal-only. That check prevents accidental capture of the
+OAuth URL and code by a pipe, CI or a tool call without a terminal; a caller that holds a
+pseudo-terminal is indistinguishable from a human and is out of its scope, which the private-host
+protocol exists for ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md), amended
+2026-10-20). Login processes disable core dumps (and are non-dumpable on Linux), and challenge and
+code strings are zeroed when dropped. See [the host contract](docs/provider-auth-host.md).
 
 Recognized authentication failures and obvious credential-bearing failed native output are
 replaced with a closed summary before capture; exact parsed usage remains separate. This is a
 bounded auth-error policy, not a promise to identify every secret in arbitrary successful output.
+The same bounded credential heuristic judges Provider-authored diagnostic lines and telemetry
+text ([docs/providers.md](docs/providers.md) lists its rules); granted paths are replaced in every
+spelling it knows (home-relative, canonical, JSON-escaped, percent-encoded, non-normalised).
 
 **Git never runs your hooks or your config.** Snapshot capture invokes `git` with
 `env_clear()`, `core.hooksPath=/dev/null`, `core.fsmonitor=false`, and

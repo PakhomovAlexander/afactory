@@ -138,6 +138,8 @@ pub(crate) fn supervise_early(argv: &[String]) -> Option<i32> {
         if argv.len() != 8 || argv[4] != "--kind" || argv[6] != "--auth-dir" {
             return Err(());
         }
+        // The relay holds challenge bytes, and the native login inherits the core limit.
+        super::super::protect_login_memory().map_err(|_| ())?;
         let kind = ProviderKind::parse(&argv[5]).map_err(|_| ())?;
         let auth_dir = Path::new(&argv[7]);
         if !auth_dir.is_absolute() {
