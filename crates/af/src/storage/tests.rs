@@ -43,6 +43,7 @@ fn policy(max_bytes: u64) -> StoragePolicy {
         keep_days: 14,
         keep_tasks: 20,
         keep_campaigns: 20,
+        keep_surveys: 50,
         keep_worker_transcripts: false,
         keep_gate_pull_requests: false,
     }

@@ -2,15 +2,15 @@
 //! a free-disk floor below which no check or Worker Attempt starts, and `af storage`.
 //!
 //! The budget counts entries — the unit af evicts whole: a warm toolchain key, a warm
-//! Workspace, a review campaign, a finished Task, a Store this release cannot replay, an
-//! installed version. One sweep serves every trigger: the end of `af task run` and `af review
-//! run` (the budget; age-based collection too only when `auto_gc` is on, which it is not by
-//! default), a warm check about to create a new key (budget only),
+//! Workspace, a review campaign, a finished Task, a Survey (ADR-0152 clause 13), a Store this
+//! release cannot replay, an installed version. One sweep serves every trigger: the end of `af
+//! task run` and `af review run` (the budget; age-based collection too only when `auto_gc` is
+//! on, which it is not by default), a warm check about to create a new key (budget only),
 //! the free-disk floor, and `af storage prune --apply`. It never evicts an entry in use (a held
 //! lock, a live writer lease, a running campaign, the default or a pinned version, the running
 //! binary) or one used within the last hour, and it removes nothing without going through the
-//! rule that owns it: finished Tasks through the Store's own collection, so tombstones stay;
-//! directories without following a link.
+//! rule that owns it: finished Tasks through the Store's own collection and Surveys behind their
+//! `SurveyCollected@1`, so tombstones stay; directories without following a link.
 
 pub(crate) mod gate;
 mod hint;
@@ -111,9 +111,12 @@ pub(crate) enum Kind {
     /// What a Task Store holds beyond its finished Tasks: never evicted itself; its Tasks are,
     /// one at a time.
     TaskStore,
-    /// A Project Store (ADR-0151) beyond the Task Stores of its Workspaces: never evicted, since
-    /// it indexes the Project's Workspaces.
+    /// A Project Store (ADR-0151) beyond the Task Stores of its Workspaces and its Surveys:
+    /// never evicted, since it indexes the Project's Workspaces.
     ProjectStore,
+    /// One Survey's record in its Project Store's CAS (ADR-0152 clause 13), last used at its
+    /// cutoff: collected one at a time behind a tombstone.
+    Survey,
     UnreadableStore,
     Version,
     /// A removal a process that died left claimed under a private name: never inventoried, only
@@ -122,13 +125,14 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    const ALL: [Kind; 8] = [
+    const ALL: [Kind; 9] = [
         Kind::WarmKey,
         Kind::Workspace,
         Kind::Campaign,
         Kind::Task,
         Kind::TaskStore,
         Kind::ProjectStore,
+        Kind::Survey,
         Kind::UnreadableStore,
         Kind::Version,
     ];
@@ -141,6 +145,7 @@ impl Kind {
             Kind::Task => "task",
             Kind::TaskStore => "task_store",
             Kind::ProjectStore => "project_store",
+            Kind::Survey => "survey",
             Kind::UnreadableStore => "unreadable_store",
             Kind::Version => "version",
             Kind::Claim => "claim",
@@ -155,6 +160,7 @@ impl Kind {
             Kind::Task => "finished Tasks",
             Kind::TaskStore => "Task Stores (rest)",
             Kind::ProjectStore => "Project Stores",
+            Kind::Survey => "Surveys",
             Kind::UnreadableStore => "unreadable Stores",
             Kind::Version => "installed versions",
             Kind::Claim => "finished removals",
@@ -309,7 +315,7 @@ fn modified_ms(path: &Path) -> Option<u64> {
 
 /// Whether some process holds the advisory lock of the file at `path`: it cannot be locked
 /// exclusively right now. Taking it changes nothing about the file.
-fn lock_held(path: &Path) -> bool {
+pub(crate) fn lock_held(path: &Path) -> bool {
     let Ok(file) = std::fs::File::open(path) else {
         return false;
     };
@@ -701,6 +707,7 @@ fn project_store(inventory: &mut Inventory, path: &Path) {
                     .fold(0, u64::saturating_add);
                 entry.bytes = entry.bytes.saturating_sub(below);
             }
+            surveys_into(inventory, path);
         }
         Err(reason) => inventory.problems.push(Problem {
             path: path.to_path_buf(),
@@ -919,6 +926,7 @@ pub(crate) fn sweep(
             });
         }
         report.failures.extend(left);
+        finish_collected_surveys(roots, &mut report);
     }
     match drop_gone_registrations(roots, apply) {
         Ok(dropped) => report.registry_dropped = dropped,
@@ -1278,6 +1286,7 @@ fn collect(
         !(matches!(entry.kind, Kind::Campaign | Kind::UnreadableStore)
             && taken.contains(&entry.path))
     });
+    collect_surveys(policy, stock, now, apply, report);
 }
 
 /// Remove one entry through the rule that owns it. Returns the bytes removed.
@@ -1397,6 +1406,7 @@ fn evict(
         }
         Kind::TaskStore => Err(failed("a Task Store is never removed whole".into())),
         Kind::ProjectStore => Err(failed("a Project Store is never evicted".into())),
+        Kind::Survey => evict_survey(stock, entry).map_err(failed),
         Kind::Claim => Err(failed(
             "a claim is finished by recovery, never evicted".into(),
         )),
@@ -1542,7 +1552,8 @@ pub(crate) fn observation(
                 Kind::UnreadableStore => StorageSweepKindV1::UnreadableStore,
                 Kind::Version => StorageSweepKindV1::Version,
                 Kind::Claim => StorageSweepKindV1::Claim,
-                Kind::TaskStore | Kind::ProjectStore => return None,
+                // A Survey's removal has no kind in `af/TaskStorageSweep@1`: counted, not listed.
+                Kind::TaskStore | Kind::ProjectStore | Kind::Survey => return None,
             };
             let path = removal.path.to_str()?.to_string();
             (path.len() <= MAX_SWEEP_PATH_BYTES && !path.chars().any(char::is_control)).then(|| {
@@ -2035,7 +2046,7 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
     let total = stock.total();
     if json_output {
         let document = json!({
-            "schema": "af/storage@2",
+            "schema": "af/storage@3",
             "max_bytes": policy.max_bytes,
             "total_bytes": total,
             "min_free_bytes": policy.min_free_bytes,
@@ -2126,7 +2137,7 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
     let report = sweep(&roots, &policy, true, apply);
     if json_output {
         let mut document = serde_json::to_value(&report).map_err(|e| e.to_string())?;
-        document["schema"] = json!("af/storage-prune@1");
+        document["schema"] = json!("af/storage-prune@2");
         println!(
             "{}",
             serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?
@@ -2185,6 +2196,163 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
         }
     );
     Ok(0)
+}
+
+/// The Surveys of the readable Project Store at `path` (ADR-0152 clause 13): one entry of kind
+/// `survey` each, its record's CAS bytes, last used at its cutoff, taken out of the Project
+/// Store's own bytes. The Store's identity is recorded as a registered Task Store's is, so a
+/// Survey's collection reaches only the directory inventory measured.
+fn surveys_into(inventory: &mut Inventory, path: &Path) {
+    let surveys = match crate::projects::survey::collect::inventory(path) {
+        Ok(surveys) => surveys,
+        Err(reason) => {
+            inventory.problems.push(Problem {
+                path: path.to_path_buf(),
+                reason: format!("its Surveys cannot be listed, so they are kept: {reason}"),
+            });
+            return;
+        }
+    };
+    let reached = plain_path(Path::new("/"), path);
+    match &reached {
+        Ok(identity) => {
+            inventory
+                .store_identities
+                .insert(path.to_path_buf(), (PathBuf::from("/"), *identity));
+        }
+        Err(reason) => inventory.problems.push(Problem {
+            path: path.to_path_buf(),
+            reason: reason.clone(),
+        }),
+    }
+    let bytes = surveys
+        .iter()
+        .map(|survey| survey.bytes)
+        .fold(0, u64::saturating_add);
+    if let Some(entry) = inventory
+        .entries
+        .iter_mut()
+        .rev()
+        .find(|entry| entry.kind == Kind::ProjectStore && entry.path == path)
+    {
+        entry.bytes = entry.bytes.saturating_sub(bytes);
+    }
+    for survey in surveys {
+        let in_use = match &reached {
+            Ok(_) => survey.in_use,
+            Err(_) => Some("its Project Store cannot be reached without a link".into()),
+        };
+        inventory.entries.push(Entry {
+            kind: Kind::Survey,
+            path: survey.object,
+            task_id: None,
+            bytes: survey.bytes,
+            last_use_unix_ms: survey.last_use_unix_ms,
+            in_use,
+            reason: None,
+            identity: None,
+        });
+    }
+}
+
+/// The collection pass's Surveys: per Project, those beyond the newest `[storage]
+/// keep_surveys`, oldest first, idle at least `keep_days`, never the newest complete one or one
+/// its Project Store's lock holds (ADR-0152 clause 13).
+fn collect_surveys(
+    policy: &StoragePolicy,
+    stock: &mut Inventory,
+    now: u64,
+    apply: bool,
+    report: &mut SweepReport,
+) {
+    let idle_ms = policy.keep_days.saturating_mul(DAY_MS);
+    let projects: Vec<PathBuf> = stock
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == Kind::ProjectStore)
+        .map(|entry| entry.path.clone())
+        .collect();
+    let mut taken = BTreeSet::new();
+    for project in projects {
+        if apply && let Err(why) = stock.still_the_store(&project) {
+            report.failures.push(format!(
+                "collecting the Surveys of {}: {why}",
+                project.display()
+            ));
+            continue;
+        }
+        match crate::projects::survey::collect::collect_beyond_limit(
+            &project,
+            policy.keep_surveys,
+            idle_ms,
+            now,
+            apply,
+        ) {
+            Ok(collected) => {
+                for (object, bytes) in collected {
+                    report.removals.push(Removal {
+                        kind: Kind::Survey,
+                        path: object.clone(),
+                        task_id: None,
+                        bytes,
+                        rule: Rule::Collection,
+                    });
+                    taken.insert(object);
+                }
+            }
+            Err(error) => report.failures.push(format!(
+                "collecting the Surveys of {}: {error}",
+                project.display()
+            )),
+        }
+    }
+    stock
+        .entries
+        .retain(|entry| !(entry.kind == Kind::Survey && taken.contains(&entry.path)));
+}
+
+/// The budget's eviction of one Survey: only from the Project Store inventory reached, through
+/// its tombstone and deletion, its protection read again under the Store's lock.
+fn evict_survey(stock: &Inventory, entry: &Entry) -> Result<u64, String> {
+    let (project, survey_id) = crate::projects::survey::collect::survey_of_object(&entry.path)
+        .ok_or("names no Survey of a Project Store")?;
+    stock.still_the_store(&project)?;
+    crate::projects::survey::collect::collect_one(&project, &survey_id)
+}
+
+/// Finish the Survey collections an interruption left between a tombstone and its deletion, in
+/// every registered Project Store reached without a link: counted and reported like a claim's
+/// recovery.
+fn finish_collected_surveys(roots: &Roots, report: &mut SweepReport) {
+    let Ok(registered) = registry::read(&roots.registry) else {
+        return;
+    };
+    for entry in registered
+        .iter()
+        .filter(|entry| entry.kind == StoreKind::Project && has_store(&entry.path))
+    {
+        if plain_path(Path::new("/"), &entry.path).is_err() {
+            continue;
+        }
+        match crate::projects::survey::collect::finish_collected(&entry.path) {
+            Ok(finished) => {
+                for (object, bytes) in finished {
+                    report.total_before = report.total_before.saturating_add(bytes);
+                    report.removals.push(Removal {
+                        kind: Kind::Survey,
+                        path: object,
+                        task_id: None,
+                        bytes,
+                        rule: Rule::Recovery,
+                    });
+                }
+            }
+            Err(error) => report.failures.push(format!(
+                "finishing the Survey collections of {}: {error}",
+                entry.path.display()
+            )),
+        }
+    }
 }
 
 /// The kinds and totals of an inventory, by kind, for a caller that only needs bytes.

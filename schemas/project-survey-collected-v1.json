@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-survey-collected:1",
+  "title": "SurveyCollected@1",
+  "description": "A Project Store event (ADR-0152 clause 13): the tombstone of a Survey the Storage Budget collected, appended before its record leaves the Store's CAS. A `SurveyRecorded@1` whose Survey a tombstone names replays as collected, and `af project history` answers for it from the tombstone. `tree` and `history` keep the record's totals; each is absent when the record held no such section or could not be read.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "survey_id",
+    "head",
+    "cutoff_unix_s",
+    "completeness",
+    "collected_unix_ms"
+  ],
+  "properties": {
+    "survey_id": {
+      "description": "The CAS digest the collected record had.",
+      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+    },
+    "head": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+    },
+    "cutoff_unix_s": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+    },
+    "completeness": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/completeness"
+    },
+    "tree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "files",
+        "bytes",
+        "lines"
+      ],
+      "properties": {
+        "files": {
+          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+        },
+        "bytes": {
+          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+        },
+        "lines": {
+          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+        }
+      }
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commits",
+        "merges"
+      ],
+      "properties": {
+        "commits": {
+          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+        },
+        "merges": {
+          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+        }
+      }
+    },
+    "collected_unix_ms": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/unix_ms"
+    }
+  }
+}

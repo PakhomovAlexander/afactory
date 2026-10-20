@@ -489,6 +489,47 @@ with an unchanged survey key records nothing and prints its `unchanged:` line.
 Surveys stay in the Project Store; collecting old ones behind a tombstone comes with the detached
 after-run refresh in a later package.
 
+### Collection
+
+Every Survey is an entry of kind `survey` of the machine budget: `af storage` lists it with its
+record's CAS bytes, its path the CAS object, and its cutoff as its last use, and `--json` prints
+`af/storage@3` ([schema](../schemas/storage-v3.json)). `af project refresh` collects nothing,
+however often it runs. Surveys go only in the Storage Budget's own passes
+([ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md)):
+
+- `af storage prune --apply`, and the sweep after a run when `[storage] auto_gc = true`, collect
+  the Surveys of each Project beyond the newest `[storage] keep_surveys` (50; machine layers only,
+  `AF_STORAGE__KEEP_SURVEYS`), oldest first, each idle at least `keep_days`;
+- every sweep's budget step may take any Survey, least recently used first among every entry,
+  while af holds more than `max_bytes`, even below `keep_surveys`.
+
+Neither takes the newest complete Survey, a Survey of a Project Store whose `project.lock` a
+refresh or a plan holds, or a Survey used within the hour, so the protected Surveys may exceed
+`keep_surveys`. The Project's log, `workspaces.toml` and operator files are never reclaimed.
+
+A collected Survey leaves a `SurveyCollected@1` tombstone in the Project Store's log, the run
+`survey-collection` ([schema](../schemas/project-survey-collected-v1.json)): its ID, head, cutoff,
+completeness and the totals of `tree` (files, bytes, lines) and `history` (commits, merges). The
+tombstone is appended before the record is deleted, and the next applied sweep deletes any record
+a tombstone names that an interruption left, with the rule `recovery`. `af project history` marks
+a collected Survey `collected` from its tombstone; its `--json` document lists the chain as
+before. `af project survey` exits 1 when the newest Survey was collected, saying so and naming
+`af project refresh`, and `af project show` then prints no Survey. A Survey's
+`previous_survey_id` is a name: a collected predecessor keeps nothing alive.
+
+```sh
+af storage --json | jq '[.entries[] | select(.kind == "survey")] | length'
+AF_STORAGE__KEEP_SURVEYS=10 af storage prune --apply
+af project history | grep collected
+```
+
+Patterns match in bounded work: the matcher of `.af/af.toml`, the routes' and the Surveyor's alike,
+costs at most (pattern length + 1) × (path length + 1) steps and never backtracks, a `[survey]`
+pattern is at most 256 bytes and a pattern list at most 64 patterns, and a policy beyond either is
+refused naming the key
+([ADR-0152](adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md), clauses 13
+and 14).
+
 ## What is written where
 
 | Written | Where | By |

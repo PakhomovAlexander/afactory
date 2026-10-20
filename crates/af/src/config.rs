@@ -33,6 +33,7 @@ auto_gc = false
 keep_days = 14
 keep_tasks = 20
 keep_campaigns = 20
+keep_surveys = 50
 keep_worker_transcripts = false
 keep_gate_pull_requests = false
 "#;
@@ -177,6 +178,9 @@ pub(crate) struct StoragePolicy {
     pub(crate) keep_tasks: usize,
     /// The newest review campaigns kept.
     pub(crate) keep_campaigns: usize,
+    /// The newest Surveys collection keeps per Project (ADR-0152 clause 13): a target that the
+    /// Surveys it protects may exceed.
+    pub(crate) keep_surveys: usize,
     /// Keep each Claude Attempt's project directory in the Claude config directory.
     pub(crate) keep_worker_transcripts: bool,
     /// Leave remote-check gate pull requests and branches open when a Task finishes.
@@ -229,6 +233,8 @@ impl Config {
                 .map_err(|_| "[storage] keep_tasks is too large".to_string())?,
             keep_campaigns: usize::try_from(count_of("keep_campaigns")?)
                 .map_err(|_| "[storage] keep_campaigns is too large".to_string())?,
+            keep_surveys: usize::try_from(count_of("keep_surveys")?)
+                .map_err(|_| "[storage] keep_surveys is too large".to_string())?,
             keep_worker_transcripts: bool_of("keep_worker_transcripts")?,
             keep_gate_pull_requests: bool_of("keep_gate_pull_requests")?,
         })
@@ -888,6 +894,7 @@ mod tests {
                 keep_days: 14,
                 keep_tasks: 20,
                 keep_campaigns: 20,
+                keep_surveys: 50,
                 keep_worker_transcripts: false,
                 keep_gate_pull_requests: false,
             }

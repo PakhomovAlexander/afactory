@@ -1474,3 +1474,116 @@ mod tests {
         assert_eq!(text["origin"], "created");
     }
 }
+
+/// The totals of a collected Survey's `tree` its tombstone keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurveyCollectedTreeV1 {
+    pub files: DecimalU64,
+    pub bytes: DecimalU64,
+    pub lines: DecimalU64,
+}
+
+/// The totals of a collected Survey's `history` its tombstone keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurveyCollectedHistoryV1 {
+    pub commits: DecimalU64,
+    pub merges: DecimalU64,
+}
+
+/// Payload of `SurveyCollected@1` (ADR-0152 clause 13): the tombstone of a Survey the Storage
+/// Budget collected, appended before the record leaves the Project Store's CAS. It keeps what
+/// `af project history` answers for the Survey once its record is gone: the head, the cutoff,
+/// the completeness and the totals of `tree` and `history`, each absent when the record held no
+/// such section or could not be read. Like every Project Store event, no path and no email.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurveyCollectedPayloadV1 {
+    /// The CAS digest the collected record had.
+    pub survey_id: String,
+    pub head: String,
+    pub cutoff_unix_s: DecimalU64,
+    pub completeness: SurveyCompletenessV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree: Option<SurveyCollectedTreeV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<SurveyCollectedHistoryV1>,
+    pub collected_unix_ms: DecimalU64,
+}
+
+impl SurveyCollectedPayloadV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        if !crate::is_digest(&self.survey_id) {
+            return Err("SurveyCollected@1 names its Survey by digest".into());
+        }
+        if !is_commit_id(&self.head) {
+            return Err("SurveyCollected@1 has an invalid head commit".into());
+        }
+        if self
+            .history
+            .is_some_and(|history| history.merges.get() > history.commits.get())
+        {
+            return Err("SurveyCollected@1 counts more merges than commits".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod collected_tests {
+    use super::*;
+
+    #[test]
+    fn a_tombstone_names_its_survey_by_digest_and_keeps_only_totals() {
+        let tombstone = SurveyCollectedPayloadV1 {
+            survey_id: format!("sha256:{}", "a".repeat(64)),
+            head: "1".repeat(40),
+            cutoff_unix_s: 1_800_000_000.into(),
+            completeness: SurveyCompletenessV1::Partial,
+            tree: Some(SurveyCollectedTreeV1 {
+                files: 16.into(),
+                bytes: 1496.into(),
+                lines: 70.into(),
+            }),
+            history: Some(SurveyCollectedHistoryV1 {
+                commits: 8.into(),
+                merges: 1.into(),
+            }),
+            collected_unix_ms: 1_800_000_000_123.into(),
+        };
+        tombstone.validate().unwrap();
+        let value = serde_json::to_value(&tombstone).unwrap();
+        assert_eq!(value["tree"]["files"], "16");
+        assert_eq!(value["collected_unix_ms"], "1800000000123");
+        let bare = SurveyCollectedPayloadV1 {
+            tree: None,
+            history: None,
+            ..tombstone.clone()
+        };
+        bare.validate().unwrap();
+        assert!(serde_json::to_value(&bare).unwrap().get("tree").is_none());
+        for broken in [
+            SurveyCollectedPayloadV1 {
+                survey_id: "survey-1".into(),
+                ..tombstone.clone()
+            },
+            SurveyCollectedPayloadV1 {
+                head: "HEAD".into(),
+                ..tombstone.clone()
+            },
+            SurveyCollectedPayloadV1 {
+                history: Some(SurveyCollectedHistoryV1 {
+                    commits: 1.into(),
+                    merges: 2.into(),
+                }),
+                ..tombstone.clone()
+            },
+        ] {
+            assert!(broken.validate().is_err(), "{broken:?}");
+        }
+        let mut unknown = value.clone();
+        unknown["path"] = serde_json::json!("/home/me/afactory");
+        assert!(serde_json::from_value::<SurveyCollectedPayloadV1>(unknown).is_err());
+    }
+}

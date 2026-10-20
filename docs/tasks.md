@@ -298,14 +298,15 @@ the lock `af self` holds while it changes the default or a pin, so one that beca
 stays.
 
 `af storage` prints what af holds, per kind, against the budget, and the free bytes against
-`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@2` document.
+`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@3` document.
 After every `af task run` and `af review run` the sweep holds af to `max_bytes`, evicting least
 recently used entries; it does not collect by age unless `[storage] auto_gc = true`. `af storage
 prune` previews the sweep with collection; `af storage prune --apply` performs it now. It collects
 first: finished Tasks beyond the
-newest `keep_tasks` (20) of each Store, review campaigns beyond the newest `keep_campaigns` (20)
-and Stores this release cannot read, each idle at least `keep_days` (14); then it evicts until
-af fits. A Store made with `--state` is recorded in `$XDG_STATE_HOME/af/stores.toml`, so the
+newest `keep_tasks` (20) of each Store, review campaigns beyond the newest `keep_campaigns` (20),
+the Surveys of each Project beyond the newest `keep_surveys` (50) and Stores this release cannot
+read, each idle at least `keep_days` (14); then it evicts until af fits. A Survey goes behind its
+`SurveyCollected@1` tombstone, and never the newest complete one ([Collection](project.md#collection)). A Store made with `--state` is recorded in `$XDG_STATE_HOME/af/stores.toml`, so the
 sweep reaches it too. A finished Task whose remote checks left gate branches or a pull request is
 collected only after its gate cleanup is done, by the sweep and by `af task gc --apply` alike;
 until then it stays and the next sweep tries again. The sweep that ends `af task run` records

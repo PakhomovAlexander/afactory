@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 179] = [
+const SCHEMAS: [&str; 180] = [
     "project-registered-v1.json",
     "project-survey-v1.json",
     "project-survey-recorded-v1.json",
@@ -210,6 +210,7 @@ const SCHEMAS: [&str; 179] = [
     "slice-set-v1.json",
     "source-snapshot-v1.json",
     "subject-v1.json",
+    "project-survey-collected-v1.json",
 ];
 
 fn workspace_root() -> PathBuf {
@@ -4337,3 +4338,6 @@ fn measurements_and_comparisons_match_their_schemas_in_both_directions() {
         assert_eq!(rust, valid, "{operator}");
     }
 }
+
+#[path = "schema_parity/project_collection.rs"]
+mod project_collection;

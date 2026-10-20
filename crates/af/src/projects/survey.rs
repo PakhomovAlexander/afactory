@@ -302,7 +302,7 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
     let git = Git::open(&checkout.toplevel)?;
     let head = head(&git)?;
     let refs_digest = measure::refs_digest(&git)?;
-    let policy = Policy::load(&checkout.toplevel);
+    let policy = Policy::load(&checkout.toplevel).and_then(within_pattern_limits);
     let mut store = open(checkout)?;
     let policy = match policy {
         Ok(policy) => policy,
@@ -400,9 +400,12 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
     store.record_survey(&survey, bytes).map(Refreshed::Recorded)
 }
 
-/// The newest recorded Survey of the Project, if any.
+/// The newest recorded Survey of the Project while it is uncollected (ADR-0152 clause 13): a
+/// newest Survey a tombstone names is none.
 pub(crate) fn newest(store: &ProjectStore, log: &Log) -> Result<Option<Recorded>, String> {
+    let collected = collect::collected_ids(&store.events)?;
     log.newest_survey()
+        .filter(|newest| !collected.contains(&newest.survey_id))
         .map(|newest| store.survey(newest))
         .transpose()
 }
@@ -585,4 +588,26 @@ pub(crate) fn after_onboard(repo: &Path, json: bool) {
         )),
         Err(error) => eprintln!("af onboard: no Survey was recorded: {error}"),
     }
+}
+
+pub(crate) mod collect;
+
+/// The pattern limits of ADR-0152 clause 14, where the Surveyor loads its patterns: every
+/// pattern list at most 64 patterns and every pattern at most 256 bytes, refused naming the key.
+fn within_pattern_limits(policy: Policy) -> Result<Policy, String> {
+    for (key, patterns) in [
+        ("exclude", &policy.exclude),
+        ("tests", &policy.tests),
+        ("agent_authors", &policy.agent_authors),
+        ("agent_trailers", &policy.agent_trailers),
+    ] {
+        collect::check_patterns(key, patterns)?;
+    }
+    for (key, pattern) in [
+        ("decisions", &policy.decisions),
+        ("release_tags", &policy.release_tags),
+    ] {
+        collect::check_patterns(key, std::slice::from_ref(pattern))?;
+    }
+    Ok(policy)
 }
