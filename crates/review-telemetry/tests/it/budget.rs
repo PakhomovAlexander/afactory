@@ -385,6 +385,86 @@ fn telemetry_housekeeping_never_parses_spans() {
         review_telemetry::segment::reader::read_sealed(&path).is_err(),
         "the full record reader refuses it"
     );
+
+    // A live segment, its writer holding the lock: every span and event payload becomes
+    // unparsable behind a valid envelope, while its header, blob and blob_ref records stay
+    // valid. The inventory measures it with its references, the sweep keeps its blobs as roots,
+    // and only the full reader refuses it.
+    let writer = writer(&root, Level::Content);
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event_with_content(
+        &span,
+        "gen_ai.content.input",
+        Attrs::new(),
+        b"a live input\n",
+        Media::Text,
+    );
+    writer.event(&span, "af.note", Attrs::new().text("af.text", "a note"));
+    writer.flush();
+    let live_id = writer.segment_id().unwrap();
+    let live = layout.live_segment(&live_id);
+    let text = std::fs::read_to_string(&live).unwrap();
+    let mut referenced = std::collections::BTreeSet::new();
+    let mut spans = 0;
+    let rewritten: String = text
+        .lines()
+        .map(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            let kind = value["t"].as_str().unwrap();
+            if kind == "blob_ref" {
+                referenced.insert(value["digest"].as_str().unwrap().to_string());
+            }
+            if kind.starts_with("span") || kind == "event" {
+                spans += 1;
+                format!(
+                    r#"{{"t":"{kind}","seq":{},"schema":"{}","attributes":{{"unterminated"#,
+                    value["seq"],
+                    value["schema"].as_str().unwrap()
+                ) + "\n"
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    assert!(spans >= 3 && referenced.len() == 1, "{text}");
+    std::fs::write(&live, &rewritten).unwrap();
+    age(&root, Duration::from_secs(2 * 3_600));
+
+    for recover in [false, true] {
+        let directory = Directory::measure(&root, recover).unwrap().unwrap();
+        assert!(directory.problems.is_empty(), "{:?}", directory.problems);
+        let segment = &directory.segments[&live_id];
+        assert_eq!(segment.state, State::Live);
+        assert_eq!(
+            segment.refs, referenced,
+            "its blob_ref records, read structurally"
+        );
+        assert!(directory.target(&live_id).is_none(), "in use");
+    }
+    let reclaimed = budget::reclaim(&root, &[], SystemTime::now()).unwrap();
+    assert!(reclaimed.notes.is_empty(), "{reclaimed:?}");
+    for digest in &referenced {
+        assert!(layout.blob(digest).exists(), "a root: {digest}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&live).unwrap(),
+        rewritten,
+        "untouched"
+    );
+    let structure = review_telemetry::segment::reader::structure(rewritten.as_bytes());
+    assert_eq!(structure.kept_bytes, rewritten.len(), "{structure:?}");
+    let full = review_telemetry::segment::reader::read_live(&live).unwrap();
+    assert!(
+        full.invalid.is_some() && full.interior_corruption,
+        "the full record reader refuses it: {full:?}"
+    );
+    assert!(
+        review_telemetry::segment::reader::referenced(&full.records).is_empty(),
+        "the full reader never reaches its references"
+    );
+    drop(writer);
 }
 
 /// ADR-0144, design §6: an eviction entry is removed whole or left whole. A deterministic hook
@@ -462,5 +542,46 @@ fn telemetry_eviction_keeps_an_entry_whole_when_the_manifest_changes_midway() {
         names(),
         [format!("{kept}.jsonl.gz"), format!("{kept}.refs")],
         "only the changed entry is left"
+    );
+
+    // A file appears under the compressed copy's name once that copy is staged: before the
+    // staged files are unlinked both original names are checked, so the entry is reported
+    // changed, never removed; its manifest is restored, the replacement stays, and the staged
+    // copy that cannot go back under its taken name is left for the sweep's temporaries.
+    let returned = sealed_with(&root, b"returned's input\n", b"returned's own output\n");
+    age(&root, Duration::from_secs(2 * 3_600));
+    let directory = Directory::measure(&root, false).unwrap().unwrap();
+    let target = directory.target(&returned).unwrap();
+    let sealed = layout.sealed_segment(&returned);
+    let manifest = layout.refs(&returned);
+    let manifest_bytes = std::fs::read(&manifest).unwrap();
+    let evicted = budget::evict_with(&root, &target, now, &|| {
+        assert!(!sealed.exists(), "the compressed copy is staged");
+        std::fs::write(&sealed, b"a replacement under the compressed name").unwrap();
+    })
+    .unwrap();
+    let budget::Evicted::Changed(reason) = evicted else {
+        panic!("reported removed: {evicted:?}");
+    };
+    assert!(reason.contains("reappeared"), "{reason}");
+    assert!(reason.contains("could not be restored"), "{reason}");
+    assert_eq!(
+        std::fs::read(&sealed).unwrap(),
+        b"a replacement under the compressed name"
+    );
+    assert_eq!(
+        std::fs::read(&manifest).unwrap(),
+        manifest_bytes,
+        "the manifest is back under its name"
+    );
+    let staged: Vec<String> = names()
+        .into_iter()
+        .filter(|name| name.starts_with('.'))
+        .collect();
+    assert_eq!(
+        staged.len(),
+        1,
+        "the staged copy is a temporary: {:?}",
+        names()
     );
 }

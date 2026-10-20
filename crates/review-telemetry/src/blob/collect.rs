@@ -6,8 +6,9 @@
 //! never removed, while a sealed segment's `.refs` manifest names it or a `blob_ref` record in
 //! the valid prefix of any retained `.jsonl` segment references it, locked or not. Before it
 //! collects anything it recovers every unsealed segment whose lock it can take and reads the
-//! flushed prefix of every segment it cannot lock, in that order. It reads only that structural
-//! metadata (ADR-0153 clause 1).
+//! flushed prefix of every segment it cannot lock, in that order, through the structural
+//! scanner ([`reader::structure`]): the `blob_ref` records, every other line judged by its
+//! envelope alone. It reads only that structural metadata (ADR-0153 clause 1).
 //!
 //! The telemetry root is opened once; the lock, the segments and the blobs are reached through
 //! that descriptor ([`collect_in`]), never through a pathname again.
@@ -66,7 +67,8 @@ pub fn roots_in(versioned: &Confined) -> Result<BTreeSet<String>, String> {
                 segments.join(&format!("{id}{}", layout::LIVE)).display()
             )
         })?;
-        roots.extend(reader::referenced(&reader::scan(&bytes).records));
+        // The valid prefix read structurally: its `blob_ref` records, never a span.
+        roots.extend(reader::referenced(&reader::structure(&bytes).records));
     }
     Ok(roots)
 }

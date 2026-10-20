@@ -575,3 +575,135 @@ fn telemetry_reindex_recovery_stays_within_the_root() {
     assert_eq!(snapshot(&outside), before, "the link target untouched");
     assert!(Layout::new(&outside).live_segment(&foreign).is_file());
 }
+
+/// `runs` and `show` of `root`'s one run, through a fresh ingest.
+fn views(root: &std::path::Path) -> (review_telemetry::view::Runs, review_telemetry::view::Show) {
+    let (index, read, unreadable) = review_telemetry::view::open(root).unwrap();
+    let runs =
+        review_telemetry::view::runs(&index, root, read.clone(), unreadable.clone(), None, None)
+            .unwrap();
+    let [listed] = runs.runs.as_slice() else {
+        panic!("{runs:?}");
+    };
+    let shown = review_telemetry::view::show(
+        &index,
+        root,
+        read,
+        unreadable,
+        (
+            &listed.store_id,
+            &listed.run_id,
+            &listed.trace_id,
+            listed.kind.clone(),
+        ),
+        &review_telemetry::view::ShowSelection::default(),
+    )
+    .unwrap();
+    (runs, shown)
+}
+
+/// Design §6: a `.jsonl` beside a `.jsonl.gz` of its id is the segment, the compressed copy stale
+/// staging. The index ingests the sealed segment first; then a live `.jsonl` of the same id — a
+/// prefix of it, held by a writer's lock — appears beside it. The next ingest forgets the
+/// segment's sealed rows and ingests the live prefix from offset zero: `runs` and `show` reflect
+/// only the live prefix, nothing of the stale compressed copy, and answer identically after
+/// `reindex`.
+#[test]
+fn telemetry_index_forgets_a_stale_seal_when_the_live_file_returns() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let layout = Layout::new(root);
+    let writer = writer(root, Level::Spans);
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let id = writer.segment_id().unwrap();
+    let execution = Execution {
+        store_id: "e".repeat(64),
+        run_id: "task:returned".into(),
+        execution_id: id.clone(),
+        ordinal: 1,
+        store_sequence_at_start: 0,
+    };
+    let trace = execution.trace_id();
+    let run = writer
+        .span_start(
+            Some(&trace),
+            Some(&command),
+            "af.run",
+            SpanKind::Internal,
+            execution.attributes().enumerated("af.run.kind", "task"),
+        )
+        .unwrap();
+    let node = writer
+        .span_start(
+            Some(&trace),
+            Some(&run),
+            "af.node",
+            SpanKind::Internal,
+            Attrs::new().id("af.node_id", "n1"),
+        )
+        .unwrap();
+    writer.event(&node, "af.note", Attrs::new());
+    writer.span_end(&node, SpanStatus::Ok, Attrs::new(), 2);
+    writer.span_end(
+        &run,
+        SpanStatus::Ok,
+        Attrs::new().text("af.outcome", "finished"),
+        1,
+    );
+    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+
+    // Indexed as sealed: the whole tree.
+    let (runs, shown) = views(root);
+    assert!(runs.runs[0].executions.sealed.contains(&1), "{runs:?}");
+    let names: Vec<&str> = shown.spans.iter().map(|span| span.name.as_str()).collect();
+    assert_eq!(names, ["af.command", "af.run", "af.node"]);
+
+    // The live file returns beside the compressed copy: its prefix up to the `af.run` start,
+    // held by a writer's lock.
+    let bytes = crate::sealed_bytes(&sealed.path);
+    let text = String::from_utf8(bytes).unwrap();
+    let prefix: String = text
+        .split_inclusive('\n')
+        .take_while(|line| !line.contains("\"af.node\""))
+        .collect();
+    assert!(prefix.contains("\"af.run\"") && !prefix.contains("af.note"));
+    std::fs::write(layout.live_segment(&id), &prefix).unwrap();
+    let _held = review_telemetry::layout::try_lock(
+        std::fs::File::open(layout.live_segment(&id)).unwrap(),
+        nix::fcntl::FlockArg::LockExclusiveNonblock,
+    )
+    .unwrap();
+    assert!(sealed.path.exists(), "the stale compressed copy stays");
+
+    let (runs, shown) = views(root);
+    let [listed] = runs.runs.as_slice() else {
+        panic!("{runs:?}");
+    };
+    assert!(listed.executions.sealed.is_empty(), "{listed:?}");
+    assert_eq!(listed.executions.list[0].segment, "live");
+    assert!(listed.open, "the live execution is open");
+    assert_eq!(listed.outcome, None, "the stale seal's outcome is gone");
+    let names: Vec<&str> = shown.spans.iter().map(|span| span.name.as_str()).collect();
+    assert_eq!(names, ["af.command", "af.run"], "only the live prefix");
+    assert!(
+        shown.spans.iter().all(|span| span.status == "open"),
+        "{:?}",
+        shown.spans
+    );
+    let segments = {
+        let mut index = Index::open(&layout).unwrap();
+        index.ingest().unwrap();
+        index.dump().unwrap()["segments"].clone()
+    };
+    let [row] = segments.as_slice() else {
+        panic!("{segments:?}");
+    };
+    assert_ne!(row[1], "'sealed'", "{row:?}");
+
+    // A rebuild answers identically.
+    review_telemetry::status::reindex(root).unwrap();
+    assert_eq!(views(root), (runs, shown), "identical after reindex");
+}

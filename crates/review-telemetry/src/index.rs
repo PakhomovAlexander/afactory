@@ -516,7 +516,10 @@ impl Index {
     /// A sealed segment's file is recorded with its identity (device, inode, size and
     /// modification time) and compared with the file under its name on every ingest: a sealed
     /// file replaced or rewritten since is read and validated again, its earlier rows
-    /// forgotten, and on refusal it is listed unreadable, exactly as a rebuild would answer.
+    /// forgotten, and on refusal it is listed unreadable, exactly as a rebuild would answer. A
+    /// segment ingested as sealed whose `.jsonl` the listing selects again (the compressed copy
+    /// beside it is then stale staging) has its rows forgotten and its live prefix ingested from
+    /// offset zero, as a rebuild would.
     pub fn ingest(&mut self) -> Result<(Ingested, Vec<(String, String)>), String> {
         // The segments of the `v1/` the index holds, never looked up by pathname again.
         let directory = match &self.versioned {
@@ -639,7 +642,15 @@ impl Index {
                     continue;
                 }
             };
-            let (offset, position) = if offset > bytes.len() {
+            // A segment ingested as sealed whose live file the listing now selects (a stale
+            // compressed copy beside it): its rows are forgotten and the live prefix ingested
+            // from offset zero, so no view shows a record of the stale copy.
+            let stale_seal =
+                matches!(states.get(segment_id), Some((state, _)) if state == "sealed");
+            if stale_seal {
+                forget(&transaction, segment_id)?;
+            }
+            let (offset, position) = if stale_seal || offset > bytes.len() {
                 (0, None)
             } else {
                 (offset, position)

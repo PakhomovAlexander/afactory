@@ -5,8 +5,13 @@
 //!
 //! Housekeeping reads only structural metadata: file sizes and times, lock state, the `.refs`
 //! manifest and the header and seal records of a sealed segment, the `blob_ref` records in the
-//! valid prefix of a `.jsonl` one, and the index's size. It never reads a span, an event, an
-//! attribute or a blob of a sealed segment.
+//! valid prefix of a `.jsonl` one — read by the structural scanner ([`reader::structure`]),
+//! which judges every other line by its envelope alone — and the index's size. It never reads a
+//! span, an event, an attribute or a blob, of a sealed segment or a live one. The one exception
+//! is not housekeeping's own read: before an applied sweep measures or collects anything it has
+//! the reader recover every unsealed segment whose lock it can take ([`reader::recover_all_in`],
+//! design §6), and recovery, which keeps only valid lines and ends the spans its prefix left
+//! open, validates that prefix in full.
 //!
 //! **Physical union.** A directory's bytes are every allocated byte beneath it, counted once.
 //! Each sealed or corrupt segment is an entry whose bytes are its **marginal** bytes — what its
@@ -35,8 +40,8 @@
 //! place and reported as changed. A sealed segment's removal is staged so that it is whole or
 //! nothing: each file is checked again immediately before its own step and renamed under a
 //! staging name in the held `segments/`, a change found at the manifest's step restores the
-//! compressed copy, and only once both files are staged, and checked there again, are they
-//! unlinked.
+//! compressed copy, and only once both files are staged, and checked there again with neither
+//! original name holding a file again, are they unlinked.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -244,8 +249,9 @@ impl Directory {
             ] {
                 for id in ids {
                     let name = format!("{id}{}", layout::LIVE);
+                    // The valid prefix read structurally: its `blob_ref` records, never a span.
                     let refs = match reader::read_live_in(&segments, id) {
-                        Ok(bytes) => reader::referenced(&reader::scan(&bytes).records),
+                        Ok(bytes) => reader::referenced(&reader::structure(&bytes).records),
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                         Err(error) => {
                             directory
@@ -485,8 +491,10 @@ fn unix_ms(time: SystemTime) -> u64 {
 /// manifest is checked and renamed the same way (the second); a file found changed before its
 /// own step, or under its staging name, restores what was staged under its own name (never over
 /// a file that took the name since) and the entry is [`Evicted::Changed`]. Only once both are
-/// staged, and found there still the files inventoried immediately before the first unlink, are
-/// they unlinked: [`Evicted::Removed`] is returned only when no file of the entry remains.
+/// staged, and found there still the files inventoried immediately before the first unlink, with
+/// no file reappeared under either original name, are they unlinked; a file that took either
+/// name restores what was staged where its name is free, and the entry is [`Evicted::Changed`].
+/// [`Evicted::Removed`] is returned only when nothing of the entry remains under either name.
 pub fn evict(root: &Path, target: &Target, now: SystemTime) -> Result<Evicted, String> {
     evict_with(root, target, now, &|| {})
 }
@@ -648,13 +656,19 @@ pub fn evict_with(
         None => None,
     };
     // Every file of the entry, checked under its staging name immediately before the first
-    // unlink; then the unlinks.
+    // unlink, and both original names checked for a file that appeared there since: nothing
+    // of the entry may remain under either name once it is reported removed. Then the unlinks.
     let whole = is_found(&staged_segment, target.found.file)
         && staged_manifest
             .as_ref()
             .is_none_or(|(staged, found)| is_found(staged, *found));
-    if !whole {
-        let why = "changed while it was staged for removal";
+    let reappeared = segments.kind(&name).is_some() || segments.kind(&manifest).is_some();
+    if !whole || reappeared {
+        let why = if whole {
+            "a file reappeared under its name while it was staged for removal"
+        } else {
+            "changed while it was staged for removal"
+        };
         if let Some((staged, _)) = &staged_manifest {
             let _ = restore(staged, &manifest, why);
         }

@@ -14,7 +14,12 @@
 //! is interior corruption: the segment is renamed `.corrupt`, never read again. A `.jsonl.gz`
 //! or `.refs` beside a `.jsonl` of the same id is stale staging (the publication's last step
 //! removes the `.jsonl`): every reader treats the segment as unsealed ([`Listing::stale`]) and
-//! recovery replaces those files.
+//! recovery replaces those files, or, when it rejects the `.jsonl` (empty or corrupt), removes
+//! them before it removes or renames the `.jsonl`, so they are never read as sealed.
+//!
+//! **Housekeeping** reads a `.jsonl` segment's valid prefix through [`structure`], never
+//! [`scan`]: framing, envelopes and the prefix rules, and the full record only of the
+//! structural kinds (design §3.1, ADR-0153).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
@@ -126,6 +131,133 @@ pub fn scan_from(bytes: &[u8], start: usize, previous: Option<Position>) -> Pref
 /// [`scan_from`] from the start of a segment.
 pub fn scan(bytes: &[u8]) -> Prefix {
     scan_from(bytes, 0, None)
+}
+
+/// The valid prefix of a live or unsealed segment as storage housekeeping reads it (design §3.1,
+/// ADR-0153): the structural records only.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Structure {
+    /// The `segment`, `blob`, `blob_ref`, `problem` and `seal` records of the prefix, in order.
+    pub records: Vec<Record>,
+    /// Bytes of the complete, structurally valid lines kept, newlines included.
+    pub kept_bytes: usize,
+    /// Why the first line after the prefix was refused, when it is complete.
+    pub invalid: Option<String>,
+}
+
+/// The record kinds housekeeping decodes in full; every other kind is judged by its envelope
+/// alone.
+const STRUCTURAL_KINDS: [&str; 5] = ["segment", "blob", "blob_ref", "problem", "seal"];
+
+/// Every record kind with the versioned type it carries.
+const KINDS: [(&str, &str); 12] = [
+    ("segment", schema::SEGMENT),
+    ("span_start", schema::SPAN),
+    ("span_end", schema::SPAN),
+    ("event", schema::EVENT),
+    ("config", schema::CONFIG),
+    ("node", schema::NODE),
+    ("finding", schema::FINDING),
+    ("demand", schema::DEMAND),
+    ("blob", schema::BLOB),
+    ("blob_ref", schema::BLOB_REF),
+    ("problem", schema::PROBLEM),
+    ("seal", schema::SEAL),
+];
+
+/// A line's envelope — its type and `seq` — read from the canonical prefix every writer of this
+/// release begins a record with, `{"t":"<type>","seq":<seq>,"schema":"<schema>"`, and nothing
+/// after it: the type must be a record kind, the `seq` a canonical decimal above zero and the
+/// schema the one that kind carries (another version is refused, ADR-0145).
+fn envelope(line: &[u8]) -> Result<(&'static str, u64), String> {
+    if line.len() > RECORD_MAX_BYTES {
+        return Err(format!(
+            "a record of {} bytes exceeds the {RECORD_MAX_BYTES}-byte record bound",
+            line.len()
+        ));
+    }
+    let not = || "not a record envelope".to_string();
+    let rest = line.strip_prefix(b"{\"t\":\"").ok_or_else(not)?;
+    let (kind, expected) = KINDS
+        .iter()
+        .find(|(kind, _)| {
+            rest.strip_prefix(kind.as_bytes())
+                .is_some_and(|after| after.starts_with(b"\",\"seq\":"))
+        })
+        .copied()
+        .ok_or_else(not)?;
+    let rest = &rest[kind.len() + b"\",\"seq\":".len()..];
+    let digits = rest.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    let seq = std::str::from_utf8(&rest[..digits])
+        .ok()
+        .filter(|text| !text.is_empty() && (text.len() == 1 || !text.starts_with('0')))
+        .and_then(|text| text.parse::<u64>().ok())
+        .filter(|seq| *seq > 0)
+        .ok_or_else(|| format!("a `{kind}` record without a valid seq"))?;
+    let rest = rest[digits..]
+        .strip_prefix(b",\"schema\":\"")
+        .ok_or_else(not)?;
+    match rest.strip_prefix(expected.as_bytes()) {
+        Some(after) if after.starts_with(b"\"") => Ok((kind, seq)),
+        _ => Err(format!(
+            "a `{kind}` record of another schema than `{expected}`"
+        )),
+    }
+}
+
+/// The structural scanner storage housekeeping reads a live or unsealed segment's valid prefix
+/// with (design §3.1, ADR-0153): it validates the framing (complete lines within the record
+/// bound), each line's envelope — type and `seq` ([`envelope`]) — and the prefix rules (the
+/// header first and only first, `seq` strictly increasing, nothing after the seal), and decodes
+/// the full record only for the `segment`, `blob`, `blob_ref`, `problem` and `seal` kinds. A
+/// span, an event, a configuration part, a plan node, a Finding or a Demand is never decoded:
+/// whatever its payload holds, only its envelope is read. Where [`scan`], the full reader,
+/// refuses a line whose payload is invalid, this keeps it.
+pub fn structure(bytes: &[u8]) -> Structure {
+    let mut structure = Structure::default();
+    let mut offset = 0;
+    let mut last: Option<Position> = None;
+    while let Some(newline) = bytes[offset..].iter().position(|byte| *byte == b'\n') {
+        let line = &bytes[offset..offset + newline];
+        let (kind, seq) = match envelope(line) {
+            Ok(envelope) => envelope,
+            Err(reason) => {
+                structure.invalid = Some(reason);
+                break;
+            }
+        };
+        let ordered = match last {
+            None => kind == "segment" && seq == 1,
+            Some(Position { sealed: true, .. }) => false,
+            Some(previous) => kind != "segment" && seq > previous.seq,
+        };
+        if !ordered {
+            structure.invalid = Some(format!("a `{kind}` record at seq {seq} out of order"));
+            break;
+        }
+        if STRUCTURAL_KINDS.contains(&kind) {
+            match Record::parse_line(line) {
+                Ok(record) if record.kind() == kind && record.seq() == seq => {
+                    structure.records.push(record);
+                }
+                Ok(_) => {
+                    structure.invalid = Some(format!("a `{kind}` record of another envelope"));
+                    break;
+                }
+                Err(reason) => {
+                    structure.invalid = Some(reason);
+                    break;
+                }
+            }
+        }
+        last = Some(Position {
+            seq,
+            sealed: kind == "seal",
+        });
+        offset += newline + 1;
+    }
+    structure.kept_bytes = offset;
+    structure
 }
 
 /// Read `reader` whole when it yields at most `limit` bytes; past it nothing more is read and
@@ -511,12 +643,27 @@ pub fn recover_in(segments: &Confined, segment_id: &str) -> Result<Recovery, Str
         ));
     }
     let bytes = read_at_most(&mut *held, SEGMENT_MAX_BYTES_BOUND).map_err(io)?;
+    // A live segment rejected — empty, or corrupt — leaves no seal of its id readable: the
+    // stale `.jsonl.gz` and `.refs` beside it go first, through the held directory, so no
+    // listing ever takes them as sealed once the `.jsonl` is gone.
+    let withdraw_stale = || -> Result<(), String> {
+        for stale in [sealed_name.clone(), format!("{segment_id}{}", layout::REFS)] {
+            match segments.unlink(&stale) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("{}: {error}", segments.join(&stale).display())),
+            }
+        }
+        Ok(())
+    };
     if bytes.is_empty() {
+        withdraw_stale()?;
         segments.unlink(&name).map_err(io)?;
         return Ok(Recovery::Empty);
     }
     let prefix = scan(&bytes);
     if prefix.interior_corruption || prefix.segment_id() != Some(segment_id) {
+        withdraw_stale()?;
         segments
             .rename(&name, &format!("{segment_id}{}", layout::CORRUPT))
             .map_err(io)?;

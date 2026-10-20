@@ -51,15 +51,21 @@ it; a consumer that has not finished in time — a write blocked on the volume �
 nothing else seals, compresses, replaces or writes the segment, the command's exit status is its
 own, the lock ends with the process, `af telemetry status` counts the segment `unsealed`, and
 the next reader recovers what was written. The compressed segment and its manifest are staged in
-temporary files, and the 2 s govern the whole publication: the deadline is checked again
-immediately before each step — the manifest's rename, the compressed copy's rename and the
-unlink of the live `.jsonl`, which happens only while the deadline has not passed — and a
-consumer that finds it gone at any step, a blocked write or rename released later among them,
-publishes nothing further, removes what it already renamed into place and what it staged, and
-leaves the live segment for the next reader. Whatever a consumer leaves, every reader,
-`af telemetry status` and the storage inventory take a `.jsonl` beside a `.jsonl.gz` or `.refs`
-of the same segment id as the unsealed segment: those files are stale staging, never read as
-sealed, replaced by recovery and removed by the sweep after an hour. A telemetry-only failure
+temporary files, and the 2 s govern the whole publication: the deadline check is the last thing
+before each step — the manifest's rename, the compressed copy's rename and the unlink of the
+live `.jsonl`, which happens only while the deadline has not passed — with nothing between the
+check and the step, and it runs again when a rename returns; a consumer that finds the deadline
+gone at any check, a blocked write released later among them, publishes nothing further and
+removes what it already renamed into place (the file just placed included) and what it staged,
+so once the deadline has passed nothing of the seal stays under its final name, and leaves the
+live segment for the next reader. A seal is reported only when the live `.jsonl` itself was
+unlinked: when its name no longer holds the writer's file at the last step, the seal is
+withdrawn the same way and the segment is left unsealed. Whatever a consumer leaves, every
+reader, `af telemetry status`, the index and the storage inventory take a `.jsonl` beside a
+`.jsonl.gz` or `.refs` of the same segment id as the unsealed segment: those files are stale
+staging, never read as sealed (an index that had read the compressed copy forgets it and reads
+the `.jsonl` from its start), replaced by recovery, removed by recovery before it removes an
+empty `.jsonl` or renames a corrupt one, and removed by the sweep after an hour. A telemetry-only failure
 (an unwritable directory, a quota, a locked index) is one line on stderr,
 `af: telemetry problem (…), the command is unaffected: …`, recorded in the segment when it can
 be.
@@ -386,7 +392,9 @@ and inode inventoried and was not modified within the last hour, that no writer 
 removed whole or left whole: a sealed segment's compressed copy and then its manifest are each
 checked immediately before their own step and renamed under a staging name in the held
 directory, a change found at the manifest restores the compressed copy, and only once both are
-staged, and checked there again, are they unlinked. An entry any file of which changed —
+staged, and checked there again with no file reappeared under either original name, are they
+unlinked; a file that took either name restores what was staged wherever its name is free. An
+entry any file of which changed —
 replaced, locked, used — is left in place whole and reported with what changed, never as
 removed
 (`telemetry.changed` in `af/storage-prune@2`, `changed` in `af/telemetry-gc@1`). Before it measures or collects anything an applied sweep recovers every
@@ -400,7 +408,11 @@ exceed 16 MiB and a quarter of the file, runs `VACUUM` — deleting the index un
 when there is no room to vacuum (the next reader rebuilds it), deferring without the lock. What
 it reclaims is measured as allocated bytes (`telemetry.reclaimed` in `af/storage-prune@2`). It
 reads only structural metadata: file sizes and times, lock state, manifests, a sealed segment's
-header and seal records and the `blob_ref` records of a live segment, never a span; a sealed
+header and seal records and the `blob_ref` records of a live or unsealed segment's valid prefix,
+read by a structural scanner that checks each line's framing, record type and sequence and
+decodes only `segment`, `blob`, `blob_ref`, `problem` and `seal` records, never a span, an
+event or an attribute (the recovery an applied sweep runs first is the reader's own, which keeps
+only valid lines and so validates the prefix it rewrites); a sealed
 segment without its manifest leaves its references unknown and the blob collection refused. A telemetry segment it removes after a run is counted
 among the omitted removals of the Task's `storage_sweep` record.
 

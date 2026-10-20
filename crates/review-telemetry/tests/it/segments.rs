@@ -1156,4 +1156,57 @@ fn telemetry_live_segment_beside_a_stale_seal_is_unsealed() {
         panic!("no seal");
     };
     assert_eq!(seal.exit, SealExit::Recovered);
+
+    // A live file recovery rejects never leaves the stale seal readable: the same-id
+    // `.jsonl.gz` and `.refs` go before the `.jsonl` is removed (empty) or renamed `.corrupt`
+    // (an invalid line before a valid one), so no listing takes them as sealed afterwards.
+    let sealed_beside = |live: &dyn Fn(&[u8]) -> Vec<u8>| {
+        let writer = crate::writer(temp.path(), Level::Spans);
+        let span = writer
+            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let id = sealed.segment_id.clone();
+        std::fs::write(
+            layout.live_segment(&id),
+            live(&crate::sealed_bytes(&sealed.path)),
+        )
+        .unwrap();
+        assert!(sealed.path.exists() && sealed.refs.exists());
+        assert_eq!(reader::list(&layout).unwrap().stale, [id.clone()]);
+        id
+    };
+    let empty = sealed_beside(&|_| Vec::new());
+    assert_eq!(reader::recover(&layout, &empty).unwrap(), Recovery::Empty);
+    let corrupt = sealed_beside(&|bytes| {
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        format!("{}\nnot a record\n{}\n", lines[0], lines[1]).into_bytes()
+    });
+    assert_eq!(
+        reader::recover(&layout, &corrupt).unwrap(),
+        Recovery::Corrupt {
+            segment_id: corrupt.clone()
+        }
+    );
+    assert!(layout.corrupt_segment(&corrupt).exists());
+    for rejected in [&empty, &corrupt] {
+        assert!(!layout.live_segment(rejected).exists(), "{rejected}");
+        assert!(
+            !layout.sealed_segment(rejected).exists(),
+            "{rejected}: the stale seal is gone"
+        );
+        assert!(
+            !layout.refs(rejected).exists(),
+            "{rejected}: the stale manifest is gone"
+        );
+    }
+    let listing = reader::list(&layout).unwrap();
+    assert_eq!(listing.sealed, [id.clone()], "{listing:?}");
+    assert_eq!(listing.refs, [id.clone()], "{listing:?}");
+    assert_eq!(listing.corrupt, [corrupt.clone()], "{listing:?}");
+    assert!(listing.stale.is_empty(), "{listing:?}");
+    let status = status_of(temp.path());
+    assert_eq!((status.segments.sealed, status.segments.unsealed), (1, 0));
 }

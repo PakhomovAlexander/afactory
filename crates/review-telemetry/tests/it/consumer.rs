@@ -338,12 +338,14 @@ fn telemetry_released_terminal_write_cannot_seal_after_the_deadline() {
 }
 
 /// Design §6: the deadline governs the whole publication, with no exemption for one already
-/// under way. The consumer's rename of the compressed copy is held until `finish` has given up
-/// at the 2 s bound and then completes; the unlink of the live `.jsonl` is held the same way.
-/// While held, the `.refs` (and then the `.jsonl.gz`) lie beside the live `.jsonl` and no
-/// reader takes them as sealed; once released, the consumer finds the deadline passed before
-/// the unlink, removes what it renamed into place and leaves the live segment, whose complete
-/// prefix a later reader recovers.
+/// under way, and once it has passed nothing of the seal is ever visible under its final name.
+/// The publication's hooks all run before its first step, and the deadline check is the last
+/// thing before each rename and runs again after it. The hook of the compressed copy's rename
+/// is held until `finish` has given up at the 2 s bound, then released, and so is the unlink's.
+/// A watcher looks at the directory from the moment `finish` returns until the consumer is done:
+/// a `.jsonl.gz` or a `.refs` under its final name at any moment after the deadline fails the
+/// test. The consumer finds the deadline passed, removes what it staged and leaves the live
+/// segment, whose complete prefix a later reader recovers.
 #[test]
 fn telemetry_stalled_rename_cannot_seal_after_the_deadline() {
     let temp = tempfile::tempdir().unwrap();
@@ -390,33 +392,47 @@ fn telemetry_stalled_rename_cannot_seal_after_the_deadline() {
     );
     assert!(started.elapsed() < Duration::from_secs(4));
     assert!(writer.abandoned());
+    // From here on, past the deadline, a watcher looks for the seal under its final names.
+    let done = Arc::new(AtomicBool::new(false));
+    let (watching, sealed, refs) = (done.clone(), layout.sealed_segment(&id), layout.refs(&id));
+    let watcher = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        loop {
+            let finished = watching.load(Ordering::SeqCst);
+            for path in [&sealed, &refs] {
+                if path.exists() {
+                    seen.push(path.display().to_string());
+                }
+            }
+            if finished {
+                return seen;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
     assert_eq!(
         steps.load(Ordering::SeqCst),
         2,
-        "held in the compressed rename"
+        "held in the compressed rename's hook"
     );
     let unsealed = |what: &str| {
         let listing = reader::list(&layout).unwrap();
         assert_eq!(listing.live, [id.clone()], "{what}: {listing:?}");
         assert!(listing.sealed.is_empty(), "{what}: {listing:?}");
         assert!(listing.refs.is_empty(), "{what}: {listing:?}");
-        assert_eq!(listing.stale, [id.clone()], "{what}: {listing:?}");
+        assert!(listing.stale.is_empty(), "{what}: {listing:?}");
     };
-    assert!(layout.refs(&id).exists() && layout.live_segment(&id).exists());
-    unsealed("the manifest beside the live segment");
+    assert!(layout.live_segment(&id).exists());
+    unsealed("the publication held before its first step");
 
-    // The held rename goes through after the deadline; the unlink's check finds it passed.
+    // The held hooks go through after the deadline; the next check finds it passed.
     opened.store(2, Ordering::SeqCst);
     let waiting = Instant::now();
     while steps.load(Ordering::SeqCst) < 3 {
         assert!(waiting.elapsed() < Duration::from_secs(10));
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(
-        layout.sealed_segment(&id).exists(),
-        "renamed after the deadline"
-    );
-    unsealed("the compressed copy beside the live segment");
+    unsealed("the unlink's hook held");
     opened.store(3, Ordering::SeqCst);
     let names = || -> Vec<String> {
         std::fs::read_dir(layout.segments())
@@ -428,12 +444,19 @@ fn telemetry_stalled_rename_cannot_seal_after_the_deadline() {
     while names().len() != 1 {
         assert!(
             waiting.elapsed() < Duration::from_secs(10),
-            "the released consumer withdraws what it renamed: {:?}",
+            "the released consumer removes what it staged: {:?}",
             names()
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    // Long enough for a consumer that would publish to have done so.
     std::thread::sleep(Duration::from_millis(200));
+    done.store(true, Ordering::SeqCst);
+    let seen = watcher.join().unwrap();
+    assert!(
+        seen.is_empty(),
+        "visible under a final name after the deadline: {seen:?}"
+    );
     assert_eq!(names(), [format!("{id}.jsonl")], "only the live segment");
     drop(writer);
     let recovering = Instant::now();
@@ -479,5 +502,83 @@ fn telemetry_stalled_rename_cannot_seal_after_the_deadline() {
         seal.exit,
         SealExit::Recovered,
         "the writer's seal superseded"
+    );
+}
+
+/// Design §6: a seal is reported only when the live `.jsonl` itself was unlinked. The live name
+/// is replaced by another file just before the publication's last step: the step finds the name
+/// no longer holding the writer's file, the staged seal is withdrawn — no `.jsonl.gz` and no
+/// `.refs` remain — the writer never says sealed, and `finish` reports the segment unsealed, as
+/// the listing does: the replacement is the `.jsonl` under the id, beside nothing sealed.
+#[test]
+fn telemetry_replaced_live_name_withdraws_the_seal() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = review_telemetry::layout::Layout::new(temp.path());
+    let mut options = options(temp.path(), Level::Spans);
+    let steps = Arc::new(AtomicU64::new(0));
+    let (step, segments) = (steps.clone(), layout.segments());
+    options.write_hook = Some(Arc::new(move |_| {
+        if writer::phase() == writer::Phase::Publish && step.fetch_add(1, Ordering::SeqCst) + 1 == 3
+        {
+            // The unlink's hook: another file takes the live name.
+            let live = std::fs::read_dir(&segments)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+                .unwrap();
+            let replacement = segments.join("replacement");
+            std::fs::write(&replacement, b"").unwrap();
+            std::fs::rename(&replacement, &live).unwrap();
+        }
+        Ok(())
+    }));
+    let writer = Writer::new(options).unwrap();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let run = writer
+        .span_start(
+            None,
+            Some(&command),
+            "af.run",
+            SpanKind::Internal,
+            Attrs::new(),
+        )
+        .unwrap();
+    writer.run_started();
+    writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
+    writer.run_ended();
+    writer.begin_terminal();
+    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+    let id = writer.segment_id().unwrap();
+    let error = writer.finish(SealExit::Ok).unwrap_err();
+    assert_eq!(error, writer::REPLACED, "reported unsealed");
+    assert_eq!(steps.load(Ordering::SeqCst), 3, "every step's hook ran");
+    assert!(writer.failed(), "never sealed");
+    assert!(
+        writer
+            .problems()
+            .iter()
+            .any(|(_, reason)| reason == writer::REPLACED),
+        "{:?}",
+        writer.problems()
+    );
+    assert!(
+        !layout.sealed_segment(&id).exists(),
+        "the seal is withdrawn"
+    );
+    assert!(!layout.refs(&id).exists(), "the manifest is withdrawn");
+    let mut names: Vec<String> = std::fs::read_dir(layout.segments())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, [format!("{id}.jsonl")], "only the replacement");
+    drop(writer);
+    let listing = reader::list(&layout).unwrap();
+    assert_eq!(listing.unsealed, [id.clone()], "{listing:?}");
+    assert!(
+        listing.sealed.is_empty() && listing.refs.is_empty() && listing.stale.is_empty(),
+        "{listing:?}"
     );
 }
