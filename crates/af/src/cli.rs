@@ -1419,8 +1419,9 @@ pub(crate) enum TelemetryCommand {
 Prints the configured `[telemetry] level`; the telemetry directory and its allocated bytes, in \
 total against `[telemetry] max_bytes` and per entry (each segment with its manifest, the blobs, \
 the index with its WAL and shared memory, temporary files, locks, and `unrecognized`: every \
-other path beneath the directory, counted once, named up to 16, never read or removed, so the \
-total is every allocated byte beneath it), each sealed segment with its \
+other path beneath the directory, a symbolic link included, counted once, named up to 16, never \
+read, followed or removed, so the total is every allocated byte beneath it), each sealed segment \
+with its \
 seal's `exit` and its capture (`complete`, or why not: `recovered, drops unknown`); the segments \
 by state — `live` (a writer holds its lock), `unsealed` (nobody does: a crashed writer's, \
 recovered by the next `reindex`), `sealed` and `corrupt` (interior corruption, never read); the \
@@ -1431,7 +1432,9 @@ byte (`fresh`, or `direct` when another command is replacing it and the segments
 directly, said on stderr); the distinct problems recorded; what cannot be read (a directory of \
 another telemetry version such as `v0/`, never read; a segment with an invalid line before a \
 valid one or a line over the 16 KiB record bound, never indexed); and every telemetry directory \
-registered on this machine, with any overlap rechecked.\n\n\
+registered on this machine, with its overlap rechecked: `none`, `overlapping`, or `unknown` when \
+the Store registry cannot be read (the problem is named among the problems and the exit code is \
+unchanged).\n\n\
 Never: recovers or removes a segment, records telemetry, reads a Store, reads around an index of \
 another schema version, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the telemetry directory cannot be read or its index is of another \

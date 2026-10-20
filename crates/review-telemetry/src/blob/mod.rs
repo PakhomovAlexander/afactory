@@ -84,68 +84,107 @@ fn ceil_boundary(text: &str, mut at: usize) -> usize {
     at
 }
 
+/// One source line (its body without the `\n`) redacted: a body longer than `max` bytes is
+/// withheld whole as [`redact::OVERSIZED_LINE`] before it is converted or judged at all.
+/// Returns the redacted body, whether it was withheld whole, and how many lines were withheld.
+fn redact_line(body: &[u8], max: usize, redactor: &Redactor) -> (String, bool, u32) {
+    if body.len() > max {
+        return (redact::OVERSIZED_LINE.to_string(), true, 1);
+    }
+    let (line, count) = redactor.text(&String::from_utf8_lossy(body));
+    (line, false, count)
+}
+
+/// The lines of `source`: each body and whether a `\n` ends it.
+fn source_lines(source: &[u8]) -> impl Iterator<Item = (&[u8], bool)> {
+    source
+        .split_inclusive(|byte| *byte == b'\n')
+        .map(|line| match line.strip_suffix(b"\n") {
+            Some(body) => (body, true),
+            None => (line, false),
+        })
+}
+
 /// Text redacted per line, then cut to `max` bytes head and tail. A line longer than `max` is
-/// withheld whole as [`redact::OVERSIZED_LINE`].
+/// withheld whole as [`redact::OVERSIZED_LINE`]. Nothing proportional to the source is
+/// allocated: a first pass measures the redacted text line by line, and a second keeps only
+/// what the head and the tail need, so what is held besides the source is bounded by `max` and
+/// one line at most `max` long.
 fn bounded_text(source: &[u8], max: usize, redactor: &Redactor) -> (String, bool, bool, u32) {
-    let text = String::from_utf8_lossy(source);
-    let mut redacted = String::with_capacity(text.len().min(max + 64));
+    let mut total = 0;
     let mut withheld = 0;
     let mut withheld_whole = false;
-    for line in text.split_inclusive('\n') {
-        let body = line.trim_end_matches('\n');
-        let end = &line[body.len()..];
-        if body.len() > max {
-            redacted.push_str(redact::OVERSIZED_LINE);
-            withheld += 1;
-            withheld_whole = true;
-        } else {
-            let (line, count) = redactor.text(body);
-            redacted.push_str(&line);
-            withheld += count;
-        }
-        redacted.push_str(end);
+    for (body, newline) in source_lines(source) {
+        let (line, whole, count) = redact_line(body, max, redactor);
+        total += line.len() + usize::from(newline);
+        withheld += count;
+        withheld_whole |= whole;
     }
-    if redacted.len() <= max {
+    if total <= max {
+        let mut redacted = String::with_capacity(total);
+        for (body, newline) in source_lines(source) {
+            redacted.push_str(&redact_line(body, max, redactor).0);
+            if newline {
+                redacted.push('\n');
+            }
+        }
         return (redacted, false, withheld_whole, withheld);
     }
     // Room for the marker, with the widest count it can carry.
-    let marker_room = truncation_marker(redacted.len()).len();
+    let marker_room = truncation_marker(total).len();
     let keep = max.saturating_sub(marker_room);
-    let head_end = floor_boundary(&redacted, keep / 2);
-    let tail_start = ceil_boundary(&redacted, redacted.len() - (keep - keep / 2));
-    let cut = tail_start - head_end;
-    let bounded = format!(
-        "{}{}{}",
-        &redacted[..head_end],
-        truncation_marker(cut),
-        &redacted[tail_start..]
-    );
+    let head_budget = keep / 2;
+    let tail_from = total - (keep - keep / 2);
+    let (mut head, mut tail) = (String::new(), String::new());
+    let (mut head_end, mut tail_start) = (0, total);
+    let mut offset = 0;
+    for (body, newline) in source_lines(source) {
+        let mut line = redact_line(body, max, redactor).0;
+        if newline {
+            line.push('\n');
+        }
+        let (start, end) = (offset, offset + line.len());
+        offset = end;
+        if start >= head_budget && end <= tail_from {
+            continue;
+        }
+        if start < head_budget {
+            let at = floor_boundary(&line, head_budget - start);
+            head.push_str(&line[..at]);
+            head_end = start + at;
+        }
+        if end > tail_from {
+            let at = ceil_boundary(&line, tail_from.saturating_sub(start));
+            if tail.is_empty() {
+                tail_start = start + at;
+            }
+            tail.push_str(&line[at..]);
+        }
+    }
+    let bounded = format!("{head}{}{tail}", truncation_marker(tail_start - head_end));
     (bounded, true, withheld_whole, withheld)
 }
 
+/// The retained bytes of a JSON source withheld whole: the JSON string [`redact::WITHHELD`].
+fn withheld_json() -> Vec<u8> {
+    serde_json::to_vec(redact::WITHHELD).expect("a string serializes")
+}
+
 /// Redact, bound, digest and compress `source` under the current redaction version.
+///
+/// The bound is judged before anything is parsed: a JSON source longer than `max_blob_bytes`
+/// is one document too long to be judged whole and becomes the withheld value at once, whether
+/// it is well-formed or not, with nothing deserialized or allocated for it.
 pub fn prepare(source: &[u8], media: Media, max_blob_bytes: u64, redactor: &Redactor) -> Prepared {
     let max = usize::try_from(max_blob_bytes).unwrap_or(usize::MAX);
     let (retained, truncated, withheld_whole, redacted, media) = match media {
+        Media::Json if source.len() > max => (withheld_json(), false, true, 1, Media::Json),
         Media::Json => match serde_json::from_slice::<serde_json::Value>(source) {
-            Ok(_) if source.len() > max => (
-                serde_json::to_vec(redact::WITHHELD).expect("a string serializes"),
-                false,
-                true,
-                1,
-                Media::Json,
-            ),
             Ok(mut document) => {
                 let redacted = redactor.json(&mut document);
                 let bytes = serde_json::to_vec(&document).expect("a value serializes");
                 if bytes.len() > max {
-                    (
-                        serde_json::to_vec(redact::WITHHELD).expect("a string serializes"),
-                        false,
-                        true,
-                        redacted + 1,
-                        Media::Json,
-                    )
+                    (withheld_json(), false, true, redacted + 1, Media::Json)
                 } else {
                     (bytes, false, false, redacted, Media::Json)
                 }
@@ -197,8 +236,9 @@ pub struct Staged {
 pub fn stage(layout: &Layout, prepared: &Prepared) -> std::io::Result<Staged> {
     let path = layout.blob(&prepared.digest);
     let parent = path.parent().expect("a blob has a directory");
-    std::fs::create_dir_all(parent)?;
-    let temp = parent.join(layout::temp_name("blob"));
+    // Never through a link: a prefix directory linked elsewhere refuses the blob.
+    layout.create_dirs(parent)?;
+    let temp = parent.join(layout::temp_name(layout::BLOB_TEMP_LABEL));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -223,7 +263,8 @@ pub enum Placed {
 /// Put a staged blob in place: an existing file of the digest with the same size is reused and
 /// the temporary file removed; anything else is replaced by the rename.
 pub fn place(staged: &Staged) -> std::io::Result<Placed> {
-    match std::fs::metadata(&staged.path) {
+    // Judged without following a link: a link in a blob's place is replaced, never reused.
+    match std::fs::symlink_metadata(&staged.path) {
         Ok(existing) if existing.is_file() && existing.len() == staged.stored_bytes => {
             std::fs::remove_file(&staged.temp)?;
             Ok(Placed::Reused)
@@ -238,6 +279,56 @@ pub fn place(staged: &Staged) -> std::io::Result<Placed> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text bound as one whole redacted string would give it: the two-pass bound must
+    /// retain exactly these bytes.
+    fn whole_then_cut(source: &[u8], max: usize, redactor: &Redactor) -> String {
+        let mut redacted = String::new();
+        for (body, newline) in source_lines(source) {
+            redacted.push_str(&redact_line(body, max, redactor).0);
+            if newline {
+                redacted.push('\n');
+            }
+        }
+        if redacted.len() <= max {
+            return redacted;
+        }
+        let keep = max.saturating_sub(truncation_marker(redacted.len()).len());
+        let head_end = floor_boundary(&redacted, keep / 2);
+        let tail_start = ceil_boundary(&redacted, redacted.len() - (keep - keep / 2));
+        format!(
+            "{}{}{}",
+            &redacted[..head_end],
+            truncation_marker(tail_start - head_end),
+            &redacted[tail_start..]
+        )
+    }
+
+    #[test]
+    fn the_two_pass_text_bound_retains_what_the_whole_text_would() {
+        let redactor = Redactor::new().with_home("/home/violet");
+        let mut source = String::new();
+        for line in 0..300 {
+            match line % 5 {
+                0 => source.push_str(&format!("é line {line} ünïcode\n")),
+                1 => source.push_str("password = pw\n"),
+                2 => source.push_str("/home/violet/project/src\n"),
+                3 => source.push_str(&"x".repeat(line)),
+                _ => source.push('\n'),
+            }
+        }
+        for max in [64, 100, 257, 1000, 4096, 9000, 100_000] {
+            let (bounded, truncated, _, _) = bounded_text(source.as_bytes(), max, &redactor);
+            assert_eq!(
+                bounded,
+                whole_then_cut(source.as_bytes(), max, &redactor),
+                "{max}"
+            );
+            assert_eq!(truncated, bounded.contains("bytes truncated"), "{max}");
+            assert!(!bounded.contains("pw\n"), "{max}");
+            assert!(bounded.len() <= max.max(64), "{max}: {}", bounded.len());
+        }
+    }
 
     #[test]
     fn equal_bytes_compress_to_equal_files() {

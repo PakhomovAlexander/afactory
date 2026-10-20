@@ -288,7 +288,10 @@ pub struct Demand {
     pub status: String,
 }
 
-/// `blob`, `af/TelemetryBlob@1`: the shared object, written once per digest per segment.
+/// `blob`, `af/TelemetryBlob@1`: the shared object, written once per digest per segment. It
+/// holds what the retained bytes are; how a source came to be those bytes (its media type, the
+/// redaction it passed) belongs to each occurrence, since two sources of different media types
+/// may retain identical bytes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlobObject {
@@ -300,8 +303,8 @@ pub struct BlobObject {
     pub bytes: u64,
     /// Compressed bytes on disk.
     pub stored_bytes: u64,
-    pub media_type: String,
-    /// The redaction version the retained bytes passed.
+    /// The redaction version this segment's writer applies, the one every occurrence of the
+    /// object in this segment passed.
     pub redaction: String,
 }
 
@@ -339,6 +342,12 @@ pub struct BlobRef {
     pub original_bytes: u64,
     pub truncated: bool,
     pub state: BlobState,
+    /// How this occurrence's source was judged and how its retained bytes read:
+    /// `text/plain; charset=utf-8` (redacted per line) or `application/json` (redacted as one
+    /// document).
+    pub media_type: String,
+    /// The redaction version this occurrence's retained bytes passed.
+    pub redaction: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -751,8 +760,9 @@ pub fn cut(text: &str, max: usize) -> String {
     format!("{}{ELLIPSIS}", &text[..end])
 }
 
-/// Bound one untrusted text value: redacted whole, then over [`MAX_STRING_BYTES`] either named
-/// as a blob occurrence by `oversized` (at `content`) or cut.
+/// Bound one untrusted text value: redacted whole, then, when the redacted value is over
+/// [`MAX_STRING_BYTES`], either offered as the original value to `oversized`, which at `content`
+/// names one blob occurrence holding it redacted, or cut.
 fn bound_text(
     key: &str,
     text: &str,
@@ -767,7 +777,9 @@ fn bound_text(
     if value.len() <= MAX_STRING_BYTES {
         return value;
     }
-    if let Some(occurrence) = oversized(key, Oversized::Text(&value)) {
+    // The blob's source is the original value: the occurrence's `source_digest` and
+    // `original_bytes` describe it, and only its redacted form is retained.
+    if let Some(occurrence) = oversized(key, Oversized::Text(text)) {
         return format!("{OCCURRENCE_PREFIX}{occurrence}");
     }
     counters.truncated += 1;
@@ -835,7 +847,10 @@ fn bound_texts(
 /// A value over its bound, offered for a blob at `content`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Oversized<'a> {
-    /// A text value, judged whole and replaced: the blob is that text.
+    /// A text value as the writer gave it, before any redaction, whose redacted form is still
+    /// over the bound: the blob's source is that original text, redacted per line before it is
+    /// retained, so the occurrence's `source_digest` and `original_bytes` describe the
+    /// original value.
     Text(&'a str),
     /// A string array as the writer gave it, before any redaction: the blob's source is the
     /// whole array as one JSON document, redacted as one document before it is retained, so
@@ -843,9 +858,53 @@ pub enum Oversized<'a> {
     Texts(&'a [String]),
 }
 
+/// The attribute names of design §5 that hold a secret-name part (`token`, `auth`) yet are typed
+/// by af's own schema: exact counters and enumerations. Under any other name, and with any
+/// other value shape under these, the secret-name rule withholds the value.
+pub const TYPED_SECRET_NAMED: [(&str, TypedName); 13] = [
+    ("af.admission.reserved_tokens", TypedName::Counter),
+    ("af.authority.load", TypedName::Enumeration),
+    ("af.context.estimated_tokens", TypedName::Counter),
+    ("af.usage.cache_read_tokens", TypedName::Counter),
+    ("af.usage.cache_write_tokens", TypedName::Counter),
+    ("af.usage.chargeable_tokens", TypedName::Counter),
+    ("af.usage.input_tokens", TypedName::Counter),
+    ("af.usage.output_tokens", TypedName::Counter),
+    ("af.usage.reasoning_tokens", TypedName::Counter),
+    ("gen_ai.client.token.usage", TypedName::Counter),
+    ("gen_ai.token.type", TypedName::Enumeration),
+    ("gen_ai.usage.input_tokens", TypedName::Counter),
+    ("gen_ai.usage.output_tokens", TypedName::Counter),
+];
+
+/// How af's schema types an attribute of [`TYPED_SECRET_NAMED`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedName {
+    /// A canonical decimal string or an integer.
+    Counter,
+    /// A value of a closed enumeration.
+    Enumeration,
+}
+
+/// Whether a secret-named `key` is one af's schema types and `value` is that typed field.
+fn typed_secret_named(key: &str, value: &Attr) -> bool {
+    TYPED_SECRET_NAMED
+        .iter()
+        .find(|(name, _)| *name == key)
+        .is_some_and(|(_, typed)| {
+            matches!(
+                (typed, value),
+                (TypedName::Counter, Attr::Decimal(_) | Attr::Int(_))
+                    | (TypedName::Enumeration, Attr::Enum(_))
+            )
+        })
+}
+
 /// Bound a writer's attributes: redact untrusted text whole, validate typed values, apply the
 /// per-value bounds and the count bound. An attribute whose name passes for a credential is
-/// omitted and counted in `af.redacted`. `oversized` is offered each string value and each
+/// omitted and counted in `af.redacted`; one whose name matches the secret-name rule keeps its
+/// name and has its value withheld whole, counted the same way ([`TYPED_SECRET_NAMED`] lists
+/// the typed exceptions). `oversized` is offered each string value and each
 /// string array over its bound and returns the occurrence id of a blob that now holds it, or
 /// `None` to cut it; outside `content` the writer passes a function that always returns `None`.
 pub fn bound_attributes(
@@ -866,6 +925,14 @@ pub fn bound_attributes(
         }
         if key.len() > MAX_KEY_BYTES || COUNTERS.contains(&key.as_str()) || out.len() >= room {
             counters.dropped += 1;
+            continue;
+        }
+        // The secret-name rule, as for a JSON member or a configuration row: the key stays and
+        // its value is withheld whole whatever its shape, unless af's own schema types the key
+        // as a counter or an enumeration and the value is that typed field.
+        if redact::secret_name(&key) && !typed_secret_named(&key, &value) {
+            counters.redacted += 1;
+            out.insert(key, Value::String(redact::WITHHELD.to_string()));
             continue;
         }
         let value = match value {

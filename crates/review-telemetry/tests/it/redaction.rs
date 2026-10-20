@@ -506,3 +506,210 @@ fn telemetry_credential_shaped_attribute_names_are_withheld() {
         assert!(judged >= 1, "{level:?}: no record carried the attributes");
     }
 }
+
+/// The secret-name rule applies to every attribute key at every level: the key stays, its value
+/// is withheld whatever its shape (text, typed or array), and `af.redacted` counts it; the
+/// counters af's own schema types under a `token` name keep their values.
+#[test]
+fn telemetry_secret_named_attribute_keys_withhold_values() {
+    for level in [Level::Metrics, Level::Spans, Level::Content] {
+        let temp = tempfile::tempdir().unwrap();
+        let writer =
+            review_telemetry::segment::writer::Writer::new(options(temp.path(), level)).unwrap();
+        let attrs = || {
+            Attrs::new()
+                .text("api_key", "violet")
+                .id("session_token", "violet-id")
+                .int("db_password", 4242)
+                .decimal("client_secret", "9876543210")
+                .boolean("auth", true)
+                .enumerated("x-auth-mode", "violet")
+                .texts("credentials", vec!["violet".into(), "indigo".into()])
+                .text("api_key_long", "violet ".repeat(400))
+                .decimal("af.usage.input_tokens", "12")
+                .text("af.usage.output_tokens", "violet")
+                .id("af.node_id", "n1")
+        };
+        let span = writer
+            .span_start(None, None, "af.command", SpanKind::Internal, attrs())
+            .unwrap();
+        writer.event(&span, "af.note", attrs());
+        writer.span_end(&span, SpanStatus::Ok, attrs(), 0);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let lines = sealed_lines(&sealed.path);
+        let mut checked = 0;
+        for line in &lines {
+            let Some(attributes) = line.get("attributes") else {
+                continue;
+            };
+            for key in [
+                "api_key",
+                "session_token",
+                "db_password",
+                "client_secret",
+                "auth",
+                "x-auth-mode",
+                "credentials",
+                "api_key_long",
+                "af.usage.output_tokens",
+            ] {
+                assert_eq!(attributes[key], WITHHELD, "{level:?} {key}: {line}");
+            }
+            assert_eq!(attributes["af.usage.input_tokens"], "12", "{line}");
+            assert_eq!(attributes["af.node_id"], "n1", "{line}");
+            assert_eq!(attributes["af.redacted"], 9, "{line}");
+            checked += 1;
+        }
+        assert_eq!(checked, 3, "{level:?}");
+        let text = String::from_utf8(crate::sealed_bytes(&sealed.path)).unwrap();
+        for planted in ["violet", "indigo", "4242", "9876543210"] {
+            assert!(!text.contains(planted), "{level:?}: {planted} in {text}");
+        }
+        // Nothing became a blob: a withheld value is never content.
+        assert!(!Layout::new(temp.path()).blobs().exists(), "{level:?}");
+    }
+}
+
+/// The credential rule reaches every field of every record kind: a typed field of a `node`,
+/// `finding`, `demand` or `config` record keeps a value that validates as an identity and is
+/// judged whole otherwise, and a header's `argv` withholds the value of an option under a
+/// secret name.
+#[test]
+fn telemetry_record_kinds_judge_every_field() {
+    use review_telemetry::record::{ConfigRow, Demand, Finding, Node, schema};
+    let planted = "API_KEY=violet";
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = options(temp.path(), Level::Spans);
+    options.argv = ["af", "task", "--api-key", "violet", "--model", "opus"]
+        .map(str::to_string)
+        .to_vec();
+    let writer = review_telemetry::segment::writer::Writer::new(options).unwrap();
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.node(Node {
+        seq: 0,
+        schema: schema::NODE.into(),
+        execution_id: planted.into(),
+        plan_digest: DIGEST.into(),
+        node_id: "n1".into(),
+        kind: planted.into(),
+        package: Some(planted.into()),
+        depends_on: vec!["n0".into(), planted.into()],
+        expected_nodes: 2,
+    });
+    writer.finding(Finding {
+        seq: 0,
+        schema: schema::FINDING.into(),
+        span_id: span.clone(),
+        key: "correctness:src/lib.rs:12".into(),
+        severity: "high".into(),
+        effective_severity: planted.into(),
+        status: "open".into(),
+        scope: planted.into(),
+        file: None,
+        line: Some(12),
+        title: "a title".into(),
+        report_artifact_id: DIGEST.into(),
+        node_id: "n1".into(),
+        worker: planted.into(),
+        model: Some(planted.into()),
+        round: None,
+        epoch: None,
+    });
+    writer.demand(Demand {
+        seq: 0,
+        schema: schema::DEMAND.into(),
+        span_id: span.clone(),
+        demand_id: "d-1".into(),
+        kind: planted.into(),
+        required: true,
+        subject_id: planted.into(),
+        snapshot_id: DIGEST.into(),
+        status: planted.into(),
+    });
+    writer.config(
+        planted,
+        vec![ConfigRow {
+            key: "telemetry.level".into(),
+            value: "\"spans\"".into(),
+            layer: "built-in".into(),
+            origin: None,
+        }],
+    );
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let text = String::from_utf8(crate::sealed_bytes(&sealed.path)).unwrap();
+    assert!(!text.contains("violet"), "{text}");
+    let lines = sealed_lines(&sealed.path);
+    let of = |kind: &str| {
+        lines
+            .iter()
+            .find(|line| line["t"] == kind)
+            .unwrap_or_else(|| panic!("no {kind}"))
+            .clone()
+    };
+    assert_eq!(
+        of("segment")["argv"],
+        json!(["af", "task", "--api-key", WITHHELD, "--model", "opus"])
+    );
+    let node = of("node");
+    assert_eq!(node["execution_id"], WITHHELD);
+    assert_eq!(node["kind"], WITHHELD);
+    assert_eq!(node["package"], WITHHELD);
+    assert_eq!(node["depends_on"], json!(["n0", WITHHELD]));
+    assert_eq!(
+        (node["plan_digest"].as_str(), node["node_id"].as_str()),
+        (Some(DIGEST), Some("n1"))
+    );
+    let finding = of("finding");
+    for field in ["effective_severity", "scope", "worker", "model"] {
+        assert_eq!(finding[field], WITHHELD, "{field}");
+    }
+    assert_eq!(finding["key"], "correctness:src/lib.rs:12");
+    assert_eq!(finding["report_artifact_id"], DIGEST);
+    assert_eq!(finding["span_id"], span.as_str());
+    let demand = of("demand");
+    for field in ["kind", "subject_id", "status"] {
+        assert_eq!(demand[field], WITHHELD, "{field}");
+    }
+    assert_eq!(demand["snapshot_id"], DIGEST);
+    assert_eq!(demand["demand_id"], "d-1");
+    assert_eq!(of("config")["execution_id"], WITHHELD);
+}
+
+/// A `HOME` the redactor cannot use is never a silent omission: the writer records one
+/// `redaction` problem right after the header naming why home paths are not replaced.
+#[test]
+fn telemetry_unknown_home_is_reported() {
+    for (home, why) in [
+        (None, "HOME is not set"),
+        (Some("relative/home"), "HOME is not absolute"),
+        (Some("/"), "HOME is `/`"),
+    ] {
+        let redactor = Redactor::with_home_variable(home.map(std::ffi::OsStr::new));
+        assert!(redactor.home_unknown().unwrap().contains(why), "{why}");
+        let temp = tempfile::tempdir().unwrap();
+        let mut options = options(temp.path(), Level::Spans);
+        options.redactor = redactor;
+        let writer = review_telemetry::segment::writer::Writer::new(options).unwrap();
+        let span = writer
+            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let lines = sealed_lines(&sealed.path);
+        assert_eq!(lines[1]["t"], "problem", "{lines:?}");
+        assert_eq!(lines[1]["seq"], 2);
+        assert_eq!(lines[1]["what"], "redaction");
+        assert!(lines[1]["reason"].as_str().unwrap().contains(why));
+        assert_eq!(
+            lines.iter().filter(|line| line["t"] == "problem").count(),
+            1,
+            "{why}"
+        );
+    }
+    let usable = Redactor::with_home_variable(Some(std::ffi::OsStr::new("/home/violet")));
+    assert_eq!(usable.home_unknown(), None);
+    assert_eq!(usable.replace("/home/violet/src"), "~/src");
+}

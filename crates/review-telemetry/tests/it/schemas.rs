@@ -140,6 +140,7 @@ fn status_and_reindex_documents_match_their_schemas() {
         max_bytes: 4 << 30,
         registry: Some(dirs::location(&temp.path().join("state"))),
         accounted: Vec::new(),
+        accounted_unknown: None,
     };
 
     // A directory that does not exist, and an empty one.
@@ -244,6 +245,7 @@ fn telemetry_status_accounts_every_byte_under_the_root() {
         max_bytes: 4 << 30,
         registry: Some(dirs::location(&temp.path().join("state"))),
         accounted: Vec::new(),
+        accounted_unknown: None,
     };
     let schema = validator("telemetry-status-v1.json");
     let root = temp.path().join("telemetry");

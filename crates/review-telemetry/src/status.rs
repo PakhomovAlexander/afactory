@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dirs::{self, Registered};
 use crate::index::{self, Index, Mode};
-use crate::layout::{self, Layout};
+use crate::layout::{self, Confined, EntryKind, Layout};
 use crate::level::Level;
 use crate::segment::reader::{self, Recovery};
 use crate::trace::sha256_digest;
@@ -114,7 +114,8 @@ pub struct IndexState {
 pub struct ProblemCount {
     pub what: String,
     pub reason: String,
-    /// Segments that recorded it.
+    /// Segments that recorded it; 0 for the problem this command finds itself (`registry`: the
+    /// accounted directories could not all be read).
     pub segments: u64,
 }
 
@@ -134,11 +135,41 @@ pub struct RegisteredDir {
     pub current: bool,
     pub first_use_unix_ms: u64,
     pub last_use_unix_ms: u64,
-    /// Why the directory overlaps other accounted state, rechecked now: the inventory counts it
-    /// once, by the containing entry, and never evicts it as telemetry.
+    /// The overlap check, rechecked now: `none`, `overlapping`, or `unknown` when what the
+    /// storage inventory accounts could not be read whole (the Store registry is unreadable or
+    /// of another version), so no directory is presented as standing alone.
+    pub overlap: OverlapCheck,
+    /// Why the directory overlaps other accounted state: the inventory counts it once, by the
+    /// containing entry, and never evicts it as telemetry. Under `unknown`, an overlap found
+    /// among what could be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlapping: Option<String>,
 }
+
+/// The outcome of a registered directory's overlap check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlapCheck {
+    /// It overlaps nothing the inventory accounts, all of which was read.
+    None,
+    Overlapping,
+    /// The accounted directories could not all be read: the check is incomplete.
+    Unknown,
+}
+
+impl OverlapCheck {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Overlapping => "overlapping",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// The `what` of the problem `status` names when the accounted directories could not all be
+/// read.
+pub const REGISTRY_PROBLEM: &str = "registry";
 
 /// `af/telemetry-status@1`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -240,6 +271,7 @@ fn registered(
     registry: Option<&Path>,
     root: &Path,
     accounted: &[dirs::Accounted],
+    accounted_unknown: bool,
 ) -> Result<Vec<RegisteredDir>, String> {
     let Some(registry) = registry else {
         return Ok(Vec::new());
@@ -254,14 +286,22 @@ fn registered(
                  path,
                  first_use_unix_ms,
                  last_use_unix_ms,
-             }| RegisteredDir {
-                exists: path.is_dir(),
-                current: path == current,
-                overlapping: dirs::overlap(&path, &paths, accounted)
-                    .map(|overlap| overlap.to_string()),
-                path: path.display().to_string(),
-                first_use_unix_ms,
-                last_use_unix_ms,
+             }| {
+                let overlapping =
+                    dirs::overlap(&path, &paths, accounted).map(|overlap| overlap.to_string());
+                RegisteredDir {
+                    exists: path.is_dir(),
+                    current: path == current,
+                    overlap: match (&overlapping, accounted_unknown) {
+                        (_, true) => OverlapCheck::Unknown,
+                        (Some(_), false) => OverlapCheck::Overlapping,
+                        (None, false) => OverlapCheck::None,
+                    },
+                    overlapping,
+                    path: path.display().to_string(),
+                    first_use_unix_ms,
+                    last_use_unix_ms,
+                }
             },
         )
         .collect())
@@ -277,6 +317,9 @@ pub struct StatusInput {
     pub registry: Option<PathBuf>,
     /// Every directory the storage inventory accounts on its own, for the overlap recheck.
     pub accounted: Vec<dirs::Accounted>,
+    /// Why `accounted` is known incomplete (the Store registry could not be read): every
+    /// overlap check is then `unknown` and the reason is one of the document's problems.
+    pub accounted_unknown: Option<String>,
 }
 
 /// `af telemetry status`. `Err` when the directory cannot be read; the caller exits 1.
@@ -308,8 +351,21 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         },
         problems: Vec::new(),
         unreadable: Vec::new(),
-        registered: registered(input.registry.as_deref(), root, &input.accounted)?,
+        registered: registered(
+            input.registry.as_deref(),
+            root,
+            &input.accounted,
+            input.accounted_unknown.is_some(),
+        )?,
     };
+    // Named first, and kept on every path out of this function: an unreadable registry never
+    // hides an overlap silently.
+    let registry_problem = input.accounted_unknown.as_ref().map(|reason| ProblemCount {
+        what: REGISTRY_PROBLEM.into(),
+        reason: format!("overlap checks are unknown: {reason}"),
+        segments: 0,
+    });
+    status.problems.extend(registry_problem.clone());
     match std::fs::metadata(root) {
         Ok(metadata) if metadata.is_dir() => status.exists = true,
         Ok(_) => return Err(format!("{} is not a directory", root.display())),
@@ -326,7 +382,7 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         });
         status.bytes.total += allocated_tree(&other);
     }
-    if !layout.versioned().is_dir() {
+    if !layout.has_versioned() {
         if let Some(entry) = unrecognized(&layout) {
             status.bytes.total += entry.bytes;
             status.bytes.entries.push(entry);
@@ -424,14 +480,18 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
             entry.capture = Some(capture);
         }
     }
-    status.problems = index
-        .problems()?
+    status.problems = registry_problem
         .into_iter()
-        .map(|(what, reason, segments)| ProblemCount {
-            what,
-            reason,
-            segments,
-        })
+        .chain(
+            index
+                .problems()?
+                .into_iter()
+                .map(|(what, reason, segments)| ProblemCount {
+                    what,
+                    reason,
+                    segments,
+                }),
+        )
         .collect();
     let note = index.note.clone();
     drop(index);
@@ -473,30 +533,34 @@ enum Known {
     Unrecognized,
 }
 
-fn known(place: Place, name: &str, is_dir: bool, layout: &Layout) -> Known {
+fn known(place: Place, name: &str, kind: EntryKind, layout: &Layout) -> Known {
+    let is_dir = kind == EntryKind::Directory;
+    let is_file = kind == EntryKind::File;
     match place {
         Place::Root if name == layout::VERSION_DIR && is_dir => Known::Own(Place::Versioned),
         Place::Root if reader::is_other_version(name) => Known::Tree,
         Place::Versioned if name == "segments" && is_dir => Known::Own(Place::Segments),
         Place::Versioned if name == "blobs" && is_dir => Known::Own(Place::Blobs),
-        Place::Blobs if is_dir && name.len() == 2 && crate::redact::is_lower_hex(name) => {
+        Place::Blobs if is_dir && layout::is_blob_prefix(name) => {
             let prefix = name.as_bytes();
             Known::Own(Place::BlobPrefix([prefix[0], prefix[1]]))
         }
-        Place::BlobPrefix(prefix) if !is_dir && is_blob_file(prefix, name) => {
+        Place::BlobPrefix(prefix) if is_file && is_blob_file(prefix, name) => {
             Known::Own(Place::Foreign)
         }
         Place::Versioned
-            if [layout.gc_lock(), layout.index_lock(), layout.index_intent()]
-                .iter()
-                .chain(layout.index_files().iter())
-                .any(|path| path.file_name().is_some_and(|known| known == name)) =>
+            if is_file
+                && [layout.gc_lock(), layout.index_lock(), layout.index_intent()]
+                    .iter()
+                    .chain(layout.index_files().iter())
+                    .any(|path| path.file_name().is_some_and(|known| known == name)) =>
         {
             Known::Own(Place::Foreign)
         }
         Place::Segments
-            if name.starts_with(layout::TEMP_PREFIX)
-                || layout::parse_segment_name(name).is_some() =>
+            if is_file
+                && (layout::is_temp_name(name, layout::WRITE_TEMP_LABEL)
+                    || layout::parse_segment_name(name).is_some()) =>
         {
             Known::Own(Place::Foreign)
         }
@@ -505,14 +569,20 @@ fn known(place: Place, name: &str, is_dir: bool, layout: &Layout) -> Known {
 }
 
 /// A file a publisher leaves in `blobs/<aa>/`: the object `<64 hex>.gz` whose digest starts
-/// with `aa`, or a temporary file the collector removes.
+/// with `aa`, or a temporary file the collector removes. A link or a stray name is neither.
 fn is_blob_file(prefix: [u8; 2], name: &str) -> bool {
-    if name.starts_with(layout::TEMP_PREFIX) {
-        return true;
+    let prefix = std::str::from_utf8(&prefix).unwrap_or_default();
+    layout::is_temp_name(name, layout::BLOB_TEMP_LABEL)
+        || layout::blob_object_digest(prefix, name).is_some()
+}
+
+/// What `path` is, without following a link.
+fn entry_kind(path: &Path) -> EntryKind {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => EntryKind::Directory,
+        Ok(metadata) if metadata.is_file() => EntryKind::File,
+        _ => EntryKind::Other,
     }
-    name.strip_suffix(".gz").is_some_and(|hex| {
-        hex.len() == 64 && crate::redact::is_lower_hex(hex) && hex.as_bytes()[..2] == prefix
-    })
 }
 
 /// The `blobs` entry: the `blobs/` directory itself, its prefix directories, the objects and
@@ -530,8 +600,9 @@ fn blob_bytes(layout: &Layout) -> u64 {
         };
         for child in children.filter_map(Result::ok) {
             let path = child.path();
-            let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir());
-            match known(place, &child.file_name().to_string_lossy(), is_dir, layout) {
+            let kind = entry_kind(&path);
+            let is_dir = kind == EntryKind::Directory;
+            match known(place, &child.file_name().to_string_lossy(), kind, layout) {
                 Known::Tree => bytes += allocated_tree(&path),
                 Known::Own(inner) => {
                     bytes += allocated(&path);
@@ -560,8 +631,9 @@ fn unrecognized(layout: &Layout) -> Option<Entry> {
         };
         for child in children.filter_map(Result::ok) {
             let path = child.path();
-            let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir());
-            match known(place, &child.file_name().to_string_lossy(), is_dir, layout) {
+            let kind = entry_kind(&path);
+            let is_dir = kind == EntryKind::Directory;
+            match known(place, &child.file_name().to_string_lossy(), kind, layout) {
                 Known::Tree => {}
                 Known::Own(inner) => {
                     if is_dir {
@@ -597,26 +669,34 @@ fn verify_blobs(layout: &Layout) -> Option<Vec<String>> {
         .ok()
         .flatten()?;
     let mut corrupt = Vec::new();
-    let Ok(prefixes) = std::fs::read_dir(layout.blobs()) else {
+    // The collector's grammar and confinement: only real prefix directories and regular files
+    // named by their digest are opened, relative to the opened directory, never through a link.
+    let Ok(Some(mut blobs)) = Confined::versioned(layout, "blobs") else {
         return Some(corrupt);
     };
-    for prefix in prefixes.filter_map(Result::ok) {
-        let Ok(files) = std::fs::read_dir(prefix.path()) else {
+    for prefix_name in blobs.names().unwrap_or_default() {
+        if !layout::is_blob_prefix(&prefix_name) {
+            continue;
+        }
+        let Ok(Some(mut prefix)) = blobs.child_dir(&prefix_name) else {
             continue;
         };
-        for file in files.filter_map(Result::ok) {
-            let name = file.file_name().to_string_lossy().to_string();
-            let Some(hex) = name.strip_suffix(".gz") else {
+        for name in prefix.names().unwrap_or_default() {
+            let Some(digest) = layout::blob_object_digest(&prefix_name, &name) else {
                 continue;
             };
-            if name.starts_with(layout::TEMP_PREFIX) {
+            if prefix.kind(&name) != Some(EntryKind::File) {
                 continue;
             }
-            let digest = format!("sha256:{hex}");
-            let ok = std::fs::File::open(file.path()).is_ok_and(|handle| {
+            let limit = crate::level::CONTENT_MAX_BLOB_BYTES_BOUND;
+            let ok = prefix.open_file(&name).is_ok_and(|handle| {
                 let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(handle), &mut bytes)
-                    .is_ok()
+                std::io::Read::read_to_end(
+                    &mut std::io::Read::take(flate2::read::GzDecoder::new(handle), limit + 1),
+                    &mut bytes,
+                )
+                .is_ok()
+                    && bytes.len() as u64 <= limit
                     && sha256_digest(&bytes) == digest
             });
             if !ok {
@@ -659,7 +739,7 @@ pub fn reindex(root: &Path) -> Result<Reindex, String> {
             })
             .collect(),
     };
-    if !layout.versioned().is_dir() {
+    if !layout.has_versioned() {
         return Ok(document);
     }
     for recovery in reader::recover_all(&layout)? {

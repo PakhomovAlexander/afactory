@@ -376,6 +376,8 @@ pub fn is_canonical_decimal(value: &str) -> bool {
 pub struct Redactor {
     home: Option<String>,
     grants: Vec<(String, String)>,
+    /// Why the home prefix is unknown, when the environment did not give a usable one.
+    home_unknown: Option<String>,
 }
 
 impl Redactor {
@@ -386,11 +388,32 @@ impl Redactor {
 
     /// The rules with the current process's `HOME` as the home prefix.
     pub fn for_this_process() -> Self {
-        let mut redactor = Self::new();
-        if let Some(home) = std::env::var_os("HOME") {
-            redactor = redactor.with_home(&home.to_string_lossy());
+        Self::with_home_variable(std::env::var_os("HOME").as_deref())
+    }
+
+    /// The rules with `home` (the value of `HOME`) as the home prefix. A value that gives no
+    /// usable prefix (unset, not UTF-8, not absolute, or `/`) is never silently dropped: the
+    /// redactor says so through [`Self::home_unknown`], and the writer records it as one
+    /// `redaction` problem.
+    pub fn with_home_variable(home: Option<&std::ffi::OsStr>) -> Self {
+        let unknown = |why: &str| Self {
+            home_unknown: Some(format!(
+                "the home directory is unknown ({why}): home paths are not replaced by `~`"
+            )),
+            ..Self::default()
+        };
+        match home.map(std::ffi::OsStr::to_str) {
+            None => unknown("HOME is not set"),
+            Some(None) => unknown("HOME is not UTF-8"),
+            Some(Some(home)) if !home.starts_with('/') => unknown("HOME is not absolute"),
+            Some(Some(home)) if home.trim_end_matches('/').is_empty() => unknown("HOME is `/`"),
+            Some(Some(home)) => Self::new().with_home(home),
         }
-        redactor
+    }
+
+    /// Why the home prefix is unknown, when [`Self::with_home_variable`] got no usable one.
+    pub fn home_unknown(&self) -> Option<&str> {
+        self.home_unknown.as_deref()
     }
 
     /// Replace `home` (and everything under it) by `~`.
@@ -398,6 +421,7 @@ impl Redactor {
         let home = home.trim_end_matches('/');
         if home.len() > 1 {
             self.home = Some(home.to_string());
+            self.home_unknown = None;
         }
         self
     }
@@ -572,6 +596,31 @@ fn pointer_matches(pattern: &str, pointer: &str) -> bool {
             .all(|(want, have)| *want == "*" || want == have)
 }
 
+/// A command line's key/value pairs under the secret-name rule: the argument after an option
+/// whose name matches it and carries no `=` (`--api-key VALUE`, `-token VALUE`) is that option's
+/// value and is withheld whole as [`WITHHELD`], whatever it looks like. `--name=value` forms are
+/// assignments the value rules already judge. Returns the arguments and how many were withheld.
+pub fn withhold_option_values(argv: &[String]) -> (Vec<String>, u32) {
+    let mut out = Vec::with_capacity(argv.len());
+    let mut withheld = 0;
+    let mut secret_option = false;
+    for argument in argv {
+        if secret_option {
+            out.push(WITHHELD.to_string());
+            withheld += 1;
+            secret_option = false;
+            continue;
+        }
+        let name = argument.trim_start_matches('-');
+        secret_option = argument.starts_with('-')
+            && !name.is_empty()
+            && !name.contains('=')
+            && secret_name(name);
+        out.push(argument.clone());
+    }
+    (out, withheld)
+}
+
 /// [`Redactor::text`] without replacements.
 pub fn redact_text(text: &str) -> (String, u32) {
     Redactor::new().text(text)
@@ -586,6 +635,40 @@ pub fn redact_json(value: &mut Value) -> u32 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn option_values_under_secret_names_are_withheld() {
+        let argv: Vec<String> = [
+            "af",
+            "--api-key",
+            "violet",
+            "-token",
+            "t0k",
+            "--model",
+            "opus",
+            "--password=hunter2",
+            "--auth",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        let (kept, withheld) = withhold_option_values(&argv);
+        assert_eq!(
+            kept,
+            [
+                "af",
+                "--api-key",
+                WITHHELD,
+                "-token",
+                WITHHELD,
+                "--model",
+                "opus",
+                "--password=hunter2",
+                "--auth"
+            ]
+        );
+        assert_eq!(withheld, 2);
+        assert!(looks_like_credential("--password=hunter2"));
+    }
 
     #[test]
     fn typed_field_validations_accept_only_their_shape() {

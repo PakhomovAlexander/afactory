@@ -95,20 +95,72 @@ fn telemetry_index_rebuild_is_identical() {
     let temp = tempfile::tempdir().unwrap();
     let layout = Layout::new(temp.path());
     let live = populated(temp.path());
+    // Mixed media: the text bytes `"violet"` and a JSON string of the same source bytes retain
+    // identical bytes, one object with two occurrences of different media types, the first
+    // ingested before the second is written.
+    let mixed = writer(temp.path(), Level::Content);
+    let mixed_span = mixed
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    mixed.event_with_content(
+        &mixed_span,
+        "af.text",
+        Attrs::new(),
+        b"\"violet\"",
+        Media::Text,
+    );
+    mixed.flush();
     let mut incremental = Index::open(&layout).unwrap();
     incremental.ingest().unwrap();
-    // The live segment grows; a second ingest reads only its new tail.
+    // The live segments grow; a second ingest reads only their new tails.
     let span = review_telemetry::trace::span_id(&live.segment_id().unwrap(), 2);
     live.event(&span, "af.note", Attrs::new().text("af.text", "later"));
     live.flush();
+    mixed.event_with_content(
+        &mixed_span,
+        "af.json",
+        Attrs::new(),
+        b"\"violet\"",
+        Media::Json,
+    );
+    mixed.flush();
     let (second, refused) = incremental.ingest().unwrap();
     assert!(refused.is_empty(), "{refused:?}");
-    assert_eq!(second.records, 1);
+    assert_eq!(second.records, 3);
     let before = incremental.dump().unwrap();
     drop(incremental);
     assert_eq!(before["runs"].len(), 2);
     assert_eq!(before["executions"].len(), 2);
     assert!(before["spans"].iter().all(|row| row.len() == 14));
+    // The digest-keyed row holds only what is intrinsic to the bytes; the media type is each
+    // occurrence's.
+    let violet = review_telemetry::trace::sha256_digest(b"\"violet\"");
+    let objects: Vec<_> = before["blobs"]
+        .iter()
+        .filter(|row| row[0] == format!("'{violet}'"))
+        .collect();
+    assert_eq!(objects.len(), 1, "{:?}", before["blobs"]);
+    assert_eq!(
+        objects[0].len(),
+        4,
+        "digest, bytes, stored_bytes, codec: {objects:?}"
+    );
+    assert_eq!(objects[0][3], format!("'{}'", index::BLOB_CODEC));
+    let index_now = Index::open(&layout).unwrap();
+    let media: Vec<String> = index_now
+        .connection()
+        .prepare("SELECT media_type FROM blob_refs WHERE digest = ?1 ORDER BY occurrence_id")
+        .unwrap()
+        .query_map([&violet], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        media,
+        [Media::Text.media_type(), Media::Json.media_type()],
+        "two occurrences of one object keep their own media types"
+    );
+    drop(index_now);
 
     index::replace(&layout).unwrap();
     let rebuilt = Index::open(&layout).unwrap().dump().unwrap();
@@ -118,6 +170,20 @@ fn telemetry_index_rebuild_is_identical() {
     direct.ingest().unwrap();
     assert_eq!(direct.dump().unwrap(), before);
     live.finish(SealExit::Ok).unwrap();
+    mixed.finish(SealExit::Ok).unwrap();
+    // Sealed, reindexed: the occurrences still answer with their own media types.
+    index::replace(&layout).unwrap();
+    let sealed = Index::open(&layout).unwrap().dump().unwrap();
+    let media_of = |dump: &std::collections::BTreeMap<String, Vec<Vec<String>>>| {
+        let columns = dump["blob_refs"][0].len();
+        dump["blob_refs"]
+            .iter()
+            .filter(|row| row[3] == format!("'{violet}'"))
+            .map(|row| row[columns - 2].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(media_of(&sealed), media_of(&before));
+    assert_eq!(media_of(&sealed).len(), 2);
 }
 
 #[test]
@@ -163,4 +229,40 @@ fn telemetry_index_replacement_under_lock() {
     // The replaced index answers as before, and its files are one database, WAL and memory.
     let index = Index::open(&layout).unwrap();
     assert_eq!(index.dump().unwrap(), expected);
+}
+
+/// The index and the lock files are never opened through a link: a linked `index.sqlite` is
+/// refused and what it points to stays untouched; `reindex` removes the link itself and
+/// recreates the database in its place; a linked `gc.lock` is never created or locked.
+#[test]
+fn telemetry_index_never_opens_through_a_link() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("telemetry");
+    let layout = Layout::new(&root);
+    let live = populated(&root);
+    live.finish(SealExit::Ok).unwrap();
+    let outside = temp.path().join("outside.sqlite");
+    std::fs::write(&outside, b"not this index").unwrap();
+    std::os::unix::fs::symlink(&outside, layout.index()).unwrap();
+    let refusal = Index::open(&layout).err().expect("refused");
+    assert!(refusal.contains("not a regular file"), "{refusal}");
+    index::replace(&layout).unwrap();
+    assert!(
+        std::fs::symlink_metadata(layout.index()).is_ok_and(|metadata| metadata.is_file()),
+        "recreated in place of the link"
+    );
+    assert_eq!(std::fs::read(&outside).unwrap(), b"not this index");
+    let mut index = Index::open(&layout).unwrap();
+    index.ingest().unwrap();
+    assert_eq!(index.dump().unwrap()["runs"].len(), 2);
+    drop(index);
+
+    let missing = temp.path().join("nowhere.lock");
+    std::fs::remove_file(layout.gc_lock()).ok();
+    std::os::unix::fs::symlink(&missing, layout.gc_lock()).unwrap();
+    assert!(
+        review_telemetry::layout::shared_now(&layout.gc_lock()).is_err(),
+        "a linked lock file is refused"
+    );
+    assert!(!missing.exists(), "nothing created through the link");
 }

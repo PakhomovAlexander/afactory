@@ -16,13 +16,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
-use std::os::unix::fs::MetadataExt as _;
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use nix::fcntl::FlockArg;
 
-use crate::layout::{self, Layout, SegmentFile};
+use crate::layout::{self, Confined, EntryKind, Layout, SegmentFile};
+use crate::level::SEGMENT_MAX_BYTES_BOUND;
 use crate::record::{Attributes, BlobState, Record, Seal, SealExit, SpanEnd, SpanStatus, schema};
 
 /// The valid prefix of a segment's bytes.
@@ -122,18 +123,49 @@ pub fn scan(bytes: &[u8]) -> Prefix {
     scan_from(bytes, 0, None)
 }
 
+/// Read `reader` whole when it yields at most `limit` bytes; past it nothing more is read and
+/// the read is refused.
+fn read_at_most(reader: impl std::io::Read, limit: u64) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("longer than the {limit}-byte segment bound; never read"),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// The bytes of a `.jsonl` segment, opened without following a link. Its length is judged
+/// before any byte is read: a file longer than any segment this release writes
+/// ([`SEGMENT_MAX_BYTES_BOUND`]) is refused, never loaded.
+pub fn read_live_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    let file = layout::open_nofollow(path)?;
+    if file.metadata()?.len() > SEGMENT_MAX_BYTES_BOUND {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("longer than the {SEGMENT_MAX_BYTES_BOUND}-byte segment bound; never read"),
+        ));
+    }
+    read_at_most(file, SEGMENT_MAX_BYTES_BOUND)
+}
+
 /// The valid prefix of a live or unsealed segment, read without its lock.
 pub fn read_live(path: &Path) -> Result<Prefix, String> {
-    let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let bytes = read_live_bytes(path).map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(scan(&bytes))
 }
 
 /// Every record of a sealed segment. Any invalid line, or a missing seal, refuses it.
 pub fn read_sealed(path: &Path) -> Result<Vec<Record>, String> {
-    let file = File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let mut bytes = Vec::new();
-    GzDecoder::new(file)
-        .read_to_end(&mut bytes)
+    let file =
+        layout::open_nofollow(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    // Decompressed only up to the longest segment this release writes: a larger stream is
+    // refused before it is held.
+    let bytes = read_at_most(GzDecoder::new(file), SEGMENT_MAX_BYTES_BOUND)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let prefix = scan(&bytes);
     if prefix.discarded_bytes > 0 || !prefix.sealed() {
@@ -179,25 +211,30 @@ pub struct Listing {
     pub temporary: Vec<PathBuf>,
 }
 
-/// List `segments/` without reading any segment.
+/// List `segments/` without reading any segment. Only regular files are listed, each name
+/// matched exactly: a link, a directory or a stray name is never a segment or a temporary (it is
+/// what `status` reports as unrecognized).
 pub fn list(layout: &Layout) -> Result<Listing, String> {
     let directory = layout.segments();
+    let failed = |error: std::io::Error| format!("{}: {error}", directory.display());
     let mut listing = Listing::default();
-    let entries = match std::fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(listing),
-        Err(error) => return Err(format!("{}: {error}", directory.display())),
+    let Some(mut segments) = Confined::versioned(layout, "segments").map_err(failed)? else {
+        return Ok(listing);
     };
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("{}: {error}", directory.display()))?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(layout::TEMP_PREFIX) {
-            listing.temporary.push(entry.path());
+    for name in segments.names().map_err(failed)? {
+        if segments.kind(&name) != Some(EntryKind::File) {
+            continue;
+        }
+        if layout::is_temp_name(&name, layout::WRITE_TEMP_LABEL) {
+            listing.temporary.push(segments.join(&name));
             continue;
         }
         match layout::parse_segment_name(&name) {
             Some((id, SegmentFile::Live)) => {
-                if layout::is_locked(&entry.path()) {
+                let locked = segments.open_file(&name).is_ok_and(|file| {
+                    layout::try_lock(file, FlockArg::LockSharedNonblock).is_err()
+                });
+                if locked {
                     listing.live.push(id);
                 } else {
                     listing.unsealed.push(id);
@@ -256,7 +293,12 @@ fn record_time(record: &Record) -> Option<&str> {
 /// Recover the `.jsonl` segment `segment_id` if its lock can be taken now.
 pub fn recover(layout: &Layout, segment_id: &str) -> Result<Recovery, String> {
     let live = layout.live_segment(segment_id);
-    let file = match OpenOptions::new().read(true).write(true).open(&live) {
+    let file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+        .open(&live)
+    {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Recovery::AlreadySealed);
@@ -279,8 +321,17 @@ pub fn recover(layout: &Layout, segment_id: &str) -> Result<Recovery, String> {
         std::fs::remove_file(&live).map_err(|error| format!("{}: {error}", live.display()))?;
         return Ok(Recovery::AlreadySealed);
     }
-    let mut bytes = Vec::new();
-    held.read_to_end(&mut bytes)
+    let length = held
+        .metadata()
+        .map_err(|error| format!("{}: {error}", live.display()))?
+        .len();
+    if length > SEGMENT_MAX_BYTES_BOUND {
+        return Err(format!(
+            "{}: longer than the {SEGMENT_MAX_BYTES_BOUND}-byte segment bound; never read",
+            live.display()
+        ));
+    }
+    let bytes = read_at_most(&mut *held, SEGMENT_MAX_BYTES_BOUND)
         .map_err(|error| format!("{}: {error}", live.display()))?;
     if bytes.is_empty() {
         std::fs::remove_file(&live).map_err(|error| format!("{}: {error}", live.display()))?;
@@ -408,8 +459,9 @@ pub fn recover_all(layout: &Layout) -> Result<Vec<Recovery>, String> {
 /// segment's `blob_ref` records.
 pub fn manifest_digests(layout: &Layout, segment_id: &str) -> Result<BTreeSet<String>, String> {
     let path = layout.refs(segment_id);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => Ok(text
+    let mut text = String::new();
+    match layout::open_nofollow(&path).and_then(|mut file| file.read_to_string(&mut text)) {
+        Ok(_) => Ok(text
             .lines()
             .filter(|line| !line.is_empty())
             .map(str::to_string)
@@ -448,7 +500,7 @@ pub fn file_len(path: &Path) -> u64 {
     std::fs::symlink_metadata(path).map_or(0, |metadata| metadata.len())
 }
 
-/// Open `path` for reading, for the index's tail reads.
+/// Open `path` for reading, for the index's tail reads, never through a link.
 pub fn open(path: &Path) -> std::io::Result<File> {
-    File::open(path)
+    layout::open_nofollow(path)
 }

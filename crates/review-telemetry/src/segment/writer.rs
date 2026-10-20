@@ -79,6 +79,9 @@ pub struct Registration {
     pub registry: PathBuf,
     /// Every directory the storage inventory accounts on its own.
     pub accounted: Vec<Accounted>,
+    /// Why `accounted` is known incomplete (the Store registry could not be read): the overlap
+    /// check is then unknown and registration refuses, one problem and no telemetry.
+    pub accounted_unknown: Option<String>,
 }
 
 /// What a writer is configured with.
@@ -329,7 +332,6 @@ fn publication<T>(
                         digest: prepared.digest.clone(),
                         bytes: prepared.retained.len() as u64,
                         stored_bytes: prepared.compressed.len() as u64,
-                        media_type: prepared.media_type.into(),
                         redaction: crate::redact::REDACTION_VERSION.into(),
                     }),
                     Counters::default(),
@@ -352,6 +354,8 @@ fn publication<T>(
                     } else {
                         BlobState::Dropped
                     },
+                    media_type: prepared.media_type.into(),
+                    redaction: crate::redact::REDACTION_VERSION.into(),
                 }),
                 Counters::default(),
             )?;
@@ -557,11 +561,11 @@ impl Writer {
     fn header(&self, segment_id: &str) -> Record {
         let options = &self.shared.options;
         let redactor = &options.redactor;
-        let (argv, _) = record::bound_attributes(
-            Attrs::new().texts("argv", options.argv.clone()),
-            redactor,
-            &mut |_, _| None,
-        );
+        // An option's value under a secret name is withheld first, then each argument is judged
+        // whole and bounded.
+        let (argv, _) = redact::withhold_option_values(&options.argv);
+        let (argv, _) =
+            record::bound_attributes(Attrs::new().texts("argv", argv), redactor, &mut |_, _| None);
         let argv = match argv.get("argv") {
             Some(Value::Array(values)) => values
                 .iter()
@@ -618,6 +622,26 @@ impl Writer {
                 pending.accepted_bytes = line.len() as u64 + 1;
                 pending.buffer.extend_from_slice(&line);
                 pending.buffer.push(b'\n');
+                // An environment the redactor could not read is one problem right after the
+                // header, never a silent omission.
+                if let Some(reason) = self.shared.options.redactor.home_unknown() {
+                    let mut problem = Record::Problem(Problem {
+                        seq: 2,
+                        schema: schema::PROBLEM.into(),
+                        time_unix_ns: ns(self.now_unix_ns()),
+                        what: ProblemWhat::Redaction,
+                        reason: reason.to_string(),
+                    });
+                    if let Some(line) = record::encode(&mut problem, Counters::default()) {
+                        pending
+                            .problems
+                            .insert((ProblemWhat::Redaction, reason.to_string()));
+                        pending.next_seq = 3;
+                        pending.accepted_bytes += line.len() as u64 + 1;
+                        pending.buffer.extend_from_slice(&line);
+                        pending.buffer.push(b'\n');
+                    }
+                }
                 pending.flush_requested = true;
                 pending.state = State::Open;
                 true
@@ -772,6 +796,12 @@ impl Writer {
     fn open_file(&self, consumer: &mut Consumer, segment_id: &str) -> Result<(), String> {
         let options = &self.shared.options;
         if let Some(registration) = &options.registration {
+            if let Some(reason) = &registration.accounted_unknown {
+                return Err(format!(
+                    "the overlap check of telemetry directory {} is unknown: {reason}",
+                    options.layout.root().display()
+                ));
+            }
             dirs::register(
                 &registration.registry,
                 options.layout.root(),
@@ -779,9 +809,12 @@ impl Writer {
             )?;
         }
         let path = options.layout.live_segment(segment_id);
-        std::fs::create_dir_all(options.layout.segments()).map_err(|error| {
-            format!("creating {}: {error}", options.layout.segments().display())
-        })?;
+        options
+            .layout
+            .create_dirs(&options.layout.segments())
+            .map_err(|error| {
+                format!("creating {}: {error}", options.layout.segments().display())
+            })?;
         let file = OpenOptions::new()
             .append(true)
             .create_new(true)
@@ -820,28 +853,26 @@ impl Writer {
         let mut contents = Vec::new();
         let mut named = Vec::new();
         let keep = options.level.keeps_content();
-        let judged = Redactor::new();
         let (attributes, counters) =
             record::bound_attributes(attrs, &options.redactor, &mut |key, value| {
                 if !keep {
                     return None;
                 }
-                // Text was already judged whole and replaced: the blob keeps exactly that
-                // value. An array arrives as the writer gave it: its source is the original
-                // array as one JSON document, redacted as one document before it is retained.
-                let (bytes, media, redactor) = match value {
-                    Oversized::Text(text) => (text.as_bytes().to_vec(), Media::Text, &judged),
+                // Both arrive as the writer gave them, so the occurrence's source identity is
+                // the original's: text is redacted per line before it is retained, an array as
+                // one JSON document.
+                let (bytes, media) = match value {
+                    Oversized::Text(text) => (text.as_bytes().to_vec(), Media::Text),
                     Oversized::Texts(values) => (
                         serde_json::to_vec(values).expect("strings serialize"),
                         Media::Json,
-                        &options.redactor,
                     ),
                 };
                 contents.push(blob::prepare(
                     &bytes,
                     media,
                     options.content_max_blob_bytes,
-                    redactor,
+                    &options.redactor,
                 ));
                 named.push(key.to_string());
                 Some(String::new())
@@ -1255,7 +1286,7 @@ impl Writer {
             size += bytes;
         }
         let count = u32::try_from(parts.len()).unwrap_or(u32::MAX);
-        let execution_id = execution_id.to_string();
+        let execution_id = self.typed(execution_id, MAX_KEY_BYTES);
         self.commit(false, |batch| {
             for (index, (rows, redacted)) in parts.into_iter().enumerate() {
                 let part = u32::try_from(index).unwrap_or(u32::MAX) + 1;
@@ -1277,22 +1308,56 @@ impl Writer {
         })
     }
 
-    /// One plan node of an execution. At most 64 `depends_on` ids are kept.
+    /// A field af's schema types as an identity or an enumeration: kept when it validates as
+    /// one, judged whole as untrusted text otherwise, so a credential in it leaves the withheld
+    /// marker; then cut to `max`.
+    fn typed(&self, value: &str, max: usize) -> String {
+        if redact::is_identity(value) {
+            record::cut(value, max)
+        } else {
+            record::cut(&self.shared.options.redactor.value(value).0, max)
+        }
+    }
+
+    /// One plan node of an execution. At most 64 `depends_on` ids are kept; every field is a
+    /// typed identity or judged whole.
     pub fn node(&self, mut node: Node) -> Option<u64> {
         node.depends_on.truncate(64);
         for id in &mut node.depends_on {
-            *id = record::cut(id, MAX_KEY_BYTES);
+            *id = self.typed(id, MAX_KEY_BYTES);
         }
+        node.execution_id = self.typed(&node.execution_id, MAX_KEY_BYTES);
+        node.plan_digest = self.typed(&node.plan_digest, MAX_KEY_BYTES);
+        node.node_id = self.typed(&node.node_id, MAX_KEY_BYTES);
+        node.kind = self.typed(&node.kind, MAX_KEY_BYTES);
+        node.package = node
+            .package
+            .map(|package| self.typed(&package, MAX_KEY_BYTES));
         node.schema = schema::NODE.into();
         self.commit(false, |batch| {
             batch.push(Record::Node(node), Counters::default())
         })
     }
 
-    /// The bounded summary of a Finding; its free text (title, file) is judged and bounded.
+    /// The bounded summary of a Finding; its free text (title, file) is judged and bounded,
+    /// and every other field is a typed identity or judged whole.
     pub fn finding(&self, mut finding: Finding) -> Option<u64> {
         let redactor = &self.shared.options.redactor;
         finding.schema = schema::FINDING.into();
+        for field in [
+            &mut finding.span_id,
+            &mut finding.key,
+            &mut finding.severity,
+            &mut finding.effective_severity,
+            &mut finding.status,
+            &mut finding.scope,
+            &mut finding.report_artifact_id,
+            &mut finding.node_id,
+            &mut finding.worker,
+        ] {
+            *field = self.typed(field, MAX_KEY_BYTES);
+        }
+        finding.model = finding.model.map(|model| self.typed(&model, MAX_KEY_BYTES));
         finding.title = record::cut(&redactor.value(&finding.title).0, MAX_STRING_BYTES);
         finding.file = finding
             .file
@@ -1302,8 +1367,19 @@ impl Writer {
         })
     }
 
-    /// The bounded summary of a Demand, keyed by its id.
+    /// The bounded summary of a Demand, keyed by its id; every field is a typed identity or
+    /// judged whole.
     pub fn demand(&self, mut demand: Demand) -> Option<u64> {
+        for field in [
+            &mut demand.span_id,
+            &mut demand.demand_id,
+            &mut demand.kind,
+            &mut demand.subject_id,
+            &mut demand.snapshot_id,
+            &mut demand.status,
+        ] {
+            *field = self.typed(field, MAX_KEY_BYTES);
+        }
         demand.schema = schema::DEMAND.into();
         self.commit(false, |batch| {
             batch.push(Record::Demand(demand), Counters::default())
@@ -1382,7 +1458,7 @@ impl Writer {
 /// Write `contents` to a temporary file beside `path` and rename it into place.
 pub(crate) fn write_atomically(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().expect("a file has a directory");
-    let temp = parent.join(layout::temp_name("write"));
+    let temp = parent.join(layout::temp_name(layout::WRITE_TEMP_LABEL));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

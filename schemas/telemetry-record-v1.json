@@ -686,7 +686,6 @@
         "digest",
         "bytes",
         "stored_bytes",
-        "media_type",
         "redaction"
       ],
       "properties": {
@@ -712,10 +711,6 @@
           "type": "integer",
           "minimum": 0
         },
-        "media_type": {
-          "type": "string",
-          "minLength": 1
-        },
         "redaction": {
           "const": "af-redact/1"
         }
@@ -735,7 +730,9 @@
         "source_digest",
         "original_bytes",
         "truncated",
-        "state"
+        "state",
+        "media_type",
+        "redaction"
       ],
       "properties": {
         "seq": {
@@ -786,6 +783,16 @@
             "stored",
             "dropped"
           ]
+        },
+        "media_type": {
+          "enum": [
+            "text/plain; charset=utf-8",
+            "application/json"
+          ],
+          "description": "How this occurrence's source was judged (per line, or as one JSON document) and how its retained bytes read. It belongs to the occurrence, never to the shared object: two sources of different media types may retain identical bytes."
+        },
+        "redaction": {
+          "const": "af-redact/1"
         }
       }
     },

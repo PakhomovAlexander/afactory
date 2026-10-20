@@ -24,6 +24,7 @@ fn start(root: &std::path::Path, directory: std::path::PathBuf, level: Level) ->
             ),
             Accounted::new(root.join("data/af/versions"), "the release installations"),
         ],
+        accounted_unknown: None,
         af_version: "0.0.0-test".into(),
         af_commit: "test".into(),
     }
@@ -118,4 +119,29 @@ fn telemetry_off_touches_nothing() {
     let idle = Telemetry::start(start(&root, directory.clone(), Level::Spans));
     assert_eq!(idle.finish(SealExit::Ok).sealed, None);
     assert!(!directory.exists());
+}
+
+/// A Store registry that cannot be read leaves the overlap check unknown: registration refuses
+/// with one problem and no telemetry, never treating the unread Stores as absent.
+#[test]
+fn telemetry_registration_refuses_an_unknown_overlap() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let directory = root.join("elsewhere/telemetry");
+    let mut unknown = start(&root, directory.clone(), Level::Spans);
+    unknown.accounted_unknown = Some("the Store registry cannot be read: version 9".into());
+    let telemetry = Telemetry::start(unknown);
+    let writer = telemetry.writer().unwrap();
+    writer.span_start(None, None, "af.command", SpanKind::Internal, Attrs::new());
+    let problems = telemetry.finish(SealExit::Ok).problems;
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].1.contains("unknown"), "{problems:?}");
+    assert!(problems[0].1.contains("version 9"), "{problems:?}");
+    assert!(!directory.join("v1").exists(), "nothing written");
+    assert!(
+        dirs::read(&dirs::location(&root.join("state")))
+            .unwrap()
+            .is_empty(),
+        "never registered"
+    );
 }

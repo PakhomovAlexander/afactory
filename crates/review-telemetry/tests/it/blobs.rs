@@ -376,6 +376,7 @@ fn telemetry_missing_blob_is_reported() {
         max_bytes: 4 << 30,
         registry: None,
         accounted: Vec::new(),
+        accounted_unknown: None,
     })
     .unwrap();
     assert_eq!(status.missing_blobs, 1);
@@ -826,4 +827,303 @@ fn telemetry_array_blob_occurrences_keep_source_identity() {
         );
     }
     assert_ne!(occurrences[0].source_digest, occurrences[1].source_digest);
+}
+
+/// The collector acts only on paths of the blob grammar, judged and removed relative to the
+/// opened directory: a prefix linked to a directory outside the root removes nothing there, and
+/// a stray-named or linked file inside is never removed; `status` reports them as unrecognized.
+#[test]
+fn telemetry_collection_never_leaves_the_root() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("telemetry");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let layout = Layout::new(&root);
+    let blobs = layout.blobs();
+    std::fs::create_dir_all(blobs.join("ab")).unwrap();
+    std::fs::create_dir_all(layout.segments()).unwrap();
+
+    // Outside the root: an old blob-named file, a temporary-named file and a plain target.
+    let outside_blob = outside.join(format!("cd{}.gz", "0".repeat(62)));
+    let outside_temp = outside.join(".tmp-blob-1-0a1b2c3d");
+    let target = outside.join("target");
+    for path in [&outside_blob, &outside_temp, &target] {
+        std::fs::write(path, b"outside").unwrap();
+    }
+    // A prefix linked outside, a stray name, a linked blob file and linked temporaries inside.
+    symlink(&outside, blobs.join("cd")).unwrap();
+    let stray = blobs.join("ab").join("stray.gz.bak");
+    std::fs::write(&stray, b"stray").unwrap();
+    let linked_blob = blobs.join("ab").join(format!("ab{}.gz", "1".repeat(62)));
+    symlink(&target, &linked_blob).unwrap();
+    let linked_temp = blobs.join("ab").join(".tmp-blob-2-0a1b2c3d");
+    symlink(&target, &linked_temp).unwrap();
+    let linked_write = layout.segments().join(".tmp-write-3-0a1b2c3d");
+    symlink(&target, &linked_write).unwrap();
+    let linked_segment = layout.segments().join("1700000000000-4-0a1b2c3d.jsonl");
+    symlink(&target, &linked_segment).unwrap();
+    // A genuine unreferenced blob and a genuine temporary, which the sweep does remove.
+    let genuine = blobs.join("ab").join(format!("ab{}.gz", "2".repeat(62)));
+    std::fs::write(&genuine, blob::compress(b"unreferenced")).unwrap();
+    let genuine_temp = blobs.join("ab").join(".tmp-blob-5-0a1b2c3d");
+    std::fs::write(&genuine_temp, b"partial").unwrap();
+
+    let swept = collect(&layout, HOUR, SystemTime::now() + 2 * HOUR).unwrap();
+    assert_eq!(swept.skipped, None);
+    assert_eq!(swept.removed_blobs, [genuine.clone()]);
+    assert_eq!(swept.removed_temporary, [genuine_temp.clone()]);
+    for path in [&outside_blob, &outside_temp, &target, &stray] {
+        assert!(!std::fs::read(path).unwrap().is_empty(), "{path:?}");
+    }
+    for link in [
+        blobs.join("cd"),
+        linked_blob.clone(),
+        linked_temp.clone(),
+        linked_write.clone(),
+        linked_segment.clone(),
+    ] {
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok_and(|metadata| metadata.is_symlink()),
+            "{link:?} was removed or replaced"
+        );
+    }
+    assert_eq!(std::fs::read(&target).unwrap(), b"outside");
+
+    let (status, _) = review_telemetry::status::status(&review_telemetry::status::StatusInput {
+        root: root.clone(),
+        level: Level::Content,
+        max_bytes: 4 << 30,
+        registry: None,
+        accounted: Vec::new(),
+        accounted_unknown: None,
+    })
+    .unwrap();
+    assert_eq!(status.segments.unsealed + status.segments.live, 0);
+    let unrecognized = status
+        .bytes
+        .entries
+        .iter()
+        .find(|entry| entry.kind == "unrecognized")
+        .expect("the stray and linked paths are unrecognized");
+    let names = unrecognized.names.clone().unwrap();
+    for path in [
+        &blobs.join("cd"),
+        &stray,
+        &linked_blob,
+        &linked_temp,
+        &linked_write,
+        &linked_segment,
+    ] {
+        let relative = path.strip_prefix(&root).unwrap().display().to_string();
+        assert!(names.contains(&relative), "{relative} not in {names:?}");
+    }
+    assert_eq!(unrecognized.count, Some(6));
+}
+
+/// An over-bound text attribute reaches the blob as the original bytes: the occurrence's
+/// `source_digest` and `original_bytes` describe the attribute as the writer gave it, even when
+/// the redactor replaced a home or grant path and the result is still over the bound, while only
+/// the redacted bytes are retained and displayed.
+#[test]
+fn telemetry_text_blob_occurrences_keep_source_identity() {
+    let long = "w".repeat(2048);
+    let home = format!("/home/violet/src {long}");
+    let tilde = format!("~/src {long}");
+    let grant = format!("/srv/codex-grant/auth {long}");
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = options(temp.path(), Level::Content);
+    options.redactor = Redactor::new()
+        .with_home("/home/violet")
+        .with_grant("CODEX_HOME", "/srv/codex-grant");
+    let writer = Writer::new(options).unwrap();
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event(
+        &span,
+        "af.texts",
+        Attrs::new()
+            .text("af.home", home.clone())
+            .text("af.tilde", tilde.clone())
+            .text("af.grant", grant.clone()),
+    );
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let text = String::from_utf8(crate::sealed_bytes(&sealed.path)).unwrap();
+    assert!(!text.contains("/home/violet") && !text.contains("/srv/codex-grant"));
+    let records = sealed_records(&sealed.path);
+    let occurrences: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::BlobRef(occurrence) => Some(occurrence.clone()),
+            _ => None,
+        })
+        .collect();
+    let objects = records
+        .iter()
+        .filter(|record| matches!(record, Record::Blob(_)))
+        .count();
+    // `af.home` and `af.tilde` retain the same bytes: one object, two occurrences.
+    assert_eq!((objects, occurrences.len()), (2, 3), "{occurrences:?}");
+    let lines = crate::sealed_lines(&sealed.path);
+    let event = lines
+        .iter()
+        .find(|line| line["t"] == "event" && line["name"] == "af.texts")
+        .unwrap();
+    let layout = Layout::new(temp.path());
+    let mut digests = Vec::new();
+    for (key, original, retained) in [
+        ("af.home", &home, &tilde),
+        ("af.tilde", &tilde, &tilde),
+        (
+            "af.grant",
+            &grant,
+            &format!("<grant:CODEX_HOME>/auth {long}"),
+        ),
+    ] {
+        let id = event["attributes"][key]
+            .as_str()
+            .unwrap()
+            .strip_prefix(OCCURRENCE_PREFIX)
+            .unwrap();
+        let occurrence = occurrences
+            .iter()
+            .find(|occurrence| occurrence.occurrence_id == id)
+            .unwrap_or_else(|| panic!("{key}: no occurrence {id}"));
+        assert_eq!(occurrence.state, BlobState::Stored, "{key}");
+        assert_eq!(
+            occurrence.source_digest,
+            review_telemetry::trace::sha256_digest(original.as_bytes()),
+            "{key}"
+        );
+        assert_eq!(occurrence.original_bytes, original.len() as u64, "{key}");
+        assert_eq!(occurrence.media_type, Media::Text.media_type(), "{key}");
+        let Content::Bytes(bytes) = blob_reader::content(&layout, occurrence) else {
+            panic!("{key}: content unavailable");
+        };
+        assert_eq!(String::from_utf8(bytes).unwrap(), *retained, "{key}");
+        digests.push(occurrence.digest.clone().unwrap());
+    }
+    assert_eq!(digests[0], digests[1]);
+    assert_ne!(digests[0], digests[2]);
+    assert_ne!(occurrences[0].source_digest, occurrences[1].source_digest);
+}
+
+/// The bound is judged before anything is parsed: a well-formed and a malformed JSON body, both
+/// above `content_max_blob_bytes`, become the same withheld occurrence.
+#[test]
+fn telemetry_oversized_content_is_withheld_before_parsing() {
+    let max = 1024;
+    let well_formed = serde_json::to_vec(&serde_json::json!({
+        "items": (0..400).map(|n| format!("item {n}")).collect::<Vec<_>>(),
+    }))
+    .unwrap();
+    let mut malformed = b"{\"items\": [".to_vec();
+    malformed.extend(std::iter::repeat_n(b'x', 4 * max));
+    assert!(serde_json::from_slice::<serde_json::Value>(&malformed).is_err());
+    assert!(well_formed.len() > max && malformed.len() > max);
+    let redactor = Redactor::new();
+    let withheld = serde_json::to_vec(review_telemetry::redact::WITHHELD).unwrap();
+    let prepared: Vec<_> = [&well_formed, &malformed]
+        .into_iter()
+        .map(|source| blob::prepare(source, Media::Json, max as u64, &redactor))
+        .collect();
+    for (prepared, source) in prepared.iter().zip([&well_formed, &malformed]) {
+        assert_eq!(prepared.retained, withheld);
+        assert!(prepared.withheld_whole && !prepared.truncated);
+        assert_eq!(prepared.media_type, Media::Json.media_type());
+        assert_eq!(prepared.original_bytes, source.len() as u64);
+        assert_eq!(
+            prepared.source_digest,
+            review_telemetry::trace::sha256_digest(source)
+        );
+    }
+    assert_eq!(prepared[0].digest, prepared[1].digest);
+
+    // Through the writer: both occurrences are stored, name one object and read as withheld.
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = options(temp.path(), Level::Content);
+    options.content_max_blob_bytes = max as u64;
+    let writer = Writer::new(options).unwrap();
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    for source in [&well_formed, &malformed] {
+        writer.event_with_content(&span, "af.body", Attrs::new(), source, Media::Json);
+    }
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let occurrences: Vec<_> = sealed_records(&sealed.path)
+        .into_iter()
+        .filter_map(|record| match record {
+            Record::BlobRef(occurrence) => Some(occurrence),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(occurrences.len(), 2);
+    let layout = Layout::new(temp.path());
+    for occurrence in &occurrences {
+        assert_eq!(
+            occurrence.digest.as_deref(),
+            Some(prepared[0].digest.as_str())
+        );
+        assert_eq!(occurrence.media_type, Media::Json.media_type());
+        assert!(!occurrence.truncated);
+        assert_eq!(
+            blob_reader::content(&layout, occurrence),
+            Content::Bytes(withheld.clone())
+        );
+    }
+}
+
+/// The writer never writes through a link either: a blob whose prefix directory is linked
+/// outside the root is dropped with one problem, and nothing is created where the link points.
+#[test]
+fn telemetry_writer_never_writes_through_a_link() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("telemetry");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let options = options(&root, Level::Content);
+    let source = b"content through a link\n";
+    let prepared = blob::prepare(
+        source,
+        Media::Text,
+        options.content_max_blob_bytes,
+        &options.redactor,
+    );
+    let layout = Layout::new(&root);
+    let prefix = layout.blob(&prepared.digest);
+    std::fs::create_dir_all(prefix.parent().unwrap().parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&outside, prefix.parent().unwrap()).unwrap();
+    let writer = Writer::new(options).unwrap();
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event_with_content(&span, "af.body", Attrs::new(), source, Media::Text);
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    assert_eq!(
+        std::fs::read_dir(&outside).unwrap().count(),
+        0,
+        "nothing outside"
+    );
+    let records = sealed_records(&sealed.path);
+    let occurrence = records
+        .iter()
+        .find_map(|record| match record {
+            Record::BlobRef(occurrence) => Some(occurrence.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(occurrence.state, BlobState::Dropped);
+    let problems: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::Problem(problem) => Some(problem.reason.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(problems.len(), 1, "{problems:?}");
 }

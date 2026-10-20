@@ -85,9 +85,15 @@ under the state root's `telemetry/`. These eight clauses bind every package of t
    member whose name itself passes for a credential becomes the string `[withheld]`, so every
    document still parses. A record attribute's name is judged by the same rule: one that passes
    for a credential is never written, the attribute is omitted and counted in `af.redacted`, and
-   the record's other attributes stay. Kernel-produced, validated identity fields and counters are typed
-   fields the heuristic never sees; environment values are never recorded; Provider grants and
-   the home prefix are replaced by placeholders. A harness's untrusted content, from its streams
+   the record's other attributes stay; one named like a secret keeps its name and loses its
+   value whatever its shape, as a JSON member does, and so does a command-line option's value.
+   Kernel-produced, validated identity fields and counters are typed fields the heuristic never
+   sees, every other field of every record kind is judged whole, and a JSON source longer than
+   its bound is withheld before it is parsed; environment values are never recorded; Provider
+   grants and the home prefix are replaced by placeholders, and a home prefix the environment
+   does not give is recorded as a problem, never silently skipped. An occurrence keeps the
+   identity of its original source bytes, its media type and its redaction version; the shared
+   object keyed by digest holds only what is intrinsic to the retained bytes. A harness's untrusted content, from its streams
    or its native telemetry, is published only after Telemetry's own whole-capture release
    decision, with kernel-derived correlation ids standing in for the harness's identifiers until
    then. The rules carry a version, `af-redact/1`, that every blob records.
@@ -107,10 +113,14 @@ under the state root's `telemetry/`. These eight clauses bind every package of t
    removes), and evicted under ADR-0144's
    rules only: by sealed segment, least recently used first, never an entry in use or used within
    the last hour, by age only under `[storage] auto_gc` or an applied prune. A live segment has a
-   total byte limit of its own with a fixed terminal reserve for its seal. Every directory
+   total byte limit of its own with a fixed terminal reserve for its seal. Collection never
+   leaves the telemetry directory: it acts only on names of the layout's exact grammar that are
+   real directories and regular files, relative to the opened directory, never through a
+   symbolic link, and readers never open a file through one. Every directory
    Telemetry has written is registered (`af/TelemetryDirs@1`), and a directory that overlaps a
    Store, a cache, a release installation or another telemetry directory is refused before its
-   first write.
+   first write; when the Store registry cannot be read the overlap is unknown, never assumed
+   absent: registration refuses and `af telemetry status` reports the check `unknown`.
 
 ## Consequences
 

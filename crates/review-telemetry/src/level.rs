@@ -13,6 +13,12 @@ const KIB: u64 = 1 << 10;
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 
+/// The largest `segment_max_bytes` accepts: no segment this release writes is longer, so a
+/// reader refuses a longer one before it reads or decompresses past it.
+pub const SEGMENT_MAX_BYTES_BOUND: u64 = 4 * GIB;
+/// The largest `content_max_blob_bytes` accepts: no blob this release retains is longer.
+pub const CONTENT_MAX_BLOB_BYTES_BOUND: u64 = 256 * MIB;
+
 /// What Telemetry records.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
@@ -212,7 +218,7 @@ pub const KEYS: [Key; 20] = [
         default: "\"256MiB\"",
         kind: KeyKind::Bytes {
             min: 16 * MIB,
-            max: 4 * GIB,
+            max: SEGMENT_MAX_BYTES_BOUND,
         },
     },
     Key {
@@ -220,7 +226,7 @@ pub const KEYS: [Key; 20] = [
         default: "\"16MiB\"",
         kind: KeyKind::Bytes {
             min: 64 * KIB,
-            max: 256 * MIB,
+            max: CONTENT_MAX_BLOB_BYTES_BOUND,
         },
     },
     Key {

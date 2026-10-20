@@ -232,8 +232,10 @@
               "budget",
               "redaction",
               "sink",
-              "observer"
-            ]
+              "observer",
+              "registry"
+            ],
+            "description": "The problem kind segments recorded, or `registry` (with `segments` 0) when this command could not read the Store registry and every overlap check is `unknown`."
           },
           "reason": {
             "type": "string"
@@ -276,7 +278,8 @@
           "exists",
           "current",
           "first_use_unix_ms",
-          "last_use_unix_ms"
+          "last_use_unix_ms",
+          "overlap"
         ],
         "properties": {
           "path": {
@@ -297,10 +300,18 @@
             "type": "integer",
             "minimum": 0
           },
+          "overlap": {
+            "enum": [
+              "none",
+              "overlapping",
+              "unknown"
+            ],
+            "description": "The overlap check, rechecked by this command: `none`, `overlapping`, or `unknown` when the directories the storage inventory accounts could not all be read (the Store registry is unreadable or of another version; `problems` names it), so no directory is presented as standing alone."
+          },
           "overlapping": {
             "type": "string",
             "minLength": 1,
-            "description": "Why this registered directory overlaps another telemetry root or a directory the storage inventory accounts on its own, rechecked by this command."
+            "description": "Why this registered directory overlaps another telemetry root or a directory the storage inventory accounts on its own. Under `overlap = unknown`, an overlap found among what could be read."
           }
         }
       }

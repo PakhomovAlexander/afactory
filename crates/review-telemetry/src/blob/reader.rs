@@ -31,7 +31,7 @@ pub const COLLECTING: &str = "content unavailable: collection in progress";
 
 /// Whether the blob file of `digest` exists.
 pub fn exists(layout: &Layout, digest: &str) -> bool {
-    layout.blob(digest).is_file()
+    std::fs::symlink_metadata(layout.blob(digest)).is_ok_and(|metadata| metadata.is_file())
 }
 
 /// The retained bytes of `digest`, verified against it, read under `gc.lock` shared. Without
@@ -45,15 +45,25 @@ pub fn read(layout: &Layout, digest: &str) -> Content {
         }
     };
     let path = layout.blob(digest);
-    let file = match std::fs::File::open(&path) {
+    // Never through a link: a blob file is read only where the layout put it.
+    let file = match layout::open_nofollow(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Content::Unavailable(MISSING.into());
         }
         Err(error) => return Content::Unavailable(format!("content unavailable: {error}")),
     };
+    // Decompressed only up to the longest blob this release retains: a larger stream is
+    // corrupt, refused before it is held.
     let mut bytes = Vec::new();
-    if GzDecoder::new(file).read_to_end(&mut bytes).is_err() || sha256_digest(&bytes) != digest {
+    let limit = crate::level::CONTENT_MAX_BLOB_BYTES_BOUND;
+    if GzDecoder::new(file)
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > limit
+        || sha256_digest(&bytes) != digest
+    {
         return Content::Unavailable("content unavailable: corrupt blob".into());
     }
     Content::Bytes(bytes)

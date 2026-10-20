@@ -203,9 +203,11 @@ Credential-looking material is withheld at every level, before any bound cuts it
 looks like a credential becomes `[line withheld: looks like credential material]`, a JSON member
 named like a secret keeps its key and loses its value (`[withheld]`), and so does a
 configuration row whose key is named like a secret, a line or document too long to judge whole
-is withheld whole, and an attribute whose name itself looks like a credential is omitted and
-counted in `af.redacted`. Identities and counters af produced are typed fields and
-stay intact. A telemetry-only failure (an unwritable directory, a full segment) is one problem
+is withheld whole, an attribute whose name itself looks like a credential is omitted and
+counted in `af.redacted`, and an attribute or a command-line option named like a secret keeps
+its name and loses its value whatever its shape. Identities and counters af produced are typed
+fields and stay intact; a HOME that gives no home prefix to replace by `~` is recorded as a
+problem. A telemetry-only failure (an unwritable directory, a full segment) is one problem
 and the run continues.
 
   af telemetry status           level, directory, bytes, segments, runs, index, problems
@@ -248,8 +250,11 @@ Layout
   $XDG_STATE_HOME/af/telemetry-dirs.v1.json   every telemetry directory ever written here
 
 `af telemetry status` accounts every byte beneath the telemetry directory: a file or directory
-that matches none of the above is counted once under an `unrecognized` entry (its count, its
-allocated bytes and up to 16 of its names), never read and never removed.
+that matches none of the above, or a symbolic link anywhere beneath it, is counted once under an
+`unrecognized` entry (its count, its allocated bytes and up to 16 of its names), never read,
+followed or removed. It rechecks each registered directory's overlap: none, overlapping, or
+unknown when the Store registry cannot be read (named among the problems; the exit code is
+unchanged).
 
 There is no telemetry keep_days: collection by age is [storage] keep_days under [storage]
 auto_gc or an applied prune. See docs/telemetry.md.";

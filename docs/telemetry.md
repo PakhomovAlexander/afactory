@@ -50,14 +50,24 @@ Provider's own words, and before any bound can cut it:
 - A record attribute whose name itself looks like a credential (a token prefix, a JSON Web
   Token, a long secret run) is never written: the attribute is omitted and counted in
   `af.redacted`, and the record's other attributes stay.
+- A record attribute named like a secret (`api_key`, `session_token`, `db_password`) keeps its
+  name and loses its value, whatever its shape (text, number, identity, list), counted in
+  `af.redacted`; only the counters and enumerations `af`'s own schema names this way (such as
+  `af.usage.input_tokens`) keep a value of their type. On a command line, the argument after an
+  option named like a secret (`--api-key VALUE`) is withheld the same way.
+- Every other field of every record (span and event names, node, Finding and Demand fields,
+  configuration rows) is either an identity that validates as one or judged whole by these
+  rules.
 - Identities and counters `af` produced (digests, run, Attempt, segment and span ids, token
   counts as exact decimal strings, timestamps) are typed fields and stay intact.
 - A configuration row whose key is named like a secret (`provider.password`, `sink.auth_token`)
   keeps its key and loses its value, whatever its length or shape; other rows keep their values
   under the rules above. Each `config` record counts what it withheld in `af.redacted`.
-- Environment values are never recorded; the home directory prefix becomes `~`.
+- Environment values are never recorded; the home directory prefix becomes `~`. When `HOME`
+  gives no usable prefix (unset, not absolute, `/`), the segment records one `redaction`
+  problem saying home paths are not replaced, never a silent omission.
 
-Each blob records the rules it passed, `af-redact/1`.
+Each blob occurrence records the rules its bytes passed, `af-redact/1`.
 
 ## The `[telemetry]` table
 
@@ -106,7 +116,8 @@ Prints the configured level; the telemetry directory and its allocated bytes, in
 the two-hex prefix directories under `v1/blobs/` and the digest-named objects and publishers'
 temporary files in them; the index with its WAL and shared-memory files; temporary files; locks;
 and `unrecognized`: every other file or directory beneath the telemetry directory, `v1/blobs/`
-included, counted once with its count, its allocated bytes and up to 16 of its names, never read
+included — a stray name, and a symbolic link wherever it lies, which is never followed —
+counted once with its count, its allocated bytes and up to 16 of its names, never read
 and never removed, so the total is every allocated byte beneath the directory), each sealed
 segment with its seal's `exit` and whether its capture is `complete` or why not (`recovered, drops unknown` for a
 segment recovered without its writer's seal, `recovered`, `12 dropped`); the segments by state —
@@ -118,8 +129,11 @@ shared — when a sweep keeps it longer than two seconds the check is reported `
 blob file is looked at; the index after this command
 ingested every new segment byte; the distinct problems recorded; what cannot be read (a
 directory of another telemetry version such as `v0/` is listed and never read); and every
-telemetry directory registered on this machine, with any overlap rechecked. It never recovers
-or removes a segment.
+telemetry directory registered on this machine, with its overlap rechecked: `none`,
+`overlapping` with the reason, or `unknown` when the Store registry (`stores.toml`) cannot be
+read or is of another version — then every directory's check is `unknown`, the registry problem
+is named among the problems (`registry`), and the exit code is unchanged. It never recovers or
+removes a segment.
 
 `--json` prints one `af/telemetry-status@1` document
 ([`schemas/telemetry-status-v1.json`](../schemas/telemetry-status-v1.json)). `--dir PATH` reads
@@ -186,7 +200,14 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
   says whether a writer is alive.
 - **Blobs.** A blob's identity is the digest of the redacted, bounded bytes it keeps; each
   capture of it is its own occurrence record, so two sources that redact to the same bytes share
-  one file and keep two occurrences.
+  one file and keep two occurrences. An occurrence carries its source's identity (the digest
+  and size of the original bytes, before any redaction), its media type and the redaction its
+  bytes passed; the shared object holds only what is intrinsic to the bytes. A JSON source
+  longer than `content_max_blob_bytes` is withheld whole before it is parsed; longer text is
+  redacted line by line and cut head and tail. Blob collection acts only on two-hex prefix
+  directories and digest-named or temporary files that are real directories and regular
+  files, relative to the opened directory, and never follows a symbolic link out of the
+  telemetry directory; readers never open a segment, blob, lock or index file through one.
 - **Registry.** Before its first write a process registers its telemetry directory
   (`af/TelemetryDirs@1`, [`schemas/telemetry-dirs-v1.json`](../schemas/telemetry-dirs-v1.json)).
   A directory inside or containing a Store, the warm check cache, a release installation or

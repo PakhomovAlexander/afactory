@@ -57,6 +57,44 @@ impl Layout {
         self.root.join(VERSION_DIR)
     }
 
+    /// Whether `v1/` is a real directory: a link in its place is never entered (it is what
+    /// `status` reports as unrecognized).
+    pub fn has_versioned(&self) -> bool {
+        std::fs::symlink_metadata(self.versioned()).is_ok_and(|metadata| metadata.is_dir())
+    }
+
+    /// Create `path`, a directory beneath the root, one component at a time, refusing any
+    /// existing component that is not a real directory: a writer never follows a link out of
+    /// the telemetry directory (the root itself may be reached through one the user chose).
+    pub fn create_dirs(&self, path: &Path) -> std::io::Result<()> {
+        let relative = path.strip_prefix(&self.root).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not beneath {}", path.display(), self.root.display()),
+            )
+        })?;
+        std::fs::create_dir_all(&self.root)?;
+        let mut current = self.root.clone();
+        for component in relative.components() {
+            current.push(component);
+            match std::fs::create_dir(&current) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+            if !std::fs::symlink_metadata(&current)?.is_dir() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "{} is not a real directory; telemetry never writes through a link",
+                        current.display()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn segments(&self) -> PathBuf {
         self.versioned().join("segments")
     }
@@ -163,14 +201,235 @@ pub fn is_segment_id(id: &str) -> bool {
         && crate::redact::is_lower_hex(parts[2])
 }
 
+/// The label of a publisher's temporary file in `blobs/<aa>/`.
+pub const BLOB_TEMP_LABEL: &str = "blob";
+/// The label of an atomic write's temporary file in `segments/` (manifests, sealed segments).
+pub const WRITE_TEMP_LABEL: &str = "write";
+
+/// A blob prefix directory's name: two lowercase hex digits.
+pub fn is_blob_prefix(name: &str) -> bool {
+    name.len() == 2 && crate::redact::is_lower_hex(name)
+}
+
+/// A blob object's file name in the prefix directory `prefix`: 64 lowercase hex digits starting
+/// with `prefix`, then `.gz`. Returns the digest it names.
+pub fn blob_object_digest(prefix: &str, name: &str) -> Option<String> {
+    let hex = name.strip_suffix(".gz")?;
+    (hex.len() == 64 && crate::redact::is_lower_hex(hex) && hex.starts_with(prefix))
+        .then(|| format!("sha256:{hex}"))
+}
+
+/// A temporary file name [`temp_name`] makes with `label`: `.tmp-<label>-<pid>-<nonce>`, the
+/// pid decimal digits and the nonce eight lowercase hex digits. Nothing else is a temporary.
+pub fn is_temp_name(name: &str, label: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix(TEMP_PREFIX)
+        .and_then(|rest| rest.strip_prefix(label))
+        .and_then(|rest| rest.strip_prefix('-'))
+    else {
+        return false;
+    };
+    let Some((pid, nonce)) = rest.split_once('-') else {
+        return false;
+    };
+    !pid.is_empty()
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && nonce.len() == 8
+        && crate::redact::is_lower_hex(nonce)
+}
+
+/// What a directory entry is, judged without following a symbolic link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    Directory,
+    File,
+    /// A symbolic link, a socket, a device, a FIFO: never entered, read or removed.
+    Other,
+}
+
+impl EntryKind {
+    fn of(stat: &nix::sys::stat::FileStat) -> Self {
+        use nix::sys::stat::SFlag;
+        match SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT {
+            SFlag::S_IFDIR => Self::Directory,
+            SFlag::S_IFREG => Self::File,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// A directory beneath a telemetry root opened without following a symbolic link: its entries
+/// are listed, judged and removed relative to the open descriptor, so a link swapped in for a
+/// directory or a file never takes a walk or a removal outside the root.
+pub struct Confined {
+    dir: nix::dir::Dir,
+    path: PathBuf,
+}
+
+fn directory_flags() -> nix::fcntl::OFlag {
+    use nix::fcntl::OFlag;
+    OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
+}
+
+impl Confined {
+    /// Open the telemetry root `path` itself, which may be reached through a link the user
+    /// chose; everything beneath it is opened with [`Self::child_dir`]. `None` when it is
+    /// absent or not a directory.
+    pub fn root(path: &Path) -> std::io::Result<Option<Self>> {
+        let flags = directory_flags() & !nix::fcntl::OFlag::O_NOFOLLOW;
+        match nix::dir::Dir::open(path, flags, nix::sys::stat::Mode::empty()) {
+            Ok(dir) => Ok(Some(Self {
+                dir,
+                path: path.to_path_buf(),
+            })),
+            Err(
+                nix::errno::Errno::ENOENT | nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR,
+            ) => Ok(None),
+            Err(errno) => Err(errno.into()),
+        }
+    }
+
+    /// The telemetry root's `v1/<name>/` (`segments`, `blobs`), each component a real
+    /// directory.
+    pub fn versioned(layout: &Layout, name: &str) -> std::io::Result<Option<Self>> {
+        let Some(root) = Self::root(layout.root())? else {
+            return Ok(None);
+        };
+        let Some(versioned) = root.child_dir(VERSION_DIR)? else {
+            return Ok(None);
+        };
+        versioned.child_dir(name)
+    }
+
+    /// The directory's path, for messages and reports.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The path of the entry `name`, for messages and reports only.
+    pub fn join(&self, name: &str) -> PathBuf {
+        self.path.join(name)
+    }
+
+    /// The entry `name` when it is a real directory, opened relative to this one.
+    pub fn child_dir(&self, name: &str) -> std::io::Result<Option<Self>> {
+        if self.kind(name) != Some(EntryKind::Directory) {
+            return Ok(None);
+        }
+        match nix::dir::Dir::openat(
+            &self.dir,
+            name,
+            directory_flags(),
+            nix::sys::stat::Mode::empty(),
+        ) {
+            Ok(dir) => Ok(Some(Self {
+                dir,
+                path: self.path.join(name),
+            })),
+            Err(
+                nix::errno::Errno::ENOENT | nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR,
+            ) => Ok(None),
+            Err(errno) => Err(errno.into()),
+        }
+    }
+
+    /// The names of the entries, `.` and `..` excluded; a name that is not UTF-8 is never one
+    /// this layout gives, and is skipped.
+    pub fn names(&mut self) -> std::io::Result<Vec<String>> {
+        let mut names = Vec::new();
+        for entry in self.dir.iter() {
+            let entry = entry?;
+            let Ok(name) = entry.file_name().to_str() else {
+                continue;
+            };
+            if name != "." && name != ".." {
+                names.push(name.to_string());
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    fn stat(&self, name: &str) -> Option<nix::sys::stat::FileStat> {
+        nix::sys::stat::fstatat(&self.dir, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW).ok()
+    }
+
+    /// What `name` is, without following a link; `None` when it is gone.
+    pub fn kind(&self, name: &str) -> Option<EntryKind> {
+        self.stat(name).map(|stat| EntryKind::of(&stat))
+    }
+
+    /// Whether `name` is a regular file last modified at least `age` before `now`.
+    pub fn file_older_than(&self, name: &str, age: Duration, now: std::time::SystemTime) -> bool {
+        let Some(stat) = self.stat(name) else {
+            return false;
+        };
+        if EntryKind::of(&stat) != EntryKind::File {
+            return false;
+        }
+        let modified = std::time::UNIX_EPOCH
+            + Duration::new(
+                u64::try_from(stat.st_mtime).unwrap_or(0),
+                u32::try_from(stat.st_mtime_nsec).unwrap_or(0),
+            );
+        now.duration_since(modified).is_ok_and(|since| since >= age)
+    }
+
+    /// Remove the regular file `name` relative to this directory. Anything else (a directory, a
+    /// link, a device) is left in place and reported as an error.
+    pub fn remove_file(&self, name: &str) -> std::io::Result<()> {
+        if self.kind(name) != Some(EntryKind::File) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not a regular file", self.join(name).display()),
+            ));
+        }
+        nix::unistd::unlinkat(&self.dir, name, nix::unistd::UnlinkatFlags::NoRemoveDir)
+            .map_err(std::io::Error::from)
+    }
+
+    /// Open the regular file `name` for reading relative to this directory, never through a
+    /// link.
+    pub fn open_file(&self, name: &str) -> std::io::Result<File> {
+        use nix::fcntl::OFlag;
+        let fd = nix::fcntl::openat(
+            &self.dir,
+            name,
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            nix::sys::stat::Mode::empty(),
+        )?;
+        let file = File::from(fd);
+        if !file.metadata()?.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not a regular file", self.join(name).display()),
+            ));
+        }
+        Ok(file)
+    }
+}
+
+/// Open the file at `path` for reading, refusing a symbolic link as its last component: a
+/// segment, manifest or blob file is only ever read where the layout put it.
+pub fn open_nofollow(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+        .open(path)
+}
+
 /// A held advisory lock; dropping it releases the lock.
 pub type Held = Flock<File>;
 
 fn open_lock_file(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // Never through a link: a lock file is created and held only where the layout puts it.
     OpenOptions::new()
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
         .create(true)
         .truncate(false)
         .write(true)
@@ -217,7 +476,7 @@ fn within(path: &Path, wait: Duration, arg: FlockArg) -> std::io::Result<Option<
 /// Whether some process holds a lock on the file at `path` (it is live). A file that cannot be
 /// opened is reported as not locked.
 pub fn is_locked(path: &Path) -> bool {
-    let Ok(file) = File::open(path) else {
+    let Ok(file) = open_nofollow(path) else {
         return false;
     };
     try_lock(file, FlockArg::LockSharedNonblock).is_err()
@@ -254,6 +513,26 @@ mod tests {
             Some(SegmentFile::Live)
         );
         assert_eq!(parse_segment_name(".tmp-gz-1-ab"), None);
+        assert!(is_temp_name(".tmp-blob-42-0a1b2c3d", BLOB_TEMP_LABEL));
+        assert!(is_temp_name(&temp_name(WRITE_TEMP_LABEL), WRITE_TEMP_LABEL));
+        for stray in [
+            ".tmp-blob-42-0a1b2c3d.bak",
+            ".tmp-blob-x-0a1b2c3d",
+            ".tmp-blob-42-0A1B2C3D",
+            ".tmp-write-42-0a1b2c3d",
+            ".tmp-blob",
+        ] {
+            assert!(!is_temp_name(stray, BLOB_TEMP_LABEL), "{stray}");
+        }
+        let hex = "ab".repeat(32);
+        assert_eq!(
+            blob_object_digest("ab", &format!("{hex}.gz")),
+            Some(format!("sha256:{hex}"))
+        );
+        assert_eq!(blob_object_digest("cd", &format!("{hex}.gz")), None);
+        assert_eq!(blob_object_digest("ab", "stray.gz.bak"), None);
+        assert_eq!(blob_object_digest("ab", &format!("{hex}.gz.bak")), None);
+        assert!(is_blob_prefix("0f") && !is_blob_prefix("0F") && !is_blob_prefix("abc"));
         assert_eq!(parse_segment_name("notes.jsonl"), None);
         let layout = Layout::new("/t");
         assert_eq!(

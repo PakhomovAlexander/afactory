@@ -43,6 +43,9 @@ pub struct Start {
     /// Every directory the storage inventory accounts on its own; registration refuses a
     /// telemetry directory that overlaps one.
     pub accounted: Vec<Accounted>,
+    /// Why `accounted` is known incomplete (the Store registry could not be read): registration
+    /// then refuses, since no overlap can be ruled out.
+    pub accounted_unknown: Option<String>,
     pub af_version: String,
     pub af_commit: String,
 }
@@ -75,6 +78,7 @@ impl Telemetry {
         options.registration = Some(Registration {
             registry: start.registry,
             accounted: start.accounted,
+            accounted_unknown: start.accounted_unknown,
         });
         Self {
             writer: Writer::new(options),

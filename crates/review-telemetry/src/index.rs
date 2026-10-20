@@ -26,6 +26,11 @@ use crate::record::{Record, SealExit};
 use crate::segment::reader::{self, Position};
 use crate::trace;
 
+/// How every blob file is stored: the `blobs` row, keyed by digest, holds only what is intrinsic
+/// to the retained bytes (their digest, their sizes and this codec); media type and redaction
+/// are the occurrence's.
+pub const BLOB_CODEC: &str = "gzip";
+
 /// The index's own shape; an index of another is refused and rebuilt by `reindex`.
 pub const INDEX_SCHEMA: &str = "af/telemetry-index@1";
 
@@ -130,8 +135,7 @@ CREATE TABLE blobs(
     digest TEXT PRIMARY KEY,
     bytes INTEGER NOT NULL,
     stored_bytes INTEGER NOT NULL,
-    media_type TEXT NOT NULL,
-    redaction TEXT NOT NULL
+    codec TEXT NOT NULL
 );
 CREATE TABLE blob_refs(
     occurrence_id TEXT PRIMARY KEY,
@@ -143,7 +147,9 @@ CREATE TABLE blob_refs(
     source_digest TEXT NOT NULL,
     original_bytes INTEGER NOT NULL,
     truncated INTEGER NOT NULL,
-    state TEXT NOT NULL
+    state TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    redaction TEXT NOT NULL
 );
 CREATE TABLE problems(
     segment_id TEXT NOT NULL,
@@ -243,9 +249,30 @@ fn configure(connection: &Connection) -> Result<(), String> {
 /// Open the index file, creating it when absent; refuse one of another shape or schema version
 /// (ADR-0145: refused, never migrated), naming the file, both schemas and the command that
 /// replaces it. A refused file is left as it was found.
+/// Open the index file, never through a link: a database, WAL or shared-memory file that is
+/// not a regular file in its place is refused (`reindex` removes the link itself, never what it
+/// points to). SQLite's own no-follow flag is not used: it refuses a link anywhere in the path,
+/// the user's own directories included.
+fn connect(path: &std::path::Path) -> Result<Connection, String> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    for file in [
+        path.to_path_buf(),
+        path.with_file_name(format!("{name}-wal")),
+        path.with_file_name(format!("{name}-shm")),
+    ] {
+        if std::fs::symlink_metadata(&file).is_ok_and(|metadata| !metadata.is_file()) {
+            return Err(format!(
+                "{}: not a regular file; the telemetry index is never opened through it",
+                file.display()
+            ));
+        }
+    }
+    Connection::open(path).map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn open_file(layout: &Layout) -> Result<Connection, String> {
     let path = layout.index();
-    let connection = Connection::open(&path).map_err(sql)?;
+    let connection = connect(&path)?;
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(sql)?;
@@ -430,7 +457,7 @@ impl Index {
                         }),
                     )
                 });
-            let bytes = match std::fs::read(&path) {
+            let bytes = match reader::read_live_bytes(&path) {
                 Ok(bytes) => bytes,
                 // Sealed or recovered between the listing and the read: the next ingest has it.
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -629,7 +656,8 @@ impl Index {
         self.connection
             .query_row(
                 "SELECT occurrence_id, digest, span_id, event_seq, source_digest, original_bytes,
-                        truncated, state, seq FROM blob_refs WHERE occurrence_id = ?1",
+                        truncated, state, seq, media_type, redaction FROM blob_refs
+                 WHERE occurrence_id = ?1",
                 params![occurrence_id],
                 |row| {
                     let state: String = row.get(7)?;
@@ -648,6 +676,8 @@ impl Index {
                         } else {
                             crate::record::BlobState::Dropped
                         },
+                        media_type: row.get(9)?,
+                        redaction: row.get(10)?,
                     })
                 },
             )
@@ -958,15 +988,13 @@ impl<'a> SegmentIngest<'a> {
                 Record::Blob(object) => {
                     transaction
                         .execute(
-                            "INSERT OR IGNORE INTO blobs(digest, bytes, stored_bytes, media_type,
-                                 redaction)
-                             VALUES (?1, ?2, ?3, ?4, ?5)",
+                            "INSERT OR IGNORE INTO blobs(digest, bytes, stored_bytes, codec)
+                             VALUES (?1, ?2, ?3, ?4)",
                             params![
                                 object.digest,
                                 as_i64(object.bytes),
                                 as_i64(object.stored_bytes),
-                                object.media_type,
-                                object.redaction
+                                BLOB_CODEC
                             ],
                         )
                         .map_err(sql)?;
@@ -983,8 +1011,8 @@ impl<'a> SegmentIngest<'a> {
                         .execute(
                             "INSERT OR IGNORE INTO blob_refs(occurrence_id, segment_id, seq,
                                  digest, span_id, event_seq, source_digest, original_bytes,
-                                 truncated, state)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                 truncated, state, media_type, redaction)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                             params![
                                 occurrence.occurrence_id,
                                 segment_id,
@@ -995,7 +1023,9 @@ impl<'a> SegmentIngest<'a> {
                                 occurrence.source_digest,
                                 as_i64(occurrence.original_bytes),
                                 i64::from(occurrence.truncated),
-                                occurrence.state.as_str()
+                                occurrence.state.as_str(),
+                                occurrence.media_type,
+                                occurrence.redaction
                             ],
                         )
                         .map_err(sql)?;
@@ -1121,8 +1151,8 @@ pub fn replace(layout: &Layout) -> Result<Replaced, String> {
     let lock = layout::exclusive_within(&layout.index_lock(), layout::LOCK_WAIT)
         .map_err(|error| format!("{}: {error}", layout.index_lock().display()))?
         .ok_or("the telemetry index is in use by another command; try again")?;
-    if layout.index().exists() {
-        if let Ok(connection) = Connection::open(layout.index()) {
+    if std::fs::symlink_metadata(layout.index()).is_ok_and(|metadata| metadata.is_file()) {
+        if let Ok(connection) = connect(&layout.index()) {
             let _ = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
             drop(connection);
         }
@@ -1134,7 +1164,7 @@ pub fn replace(layout: &Layout) -> Result<Replaced, String> {
             Err(error) => return Err(format!("{}: {error}", path.display())),
         }
     }
-    let connection = Connection::open(layout.index()).map_err(sql)?;
+    let connection = connect(&layout.index())?;
     configure(&connection)?;
     create(&connection)?;
     let mut index = Index {

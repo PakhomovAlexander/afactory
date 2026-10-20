@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use review_telemetry::dirs::{self, Accounted};
 use review_telemetry::level::Settings;
 use review_telemetry::status::{
-    self as telemetry_status, BlobVerification, Reindex, Status, StatusInput,
+    self as telemetry_status, BlobVerification, OverlapCheck, Reindex, Status, StatusInput,
 };
 
 use crate::config;
@@ -36,8 +36,10 @@ pub(crate) fn registry() -> Result<PathBuf, String> {
 }
 
 /// Every directory the storage inventory accounts on its own: a telemetry directory may
-/// overlap none of them, and may lie inside the state root but never contain it.
-pub(crate) fn accounted() -> Result<Vec<Accounted>, String> {
+/// overlap none of them, and may lie inside the state root but never contain it. The second
+/// value says why the list is known incomplete: a Store registry that cannot be read (or is of
+/// another version) is never silently omitted, so every overlap check becomes `unknown`.
+pub(crate) fn accounted() -> Result<(Vec<Accounted>, Option<String>), String> {
     let roots = storage::Roots::current()?;
     let mut accounted = vec![
         Accounted::container(config::state_home()?.join("af"), "the state root"),
@@ -48,12 +50,16 @@ pub(crate) fn accounted() -> Result<Vec<Accounted>, String> {
         Accounted::new(&roots.workspaces, "the warm Workspaces"),
         Accounted::new(&roots.installs.versions, "the release installations"),
     ];
-    if let Ok(stores) = storage::registry::read(&roots.registry) {
-        for store in stores {
-            accounted.push(Accounted::new(store.path, "a registered Store"));
+    let unknown = match storage::registry::read(&roots.registry) {
+        Ok(stores) => {
+            for store in stores {
+                accounted.push(Accounted::new(store.path, "a registered Store"));
+            }
+            None
         }
-    }
-    Ok(accounted)
+        Err(error) => Some(format!("the Store registry cannot be read: {error}")),
+    };
+    Ok((accounted, unknown))
 }
 
 /// A refused `[telemetry]` key: exit 2, one line on stderr, and under `--json` the error
@@ -116,12 +122,14 @@ pub(crate) fn status(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
         Err(refusal) => return Ok(refused(COMMAND, json, &refusal)),
     };
     let root = chosen(dir, &settings)?;
+    let (accounted, accounted_unknown) = accounted()?;
     let (status, note) = telemetry_status::status(&StatusInput {
         root,
         level: settings.level,
         max_bytes: settings.max_bytes,
         registry: Some(registry()?),
-        accounted: accounted()?,
+        accounted,
+        accounted_unknown,
     })?;
     if let Some(note) = note {
         eprintln!("{COMMAND}: {note}");
@@ -249,8 +257,15 @@ fn render_status(status: &Status) -> String {
             if !dir.exists {
                 notes.push("gone".to_string());
             }
-            if let Some(overlap) = &dir.overlapping {
-                notes.push(format!("overlapping: {overlap}"));
+            match (dir.overlap, &dir.overlapping) {
+                (OverlapCheck::Unknown, Some(overlap)) => {
+                    notes.push(format!("overlap unknown; at least: {overlap}"));
+                }
+                (OverlapCheck::Unknown, None) => {
+                    notes.push("overlap unknown: the Store registry cannot be read".to_string());
+                }
+                (_, Some(overlap)) => notes.push(format!("overlapping: {overlap}")),
+                (_, None) => {}
             }
             let notes = if notes.is_empty() {
                 String::new()

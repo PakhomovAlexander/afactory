@@ -5,6 +5,7 @@
   repository's `.af/af.toml`, and `af help telemetry` documents it. `af telemetry status` and
   `af telemetry reindex` (`--json`: `af/telemetry-status@1`, `af/telemetry-reindex@1`) show and
   rebuild the store; `status` accounts every byte beneath it, a path it does not recognize
-  under an `unrecognized` entry it never reads or removes. The credential rules for Provider-authored text moved into the crate
+  under an `unrecognized` entry it never reads or removes, and rechecks each registered
+  directory's overlap, `unknown` when the Store registry cannot be read. The credential rules for Provider-authored text moved into the crate
   unchanged, with key-aware JSON redaction added. No command records spans yet
   ([ADR-0153](docs/adr/0153-record-telemetry-in-its-own-store-and-never-let-it-steer.md)).

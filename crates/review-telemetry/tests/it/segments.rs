@@ -510,6 +510,7 @@ fn status_of(root: &std::path::Path) -> review_telemetry::status::Status {
         max_bytes: 4 << 30,
         registry: None,
         accounted: Vec::new(),
+        accounted_unknown: None,
     })
     .unwrap()
     .0
@@ -868,4 +869,26 @@ fn telemetry_reader_refuses_oversized_records() {
     let reindexed = review_telemetry::status::reindex(temp.path()).unwrap();
     assert!(listed(&reindexed.unreadable), "{:?}", reindexed.unreadable);
     assert_eq!(reindexed.segments, 0);
+}
+
+/// Every bound is judged before reading: a `.jsonl` segment longer than any segment this
+/// release writes is refused by its length, never loaded, by the reader and by the index.
+#[test]
+fn telemetry_reads_refuse_files_past_their_bound() {
+    use review_telemetry::level::SEGMENT_MAX_BYTES_BOUND;
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    std::fs::create_dir_all(layout.segments()).unwrap();
+    let path = layout.live_segment("1700000000000-1-0a1b2c3d");
+    // Sparse: the length is the bound plus one, with nothing allocated.
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(SEGMENT_MAX_BYTES_BOUND + 1)
+        .unwrap();
+    let refusal = reader::read_live(&path).unwrap_err();
+    assert!(refusal.contains("segment bound"), "{refusal}");
+    let mut index = Index::open(&layout).unwrap();
+    let (_, refused) = index.ingest().unwrap();
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].1.contains("segment bound"), "{refused:?}");
 }

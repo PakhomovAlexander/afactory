@@ -438,3 +438,87 @@ fn telemetry_status_refuses_a_foreign_index_schema() {
     assert_eq!(status["index"]["state"], "fresh");
     assert_eq!(status["runs"], 1);
 }
+
+/// A Store registry that cannot be read never hides an overlap: every registered telemetry
+/// directory's overlap check is `unknown`, the registry problem is named among the problems,
+/// no directory is presented as standing alone, and the exit code stays 0.
+#[test]
+fn telemetry_status_reports_unknown_overlap_when_the_registry_is_unreadable() {
+    let machine = Machine::new();
+    let schema = schemas::validator("telemetry-status-v1.json");
+    let registry = review_telemetry::dirs::location(&machine.root.join("state"));
+    let inside_store = machine.root.join("stores/task-a/telemetry");
+    for directory in [machine.telemetry(), inside_store.clone()] {
+        review_telemetry::dirs::register(&registry, &directory, &[]).unwrap();
+    }
+    let stores = machine.root.join("state/af/stores.toml");
+    let store = format!(
+        "version = 1\n\n[[store]]\npath = \"{}\"\nkind = \"task\"\nfirst_use_unix_ms = 1\n\
+         last_use_unix_ms = 1\n",
+        machine.root.join("stores/task-a").display()
+    );
+
+    // Readable: the directory inside the registered Store overlaps, the default one does not.
+    std::fs::write(&stores, &store).unwrap();
+    let document = json(&machine.af(&[], &["telemetry", "status", "--json"]));
+    schemas::valid(&schema, &document);
+    let overlap = |document: &Value, path: &Path| {
+        let entry = document["registered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["path"] == path.display().to_string())
+            .unwrap_or_else(|| panic!("{path:?}: {document}"))
+            .clone();
+        (entry["overlap"].clone(), entry.get("overlapping").cloned())
+    };
+    assert_eq!(overlap(&document, &machine.telemetry()).0, "none");
+    let (check, reason) = overlap(&document, &inside_store);
+    assert_eq!(check, "overlapping");
+    assert!(
+        reason
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("a registered Store")
+    );
+    assert!(
+        document["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|problem| problem["what"] != "registry")
+    );
+
+    // Unreadable (not TOML) and unsupported (another version): unknown, never `none`.
+    for contents in [
+        "this is not toml [[[".to_string(),
+        store.replace("version = 1", "version = 9"),
+    ] {
+        std::fs::write(&stores, &contents).unwrap();
+        let output = machine.af(&[], &["telemetry", "status", "--json"]);
+        assert_eq!(output.status.code(), Some(0), "{:?}", text(&output));
+        let document = json(&output);
+        schemas::valid(&schema, &document);
+        for directory in [machine.telemetry(), inside_store.clone()] {
+            let (check, _) = overlap(&document, &directory);
+            assert_eq!(check, "unknown", "{contents}: {directory:?}");
+        }
+        let problem = document["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|problem| problem["what"] == "registry")
+            .unwrap_or_else(|| panic!("{document}"))
+            .clone();
+        let reason = problem["reason"].as_str().unwrap();
+        assert!(reason.contains("stores.toml"), "{reason}");
+        assert!(reason.contains("unknown"), "{reason}");
+        assert_eq!(problem["segments"], 0);
+        let output = machine.af(&[], &["telemetry", "status"]);
+        assert_eq!(output.status.code(), Some(0));
+        let (stdout, _) = text(&output);
+        assert!(stdout.contains("overlap unknown"), "{stdout}");
+        assert!(stdout.contains("registry"), "{stdout}");
+    }
+}
