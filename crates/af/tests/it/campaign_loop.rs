@@ -1123,6 +1123,20 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(show_out.contains(r#""fix": "bound it""#), "{show_out}");
     assert!(show_out.contains("Reported"), "{show_out}");
 
+    // A missing CLI key stays on the error's one line even when it contains controls.
+    let missing = "missing\nforged\r\x1b[31m";
+    let (code, output, error) = af(
+        &repo,
+        &home,
+        &["show", "--campaign", "loop", "--state", &state, missing],
+    );
+    assert_eq!(code, 1, "{output}\n{error}");
+    assert!(output.is_empty(), "{output}");
+    assert_eq!(
+        error,
+        "af review: no finding with key missing\\u{a}forged\\u{d}\\u{1b}[31m\n"
+    );
+
     let (code, report_out, report_err) = af(
         &repo,
         &home,
