@@ -145,3 +145,123 @@ fn a_hostile_filename_from_the_diff_cannot_become_an_option() {
     assert_eq!(contained.status, CheckStatus::NotRun);
     assert!(!provider_called);
 }
+
+/// A check that writes past the output cap fails, whatever its exit code, with a reason naming
+/// the cap; the capped prefix is still its recorded stdout (M2).
+#[test]
+fn a_check_over_the_output_cap_fails_naming_the_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let runner = CheckRunner::new(&cas, dir.path()).with_output_cap(4096);
+    let flag = std::sync::atomic::AtomicBool::new(false);
+    for runner in [
+        CheckRunner::new(&cas, dir.path()).with_output_cap(4096),
+        runner.with_cancellation(Some(&flag)),
+    ] {
+        let result = runner.run(&shell("noisy", "head -c 10000 /dev/zero; exit 0"));
+        assert_eq!(result.status, CheckStatus::Failed);
+        assert_eq!(result.exit_code, Some(0));
+        let reason = result.reason.as_deref().unwrap();
+        assert!(
+            reason.contains("stdout was truncated at the 4 KiB output cap: it wrote 10000 bytes"),
+            "{reason}"
+        );
+        assert_eq!(
+            cas.get(result.stdout.as_deref().unwrap()).unwrap().len(),
+            4096
+        );
+        assert!(!GateDecision::evaluate(&[result]).passed());
+    }
+    let quiet = CheckRunner::new(&cas, dir.path())
+        .with_output_cap(4096)
+        .run(&shell("quiet", "head -c 4096 /dev/zero"));
+    assert_eq!(quiet.status, CheckStatus::Passed);
+}
+
+/// The default cap is 64 MiB: a check printing without end does not grow the kernel past it,
+/// runs to its own exit and fails.
+#[test]
+fn a_check_printing_200_mib_fails_at_the_default_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let result = CheckRunner::new(&cas, dir.path()).run(&shell(
+        "flood",
+        "head -c 209715200 /dev/zero; echo done >&2",
+    ));
+    assert_eq!(result.status, CheckStatus::Failed);
+    assert_eq!(result.exit_code, Some(0));
+    assert!(
+        result
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("stdout was truncated at the 64 MiB output cap: it wrote 209715200 bytes")
+    );
+    assert_eq!(
+        cas.get(result.stdout.as_deref().unwrap()).unwrap().len(),
+        review_process::MAX_CAPTURED_STREAM_BYTES
+    );
+    assert_eq!(
+        cas.get(result.stderr.as_deref().unwrap()).unwrap(),
+        b"done\n"
+    );
+}
+
+/// A host-local check's `PATH` holds only existing absolute directories (I6). The test runs
+/// itself again in a child whose own `PATH` carries an empty, a `.` and a relative entry.
+#[test]
+fn a_local_check_path_holds_only_absolute_directories() {
+    const PROBE: &str = "AF_FIXTURE_CHECK_PATH_PROBE";
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let result = CheckRunner::new(&cas, dir.path()).run(&shell("path", "printf '%s' \"$PATH\""));
+    assert_eq!(result.status, CheckStatus::Passed);
+    let path = String::from_utf8(cas.get(result.stdout.as_deref().unwrap()).unwrap()).unwrap();
+    assert!(
+        path.split(':')
+            .all(|entry| entry.starts_with('/') && std::path::Path::new(entry).is_dir()),
+        "{path}"
+    );
+    if std::env::var_os(PROBE).is_some() {
+        assert!(path.contains("/bin"), "{path}");
+        return;
+    }
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_local_check_path_holds_only_absolute_directories",
+            "--test-threads=1",
+        ])
+        .env(PROBE, "1")
+        .env(
+            "PATH",
+            "::.:relative/bin:/nonexistent/af-bin:/usr/bin:/bin:",
+        )
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success() && String::from_utf8_lossy(&child.stdout).contains("1 passed"),
+        "{}",
+        String::from_utf8_lossy(&child.stdout)
+    );
+}
+
+/// A child that leaves a local check's process group with `setsid` is ended before the check
+/// returns, so it cannot write into the tree sealed after it (L7). Linux only: elsewhere a
+/// `setsid` child escapes the group kill on `trusted_local`.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_setsid_child_of_a_local_check_is_ended_before_sealing() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let result = CheckRunner::new(&cas, dir.path()).run(&shell(
+        "escape",
+        "setsid sh -c 'sleep 2; touch x' >/dev/null 2>&1 </dev/null &",
+    ));
+    assert_eq!(result.status, CheckStatus::Passed);
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(
+        !dir.path().join("x").exists(),
+        "a setsid child wrote into the tree after its check returned"
+    );
+}

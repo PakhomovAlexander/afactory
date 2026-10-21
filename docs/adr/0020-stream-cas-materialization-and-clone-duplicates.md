@@ -60,3 +60,17 @@ String.
   occurrences and validates every manifest-declared size against the verified byte count.
 - Serial path preparation allocates one absolute PathBuf for the whole manifest, not one per entry;
   it still validates and creates every newly encountered parent before worker writes begin.
+
+**Amended 2026-10-20.** Committed capture now holds to the same bound. `git cat-file --batch`
+bodies are framed to their declared length and read through one 64 KiB buffer: a blob that fits
+is stored from it, a larger one is copied through it into a reused spool file that the CAS reads
+with `put_reader_with_buffer`. No blob is allocated whole, and the stored bytes and digests are
+the ones storing the whole blob gave.
+
+Materialization also refuses, before anything is written, a manifest that names a path git
+itself refuses (`.git` in any ASCII case, its NTFS and HFS+ spellings such as `.git.`, `git~1` or
+one with an HFS-ignorable code point, and a symlinked `.gitmodules`), through the predicate Task
+trees and capture share (`review_source_git::git_refuses_path`). And it asks the volume holding
+the sandbox root once, with a probe file, whether it folds ASCII case or Unicode normalisation;
+where it does, two manifest paths or directories that fold to one name are refused, naming both,
+rather than left for the last write to win.

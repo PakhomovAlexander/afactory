@@ -96,3 +96,15 @@
   `af storage prune` now report the same telemetry numbers on ext4 as on APFS; on Linux they
   are smaller than before by 4096 bytes for every directory under the telemetry root, which
   they no longer count.
+- Telemetry merged with the 2026-10-20 security audit: `[telemetry] max_bytes` is enforced, not
+  advisory — the Storage Budget's sweep evicts sealed segments past it, and `af telemetry status`
+  over the cap warns that the next storage sweep evicts them (its help, `af help telemetry`,
+  `docs/telemetry.md` and `schemas/telemetry-status-v1.json` say the same, and name no overhead
+  gate). `af/storage-prune@4` carries the audit's `left` (what a removal left in place in a Store
+  not proven af's) beside `telemetry`; `af/storage-prune@3` stays superseded and ships no
+  schema. Every `review-process` result carries the capture cap's `truncation` beside the
+  leader's process id and resource use, a check, an Attempt, a container command or a gate call
+  past the cap fails naming it inside its `af.check`, `af.harness`, `af.process` or `af.git`
+  span, and the Linux subreaper's reaps of escaped descendants take the same reap lock. At
+  `metrics` a recording command's segment header keeps `argv[0]` and the subcommand chain the
+  argument parser matched, which `af task run` and the other recording commands now pass in.

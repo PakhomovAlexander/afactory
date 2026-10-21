@@ -432,3 +432,172 @@ fn review_plan_prints_each_model_line_and_refuses_an_effort_level_codex_does_not
         assert!(message.contains(part), "{part}:\n{message}");
     }
 }
+
+/// File names are repository-authored: `af review plan` shows one holding ESC, BEL or a newline
+/// with every control character escaped visibly in text mode, while `--json` carries the names
+/// exactly as before, escaped by JSON itself.
+#[test]
+fn review_plan_text_output_shows_control_characters_in_changed_paths_escaped() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded_repo_with_a_change(root.path());
+    let hostile = ["esc\u{1b}]0;PWNED\u{7}name", "new\nline"];
+    for name in hostile {
+        std::fs::write(repo.join(name), "hostile name\n").unwrap();
+    }
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "hostile names"]);
+    let state_home = root.path().join("state");
+    let repo_arg = repo.to_str().unwrap();
+    let mut plan_args = vec![
+        "review",
+        "plan",
+        "--repo",
+        repo_arg,
+        "--pipeline",
+        ".af/pipelines/review.toml",
+        "--policy-rev",
+        "HEAD~2",
+        "--base",
+        "HEAD~1",
+        "--candidate",
+        "HEAD",
+    ];
+    let planned = af(&state_home, &plan_args);
+    assert!(planned.status.success(), "{}", stderr(&planned));
+    let raw_controls: Vec<u8> = planned
+        .stdout
+        .iter()
+        .copied()
+        .filter(|byte| (*byte < 0x20 && *byte != b'\n') || *byte == 0x7f)
+        .collect();
+    assert!(
+        raw_controls.is_empty(),
+        "raw control bytes {raw_controls:?}"
+    );
+    let text = String::from_utf8(planned.stdout).unwrap();
+    assert!(!text.chars().any(|c| c.is_control() && c != '\n'), "{text}");
+    for line in [
+        "  change  esc\\u{1b}]0;PWNED\\u{7}name",
+        "  change  new\\u{a}line",
+    ] {
+        assert!(text.lines().any(|row| row == line), "{line}:\n{text}");
+    }
+    assert!(
+        !text.lines().any(|row| row == "line"),
+        "a forged line:\n{text}"
+    );
+
+    plan_args.push("--json");
+    let planned = af(&state_home, &plan_args);
+    assert!(planned.status.success(), "{}", stderr(&planned));
+    let plan: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    let changed: Vec<&str> = plan["subject"]["changed_paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|path| path.as_str().unwrap())
+        .collect();
+    assert_eq!(changed, ["esc\u{1b}]0;PWNED\u{7}name", "new\nline"]);
+    let json = String::from_utf8(planned.stdout).unwrap();
+    assert!(json.contains(r#""esc\u001b]0;PWNED\u0007name""#), "{json}");
+}
+
+/// The `--repo` of `af review plan` comes from the command line: one holding ESC, BEL or a
+/// newline that cannot be opened is named in the error with every control character escaped
+/// visibly, so it neither drives the terminal nor forges a line (audit C3).
+#[test]
+fn review_plan_names_a_repo_it_cannot_open_with_control_characters_escaped() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("esc\u{1b}]0;PWNED\u{7}repo\nforged");
+    let planned = af(
+        &root.path().join("state"),
+        &["review", "plan", "--repo", repo.to_str().unwrap()],
+    );
+    assert_eq!(planned.status.code(), Some(1), "{}", stderr(&planned));
+    let text = stderr(&planned);
+    assert!(
+        !text.chars().any(|c| c.is_control() && c != '\n'),
+        "raw control characters:\n{text}"
+    );
+    assert_eq!(text.lines().count(), 1, "a forged line:\n{text}");
+    assert!(
+        text.starts_with("af review: opening repository ")
+            && text.contains("esc\\u{1b}]0;PWNED\\u{7}repo\\u{a}forged: "),
+        "{text}"
+    );
+}
+
+/// Pipeline node IDs are repository-authored too: a reviewer and a gather node whose IDs hold
+/// ESC and BEL (written as TOML unicode escapes) reach no terminal raw through any line of
+/// `af review plan`'s text output — topology, edges, reservations, input sizes or providers.
+#[test]
+fn review_plan_text_output_shows_control_characters_in_node_ids_escaped() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded_repo_with_a_change(root.path());
+    let pipeline = repo.join(".af/pipelines/review.toml");
+    let declared = std::fs::read_to_string(&pipeline).unwrap();
+    let hostile = declared
+        .replace(
+            "id = \"architecture\"",
+            "id = \"arch\\u001b]0;PWNED\\u0007itecture\"",
+        )
+        .replace(
+            "node = \"architecture\"",
+            "node = \"arch\\u001b]0;PWNED\\u0007itecture\"",
+        )
+        .replace("id = \"gather\"", "id = \"gath\\u001b[2J\\u0007er\"")
+        .replace("node = \"gather\"", "node = \"gath\\u001b[2J\\u0007er\"");
+    assert_ne!(hostile, declared);
+    std::fs::write(&pipeline, hostile).unwrap();
+    repin(&repo, "review");
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "hostile node ids"]);
+    let state_home = root.path().join("state");
+    let planned = af(
+        &state_home,
+        &[
+            "review",
+            "plan",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--pipeline",
+            ".af/pipelines/review.toml",
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD~1",
+            "--candidate",
+            "HEAD",
+        ],
+    );
+    assert!(planned.status.success(), "{}", stderr(&planned));
+    let raw_controls: Vec<u8> = planned
+        .stdout
+        .iter()
+        .copied()
+        .filter(|byte| (*byte < 0x20 && *byte != b'\n') || *byte == 0x7f)
+        .collect();
+    assert!(
+        raw_controls.is_empty(),
+        "raw control bytes {raw_controls:?}"
+    );
+    let text = String::from_utf8(planned.stdout).unwrap();
+    assert!(!text.chars().any(|c| c.is_control() && c != '\n'), "{text}");
+    let architecture = "arch\\u{1b}]0;PWNED\\u{7}itecture";
+    let gather = "gath\\u{1b}[2J\\u{7}er";
+    for line in [
+        format!("  node {architecture} [reviewer]"),
+        format!("  node {gather} [gather]"),
+        format!("  {architecture}.result -> {gather}.architecture"),
+        format!("provider {architecture} -> MISSING"),
+    ] {
+        assert!(text.lines().any(|row| row == line), "{line}:\n{text}");
+    }
+    for prefix in ["reserve  ", "input    "] {
+        assert!(
+            text.lines()
+                .any(|row| row.starts_with(prefix) && row.contains(architecture)),
+            "{prefix}:\n{text}"
+        );
+    }
+}

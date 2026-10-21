@@ -234,7 +234,7 @@ fn a_prompt_only_the_working_tree_has_is_drift() {
     pane.load(&scope(root)).unwrap();
     pane.open(Some(".af/task-packages/w/worker.toml"));
     assert_eq!(pane.items()[0].label, "fixture/w");
-    // An untracked prompt: `git diff` does not see it, the pane does.
+    // An untracked prompt: `commit` has no such file, the working tree does.
     let prompt = ".af/task-packages/w/instructions.md";
     write(root, prompt, "Not committed yet.\n");
     pane.open(Some(".af/task-packages/w/worker.toml"));
@@ -1249,7 +1249,7 @@ fn a_read_spawns_as_many_git_processes_for_thirty_workers_as_for_two() {
     assert!(many <= 6, "{many} git processes for one read");
 }
 
-/// `git diff` trusts the index flags; the pane does not: a `skip-worktree` or
+/// The index flags do not hide drift: a `skip-worktree` or
 /// `assume-unchanged` declaration edited in the working tree is still marked, and a flagged
 /// file left alone is not.
 #[test]

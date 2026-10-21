@@ -1241,10 +1241,12 @@ mod tests {
     #[test]
     fn typed_values_skip_the_heuristic_and_text_does_not() {
         let digest = format!("sha256:{}", "ab".repeat(32));
+        // A 32-hex id is a kernel identity only in an identity position; as text it is a secret
+        // run (a digest is no secret anywhere).
         let (attributes, counters) = bound_attributes(
             Attrs::new()
                 .id("af.context.manifest", digest.clone())
-                .text("af.failure.reason", digest.clone())
+                .text("af.failure.reason", "ab".repeat(16))
                 .decimal(
                     "af.usage.input_tokens",
                     "340282366920938463463374607431768211455",
@@ -1267,24 +1269,30 @@ mod tests {
     #[test]
     fn identity_arrays_keep_kernel_identities_only_in_their_position() {
         let digest = format!("sha256:{}", "ab".repeat(32));
+        let trace = "4bf92f3577b34da6a3ce929d0e0e4736".to_string();
         let ids = vec![
             digest.clone(),
             "sk-proj-violet".into(),
             "fixture/raw-1".into(),
+            trace.clone(),
         ];
         let (attributes, counters) = bound_attributes(
             Attrs::new()
                 .ids("artifact_refs", ids.clone())
-                .ids("af.note", vec![digest.clone()]),
+                .ids("af.note", vec![trace.clone(), digest.clone()]),
             &Redactor::new(),
             &mut |_, _| None,
         );
         assert_eq!(
             attributes["artifact_refs"],
-            serde_json::json!([digest, redact::WITHHELD, "fixture/raw-1"])
+            serde_json::json!([digest, redact::WITHHELD, "fixture/raw-1", trace])
         );
-        // Outside an identity position a digest is a long hex run, withheld like any text.
-        assert_eq!(attributes["af.note"], serde_json::json!([redact::WITHHELD]));
+        // Outside an identity position an identity is judged like any text: a 32-hex trace id
+        // is a long hex run mixing letters and digits, withheld; a digest is not a secret (M7).
+        assert_eq!(
+            attributes["af.note"],
+            serde_json::json!([redact::WITHHELD, digest])
+        );
         assert_eq!(counters.redacted, 2);
         // Bounded like any array: at most 32 elements, the marker last.
         let many = (0..40).map(|_| digest.clone()).collect();

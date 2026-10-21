@@ -132,7 +132,26 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             task_sandbox_mode(access),
             &last_message,
         );
+        // A private, empty HOME in this Attempt's own runtime directory, never the candidate
+        // tree: Codex hands HOME to the login shell its tools run in, so a committed
+        // `.bash_profile`, `.gitconfig` or `.cargo/config.toml` must not apply to them.
+        let home = staging.path().join("home");
+        let home = match std::fs::create_dir(&home)
+            .map_err(|error| error.to_string())
+            .and_then(|()| {
+                home.to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "Codex Worker home path is not UTF-8".to_owned())
+            }) {
+            Ok(home) => home,
+            Err(error) => {
+                return Ok(ModelWorkerReturn::failed(RunnerError::Unavailable(
+                    format!("Cannot create Codex Worker home: {error}"),
+                )));
+            }
+        };
         let mut runner = ModelRunner::new(workdir, timeout)
+            .with_env("HOME", home)
             .with_harness("openai", self.model_settings().map(|(model, _)| model));
         if access.has_shell() {
             // A shell child must not outlive the Attempt that started it.

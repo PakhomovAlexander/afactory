@@ -32,8 +32,8 @@ use review_core::{
 use review_store::Cas;
 
 use review_process::{
-    ExitPolicy, SupervisedError, run_supervised_captured_cancellable_with_policy,
-    run_supervised_captured_with_policy,
+    ExitPolicy, MAX_CAPTURED_STREAM_BYTES, SupervisedError, run_supervised_captured_bounded,
+    sanitized_path,
 };
 
 /// Why a supervised process yielded no capture, or an input could not be composed. Each is a
@@ -289,7 +289,25 @@ fn normalize(value: &mut serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_proposal_declaration, parse_reviewer_result};
+    use super::{note_cleanup_fallback, parse_proposal_declaration, parse_reviewer_result};
+
+    /// V4 of the security close-out: an Attempt that ran while af could not become a child
+    /// subreaper records, in its stored stderr, that descendant cleanup fell back to the
+    /// process-group kill; with the subreaper set nothing is added.
+    #[test]
+    fn an_attempt_records_that_descendant_cleanup_fell_back() {
+        let mut stderr = b"worker said".to_vec();
+        note_cleanup_fallback(&mut stderr, None);
+        assert_eq!(stderr, b"worker said");
+        note_cleanup_fallback(
+            &mut stderr,
+            Some("descendant cleanup fell back to the process-group kill: EPERM"),
+        );
+        assert_eq!(
+            stderr,
+            b"worker said\ndescendant cleanup fell back to the process-group kill: EPERM\n"
+        );
+    }
 
     #[test]
     fn a_findings_keyed_answer_is_read_as_reports() {
@@ -1189,10 +1207,13 @@ pub struct ModelRunner {
     workdir: PathBuf,
     timeout: Duration,
     grants: Vec<Grant>,
+    /// Every spelling of a granted value scrubbed from what is stored, longest first.
+    redactions: Vec<String>,
     environment: Vec<Grant>,
     exit_policy: ExitPolicy,
     /// What the `af.harness` span names: the GenAI provider and the bound model.
     harness: Option<(&'static str, Option<String>)>,
+    output_cap: usize,
 }
 
 impl ModelRunner {
@@ -1201,9 +1222,11 @@ impl ModelRunner {
             workdir: workdir.as_ref().to_path_buf(),
             timeout,
             grants: Vec::new(),
+            redactions: Vec::new(),
             environment: Vec::new(),
             exit_policy: ExitPolicy::PreserveProcessGroup,
             harness: None,
+            output_cap: MAX_CAPTURED_STREAM_BYTES,
         }
     }
 
@@ -1215,20 +1238,44 @@ impl ModelRunner {
         self
     }
 
-    /// End the whole process group when the model process exits, as a check does. An Attempt
-    /// that may run a shell sets this so no background child outlives it and keeps writing into
-    /// the sandbox the kernel is about to seal; deadline and cancellation already kill the group.
+    /// Keep at most `cap` bytes of each stream instead of
+    /// [`MAX_CAPTURED_STREAM_BYTES`]. A process that writes more fails its Attempt either way.
+    pub fn with_output_cap(mut self, cap: usize) -> Self {
+        self.output_cap = cap;
+        self
+    }
+
+    /// End the whole process group when the model process exits, as a check does, and on Linux
+    /// every descendant that left it (`ExitPolicy::KillDescendants`). An Attempt that may run a
+    /// shell sets this so no background child outlives it and keeps writing into the sandbox
+    /// the kernel is about to seal; deadline and cancellation already kill the group.
     pub fn killing_process_group_on_exit(mut self) -> Self {
-        self.exit_policy = ExitPolicy::KillProcessGroup;
+        self.exit_policy = ExitPolicy::KillDescendants;
         self
     }
 
     /// Grant one credential to the child. The value never appears in anything stored: it is
-    /// scrubbed from stdout and stderr before either is kept or quoted.
+    /// scrubbed from stdout and stderr before either is kept or quoted. A value that is an
+    /// absolute path is scrubbed in its canonical spelling too (`/var/…` and `/private/var/…`
+    /// on macOS, a symbolic link resolved), since a CLI may print the path it resolved.
     pub fn with_grant(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        let value = value.into();
+        let path = Path::new(&value);
+        let canonical = path
+            .is_absolute()
+            .then(|| std::fs::canonicalize(path).ok())
+            .flatten()
+            .and_then(|canonical| canonical.to_str().map(str::to_owned));
+        for spelling in std::iter::once(value.clone()).chain(canonical) {
+            if !spelling.is_empty() && !self.redactions.contains(&spelling) {
+                self.redactions.push(spelling);
+            }
+        }
+        self.redactions
+            .sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         self.grants.push(Grant {
             name: name.into(),
-            value: value.into(),
+            value,
         });
         self
     }
@@ -1319,7 +1366,7 @@ impl ModelRunner {
         cmd.args(&argv);
         cmd.current_dir(&self.workdir);
         cmd.env_clear();
-        cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
+        cmd.env("PATH", sanitized_path());
         cmd.env("HOME", &self.workdir);
         cmd.env("LC_ALL", "C");
         for variable in &self.environment {
@@ -1349,30 +1396,40 @@ impl ModelRunner {
                 af.native = review_telemetry::subscriber::Typed::enumerated("unavailable").field(),
             )
         };
-        let output = span.in_scope(|| match cancellation {
-            Some(flag) => run_supervised_captured_cancellable_with_policy(
+        let output = span.in_scope(|| {
+            run_supervised_captured_bounded(
                 &mut cmd,
                 Some(input),
                 self.timeout,
                 self.exit_policy,
-                flag,
-            ),
-            None => run_supervised_captured_with_policy(
-                &mut cmd,
-                Some(input),
-                self.timeout,
-                self.exit_policy,
-            ),
+                cancellation,
+                self.output_cap,
+            )
         });
         record_harness(&span, &output);
-        capture.stdout = redact(output.stdout, &self.grants);
-        capture.stderr = redact(output.stderr, &self.grants);
+        capture.stdout = redact(output.stdout, &self.redactions);
+        capture.stderr = redact(output.stderr, &self.redactions);
         if output.stderr_held {
             capture
                 .stderr
                 .extend_from_slice(b"\nstderr was still held after 5 seconds\n");
         }
         capture.started = !matches!(output.status, Err(SupervisedError::Spawn(_)));
+        if capture.started && self.exit_policy == ExitPolicy::KillDescendants {
+            note_cleanup_fallback(
+                &mut capture.stderr,
+                review_process::descendant_cleanup_fallback(),
+            );
+        }
+        // Output past the cap is not evidence the kernel can keep whole: whatever the exit
+        // status said, the Attempt failed (M2). The kept prefix is still stored for usage.
+        if let (Ok(status), Some(reason)) = (&output.status, output.truncation.reason()) {
+            capture.status = Err(RunnerError::Failed {
+                exit_code: status.code().unwrap_or(-1),
+                stderr_excerpt: reason,
+            });
+            return capture;
+        }
         capture.status = output.status.map_err(|error| match error {
             SupervisedError::TimedOut { .. } => RunnerError::TimedOut {
                 after_ms: self.timeout.as_millis() as u64,
@@ -1436,13 +1493,21 @@ fn record_harness(span: &tracing::Span, output: &review_process::SupervisedCaptu
     );
 }
 
-/// Replace every occurrence of every grant value. Byte-level, because captured output is not
-/// guaranteed to be UTF-8 and a secret split across an encoding error must still be caught
+/// Record in an Attempt's stored stderr, as a held pipe is, that its descendant cleanup fell back
+/// to the process-group kill: an Attempt never claims that guarantee silently.
+fn note_cleanup_fallback(stderr: &mut Vec<u8>, fallback: Option<&str>) {
+    if let Some(fallback) = fallback {
+        stderr.extend_from_slice(format!("\n{fallback}\n").as_bytes());
+    }
+}
+
+/// Replace every occurrence of every granted spelling. Byte-level, because captured output is
+/// not guaranteed to be UTF-8 and a secret split across an encoding error must still be caught
 /// where it appears intact.
-fn redact(bytes: Vec<u8>, grants: &[Grant]) -> Vec<u8> {
+fn redact(bytes: Vec<u8>, redactions: &[String]) -> Vec<u8> {
     let mut out = bytes;
-    for grant in grants {
-        let secret = grant.value.as_bytes();
+    for secret in redactions {
+        let secret = secret.as_bytes();
         if secret.is_empty() {
             continue;
         }

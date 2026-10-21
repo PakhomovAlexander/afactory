@@ -208,10 +208,11 @@ future readers need.
 - [0117 — Bind a Task input port to a recorded Task's
   output](0117-bind-task-inputs-to-recorded-task-outputs.md)
 - [0118 — Let a review Worker that declares `execute-checks` run in an ephemeral
-  clone](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md)
+  clone](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md) (amended 2026-10-20:
+  [a `setsid` child](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md#bounds-and-children))
 - [0119 — Open a read-first browser on bare `af`](0119-open-a-read-first-browser-on-bare-af.md)
 - [0120 — Give a source-writing Worker that declares `execute-checks` a
-  shell](0120-give-a-source-writing-worker-a-shell.md)
+  shell](0120-give-a-source-writing-worker-a-shell.md) (amended 2026-10-20 with ADR-0118)
 - [0121 — Show recorded Tasks in the browser from their inspection
   documents](0121-show-recorded-tasks-in-the-browser.md)
 - [0122 — Show committed Workers and the Attempts their recorded plans
@@ -252,7 +253,8 @@ future readers need.
 - [0140 — Run a declared check through a gate pull
   request](0140-run-a-declared-check-through-a-gate-pull-request.md) (amended 2026-10-05: [the
   pipeline chooses](0140-run-a-declared-check-through-a-gate-pull-request.md#amendment-2026-10-05-the-pipeline-chooses);
-  2026-10-07 by [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md))
+  2026-10-07 by [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md); 2026-10-20: [what
+  the workflow runs](0140-run-a-declared-check-through-a-gate-pull-request.md#amendment-2026-10-20-what-the-workflow-runs))
 - [0141 — List a logged-out default context only until its kind is
   registered](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)
 - [0142 — Carry the `af task report` of its Tasks in every pull

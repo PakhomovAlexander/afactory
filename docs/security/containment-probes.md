@@ -1,8 +1,8 @@
 # Containment probes: the malicious check
 
 The record of which containment probes are discharged, which do not apply to what GA ships, and
-which are still open, kept so that a probe nobody has run is never mistaken for a probe that
-passed.
+which are still open (none at the time of writing), kept so that a probe nobody has run is never
+mistaken for a probe that passed.
 [`non-goals.md`](../non-goals.md) relies on it for the claim that the open probes are recorded
 as open rather than claimed covered.
 
@@ -45,7 +45,7 @@ A green run. The check passes, the review converges, and the only evidence of th
 a host nobody inspects. This is the case that decides whether project-supplied check commands
 can be treated as data.
 
-## Status — provider boundary discharged; live Gate routing still open
+## Status — provider boundary and live Gate routing discharged
 
 Two test files carry this case. `crates/review-sandbox/tests/malicious_check.rs` runs against
 the `trusted_local` provider — a materialized copy of a snapshot in a temporary directory,
@@ -55,9 +55,10 @@ against `ContainerProvider` with a live daemon: one bind (the sandbox), `--netwo
 inherited environment, image pinned by manifest digest. The
 `make review-kernel-container-probes` target and dedicated CI job run them and the live v3 Gate
 route, including a timeout probe that asserts the daemon-owned container is gone before execution
-returns; they are `#[ignore]`d in the ordinary test run. The `container-probes` job has not yet
-produced green evidence for this branch. Where the target is invoked, a missing
-daemon is a hard failure, never a skip — an unrun probe must not look like a passed one.
+returns; they are `#[ignore]`d in the ordinary test run. The `container-probes` job is green on
+`main`: Release run `39396278192` at `c79f03c0` reports `check / container-probes: success`. Where
+the target is invoked, a missing daemon is a hard failure, never a skip — an unrun probe must not
+look like a passed one.
 
 | Probe | State | Why |
 |---|---|---|
@@ -87,14 +88,19 @@ portable declared environment without the host `PATH`, the caller's numeric UID:
 reaping name. A timed-out runtime client is followed by bounded `rm -f`; if cleanup cannot be
 confirmed, the Gate reports the preserved sandbox path and returns incomplete without sealing a
 possibly live bind. The
-ignored live pipeline control and lower-level probes use `CheckRunner::run_with`; the new CI job
-must turn that wiring into live evidence before Gate routing is called discharged. Open here, by
-name — one item:
+lower-level probes use `CheckRunner::run_with`; the live Gate route is exercised end to end by
+`task_campaign_review::host::domain::a_container_gate_executes_on_the_task_host` in
+`crates/review-pipeline/tests/it`, which `make review-kernel-container-probes` runs: a pipeline
+whose root Gate has a container binding is admitted, the Gate's check runs in a real container
+on the Task host, the Task's acceptance is satisfied, and the run report records the binding as
+admitted with `Container` isolation and the pinned image. The green `container-probes` job of
+Release run `39396278192` (`main` at `c79f03c0`) is that live evidence, so:
 
-- **Live Gate routing.** The target and CI job exist, but no green run of them is recorded for
-  this branch. A green `container-probes` job closes this item.
+- **Live Gate routing — discharged.** Gate dispatch is routed through the container binding in
+  code, and the live probe of that route is green on `main`.
 
-**Do not weaken this case as the wiring lands.** Marking the live-routing row satisfied on the
-strength of the provider probes would be exactly the quiet redefinition this file warns about.
+**Do not weaken this case as the wiring changes.** Live Gate routing is discharged on the
+strength of the live Gate probe, not of the provider probes; a change that stops routing a Gate
+through its binding, or a `container-probes` job that stops being green, reopens it here.
 A probe recorded as not applicable stays that way only while GA has no Broker and no allowed
 egress; whichever lands first reopens its half here.

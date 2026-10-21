@@ -10,6 +10,9 @@ fn integration_inspection_preserves_phase_and_handoff_wire_without_mutating_hist
     let directory = captured_integration::run_integration_handoff();
     let repo = tempfile::tempdir().unwrap();
     let state = directory.path();
+    // The fixture's Worker call log is not af's: an explicit --state holds only af's entries
+    // (ADR-0144).
+    std::fs::remove_file(state.join("calls")).unwrap();
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let task_run = review_store::store::task::task_run_id("integration-review").unwrap();

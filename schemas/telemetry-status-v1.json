@@ -36,11 +36,12 @@
     },
     "perturbing": {
       "type": "boolean",
-      "description": "`content`: blobs are kept and the overhead gate does not bound the level."
+      "description": "`content`: blobs of what Workers saw and did are kept."
     },
     "directory": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "description": "The telemetry directory read. Like every path of this document it is written as the text output writes it: a path under the home directory as `~/…`."
     },
     "exists": {
       "type": "boolean"
@@ -58,7 +59,8 @@
           "$ref": "#/$defs/count"
         },
         "max_bytes": {
-          "$ref": "#/$defs/count"
+          "$ref": "#/$defs/count",
+          "description": "`[telemetry] max_bytes`: the Storage Budget's sweep evicts sealed segments to meet it; `status` warns on stderr when `total` is over it that the next sweep evicts."
         },
         "entries": {
           "type": "array",

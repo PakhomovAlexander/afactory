@@ -26,15 +26,27 @@ rule either.
 ## Decision
 
 After materializing each native Task check or measurement repetition and acquiring its warm
-key (when eligible), but before its command can start, the kernel sets the modification time of every Manifest-declared regular source file
-in that private tree to one timestamp two seconds ahead of the current clock. The lead makes
-the source strictly newer than an artifact built moments earlier even on filesystems with
-coarse mtimes; every stored mtime must be strictly later than the end of warm preparation, or
-preparation fails closed. Refreshing before the lock wait is insufficient: the previous holder
-could build another Snapshot while this check waits. The refresh opens each file through no-follow directory descriptors anchored at the private
-root, refusing a symlink in any component and a non-regular replacement. Symlink entries are skipped. The CAS, source Manifest, source bytes,
-and modes are unchanged. Cancellation and the Attempt's remaining deadline are checked before every entry, immediately
-before every stamp, and before reporting the tree refreshed.
+key (when eligible), but before its command can start, the kernel observes the newest entry mtime
+in the bound Cargo target through a descriptor-relative, no-follow walk. Wall time alone cannot
+order sources after a target: clock rollback or a prior command can leave future-dated artifacts.
+When the observed target is ahead of the current clock, this invocation binds its private cold
+target instead and records `cargo_target:future_mtime`, ineligible with zero available bytes.
+Cargo home remains warm. The original target stays locked, bounded and monitored; it is neither
+rewritten nor recursively removed on this deadline-sensitive path. It stays ineligible until
+the clock catches up or ordinary cache eviction removes it.
+
+The kernel sets every Manifest-declared regular source file in the private tree to one current
+timestamp. Every stored mtime must be strictly newer than the observed target maximum, or the
+whole tree is retried at a later current time under the same budget. This covers coarse mtime
+granularity without a future lead that makes a later Cargo invocation rebuild the same units.
+Before dispatch, no stored stamp may still be in the future; clock rollback during refresh
+therefore waits within the same budget or fails closed. Refreshing before the lock wait is
+insufficient: the previous holder could build another Snapshot while this check waits.
+Each source is opened through no-follow directory descriptors anchored at the private root,
+refusing a symlink in any component and a non-regular replacement. Symlink entries are skipped.
+The CAS, source Manifest, source bytes and modes are unchanged. Cancellation and the Attempt's
+remaining deadline are checked during target directory enumeration and traversal, before every
+source entry and stamp, during every bounded wait, and before reporting the tree refreshed.
 A timeout makes the check `not_run` or the measurement fail with its deadline reason; an I/O
 error fails preparation. The command never runs with possibly stale build output.
 
@@ -48,6 +60,6 @@ recorded by this strategy.
 
 Cargo rebuilds workspace units on each native check, including an A→B→A return to older
 source content. Registry dependencies and the bounded shared target remain available. The
-check scans and updates one metadata entry per regular source file; the two-second lead may
-produce Cargo's normal future-mtime diagnostic until wall time catches up. No receipt or event
-shape changes.
+check scans the held target's metadata and updates one metadata entry per regular source file.
+Multi-step checks can reuse workspace units built earlier in the same command. A future-dated
+target costs a cold build, not a possibly stale result. No receipt or event shape changes.

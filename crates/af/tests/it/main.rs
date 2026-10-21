@@ -23,6 +23,7 @@ mod campaign_loop;
 mod catalog_digest;
 mod cli_surface;
 mod common_review_summaries;
+mod install_script;
 mod lock_af_version;
 mod onboard;
 mod onboarding_quickstart;

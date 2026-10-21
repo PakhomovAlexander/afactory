@@ -43,11 +43,14 @@ clap_mangen = "0.3.3"
 toml_edit = "0.25"
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 minisign-verify = "0.3.0"
-nix = { version = "0.31.3", default-features = false, features = ["fs", "signal", "user"] }
+# `resource` and `process`: a login disables core dumps and, on Linux, becomes non-dumpable.
+nix = { version = "0.31.3", default-features = false, features = ["fs", "process", "resource", "signal", "user"] }
 # The Claude limit probe runs the CLI on a pseudo-terminal. Tests use it too: provider setup
 # refuses to start an official CLI login unless it owns an interactive terminal, so covering the
 # terminal path needs a real one, not a flag that would weaken the check.
 portable-pty = { version = "0.9.0", default-features = false }
+# Login challenge material and the code a private host returns are zeroed when dropped.
+zeroize = { version = "1.9.0", features = ["serde"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.58.4", default-features = false }

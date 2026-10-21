@@ -1,8 +1,8 @@
 use crate::control::{ReceiveError, cancelled, receive};
 use crate::drain::{Drain, Drained, collect_after_kill_until, collect_cancellable, drain_async};
 use crate::{
-    ExitPolicy, Leader, Rusage, SupervisedError, SupervisedOutput, SupervisedStreamError,
-    stdin_writer_wait, wait_exact_cancellable,
+    ExitPolicy, Leader, MAX_CAPTURED_STREAM_BYTES, Rusage, SupervisedError, SupervisedOutput,
+    SupervisedStreamError, Truncation, stdin_writer_wait, wait_exact_cancellable,
 };
 use std::io::Write;
 use std::process::{Command, ExitStatus, Stdio};
@@ -22,6 +22,9 @@ pub struct SupervisedCapture {
     /// What the reaped leader used; `None` when nothing was started or the platform delivered
     /// nothing ([`Rusage`]).
     pub rusage: Option<Rusage>,
+    /// The streams that wrote more than their cap, with what each wrote in total. A truncated
+    /// stream is a prefix: the caller decides what that means, and must not read it as whole.
+    pub truncation: Truncation,
 }
 
 impl SupervisedCapture {
@@ -34,6 +37,7 @@ impl SupervisedCapture {
                 stderr_held: self.stderr_held,
                 pid: self.pid,
                 rusage: self.rusage,
+                truncation: self.truncation,
             }),
             Err(SupervisedError::TimedOut { .. }) => Err(SupervisedError::TimedOut {
                 stdout: self.stdout,
@@ -42,6 +46,50 @@ impl SupervisedCapture {
                 rusage: self.rusage,
             }),
             Err(error) => Err(error),
+        }
+    }
+}
+
+/// How many bytes of each stream a run keeps resident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Caps {
+    pub stdout: usize,
+    pub stderr: usize,
+}
+
+impl Caps {
+    /// Both streams at one cap: a captured run's output is evidence, never protocol data.
+    pub(crate) fn both(cap: usize) -> Self {
+        Self {
+            stdout: cap,
+            stderr: cap,
+        }
+    }
+
+    /// A buffered run whose stdout is a trusted tool's whole answer (git plumbing, a version
+    /// probe), parsed as one document: stdout is kept whole and only stderr is capped.
+    ///
+    /// Deliberately uncapped. [`MAX_CAPTURED_STREAM_BYTES`] bounds reviewer, Worker and check
+    /// output, which a hostile repository or model can make endless; git plumbing output
+    /// (`ls-files`, `ls-tree`) grows with the repository's own tree, and truncating it would
+    /// break large repositories rather than bound an adversary.
+    pub(crate) const PROTOCOL: Self = Self {
+        stdout: usize::MAX,
+        stderr: MAX_CAPTURED_STREAM_BYTES,
+    };
+
+    pub(crate) fn truncation(self, stdout_total: u64, stderr_total: u64) -> Truncation {
+        let over = |total: u64, cap: usize| (total > cap as u64).then_some(total);
+        let stdout = over(stdout_total, self.stdout);
+        let stderr = over(stderr_total, self.stderr);
+        Truncation {
+            stdout,
+            stderr,
+            cap: if stdout.is_some() {
+                self.stdout
+            } else {
+                self.stderr
+            },
         }
     }
 }
@@ -60,7 +108,14 @@ pub fn run_supervised_captured_with_policy(
     timeout: Duration,
     exit_policy: ExitPolicy,
 ) -> SupervisedCapture {
-    captured_inner(command, input, timeout, exit_policy, None)
+    captured_inner(
+        command,
+        input,
+        timeout,
+        exit_policy,
+        None,
+        Caps::both(MAX_CAPTURED_STREAM_BYTES),
+    )
 }
 
 /// Cancellation closes and reaps the same owned group as a deadline, retaining both streams.
@@ -86,15 +141,72 @@ pub fn run_supervised_captured_cancellable_with_policy(
     exit_policy: ExitPolicy,
     cancellation: &AtomicBool,
 ) -> SupervisedCapture {
-    captured_inner(command, input, timeout, exit_policy, Some(cancellation))
+    captured_inner(
+        command,
+        input,
+        timeout,
+        exit_policy,
+        Some(cancellation),
+        Caps::both(MAX_CAPTURED_STREAM_BYTES),
+    )
 }
 
-fn captured_inner(
+/// A captured run with a caller's own cap on each stream instead of
+/// [`MAX_CAPTURED_STREAM_BYTES`], for a caller that needs less (or a test that proves the cap
+/// without writing 64 MiB). Cancellation is optional, as everywhere else.
+pub fn run_supervised_captured_bounded(
     command: &mut Command,
     input: Option<Vec<u8>>,
     timeout: Duration,
     exit_policy: ExitPolicy,
     cancellation: Option<&AtomicBool>,
+    cap: usize,
+) -> SupervisedCapture {
+    captured_inner(
+        command,
+        input,
+        timeout,
+        exit_policy,
+        cancellation,
+        Caps::both(cap),
+    )
+}
+
+/// A captured run whose stdin the caller streams, so a large input is never one buffer: the
+/// writer runs on the supervision's scoped thread and may borrow caller state. A writer that
+/// meets a closed pipe stops quietly, as a buffered input does; the exit status then speaks.
+pub fn run_supervised_captured_streaming<F>(
+    command: &mut Command,
+    timeout: Duration,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&AtomicBool>,
+    writer: F,
+) -> SupervisedCapture
+where
+    F: FnOnce(&mut dyn Write) -> std::io::Result<()> + Send,
+{
+    let writer = move |stdin: &mut dyn Write| match writer(stdin) {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        result => result,
+    };
+    let capture = run_supervised_controlled(
+        command,
+        Some(writer),
+        timeout,
+        exit_policy,
+        cancellation,
+        Caps::both(MAX_CAPTURED_STREAM_BYTES),
+    );
+    capture.into_capture()
+}
+
+pub(crate) fn captured_inner(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&AtomicBool>,
+    caps: Caps,
 ) -> SupervisedCapture {
     let writer = input.map(|input| {
         move |stdin: &mut dyn Write| match stdin.write_all(&input) {
@@ -103,18 +215,8 @@ fn captured_inner(
             Err(error) => Err(error),
         }
     });
-    let capture = run_supervised_controlled(command, writer, timeout, exit_policy, cancellation);
-    SupervisedCapture {
-        status: capture.status.map_err(|error| match error {
-            SupervisedStreamError::Process(error) => error,
-            SupervisedStreamError::Input(error) => SupervisedError::Stdin(error),
-        }),
-        stdout: capture.stdout,
-        stderr: capture.stderr,
-        stderr_held: capture.stderr_held,
-        pid: capture.pid,
-        rusage: capture.rusage,
-    }
+    run_supervised_controlled(command, writer, timeout, exit_policy, cancellation, caps)
+        .into_capture()
 }
 
 pub(crate) struct StreamCapture<E> {
@@ -124,6 +226,24 @@ pub(crate) struct StreamCapture<E> {
     stderr_held: bool,
     pid: Option<u32>,
     rusage: Option<Rusage>,
+    truncation: Truncation,
+}
+
+impl StreamCapture<std::io::Error> {
+    fn into_capture(self) -> SupervisedCapture {
+        SupervisedCapture {
+            status: self.status.map_err(|error| match error {
+                SupervisedStreamError::Process(error) => error,
+                SupervisedStreamError::Input(error) => SupervisedError::Stdin(error),
+            }),
+            stdout: self.stdout,
+            stderr: self.stderr,
+            stderr_held: self.stderr_held,
+            pid: self.pid,
+            rusage: self.rusage,
+            truncation: self.truncation,
+        }
+    }
 }
 
 impl<E> StreamCapture<E> {
@@ -135,6 +255,7 @@ impl<E> StreamCapture<E> {
             stderr_held: false,
             pid: None,
             rusage: None,
+            truncation: Truncation::default(),
         }
     }
 
@@ -147,6 +268,7 @@ impl<E> StreamCapture<E> {
                 stderr_held: self.stderr_held,
                 pid: self.pid,
                 rusage: self.rusage,
+                truncation: self.truncation,
             }),
             Err(SupervisedStreamError::Process(SupervisedError::TimedOut { .. })) => {
                 Err(SupervisedStreamError::Process(SupervisedError::TimedOut {
@@ -166,6 +288,7 @@ fn failed<E>(
     stdout: Drain,
     stderr: Drain,
     leader: &Leader,
+    caps: Caps,
 ) -> StreamCapture<E> {
     // Close the entire owned group before waiting for either drain or the scoped writer, then
     // reap the leader last, once nothing will signal its pid again.
@@ -176,8 +299,9 @@ fn failed<E>(
     let (_, rusage) = leader.reap();
     StreamCapture {
         status: Err(error),
-        stdout,
-        stderr,
+        truncation: caps.truncation(stdout.total, stderr.total),
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
         stderr_held: false,
         pid: Some(leader.pid()),
         rusage,
@@ -190,8 +314,10 @@ fn completed<E>(
     stderr: Drained,
     pid: u32,
     rusage: Option<Rusage>,
+    caps: Caps,
 ) -> StreamCapture<E> {
     let stderr_held = matches!(stderr.status, Ok(true));
+    let truncation = caps.truncation(stdout.total, stderr.total);
     let status = stdout
         .status
         .and(stderr.status)
@@ -204,6 +330,7 @@ fn completed<E>(
         stderr_held,
         pid: Some(pid),
         rusage,
+        truncation,
     }
 }
 
@@ -217,7 +344,7 @@ where
     E: Send,
     F: FnOnce(&mut dyn Write) -> Result<(), E> + Send,
 {
-    run_supervised_controlled(command, writer, timeout, exit_policy, None)
+    run_supervised_controlled(command, writer, timeout, exit_policy, None, Caps::PROTOCOL)
 }
 
 fn run_supervised_controlled<E, F>(
@@ -226,6 +353,7 @@ fn run_supervised_controlled<E, F>(
     timeout: Duration,
     exit_policy: ExitPolicy,
     cancellation: Option<&AtomicBool>,
+    caps: Caps,
 ) -> StreamCapture<E>
 where
     E: Send,
@@ -234,6 +362,10 @@ where
     if cancelled(cancellation) {
         return StreamCapture::empty(SupervisedError::Cancelled);
     }
+    // Marks every process of the run's tree, so that its descendants are told from any other
+    // run's however they leave its process group.
+    let tree =
+        (exit_policy == ExitPolicy::KillDescendants).then(|| crate::reaper::Tree::new(command));
     command.stdin(if writer.is_some() {
         Stdio::piped()
     } else {
@@ -264,18 +396,23 @@ where
             });
             receive
         });
-        let stdout = drain_async(stdout_pipe);
-        let stderr = drain_async(stderr_pipe);
+        let stdout = drain_async(stdout_pipe, caps.stdout);
+        let stderr = drain_async(stderr_pipe, caps.stderr);
         let deadline = Instant::now() + timeout;
-        let kill_group_on_exit = exit_policy == ExitPolicy::KillProcessGroup;
-        if let Err(error) =
-            wait_exact_cancellable(deadline, cancellation, &leader, kill_group_on_exit)
-        {
+        let waited =
+            wait_exact_cancellable(deadline, cancellation, &leader, exit_policy.kills_group());
+        if let Some(tree) = &tree {
+            // Before draining: an escaped descendant may hold a pipe, and must not outlive the
+            // run that started it. The leader is still unreaped, so its group id is exact.
+            tree.end_escaped(leader.pid());
+        }
+        if let Err(error) = waited {
             return failed(
                 SupervisedStreamError::Process(error),
                 stdout,
                 stderr,
                 &leader,
+                caps,
             );
         }
         if let Some(receiver) = stdin_result {
@@ -303,7 +440,7 @@ where
                 }
             };
             if let Some(error) = error {
-                return failed(error, stdout, stderr, &leader);
+                return failed(error, stdout, stderr, &leader, caps);
             }
         }
         let mut cleanup = None;
@@ -322,9 +459,10 @@ where
         }
         // Reaping is the final operation: every kill above ran while the pid was reserved.
         let mut capture = match leader.reap() {
-            (Ok(status), rusage) => completed(status, stdout, stderr, leader.pid(), rusage),
+            (Ok(status), rusage) => completed(status, stdout, stderr, leader.pid(), rusage, caps),
             (Err(error), rusage) => StreamCapture {
                 status: Err(SupervisedStreamError::Process(SupervisedError::Wait(error))),
+                truncation: caps.truncation(stdout.total, stderr.total),
                 stdout: stdout.bytes,
                 stderr: stderr.bytes,
                 stderr_held: false,
@@ -353,10 +491,12 @@ mod tests {
             status(),
             Drained {
                 bytes: b"reported usage".to_vec(),
+                total: 14,
                 status: Ok(false),
             },
             Drained {
                 bytes: b"diagnostic prefix".to_vec(),
+                total: 17,
                 status: Err(SupervisedError::OutputRead {
                     stream: "stderr",
                     source: std::io::Error::other("read failed"),
@@ -364,6 +504,7 @@ mod tests {
             },
             1,
             None,
+            Caps::both(MAX_CAPTURED_STREAM_BYTES),
         );
         assert!(matches!(
             capture.status,

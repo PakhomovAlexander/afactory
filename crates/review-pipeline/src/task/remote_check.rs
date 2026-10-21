@@ -169,8 +169,9 @@ pub(crate) fn now_unix_ms() -> u64 {
 }
 
 /// Replaces every machine-local string a diagnostic may carry before it exists anywhere: the
-/// exact push URL, the mapping path and the private repository's path. A kept diagnostic is
-/// then bounded to 2 KiB.
+/// exact push URL, the mapping path and the private repository's path, and the user
+/// information of any URL (`://user:token@`), which an operator's `insteadOf` rewrite can put in
+/// a URL this redactor was never told (L3). A kept diagnostic is then bounded to 2 KiB.
 #[derive(Debug, Clone, Default)]
 pub struct Redactor {
     replacements: Vec<(String, &'static str)>,
@@ -209,7 +210,7 @@ impl Redactor {
         for (secret, label) in &self.replacements {
             text = text.replace(secret.as_str(), label);
         }
-        text
+        redact_userinfo(&text)
     }
 
     /// A diagnostic as evidence may keep it: redacted, trimmed and bounded to 2 KiB on a
@@ -232,10 +233,70 @@ impl Redactor {
     }
 }
 
+/// `text` with the user information of every URL replaced by `<userinfo>`: whatever follows a
+/// `://` up to an `@`, before any `/`, whitespace or quote ends the authority.
+fn redact_userinfo(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        let authority = tail
+            .find(|c: char| c == '/' || c.is_whitespace() || matches!(c, '\'' | '"' | '<' | '>'))
+            .unwrap_or(tail.len());
+        match tail[..authority].rfind('@') {
+            Some(user_end) if user_end > 0 => {
+                out.push_str("<userinfo>");
+                rest = &tail[user_end..];
+            }
+            _ => rest = tail,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use review_core::task::remote_check::RemoteExecutorV1;
+
+    #[test]
+    fn redaction_removes_the_userinfo_of_any_url() {
+        let redactor = Redactor::new("git@github.com:o/r.git", None);
+        let raw = "fatal: unable to access 'https://x-access-token:ghs_secret@github.com/o/r.git/': \
+                   403\nretrying ssh://deploy@example.org:22/o/r and https://user@host\n\
+                   kept: https://github.com/o/r, mail me@example.org, ftp://@host/x";
+        let kept = redactor.apply(raw);
+        assert!(
+            !kept.contains("ghs_secret") && !kept.contains("x-access-token"),
+            "{kept}"
+        );
+        assert!(
+            !kept.contains("deploy@") && !kept.contains("user@host"),
+            "{kept}"
+        );
+        assert!(
+            kept.contains("'https://<userinfo>@github.com/o/r.git/'"),
+            "{kept}"
+        );
+        assert!(
+            kept.contains("ssh://<userinfo>@example.org:22/o/r"),
+            "{kept}"
+        );
+        assert!(kept.contains("https://<userinfo>@host\n"), "{kept}");
+        assert!(
+            kept.contains("https://github.com/o/r, mail me@example.org"),
+            "{kept}"
+        );
+        assert!(kept.contains("ftp://@host/x"), "{kept}");
+        assert_eq!(
+            redactor.diagnostic(b"To https://a:b@h/x").as_deref(),
+            Some("To https://<userinfo>@h/x")
+        );
+        // The push URL itself is still replaced whole first.
+        assert_eq!(redactor.apply("to git@github.com:o/r.git"), "to <push-url>");
+    }
 
     #[test]
     fn redaction_replaces_the_push_url_and_paths_and_bounds_the_text() {

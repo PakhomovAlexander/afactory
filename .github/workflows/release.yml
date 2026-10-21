@@ -26,8 +26,6 @@ concurrency:
 
 env:
   RUST_TOOLCHAIN: 1.88.0
-  CARGO_ZIGBUILD: cargo-zigbuild==0.23.4
-  ZIG: ziglang==0.15.2
 
 jobs:
   resolve:
@@ -86,10 +84,13 @@ jobs:
       - uses: ./.github/actions/cargo-cache
         id: cargo-cache
         with:
-          kind: release-${{ matrix.target }}-zig0.15.2-zigbuild0.23.4
+          kind: release-${{ matrix.target }}-${{ hashFiles('scripts/release-toolchain.txt') }}
       - name: Install zig (static Linux builds)
         if: matrix.cross != 'none'
-        run: pip install --user "$CARGO_ZIGBUILD" "$ZIG"
+        # Pinned by version and by the sha256 of every wheel: the toolchain that links the static
+        # binaries is exactly the bytes the requirements file names.
+        run: |
+          pip install --user --require-hashes --only-binary=:all: -r scripts/release-toolchain.txt
       - name: Install qemu (runs the aarch64 binary on this x86_64 runner)
         if: matrix.cross == 'zig-qemu'
         run: |
@@ -242,7 +243,10 @@ jobs:
   # does. main's ruleset requires pull requests and lets only deploy keys bypass it, so the push
   # goes through the PIN_DEPLOY_KEY write deploy key (ADR-0152). That push starts this workflow
   # on main like any merge, so the pin commit gets main CI; `make check` also fails if this job
-  # ever leaves the pin more than one release behind.
+  # ever leaves the pin more than one release behind. Blast radius: this job runs the release
+  # binary it installs, verified only by the signed SHA256SUMS, in a checkout that holds the key,
+  # so a release whose signed bytes were hostile could push anything to main past the ruleset
+  # (ADR-0152). The script itself only fast-forwards, and only the pin may move.
   pin:
     name: pin the release in .af/af.lock
     needs: [resolve, publish]

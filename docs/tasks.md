@@ -30,12 +30,13 @@ automatic Integration are outside this path.
 - a local Git clone with no staged, tracked or untracked changes at the commit used to start
   the Task;
 - an installed `af` release whose archive digest and `SHA256SUMS.minisig` signature were both
-  verified. The release's `install.sh` always checks the digest against `SHA256SUMS`, but checks
-  the signature only when `minisign` is on `PATH`: put it there before you run the installer
-  ([install](../README.md#install)). Without it, the installer reports that only the checksum
-  was verified, and the install receipt records `verified_by = "sha256sums"` rather than
-  `"minisign"`; that checksum-only install does not meet this prerequisite. The running
-  release's `receipt.verified_by` is shown by `af self status --json`;
+  verified. The release's `install.sh` always checks the digest against `SHA256SUMS`, and the
+  signature with `minisign`: put it on `PATH` before you run the installer
+  ([install](../README.md#install)), which refuses without it. Under
+  `AF_INSTALL_ALLOW_UNSIGNED=1` it proceeds anyway, reports that only the checksum is verified,
+  and the install receipt records `verified_by = "sha256sums"` rather than `"minisign"`; that
+  checksum-only install does not meet this prerequisite. The running release's
+  `receipt.verified_by` is shown by `af self status --json`;
 - machine-local Provider authentication for every model Worker the Pipeline binds, checked with
   `af provider status` and established as [`providers.md`](providers.md) describes — an
   interactive login is opt-in and happens only at your own terminal; command Workers need none;
@@ -94,7 +95,8 @@ The Task ID is chosen here and must be new to the state directory. Without `pipe
 
 Run from the clean repository at committed `HEAD`. State defaults to a directory outside the
 repository under the user's XDG state directory; `--state` selects another external directory,
-and `--workspace LABEL` selects a Workspace's Store and bindings file
+which must be absent, empty or already an af Store: it becomes af-owned, so a directory holding
+anything else is refused. `--workspace LABEL` selects a Workspace's Store and bindings file
 ([Projects and Workspaces](project.md)).
 Save the Task request outside the checkout too (for example, `../ticket.json`, or a Workspace's
 `tasks/` directory); Afactory captures its contents into Task state. `--file` selects the request,
@@ -308,12 +310,16 @@ newest `keep_tasks` (20) of each Store, review campaigns beyond the newest `keep
 the Surveys of each Project beyond the newest `keep_surveys` (50) and Stores this release cannot
 read, each idle at least `keep_days` (14); then it evicts until af fits. A Survey goes behind its
 `SurveyCollected@1` tombstone, and never the newest complete one ([Collection](project.md#collection)). A Store made with `--state` is recorded in `$XDG_STATE_HOME/af/stores.toml`, so the
-sweep reaches it too. A finished Task whose remote checks left gate branches or a pull request is
+sweep reaches it too; it counts only af's own entries, and it is removed whole only while it
+carries the owner marker `.af-store` af wrote when it created the directory and holds nothing
+else. Otherwise only af's entries go, and the sweep names what it left in place. A finished
+Task whose remote checks left gate branches or a pull request is
 collected only after its gate cleanup is done, by the sweep and by `af task gc --apply` alike;
-until then it stays and the next sweep tries again. The sweep that ends `af task run` records
-what it removed and what failed on that Task as one `storage_sweep` observation: `af task show`
-prints a `storage sweep:` line and `--json` carries `storage_sweeps` (a telemetry segment it
-removed is counted there among the omitted removals, never listed under another kind).
+until then it stays and the next sweep tries again. A Task cancelled or abandoned after its gate
+published is cleaned up the same way once no writer holds its lease. The sweep that ends `af task
+run` records what it removed and what failed on that Task as one `storage_sweep` observation:
+`af task show` prints a `storage sweep:` line and `--json` carries `storage_sweeps` (a telemetry
+segment it removed is counted there among the omitted removals, never listed under another kind).
 Telemetry is the kind `telemetry`: every registered telemetry directory, evicted segment by
 segment under the same rules and past its own `[telemetry] max_bytes`, with every applied sweep
 reclaiming its temporary files, unreferenced blobs and free index pages; `--json` of

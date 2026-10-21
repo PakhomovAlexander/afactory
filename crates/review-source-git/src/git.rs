@@ -298,6 +298,77 @@ enum DiffHead<'a> {
     Synthetic(&'a Manifest, &'a Cas),
 }
 
+/// The options every git invocation carries ahead of its subcommand: no optional lock, and the
+/// `-c` overrides that neutralize hooks, fsmonitor, filters, external diff, CRLF translation
+/// and the attributes file. Public so the few readers outside capture that must run git against
+/// a candidate checkout (the browser, the Task file advice) carry exactly this set, not a copy.
+pub const CAPTURE_OVERRIDES: &[&str] = &[
+    "--no-optional-locks",
+    // A hostile repository cannot run code at any point in the capture path.
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "core.attributesFile=/dev/null",
+    "-c",
+    "core.quotePath=true",
+    "-c",
+    "core.bigFileThreshold=512m",
+    "-c",
+    "core.compression=6",
+    "-c",
+    "core.loosecompression=6",
+    "-c",
+    "diff.external=",
+    "-c",
+    "diff.suppressBlankEmpty=false",
+    "-c",
+    RENAME_LIMIT_CONFIG,
+    // No transport may be attempted; a submodule URL cannot become a fetch.
+    "-c",
+    "protocol.allow=never",
+    "-c",
+    "credential.helper=",
+];
+
+/// `diff.renameLimit` at [`RENAME_LIMIT`]; a test keeps the two equal.
+const RENAME_LIMIT_CONFIG: &str = "diff.renameLimit=1000";
+
+/// A git command in `workdir` with nothing of the host's opinion in it: the environment cleared
+/// and rebuilt by [`isolated_environment`], and every [`CAPTURE_OVERRIDES`] option ahead of the
+/// subcommand the caller appends. `home` must hold no git configuration; an empty directory
+/// this process owns, or `/dev/null`, under which no `.gitconfig` can ever exist.
+pub fn isolated_command(workdir: &Path, home: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    // Nothing inherited. Not "most things filtered" — nothing.
+    cmd.env_clear();
+    for (key, value) in isolated_environment(home) {
+        cmd.env(key, value);
+    }
+    cmd.current_dir(workdir);
+    cmd.args(CAPTURE_OVERRIDES);
+    cmd
+}
+
+/// The whole environment of an [`isolated_command`].
+pub fn isolated_environment(home: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
+    vec![
+        ("PATH", std::env::var_os("PATH").unwrap_or_default()),
+        ("HOME", home.as_os_str().to_owned()),
+        ("GIT_CONFIG_NOSYSTEM", "1".into()),
+        ("GIT_CONFIG_GLOBAL", "/dev/null".into()),
+        ("GIT_ATTR_NOSYSTEM", "1".into()),
+        ("GIT_TERMINAL_PROMPT", "0".into()),
+        ("GIT_OPTIONAL_LOCKS", "0".into()),
+        // Deterministic collation and message text, so output parsing cannot drift by locale.
+        ("LC_ALL", "C".into()),
+        ("TZ", "UTC".into()),
+    ]
+}
+
 /// A kernel-owned bare repository whose only input from the candidate is its resolved object
 /// database ([`Repo::object_repository`]); removed when dropped. A git run in it gets
 /// [`Self::git_dir`] as `--git-dir` and [`Self::environment`] beside its own, and runs from a
@@ -415,47 +486,7 @@ impl Repo {
     }
 
     fn command(&self) -> Command {
-        let mut cmd = Command::new("git");
-        let rename_limit_config = format!("diff.renameLimit={RENAME_LIMIT}");
-        // Nothing inherited. Not "most things filtered" — nothing.
-        cmd.env_clear();
-        for (key, value) in self.environment() {
-            cmd.env(key, value);
-        }
-
-        cmd.current_dir(&self.workdir);
-        cmd.args([
-            "--no-optional-locks",
-            // A hostile repository cannot run code at any point in the capture path.
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.autocrlf=false",
-            "-c",
-            "core.attributesFile=/dev/null",
-            "-c",
-            "core.quotePath=true",
-            "-c",
-            "core.bigFileThreshold=512m",
-            "-c",
-            "core.compression=6",
-            "-c",
-            "core.loosecompression=6",
-            "-c",
-            "diff.external=",
-            "-c",
-            "diff.suppressBlankEmpty=false",
-            "-c",
-            &rename_limit_config,
-            // No transport may be attempted; a submodule URL cannot become a fetch.
-            "-c",
-            "protocol.allow=never",
-            "-c",
-            "credential.helper=",
-        ]);
-        cmd
+        isolated_command(&self.workdir, &self.home)
     }
 
     /// Every inherited environment variable git is given. The list is exhaustive by
@@ -463,18 +494,7 @@ impl Repo {
     /// git no matter what launched the kernel. The typed tree-diff path additionally supplies a
     /// kernel-resolved `GIT_OBJECT_DIRECTORY`; it is authority, not inherited environment.
     pub fn environment(&self) -> Vec<(&'static str, std::ffi::OsString)> {
-        vec![
-            ("PATH", std::env::var_os("PATH").unwrap_or_default()),
-            ("HOME", self.home.clone().into_os_string()),
-            ("GIT_CONFIG_NOSYSTEM", "1".into()),
-            ("GIT_CONFIG_GLOBAL", "/dev/null".into()),
-            ("GIT_ATTR_NOSYSTEM", "1".into()),
-            ("GIT_TERMINAL_PROMPT", "0".into()),
-            ("GIT_OPTIONAL_LOCKS", "0".into()),
-            // Deterministic collation and message text, so output parsing cannot drift by locale.
-            ("LC_ALL", "C".into()),
-            ("TZ", "UTC".into()),
-        ]
+        isolated_environment(&self.home)
     }
 
     fn supervision_error(&self, args: Vec<String>, error: SupervisedError) -> GitError {
@@ -1452,6 +1472,10 @@ mod tests {
 
     #[test]
     fn rename_limit_warnings_are_detected_even_when_git_exits_zero() {
+        assert_eq!(
+            super::RENAME_LIMIT_CONFIG,
+            format!("diff.renameLimit={}", super::RENAME_LIMIT)
+        );
         assert!(
             super::TREE_DIFF_POLICY_VERSION
                 .contains(&format!("rename-limit={}", super::RENAME_LIMIT)),

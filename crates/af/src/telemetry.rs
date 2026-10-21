@@ -7,7 +7,7 @@
 //! command ever records telemetry itself.
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use review_telemetry::dirs::{self, Accounted};
 use review_telemetry::level::Settings;
@@ -22,7 +22,7 @@ mod config_record;
 mod recording;
 mod views;
 
-pub(crate) use recording::begin;
+pub(crate) use recording::{begin, command_chain};
 pub(crate) use views::{config, gc, ledger, runs, show, tail};
 
 /// The machine's `[telemetry]` table, or the refusal naming its key.
@@ -93,14 +93,27 @@ pub(super) fn chosen(dir: Option<PathBuf>, settings: &Settings) -> Result<PathBu
     }
 }
 
+/// `path` as the text output writes it: under the home directory, `~/…`, by
+/// [`telemetry_status::home_relative`]; as it is when no home directory is known.
 pub(super) fn home_relative(path: &str) -> String {
     match config::home() {
-        Ok(home) => match Path::new(path).strip_prefix(&home) {
-            Ok(rest) => format!("~/{}", rest.display()),
-            Err(_) => path.to_string(),
-        },
+        Ok(home) => telemetry_status::home_relative(path, &home),
         Err(_) => path.to_string(),
     }
+}
+
+/// The warning `status` gives when the directory is over `[telemetry] max_bytes`, which the
+/// Storage Budget's next sweep meets by evicting sealed segments (ADR-0144, ADR-0153).
+fn over_max_bytes_warning(status: &Status) -> Option<String> {
+    status.over_max_bytes().map(|over| {
+        format!(
+            "warning: the telemetry directory holds {}, {} over [telemetry] max_bytes ({}); the \
+             next storage sweep evicts sealed segments to meet it",
+            human_bytes(status.bytes.total),
+            human_bytes(over),
+            human_bytes(status.bytes.max_bytes)
+        )
+    })
 }
 
 /// `af telemetry status`.
@@ -123,6 +136,13 @@ pub(crate) fn status(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
     if let Some(note) = note {
         eprintln!("{COMMAND}: {note}");
     }
+    if let Some(warning) = over_max_bytes_warning(&status) {
+        eprintln!("{COMMAND}: {warning}");
+    }
+    let status = match config::home() {
+        Ok(home) => status.relative_to(&home),
+        Err(_) => status,
+    };
     if json {
         println!(
             "{}",
@@ -138,7 +158,7 @@ fn render_status(status: &Status) -> String {
     let mut out = String::new();
     let level = status.level.as_str();
     let perturbing = if status.perturbing {
-        " (perturbing: content is not bounded by the overhead gate)"
+        " (perturbing: keeps content blobs of what Workers saw and did)"
     } else {
         ""
     };
@@ -146,7 +166,7 @@ fn render_status(status: &Status) -> String {
     let _ = writeln!(
         out,
         "directory    {}{}",
-        home_relative(&status.directory),
+        status.directory,
         if status.exists {
             ""
         } else {
@@ -155,9 +175,15 @@ fn render_status(status: &Status) -> String {
     );
     let _ = writeln!(
         out,
-        "bytes        {} of a {} cap ([telemetry] max_bytes)",
+        "bytes        {} of a {} cap ([telemetry] max_bytes; the storage sweep evicts sealed \
+         segments to meet it){}",
         human_bytes(status.bytes.total),
-        human_bytes(status.bytes.max_bytes)
+        human_bytes(status.bytes.max_bytes),
+        if status.over_max_bytes().is_some() {
+            " — over"
+        } else {
+            ""
+        }
     );
     for entry in &status.bytes.entries {
         if entry.bytes == 0 && entry.kind != "segment" {
@@ -232,8 +258,7 @@ fn render_status(status: &Status) -> String {
         let _ = writeln!(
             out,
             "unreadable   {}: {}",
-            home_relative(&unreadable.path),
-            unreadable.reason
+            unreadable.path, unreadable.reason
         );
     }
     if !status.registered.is_empty() {
@@ -261,7 +286,7 @@ fn render_status(status: &Status) -> String {
             } else {
                 format!("  ({})", notes.join("; "))
             };
-            let _ = writeln!(out, "  {}{notes}", home_relative(&dir.path));
+            let _ = writeln!(out, "  {}{notes}", dir.path);
         }
     }
     out
@@ -282,6 +307,10 @@ pub(crate) fn reindex(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
         ));
     }
     let document = telemetry_status::reindex(&root)?;
+    let document = match config::home() {
+        Ok(home) => document.relative_to(&home),
+        Err(_) => document,
+    };
     if json {
         println!(
             "{}",
@@ -295,7 +324,7 @@ pub(crate) fn reindex(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
 
 fn render_reindex(document: &Reindex) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "reindexed    {}", home_relative(&document.directory));
+    let _ = writeln!(out, "reindexed    {}", document.directory);
     let _ = writeln!(
         out,
         "segments     {} ({} records): {} spans, {} events, {} blobs, {} occurrences",
@@ -337,9 +366,139 @@ fn render_reindex(document: &Reindex) -> String {
         let _ = writeln!(
             out,
             "unreadable   {}: {}",
-            home_relative(&unreadable.path),
-            unreadable.reason
+            unreadable.path, unreadable.reason
         );
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(total: u64, max_bytes: u64) -> Status {
+        serde_json::from_value(serde_json::json!({
+            "schema": "af/telemetry-status@1",
+            "level": "content",
+            "perturbing": true,
+            "directory": "~/.local/state/af/telemetry",
+            "exists": true,
+            "bytes": {"total": total, "max_bytes": max_bytes, "entries": []},
+            "segments": {"live": 0, "unsealed": 0, "sealed": 0, "corrupt": 0},
+            "runs": 0,
+            "withheld_attempts": 0,
+            "missing_blobs": 0,
+            "blob_verification": "verified",
+            "index": {
+                "state": "fresh",
+                "ingested_segments": 0,
+                "ingested_records": 0,
+                "ingested_bytes": 0
+            },
+            "problems": [],
+            "unreadable": [],
+            "registered": []
+        }))
+        .unwrap()
+    }
+
+    /// The Storage Budget enforces `[telemetry] max_bytes`: `status` says so on its bytes line
+    /// and warns when the directory is over it that the next sweep evicts (audit L17), and names
+    /// no overhead gate (I3).
+    #[test]
+    fn status_warns_that_the_next_sweep_evicts_when_over_the_cap() {
+        let under = status(1 << 20, 256 << 20);
+        assert_eq!(over_max_bytes_warning(&under), None);
+        let text = render_status(&under);
+        assert!(
+            text.contains("the storage sweep evicts sealed segments"),
+            "{text}"
+        );
+        assert!(!text.contains("advisory"), "{text}");
+        assert!(!text.contains("— over"), "{text}");
+        assert!(!text.contains("overhead gate"), "{text}");
+
+        let over = status(300 << 20, 256 << 20);
+        let warning = over_max_bytes_warning(&over).unwrap();
+        assert!(warning.contains("over [telemetry] max_bytes"), "{warning}");
+        assert!(
+            warning.contains("the next storage sweep evicts sealed segments to meet it"),
+            "{warning}"
+        );
+        assert!(!warning.contains("advisory"), "{warning}");
+        assert!(render_status(&over).contains("— over"));
+    }
+
+    /// At `metrics` the segment header records exactly the subcommand chain its caller passes
+    /// to `Telemetry::start`: this test parses `af provider setup alice --kind claude` with clap
+    /// itself and passes `provider setup`, never the positional `alice` a guess from leading
+    /// lower-case words would take; without a chain it records `argv[0]` alone (audit E1). The
+    /// chain is the one [`recording::command_chain`] passes to `begin` for the same `argv`.
+    #[test]
+    fn the_metrics_header_records_the_subcommand_chain_its_caller_passes() {
+        use clap::CommandFactory as _;
+        use review_telemetry::level::Level;
+        use review_telemetry::record::{Attrs, Record, SealExit, SpanKind, SpanStatus};
+        use review_telemetry::{Start, Telemetry};
+
+        let matches = crate::cli::Af::command()
+            .try_get_matches_from(["af", "provider", "setup", "alice", "--kind", "claude"])
+            .unwrap();
+        let mut chain = Vec::new();
+        let mut current = &matches;
+        while let Some((name, next)) = current.subcommand() {
+            chain.push(name.to_owned());
+            current = next;
+        }
+        assert_eq!(chain, ["provider", "setup"]);
+        let argv = ["af", "provider", "setup", "alice", "--kind", "claude"].map(String::from);
+        assert_eq!(
+            recording::command_chain(&argv),
+            chain,
+            "what `begin` is passed"
+        );
+        let header = |command: Vec<String>| {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let telemetry = Telemetry::start(Start {
+                settings: Settings {
+                    level: Level::Metrics,
+                    ..Settings::default()
+                },
+                directory: root.join("state/af/telemetry"),
+                registry: dirs::location(&root.join("state")),
+                accounted: vec![Accounted::container(
+                    root.join("state/af"),
+                    "the state root",
+                )],
+                accounted_unknown: None,
+                af_version: "0.0.0-test".into(),
+                af_commit: "test".into(),
+                write_hook: None,
+                command,
+            });
+            let writer = telemetry.writer().unwrap();
+            let span = writer
+                .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+                .unwrap();
+            writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+            let finished = telemetry.finish(SealExit::Ok);
+            let sealed = finished.sealed.unwrap();
+            let records = review_telemetry::segment::reader::read_sealed(&sealed.path).unwrap();
+            records
+                .into_iter()
+                .find_map(|record| match record {
+                    Record::Segment(header) => Some(header.argv),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        // `argv[0]` is this test binary, its home prefix redacted to `~`.
+        let recorded = header(chain);
+        assert_eq!(recorded[1..], ["provider", "setup"], "{recorded:?}");
+        assert!(!recorded.iter().any(|word| word.contains("alice")));
+        let alone = header(Vec::new());
+        assert_eq!(alone.len(), 1, "{alone:?}");
+        assert_eq!(alone[0], recorded[0]);
+    }
 }

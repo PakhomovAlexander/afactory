@@ -75,3 +75,36 @@ fn read_only_command_worker_keeps_the_preserving_policy() {
         .stderr(std::process::Stdio::null())
         .status();
 }
+
+/// A child that leaves the Worker's process group with `setsid` is ended before the Attempt
+/// returns, so it cannot write into the tree the kernel seals next (L7). Linux only: elsewhere a
+/// `setsid` child escapes the group kill on `trusted_local`.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_setsid_child_of_an_execute_checks_worker_is_ended_before_sealing() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let workdir = directory.path().join("work");
+    let runtime = directory.path().join("runtime");
+    std::fs::create_dir_all(&workdir).unwrap();
+    std::fs::create_dir_all(&runtime).unwrap();
+    let script = "setsid sh -c 'sleep 2; touch x' >/dev/null 2>&1 </dev/null & printf ok";
+    let command = Command::new("/bin/sh", vec![Arg::literal("-c"), Arg::literal(script)]);
+    let returned = invoke_command_bytes(
+        &cas,
+        &workdir,
+        &runtime,
+        &command,
+        Vec::new(),
+        Duration::from_secs(30),
+        None,
+        &[],
+        WorkerAccess::ExecuteChecks,
+    );
+    assert_eq!(returned.message.expect("the leader replies"), b"ok");
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        !workdir.join("x").exists(),
+        "a setsid child wrote into the tree after its Attempt returned"
+    );
+}

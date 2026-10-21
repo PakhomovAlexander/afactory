@@ -257,9 +257,15 @@ fn directory_flags() -> nix::fcntl::OFlag {
     OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
 }
 
-/// Files under a telemetry root are created readable and writable by their owner.
+/// Files under a telemetry root are created readable and writable by their owner only: at
+/// `content` level they hold tool arguments, check output and reasoning.
 fn file_mode() -> nix::sys::stat::Mode {
-    nix::sys::stat::Mode::from_bits_truncate(0o644)
+    nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR
+}
+
+/// Directories under a telemetry root, and the root itself, are their owner's alone.
+fn directory_mode() -> nix::sys::stat::Mode {
+    nix::sys::stat::Mode::S_IRWXU
 }
 
 fn not_a_file(path: &Path) -> std::io::Error {
@@ -393,15 +399,29 @@ impl Confined {
     }
 
     /// Create the telemetry root `path` when it is absent (through whatever the user's path
-    /// names) and open it.
+    /// names), private (0700, whatever the umask), and open it. A root this process's effective
+    /// user owns whose group or others have any access is narrowed to 0700.
+    // `mode_t` is `u16` on macOS and `u32` on Linux, so the `into()` is needed on one only.
+    #[allow(clippy::useless_conversion)]
     pub fn create_root(path: &Path) -> std::io::Result<Self> {
-        std::fs::create_dir_all(path)?;
-        Self::root(path)?.ok_or_else(|| {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(directory_mode().bits().into())
+            .create(path)?;
+        let root = Self::root(path)?.ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("{} is not a directory", path.display()),
             )
-        })
+        })?;
+        let stat = nix::sys::stat::fstat(&root.fd)?;
+        #[allow(clippy::unnecessary_cast)]
+        let open_to_others = (stat.st_mode as u32) & 0o077 != 0;
+        if open_to_others && stat.st_uid == nix::unistd::geteuid().as_raw() {
+            nix::sys::stat::fchmod(&root.fd, directory_mode())?;
+        }
+        Ok(root)
     }
 
     /// The telemetry root's `v1/<name>/` (`segments`, `blobs`), each component a real
@@ -515,11 +535,7 @@ impl Confined {
     /// existing entry that is not a real directory (a link included) is refused: a writer never
     /// follows a link out of the telemetry directory.
     pub fn create_child_dir(&self, name: &str) -> std::io::Result<Self> {
-        match nix::sys::stat::mkdirat(
-            &self.fd,
-            name,
-            nix::sys::stat::Mode::from_bits_truncate(0o755),
-        ) {
+        match nix::sys::stat::mkdirat(&self.fd, name, directory_mode()) {
             Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
             Err(errno) => return Err(errno.into()),
         }
@@ -1024,5 +1040,33 @@ mod tests {
         let root_dir = Confined::open_root(&root).unwrap().unwrap();
         let v0 = root_dir.child_dir("v0").unwrap().unwrap();
         assert_eq!(v0.allocated("link"), 0, "never its target's");
+    }
+
+    /// Telemetry holds tool arguments, check output and reasoning at `content` level: its root,
+    /// its directories and its files are the owner's alone whatever the umask, and an existing
+    /// root open to others is narrowed.
+    #[test]
+    fn the_telemetry_tree_is_private_and_an_open_root_is_narrowed() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let mode = |path: &Path| std::fs::symlink_metadata(path).unwrap().mode() & 0o777;
+        let temporary = tempfile::tempdir().unwrap();
+        let layout = Layout::new(temporary.path().join("state/af/telemetry"));
+        let segments = create_versioned(&layout, "segments").unwrap();
+        drop(segments.create_file("live.jsonl", true).unwrap());
+        for directory in ["state", "state/af", "state/af/telemetry"] {
+            assert_eq!(
+                mode(&temporary.path().join(directory)),
+                0o700,
+                "{directory}"
+            );
+        }
+        let versioned = layout.root().join(VERSION_DIR);
+        assert_eq!(mode(&versioned), 0o700);
+        assert_eq!(mode(&versioned.join("segments")), 0o700);
+        assert_eq!(mode(&versioned.join("segments/live.jsonl")), 0o600);
+
+        std::fs::set_permissions(layout.root(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        Confined::create_root(layout.root()).unwrap();
+        assert_eq!(mode(layout.root()), 0o700);
     }
 }

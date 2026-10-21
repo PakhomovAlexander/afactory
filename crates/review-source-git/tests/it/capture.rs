@@ -528,3 +528,131 @@ fn dirty_capture_large_tree_measurement() {
         f64::from(count) * 40.0 / 1024.0
     );
 }
+
+/// Run git in the fixture with `input` on stdin, for the trees `git add` would refuse to build.
+fn git_with_input(fixture: &Fixture, args: &[&str], input: &[u8]) -> String {
+    use std::io::Write;
+    let mut child = std::process::Command::new("git")
+        .current_dir(fixture.repo_path())
+        .env("HOME", fixture.home_path())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "git {args:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+/// A commit of a tree listed as `<mode> <type> <id>\t<name>` lines, built with `git mktree`,
+/// which, unlike `git add`, writes any name and any mode it is given.
+fn commit_tree(fixture: &Fixture, listing: &str) -> String {
+    let tree = git_with_input(fixture, &["mktree"], listing.as_bytes());
+    git_with_input(fixture, &["commit-tree", "-m", "crafted", &tree], b"")
+}
+
+/// `git add` refuses `.git/…`, but `git mktree` and a fetch without fsck do not: such a tree is
+/// refused at capture in every spelling git itself refuses, never captured or silently dropped.
+#[test]
+fn a_tree_naming_git_administration_is_refused_at_capture() {
+    let fixture = Fixture::new();
+    fixture.with_content();
+    fixture.commit_all("initial");
+    let blob = git_with_input(&fixture, &["hash-object", "-w", "--stdin"], b"[core]\n");
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    for (directory, name) in [
+        (".git", "config"),
+        (".GIT", "HEAD"),
+        (".git.", "x"),
+        ("git~1", "x"),
+    ] {
+        let inner = git_with_input(
+            &fixture,
+            &["mktree"],
+            format!("100644 blob {blob}\t{name}\n").as_bytes(),
+        );
+        let commit = commit_tree(
+            &fixture,
+            &format!("040000 tree {inner}\t{directory}\n100644 blob {blob}\tREADME\n"),
+        );
+        let error = Capture::new(&repo, &cas).committed(&commit).unwrap_err();
+        let path = format!("{directory}/{name}");
+        assert!(
+            matches!(&error, CaptureError::GitPath { path: refused } if *refused == path),
+            "{path}: {error}"
+        );
+        assert!(error.to_string().contains(&path), "{error}");
+    }
+    let link = commit_tree(&fixture, &format!("120000 blob {blob}\t.gitmodules\n"));
+    let error = Capture::new(&repo, &cas).committed(&link).unwrap_err();
+    assert!(
+        matches!(&error, CaptureError::GitPath { path } if path == ".gitmodules"),
+        "{error}"
+    );
+    let file = commit_tree(&fixture, &format!("100644 blob {blob}\t.gitmodules\n"));
+    Capture::new(&repo, &cas).committed(&file).unwrap();
+}
+
+/// A legacy `100664` blob, as old trees hold, is a regular file: captured, materialized and
+/// diffed like `100644`, rather than failing the whole review.
+#[test]
+fn a_legacy_group_writable_blob_is_captured_as_a_regular_file() {
+    let fixture = Fixture::new();
+    fixture.with_content();
+    fixture.commit_all("initial");
+    let blob = git_with_input(&fixture, &["hash-object", "-w", "--stdin"], b"legacy\n");
+    let commit = commit_tree(
+        &fixture,
+        &format!("100664 blob {blob}\tlegacy.txt\n100755 blob {blob}\trun.sh\n"),
+    );
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let snapshot = Capture::new(&repo, &cas).committed(&commit).unwrap();
+    let legacy = snapshot.manifest.get("legacy.txt").unwrap();
+    assert_eq!(legacy.kind, review_source_git::EntryKind::File);
+    assert_eq!(legacy.content, review_source_git::digest_bytes(b"legacy\n"));
+    assert_eq!(
+        snapshot.manifest.get("run.sh").unwrap().kind,
+        review_source_git::EntryKind::Executable
+    );
+    let tree = fixture.dir.path().join("materialized");
+    materialize(&snapshot.manifest, &cas, &tree).unwrap();
+    assert_eq!(std::fs::read(tree.join("legacy.txt")).unwrap(), b"legacy\n");
+    let base = repo.resolve_tree(&commit).unwrap();
+    let diff = repo
+        .tree_diff_synthetic_head(&base, &snapshot.manifest, &cas)
+        .unwrap();
+    assert!(diff.1.changes.is_empty(), "{:?}", diff.1.changes);
+}
+
+/// A committed blob several times the capture buffer is stored byte for byte, under the digest
+/// the whole blob has.
+#[test]
+fn a_committed_blob_larger_than_the_buffer_is_stored_byte_identical() {
+    let fixture = Fixture::new();
+    let large: Vec<u8> = (0..3 * 1024 * 1024 + 7)
+        .map(|index: usize| (index * 131 % 253) as u8)
+        .collect();
+    fixture.write("large.bin", &large);
+    fixture.write("small.txt", b"small\n");
+    let commit = fixture.commit_all("a large blob");
+    let repo = repo_of(&fixture);
+    let cas = cas_of(&fixture);
+    let snapshot = Capture::new(&repo, &cas).committed(&commit).unwrap();
+    let entry = snapshot.manifest.get("large.bin").unwrap();
+    assert_eq!(entry.size, large.len() as u64);
+    assert_eq!(entry.content, review_source_git::digest_bytes(&large));
+    assert_eq!(cas.get(&entry.content).unwrap(), large);
+    let small = snapshot.manifest.get("small.txt").unwrap();
+    assert_eq!(cas.get(&small.content).unwrap(), b"small\n");
+    // The same tree captured from the worktree is the same snapshot.
+    let dirty = Capture::new(&repo, &cas).dirty().unwrap();
+    assert_eq!(dirty.content_digest, snapshot.content_digest);
+}

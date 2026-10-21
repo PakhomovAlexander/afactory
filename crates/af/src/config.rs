@@ -22,7 +22,7 @@ update_check = true
 check_every = "24h"
 auto_update = "notify"
 channel = "stable"
-install_pins = true
+install_pins = "ask"
 keep_versions = 3
 source = "PakhomovAlexander/afactory"
 
@@ -95,6 +95,26 @@ pub(crate) enum AutoUpdate {
     Never,
 }
 
+/// Whether a project lock's pin that is not installed yet is installed on demand: `ask` on a
+/// terminal first, `always`, or `never` (then `af self install <version>` is the step). The
+/// booleans of earlier releases keep their meaning: `true` is `always`, `false` is `never`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallPins {
+    Ask,
+    Always,
+    Never,
+}
+
+impl InstallPins {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            InstallPins::Ask => "ask",
+            InstallPins::Always => "always",
+            InstallPins::Never => "never",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Channel {
     Stable,
@@ -108,7 +128,7 @@ pub(crate) struct SelfPolicy {
     pub(crate) check_every: Duration,
     pub(crate) auto_update: AutoUpdate,
     pub(crate) channel: Channel,
-    pub(crate) install_pins: bool,
+    pub(crate) install_pins: InstallPins,
     pub(crate) keep_versions: usize,
     pub(crate) source: String,
 }
@@ -154,6 +174,18 @@ impl Config {
             "rc" => Channel::Rc,
             other => return Err(format!("[self] channel = \"{other}\" is not stable or rc")),
         };
+        let install_pins = match get("install_pins")? {
+            Value::Boolean(true) => InstallPins::Always,
+            Value::Boolean(false) => InstallPins::Never,
+            Value::String(text) if text == "ask" => InstallPins::Ask,
+            Value::String(text) if text == "always" => InstallPins::Always,
+            Value::String(text) if text == "never" => InstallPins::Never,
+            other => {
+                return Err(format!(
+                    "[self] install_pins = {other} is not one of \"ask\", \"always\", \"never\" (or true, false)"
+                ));
+            }
+        };
         let keep_versions = get("keep_versions")?
             .as_integer()
             .filter(|value| *value >= 1)
@@ -165,7 +197,7 @@ impl Config {
                 .ok_or("[self] check_every must look like 24h, 30m, or 90s")?,
             auto_update,
             channel,
-            install_pins: bool_of("install_pins")?,
+            install_pins,
             keep_versions,
             source: str_of("source")?,
         })
@@ -524,12 +556,20 @@ pub(crate) fn load_rooted(
 
     let mut ignored = Vec::new();
     for (layer, path) in planned {
-        let present = path.is_file();
+        // A link where a layer belongs is present, so that reading it refuses it in one line;
+        // it is never followed to whatever it names.
+        let present = std::fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| metadata.is_file() || metadata.file_type().is_symlink());
         if present {
-            let text = std::fs::read_to_string(&path)
+            let text = read_layer(&path)
                 .map_err(|error| Refusal::naming("reading ", &path, &format!(": {error}")))?;
-            let mut value: Value = toml::from_str(&text)
-                .map_err(|error| Refusal::naming("", &path, &format!(": {}", error.message())))?;
+            let mut value: Value = toml::from_str(&text).map_err(|error| {
+                Refusal::naming(
+                    "",
+                    &path,
+                    &review_config::excerpt::bounded(&format!(": {}", error.message())),
+                )
+            })?;
             if matches!(layer, "directory" | "project" | "local")
                 && let Some(table) = value.as_table_mut()
             {
@@ -592,6 +632,24 @@ pub(crate) fn load_rooted(
         effective,
         origins,
     })
+}
+
+/// One layer file, whole, through [`read_authority`].
+fn read_layer(path: &Path) -> Result<String, String> {
+    read_authority(path)
+}
+
+/// One authority file (a configuration layer, a project's `.af/af.lock`), whole, within
+/// [`review_config::lock::MAX_AUTHORITY_FILE_BYTES`]: opened by the path as named, never
+/// canonicalised first, without following a link at its final component, and read no further
+/// than the bound. A link is refused, and so is a file of gigabytes, before it is read whole;
+/// either in one line. Canonicalisation, where a caller still needs it for display or
+/// ancestry, comes after this read and never decides which file is read.
+pub(crate) fn read_authority(path: &Path) -> Result<String, String> {
+    let bytes =
+        review_store::local_fs::read_bounded(path, review_config::lock::MAX_AUTHORITY_FILE_BYTES)
+            .map_err(|error| error.to_string())?;
+    String::from_utf8(bytes).map_err(|error| error.to_string())
 }
 
 fn conf_d(dir: &Path) -> Vec<PathBuf> {
@@ -908,7 +966,36 @@ mod tests {
         };
         let policy = config.self_policy().unwrap();
         assert_eq!(policy.auto_update, AutoUpdate::Notify);
+        assert_eq!(policy.install_pins, InstallPins::Ask);
         assert_eq!(policy.keep_versions, 3);
+    }
+
+    #[test]
+    fn install_pins_takes_three_values_and_the_booleans_keep_their_meaning() {
+        let policy = |value: &str| {
+            let mut effective: Value = toml::from_str(BUILT_IN).unwrap();
+            effective["self"]["install_pins"] =
+                toml::from_str::<Value>(&format!("v = {value}")).unwrap()["v"].clone();
+            Config {
+                machine_scope: true,
+                ignored: Vec::new(),
+                files: Vec::new(),
+                toplevel: None,
+                effective,
+                origins: BTreeMap::new(),
+            }
+            .self_policy()
+            .map(|policy| policy.install_pins)
+        };
+        assert_eq!(policy("\"ask\""), Ok(InstallPins::Ask));
+        assert_eq!(policy("\"always\""), Ok(InstallPins::Always));
+        assert_eq!(policy("\"never\""), Ok(InstallPins::Never));
+        assert_eq!(policy("true"), Ok(InstallPins::Always));
+        assert_eq!(policy("false"), Ok(InstallPins::Never));
+        for refused in ["\"sometimes\"", "1"] {
+            let error = policy(refused).unwrap_err();
+            assert!(error.contains("[self] install_pins"), "{error}");
+        }
     }
 
     #[test]
@@ -1107,6 +1194,63 @@ mod tests {
         let span = refusal.path.clone().unwrap();
         assert_eq!(&refusal.text[span], file.display().to_string());
         assert_eq!(Refusal::from("plain").path, None);
+    }
+
+    /// L10 of the 2026-10-20 audit: a layer file beyond 1 MiB — an ancestor's or the
+    /// repository's `.af/af.toml` — is refused in one line naming it, never read whole; and a
+    /// layer is opened as named, never through a link (V3 of the close-out): a linked project,
+    /// local or directory layer is refused in one line, not followed.
+    #[test]
+    fn an_oversized_layer_is_refused_naming_its_file_and_a_linked_layer_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(repo.join(".af")).unwrap();
+        let file = repo.join(".af/af.toml");
+        std::fs::write(&file, format!("# {}\n", "x".repeat(2 * 1024 * 1024))).unwrap();
+        let roots = MachineRoots {
+            system: root.join("etc"),
+            user: root.join("user"),
+            environment: Vec::new(),
+        };
+        let refusal = load_rooted(Some(&repo), false, &roots).unwrap_err();
+        assert!(
+            refusal
+                .text
+                .starts_with(&format!("reading {}: ", file.display())),
+            "{}",
+            refusal.text
+        );
+        assert!(refusal.text.contains("over the bound of 1048576 bytes"));
+        assert_eq!(refusal.text.lines().count(), 1);
+
+        let kept = root.join("dotfiles/af.toml");
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(&kept, "[storage]\nkeep_days = 3\n").unwrap();
+        std::fs::remove_file(&file).unwrap();
+        assert!(load_rooted(Some(&repo), false, &roots).is_ok());
+        let local = repo.join(".af/af.local.toml");
+        let ancestor = root.join(".af/af.toml");
+        std::fs::create_dir_all(ancestor.parent().unwrap()).unwrap();
+        for linked in [&file, &local, &ancestor] {
+            std::os::unix::fs::symlink(&kept, linked).unwrap();
+            let refusal = load_rooted(Some(&repo), false, &roots).unwrap_err();
+            assert_eq!(
+                refusal.text,
+                format!(
+                    "reading {}: it is a symbolic link; af reads it only as a regular file",
+                    linked.display()
+                )
+            );
+            std::fs::remove_file(linked).unwrap();
+        }
+        // A dangling link is refused too, never skipped as absent.
+        std::os::unix::fs::symlink(root.join("nowhere.toml"), &file).unwrap();
+        let refusal = load_rooted(Some(&repo), false, &roots).unwrap_err();
+        assert!(refusal.text.contains("symbolic link"), "{}", refusal.text);
+        assert_eq!(refusal.text.lines().count(), 1);
     }
 
     #[test]

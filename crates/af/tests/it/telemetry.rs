@@ -522,3 +522,71 @@ fn telemetry_status_reports_unknown_overlap_when_the_registry_is_unreadable() {
         assert!(stdout.contains("registry"), "{stdout}");
     }
 }
+
+/// `status --json` and `reindex --json` write a path under the home directory as the text
+/// output does, `~/…` (audit I9).
+#[test]
+fn telemetry_documents_write_home_paths_as_the_text_output_does() {
+    let machine = Machine::new();
+    let state = machine.root.join("home/.local/state");
+    let env = [("XDG_STATE_HOME", state.to_str().unwrap())];
+    let telemetry = state.join("af/telemetry");
+    sealed_run(&telemetry, "run-1");
+    std::fs::create_dir_all(telemetry.join("v0")).unwrap();
+    let document = json(&machine.af(&env, &["telemetry", "status", "--json"]));
+    schemas::valid(&schemas::validator("telemetry-status-v1.json"), &document);
+    assert_eq!(document["directory"], "~/.local/state/af/telemetry");
+    assert_eq!(
+        document["unreadable"][0]["path"],
+        "~/.local/state/af/telemetry/v0"
+    );
+    let (stdout, _) = text(&machine.af(&env, &["telemetry", "status"]));
+    assert!(
+        stdout.contains("directory    ~/.local/state/af/telemetry"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains(machine.root.to_str().unwrap()), "{stdout}");
+    let reindexed = json(&machine.af(&env, &["telemetry", "reindex", "--json"]));
+    schemas::valid(&schemas::validator("telemetry-reindex-v1.json"), &reindexed);
+    assert_eq!(reindexed["directory"], "~/.local/state/af/telemetry");
+}
+
+/// No sink exists in this release: `sink = "otlp"` and the endpoint and headers keys refuse the
+/// load (audit L12); the help and `status` say the storage sweep evicts sealed segments to meet
+/// `max_bytes` (the Storage Budget enforces it), and neither names an overhead gate (audit L17,
+/// I3).
+#[test]
+fn telemetry_refuses_the_unimplemented_sink_and_says_how_the_cap_is_enforced() {
+    let machine = Machine::new();
+    for (key, value) in [
+        ("AF_TELEMETRY__SINK", "otlp"),
+        (
+            "AF_TELEMETRY__SINK_ENDPOINT",
+            "https://collector.example:4318",
+        ),
+        ("AF_TELEMETRY__SINK_HEADERS_FILE", "/etc/af/otlp-headers"),
+    ] {
+        let output = machine.af(&[(key, value)], &["telemetry", "status", "--json"]);
+        assert_eq!(output.status.code(), Some(2), "{key}");
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let error = document["error"].as_str().unwrap();
+        assert!(error.starts_with("[telemetry] sink"), "{error}");
+        assert!(error.contains("not implemented in this release"), "{error}");
+    }
+    let (help, _) = text(&machine.af(&[], &["help", "telemetry"]));
+    assert!(help.contains("sealed segments past it"), "{help}");
+    assert!(!help.contains("advisory"), "{help}");
+    assert!(!help.contains("overhead gate"), "{help}");
+    assert!(!help.contains("push after each run"), "{help}");
+    let (stdout, _) = text(&machine.af(
+        &[("AF_TELEMETRY__LEVEL", "content")],
+        &["telemetry", "status"],
+    ));
+    assert!(stdout.contains("perturbing"), "{stdout}");
+    assert!(
+        stdout.contains("the storage sweep evicts sealed segments to meet it"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("advisory"), "{stdout}");
+    assert!(!stdout.contains("overhead gate"), "{stdout}");
+}

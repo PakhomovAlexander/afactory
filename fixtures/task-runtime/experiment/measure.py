@@ -34,12 +34,22 @@ if mode == 'cargo':
               if stat.S_ISREG(os.lstat(os.path.join(parent, name)).st_mode)}
     assert len(stamps) == 1, sorted(stamps)
     stamp = stamps.pop()
+    assert stamp <= time.time_ns(), 'source stamp is in the future'
     for parent, _, files in os.walk(target_dir):
         for name in files:
             left = os.lstat(os.path.join(parent, name)).st_mtime_ns
             assert stamp > left, 'a source is not newer than ' + os.path.join(parent, name)
     expected = int(re.search(r'\{\s*(\d+)\s*\}', open('word/src/lib.rs').read()).group(1))
     subprocess.run(['cargo', 'build', '--offline', '--locked', '--quiet'], check=True)
+    repeated = subprocess.run(['cargo', 'build', '--offline', '--locked', '--message-format=json'],
+                              check=True, capture_output=True, text=True)
+    artifacts = [json.loads(line) for line in repeated.stdout.splitlines()
+                 if json.loads(line).get('reason') == 'compiler-artifact']
+    assert artifacts and all(a['fresh'] for a in artifacts), 'second build recompiled workspace units'
+    marker = os.path.join(os.environ['CARGO_HOME'], 'registry', 'freshness-sentinel')
+    if os.path.exists(marker):
+        assert open(marker).read() == 'registry preserved'
+        print('registry cache reused')
     printed = subprocess.run([os.path.join(target_dir, 'debug', 'app')], check=True,
                              capture_output=True, text=True).stdout.strip()
     print('built', printed, 'from a source of', expected)

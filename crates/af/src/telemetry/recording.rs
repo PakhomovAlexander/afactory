@@ -107,10 +107,27 @@ fn test_hook() -> Option<review_telemetry::segment::writer::WriteHook> {
     }
 }
 
-/// Start recording a command that runs a kernel run of `kind`. Nothing is opened yet beyond
-/// what the first record needs: the segment, and with it the directory, opens with the
-/// `af.command` span.
-pub(crate) fn begin(kind: RunKind) -> Recording {
+/// The subcommand chain the argument parser matches for `argv` (`["task", "run"]`): what the
+/// segment header keeps beside `argv[0]` at `metrics`, never a guess from `argv` (audit L11).
+/// Empty when `argv` does not parse.
+pub(crate) fn command_chain(argv: &[String]) -> Vec<String> {
+    use clap::CommandFactory as _;
+    let Ok(matches) = crate::cli::Af::command().try_get_matches_from(argv) else {
+        return Vec::new();
+    };
+    let mut chain = Vec::new();
+    let mut current = &matches;
+    while let Some((name, next)) = current.subcommand() {
+        chain.push(name.to_owned());
+        current = next;
+    }
+    chain
+}
+
+/// Start recording a command that runs a kernel run of `kind`, its subcommand chain `command`
+/// ([`command_chain`]). Nothing is opened yet beyond what the first record needs: the segment,
+/// and with it the directory, opens with the `af.command` span.
+pub(crate) fn begin(kind: RunKind, command: Vec<String>) -> Recording {
     review_pipeline::telemetry::set_run_kind(kind);
     let settings = match super::settings() {
         Ok(settings) => settings,
@@ -136,6 +153,7 @@ pub(crate) fn begin(kind: RunKind) -> Recording {
             af_commit: crate::selfmgmt::COMMIT.to_string(),
             settings: settings.clone(),
             write_hook: test_hook(),
+            command,
         })
     })();
     let start = match started {

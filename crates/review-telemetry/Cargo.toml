@@ -15,7 +15,7 @@ doctest = false
 # A leaf: nothing in the workspace. `review-process` never links this crate (ADR-0026).
 [dependencies]
 flate2 = { version = "1.1.5", default-features = false, features = ["rust_backend"] }
-nix = { version = "0.31.3", default-features = false, features = ["dir", "fs", "feature"] }
+nix = { version = "0.31.3", default-features = false, features = ["dir", "fs", "feature", "user"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }

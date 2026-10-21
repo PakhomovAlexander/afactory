@@ -1130,13 +1130,14 @@ fn telemetry_write_failure_is_fail_open() {
             .filter(|line| line.starts_with("af: telemetry problem"))
             .count()
     };
-    // A read-only directory (which the superuser could write anyway).
+    // A read-only directory (which the superuser could write anyway), the owner's alone: a root
+    // open to others would be narrowed to 0700 when opened (audit M6), writable again.
     let machine = Machine::new();
     let (repo, state) = task_gc::fixture(&machine.root);
     if !nix::unistd::geteuid().is_root() {
         let directory = machine.telemetry();
         std::fs::create_dir_all(&directory).unwrap();
-        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500)).unwrap();
         let output = start(&machine, &repo, &state, "gc-older.json", &[]);
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
         let (stdout, stderr) = text(&output);

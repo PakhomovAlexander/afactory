@@ -999,7 +999,7 @@ fn warm_measurements_of_a_then_b_then_a_on_one_key_each_build_their_own_snapshot
     let text = text
         .replace("check_wall_ms = 60000", "check_wall_ms = 180000")
         .replace("wall_ms = 20000", "wall_ms = 60000");
-    let text = format!("{text}\n[warm]\nbuild_cache = [\"cargo_target\"]\n");
+    let text = format!("{text}\n[warm]\nbuild_cache = [\"cargo_target\", \"cargo_home\"]\n");
     let mut fixture = fixture(&[(path, text), ("mode.txt", "cargo\n".into())]);
     for (path, bytes) in WORKSPACE
         .iter()
@@ -1019,7 +1019,7 @@ fn warm_measurements_of_a_then_b_then_a_on_one_key_each_build_their_own_snapshot
 
     let b = json!({"word/src/lib.rs": word(40)});
     let first = start(&fixture, "cargo-one", b.clone(), 0);
-    let second = start(&fixture, "cargo-two", b, 0);
+    let second = start(&fixture, "cargo-two", b.clone(), 0);
     let cas = cas(&fixture);
     let mut toolchains = std::collections::BTreeSet::new();
     let mut runs = 0;
@@ -1057,16 +1057,79 @@ fn warm_measurements_of_a_then_b_then_a_on_one_key_each_build_their_own_snapshot
     assert_eq!(toolchains.len(), 1, "one key for every repetition");
     assert_eq!(conclusion(&comparison(&cas, &first)), "improved");
     assert_eq!(conclusion(&comparison(&cas, &second)), "improved");
-    let mut targets = 0;
+    let mut targets = Vec::new();
     for project in std::fs::read_dir(fixture.root.join("cache/af/task-build-cache"))
         .unwrap()
         .flatten()
     {
         for key in std::fs::read_dir(project.path()).unwrap().flatten() {
-            targets += usize::from(key.path().join("cargo_target/debug/app").is_file());
+            if key.path().join("cargo_target/debug/app").is_file() {
+                targets.push(key.path().join("cargo_target"));
+            }
         }
     }
-    assert_eq!(targets, 1, "every build went into the one warm key");
+    assert_eq!(targets.len(), 1, "every build went into the one warm key");
+
+    // Simulate a clock rollback or a previous build script leaving future fingerprints.
+    // Deep entries, not only the root, must decide freshness. The held target contains B;
+    // A must now build cold, never use B's future-dated dep-info. Cargo home stays warm.
+    let target = &targets[0];
+    let future = std::time::SystemTime::now() + std::time::Duration::from_secs(86_400);
+    let mut pending = vec![target.clone()];
+    let mut fingerprints = 0;
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(entry.path());
+            } else {
+                fingerprints +=
+                    usize::from(entry.path().to_string_lossy().contains(".fingerprint/"));
+                std::fs::File::open(entry.path())
+                    .unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(future))
+                    .unwrap();
+            }
+        }
+    }
+    assert!(
+        fingerprints > 0,
+        "real Cargo fingerprints were future-dated"
+    );
+    let registry = target.parent().unwrap().join("cargo_home/registry");
+    std::fs::create_dir_all(&registry).unwrap();
+    let marker = registry.join("freshness-sentinel");
+    std::fs::write(&marker, "registry preserved").unwrap();
+    let marker_time = std::fs::metadata(&marker).unwrap().modified().unwrap();
+    let future_run = start(&fixture, "cargo-future", b, 0);
+    for (port, value) in [("baseline", "80"), ("candidate", "40")] {
+        let measured = measurement(&cas, &future_run, port);
+        assert_eq!(measured.runs.len(), 3);
+        for run in &measured.runs {
+            assert_eq!(run.exit_code, Some(0));
+            assert_eq!(run.metrics["bytes_written"].value.to_string(), value);
+            let stdout =
+                String::from_utf8(cas.get(run.stdout_id.as_ref().unwrap()).unwrap()).unwrap();
+            assert!(
+                stdout.contains(&format!("built {value} from a source of {value}")),
+                "{stdout}"
+            );
+            assert!(stdout.contains("registry cache reused"), "{stdout}");
+            let cache = run.cache.as_ref().unwrap();
+            assert!(!cache.warm, "{cache:?}");
+            assert_eq!(cache.bytes, 0);
+            assert_eq!(cache.reason.as_deref(), Some("future_mtime"));
+        }
+    }
+    assert_eq!(conclusion(&comparison(&cas, &future_run)), "improved");
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        "registry preserved"
+    );
+    assert_eq!(
+        std::fs::metadata(marker).unwrap().modified().unwrap(),
+        marker_time
+    );
 }
 
 #[test]

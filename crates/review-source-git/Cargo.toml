@@ -24,6 +24,8 @@ sha2 = "0.11.0"
 tempfile = "3.27.0"
 notify = "8.2.0"
 reflink-copy = "0.1.19"
+# Folds NFC/NFD twins when a sandbox volume normalises names (materialize.rs).
+unicode-normalization = "0.1.26"
 nix = { version = "0.31.3", default-features = false, features = ["dir", "fs"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
