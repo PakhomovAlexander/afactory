@@ -292,3 +292,5 @@ future readers need.
   Surveyor](0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md)
 - [0160 — Carry a bounded Project Brief on a declared
   port](0160-carry-a-bounded-project-brief-on-a-declared-port.md)
+- [0161 — Refresh native check source mtimes before reusing a Cargo
+  target](0161-refresh-native-check-source-mtimes-before-reusing-cargo-target.md)
