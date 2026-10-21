@@ -752,3 +752,100 @@ The harness streams (turns, tool calls, reasoning), content blobs (Store event p
 Finding bodies among them), the harnesses' own OpenTelemetry export, the OTLP sink, and the
 commands `turns`, `tools`, `context`, `reasoning`, the analytics, `search`, `sql` and `export`
 all belong to later packages of the design note.
+
+## Performance
+
+Design §12 is the contract. At `spans` Telemetry may cost at most 2% of a command's wall time,
+its finalization included, on the pinned workload below; this is a release gate, measured, never
+labelled away. `content` has no bound (`af telemetry status` calls it *perturbing*). On the
+read-latency corpus `af telemetry status` answers in under 2 s on a fresh index and under 200 ms
+when nothing is new, and `show` of one run in under 200 ms, warm.
+
+**The overhead protocol.** `scripts/telemetry-overhead.py` runs the three credential-free bench
+fixtures of [`fixtures/telemetry-bench/`](../fixtures/telemetry-bench/README.md) through the Task
+runtime with scripted harnesses: `telemetry-bench-concurrent` (four concurrent Attempts),
+`telemetry-bench-dense` (one Attempt writing 50 MiB of stream-json-shaped output at pipe speed)
+and `telemetry-bench-store` (a Task-backed Review whose 1,000 checks and four reviewers append
+about 1,180 Store events; the fixture's README says why not 10,000). Each measurement is a pair,
+one command at `off` and one at `spans` on the same machine and fixture, in an order drawn at
+random per pair, 20 pairs per fixture. A command's wall time runs from exec to exit, so the
+seal, the compression and the sweep's telemetry inventory are inside it. Every command runs in a
+fresh copy of its fixture with private `HOME`, XDG directories, `TMPDIR` and Store, and must exit
+as the fixture expects, leaving no telemetry directory at `off` and a segment at `spans`. Per
+fixture the script reports the paired differences `(spans - off) / off`, their median and a 95%
+percentile-bootstrap interval of the median (10,000 resamples, seeded). **Drain latency** is
+measured on the dense fixture's runs: from the harness's last write (its final stderr line names
+the unix nanosecond) to the supervisor's drain completion (the modification time of the Worker's
+drained stdout in the Store, which `ModelRunner` writes first thing after the supervisor
+returns, at the file system's timestamp resolution), `spans` minus `off` per pair. The gate
+passes when every fixture's median is at most 2% and its interval's upper bound at most 3%, and
+the drain latency's median difference is at most 10 ms; it is judged only over all three
+fixtures at full scale with 20 pairs, and anything less is `not_judged`.
+
+```sh
+make telemetry-gate          # a release build, 20 pairs per fixture; fails when the gate fails
+python3 scripts/telemetry-overhead.py --af target/release/af --pairs 5 --fixture telemetry-bench-dense
+python3 scripts/telemetry-overhead.py --judge target/telemetry-gate/overhead.json
+```
+
+`make telemetry-gate` prints the table, fails when the script exits 3 (the gate failed), and
+writes the `af/telemetry-overhead@1` document
+([`schemas/telemetry-overhead-v1.json`](../schemas/telemetry-overhead-v1.json)) to
+`target/telemetry-gate/overhead.json`; `--json` prints the document instead, `--judge`
+recomputes every figure and the verdict from a recorded document's own pairs, and `--keep`
+keeps every run's directory. `make check` runs only a one-pair smoke of the script
+(`--pairs 1 --scale smoke`, the nextest test `telemetry_overhead_smoke`), whose verdict is
+`not_judged`.
+
+**The read-latency corpus.** `scripts/telemetry-corpus.py generate --out DIR` writes
+`telemetry-corpus-10k` deterministically from a seed (`--seed`) into an absent or empty
+directory that is not af's state root: 10,000 runs over 20,000 executions, one sealed segment
+each, 2,000,000 spans, 4,000,000 events, 200,000 blobs of which a quarter are shared, 2 GiB of
+segment JSONL and 1 GiB of retained blob bytes (about 190 MiB and 310 MiB compressed on disk),
+written at `content`. `--runs N` scales it; the same seed and scale give byte-identical files.
+`scripts/telemetry-corpus.py measure --dir DIR --af target/release/af` then runs, with private
+homes and `content_index` on, `af telemetry status` on a fresh index, `af telemetry status` with
+nothing new and `af telemetry show` of one run, each warm (every file read once first) and, where
+the script may drop the page cache (Linux or macOS as root), cold; otherwise it reports warm-only
+and why. It prints the latency, peak memory and index size of each against its bound, or with
+`--json` the `af/telemetry-read-latency@1` document
+([`schemas/telemetry-read-latency-v1.json`](../schemas/telemetry-read-latency-v1.json)), and
+exits 3 when a warm figure is over its bound.
+
+```sh
+python3 scripts/telemetry-corpus.py generate --out /scratch/telemetry-corpus-10k
+python3 scripts/telemetry-corpus.py measure --dir /scratch/telemetry-corpus-10k --af target/release/af
+```
+
+**First measurement** (21 October 2026, af 0.12.0-rc.4 release build, macOS 27.0.1 on an Apple
+M3 Max with 14 cores and 36 GiB; the machine ran other work throughout, at load averages
+between 14 and 56). `make telemetry-gate`, 20 pairs per fixture, seed 20261021:
+
+| Fixture | Store events | Median `off` | Median `spans` | Median overhead | 95% interval | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| `telemetry-bench-concurrent` | 48 | 2,884 ms | 2,965 ms | +2.34% | [+1.68%, +3.12%] | fail |
+| `telemetry-bench-dense` | 27 | 827 ms | 847 ms | +3.05% | [−2.30%, +9.48%] | fail |
+| `telemetry-bench-store` | 1,178 | 12,001 ms | 13,585 ms | +7.94% | [−9.21%, +37.71%] | fail |
+| drain latency, `telemetry-bench-dense` | | 0.637 ms | 0.685 ms | +0.050 ms | [−0.018 ms, +0.195 ms] | pass |
+
+**`spans` does not pass the 2% gate on this machine in this measurement.** The drain latency is
+within its bound. The dense and Store fixtures' intervals are as wide as the machine's load made
+them (one Store command took 5.4 s and another 28.5 s), so their medians say little; the
+concurrent fixture's interval lies wholly above zero, about 80 ms a command, and its upper bound
+is over 3%. A gate run on a quiet machine decides the release; this one records the first figures.
+
+The corpus (seed 20261021): 10,000 runs, 20,000 executions, 2,000,000 spans, 4,000,000 events,
+200,000 blobs (50,000 shared), 2,148,452,663 bytes of segments (+0.05% of 2 GiB; 192 MiB on disk)
+and 1,071,508,005 bytes of blobs (−0.21% of 1 GiB; 308 MiB on disk), generated in 27 s with eight
+processes; measured at a load average of 9 to 12, warm-only (`purge` needs root on macOS):
+
+| Read | Warm | Peak memory | Index after | Bound | Verdict |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `status`, fresh index | 102,580 ms | 324 MiB | 1.65 GiB | 2,000 ms | over |
+| `status`, nothing new | 9,417 ms | 103 MiB | 1.65 GiB | 200 ms | over |
+| `show` of one run | 242 ms | 33 MiB | 1.65 GiB | 200 ms | over |
+
+All three reads are over their bounds on this tree. A profile of the unchanged `status` spends
+almost all of it in `Index::missing_blobs`, which opens the blob's prefix directory
+(`Confined::child_dir`, an `openat`) once for every stored occurrence, 250,000 here; the fresh
+figure includes ingesting all 8.6 million records into an absent index.
