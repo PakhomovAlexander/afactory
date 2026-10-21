@@ -510,6 +510,118 @@ fn telemetry_mirror_corrupt_usage_artifact_marks_coverage_incomplete() {
     assert_eq!(charge.native, None, "no native observation");
 }
 
+/// One committed usage record naming two raw artifacts, a valid native observation and a raw
+/// blob, the one at `corrupt` (0 or 1) the blob, corrupted after the Store validated the
+/// record: the mirror reads both, one `observer` problem names the corrupt one alone, the
+/// ledger reads incomplete, and the charge snapshot carries no native observation although
+/// the observation is valid.
+fn corrupt_beside_a_valid_observation(corrupt: usize) {
+    let (_temp, root, store_dir) = directories();
+    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
+    let observer = Arc::new(CorruptBeforeMirror {
+        mirror: recording.mirror(),
+        armed: std::sync::Mutex::new(None),
+    });
+    let mut f = recording
+        .within(|| TaskFixture::new(store_dir, |store| store.observe_commits(observer.clone())));
+    let (attempt, raw) = recording.within(|| {
+        let attempt = f.start("write");
+        let valid = f.native(
+            &attempt,
+            "write",
+            &TaskUsageObservationV1 {
+                reported_usage: Some(usage(Some(6), 6)),
+                charge_complete: true,
+            },
+        );
+        // A record names one observation at most; the other raw artifact is a plain blob.
+        let damaged = f
+            .cas
+            .put_json(&serde_json::json!({ "native": "transcript of write" }))
+            .unwrap();
+        let mut raw = vec![valid];
+        raw.insert(corrupt, damaged);
+        f.renew();
+        let hex = raw[corrupt].strip_prefix("sha256:").unwrap();
+        *observer.armed.lock().unwrap() = Some(
+            f.directory
+                .path()
+                .join("cas/objects")
+                .join(&hex[..2])
+                .join(&hex[2..]),
+        );
+        f.observe_raw(&attempt, usage(Some(6), 6), raw.clone());
+        assert!(
+            observer.armed.lock().unwrap().is_none(),
+            "corrupted on commit"
+        );
+        assert!(f.cas.get_optional_artifact(&raw[corrupt]).is_err());
+        assert!(f.cas.get_optional_artifact(&raw[1 - corrupt]).is_ok());
+        (attempt, raw)
+    });
+    recording.finish();
+    let ledger = read_ledger(&root, &run_id);
+    assert_eq!(ledger.coverage, "incomplete");
+    assert!(
+        ledger
+            .coverage_reasons
+            .iter()
+            .any(|reason| reason.contains("Store mirror problem")),
+        "{:?}",
+        ledger.coverage_reasons
+    );
+    let (index, _, _) = view::open(&root).unwrap();
+    let problems: Vec<(String, String)> = index
+        .connection()
+        .prepare("SELECT what, reason FROM problems ORDER BY seq")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(index);
+    let named = |id: &str| format!("raw artifact {}…", &id[..23]);
+    let naming = |id: &str| {
+        problems
+            .iter()
+            .filter(|(what, reason)| {
+                what == "observer"
+                    && reason.contains(&named(id))
+                    && reason.contains("usage_observed")
+                    && reason.contains("do not match its digest")
+            })
+            .count()
+    };
+    assert_eq!(naming(&raw[corrupt]), 1, "{problems:?}");
+    assert_eq!(naming(&raw[1 - corrupt]), 0, "{problems:?}");
+    let charge = ledger
+        .accounting
+        .attempts
+        .iter()
+        .find(|recorded| recorded.attempt_id == attempt)
+        .and_then(|recorded| recorded.charge.clone())
+        .expect("the charge snapshot is kept");
+    assert_eq!(charge.source, "usage_observed");
+    assert_eq!(charge.counters.chargeable_tokens.as_deref(), Some("6"));
+    assert_eq!(charge.counters.input_tokens.as_deref(), Some("6"));
+    assert_eq!(charge.native, None, "no native observation");
+}
+
+/// Design §7.5: a corrupt raw artifact after a valid native observation in one committed
+/// record is read and reported, never passed over because an observation came first.
+#[test]
+fn telemetry_mirror_corrupt_artifact_after_a_valid_observation_marks_coverage_incomplete() {
+    corrupt_beside_a_valid_observation(1);
+}
+
+/// Design §7.5: a corrupt raw artifact before a valid native observation in one committed
+/// record withholds the observation it reported a failure beside.
+#[test]
+fn telemetry_mirror_corrupt_artifact_before_a_valid_observation_marks_coverage_incomplete() {
+    corrupt_beside_a_valid_observation(0);
+}
+
 // ------------------------------------------------------------------------------------------
 // the charge and wall series
 

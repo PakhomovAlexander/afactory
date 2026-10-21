@@ -340,21 +340,14 @@ impl StoreMirror {
                 );
                 continue;
             };
-            let read = usage_id
+            let usage = usage_id
                 .as_deref()
                 .map(|id| token_usage(commit.cas, id))
-                .transpose()
-                .and_then(|usage| Ok((usage, native_observation(commit.cas, &raw)?)));
-            let (usage, (native, unreadable)) = match read {
-                Ok(read) => read,
-                Err(reason) => {
-                    self.failed(writer, Some(store_id), &reason);
-                    continue;
-                }
-            };
+                .transpose();
+            let read = native_observation(commit.cas, &raw);
             // A raw artifact the CAS cannot read is the observer's failure: the snapshot keeps
             // the projection's figures without the observation it may have held.
-            for (artifact, why) in &unreadable {
+            for (artifact, why) in &read.unreadable {
                 self.failed(
                     writer,
                     Some(store_id),
@@ -366,6 +359,13 @@ impl StoreMirror {
                     ),
                 );
             }
+            let (usage, native) = match (usage, read.observation) {
+                (Ok(usage), Ok(native)) => (usage, native),
+                (Err(reason), _) | (_, Err(reason)) => {
+                    self.failed(writer, Some(store_id), &reason);
+                    continue;
+                }
+            };
             let mut attrs = Attrs::new()
                 .id("af.store_id", store_id)
                 .id("af.run_id", event.run_id.clone())
@@ -896,16 +896,20 @@ fn token_usage(cas: &Cas, id: &str) -> Result<TaskTokenUsageV3, String> {
         .map_err(|error| format!("a committed usage record cannot be read: {error}"))
 }
 
-/// A native usage observation, when there is one, and each raw artifact the CAS could not read,
-/// named for a problem, with why.
-type NativeRead = (Option<TaskUsageObservationV1>, Vec<(String, String)>);
+/// What a committed record's raw artifacts hold: its native usage observation, when there is
+/// one and every raw artifact was read, and each raw artifact the CAS could not read, named
+/// for a problem, with why.
+struct NativeRead {
+    observation: Result<Option<TaskUsageObservationV1>, String>,
+    unreadable: Vec<(String, String)>,
+}
 
-/// The native usage observation among a committed record's raw artifacts, when it has one,
-/// and the raw artifacts the CAS holds but cannot read.
-fn native_observation(cas: &Cas, raw: &[String]) -> Result<NativeRead, String> {
-    let unreadable =
-        |error: String| format!("a committed usage observation cannot be read: {error}");
-    let mut failed = Vec::new();
+/// Every raw artifact a committed record names, read before any answer: the first native
+/// usage observation among them, and the raw artifacts the CAS holds but cannot read. When any
+/// read failed the observation is withheld, since the unread artifact may have held it.
+fn native_observation(cas: &Cas, raw: &[String]) -> NativeRead {
+    let mut observation = Ok(None);
+    let mut unreadable = Vec::new();
     for id in raw {
         let envelope = match cas.get_optional_artifact(id) {
             Ok(Some(envelope)) => envelope,
@@ -914,17 +918,23 @@ fn native_observation(cas: &Cas, raw: &[String]) -> Result<NativeRead, String> {
             // The Store read every raw artifact before it committed the record, so one it
             // cannot read now is corrupt or unreadable, never a blob to pass over.
             Err(error) => {
-                failed.push((artifact_name(id), cas_failure(&error)));
+                unreadable.push((artifact_name(id), cas_failure(&error)));
                 continue;
             }
         };
-        if envelope.artifact_type == TASK_USAGE_OBSERVATION_V1 {
-            return serde_json::from_value(envelope.payload)
-                .map(|native| (Some(native), failed))
-                .map_err(|error| unreadable(error.to_string()));
+        if envelope.artifact_type == TASK_USAGE_OBSERVATION_V1 && matches!(observation, Ok(None)) {
+            observation = serde_json::from_value(envelope.payload)
+                .map(Some)
+                .map_err(|error| format!("a committed usage observation cannot be read: {error}"));
         }
     }
-    Ok((None, failed))
+    if !unreadable.is_empty() && observation.is_ok() {
+        observation = Ok(None);
+    }
+    NativeRead {
+        observation,
+        unreadable,
+    }
 }
 
 /// A CAS id as a problem can carry it: a digest's first 16 hex digits, since the whole digest

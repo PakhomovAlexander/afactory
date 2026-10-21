@@ -77,9 +77,30 @@ pub fn tables(net: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The first `count` whitespace-separated columns of `line`, and the exact rest of the line
+/// after the one space that separates it from them: empty when there is no rest.
+fn fixed_columns(line: &str, count: usize) -> (Vec<&str>, &str) {
+    let mut columns = Vec::with_capacity(count);
+    let mut rest = line;
+    while columns.len() < count {
+        let start = rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        if start.is_empty() {
+            return (columns, "");
+        }
+        let end = start
+            .find(|c: char| c.is_ascii_whitespace())
+            .unwrap_or(start.len());
+        columns.push(&start[..end]);
+        rest = &start[end..];
+    }
+    (columns, rest.strip_prefix(' ').unwrap_or(rest))
+}
+
 /// One table row of `inode`: the row's columns, keyed by the header's names. The inet tables'
 /// headers name `tx_queue rx_queue` and `tr tm->when` where each row has one `a:b` column, so
-/// those pairs are one column each.
+/// those pairs are one column each. A table whose last column is `Path` (`unix`) has fixed
+/// columns before it, and its path is the exact rest of the row: a name may hold leading,
+/// trailing and repeated spaces, or be spaces only.
 fn row(text: &str, inode: u64) -> Option<Vec<(String, String)>> {
     let mut lines = text.lines();
     let mut names: Vec<String> = Vec::new();
@@ -96,8 +117,14 @@ fn row(text: &str, inode: u64) -> Option<Vec<(String, String)>> {
     }
     let at = names.iter().position(|name| name == "inode")?;
     let wanted = inode.to_string();
+    let pathed = names.last().is_some_and(|name| name == "path");
     lines.find_map(|line| {
-        let columns: Vec<&str> = line.split_whitespace().collect();
+        let (columns, path) = if pathed {
+            let (columns, path) = fixed_columns(line, names.len() - 1);
+            (columns, Some(path))
+        } else {
+            (line.split_whitespace().collect(), None)
+        };
         if columns.get(at) != Some(&wanted.as_str()) {
             return None;
         }
@@ -106,12 +133,8 @@ fn row(text: &str, inode: u64) -> Option<Vec<(String, String)>> {
             .zip(&columns)
             .map(|(name, value)| (name.clone(), (*value).to_string()))
             .collect();
-        // A unix socket's path may hold spaces: it is the rest of the row.
-        if names.last().is_some_and(|name| name == "path") && columns.len() > names.len() {
-            let rest = columns[names.len() - 1..].join(" ");
-            if let Some(last) = row.last_mut() {
-                last.1 = rest;
-            }
+        if let Some(path) = path {
+            row.push(("path".to_string(), path.to_string()));
         }
         Some(row)
     })
@@ -337,5 +360,39 @@ Num       RefCount Protocol Flags    Type St Inode Path
         let missing = Path::new("/nonexistent/proc/net");
         assert!(violations(missing, &[9999]).is_empty());
         assert!(violations(missing, &[]).is_empty());
+    }
+
+    /// Listeners whose names Linux permits and whitespace splitting would lose: a name of three
+    /// spaces, and one with leading, repeated inner and trailing spaces, after an `Inode` padded
+    /// to five columns as the kernel prints it.
+    const SPACED: &str = concat!(
+        "Num       RefCount Protocol Flags    Type St Inode Path\n",
+        "0000000000000000: 00000002 00000000 00010000 0001 01  6001    \n",
+        "0000000000000000: 00000002 00000000 00010000 0001 01  6002  /run/af  two   gaps \n",
+    );
+
+    fn spaced(inode: u64) -> Vec<Violation> {
+        judge(&[("unix".to_string(), SPACED.to_string())], &[inode]).violations
+    }
+
+    #[test]
+    fn socket_unix_listener_named_by_spaces_only_is_a_violation() {
+        assert_eq!(
+            spaced(6001),
+            [Violation {
+                inode: 6001,
+                table: "unix".into(),
+                kind: "0001".into(),
+                state: "01".into(),
+                path: "   ".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn socket_unix_listener_path_keeps_its_exact_spaces() {
+        let violations = spaced(6002);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].path, " /run/af  two   gaps ");
     }
 }
