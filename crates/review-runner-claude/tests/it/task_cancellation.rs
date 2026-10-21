@@ -19,6 +19,8 @@ fn native_cancellation_retains_full_usage_and_reaps_owned_process() {
             )
         },
         &output,
+        // An envelope without a stream message's `type` is kept whole.
+        &output,
         review_core::task::usage::TaskTokenUsageV3 {
             input_tokens: Some(u128::from(u64::MAX).into()),
             output_tokens: Some(20u128.into()),

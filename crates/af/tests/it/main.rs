@@ -68,5 +68,6 @@ mod telemetry_config;
 mod telemetry_ledger;
 mod telemetry_phases;
 mod telemetry_runs;
+mod telemetry_streams;
 mod tui;
 mod undeclared_af_paths;

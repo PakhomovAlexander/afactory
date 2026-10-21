@@ -9,6 +9,7 @@
 pub mod cli;
 pub mod model;
 pub mod native_failure;
+pub mod stream;
 pub mod task;
 
 pub use model::{

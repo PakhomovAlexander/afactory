@@ -25,6 +25,9 @@ serde_json = { version = "1.0.149", features = ["preserve_order"] }
 nix = { version = "0.31.3", default-features = false, features = ["dir", "fs"] }
 
 [dev-dependencies]
+# The Telemetry level fixtures record an Attempt through the write side only (ADR-0153).
+review-telemetry = { path = "../review-telemetry" }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 # Tests build real locked packages; the library itself never touches the config layer.
 review-config = { path = "../review-config" }
 jsonschema = { version = "0.58.4", default-features = false }

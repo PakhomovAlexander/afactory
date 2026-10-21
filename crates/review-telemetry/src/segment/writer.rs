@@ -8,17 +8,19 @@
 //!
 //! **One owner.** The open file, every write, the manifest, the seal, the compression and the
 //! rename are the consumer's work ([`Writer::consume`] and the sealing below) and no other
-//! code's. Appending threads only encode into the buffer and signal [`Shared::wake`].
+//! code's. Appending threads only encode into the buffer and wake the consumer.
 //!
 //! **The consumer thread** (design §6) starts when the process opens its first `af.run` span
 //! ([`Writer::run_started`]) and is from then on the segment's only writer, until the segment
 //! is sealed or abandoned: ending `af.run` ([`Writer::run_ended`]) neither stops it nor hands
 //! the writes back, so the `af.command` end and every later record go through it too. It waits
-//! on one condition with one deadline and wakes when a kernel thread appends a record, when the
-//! stream queue receives a chunk ([`Writer::stream_chunk`], the hook package P6 fills), or when
-//! the deadline passes — the oldest pending record's time plus `flush_latency_ms`. After each
-//! wake it drains the stream queue, writes every full buffer, and writes the current buffer when
-//! the queue is empty or the deadline has passed; then it recomputes the deadline and sleeps.
+//! parked with one deadline and wakes when a kernel thread appends a record, when a stream
+//! queue receives a chunk (a harness stream observer unparks it, [`StreamQueue`]), or when the
+//! deadline passes — the oldest pending record's time plus `flush_latency_ms`. An unpark is
+//! never lost and never blocks the thread that gives it, so an observer's offer takes no lock
+//! of the writer's. After each wake it drains the stream queues, writes every full buffer, and
+//! writes the current buffer when the queues are empty or the deadline has passed; then it
+//! recomputes the deadline and sleeps.
 //! There is no periodic timer and no polling: a quiet writer sleeps without a deadline. Before
 //! the consumer thread starts (before the first `af.run`, and in a process that opens none) the
 //! appending thread runs the same consumer code after each append, under the consumer's own
@@ -116,11 +118,24 @@ pub type WriteHook = Arc<dyn Fn(u64) -> std::io::Result<()> + Send + Sync>;
 /// recorded; production writers read the monotonic clock from the header's origin.
 pub type ClockHook = Arc<dyn Fn() -> u128 + Send + Sync>;
 
-/// The stream queue of design §7.3, filled by package P6: the consumer drains it at every wake,
-/// before it writes.
+/// A stream queue of design §7.3: one per observed harness process, drained by the consumer at
+/// every wake, before it writes ([`Writer::attach_stream`]).
 pub trait StreamQueue: Send + Sync {
     /// Frame and record every queued chunk through `writer`; whether the queue is empty now.
     fn drain(&self, writer: &Writer) -> bool;
+
+    /// Whether a chunk, or the end of the stream, waits to be drained. Read by the consumer
+    /// before it parks, so a wake that came first is never missed.
+    fn has_pending(&self) -> bool;
+
+    /// Whether the queue has nothing more to give: it is detached after its last drain.
+    fn finished(&self) -> bool;
+
+    /// The seal is being written: give up on what is still queued, and return how many chunks
+    /// this queue lost in all — dropped by its observer, or still queued now — for the seal's
+    /// `dropped_chunks`. Never called for a queue that finished, which counted its drops itself
+    /// ([`Writer::count_dropped_chunks`]).
+    fn discard(&self) -> u64;
 }
 
 /// Registration of the telemetry directory before the first write (design §6).
@@ -152,6 +167,10 @@ pub struct WriterOptions {
     pub flush_bytes: u64,
     pub segment_max_bytes: u64,
     pub content_max_blob_bytes: u64,
+    /// `[telemetry] observer_queue_bytes`: the bound of each harness stream observer's queue.
+    pub observer_queue_bytes: u64,
+    /// `[telemetry] content_attempt_max_bytes`: the bound of an Attempt's pending content.
+    pub content_attempt_max_bytes: u64,
     pub af_version: String,
     pub af_commit: String,
     pub argv: Vec<String>,
@@ -180,6 +199,8 @@ impl WriterOptions {
             flush_bytes: defaults.flush_bytes,
             segment_max_bytes: defaults.segment_max_bytes,
             content_max_blob_bytes: defaults.content_max_blob_bytes,
+            observer_queue_bytes: defaults.observer_queue_bytes,
+            content_attempt_max_bytes: defaults.content_attempt_max_bytes,
             af_version: env!("CARGO_PKG_VERSION").to_string(),
             af_commit: "unknown".to_string(),
             argv: std::env::args().collect(),
@@ -200,6 +221,8 @@ impl WriterOptions {
         self.flush_bytes = settings.flush_bytes;
         self.segment_max_bytes = settings.segment_max_bytes;
         self.content_max_blob_bytes = settings.content_max_blob_bytes;
+        self.observer_queue_bytes = settings.observer_queue_bytes;
+        self.content_attempt_max_bytes = settings.content_attempt_max_bytes;
         self.flush_latency_ms = settings.flush_latency_ms;
         self
     }
@@ -375,13 +398,15 @@ pub struct Shared {
     options: WriterOptions,
     clock: Clock,
     pending: Mutex<Pending>,
-    /// Signalled on every append; the consumer thread waits on it.
-    pub wake: Condvar,
     /// Signalled by the consumer thread after each write and when it exits.
     done: Condvar,
     consumer: Mutex<Consumer>,
-    stream: Mutex<Option<Arc<dyn StreamQueue>>>,
+    /// The attached stream queues, by the id [`Writer::attach_stream`] gave them.
+    streams: Mutex<Vec<(u64, Arc<dyn StreamQueue>)>>,
+    next_stream: std::sync::atomic::AtomicU64,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The consumer thread, once it runs: every wake unparks it.
+    consumer_thread: OnceLock<std::thread::Thread>,
     /// Writes made so far, for the write hook.
     writes: std::sync::atomic::AtomicU64,
     /// Set once, when the consumer opens the segment.
@@ -720,14 +745,15 @@ impl Writer {
                     seal_request: None,
                     seal_result: None,
                 }),
-                wake: Condvar::new(),
                 done: Condvar::new(),
                 consumer: Mutex::new(Consumer {
                     file: None,
                     segments: None,
                 }),
-                stream: Mutex::new(None),
+                streams: Mutex::new(Vec::new()),
+                next_stream: std::sync::atomic::AtomicU64::new(1),
                 thread: Mutex::new(None),
+                consumer_thread: OnceLock::new(),
                 writes: std::sync::atomic::AtomicU64::new(0),
                 tree: OnceLock::new(),
                 options,
@@ -741,6 +767,11 @@ impl Writer {
 
     pub fn layout(&self) -> &Layout {
         &self.shared.options.layout
+    }
+
+    /// The bounds this writer was configured with.
+    pub fn options(&self) -> &WriterOptions {
+        &self.shared.options
     }
 
     /// Unix nanoseconds now on the writer's clock.
@@ -935,7 +966,7 @@ impl Writer {
         }
         self.accept(pending, lines);
         drop(guard);
-        self.shared.wake.notify_all();
+        self.signal();
         Some(value)
     }
 
@@ -1119,7 +1150,7 @@ impl Writer {
         }
         pending.flush_asked += 1;
         let ticket = pending.flush_asked;
-        self.shared.wake.notify_all();
+        self.signal();
         let deadline = wait_until(&pending);
         while pending.flush_done < ticket && !pending.consumer_exited {
             if matches!(
@@ -1194,6 +1225,8 @@ impl Writer {
             .spawn(move || writer.consumer_loop());
         match spawned {
             Ok(handle) => {
+                // Known before this returns, so an observer made right after can wake it.
+                let _ = self.shared.consumer_thread.set(handle.thread().clone());
                 *lock(&self.shared.thread) = Some(handle);
                 true
             }
@@ -1216,19 +1249,68 @@ impl Writer {
         }
     }
 
-    /// Install the stream queue the consumer drains at every wake (package P6).
-    pub fn set_stream_queue(&self, queue: Arc<dyn StreamQueue>) {
-        *lock(&self.shared.stream) = Some(queue);
+    /// Wake the consumer thread, when one runs: an unpark, never lost and never blocking.
+    fn signal(&self) {
+        if let Some(thread) = self.shared.consumer_thread.get() {
+            thread.unpark();
+        }
     }
 
-    /// The stream queue received a chunk: wake the consumer. Never blocks.
+    /// The consumer thread, once it runs: what a stream observer unparks.
+    pub fn consumer_thread(&self) -> Option<std::thread::Thread> {
+        self.shared.consumer_thread.get().cloned()
+    }
+
+    /// Attach a stream queue the consumer drains at every wake until it is
+    /// [`StreamQueue::finished`]; its id, for [`Self::detach_stream`].
+    pub fn attach_stream(&self, queue: Arc<dyn StreamQueue>) -> u64 {
+        let id = self
+            .shared
+            .next_stream
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        lock(&self.shared.streams).push((id, queue));
+        self.stream_chunk();
+        id
+    }
+
+    /// Detach a stream queue: the consumer drains it no more.
+    pub fn detach_stream(&self, id: u64) {
+        lock(&self.shared.streams).retain(|(attached, _)| *attached != id);
+    }
+
+    /// A stream queue has something new (a chunk, its end, its release decision): wake the
+    /// consumer.
     pub fn stream_chunk(&self) {
         lock(&self.shared.pending).stream_pending = true;
-        self.shared.wake.notify_all();
+        self.signal();
     }
 
-    /// The consumer thread: one condition, one deadline, no timer and no polling.
+    /// Drain every attached stream queue once, detaching the finished ones; whether all are
+    /// empty now.
+    fn drain_streams(&self) -> bool {
+        let streams: Vec<(u64, Arc<dyn StreamQueue>)> = lock(&self.shared.streams).clone();
+        let mut empty = true;
+        for (id, queue) in streams {
+            empty &= queue.drain(self);
+            if queue.finished() {
+                self.detach_stream(id);
+            }
+        }
+        empty
+    }
+
+    /// Whether an attached stream queue waits to be drained.
+    fn streams_pending(&self) -> bool {
+        lock(&self.shared.streams)
+            .iter()
+            .any(|(_, queue)| queue.has_pending())
+    }
+
+    /// The consumer thread: parked with one deadline, no timer and no polling. Every wake is an
+    /// unpark ([`Self::signal`], a stream observer's offer), which is never lost: one given
+    /// before the thread parks makes the park return at once.
     fn consumer_loop(&self) {
+        let _ = self.shared.consumer_thread.set(std::thread::current());
         let latency = Duration::from_millis(self.shared.options.flush_latency_ms.max(1));
         let mut seen = 0_u64;
         loop {
@@ -1258,32 +1340,25 @@ impl Writer {
                     let woken = pending.appends != seen
                         || !pending.ready.is_empty()
                         || pending.flush_asked > pending.flush_done
-                        || pending.stream_pending;
+                        || pending.stream_pending
+                        || self.streams_pending();
                     if woken || due {
                         seen = pending.appends;
                         pending.stream_pending = false;
                         break (pending.flush_asked, due);
                     }
-                    pending = match deadline {
-                        None => self
-                            .shared
-                            .wake
-                            .wait(pending)
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-                        Some(deadline) => {
-                            self.shared
-                                .wake
-                                .wait_timeout(pending, deadline - now)
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .0
-                        }
-                    };
+                    // A wake given after the check above unparks the park below at once.
+                    drop(pending);
+                    match deadline {
+                        None => std::thread::park(),
+                        Some(deadline) => std::thread::park_timeout(deadline - now),
+                    }
+                    pending = lock(&self.shared.pending);
                 }
             };
-            // Drain the stream queue, then write: the buffer goes when the queue is empty, the
+            // Drain the stream queues, then write: the buffer goes when they are empty, the
             // deadline has passed or a flush was asked for.
-            let stream = lock(&self.shared.stream).clone();
-            let queue_empty = stream.is_none_or(|queue| queue.drain(self));
+            let queue_empty = self.drain_streams();
             let pending_ask = {
                 let pending = lock(&self.shared.pending);
                 asked > pending.flush_done
@@ -1587,7 +1662,7 @@ impl Writer {
         // Dropped because the sweep held gc.lock or the file could not be placed.
         pending.dropped += contents.iter().filter(|content| !content.stored).count() as u64;
         drop(guard);
-        self.shared.wake.notify_all();
+        self.signal();
         if gc.is_some() && !self.hook(PublishStep::Renamed) {
             return None;
         }
@@ -1784,6 +1859,116 @@ impl Writer {
                 counters,
             )
         })
+    }
+
+    /// Unix nanoseconds of `instant` on the writer's clock: a stream observer's arrival time. A
+    /// fixture's injected clock has no instants and gives its own now.
+    pub fn unix_ns_at(&self, instant: Instant) -> u128 {
+        match &self.shared.options.clock {
+            Some(clock) => clock(),
+            None => self.shared.clock.unix_ns_at(instant),
+        }
+    }
+
+    /// Bound `attrs` for a live stream record: as [`Self::bound`], but no value is ever offered
+    /// for a blob, at any level. A harness's content waits for its Attempt's release decision
+    /// (design §7.3) and never reaches a live record, and the consumer, which writes these,
+    /// never waits on a publication of its own.
+    fn bound_live(&self, attrs: Attrs) -> (Attributes, Counters) {
+        record::bound_attributes(attrs, &self.shared.options.redactor, &mut |_, _| None)
+    }
+
+    /// A span start of a harness stream at `start_unix_ns` (the arrival of the line that opened
+    /// it), its attributes bounded and never a blob; its `span_id`.
+    pub fn stream_span_start(
+        &self,
+        trace_id: Option<&str>,
+        parent_span_id: Option<&str>,
+        name: &str,
+        kind: SpanKind,
+        attrs: Attrs,
+        start_unix_ns: u128,
+    ) -> Option<String> {
+        let (attributes, mut counters) = self.bound_live(attrs);
+        let name = self.name(name, &mut counters);
+        let trace_id = trace_id.map(|id| self.typed("trace_id", id, MAX_KEY_BYTES));
+        let parent_span_id =
+            parent_span_id.map(|id| self.typed("parent_span_id", id, MAX_KEY_BYTES));
+        let value = self.commit(false, |batch| {
+            let span_id = trace::span_id(batch.segment_id(), batch.seq());
+            batch.push(
+                Record::SpanStart(SpanStart {
+                    seq: 0,
+                    schema: schema::SPAN.into(),
+                    trace_id: trace_id.clone(),
+                    span_id: span_id.clone(),
+                    parent_span_id: parent_span_id.clone(),
+                    name: name.clone(),
+                    kind,
+                    start_unix_ns: ns(start_unix_ns),
+                    attributes: attributes.clone(),
+                }),
+                counters,
+            )?;
+            Some(span_id)
+        });
+        self.after_append(false);
+        value
+    }
+
+    /// A span end of a harness stream at `end_unix_ns`, its attributes bounded and never a blob.
+    pub fn stream_span_end(
+        &self,
+        span_id: &str,
+        status: SpanStatus,
+        attrs: Attrs,
+        end_unix_ns: u128,
+    ) {
+        let (attributes, counters) = self.bound_live(attrs);
+        self.commit(false, |batch| {
+            batch.push(
+                Record::SpanEnd(SpanEnd {
+                    seq: 0,
+                    schema: schema::SPAN.into(),
+                    span_id: span_id.to_string(),
+                    end_unix_ns: Some(ns(end_unix_ns)),
+                    status,
+                    attributes: attributes.clone(),
+                }),
+                counters,
+            )
+        });
+        self.after_append(false);
+    }
+
+    /// An event of a harness stream at `time_unix_ns`, its attributes bounded and never a blob;
+    /// its `seq`.
+    pub fn stream_event(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        time_unix_ns: u128,
+    ) -> Option<u64> {
+        let (attributes, mut counters) = self.bound_live(attrs);
+        let name = self.name(name, &mut counters);
+        let value = self.commit(false, |batch| {
+            batch.push(
+                Record::Event(Event {
+                    seq: 0,
+                    schema: schema::EVENT.into(),
+                    span_id: span_id.to_string(),
+                    time_unix_ns: ns(time_unix_ns),
+                    name: name.clone(),
+                    attributes: attributes.clone(),
+                    blob: None,
+                    blob_media_type: None,
+                }),
+                counters,
+            )
+        });
+        self.after_append(false);
+        value
     }
 
     /// A telemetry-only problem: recorded once per distinct `what` and `reason`, from the
@@ -2007,7 +2192,8 @@ impl Writer {
         })
     }
 
-    /// Count chunks a stream observer dropped (P6); kept in memory and written in the seal.
+    /// Count chunks a stream observer dropped, or a stream queue still held at the seal; kept in
+    /// memory and written in the seal (`dropped_chunks`).
     pub fn count_dropped_chunks(&self, chunks: u64) {
         lock(&self.shared.pending).dropped_chunks += chunks;
     }
@@ -2051,7 +2237,7 @@ impl Writer {
             pending.unwritten.push((ProblemWhat::Write, reason.clone()));
             return Err(reason);
         }
-        self.shared.wake.notify_all();
+        self.signal();
         let mut pending = lock(&self.shared.pending);
         while !pending.consumer_exited {
             let now = Instant::now();
@@ -2098,8 +2284,16 @@ impl Writer {
         ended: String,
         deadline: Instant,
     ) -> Result<Option<Sealed>, String> {
-        if let Some(queue) = lock(&self.shared.stream).clone() {
-            queue.drain(self);
+        // Every stream queue drained, each tap that has its release decision ended; within
+        // the shutdown's bound. What a queue still holds then is never written and counts in
+        // the seal as dropped chunks.
+        while !self.drain_streams() && Instant::now() < deadline {}
+        let streams: Vec<(u64, Arc<dyn StreamQueue>)> = lock(&self.shared.streams).clone();
+        for (id, queue) in streams {
+            if !queue.finished() {
+                self.count_dropped_chunks(queue.discard());
+            }
+            self.detach_stream(id);
         }
         self.consume(true);
         match lock(&self.shared.pending).state {

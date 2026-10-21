@@ -270,7 +270,8 @@ fn provider_models_help_and_man_page_describe_the_command() {
 fn telemetry_help_and_man_pages_describe_the_commands() {
     let namespace = out(&af(&["telemetry", "--help"]));
     for command in [
-        "status ", "reindex ", "runs ", "show ", "config ", "tail ", "ledger ", "gc ",
+        "status ", "reindex ", "runs ", "show ", "turns ", "tools ", "config ", "tail ", "ledger ",
+        "gc ",
     ] {
         assert!(
             namespace
@@ -352,6 +353,25 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
             "af/telemetry-ledger@1",
             ["--store <ID>", "--dir <PATH>"].as_slice(),
         ),
+        // P6 (design §7.3, §10): the turns and tool calls of the harness streams.
+        (
+            "turns",
+            "Usage: af telemetry turns [OPTIONS] <RUN>",
+            "af/telemetry-turns@1",
+            [
+                "--store <ID>",
+                "--attempt <ID>",
+                "--dir <PATH>",
+                "release decision",
+            ]
+            .as_slice(),
+        ),
+        (
+            "tools",
+            "Usage: af telemetry tools [OPTIONS] <RUN>",
+            "af/telemetry-tools@1",
+            ["--store <ID>", "--attempt <ID>", "--dir <PATH>", "tool set"].as_slice(),
+        ),
     ] {
         for help in [
             af(&["telemetry", command, "--help"]),
@@ -391,6 +411,8 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "af telemetry config",
         "af telemetry tail",
         "af telemetry ledger",
+        "af telemetry turns",
+        "af telemetry tools",
         "af telemetry gc",
         "machine layers only",
     ] {
@@ -408,6 +430,8 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "af-telemetry-config.1",
         "af-telemetry-tail.1",
         "af-telemetry-ledger.1",
+        "af-telemetry-turns.1",
+        "af-telemetry-tools.1",
         "af-telemetry-gc.1",
         "af-telemetry.7",
     ] {

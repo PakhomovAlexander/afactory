@@ -1,5 +1,6 @@
 use crate::control::{ReceiveError, cancelled, receive};
-use crate::drain::{Drain, Drained, collect_after_kill_until, collect_cancellable, drain_async};
+use crate::drain::{Drain, Drained, collect_after_kill_until, collect_cancellable, drain_observed};
+use crate::observe::{ObservedStream, OutputObserver, Tap};
 use crate::{
     ExitPolicy, Leader, Rusage, SupervisedError, SupervisedOutput, SupervisedStreamError,
     stdin_writer_wait, wait_exact_cancellable,
@@ -60,7 +61,7 @@ pub fn run_supervised_captured_with_policy(
     timeout: Duration,
     exit_policy: ExitPolicy,
 ) -> SupervisedCapture {
-    captured_inner(command, input, timeout, exit_policy, None)
+    captured_inner(command, input, timeout, exit_policy, None, None)
 }
 
 /// Cancellation closes and reaps the same owned group as a deadline, retaining both streams.
@@ -86,7 +87,36 @@ pub fn run_supervised_captured_cancellable_with_policy(
     exit_policy: ExitPolicy,
     cancellation: &AtomicBool,
 ) -> SupervisedCapture {
-    captured_inner(command, input, timeout, exit_policy, Some(cancellation))
+    captured_inner(
+        command,
+        input,
+        timeout,
+        exit_policy,
+        Some(cancellation),
+        None,
+    )
+}
+
+/// [`run_supervised_captured_with_policy`], cancellable when `cancellation` is given, whose
+/// drains also offer every chunk they read to `observer` (design §7.3). The offer never
+/// blocks and a full queue drops the chunk, so the capture — its bytes, status, deadline, held
+/// output and resource use — is the one the same command gives without an observer.
+pub fn run_supervised_captured_observed(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&AtomicBool>,
+    observer: &OutputObserver,
+) -> SupervisedCapture {
+    captured_inner(
+        command,
+        input,
+        timeout,
+        exit_policy,
+        cancellation,
+        Some(observer),
+    )
 }
 
 fn captured_inner(
@@ -95,6 +125,7 @@ fn captured_inner(
     timeout: Duration,
     exit_policy: ExitPolicy,
     cancellation: Option<&AtomicBool>,
+    observer: Option<&OutputObserver>,
 ) -> SupervisedCapture {
     let writer = input.map(|input| {
         move |stdin: &mut dyn Write| match stdin.write_all(&input) {
@@ -103,7 +134,14 @@ fn captured_inner(
             Err(error) => Err(error),
         }
     });
-    let capture = run_supervised_controlled(command, writer, timeout, exit_policy, cancellation);
+    let capture = run_supervised_controlled(
+        command,
+        writer,
+        timeout,
+        exit_policy,
+        cancellation,
+        observer,
+    );
     SupervisedCapture {
         status: capture.status.map_err(|error| match error {
             SupervisedStreamError::Process(error) => error,
@@ -217,7 +255,7 @@ where
     E: Send,
     F: FnOnce(&mut dyn Write) -> Result<(), E> + Send,
 {
-    run_supervised_controlled(command, writer, timeout, exit_policy, None)
+    run_supervised_controlled(command, writer, timeout, exit_policy, None, None)
 }
 
 fn run_supervised_controlled<E, F>(
@@ -226,6 +264,7 @@ fn run_supervised_controlled<E, F>(
     timeout: Duration,
     exit_policy: ExitPolicy,
     cancellation: Option<&AtomicBool>,
+    observer: Option<&OutputObserver>,
 ) -> StreamCapture<E>
 where
     E: Send,
@@ -264,8 +303,15 @@ where
             });
             receive
         });
-        let stdout = drain_async(stdout_pipe);
-        let stderr = drain_async(stderr_pipe);
+        let tap = |stream| {
+            observer.map(|observer| Tap {
+                observer: observer.clone(),
+                process: leader.pid(),
+                stream,
+            })
+        };
+        let stdout = drain_observed(stdout_pipe, tap(ObservedStream::Stdout));
+        let stderr = drain_observed(stderr_pipe, tap(ObservedStream::Stderr));
         let deadline = Instant::now() + timeout;
         let kill_group_on_exit = exit_policy == ExitPolicy::KillProcessGroup;
         if let Err(error) =

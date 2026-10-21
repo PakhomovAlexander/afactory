@@ -36,3 +36,20 @@ gate's wall and the Review fold.
 Every package digest in `.af/task-catalog.toml` and the pipeline digest in the Store fixture's
 `.af/af.lock` are pinned: a change to a package file needs its pin recomputed with
 `af catalog digest PACKAGE_DIR`, and a change to `.af/pipelines/review.toml` the lock's digest.
+
+## Invocation cost
+
+`scripts/telemetry-invocation-cost.py` measures what the Claude `stream-json` invocation costs
+against `json` (design §12, the invocation-cost gate; the result is under `Performance` in
+[`docs/telemetry.md`](../../docs/telemetry.md)). Its two fixtures run one Task through the Task
+runtime whose Workers are Claude model Workers bound to the Provider `claude-bench`:
+`telemetry-bench-invocation-one` (one reviewer) and `telemetry-bench-invocation-four` (four
+reviewers with `max_parallel = 4`). Their harness is
+[`invocation-claude.py`](invocation-claude.py), installed as `claude` on each command's `PATH`
+with a private Provider registry naming its auth directory; it answers af's help, version,
+login and catalog checks and the admission probe, and runs one scripted Attempt per request.
+`bench.json` in the auth directory, written per run, names the shape it prints and the bytes of
+intermediate tool output (64 KiB tool results), so the repository and its Snapshot are the same
+for both shapes; under either it builds the same output and answers the same final result. The
+pins in each `.af/task-catalog.toml` are recomputed with `af catalog digest PACKAGE_DIR` after a
+change.

@@ -315,6 +315,19 @@ impl TelemetrySubscriber {
         })
     }
 
+    fn identity_of(&self, id: u64) -> Option<SpanIdentity> {
+        lock(&self.spans).get(&id).and_then(|state| {
+            state.span_id.clone().map(|span_id| SpanIdentity {
+                span: RecordedSpan {
+                    span_id,
+                    trace_id: state.trace_id.clone(),
+                },
+                identity: state.identity.clone(),
+                depth: state.depth,
+            })
+        })
+    }
+
     fn parent_of(&self, explicit: Option<&Id>, contextual: bool) -> Option<u64> {
         match explicit {
             Some(id) => Some(id.into_u64()),
@@ -340,6 +353,26 @@ pub fn recorded(span: &tracing::Span) -> Option<RecordedSpan> {
         dispatch
             .downcast_ref::<TelemetrySubscriber>()
             .and_then(|subscriber| subscriber.recorded(id.into_u64()))
+    })
+    .flatten()
+}
+
+/// A recorded span with the run identity it named or took from its parent ([`RUN_IDENTITY`]) and
+/// its depth (the root is 0): what a record written beside the subscriber — a harness stream's
+/// `af.turn` and `af.tool` spans — names to belong to the same run below it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpanIdentity {
+    pub span: RecordedSpan,
+    pub identity: Vec<(String, Attr)>,
+    pub depth: usize,
+}
+
+/// The [`SpanIdentity`] of `span`, when this crate's subscriber kept its start.
+pub fn span_identity(span: &tracing::Span) -> Option<SpanIdentity> {
+    span.with_subscriber(|(id, dispatch)| {
+        dispatch
+            .downcast_ref::<TelemetrySubscriber>()
+            .and_then(|subscriber| subscriber.identity_of(id.into_u64()))
     })
     .flatten()
 }

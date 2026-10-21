@@ -219,6 +219,10 @@ unwritable directory, a full segment) is one problem and the run continues.
   af telemetry runs             every run: executions, active, execution and elapsed time,
                                 outcome, charge, failures, coverage, retained history
   af telemetry show RUN         the span tree: start offset, total and self time, status
+  af telemetry turns RUN        one row per model turn: arrival timing, the harness's per-turn
+                                usage, stop reason, text and thinking sizes, tool calls
+  af telemetry tools RUN        one row per tool call: name (when in the invocation's tool
+                                set), arrival timing, outcome, input and output bytes
   af telemetry config RUN       a run's configuration record in one execution: version,
                                 configuration with origins (an environment value is <env>),
                                 plan, bindings, Providers, harness versions, host, AF_*/OTEL_*
@@ -273,6 +277,24 @@ Task projection holds it (af.usage.state, ordered by the committed event's seque
 sidecar write its merged row (af.usage.wall, ordered within one execution only); an Attempt's
 figures are its latest charge, run totals are sums of those, and the sidecar series never
 enters them.
+
+At spans and above every harness's streams are tapped as they arrive: the supervisor's drain
+offers each chunk to a bounded queue (observer_queue_bytes) without ever waiting, a full queue
+drops the chunk and counts it, and the consumer frames lines and records validated structure
+only, timed by arrival: a Claude assistant message (stream-json) or a Codex turn is af.turn
+with the harness's own per-turn usage, a Claude tool_use block or a Codex command or MCP item
+is af.tool with its input and output bytes, and the other lines are events. Every identifier
+the harness supplies is af.corr in a live record; every untrusted string (text, thinking, tool
+arguments and results, errors, unparsed lines) is only a size. A frame too long to judge is
+withheld whole; a dropped chunk is af.stream.gap and the stream incomplete. Once the process
+has ended Telemetry takes its own release decision: login-challenge material in either stream,
+or an adapter that replaced the streams, withholds everything pending (af.stream.withheld);
+otherwise af.harness.ids lists each correlation id with its original once it passes the
+credential rules. Claude is asked for --output-format stream-json --verbose at spans and
+content and for json at off and metrics; the adapter reads the result line and nothing else
+either way, and the Store keeps that line and stderr (Codex: its turn and error lines and the
+-o final message), so accounting, classification and the Store's bytes are the same at every
+level.
 
 The [telemetry] table, machine layers only (built-in, system, user, AF_TELEMETRY__<KEY>); a
 repository's .af/af.toml cannot set it, and a value outside its bound refuses the load naming

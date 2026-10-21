@@ -113,7 +113,22 @@ print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':184467440737
     assert_eq!(usage.input_tokens.unwrap().get(), u128::from(u64::MAX));
     assert_eq!(usage.output_tokens.unwrap().get(), 20);
     assert_eq!(usage.chargeable_tokens.get(), u128::from(u64::MAX) + 20);
-    assert_eq!(returned.raw_artifact_ids.len(), 2);
+    // A final message read from the `-o` file is raw evidence beside stdout and stderr.
+    let delivered = matches!(case, "regular" | "exact_bound");
+    assert_eq!(
+        returned.raw_artifact_ids.len(),
+        if delivered { 3 } else { 2 }
+    );
+    if delivered {
+        assert_eq!(
+            cas.get(&returned.raw_artifact_ids[2]).unwrap(),
+            if case == "regular" {
+                b"held regular file".to_vec()
+            } else {
+                vec![b'x'; MAX_WORKER_BYTES]
+            }
+        );
+    }
     // The fixture emits its own diagnostic: interpreter startup warnings differ by platform.
     let stderr = cas.get(&returned.raw_artifact_ids[1]).unwrap();
     assert!(
@@ -121,12 +136,10 @@ print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':184467440737
             .unwrap()
             .contains("native-final-message fixture diagnostic\n")
     );
-    let stdout = cas.get(&returned.raw_artifact_ids[0]).unwrap();
-    assert!(
-        String::from_utf8(stdout)
-            .unwrap()
-            .contains("turn.completed")
-    );
+    // The raw-output rule: the turn line is kept, the agent message's line is not.
+    let stdout = String::from_utf8(cas.get(&returned.raw_artifact_ids[0]).unwrap()).unwrap();
+    assert!(stdout.contains("turn.completed"));
+    assert!(!stdout.contains("agent_message"));
     match case {
         "regular" => assert_eq!(returned.message.unwrap(), b"held regular file"),
         "exact_bound" => assert_eq!(returned.message.unwrap(), vec![b'x'; MAX_WORKER_BYTES]),

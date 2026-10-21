@@ -33,8 +33,11 @@ use review_store::Cas;
 
 use review_process::{
     ExitPolicy, SupervisedError, run_supervised_captured_cancellable_with_policy,
-    run_supervised_captured_with_policy,
+    run_supervised_captured_observed, run_supervised_captured_with_policy,
 };
+
+use crate::native_failure::{NativeFailureKind, classify_native_failure};
+use crate::stream::{HarnessStream, Observation};
 
 /// Why a supervised process yielded no capture, or an input could not be composed. Each is a
 /// typed outcome, never an empty result: a Worker that crashed and a Worker that found nothing
@@ -1275,6 +1278,55 @@ impl ModelRunner {
             &mut capture.stdout,
             &mut capture.stderr,
         );
+        self.store_raw(cas, &mut capture);
+        capture
+    }
+
+    /// [`Self::capture_filtered`] for a harness whose streams Telemetry taps (design §7.3): at
+    /// `spans` and above the supervisor's drains offer every chunk to Telemetry's bounded
+    /// observer as it is read, so its turns and tool calls are recorded live, timed by arrival.
+    /// The offer never blocks and a full queue drops the chunk, so the process, its streams,
+    /// its status, deadline and accounting, the filter and what the CAS keeps are the same as
+    /// [`Self::capture_filtered`]'s, at every level. Once the process has ended and before any
+    /// pending byte of it is published, Telemetry takes its own release decision over the
+    /// complete streams ([`review_telemetry::stream::Release`]): the streams are withheld when
+    /// either carries login-challenge material, when the filter replaced both (the adapter's
+    /// whole-capture privacy filter), or when a failed process's stderr classifies as an
+    /// authentication failure; `af.harness` records `af.stream.withheld`, and with the
+    /// observer's `dropped_chunks` and `gaps` it ends once the filter has read the streams.
+    pub fn capture_observed(
+        &self,
+        cas: &Cas,
+        command: &Command,
+        input: Vec<u8>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        stream: &HarnessStream,
+        filter: impl FnOnce(bool, &mut Vec<u8>, &mut Vec<u8>),
+    ) -> SettledCapture {
+        let (mut capture, harness) = self.supervise(command, input, cancellation, Some(stream));
+        let failed = !capture.status.as_ref().is_ok_and(|status| status.success());
+        // What the decision reads, over the complete streams, before the filter changes them;
+        // read only for a process Telemetry observed, so nothing is paid for it below `spans`.
+        let observed = harness.as_ref().is_some_and(HarnessRecord::observed);
+        let withheld_before = observed
+            && (review_telemetry::redact::carries_auth_material(&capture.stdout)
+                || review_telemetry::redact::carries_auth_material(&capture.stderr)
+                || failed
+                    && classify_native_failure(&String::from_utf8_lossy(&capture.stderr))
+                        .is_auth());
+        filter(failed, &mut capture.stdout, &mut capture.stderr);
+        if let Some(harness) = harness {
+            let replaced = NativeFailureKind::replaced_capture(&capture.stdout, &capture.stderr);
+            harness.finish(Some(Released {
+                withheld: withheld_before || replaced,
+            }));
+        }
+        self.store_raw(cas, &mut capture);
+        capture
+    }
+
+    /// Store the redacted streams in the CAS, in order; a storage failure refuses the output.
+    fn store_raw(&self, cas: &Cas, capture: &mut SettledCapture) {
         for bytes in [&capture.stdout, &capture.stderr] {
             if bytes.is_empty() {
                 continue;
@@ -1288,7 +1340,6 @@ impl ModelRunner {
                 }
             }
         }
-        capture
     }
 
     fn capture_process(
@@ -1297,6 +1348,23 @@ impl ModelRunner {
         input: Vec<u8>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> SettledCapture {
+        let (capture, harness) = self.supervise(command, input, cancellation, None);
+        if let Some(harness) = harness {
+            harness.finish(None);
+        }
+        capture
+    }
+
+    /// Run the process under its `af.harness` span, observed for Telemetry when `stream` names
+    /// its harness and Telemetry records streams; the span is returned open with what the
+    /// supervisor delivered, for the caller to end.
+    fn supervise(
+        &self,
+        command: &Command,
+        input: Vec<u8>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        stream: Option<&HarnessStream>,
+    ) -> (SettledCapture, Option<HarnessRecord>) {
         let mut capture = SettledCapture {
             started: false,
             status: Err(RunnerError::Refused("unresolved command".into())),
@@ -1311,7 +1379,7 @@ impl ModelRunner {
             Ok(argv) => argv,
             Err(error) => {
                 capture.status = Err(error);
-                return capture;
+                return (capture, None);
             }
         };
 
@@ -1329,7 +1397,7 @@ impl ModelRunner {
             cmd.env(&grant.name, &grant.value);
         }
         // The harness process is the Attempt's `af.harness` span (design §7.1, §7.2): the
-        // program only, never its arguments; its stream-derived children are P6's.
+        // program only, never its arguments; its stream-derived children are the tap's.
         let (provider, model) = self
             .harness
             .as_ref()
@@ -1347,24 +1415,51 @@ impl ModelRunner {
                 gen_ai.provider.name = provider,
                 gen_ai.request.model = model,
                 af.native = review_telemetry::subscriber::Typed::enumerated("unavailable").field(),
+                dropped_chunks = tracing::field::Empty,
+                gaps = tracing::field::Empty,
+                af.stream.withheld = tracing::field::Empty,
+                af.native.withheld = tracing::field::Empty,
             )
         };
-        let output = span.in_scope(|| match cancellation {
-            Some(flag) => run_supervised_captured_cancellable_with_policy(
+        let observation = stream.and_then(|stream| {
+            Observation::start(
+                &span,
+                stream,
+                provider.unwrap_or("unknown"),
+                model.map(str::to_string),
+                self.grants
+                    .iter()
+                    .map(|grant| (grant.name.clone(), grant.value.clone()))
+                    .collect(),
+            )
+        });
+        let output = span.in_scope(|| match (&observation, cancellation) {
+            (Some(observation), cancellation) => run_supervised_captured_observed(
+                &mut cmd,
+                Some(input),
+                self.timeout,
+                self.exit_policy,
+                cancellation,
+                observation.observer(),
+            ),
+            (None, Some(flag)) => run_supervised_captured_cancellable_with_policy(
                 &mut cmd,
                 Some(input),
                 self.timeout,
                 self.exit_policy,
                 flag,
             ),
-            None => run_supervised_captured_with_policy(
+            (None, None) => run_supervised_captured_with_policy(
                 &mut cmd,
                 Some(input),
                 self.timeout,
                 self.exit_policy,
             ),
         });
-        record_harness(&span, &output);
+        if let Some(observation) = &observation {
+            observation.close();
+        }
+        let harness = HarnessRecord::new(span, &output, observation);
         capture.stdout = redact(output.stdout, &self.grants);
         capture.stderr = redact(output.stderr, &self.grants);
         if output.stderr_held {
@@ -1385,16 +1480,89 @@ impl ModelRunner {
                 stderr_excerpt: error.to_string(),
             },
         });
-        capture
+        (capture, Some(harness))
     }
 }
 
-/// End the `af.harness` span with what the supervisor returned: the process, its resource use
-/// and stream sizes, and on anything but a clean exit the kernel's class.
-fn record_harness(span: &tracing::Span, output: &review_process::SupervisedCapture) {
-    if span.is_disabled() {
-        return;
+/// What Telemetry's release decision came to, for the `af.harness` span.
+struct Released {
+    withheld: bool,
+}
+
+/// An `af.harness` span still open, with what the supervisor delivered, and the observation
+/// of its streams when there is one.
+struct HarnessRecord {
+    span: tracing::Span,
+    facts: review_telemetry::process::ProcessFacts,
+    failure: Option<(&'static str, String)>,
+    observation: Option<(Observation, u64, u64)>,
+}
+
+impl HarnessRecord {
+    fn new(
+        span: tracing::Span,
+        output: &review_process::SupervisedCapture,
+        observation: Option<Observation>,
+    ) -> Self {
+        let (facts, failure) = harness_facts(output);
+        let observation = observation.map(|observation| {
+            (
+                observation,
+                output.stdout.len() as u64,
+                output.stderr.len() as u64,
+            )
+        });
+        Self {
+            span,
+            facts,
+            failure,
+            observation,
+        }
     }
+
+    /// Whether Telemetry observed the process's streams.
+    fn observed(&self) -> bool {
+        self.observation.is_some()
+    }
+
+    /// End the span: the process's facts, and for an observed process the observer's drops and
+    /// gaps and the release decision, which is handed to the consumer for the tap.
+    fn finish(self, released: Option<Released>) {
+        if let Some((observation, stdout_bytes, stderr_bytes)) = &self.observation {
+            let withheld = released.as_ref().is_some_and(|released| released.withheld);
+            let observer = observation.observer();
+            if !self.span.is_disabled() {
+                self.span
+                    .record("dropped_chunks", observer.dropped_chunks());
+                self.span.record("gaps", observer.gaps());
+                self.span.record("af.stream.withheld", withheld);
+                self.span.record("af.native.withheld", withheld);
+            }
+            observation.release(review_telemetry::stream::Release {
+                withheld,
+                native_withheld: withheld,
+                stdout_bytes: *stdout_bytes,
+                stderr_bytes: *stderr_bytes,
+            });
+        }
+        review_telemetry::process::finish(
+            &self.span,
+            &self.facts,
+            self.failure
+                .as_ref()
+                .map(|(class, reason)| (*class, reason.as_str())),
+        );
+    }
+}
+
+/// What the `af.harness` span records of what the supervisor returned: the process, its resource
+/// use and stream sizes, and on anything but a clean exit the kernel's class.
+fn harness_facts(
+    output: &review_process::SupervisedCapture,
+) -> (
+    review_telemetry::process::ProcessFacts,
+    Option<(&'static str, String)>,
+) {
     let mut facts = review_telemetry::process::ProcessFacts {
         pid: output.pid,
         rusage: output
@@ -1427,13 +1595,7 @@ fn record_harness(span: &tracing::Span, output: &review_process::SupervisedCaptu
         )),
         Err(error) => Some(("failed", error.to_string())),
     };
-    review_telemetry::process::finish(
-        span,
-        &facts,
-        failure
-            .as_ref()
-            .map(|(class, reason)| (*class, reason.as_str())),
-    );
+    (facts, failure)
 }
 
 /// Replace every occurrence of every grant value. Byte-level, because captured output is not

@@ -155,16 +155,16 @@ pub fn open(root: &Path) -> Result<(Index, IndexRead, Vec<Unreadable>), String> 
     Ok((index, read, unreadable))
 }
 
-fn sql(error: rusqlite::Error) -> String {
+pub(crate) fn sql(error: rusqlite::Error) -> String {
     format!("telemetry index: {error}")
 }
 
 /// Unix nanoseconds as the decimal text documents carry (a JSON number loses precision).
-fn ns_text(value: i64) -> String {
+pub(crate) fn ns_text(value: i64) -> String {
     value.to_string()
 }
 
-fn micros(nanos: i64) -> u64 {
+pub(crate) fn micros(nanos: i64) -> u64 {
     u64::try_from(nanos.max(0) / 1_000).unwrap_or(0)
 }
 

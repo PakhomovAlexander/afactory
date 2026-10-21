@@ -102,3 +102,25 @@
   cold (`--json`: `af/telemetry-read-latency@1`); an unchanged `status` now opens each blob
   prefix directory once instead of once per object. `docs/telemetry.md` gains a `Performance`
   section with the protocol and this machine's first numbers.
+- Telemetry, sixth package: every Claude and Codex Attempt's streams are tapped as they arrive.
+  The supervisor's drain offers each chunk to a bounded queue (`[telemetry]
+  observer_queue_bytes`) without ever waiting — a full queue drops it and counts it — so the
+  process, its bytes, status, deadline, held output and accounting are unchanged, and from
+  `spans` on the consumer records validated structure only, timed by arrival: each Claude
+  `assistant` message and each Codex turn is `af.turn` with the harness's own per-turn usage and
+  stop reason, each `tool_use` block or Codex command and MCP item is `af.tool` with its input and
+  output bytes, the other lines are events, every harness identifier is a correlation id
+  (`af.corr`) and every untrusted string only a size. A frame too long to judge is withheld
+  whole, a dropped chunk is `af.stream.gap` and makes the stream incomplete, and once the
+  process has ended Telemetry takes its own release decision over the complete streams —
+  login-challenge material or a replaced capture withholds everything pending
+  (`af.stream.withheld`), a successful reply's included — before `af.harness.ids` lists the
+  originals that pass the credential rules. A Claude Attempt asks for `--output-format
+  stream-json --verbose` at `spans` and `content` and keeps `json` at `off` and `metrics`, the
+  invocation-cost gate (`scripts/telemetry-invocation-cost.py`, `af/telemetry-invocation-cost@1`)
+  having failed; `claude --help` must declare `--verbose`. The Store now keeps of a Claude
+  Attempt's stdout only its `result` line, and of a Codex Attempt's its turn and error lines
+  beside the `-o` final message, so accounting, classification and raw evidence are the same
+  at every level. `af telemetry turns` and `tools` (`--json`: `af/telemetry-turns@1`,
+  `af/telemetry-tools@1`) print one row per turn or tool call with its timing, usage, outcome
+  and sizes.

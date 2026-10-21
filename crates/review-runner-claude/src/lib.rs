@@ -4,7 +4,12 @@
 //! args are the model flags (`--model opus --effort xhigh`), and both sit under the lockfile's
 //! content digest — but a different provider surface: `-p --output-format json` prints one JSON
 //! envelope with `is_error`, the final text in `result`, and cumulative token usage in `usage`;
-//! the prompt is streamed on stdin so Change Sets are not constrained by the argv ceiling. The
+//! the prompt is streamed on stdin so Change Sets are not constrained by the argv ceiling. When
+//! Telemetry records harness streams (`spans` and above) a Task Attempt asks for
+//! `--output-format stream-json --verbose` instead, a reporting flag: every message is a line,
+//! and the `result` line is the envelope `json` prints. The adapter reads that line and nothing
+//! else, and the Store keeps it with stderr ([`task::result_output`]), so accounting,
+//! classification and the Store's bytes are the same under both shapes (design §7.3, §12). The
 //! adapter appends `--safe-mode --restricted` and an explicit read-only tool grant after package
 //! model flags, so repository settings, Hooks, plugins, MCP servers, and package arguments cannot
 //! widen Worker authority. A Task Attempt widens that grant only as far as the kernel-derived
@@ -181,6 +186,7 @@ pub const CLAUDE_INVOCATION: CliInvocation = CliInvocation {
     flags: &[
         CliFlag::short("-p", "--print"),
         CliFlag::long("--output-format"),
+        CliFlag::long("--verbose"),
         CliFlag::long("--model"),
         CliFlag::long("--effort"),
         CliFlag::long("--safe-mode"),
@@ -194,14 +200,39 @@ pub const CLAUDE_INVOCATION: CliInvocation = CliInvocation {
     upgrade: "npm install -g @anthropic-ai/claude-code@latest",
 };
 
-/// The `claude -p` command one Attempt runs: the package model flags, then the adapter-owned
-/// security flags.
-fn claude_command(program: &str, model_flags: &[String]) -> Command {
-    let mut args = vec![
-        Arg::literal("-p"),
-        Arg::literal("--output-format"),
-        Arg::literal("json"),
-    ];
+/// What a Claude Attempt is asked to print (design §7.3, §12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputShape {
+    /// `--output-format json`: the one result envelope, at `off` and `metrics`.
+    Json,
+    /// `--output-format stream-json --verbose`: every message a line, the last the result
+    /// envelope, at `spans` and `content`, where Telemetry taps the stream.
+    StreamJson,
+}
+
+impl OutputShape {
+    /// The shape for an Attempt starting now. The invocation-cost gate of design §12 failed on
+    /// this machine (`docs/telemetry.md`, Invocation cost), so the stream is asked for only
+    /// while Telemetry records it; both shapes give the adapter the same result line.
+    pub fn now() -> Self {
+        if review_runner::stream::records_streams() {
+            Self::StreamJson
+        } else {
+            Self::Json
+        }
+    }
+}
+
+/// The `claude -p` command one Attempt runs: the output shape, the package model flags, then
+/// the adapter-owned security flags.
+fn claude_command(program: &str, model_flags: &[String], shape: OutputShape) -> Command {
+    let mut args = vec![Arg::literal("-p"), Arg::literal("--output-format")];
+    match shape {
+        OutputShape::Json => args.push(Arg::literal("json")),
+        OutputShape::StreamJson => {
+            args.extend([Arg::literal("stream-json"), Arg::literal("--verbose")]);
+        }
+    }
     args.extend(model_flags.iter().map(Arg::literal));
     // Security flags are adapter-owned and deliberately follow package-controlled model flags.
     // Claude applies the last value for valued flags; packages therefore cannot replace the

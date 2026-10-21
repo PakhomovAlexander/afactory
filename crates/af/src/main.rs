@@ -1544,6 +1544,26 @@ fn main() {
                 "af telemetry show",
                 telemetry::show(json, dir, run, store, attempt, span, depth),
             ),
+            cli::TelemetryCommand::Turns {
+                run,
+                store,
+                attempt,
+                json,
+                dir,
+            } => (
+                "af telemetry turns",
+                telemetry::turns(json, dir, run, store, attempt),
+            ),
+            cli::TelemetryCommand::Tools {
+                run,
+                store,
+                attempt,
+                json,
+                dir,
+            } => (
+                "af telemetry tools",
+                telemetry::tools(json, dir, run, store, attempt),
+            ),
             cli::TelemetryCommand::Config {
                 run,
                 store,

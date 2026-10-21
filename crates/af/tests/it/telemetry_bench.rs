@@ -796,3 +796,139 @@ fn telemetry_corpus_is_deterministic() {
         ],
     );
 }
+
+/// One recorded run of the invocation-cost protocol.
+fn invocation_run(wall_ms: f64, peak_rss_bytes: u64, stdout_bytes: u64) -> Value {
+    json!({"wall_ms": wall_ms, "exit_code": 0, "peak_rss_bytes": peak_rss_bytes, "segments": 0,
+           "drain_ms": null, "stdout_bytes": stdout_bytes})
+}
+
+/// An `af/telemetry-invocation-cost@1` document over every case at full scale, 20 pairs each,
+/// whose `stream-json` runs at `off` cost `wall` more than `json` and `rss` more bytes.
+fn invocation_document(wall: f64, rss: u64) -> Value {
+    let mut cases = Vec::new();
+    for fixture in [
+        "telemetry-bench-invocation-one",
+        "telemetry-bench-invocation-four",
+    ] {
+        for size in [1u64 << 20, 16 << 20, 64 << 20] {
+            let level = |extra_wall: f64, extra_rss: u64| {
+                let pairs: Vec<Value> = (0..20)
+                    .map(|index| {
+                        let base = 1000.0 + f64::from(index);
+                        json!({"order": ["json", "stream-json"],
+                               "json": invocation_run(base, 100 << 20, 600),
+                               "stream-json": invocation_run(
+                                   base * (1.0 + extra_wall), (100 << 20) + extra_rss, size + 600)})
+                    })
+                    .collect();
+                json!({"pairs": pairs})
+            };
+            cases.push(json!({"name": format!("{fixture} {} MiB", size >> 20),
+                              "fixture": fixture, "attempts": 1, "tool_output_bytes": size,
+                              "levels": {"off": level(wall, rss), "spans": level(0.0, 0)},
+                              "accounting": {"phase": "finished", "chargeable_tokens": "24",
+                                             "attempts": 3, "usage": []}}));
+        }
+    }
+    json!({"schema": "af/telemetry-invocation-cost@1",
+           "af": {"path": "af", "version": "af 0.0.0"},
+           "machine": {"os": "test", "arch": "test", "cpus": 1, "load1": null},
+           "protocol": {"pairs": 20, "scale": "full", "seed": 1, "resamples": 10000,
+                        "wall_bound_pct": 2.0, "rss_slack_bytes": 16 << 20},
+           "cases": cases})
+}
+
+/// Design §12 and §15 P6, the invocation-cost gate: the measurement runs on the invocation
+/// fixtures (a one-pair smoke through the real binary, every case at smoke scale, the
+/// accounting the same under both shapes and at both levels, `not_judged`), its document matches
+/// `af/telemetry-invocation-cost@1`, `--judge` recomputes exactly what it printed, and the rule —
+/// at `off`, median wall within 2% of `json` and median peak RSS at most the stream's bytes plus
+/// 16 MiB above it — passes a cheap stream (one invocation shape) and fails a costly one (the
+/// fallback's two shapes), on recorded distributions.
+#[test]
+fn telemetry_stream_json_cost_gate() {
+    let machine = Machine::new();
+    let work = machine.root.join("work/invocation");
+    let output = machine.script(
+        "telemetry-invocation-cost.py",
+        &[
+            "--af",
+            crate::common::AF,
+            "--pairs",
+            "1",
+            "--scale",
+            "smoke",
+            "--work",
+            work.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let measured = document(&output);
+    let validator = schemas::validator("telemetry-invocation-cost-v1.json");
+    schemas::valid(&validator, &measured);
+    every_property_required(&schema_document("telemetry-invocation-cost-v1.json"));
+    let cases = measured["cases"].as_array().unwrap();
+    assert_eq!(
+        cases.len(),
+        2,
+        "both fixtures at the smoke size: {measured}"
+    );
+    for case in cases {
+        assert_eq!(case["accounting"]["phase"], "finished", "{case}");
+        for level in ["off", "spans"] {
+            let pair = &case["levels"][level]["pairs"][0];
+            let stream = pair["stream-json"]["stdout_bytes"].as_u64().unwrap();
+            let json = pair["json"]["stdout_bytes"].as_u64().unwrap();
+            assert!(
+                stream > json + (64 << 10),
+                "the stream carries the tool output: {pair}"
+            );
+            let segments = pair["json"]["segments"].as_u64().unwrap();
+            assert_eq!(segments == 0, level == "off", "{pair}");
+        }
+    }
+    assert_eq!(measured["gate"]["verdict"], "not_judged", "{measured}");
+    assert_eq!(measured["decision"], "not_judged");
+    let recorded = machine.root.join("work/invocation-smoke.json");
+    std::fs::write(&recorded, serde_json::to_vec(&measured).unwrap()).unwrap();
+    let judged = machine.script(
+        "telemetry-invocation-cost.py",
+        &["--judge", recorded.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(judged.status.code(), Some(0), "{}", text(&judged));
+    assert_eq!(document(&judged), measured);
+    refuses_unnamed(
+        &validator,
+        &measured,
+        &[
+            "",
+            "/protocol",
+            "/cases/0",
+            "/cases/0/levels",
+            "/cases/0/levels/off",
+            "/cases/0/levels/off/pairs/0",
+            "/cases/0/levels/off/pairs/0/json",
+            "/gate",
+        ],
+    );
+    // The rule, on recorded distributions.
+    for (wall, rss, verdict, decision, code) in [
+        (0.01, 1 << 20, "pass", "one_shape", Some(0)),
+        (0.05, 1 << 20, "fail", "two_shapes", Some(3)),
+        (0.0, 200 << 20, "fail", "two_shapes", Some(3)),
+    ] {
+        let path = machine.root.join(format!("work/rule-{verdict}-{rss}.json"));
+        std::fs::write(&path, invocation_document(wall, rss).to_string()).unwrap();
+        let judged = machine.script(
+            "telemetry-invocation-cost.py",
+            &["--judge", path.to_str().unwrap(), "--json"],
+        );
+        assert_eq!(judged.status.code(), code, "{}", text(&judged));
+        let judged = document(&judged);
+        schemas::valid(&validator, &judged);
+        assert_eq!(judged["gate"]["verdict"], verdict, "{judged}");
+        assert_eq!(judged["decision"], decision);
+    }
+}

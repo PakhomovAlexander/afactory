@@ -4,8 +4,8 @@
 //!
 //! A leaf crate: it links nothing in the workspace, and `review-process` never links it
 //! (ADR-0026). The write side — [`record`], [`segment::writer`], [`blob`], [`redact`],
-//! [`level`], [`subscriber`], [`trace`], [`dirs`], [`process`] — is for every crate that
-//! records. The read side — [`segment::reader`], [`index`], [`status`], [`view`], [`ledger`],
+//! [`level`], [`subscriber`], [`trace`], [`dirs`], [`process`], [`stream`] — is for every crate
+//! that records. The read side — [`segment::reader`], [`index`], [`status`], [`view`], [`ledger`],
 //! [`accounting`], [`budget`], [`blob::reader`] and [`blob::collect`] — is linked only by
 //! `af telemetry`, `af storage` and the TUI (clause 1); a source test holds every other crate
 //! to that.
@@ -28,8 +28,10 @@ pub mod record;
 pub mod redact;
 pub mod segment;
 pub mod status;
+pub mod stream;
 pub mod subscriber;
 pub mod trace;
+pub mod turns;
 pub mod view;
 
 use std::path::PathBuf;

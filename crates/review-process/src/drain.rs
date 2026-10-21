@@ -1,4 +1,5 @@
 use crate::control::{ReceiveError, receive};
+use crate::observe::Tap;
 use crate::{Leader, OUTPUT_DRAIN_GRACE, SupervisedError};
 use std::io::Read;
 use std::sync::atomic::AtomicBool;
@@ -21,19 +22,39 @@ pub(crate) struct Drained {
     pub status: Result<bool, SupervisedError>,
 }
 
-pub(crate) fn drain_async(mut pipe: impl Read + Send + 'static) -> Drain {
+pub(crate) fn drain_async(pipe: impl Read + Send + 'static) -> Drain {
+    drain_observed(pipe, None)
+}
+
+/// [`drain_async`] that also offers every chunk it reads to `tap`'s observer, after keeping it:
+/// one non-blocking offer per read, the drain's only other work.
+pub(crate) fn drain_observed(mut pipe: impl Read + Send + 'static, tap: Option<Tap>) -> Drain {
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let accumulated = Arc::clone(&bytes);
     let (send, completion) = mpsc::channel();
     std::thread::spawn(move || {
         let mut chunk = [0; 16 * 1024];
+        let mut offset = 0_u64;
         let result = loop {
             match pipe.read(&mut chunk) {
                 Ok(0) => break Ok(()),
-                Ok(count) => accumulated
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .extend_from_slice(&chunk[..count]),
+                Ok(count) => {
+                    let arrival = std::time::Instant::now();
+                    accumulated
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .extend_from_slice(&chunk[..count]);
+                    if let Some(tap) = &tap {
+                        tap.observer.offer(
+                            tap.process,
+                            tap.stream,
+                            offset,
+                            &chunk[..count],
+                            arrival,
+                        );
+                    }
+                    offset += count as u64;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => break Err(error),
             }

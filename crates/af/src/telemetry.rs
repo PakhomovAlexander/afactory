@@ -19,9 +19,11 @@ use crate::config;
 use crate::storage::{self, human_bytes};
 
 mod config_record;
+mod harness;
 mod recording;
 mod views;
 
+pub(crate) use harness::{tools, turns};
 pub(crate) use recording::begin;
 pub(crate) use views::{config, gc, ledger, runs, show, tail};
 

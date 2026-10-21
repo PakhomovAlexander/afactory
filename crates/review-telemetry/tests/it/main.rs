@@ -12,6 +12,7 @@ mod redaction;
 mod schemas;
 mod segments;
 mod sources;
+mod streams;
 mod subscriber;
 
 use std::path::{Path, PathBuf};

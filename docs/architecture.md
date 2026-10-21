@@ -567,8 +567,9 @@ process spans from them.
 ### Telemetry span catalogue
 
 Every span name af emits is a row here; `telemetry_span_catalogue` fails when a source names
-one that is not. `af.turn`, `af.tool` and `af.sink` join with the harness-stream and sink
-packages of the design note.
+one that is not. `af.turn` and `af.tool` are written by the harness stream tap
+(`review_telemetry::stream`) at the arrival times of the lines that open and close them;
+`af.sink` joins with the sink package of the design note.
 
 | Span | Kind | Parent | Attributes |
 | --- | --- | --- | --- |
@@ -580,7 +581,9 @@ packages of the design note.
 | `af.attempt` | internal | `af.node` | `af.attempt_id`, `af.epoch`, `af.worker`, `af.provider`, `af.provider.kind`, the kernel's usage and charge, outcome |
 | `af.admission` | internal | `af.attempt` | `af.admission.reserved_tokens`, `af.provider`, `af.admission.wait_ms`, outcome (`refused` below the free-disk floor) |
 | `af.context.compose` | internal | `af.attempt` | `af.context.manifest`, `af.context.bytes`, `af.context.estimated_tokens`, `af.context.layers` |
-| `af.harness` | process | `af.attempt` | `gen_ai.operation.name = invoke_agent`, `gen_ai.provider.name`, `gen_ai.request.model`, `af.native`, the process attributes |
+| `af.harness` | process | `af.attempt` | `gen_ai.operation.name = invoke_agent`, `gen_ai.provider.name`, `gen_ai.request.model`, `af.native`, the process attributes; for a tapped harness, at its end `dropped_chunks`, `gaps`, `af.stream.withheld`, `af.native.withheld` |
+| `af.turn` | client | `af.harness` | `gen_ai.operation.name = chat`, `gen_ai.provider.name`, `gen_ai.request.model`, `af.series = turn`, `af.turn.ordinal`; at its end `af.corr`, the harness's per-turn `af.usage.*` and `gen_ai.usage.*`, `gen_ai.response.finish_reasons`, `gen_ai.response.model`, `af.turn.text_*`, `af.turn.thinking_*`, `af.turn.tool_calls`, outcome |
+| `af.tool` | internal | `af.turn`, or `af.harness` outside a turn | `gen_ai.operation.name = execute_tool`, `gen_ai.tool.type = function`, `gen_ai.tool.name` (in the invocation's tool set), `gen_ai.tool.call.id` and `af.corr`, `af.tool.input_bytes`; at its end `af.tool.output_bytes`, `af.tool.exit_code`, `af.tool.status`, outcome |
 | `af.output.parse` | internal | `af.attempt` | `af.output.contract`, `af.output.valid`, the refusal (`invalid_output_contract`) |
 | `af.usage.account` | internal | `af.attempt` | `af.usage.observation`, `af.usage.unknown_cause`, `af.usage.chargeable_tokens` |
 | `af.gate` | internal | a check node's `af.attempt`, or the review Gate's | `af.gate.checks`, `af.gate.decision`, `af.check.warm` |

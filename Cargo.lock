@@ -1517,8 +1517,10 @@ dependencies = [
  "review-runner",
  "review-sandbox",
  "review-store",
+ "review-telemetry",
  "serde_json",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -1530,9 +1532,11 @@ dependencies = [
  "review-runner",
  "review-runner-claude",
  "review-store",
+ "review-telemetry",
  "rustix",
  "serde_json",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
