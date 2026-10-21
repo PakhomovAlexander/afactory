@@ -575,13 +575,22 @@ def aggregate(plan_bytes, builds_bytes, shards_dir, run_dir, report_dir, job_sum
     planned = len(plan["shards"])
     received = {}
     names = sorted(os.listdir(shards_dir)) if os.path.isdir(shards_dir) else []
+    single = None
+    # download-artifact v8 flattens one match, including a sole surviving shard of a
+    # multi-shard plan. Read the same bounded transport first; its identity, not an
+    # assumed shard zero, supplies the name. Mixed flat/nested files fail admission.
+    if transport.TRANSPORT_FILE in names:
+        single = transport.read_directory(shards_dir)
+        require(single[0]["content"] == "shard_bundle", "the flat artifact is not a shard bundle")
+        names = [shard_artifact(single[0]["run_id"], single[0]["shard"])]
     for name in names:
         match = SHARD_ARTIFACT.match(name)
         require(match is not None and match.group(1) == plan["run_id"],
                 "%s is not a shard artifact of run %s" % (name, plan["run_id"]))
         index = int(match.group(2))
         require(index < planned, "%s names shard %d; the plan has %d" % (name, index, planned))
-        doc, files, _ = transport.read_directory(os.path.join(shards_dir, name))
+        doc, files, _ = single if single is not None else transport.read_directory(
+            os.path.join(shards_dir, name))
         require(doc["run_id"] == plan["run_id"] and doc["content"] == "shard_bundle"
                 and doc["shard"] == index,
                 "%s holds %s %s of run %s, not shard %d of this run"
