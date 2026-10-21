@@ -42,6 +42,9 @@ VERSION = %(version)r
 SIDE = %(side)r
 CONTROL = %(control)r
 args = sys.argv[1:]
+if os.environ.get("AF_SELF_OFFLINE") != "1":
+    sys.stderr.write("CLI fixtures and samples must not start a release update check\n")
+    sys.exit(10)
 
 
 def state():

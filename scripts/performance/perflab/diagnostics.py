@@ -89,7 +89,7 @@ LINUX_CONTAINER = "linux_container"
 MODES = (TRUSTED_LOCAL, LINUX_CONTAINER)
 # A CLI command's environment, as a shard's (`runner.CLI_ENVIRONMENT`), with its private
 # HOME, XDG directories and TMPDIR and the case's declared AF settings added.
-CLI_ENVIRONMENT = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "TZ": "UTC"}
+CLI_ENVIRONMENT = clicases.ENVIRONMENT
 # A CLI fixture's untimed setup or seed writer: the bound a shard gives it (ADR-0169).
 CLI_SETUP_SECONDS = limits.SAMPLE_TIMEOUT_SECONDS_MAX
 CLI_SEED_LOG_BYTES = 64 * 1024

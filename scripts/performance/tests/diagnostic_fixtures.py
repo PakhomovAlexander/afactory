@@ -365,6 +365,8 @@ import json, os, sys, time
 here = os.path.dirname(os.path.abspath(sys.argv[0]))
 config = json.load(open(os.path.join(here, "fake-af.json")))
 args = sys.argv[1:]
+if os.environ.get("AF_SELF_OFFLINE") != "1":
+    sys.stderr.write("af: diagnostic setup and samples must be offline\n"); sys.exit(10)
 home = os.environ.get("HOME", "")
 # Its own private HOME, XDG directories and TMPDIR: one directory made for this execution.
 private = home and home != config.get("real_home") and all(

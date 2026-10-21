@@ -79,7 +79,9 @@ SEED_LOG_BYTES = 64 * 1024
 # root holds the writer's work directory (ADR-0170).
 NATIVE_PROBE_SCRATCH = "probe"
 NATIVE_SEED_COPY = "seed/" + oracle.WORK_DIR
-CLI_ENVIRONMENT = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "TZ": "UTC"}
+# Measure the frozen product, with no self-install or detached release update check in
+# either fixture setup or the timed CLI command. Descendant refusal remains unchanged.
+CLI_ENVIRONMENT = clicases.ENVIRONMENT
 # The calibration loop's control, named only for a preparation or slowdown member (ADR-0181).
 INJECTION_ENV = "AF_PERF_CALIBRATION_ITERATIONS"
 CONTAINER_BINARIES = {"af": "/perf/bin/af", "probe": "/perf/bin/perf-probe"}
