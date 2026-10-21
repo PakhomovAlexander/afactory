@@ -1,36 +1,36 @@
 schema = "af.task-catalog/2"
 code_policy = ".af/code-policy.toml"
 
-# Placeholders: `crates/af/tests/it/project_brief.rs` pins every digest from the copied tree
-# before it commits, as `task_input_bindings.rs` does for `bound-inputs`.
+# Real digests (`af catalog digest`), so the published-pin check holds; `crates/af/tests/it/project_brief.rs`
+# still pins every digest from the copied tree before it commits, as `task_input_bindings.rs` does for `bound-inputs`.
 [packages."fixture/evaluator"]
 version = "1.0.0"
-digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+digest = "sha256:a54961152ee0e267c42fea39bb2bbbdac7812a2d505d9ccffd4d5f305f980202"
 path = ".af/task-packages/fixture/evaluator"
 
 [packages."fixture/exposing"]
 version = "1.0.0"
-digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+digest = "sha256:10c3a9f4f5f10f55785f187b917a86ee85bf9fc2075e3c80e9f22bf0eb73feb9"
 path = ".af/task-packages/fixture/exposing"
 
 [packages."fixture/forged"]
 version = "1.0.0"
-digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+digest = "sha256:1852eca268be328f55b5df1003b19e1c94951246992612a16edf85fa3b09cf49"
 path = ".af/task-packages/fixture/forged"
 
 [packages."fixture/forger"]
 version = "1.0.0"
-digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+digest = "sha256:0bd8a7c161918546182a1e47e4eaac81ccb223f5066dca34de8f66cf834a955a"
 path = ".af/task-packages/fixture/forger"
 
 [packages."fixture/implementer"]
 version = "1.0.0"
-digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+digest = "sha256:3e446beefa6c4ed82e0e3a2e648441553c9ed7cc0b324f99ea424529c421c532"
 path = ".af/task-packages/fixture/implementer"
 
 [packages."fixture/oriented"]
 version = "1.0.0"
-digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+digest = "sha256:1ed9c1275e92a593eb3f7c507605813a4a58b0732eb439d8546e737ea3e8831d"
 path = ".af/task-packages/fixture/oriented"
 
 [independence]
