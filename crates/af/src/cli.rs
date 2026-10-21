@@ -24,6 +24,7 @@ and journaled.
 Namespaces:
   review     plan, run, and work a review Campaign
   task       start, inspect, and deliver an implement Task
+  project    show this repository's Project and manage its Workspaces
   catalog    capture shared Pipeline, Worker and Task-kind packages from Git
   provider   inspect and preflight the configured model providers
   onboard    generate or validate `.af/` review authority for a repository
@@ -165,6 +166,46 @@ local branch and worktree, after confirming the Task ID.",
         #[command(subcommand)]
         command: TaskCommand,
     },
+    /// Show this repository's Project, measure it into Surveys, and manage its Workspaces
+    #[command(
+        subcommand_required = true,
+        arg_required_else_help = true,
+        long_about = "Show this repository's Project, measure it into Surveys, and manage its \
+Workspaces.\n\n\
+A Project is the identity of one repository across every clone and worktree: `sha256:` + \
+hex(SHA-256(`af/project-id@1\\0` + repository_id)), where repository_id is the sorted root \
+commits every Snapshot origin already carries; never a path or a remote URL. Its Project Store \
+lives under `$XDG_STATE_HOME/af/project/<hex>/`. A Workspace is one registered checkout of the \
+Project, with its own Task Store, bindings file and Task-file directory, under one label; the \
+paths are kept on this machine only, in the Project Store's `workspaces.toml`.\n\n\
+Registration is lazy and token-free: `af onboard --apply`, `af task plan`, `af task start`, \
+`af review run` and every `af project` command but `brief` register the Project and the invoking checkout \
+(origin `adopted`, labelled by its directory name, its Store the default Task Store). A shallow \
+clone is refused until `git fetch --unshallow`; a repository without commits has no Project. \
+`af task deliver` registers the worktree it creates (origin `delivered`, labelled by the Task \
+ID). `--workspace LABEL` on the `af task` commands that take `--state` selects a Workspace's \
+Store, and on `plan` and `start` its bindings file.\n\n\
+A Survey (`af/ProjectSurvey@2`) is one kernel-measured description of the Project at its head: \
+identity, tree, history, contributors, decisions, vocabulary and checks, every number decimal \
+text, bounded by the `[survey]` table of `.af/af.toml`. The token-free Surveyor records one at \
+`af onboard --apply` and on `af project refresh`, in the Project Store, and reuses a complete \
+Survey while its survey key (head, refs, policy digest, Surveyor version) is unchanged. It calls \
+no Provider, runs no hook or project code, and never stores an author email.\n\n\
+A Project Brief (`af/ProjectBrief@1`) is the bounded selection of one Survey that a pipeline's \
+declared `project_brief` root port carries into the Workers it is wired to, and no other: a \
+`[brief.<name>]` variant of `.af/af.toml` (built in: `orient` and `none`) rendered from the \
+Survey a Task pinned when it was planned, whole sections dropped last-declared first until it \
+fits `max_bytes`. `af project brief` prints the exact bytes a plan would bind, token-free.\n\n\
+Never: writes inside a checkout, commits, pushes, or removes a Store. Results go to stdout \
+(`--json` prints `af/project@1`, `af/project-workspaces@1`, `af/ProjectSurvey@2`, \
+`af/project-history@2` or `af/project-brief-preview@1`); warnings go to stderr. Exit codes: 0 success, 1 failure (the message \
+names the next action; `af/error@1` under --json), 2 usage error.",
+        after_long_help = "Examples:\n  af project show\n  af project refresh\n  af project survey --json | jq .tree.files\n  af project history\n  af project brief --variant orient\n  af project workspaces --json\n  af project workspace new research --branch agent/research\n  af project workspace add ../afactory-wt-research --label research --state \"$W/state\"\n  af project workspace remove research\n  af project workspace remove research --delete-worktree\n  af task plan --workspace research --file ticket.json"
+    )]
+    Project {
+        #[command(subcommand)]
+        command: ProjectCli,
+    },
     /// Show the effective configuration and where each value came from
     #[command(
         subcommand_required = true,
@@ -211,8 +252,8 @@ or activates a release older than 0.8.0 (the oldest supported release).",
         args_conflicts_with_subcommands = true,
         long_about = "Show what af keeps on this machine against its storage budget, and reclaim it.\n\n\
 af keeps at most `[storage] max_bytes` (20 GiB by default) between runs: warm build keys, warm \
-Workspaces, review campaign Stores, Task Stores (in the state root and registered elsewhere) and \
-installed versions. `af storage` prints, per kind, the entries, their bytes and their oldest and \
+Workspaces, review campaign Stores, Task Stores (in the state root and registered elsewhere), \
+Project Stores (counted, never evicted), each Survey a Project Store holds (collected one at a time behind a tombstone, never the newest complete one) and installed versions. `af storage` prints, per kind, the entries, their bytes and their oldest and \
 newest use; the Stores this release cannot read, with the reason; the total against the budget; \
 and the free bytes against `[storage] min_free_bytes`, the floor below which af refuses to start a \
 check or a Worker Attempt. It reads only; `af storage prune` previews the sweep that runs after \
@@ -222,7 +263,7 @@ repository's `.af/af.toml` cannot change it. See `af help storage`.",
         after_long_help = "Examples:\n  af storage\n  af storage --json | jq .total_bytes\n  af storage prune\n  af storage prune --apply\n  AF_STORAGE__MAX_BYTES=10GiB af storage prune --apply"
     )]
     Storage {
-        /// Machine-readable af/storage@2
+        /// Machine-readable af/storage@4
         #[arg(long)]
         json: bool,
         #[command(subcommand)]
@@ -1139,6 +1180,14 @@ pub(crate) enum TaskCommand {
         /// Explicit state directory (outside the repository)
         #[arg(long, value_name = "DIR", help_heading = "Selector")]
         state: Option<PathBuf>,
+        /// The Workspace whose Store and bindings file to use, by label (`af project workspaces`)
+        #[arg(
+            long,
+            value_name = "LABEL",
+            conflicts_with = "state",
+            help_heading = "Selector"
+        )]
+        workspace: Option<String>,
         /// Source revision (default: HEAD)
         #[arg(
             long,
@@ -1171,6 +1220,9 @@ pub(crate) enum TaskCommand {
         repo: PathBuf,
         #[arg(long, value_name = "DIR")]
         state: Option<PathBuf>,
+        /// The Workspace whose Store and bindings file to use, by label (`af project workspaces`)
+        #[arg(long, value_name = "LABEL", conflicts_with = "state")]
+        workspace: Option<String>,
         #[arg(long, default_value = "HEAD", conflicts_with = "uncommitted")]
         authority: String,
         #[arg(long)]
@@ -1301,6 +1353,14 @@ opens a pull request, or contacts a remote.",
         /// Explicit state directory
         #[arg(long, value_name = "DIR", help_heading = "Selector")]
         state: Option<PathBuf>,
+        /// The Workspace whose Store to use, by label (`af project workspaces` lists them)
+        #[arg(
+            long,
+            value_name = "LABEL",
+            conflicts_with = "state",
+            help_heading = "Selector"
+        )]
+        workspace: Option<String>,
         /// One JSON document on stdout instead of text
         #[arg(long, help_heading = "Output")]
         json: bool,
@@ -1393,6 +1453,277 @@ and model; no Provider label, path, credential, prompt or Worker output is print
     },
 }
 
+// ------------------------------------------------------------------------------------------
+// project
+
+/// `af project survey --section NAME…`: a text-only option, so it conflicts with `--json`
+/// (usage error 2). It is an argument of the subcommand rather than a field of
+/// [`ProjectCommand::Survey`], whose shape every reader of `af project` matches;
+/// [`survey_sections`] reads it.
+fn survey_section_arg() -> clap::Arg {
+    clap::Arg::new("section")
+        .long("section")
+        .value_name("NAME")
+        .help("Only these sections of the text summary, by name; repeat or separate with commas")
+        .value_parser(crate::projects::survey::SECTION_NAMES)
+        .value_delimiter(',')
+        .action(clap::ArgAction::Append)
+        .conflicts_with("json")
+}
+
+/// The `--section` names `argv`, an `af project survey` command line, gave, in the order given;
+/// empty for every other command.
+pub(crate) fn survey_sections(argv: &[String]) -> Vec<String> {
+    use clap::CommandFactory as _;
+    Af::command()
+        .try_get_matches_from(argv)
+        .ok()
+        .and_then(|matches| {
+            let project = matches.subcommand_matches("project")?;
+            let survey = project.subcommand_matches("survey")?;
+            Some(
+                survey
+                    .get_many::<String>("section")?
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// `af project`: the commands of [`ProjectCommand`], then `brief`, which reads the Project
+/// Store and records nothing (ADR-0160).
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProjectCli {
+    #[command(flatten)]
+    Core(ProjectCommand),
+    /// Print the exact Project Brief a `project` port would carry, recording nothing
+    #[command(
+        long_about = "Render one Project Brief variant (`af/ProjectBrief@1`) of this checkout's \
+newest complete Survey, or of the complete Survey --survey names, and print exactly the \
+canonical bytes a plan would bind on a `project_brief` port of that variant: what a Worker \
+wired to the port reads, before any token is spent.\n\n\
+A variant is a `[brief.<name>]` table of `.af/af.toml` (`sections`, `max_bytes`, `decisions`, \
+`hot_paths`); `orient` (tree, vocabulary, decisions, checks, hot_paths in 8192 bytes, the newest \
+12 decisions and the first 20 hot paths) and `none` are built in. Whole sections are dropped, \
+last-declared first, until the record fits `max_bytes`, each named in `dropped` with its reason.\n\n\
+--json prints `af/project-brief-preview@1`: the Brief's artifact ID, the Brief byte for byte as \
+the text form prints it, and the context manifest entry a Worker would see (bytes and the \
+runner's token estimate); or `outcome: none` with its reason (`variant_none`, `no_survey`), exit \
+0. Without a Survey the text form exits 1 and names `af project refresh`; variant `none` prints \
+nothing and says so on stderr. Reads the Project Store only: registers nothing, records nothing \
+and writes nothing inside the checkout.",
+        after_long_help = "Examples:\n  af project brief\n  af project brief --variant orient --json | jq .manifest\n  af project brief --survey sha256:… | wc -c"
+    )]
+    Brief {
+        /// The variant to render [default: orient]
+        #[arg(long, value_name = "NAME")]
+        variant: Option<String>,
+        /// Render this complete Survey instead of the newest complete one
+        #[arg(long, value_name = "ID")]
+        survey: Option<String>,
+        /// One `af/project-brief-preview@1` document on stdout instead of the Brief's bytes
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProjectCommand {
+    /// Show the Project: identity, name, Store, every Workspace and the newest Survey
+    #[command(
+        long_about = "Show the Project of the checkout af runs in: its ID, repository_id, the \
+`[project] name` and `min_af` its `.af/af.toml` declared when it was registered, the Project \
+Store, and every Workspace with its label, origin, checkout, Task Store, bindings file, Task-file \
+directory and registration time. The text also shows the newest Survey's summary, or the reason \
+of the newest SurveyFailed@1 when no Survey was recorded since; `af/project@1` is unchanged.\n\n\
+Registers the Project and this checkout first when they are new. Reads nothing else and writes \
+nothing inside the checkout.",
+        after_long_help = "Examples:\n  af project show\n  af project show --json | jq .project_id"
+    )]
+    Show {
+        /// One `af/project@1` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the Project's Workspaces: label, origin, checkout, Store, bindings, Task files
+    #[command(
+        long_about = "List every registered Workspace of this checkout's Project, in label order: \
+its label, origin (`adopted`, `created` or `delivered`), checkout, Task Store, bindings file and \
+Task-file directory. A path this machine's `workspaces.toml` does not know is shown as unknown.",
+        after_long_help = "Examples:\n  af project workspaces\n  af project workspaces --json"
+    )]
+    Workspaces {
+        /// One `af/project-workspaces@1` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the newest Survey of the Project
+    #[command(
+        long_about = "Show the newest Survey of this checkout's Project: one kernel-measured \
+description of the head (`af/ProjectSurvey@2`) with the sections identity, tree, history, \
+contributors, decisions, vocabulary and checks, each complete, partial or unavailable with the \
+bound it reached. Text is one line per section, and --section picks sections of the text only; \
+--json prints the complete record unchanged, its canonical bytes, every number decimal text, \
+and --section with --json is a usage error (exit 2).\n\nRecords nothing. Fails (exit 1) when \
+the Project has no Survey yet, or when the Storage Budget collected its newest one, and says \
+which; `af project refresh` records one.",
+        after_long_help = "Examples:\n  af project survey\n  af project survey --section tree --section history\n  af project survey --json | jq '.history.hot_paths[].path'",
+        arg = survey_section_arg()
+    )]
+    Survey {
+        /// The `af/ProjectSurvey@2` record on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Measure the head into a new Survey now, unless its survey key is unchanged
+    #[command(
+        long_about = "Run the Surveyor now and wait: measure this checkout's head into a Survey \
+and record it in the Project Store, then print its summary. A complete newest Survey with an \
+unchanged survey key (the head commit, the digest of `refs/heads` and `refs/tags`, the policy \
+digest and the Surveyor version) is reused: the command prints `unchanged: head …, refs …, \
+policy …, surveyor …` with that Survey's summary and records nothing. A new tag or branch, a \
+policy change or a partial newest Survey records a new one; --force records one regardless of \
+the key.\n\nThe Surveyor reads the repository only through supervised git plumbing (ls-tree, \
+cat-file, log, rev-list, for-each-ref), every stream read as it arrives, under one deadline, \
+`[survey] max_wall_ms`, checked at every item; a section it cannot finish is partial or \
+unavailable and the Survey is still recorded. `max_paths`, `max_entries`, `max_file_bytes` and \
+`max_survey_bytes` bound the rest. It calls no Provider, runs no hook or project code and \
+writes nothing inside the checkout. Contributors are named by author name or, under \
+`[survey] identity = \"email_hash\"`, by the first 16 hex digits of SHA-256 of the lowercased, \
+trimmed email; an author email is never stored. A Survey that cannot be taken, or whose record \
+is over `max_survey_bytes`, records SurveyFailed@1, which `af project show` prints, and exits 1.",
+        after_long_help = "Examples:\n  af project refresh\n  af project refresh --force\n  af project refresh --json | jq .completeness\n  AF_SURVEY__MAX_COMMITS=1000 af project refresh"
+    )]
+    Refresh {
+        /// The recorded (or unchanged) `af/ProjectSurvey@2` record on stdout instead of text
+        #[arg(long)]
+        json: bool,
+        /// Record a Survey even when the survey key is unchanged
+        #[arg(long)]
+        force: bool,
+    },
+    /// List the Project's Surveys, newest first
+    #[command(
+        long_about = "List the Survey chain of this checkout's Project, newest first: each \
+Survey's ID, when it was recorded, its head, its cutoff and its completeness; a Survey the \
+Storage Budget collected is answered from its SurveyCollected@1 tombstone and marked \
+`collected`, and one whose record is of a superseded version (`af/ProjectSurvey@1`, another af \
+release's) is listed by its ID and time as `unreadable: superseded version` and kept. --json \
+prints `af/project-history@2`. Records nothing.",
+        after_long_help = "Examples:\n  af project history\n  af project history --json | jq -r '.surveys[0].survey_id'"
+    )]
+    History {
+        /// One `af/project-history@2` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create, adopt, or remove one Workspace
+    #[command(subcommand_required = true, arg_required_else_help = true)]
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum WorkspaceCommand {
+    /// Create a worktree, a branch and a Workspace directory, and register them
+    #[command(
+        long_about = "Create a Workspace for one line of work: a new branch (`af/LABEL` unless \
+--branch) at this checkout's HEAD (unless --from), a worktree of it at `<checkout>-wt-LABEL` \
+beside this checkout (unless --path), and the directory \
+`$XDG_STATE_HOME/af/project/<hex>/workspaces/LABEL/` holding an empty `state/` for its Task \
+Store, an empty `tasks/` for its Task files and a `bindings.toml` template that names no \
+account. The Workspace is registered with origin `created`.\n\nThe worktree is filled the way \
+`af task deliver` fills one: `git worktree add --no-checkout`, the index by `git read-tree`, and \
+the files of the commit's tree written from a committed capture, so no checkout, filter or hook \
+of the repository runs on this machine.\n\nEvery check runs before anything is made: a taken \
+label, an existing path, branch or Workspace directory, and a --from commit whose root commits \
+are not this Project's are refused (exit 1); a --path at or inside this checkout, inside another \
+Workspace or inside `$XDG_STATE_HOME/af` is a usage error (exit 2). When a later step fails, what \
+was made is undone newest first, and the message says what was undone and what remains. Never: \
+commits, pushes, or contacts a remote.",
+        after_long_help = "Examples:\n  af project workspace new research\n  af project workspace new research --branch agent/research --from main\n  af project workspace new spike --path ../spike"
+    )]
+    New {
+        /// The new Workspace's label: letters, digits, `-` and `_`
+        #[arg(value_parser = workspace_label)]
+        label: String,
+        /// The new branch [default: af/LABEL]
+        #[arg(long, value_name = "NAME")]
+        branch: Option<String>,
+        /// Where the worktree goes, outside this checkout, every Workspace and af's state
+        /// [default: <checkout>-wt-LABEL beside this checkout]
+        #[arg(long, value_name = "DIR")]
+        path: Option<PathBuf>,
+        /// The commit the branch starts at, one of this Project [default: this checkout's HEAD]
+        #[arg(long, value_name = "REV")]
+        from: Option<String>,
+        /// One `af/project-workspaces@1` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Register an existing checkout of this Project as a Workspace
+    #[command(
+        long_about = "Register an existing checkout of this Project (a worktree or a clone) as a \
+Workspace of origin `adopted`. Its Store is the default Task Store for that checkout unless \
+--state names another; --bindings and --tasks name its bindings file and Task-file directory. \
+This is how a hand-made directory of `tasks/`, `bindings.toml` and `state/` becomes a Workspace \
+without moving a byte.\n\nA checkout of another Project is refused, naming both Project IDs; \
+a checkout already registered is refused, naming its label.",
+        after_long_help = "Examples:\n  af project workspace add ../afactory-wt-research --label research --state \"$W/state\" --bindings \"$W/bindings.toml\" --tasks \"$W/tasks\""
+    )]
+    Add {
+        /// The checkout to adopt
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+        /// Its label [default: the checkout's directory name]
+        #[arg(long, value_name = "LABEL", value_parser = workspace_label)]
+        label: Option<String>,
+        /// Its Task Store [default: the checkout's default Task Store]
+        #[arg(long, value_name = "DIR")]
+        state: Option<PathBuf>,
+        /// Its bindings file, which `--workspace` supplies as `--bindings`
+        #[arg(long, value_name = "FILE")]
+        bindings: Option<PathBuf>,
+        /// The directory holding its Task files
+        #[arg(long, value_name = "DIR")]
+        tasks: Option<PathBuf>,
+        /// One `af/project-workspaces@1` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Unregister a Workspace; keep its Store, and its worktree unless asked
+    #[command(
+        long_about = "Unregister a Workspace. Its Task Store is never removed: when it still \
+holds a Task that is not collected, the command says so and names `af task gc`. \
+--delete-worktree also removes the checkout, only a linked worktree whose files equal its HEAD \
+commit, compared without running any filter or hook of the repository; the branch stays.",
+        after_long_help = "Examples:\n  af project workspace remove research\n  af project workspace remove research --delete-worktree"
+    )]
+    Remove {
+        /// The Workspace's label
+        #[arg(value_parser = workspace_label)]
+        label: String,
+        /// Also remove the worktree, when its files equal its commit
+        #[arg(long)]
+        delete_worktree: bool,
+        /// One `af/project-workspaces@1` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// A Workspace label: the safe-name rule of Task IDs, refused as a usage error.
+fn workspace_label(value: &str) -> Result<String, String> {
+    if review_core::project::is_workspace_label(value) {
+        Ok(value.to_string())
+    } else {
+        Err("a label is 1 to 128 ASCII letters, digits, `-` or `_`, starting with a letter or digit".into())
+    }
+}
+
 #[derive(Debug, Args, Clone)]
 pub(crate) struct TaskInspectArgs {
     /// Repository the Task belongs to
@@ -1406,6 +1737,14 @@ pub(crate) struct TaskInspectArgs {
     /// Explicit state directory
     #[arg(long, value_name = "DIR", help_heading = "Selector")]
     pub(crate) state: Option<PathBuf>,
+    /// The Workspace whose Store to use, by label (`af project workspaces` lists them)
+    #[arg(
+        long,
+        value_name = "LABEL",
+        conflicts_with = "state",
+        help_heading = "Selector"
+    )]
+    pub(crate) workspace: Option<String>,
     /// One JSON document on stdout instead of text
     #[arg(long, help_heading = "Output")]
     pub(crate) json: bool,
@@ -1420,8 +1759,8 @@ pub(crate) enum StorageCommand {
     #[command(
         long_about = "Preview, and with --apply perform, the sweep that runs after every `af task \
 run` and `af review run`.\n\nCollection first: finished Tasks beyond the newest `keep_tasks` of \
-each Store, review campaigns beyond the newest `keep_campaigns`, and Stores this release cannot \
-read, each idle at least `keep_days`; and the gate pull requests and branches finished Tasks \
+each Store, review campaigns beyond the newest `keep_campaigns`, the Surveys of each Project beyond \
+the newest `keep_surveys`, and Stores this release cannot read, each idle at least `keep_days`; and the gate pull requests and branches finished Tasks \
 left. Then the budget: while af holds more than `max_bytes`, the least recently used entry goes \
 first. Nothing in use is ever removed — a held lock, a live writer lease, a running campaign, the \
 default or a pinned version, the running binary — nor anything used within the last hour. \
@@ -1432,7 +1771,7 @@ Finished Tasks go through the Store's own collection, so each keeps its tombston
         /// Remove what the preview names (default: preview only)
         #[arg(long)]
         apply: bool,
-        /// Machine-readable af/storage-prune@2
+        /// Machine-readable af/storage-prune@4
         #[arg(long)]
         json: bool,
     },

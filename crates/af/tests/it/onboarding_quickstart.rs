@@ -106,7 +106,17 @@ test -z "$(git remote)"
         serde_json::from_slice(&std::fs::read(root.path().join("plan.json")).unwrap()).unwrap();
     assert_eq!(plan["schema"], "af/review-plan@1");
     assert_eq!(plan["token_free"], true);
-    assert!(!root.path().join("state").exists());
+    // Planning records nothing; `af onboard --apply` registers the Project and its checkout
+    // (ADR-0158), which is the only state the walkthrough leaves.
+    let kept: std::collections::BTreeSet<String> = std::fs::read_dir(root.path().join("state/af"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        kept.iter()
+            .all(|name| ["project", "stores.toml", "stores.lock"].contains(&name.as_str())),
+        "{kept:?}"
+    );
     assert_eq!(plan["subject"]["empty"], false);
     assert_eq!(plan["route"]["changed_paths"], 1);
     assert!(

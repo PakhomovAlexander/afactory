@@ -3,7 +3,10 @@
 //!
 //! Every temporary sandbox and temporary template lives in a directory under the process's
 //! temporary root named `af-sandbox-<pid>-<random>`, and every check's runtime directory (its
-//! `HOME`, `TMPDIR`, `AF_CHECK_SCRATCH` and `XDG_CACHE_HOME`) in one named `af-check-<pid>-<random>`. The handle that owns the directory removes
+//! `HOME`, `TMPDIR`, `AF_CHECK_SCRATCH` and `XDG_CACHE_HOME`) in one named `af-check-<pid>-<random>`.
+//! The Surveyor's Tree Digest spills its sorted manifest runs into one named
+//! `af-tree-digest-<pid>-<random>` (`review_source_git::digest::SPILL_PREFIX`), which the sweep
+//! treats the same way (ADR-0159 clause 9). The handle that owns the directory removes
 //! it on drop, so a process that ends normally leaves nothing. A process that is killed, or
 //! that aborts, never runs its drops: its trees stay in the temporary root forever, and a tree
 //! that a Gate built into carries a whole `target/` directory. The pid in the name is what lets
@@ -22,10 +25,17 @@
 //! with its leader on every path short of `SIGKILL`.
 
 use std::path::Path;
+use std::time::Instant;
 
 const PREFIX: &str = "af-sandbox-";
 /// The name prefix of a check's runtime directory (see [`crate::CheckRuntime`]).
 pub(crate) const CHECK_PREFIX: &str = "af-check-";
+
+/// The name prefix of the directory a Tree Digest spills its manifest runs into.
+const TREE_DIGEST_PREFIX: &str = review_source_git::digest::SPILL_PREFIX;
+
+/// Every kind of directory the crash sweep removes for a dead owner.
+const SWEPT: [&str; 3] = [PREFIX, CHECK_PREFIX, TREE_DIGEST_PREFIX];
 
 /// The marker a provider writes beside a sandbox tree (never inside it, where a container bind
 /// could see it) when it releases the handle without removing the directory on purpose. A
@@ -74,9 +84,15 @@ pub(crate) fn mark_preserved(sandbox_dir: &Path) -> std::io::Result<()> {
 
 /// The owning pid encoded in a sandbox directory name, or `None` for any other entry.
 fn owner_pid(name: &str) -> Option<u32> {
-    let rest = name
-        .strip_prefix(PREFIX)
-        .or_else(|| name.strip_prefix(CHECK_PREFIX))?;
+    owner_pid_of(name, &[PREFIX, CHECK_PREFIX])
+}
+
+/// The owning pid encoded in a name that starts with one of `prefixes`: the prefix, a decimal
+/// pid, `-` and a non-empty random part.
+fn owner_pid_of(name: &str, prefixes: &[&str]) -> Option<u32> {
+    let rest = prefixes
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))?;
     let (pid, random) = rest.split_once('-')?;
     if pid.is_empty() || random.is_empty() || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
@@ -116,9 +132,10 @@ pub struct SweepReport {
     pub preserved: usize,
 }
 
-/// Remove every sandbox and check runtime directory under this process's temporary root whose
-/// owning process no longer exists. Best-effort and silent: an unreadable root or a failed removal is counted,
-/// never raised, because nothing a review does depends on this housekeeping.
+/// Remove every sandbox, check runtime and Tree Digest spill directory under this process's
+/// temporary root whose owning process no longer exists. Best-effort and silent: an unreadable
+/// root or a failed removal is counted, never raised, because nothing a review does depends on
+/// this housekeeping.
 pub fn sweep_stale_sandboxes() -> SweepReport {
     sweep_stale_sandboxes_in(&std::env::temp_dir())
 }
@@ -134,12 +151,57 @@ pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
         report.removed += removed.len();
         report.failed += left.len();
     }
+    sweep_owned(root, &SWEPT, None, &mut report);
+    report
+}
+
+/// Remove the Tree Digest spill directories (`af-tree-digest-<pid>-<random>`) under this
+/// process's temporary root whose owning process no longer exists, under the rules of
+/// [`sweep_stale_sandboxes`] and touching nothing else, so a refresh killed after a spill leaves
+/// its runs only until the next refresh or the next sweep of review or Task work.
+pub fn sweep_stale_tree_digests() -> SweepReport {
+    sweep_stale_tree_digests_in(&std::env::temp_dir())
+}
+
+/// [`sweep_stale_tree_digests`] against an explicit root.
+pub fn sweep_stale_tree_digests_in(root: &Path) -> SweepReport {
+    let mut report = SweepReport::default();
+    sweep_owned(root, &[TREE_DIGEST_PREFIX], None, &mut report);
+    report
+}
+
+/// [`sweep_stale_tree_digests_in`] bounded by `deadline`: what every refresh of the Surveyor
+/// runs first, before it decides whether to reuse a Survey. One listing of `root`, and no
+/// removal begun once `deadline` passed, so the sweep outlasts it by at most the one removal
+/// then running; a dead spill it did not reach is left, uncounted, for the next sweep.
+pub fn sweep_stale_tree_digests_before(root: &Path, deadline: Instant) -> SweepReport {
+    let mut report = SweepReport::default();
+    sweep_owned(root, &[TREE_DIGEST_PREFIX], Some(deadline), &mut report);
+    report
+}
+
+/// Remove every directory under `root` named with one of `prefixes`, a pid and a random part,
+/// whose owning process no longer exists and that is not preserved, counting into `report`,
+/// and none once `deadline` passed.
+fn sweep_owned(
+    root: &Path,
+    prefixes: &[&str],
+    deadline: Option<Instant>,
+    report: &mut SweepReport,
+) {
     let Ok(entries) = std::fs::read_dir(root) else {
-        return report;
+        return;
     };
     let own_pid = std::process::id();
     for entry in entries.flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(owner_pid) else {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return;
+        }
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| owner_pid_of(name, prefixes))
+        else {
             continue;
         };
         let path = entry.path();
@@ -163,7 +225,6 @@ pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
             report.failed += 1;
         }
     }
-    report
 }
 
 /// Remove the directory a sweep listed, only while its name still holds that directory: the
@@ -174,6 +235,7 @@ fn remove_listed(root: &Path, name: &std::ffi::OsStr, listed: &std::fs::Metadata
     let identity = crate::Identity {
         device: listed.dev(),
         inode: listed.ino(),
+        born: None,
     };
     crate::open_anchor(root)
         .and_then(|anchor| crate::remove_tree_at(&anchor, name, Some(identity)))
@@ -415,6 +477,87 @@ mod tests {
             "the link target's mode is untouched"
         );
         std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_tree_digests_spill_is_swept_and_a_live_or_preserved_one_is_kept() {
+        let root = tempfile::tempdir().unwrap();
+        // The runs a refresh killed after its spill left, and those of a refresh still running.
+        let dead = root.path().join("af-tree-digest-2000000000-dead04");
+        std::fs::create_dir_all(&dead).unwrap();
+        std::fs::write(dead.join("run-0"), b"runs").unwrap();
+        let live = root
+            .path()
+            .join(format!("af-tree-digest-{}-live03", std::process::id()));
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("run-0"), b"runs").unwrap();
+        let kept = root.path().join("af-tree-digest-2000000000-kept02");
+        std::fs::create_dir_all(&kept).unwrap();
+        mark_preserved(&kept).unwrap();
+        let sandbox = root.path().join("af-sandbox-2000000000-other1");
+        std::fs::create_dir_all(&sandbox).unwrap();
+        assert!(
+            !is_af_directory_name("af-tree-digest-17-x"),
+            "a spill is no Attempt's directory"
+        );
+
+        // The Surveyor's own sweep takes the dead spill alone.
+        let report = sweep_stale_tree_digests_in(root.path());
+        assert_eq!(
+            report,
+            SweepReport {
+                removed: 1,
+                failed: 0,
+                live: 1,
+                preserved: 1,
+            }
+        );
+        assert!(!dead.exists());
+        assert!(live.join("run-0").exists());
+        assert!(kept.exists());
+        assert!(sandbox.exists(), "a sandbox is not the Surveyor's to sweep");
+
+        // The crash sweep of review and Task work takes a dead spill like a dead sandbox.
+        std::fs::create_dir_all(&dead).unwrap();
+        let report = sweep_stale_sandboxes_in(root.path());
+        assert_eq!(report.removed, 2, "{report:?}");
+        assert_eq!(report.live, 1, "{report:?}");
+        assert!(!dead.exists() && !sandbox.exists());
+        assert!(live.join("run-0").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bounded_spill_sweep_removes_nothing_past_its_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let dead = root.path().join("af-tree-digest-2000000000-dead05");
+        std::fs::create_dir_all(&dead).unwrap();
+        std::fs::write(dead.join("run-0"), b"runs").unwrap();
+        let live = root
+            .path()
+            .join(format!("af-tree-digest-{}-live05", std::process::id()));
+        std::fs::create_dir_all(&live).unwrap();
+
+        let passed = Instant::now();
+        assert_eq!(
+            sweep_stale_tree_digests_before(root.path(), passed),
+            SweepReport::default()
+        );
+        assert!(dead.exists(), "a passed deadline begins no removal");
+
+        let ahead = Instant::now() + std::time::Duration::from_secs(60);
+        assert_eq!(
+            sweep_stale_tree_digests_before(root.path(), ahead),
+            SweepReport {
+                removed: 1,
+                failed: 0,
+                live: 1,
+                preserved: 0,
+            }
+        );
+        assert!(!dead.exists());
+        assert!(live.exists());
     }
 
     #[test]

@@ -46,6 +46,34 @@ pub struct WorkerRequest {
     pub output_schemas: BTreeMap<String, Value>,
 }
 
+impl WorkerRequest {
+    /// The request [`WorkerContract::prepare`] renders: the installed protocol fields around a
+    /// Worker's instructions, its declared inputs, its admitted retry feedback and its captured
+    /// output schemas. A plan-time check renders the same request from the parts known then, so
+    /// both apply [`MAX_WORKER_BYTES`] to one accounting (ADR-0160).
+    pub fn new(
+        instructions: &str,
+        inputs: BTreeMap<String, Vec<WorkerValue>>,
+        feedback: Vec<WorkerValue>,
+        output_schemas: BTreeMap<String, Value>,
+    ) -> Self {
+        Self {
+            schema: "af.worker-request/1".into(),
+            reply_format: WORKER_REPLY_FORMAT.into(),
+            instructions: instructions.into(),
+            inputs,
+            feedback,
+            output_schemas,
+        }
+    }
+
+    /// The exact bytes the Worker reads, JSON escaping and every wrapper included: what the cap
+    /// measures.
+    pub fn rendered(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(self).map_err(|e| e.to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerReply {
@@ -250,9 +278,20 @@ impl WorkerContract {
                 {
                     return Err("Worker input differs from its admitted type or Snapshot".into());
                 }
+                // A Project Brief is the one input a pipeline adds for orientation alone, so
+                // its entry names the port that asked for it (ADR-0160).
+                let required_by =
+                    if value.artifact_type == review_core::task::project_brief::PROJECT_BRIEF_V1 {
+                        format!(
+                            "{}{port}",
+                            review_core::task::project_brief::PORT_REQUIRED_BY_PREFIX
+                        )
+                    } else {
+                        "declared input port".into()
+                    };
                 manifest.record(
                     port,
-                    "declared input port",
+                    required_by,
                     Some(id.clone()),
                     Some(value.artifact_type.clone()),
                     serde_json::to_vec(&value).map_err(|e| e.to_string())?.len(),
@@ -286,14 +325,12 @@ impl WorkerContract {
             None,
             schemas_len,
         );
-        let request = WorkerRequest {
-            schema: "af.worker-request/1".into(),
-            reply_format: WORKER_REPLY_FORMAT.into(),
-            instructions: instructions.into(),
+        let request = WorkerRequest::new(
+            instructions,
             inputs,
-            feedback: feedback_values,
-            output_schemas: self.output_schemas.clone(),
-        };
+            feedback_values,
+            self.output_schemas.clone(),
+        );
         manifest.record(
             "reply_format",
             "installed Worker protocol",
@@ -301,7 +338,7 @@ impl WorkerContract {
             None,
             WORKER_REPLY_FORMAT.len(),
         );
-        let bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
+        let bytes = request.rendered()?;
         if bytes.len() > MAX_WORKER_BYTES {
             return Err("Worker context exceeds byte bound; narrow the declared input".into());
         }
@@ -638,5 +675,76 @@ mod canonical_set_tests {
         let before = other.clone();
         canonical_sets(&mut other);
         assert_eq!(other, before, "only a draft is a set-carrying reply");
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+    use review_core::PortCardinality;
+    use review_core::task::ArtifactInputV1;
+
+    /// The plan-time cap check renders a request with [`WorkerRequest::new`]; dispatch renders
+    /// the same bytes, escaping and output schemas included, so one accounting decides both.
+    #[test]
+    fn a_request_built_from_its_parts_is_the_one_prepare_renders() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let schemas = BTreeMap::from([(
+            "answer".to_string(),
+            serde_json::json!({"type": "object", "description": "a \"quoted\" schema"}),
+        )]);
+        let contract =
+            WorkerContract::capture(&cas, serde_json::json!({"type": "object"}), schemas.clone())
+                .unwrap();
+        let payload = serde_json::json!({"text": "quotes \" and a line\nbreak"});
+        let (id, _) = cas
+            .put_artifact(
+                "af/Source@1",
+                Producer::KernelOperation {
+                    run_id: "request-fixture".into(),
+                    node_id: None,
+                    operation_id: "capture@1".into(),
+                },
+                vec![],
+                None,
+                payload.clone(),
+            )
+            .unwrap();
+        let invocation = TaskInvocationV1 {
+            plan_id: cas.put(b"captured plan").unwrap(),
+            node: "root.worker".into(),
+            inputs: BTreeMap::from([(
+                "source".to_string(),
+                ArtifactInputV1 {
+                    artifact_ids: vec![id.clone()],
+                    artifact_type: "af/Source@1".into(),
+                    cardinality: PortCardinality::One,
+                    snapshot_id: None,
+                },
+            )]),
+        };
+        let instructions = "Read \"source\".\n";
+        let context = contract
+            .prepare(&cas, &invocation, &[], instructions)
+            .unwrap();
+        let (context, rendered) = contract.read_context(&cas, &context).unwrap();
+        let value = WorkerValue {
+            artifact_id: id,
+            artifact_type: "af/Source@1".into(),
+            snapshot_id: None,
+            payload,
+        };
+        let request = WorkerRequest::new(
+            instructions,
+            BTreeMap::from([("source".to_string(), vec![value])]),
+            Vec::new(),
+            schemas,
+        );
+        assert_eq!(request.rendered().unwrap(), rendered);
+        assert_eq!(context.manifest.rendered_bytes, rendered.len() as u64);
+        // The payload sum is not the request: wrappers, protocol fields and escaping add bytes.
+        let sum = instructions.len() + serde_json::to_vec(&request.inputs).unwrap().len();
+        assert!(rendered.len() > sum);
     }
 }

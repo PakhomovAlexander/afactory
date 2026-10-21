@@ -92,6 +92,28 @@ mod tests {
         assert!(parse_task_pipeline(&text.replace("af.pipeline/1", "af.pipeline/2")).is_err());
     }
 
+    /// A pipeline with a Project Brief port is `af.pipeline/2` (ADR-0160); the same file
+    /// labelled `af.pipeline/1` is refused when it loads, naming the version it needs.
+    #[test]
+    fn a_brief_port_loads_only_under_af_pipeline_2() {
+        let path = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .join("fixtures/task-contracts/v2/pipeline-definition.json");
+        let definition: PipelineDefinitionV1 =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let text = toml::to_string(&definition).unwrap();
+        assert!(text.starts_with("schema = \"af.pipeline/2\""), "{text}");
+        assert_eq!(parse_task_pipeline(&text).unwrap(), definition);
+        let refused = parse_task_pipeline(&text.replace("af.pipeline/2", "af.pipeline/1"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("declares the Project Brief port project under af.pipeline/1"),
+            "{refused}"
+        );
+    }
+
     #[test]
     fn human_set_order_is_normalized_but_duplicates_are_not_silently_erased() {
         let text = toml::to_string(&definition()).unwrap();

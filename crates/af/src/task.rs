@@ -231,6 +231,48 @@ impl DeliveryLock {
     }
 }
 
+/// The git command delivery runs, in `directory` with the private `home`: nothing inherited but
+/// `PATH`, no user or system configuration, attributes file, hooks, fsmonitor, sparse checkout,
+/// external diff, transport or credential helper. `af project workspace new` runs the same
+/// command (ADR-0158).
+pub(crate) fn isolated_git(directory: &Path, home: &Path) -> ProcessCommand {
+    let mut command = ProcessCommand::new("git");
+    command.env_clear();
+    command
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("LC_ALL", "C")
+        .env("TZ", "UTC")
+        .current_dir(directory)
+        .args([
+            "--no-optional-locks",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "-c",
+            "core.sparseCheckout=false",
+            "-c",
+            "core.sparseCheckoutCone=false",
+            "-c",
+            "diff.external=",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "credential.helper=",
+        ]);
+    command
+}
+
 impl DeliveryGit {
     fn new(directory: impl Into<PathBuf>, home: impl Into<PathBuf>) -> Self {
         Self {
@@ -240,41 +282,7 @@ impl DeliveryGit {
     }
 
     fn command(&self) -> ProcessCommand {
-        let mut command = ProcessCommand::new("git");
-        command.env_clear();
-        command
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", &self.home)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_ATTR_NOSYSTEM", "1")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .env("LC_ALL", "C")
-            .env("TZ", "UTC")
-            .current_dir(&self.directory)
-            .args([
-                "--no-optional-locks",
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "core.autocrlf=false",
-                "-c",
-                "core.attributesFile=/dev/null",
-                "-c",
-                "core.sparseCheckout=false",
-                "-c",
-                "core.sparseCheckoutCone=false",
-                "-c",
-                "diff.external=",
-                "-c",
-                "protocol.allow=never",
-                "-c",
-                "credential.helper=",
-            ]);
-        command
+        isolated_git(&self.directory, &self.home)
     }
 
     fn run<I, S>(&self, args: I, input: Option<Vec<u8>>) -> Result<SupervisedOutput, String>
@@ -1361,7 +1369,7 @@ fn create_delivery_refs(git: &DeliveryGit, prepared: &DeliveryPrepared) -> Resul
     Ok(())
 }
 
-fn ensure_empty_linked_worktree(worktree: &Path) -> Result<(), String> {
+pub(crate) fn ensure_empty_linked_worktree(worktree: &Path) -> Result<(), String> {
     if !worktree.join(".git").is_file() {
         return Err("Git did not create a linked-worktree administration file".into());
     }

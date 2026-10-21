@@ -98,10 +98,22 @@ pub enum EventType {
     BuildCacheCapturedV1,
     #[serde(rename = "WorkspaceRebased@1")]
     WorkspaceRebasedV1,
+    #[serde(rename = "ProjectRegistered@1")]
+    ProjectRegisteredV1,
+    #[serde(rename = "WorkspaceRegistered@1")]
+    WorkspaceRegisteredV1,
+    #[serde(rename = "WorkspaceRemoved@1")]
+    WorkspaceRemovedV1,
+    #[serde(rename = "SurveyRecorded@1")]
+    SurveyRecordedV1,
+    #[serde(rename = "SurveyFailed@1")]
+    SurveyFailedV1,
+    #[serde(rename = "SurveyCollected@1")]
+    SurveyCollectedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 49] = [
         Self::TaskTransitionV5,
         Self::TaskExecutionStartedV1,
         Self::TaskReviewResultSelectedV1,
@@ -145,6 +157,12 @@ impl EventType {
         Self::WorkerNotesRecordedV1,
         Self::BuildCacheCapturedV1,
         Self::WorkspaceRebasedV1,
+        Self::ProjectRegisteredV1,
+        Self::WorkspaceRegisteredV1,
+        Self::WorkspaceRemovedV1,
+        Self::SurveyRecordedV1,
+        Self::SurveyFailedV1,
+        Self::SurveyCollectedV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -192,6 +210,12 @@ impl EventType {
             Self::WorkerNotesRecordedV1 => "WorkerNotesRecorded@1",
             Self::BuildCacheCapturedV1 => "BuildCacheCaptured@1",
             Self::WorkspaceRebasedV1 => "WorkspaceRebased@1",
+            Self::ProjectRegisteredV1 => "ProjectRegistered@1",
+            Self::WorkspaceRegisteredV1 => "WorkspaceRegistered@1",
+            Self::WorkspaceRemovedV1 => "WorkspaceRemoved@1",
+            Self::SurveyRecordedV1 => "SurveyRecorded@1",
+            Self::SurveyFailedV1 => "SurveyFailed@1",
+            Self::SurveyCollectedV1 => "SurveyCollected@1",
         }
     }
 
@@ -245,6 +269,12 @@ impl EventType {
             Self::WorkerNotesRecordedV1 => ("WorkerNotesRecorded", 1),
             Self::BuildCacheCapturedV1 => ("BuildCacheCaptured", 1),
             Self::WorkspaceRebasedV1 => ("WorkspaceRebased", 1),
+            Self::ProjectRegisteredV1 => ("ProjectRegistered", 1),
+            Self::WorkspaceRegisteredV1 => ("WorkspaceRegistered", 1),
+            Self::WorkspaceRemovedV1 => ("WorkspaceRemoved", 1),
+            Self::SurveyRecordedV1 => ("SurveyRecorded", 1),
+            Self::SurveyFailedV1 => ("SurveyFailed", 1),
+            Self::SurveyCollectedV1 => ("SurveyCollected", 1),
         }
     }
 }
@@ -334,6 +364,12 @@ impl std::str::FromStr for EventType {
             "WorkerNotesRecorded@1" => Ok(Self::WorkerNotesRecordedV1),
             "BuildCacheCaptured@1" => Ok(Self::BuildCacheCapturedV1),
             "WorkspaceRebased@1" => Ok(Self::WorkspaceRebasedV1),
+            "ProjectRegistered@1" => Ok(Self::ProjectRegisteredV1),
+            "WorkspaceRegistered@1" => Ok(Self::WorkspaceRegisteredV1),
+            "WorkspaceRemoved@1" => Ok(Self::WorkspaceRemovedV1),
+            "SurveyRecorded@1" => Ok(Self::SurveyRecordedV1),
+            "SurveyFailed@1" => Ok(Self::SurveyFailedV1),
+            "SurveyCollected@1" => Ok(Self::SurveyCollectedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -871,6 +907,36 @@ pub fn validate_event_payload(
             rebased
                 .validate()
                 .map_err(|error| format!("WorkspaceRebased@1: {error}"))
+        }
+        EventType::ProjectRegisteredV1 => {
+            serde_json::from_value::<crate::ProjectRegisteredPayloadV1>(payload.clone())
+                .map_err(|error| format!("ProjectRegistered@1: {error}"))?
+                .validate()
+        }
+        EventType::WorkspaceRegisteredV1 => {
+            serde_json::from_value::<crate::WorkspaceRegisteredPayloadV1>(payload.clone())
+                .map_err(|error| format!("WorkspaceRegistered@1: {error}"))?
+                .validate()
+        }
+        EventType::WorkspaceRemovedV1 => {
+            serde_json::from_value::<crate::WorkspaceRemovedPayloadV1>(payload.clone())
+                .map_err(|error| format!("WorkspaceRemoved@1: {error}"))?
+                .validate()
+        }
+        EventType::SurveyRecordedV1 => {
+            serde_json::from_value::<crate::SurveyRecordedPayloadV1>(payload.clone())
+                .map_err(|error| format!("SurveyRecorded@1: {error}"))?
+                .validate()
+        }
+        EventType::SurveyFailedV1 => {
+            serde_json::from_value::<crate::SurveyFailedPayloadV1>(payload.clone())
+                .map_err(|error| format!("SurveyFailed@1: {error}"))?
+                .validate()
+        }
+        EventType::SurveyCollectedV1 => {
+            serde_json::from_value::<crate::project::SurveyCollectedPayloadV1>(payload.clone())
+                .map_err(|error| format!("SurveyCollected@1: {error}"))?
+                .validate()
         }
     }
 }

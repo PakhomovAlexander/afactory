@@ -939,7 +939,7 @@
       "type": "array",
       "minItems": 1,
       "items": {
-        "$ref": "urn:af:schema:task-storage-sweep:1"
+        "$ref": "urn:af:schema:task-storage-sweep:2"
       }
     },
     "experiments": {

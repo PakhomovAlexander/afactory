@@ -598,7 +598,7 @@ impl EventStore {
         &mut self,
         cas: &Cas,
         lease: &TaskLease,
-        sweep: review_core::task::storage_sweep::TaskStorageSweepV1,
+        sweep: review_core::task::storage_sweep::TaskStorageSweepV2,
     ) -> Result<RunEvent, StoreError> {
         self.task_change(cas, lease, TaskChangeV1::StorageSweep { sweep }, now()?)
     }

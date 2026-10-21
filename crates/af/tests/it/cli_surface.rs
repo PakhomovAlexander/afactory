@@ -263,6 +263,191 @@ fn provider_models_help_and_man_page_describe_the_command() {
     assert!(page.contains("list_models"), "{page}");
 }
 
+/// `af project` is a namespace of its own with long help and examples, listed in `af --help`,
+/// and every `af task` command that takes `--state` takes `--workspace` beside it (ADR-0158).
+#[test]
+fn project_help_and_the_workspace_flag_describe_the_commands() {
+    let root = out(&af(&["--help"]));
+    assert!(
+        root.lines()
+            .any(|line| line.trim_start().starts_with("project ")),
+        "{root}"
+    );
+    for help in [af(&["project", "--help"]), af(&["help", "project"])] {
+        assert!(help.status.success(), "{}", err(&help));
+        let text = out(&help).split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "Usage: af project <COMMAND>",
+            "show",
+            "workspaces",
+            "workspace",
+            "af/project-id@1\\0",
+            "$XDG_STATE_HOME/af/project/<hex>/",
+            "workspaces.toml",
+            "git fetch --unshallow",
+            "--workspace LABEL",
+            "Never: writes inside a checkout, commits, pushes, or removes a Store.",
+            "af/project@1",
+            "af/error@1",
+            "af project workspace new research --branch agent/research",
+            "af project workspace remove research --delete-worktree",
+        ] {
+            assert!(text.contains(needle), "`{needle}` missing:\n{text}");
+        }
+        assert!(!text.contains("ledger"), "{text}");
+    }
+    let workspace = out(&af(&["project", "workspace", "--help"]));
+    for command in ["new", "add", "remove"] {
+        assert!(
+            workspace
+                .lines()
+                .any(|line| line.trim_start().starts_with(&format!("{command} "))),
+            "{workspace}"
+        );
+    }
+    let new = out(&af(&["project", "workspace", "new", "--help"]));
+    let new = new.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "`git worktree add --no-checkout`",
+        "no checkout, filter or hook of the repository runs on this machine",
+        "Every check runs before anything is made",
+        "inside `$XDG_STATE_HOME/af` is a usage error (exit 2)",
+        "undone newest first",
+    ] {
+        assert!(new.contains(needle), "`{needle}` missing:\n{new}");
+    }
+    let bare = af(&["project"]);
+    assert_eq!(bare.status.code(), Some(2));
+    assert!(err(&bare).contains("Usage: af project"), "{}", err(&bare));
+    for command in [
+        &["task", "plan"][..],
+        &["task", "start"],
+        &["task", "run"],
+        &["task", "show"],
+        &["task", "list"],
+        &["task", "explain"],
+        &["task", "deliver"],
+        &["task", "report"],
+        &["task", "gc"],
+    ] {
+        let mut args = command.to_vec();
+        args.push("--help");
+        let help = out(&af(&args));
+        assert!(help.contains("--workspace <LABEL>"), "{command:?}: {help}");
+    }
+    let both = af(&["task", "list", "--workspace", "w", "--state", "/tmp/state"]);
+    assert_eq!(both.status.code(), Some(2));
+    assert!(err(&both).contains("cannot be used with"), "{}", err(&both));
+
+    let dir = tempfile::tempdir().unwrap();
+    let man = af(&["self", "man", dir.path().to_str().unwrap()]);
+    assert!(man.status.success(), "{}", err(&man));
+    for page in [
+        "af-project.1",
+        "af-project-show.1",
+        "af-project-workspace-new.1",
+    ] {
+        assert!(dir.path().join(page).is_file(), "{page} missing");
+    }
+}
+
+/// The Surveyor's commands (ADR-0159) are listed under `af project` with their documents, the
+/// skip rule, the bound and the email rule, and each has its own manual page.
+#[test]
+fn project_survey_refresh_and_history_describe_the_surveyor() {
+    let project = out(&af(&["project", "--help"]));
+    for command in ["survey", "refresh", "history"] {
+        assert!(
+            project
+                .lines()
+                .any(|line| line.trim_start().starts_with(&format!("{command} "))),
+            "{project}"
+        );
+    }
+    let project = project.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "af/ProjectSurvey@2",
+        "af/project-history@2",
+        "`af onboard --apply` and on `af project refresh`",
+        "never stores an author email",
+        "survey key (head, refs, policy digest, Surveyor version) is unchanged",
+        "af project refresh",
+    ] {
+        assert!(project.contains(needle), "`{needle}` missing:\n{project}");
+    }
+    let refresh = out(&af(&["project", "refresh", "--help"]));
+    let refresh = refresh.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "unchanged survey key",
+        "prints `unchanged: head …, refs …, policy …, surveyor …`",
+        "--force",
+        "`[survey] max_wall_ms`, checked at every item",
+        "`max_survey_bytes`",
+        "calls no Provider, runs no hook or project code and writes nothing inside the checkout",
+        "first 16 hex digits of SHA-256 of the lowercased, trimmed email",
+        "SurveyFailed@1",
+        "AF_SURVEY__MAX_COMMITS=1000 af project refresh",
+    ] {
+        assert!(refresh.contains(needle), "`{needle}` missing:\n{refresh}");
+    }
+    let survey = out(&af(&["project", "survey", "--help"]));
+    assert!(survey.contains("--json"), "{survey}");
+    assert!(survey.contains("af project refresh"), "{survey}");
+    let history = out(&af(&["project", "history", "--help"]));
+    assert!(history.contains("af/project-history@2"), "{history}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let man = af(&["self", "man", dir.path().to_str().unwrap()]);
+    assert!(man.status.success(), "{}", err(&man));
+    for page in [
+        "af-project-survey.1",
+        "af-project-refresh.1",
+        "af-project-history.1",
+    ] {
+        assert!(dir.path().join(page).is_file(), "{page} missing");
+    }
+}
+
+/// `af project brief` (ADR-0160) is listed under `af project` with the Brief, says what it prints
+/// and records, and has its own manual page.
+#[test]
+fn project_brief_describes_the_exact_bytes_a_port_carries() {
+    let project = out(&af(&["project", "--help"]));
+    assert!(
+        project
+            .lines()
+            .any(|line| line.trim_start().starts_with("brief ")),
+        "{project}"
+    );
+    let project = project.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "af/ProjectBrief@1",
+        "`[brief.<name>]` variant",
+        "af/project-brief-preview@1",
+        "af project brief --variant orient",
+    ] {
+        assert!(project.contains(needle), "`{needle}` missing:\n{project}");
+    }
+    let brief = out(&af(&["project", "brief", "--help"]));
+    let brief = brief.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "--variant <NAME>",
+        "--survey <ID>",
+        "--json",
+        "exactly the canonical bytes a plan would bind",
+        "`orient` (tree, vocabulary, decisions, checks, hot_paths in 8192 bytes",
+        "last-declared first",
+        "`outcome: none` with its reason (`variant_none`, `no_survey`), exit 0",
+        "registers nothing, records nothing and writes nothing inside the checkout",
+    ] {
+        assert!(brief.contains(needle), "`{needle}` missing:\n{brief}");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let man = af(&["self", "man", dir.path().to_str().unwrap()]);
+    assert!(man.status.success(), "{}", err(&man));
+    assert!(dir.path().join("af-project-brief.1").is_file());
+}
+
 /// `af telemetry`, its commands and `af help telemetry` say what they print, what they never
 /// do, their options and their exit codes, in `--help`, in `af help` and in the man pages
 /// (ADR-0153, ADR-0146).

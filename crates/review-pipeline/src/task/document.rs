@@ -64,6 +64,7 @@ fn port(artifact_type: &str, optional: bool) -> PipelinePortV1 {
         optional,
         affinity: PortAffinityV1::Unbound {},
         root_default: None,
+        brief: None,
         covers: BTreeSet::new(),
     }
 }

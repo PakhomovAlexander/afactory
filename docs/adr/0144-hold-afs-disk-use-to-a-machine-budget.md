@@ -114,7 +114,8 @@ remote check left two branches and a draft pull request open.
    totals on the Task that run executed — a Task that sweep never collects or evicts, so the
    record always has its Task; a later sweep takes it under the same rules as any other — as one
    `storage_sweep` transition carrying
-   `af/TaskStorageSweep@1` inline (at most 256 removals and 64 failures listed, the rest counted;
+   `af/TaskStorageSweep@1` inline (`@2` since ADR-0159 clause 13, which can say its total after
+   is `unknown`; at most 256 removals and 64 failures listed, the rest counted;
    a sweep that removed nothing and failed nothing records nothing), which `af task show` prints
    as one line. Triggers: the end of every `af task run`, `af task start --execute` and `af
    review run` whatever the outcome, a run refused before it started work included (the budget

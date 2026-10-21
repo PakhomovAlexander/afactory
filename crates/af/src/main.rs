@@ -41,6 +41,10 @@ mod model_check;
 mod model_failures;
 mod onboard;
 mod project;
+/// Project Briefs (ADR-0160), beside the Surveyor they render from.
+#[path = "projects/brief.rs"]
+mod project_brief;
+mod projects;
 mod providers;
 mod report_tasks;
 mod review_task;
@@ -1161,6 +1165,18 @@ fn main() {
     // A command that runs a kernel run records it (ADR-0153); every other command opens no
     // telemetry directory.
     let mut recording = recorded_run(&command).map(telemetry::begin);
+    // Registered best effort (ADR-0158): `af task plan|start` before `--workspace` resolves,
+    // every other command once it ran.
+    let registers = projects::lazy_target(&command);
+    if let Some(lazy) = registers.as_ref().filter(|lazy| lazy.first) {
+        projects::register_lazily(lazy);
+    }
+    let delivered = projects::delivered_target(&command);
+    // `af onboard --apply` records the first Survey once it registered (ADR-0159).
+    let surveyed = match &command {
+        cli::Command::Onboard(args) if args.apply => Some((args.repo.clone(), args.json)),
+        _ => None,
+    };
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
         cli::Command::Review(namespace) => ("af review", review_command(namespace)),
         cli::Command::Provider { command } => ("af provider", provider_command(command)),
@@ -1230,229 +1246,24 @@ fn main() {
             task_execution::catalog::sync(&source, &revision, &manifest, &repo, &destination, json)
                 .map(|()| 0),
         ),
-        cli::Command::Task { command } => (
-            "af task",
-            match command {
-                cli::TaskCommand::Start {
-                    file,
-                    execute,
-                    bindings,
-                    source_bindings,
-                    repo,
-                    state,
-                    authority,
-                    uncommitted,
-                    timeout_secs,
+        cli::Command::Task { command } => ("af task", task_command(command)),
+        cli::Command::Project {
+            command:
+                cli::ProjectCli::Brief {
+                    variant,
+                    survey,
                     json,
-                } => task_execution::start(task_execution::StartOptions {
-                    file,
-                    bindings,
-                    source_bindings,
-                    repo,
-                    state,
-                    authority,
-                    uncommitted,
-                    json,
-                    plan_only: !execute,
-                    timeout_secs,
-                    optimization_history: None,
-                }),
-                cli::TaskCommand::Plan {
-                    file,
-                    bindings,
-                    source_bindings,
-                    repo,
-                    state,
-                    authority,
-                    uncommitted,
-                    json,
-                } => {
-                    // A plan reads each bound Provider's catalog token-free and names every
-                    // Model binding's verdict (ADR-0148).
-                    model_check::enable_plan_time();
-                    task_execution::start(task_execution::StartOptions {
-                        file,
-                        bindings,
-                        source_bindings,
-                        repo,
-                        state,
-                        authority,
-                        uncommitted,
-                        json,
-                        plan_only: true,
-                        timeout_secs: None,
-                        optimization_history: None,
-                    })
-                }
-                cli::TaskCommand::DecisionPayload {
-                    task_id,
-                    developer,
-                    decision,
-                    reason,
-                    output,
-                    inspect,
-                } => task_execution::developer::payload_file(
-                    &task_id,
-                    &developer,
-                    if decision == "approved" {
-                        review_core::task::plan::PlanDecisionKindV1::Approved
-                    } else {
-                        review_core::task::plan::PlanDecisionKindV1::Rejected
-                    },
-                    &reason,
-                    &output,
-                    &inspect,
-                ),
-                cli::TaskCommand::Approve {
-                    task_id,
-                    payload,
-                    signature,
-                    inspect,
-                } => task_execution::developer::apply(
-                    &task_id,
-                    review_core::task::plan::PlanDecisionKindV1::Approved,
-                    &payload,
-                    &signature,
-                    &inspect,
-                ),
-                cli::TaskCommand::Reject {
-                    task_id,
-                    payload,
-                    signature,
-                    inspect,
-                } => task_execution::developer::apply(
-                    &task_id,
-                    review_core::task::plan::PlanDecisionKindV1::Rejected,
-                    &payload,
-                    &signature,
-                    &inspect,
-                ),
-                cli::TaskCommand::Refresh {
-                    task_id,
-                    source_file,
-                    source_bindings,
-                    inspect,
-                } => task_execution::refresh::refresh(
-                    &task_id,
-                    source_file.as_deref(),
-                    source_bindings.as_deref(),
-                    &inspect,
-                ),
-                cli::TaskCommand::Run {
-                    task_id,
-                    confirm_plan,
-                    execute,
-                    inspect,
-                } => task_execution::run(
-                    &task_id,
-                    &inspect.repo,
-                    inspect.state.as_deref(),
-                    inspect.json,
-                    confirm_plan.as_deref(),
-                    execute,
-                ),
-                cli::TaskCommand::Output {
-                    task_id,
-                    port,
-                    format,
-                    output,
-                    inspect,
-                } => task_execution::domain::write_output(
-                    &task_id,
-                    &port,
-                    &format,
-                    &output,
-                    &inspect.repo,
-                    inspect.state.as_deref(),
-                    inspect.json,
-                ),
-                cli::TaskCommand::Export {
-                    task_id,
-                    name,
-                    destination,
-                    inspect,
-                } => task_execution::export::run(
-                    &task_id,
-                    &name,
-                    &destination,
-                    &inspect.repo,
-                    inspect.state.as_deref(),
-                    inspect.json,
-                ),
-                cli::TaskCommand::Explain {
-                    task_id,
-                    tree,
-                    plan,
-                    inspect,
-                } => task_execution::explain(
-                    &task_id,
-                    &inspect.repo,
-                    inspect.state.as_deref(),
-                    inspect.json,
-                    plan.as_deref(),
-                    tree,
-                ),
-                cli::TaskCommand::Deliver {
-                    task_id,
-                    repo,
-                    branch,
-                    worktree,
-                    confirm,
-                    state,
-                    json,
-                } => task::delivery_from_cli(task_id, repo, branch, worktree, confirm, state, json)
-                    .and_then(task::deliver)
-                    .map(|()| 0),
-                cli::TaskCommand::ObserveAdoption {
-                    task_id,
-                    commit,
-                    workload,
-                    model,
-                    environment,
-                    evidence_task,
-                    inspect,
-                } => task::observe_adoption(
-                    &task_id,
-                    &commit,
-                    &workload,
-                    &model,
-                    &environment,
-                    evidence_task.as_deref(),
-                    &inspect.repo,
-                    inspect.state.as_ref(),
-                    inspect.json,
-                )
-                .map(|()| 0),
-                cli::TaskCommand::List { sizes, inspect } => {
-                    task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
-                        .and_then(|options| task::list(options, sizes))
-                        .map(|()| 0)
-                }
-                cli::TaskCommand::Gc {
-                    older_than,
-                    keep,
-                    apply,
-                    inspect,
-                } => task_execution::collection::gc(
-                    older_than,
-                    keep,
-                    apply,
-                    &inspect.repo,
-                    inspect.state.as_deref(),
-                    inspect.json,
-                ),
-                cli::TaskCommand::Show { task_id, inspect } => {
-                    task::inspect_from_cli(Some(task_id), inspect.repo, inspect.state, inspect.json)
-                        .and_then(task::show)
-                        .map(|()| 0)
-                }
-                cli::TaskCommand::Report { task_ids, inspect } => {
-                    task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
-                        .and_then(|options| task::report(options, &task_ids))
-                        .map(|()| 0)
-                }
-            },
-        ),
+                },
+        } => ("af project", project_brief::command(variant, survey, json)),
+        cli::Command::Project {
+            command: cli::ProjectCli::Core(command),
+        } => {
+            let sections = match &command {
+                cli::ProjectCommand::Survey { json: false } => cli::survey_sections(&argv),
+                _ => Vec::new(),
+            };
+            ("af project", projects::survey::run(command, &sections))
+        }
         cli::Command::Config { command } => (
             "af config",
             match command {
@@ -1643,6 +1454,15 @@ fn main() {
         }
         exit_interrupted(&argv, prefix, signal, outcome.err());
     }
+    if let Some(lazy) = registers.as_ref().filter(|lazy| !lazy.first) {
+        projects::register_lazily(lazy);
+    }
+    if let Some((repo, json)) = &surveyed {
+        projects::survey::after_onboard(repo, *json);
+    }
+    if let (Some((worktree, task_id)), Ok(0)) = (&delivered, &outcome) {
+        projects::register_delivered(worktree, task_id);
+    }
     if collects_after {
         // Whatever the run's outcome; a failure here is a warning, never the exit status.
         storage::after_run();
@@ -1681,6 +1501,234 @@ fn main() {
     selfmgmt::after_command(&argv);
     if code != 0 {
         std::process::exit(code);
+    }
+}
+
+/// `af task`: `--workspace` resolved first, then the subcommand.
+fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
+    let command = projects::resolve_task_workspace(command)?;
+    match command {
+        cli::TaskCommand::Start {
+            file,
+            execute,
+            bindings,
+            source_bindings,
+            repo,
+            state,
+            authority,
+            uncommitted,
+            timeout_secs,
+            json,
+            workspace: _,
+        } => task_execution::start(task_execution::StartOptions {
+            file,
+            bindings,
+            source_bindings,
+            repo,
+            state,
+            authority,
+            uncommitted,
+            json,
+            plan_only: !execute,
+            timeout_secs,
+            optimization_history: None,
+        }),
+        cli::TaskCommand::Plan {
+            file,
+            bindings,
+            source_bindings,
+            repo,
+            state,
+            authority,
+            uncommitted,
+            json,
+            workspace: _,
+        } => {
+            // A plan reads each bound Provider's catalog token-free and names every
+            // Model binding's verdict (ADR-0148).
+            model_check::enable_plan_time();
+            task_execution::start(task_execution::StartOptions {
+                file,
+                bindings,
+                source_bindings,
+                repo,
+                state,
+                authority,
+                uncommitted,
+                json,
+                plan_only: true,
+                timeout_secs: None,
+                optimization_history: None,
+            })
+        }
+        cli::TaskCommand::DecisionPayload {
+            task_id,
+            developer,
+            decision,
+            reason,
+            output,
+            inspect,
+        } => task_execution::developer::payload_file(
+            &task_id,
+            &developer,
+            if decision == "approved" {
+                review_core::task::plan::PlanDecisionKindV1::Approved
+            } else {
+                review_core::task::plan::PlanDecisionKindV1::Rejected
+            },
+            &reason,
+            &output,
+            &inspect,
+        ),
+        cli::TaskCommand::Approve {
+            task_id,
+            payload,
+            signature,
+            inspect,
+        } => task_execution::developer::apply(
+            &task_id,
+            review_core::task::plan::PlanDecisionKindV1::Approved,
+            &payload,
+            &signature,
+            &inspect,
+        ),
+        cli::TaskCommand::Reject {
+            task_id,
+            payload,
+            signature,
+            inspect,
+        } => task_execution::developer::apply(
+            &task_id,
+            review_core::task::plan::PlanDecisionKindV1::Rejected,
+            &payload,
+            &signature,
+            &inspect,
+        ),
+        cli::TaskCommand::Refresh {
+            task_id,
+            source_file,
+            source_bindings,
+            inspect,
+        } => task_execution::refresh::refresh(
+            &task_id,
+            source_file.as_deref(),
+            source_bindings.as_deref(),
+            &inspect,
+        ),
+        cli::TaskCommand::Run {
+            task_id,
+            confirm_plan,
+            execute,
+            inspect,
+        } => task_execution::run(
+            &task_id,
+            &inspect.repo,
+            inspect.state.as_deref(),
+            inspect.json,
+            confirm_plan.as_deref(),
+            execute,
+        ),
+        cli::TaskCommand::Output {
+            task_id,
+            port,
+            format,
+            output,
+            inspect,
+        } => task_execution::domain::write_output(
+            &task_id,
+            &port,
+            &format,
+            &output,
+            &inspect.repo,
+            inspect.state.as_deref(),
+            inspect.json,
+        ),
+        cli::TaskCommand::Export {
+            task_id,
+            name,
+            destination,
+            inspect,
+        } => task_execution::export::run(
+            &task_id,
+            &name,
+            &destination,
+            &inspect.repo,
+            inspect.state.as_deref(),
+            inspect.json,
+        ),
+        cli::TaskCommand::Explain {
+            task_id,
+            tree,
+            plan,
+            inspect,
+        } => task_execution::explain(
+            &task_id,
+            &inspect.repo,
+            inspect.state.as_deref(),
+            inspect.json,
+            plan.as_deref(),
+            tree,
+        ),
+        cli::TaskCommand::Deliver {
+            task_id,
+            repo,
+            branch,
+            worktree,
+            confirm,
+            state,
+            json,
+            workspace: _,
+        } => task::delivery_from_cli(task_id, repo, branch, worktree, confirm, state, json)
+            .and_then(task::deliver)
+            .map(|()| 0),
+        cli::TaskCommand::ObserveAdoption {
+            task_id,
+            commit,
+            workload,
+            model,
+            environment,
+            evidence_task,
+            inspect,
+        } => task::observe_adoption(
+            &task_id,
+            &commit,
+            &workload,
+            &model,
+            &environment,
+            evidence_task.as_deref(),
+            &inspect.repo,
+            inspect.state.as_ref(),
+            inspect.json,
+        )
+        .map(|()| 0),
+        cli::TaskCommand::List { sizes, inspect } => {
+            task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
+                .and_then(|options| task::list(options, sizes))
+                .map(|()| 0)
+        }
+        cli::TaskCommand::Gc {
+            older_than,
+            keep,
+            apply,
+            inspect,
+        } => task_execution::collection::gc(
+            older_than,
+            keep,
+            apply,
+            &inspect.repo,
+            inspect.state.as_deref(),
+            inspect.json,
+        ),
+        cli::TaskCommand::Show { task_id, inspect } => {
+            task::inspect_from_cli(Some(task_id), inspect.repo, inspect.state, inspect.json)
+                .and_then(task::show)
+                .map(|()| 0)
+        }
+        cli::TaskCommand::Report { task_ids, inspect } => {
+            task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
+                .and_then(|options| task::report(options, &task_ids))
+                .map(|()| 0)
+        }
     }
 }
 

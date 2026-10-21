@@ -74,6 +74,7 @@ fn port(kind: &str, affinity: PortAffinityV1) -> PipelinePortV1 {
         optional: false,
         affinity,
         root_default: None,
+        brief: None,
         covers: BTreeSet::new(),
     }
 }
@@ -120,7 +121,7 @@ pub fn pipeline(checks: &[&str], remote: &[&str]) -> PipelineDefinitionV1 {
         port: "source".into(),
     };
     PipelineDefinitionV1 {
-        schema: PipelineSchemaV1::V1,
+        schema: PipelineSchema::V1,
         name: PIPELINE.into(),
         version: "1.0.0".into(),
         contract: contract(),
@@ -160,7 +161,7 @@ pub fn pipeline(checks: &[&str], remote: &[&str]) -> PipelineDefinitionV1 {
 /// A parent Pipeline whose only node calls `PIPELINE`, so its check node is a child's.
 pub fn parent() -> PipelineDefinitionV1 {
     PipelineDefinitionV1 {
-        schema: PipelineSchemaV1::V1,
+        schema: PipelineSchema::V1,
         name: PARENT.into(),
         version: "1.0.0".into(),
         contract: contract(),

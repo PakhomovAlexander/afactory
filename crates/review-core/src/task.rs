@@ -20,6 +20,7 @@ pub mod owned_children;
 pub mod pipeline;
 pub mod plan;
 pub mod planning;
+pub mod project_brief;
 pub mod provider;
 pub mod remote_check;
 pub mod repair;
