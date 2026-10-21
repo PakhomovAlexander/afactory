@@ -33,7 +33,8 @@
   without a seal (the `.corrupt` file another reader's recovery left), exits 1 for an unknown
   run before following anything (naming the unreadable segment instead when one could hold
   it), refuses naming a `.corrupt` segment that held one of the run's executions or exists
-  while the run cannot be found, and follows a run in one Store, refusing with `--store`
+  while the run cannot be found, also one renamed after it started, before it ever saw it
+  (checked at every look and before it exits 0), and follows a run in one Store, refusing with `--store`
   guidance, once the followed Store's pending records are printed, a second Store that starts
   the same run id while it is followed, even in a segment sealed during its startup or between
   two of its looks.

@@ -362,7 +362,10 @@ and exits 1 without following anything. A segment recovery renamed `.corrupt` is
 so tail looks into it for the run: when it held one of the run's executions (an `af.run` of
 the run, or an invalid line naming the run id), or the run cannot be found at all while any
 `.corrupt` segment exists, tail names that `.corrupt` file and exits 1 instead of finishing
-over the readable executions. It then follows that run in one Store for its whole lifetime: the
+over the readable executions. Tail looks again at every look while it follows and once more
+before it exits 0: a segment another reader's recovery renamed `.corrupt` after tail started,
+before tail ever saw it, fails tail the same way when it held one of the run's executions. It
+then follows that run in one Store for its whole lifetime: the
 one `--store ID` names, else the one Store that records it when tail starts. When two Stores
 record the run id without `--store`, at the start or once a second Store starts it while it is
 followed (also in a segment created and sealed during tail's startup or between two of its

@@ -1424,6 +1424,41 @@ fn corrupt_could_hold(
     Ok(None)
 }
 
+/// With a run selected, refuse every `.corrupt` segment of `corrupt` not yet in `judged` that
+/// could hold an execution of it ([`corrupt_could_hold`], within the Store `--store` named):
+/// one another reader's recovery renamed after [`tail_start`] listed the directory, before
+/// `tail` ever saw it, which `tail` would otherwise finish over or wait past. Every segment
+/// judged unable to hold the run joins `judged` and is never read again.
+fn refuse_new_corrupt(
+    segments: &Confined,
+    corrupt: &[String],
+    selection: &TailSelection,
+    judged: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let Some(run_id) = selection.run_id.as_deref() else {
+        return Ok(());
+    };
+    let store = selection
+        .store_named
+        .then_some(selection.store_id.as_deref())
+        .flatten();
+    for id in corrupt {
+        if judged.contains(id) {
+            continue;
+        }
+        if let Some(why) = corrupt_could_hold(segments, id, run_id, store)? {
+            return Err(format!(
+                "{}: an unreadable segment (interior corruption; {why}); renamed by another \
+                 reader's recovery while tail ran, never read, so run {run_id} cannot be followed \
+                 whole",
+                segments.join(&format!("{id}{}", layout::CORRUPT)).display()
+            ));
+        }
+        judged.insert(id.clone());
+    }
+    Ok(())
+}
+
 /// The segments holding the `af.run` spans of the trace `trace_id`'s executions.
 fn execution_segments(index: &Index, trace_id: &str) -> Result<BTreeSet<String>, String> {
     let mut statement = index
@@ -1620,7 +1655,10 @@ impl Followed {
 /// segment is emitted, whatever order the segments sort in. With a run selected, every sealed
 /// segment outside [`TailSelection::sealed_baseline`] is inspected for it, those of the first
 /// listing included (one created and sealed between the run's lookup and the first look, or
-/// between two looks): a second Store there is refused the same way.
+/// between two looks): a second Store there is refused the same way. With a run selected, every
+/// look and every success first judge each `.corrupt` segment not judged before: one that could
+/// hold an execution of the run (renamed by another reader's recovery after [`tail_start`]'s
+/// listing, before `tail` saw it) fails it, naming the `.corrupt` file.
 pub fn tail(
     root: &Path,
     selection: &TailSelection,
@@ -1640,6 +1678,8 @@ pub fn tail(
     let mut preexisting: Option<BTreeSet<String>> = selection.sealed_baseline.clone();
     // A run nobody writes: its sealed segments, read on the first look.
     let mut sealed_run = selection.sealed_run.clone();
+    // The `.corrupt` segments judged unable to hold the selected run.
+    let mut judged: BTreeSet<String> = BTreeSet::new();
     let mut first = true;
     loop {
         if segments.is_none() {
@@ -1666,6 +1706,7 @@ pub fn tail(
         }
         if let Some(directory) = &segments {
             let listing = reader::list_in(directory)?;
+            refuse_new_corrupt(directory, &listing.corrupt, selection, &mut judged)?;
             for id in listing.live.iter().chain(&listing.unsealed) {
                 followed.entry(id.clone()).or_default();
             }
@@ -1817,6 +1858,10 @@ pub fn tail(
             let nobody_writes = first && selection.sealed_run.is_some();
             if (nobody_writes || !carrying.is_empty()) && carrying.iter().all(|state| state.sealed)
             {
+                // Once more before success: a segment renamed `.corrupt` since this look's
+                // listing could hold an execution the lines above omit.
+                let corrupt = reader::list_in(directory)?.corrupt;
+                refuse_new_corrupt(directory, &corrupt, selection, &mut judged)?;
                 return Ok(Tailed::Done);
             }
         } else if first && selection.sealed_run.is_some() {
@@ -1828,6 +1873,10 @@ pub fn tail(
             ));
         }
         if stop() {
+            if let Some(directory) = &segments {
+                let corrupt = reader::list_in(directory)?.corrupt;
+                refuse_new_corrupt(directory, &corrupt, selection, &mut judged)?;
+            }
             return Ok(Tailed::Done);
         }
         first = false;

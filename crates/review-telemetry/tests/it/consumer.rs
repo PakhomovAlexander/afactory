@@ -442,6 +442,159 @@ fn telemetry_tail_refuses_a_second_store_sealed_during_startup() {
     a.finish(SealExit::Ok).unwrap().unwrap();
 }
 
+/// Interior corruption in the live segment `writer` writes (an invalid complete line, then a
+/// valid record on `run`), its writer then dead before its seal: recovery renames it `.corrupt`.
+fn corrupt_and_abandon(writer: &Writer, run: &str) {
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(writer.path().unwrap())
+        .unwrap()
+        .write_all(b"{\"t\":\"event\",\"not\":\"a record\"}\n")
+        .unwrap();
+    writer.event(run, "af.after", Attrs::new());
+    writer.flush();
+    writer.abandon();
+}
+
+/// Another reader's recovery of `segment`: it finds the interior corruption and renames it
+/// `.corrupt`; the path of that file.
+fn recovered_as_corrupt(root: &std::path::Path, segment: &str) -> std::path::PathBuf {
+    let layout = review_telemetry::layout::Layout::new(root);
+    assert_eq!(
+        reader::recover(&layout, segment).unwrap(),
+        reader::Recovery::Corrupt {
+            segment_id: segment.to_string()
+        }
+    );
+    let corrupt = layout.corrupt_segment(segment);
+    assert!(corrupt.is_file() && !layout.live_segment(segment).exists());
+    corrupt
+}
+
+/// Design §6 and §10: a reader refuses what it cannot read, also when the corruption is found
+/// after tail checked for it. Barrier controlled, with and without the Store named (`--store`):
+/// RUN has one sealed execution and a second, unsealed one that another reader recovers and
+/// renames `.corrupt` after [`view::tail_start`]'s listing — at a barrier before tail's first
+/// look, and at a barrier mid-follow (while tail prints the sealed execution's lines) — and
+/// RUN's only execution, live when it is resolved, renamed the same way before the first look.
+/// Every time tail fails naming the `.corrupt` file: never finishing over the sealed execution
+/// while omitting the corrupt one, never waiting past it, never calling the run unknown.
+#[test]
+fn telemetry_tail_refuses_a_segment_renamed_corrupt_after_its_startup_check() {
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Case {
+        BeforeFirstLook,
+        MidFollow,
+        OnlyExecution,
+    }
+    let store = "a".repeat(64);
+    for named in [false, true] {
+        for case in [Case::BeforeFirstLook, Case::MidFollow, Case::OnlyExecution] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut sealed = None;
+            if case != Case::OnlyExecution {
+                let (writer, command, run, segment) = live_run_in(temp.path(), &store);
+                writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
+                writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+                writer.finish(SealExit::Ok).unwrap().unwrap();
+                sealed = Some(segment);
+            }
+            // The second execution as RUN is resolved: unsealed with interior corruption (the
+            // index forgets it), live and valid (the run's only execution), or not yet started
+            // (it starts mid-follow).
+            let mut live = None;
+            let mut unsealed = None;
+            match case {
+                Case::BeforeFirstLook => {
+                    let (writer, _, run, segment) = live_run_in(temp.path(), &store);
+                    corrupt_and_abandon(&writer, &run);
+                    unsealed = Some(segment);
+                }
+                Case::OnlyExecution => live = Some(live_run_in(temp.path(), &store)),
+                Case::MidFollow => {}
+            }
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let (sender, received) = mpsc::channel();
+            let (root, gate) = (temp.path().to_path_buf(), barrier.clone());
+            let named_store = named.then(|| store.clone());
+            let tail = std::thread::spawn(move || {
+                let selection =
+                    match view::tail_start(&root, Some("run-1"), named_store.as_deref())? {
+                        view::TailStart::Follow(selection) => selection,
+                        other => return Err(format!("{other:?}")),
+                    };
+                // The startup check is done; the segment is renamed before the first look.
+                if case != Case::MidFollow {
+                    gate.wait();
+                    gate.wait();
+                }
+                let mut paused = false;
+                let started = Instant::now();
+                view::tail(
+                    &root,
+                    &selection,
+                    Duration::from_millis(5),
+                    &|| started.elapsed() > Duration::from_secs(20),
+                    &mut |line| {
+                        // Mid-follow: the first printed line of the sealed execution waits while
+                        // the second execution starts, dies and is renamed.
+                        if case == Case::MidFollow && !paused {
+                            paused = true;
+                            gate.wait();
+                            gate.wait();
+                        }
+                        let _ = sender.send(line.clone());
+                        Ok(())
+                    },
+                )
+            });
+            barrier.wait();
+            let segment = match case {
+                Case::BeforeFirstLook => unsealed.take().unwrap(),
+                Case::OnlyExecution => {
+                    let (writer, _, run, segment) = live.take().unwrap();
+                    corrupt_and_abandon(&writer, &run);
+                    segment
+                }
+                Case::MidFollow => {
+                    let (writer, _, run, segment) = live_run_in(temp.path(), &store);
+                    corrupt_and_abandon(&writer, &run);
+                    segment
+                }
+            };
+            let corrupt = recovered_as_corrupt(temp.path(), &segment);
+            barrier.wait();
+            let error = tail
+                .join()
+                .unwrap()
+                .expect_err(&format!("{case:?}, named {named}: tail refuses"));
+            assert!(
+                error.contains(&corrupt.display().to_string())
+                    && error.contains("interior corruption"),
+                "{case:?}, named {named}: names the .corrupt file: {error}"
+            );
+            assert!(
+                !error.to_lowercase().contains("unknown"),
+                "{case:?}: {error}"
+            );
+            let lines: Vec<_> = received.try_iter().collect();
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| Some(&line.segment_id) == sealed.as_ref()),
+                "{case:?}: nothing of the corrupt segment: {lines:?}"
+            );
+            if case == Case::MidFollow {
+                assert!(
+                    !lines.is_empty(),
+                    "mid-follow: the sealed execution was printing"
+                );
+            }
+        }
+    }
+}
+
 /// A consumer blocked in a write is abandoned at the seal within the 2 s bound: ending the run
 /// waits for nothing, and no other thread writes, seals or replaces the segment, which stays
 /// `.jsonl` with what was flushed.
