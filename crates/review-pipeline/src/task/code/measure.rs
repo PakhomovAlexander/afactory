@@ -259,7 +259,7 @@ impl CodeTaskDomain {
             .iter()
             .flat_map(|rustup| rustup.environment())
             .fold(runner, |runner, (key, value)| runner.with_env(key, value));
-        let (session, prepared) = match session {
+        let (session, mut prepared) = match session {
             Some(session) => {
                 let prepared = session.prepare(
                     cas,
@@ -281,10 +281,13 @@ impl CodeTaskDomain {
         }
         // Hold the warm key before refreshing, for every repetition: another holder may
         // have built a newer artifact while preparation waited for the lock.
-        let source_refresh = sandbox.refresh_source_mtimes(
-            cancellation,
-            Duration::from_millis(deadline.saturating_sub(now_ms()?).min(remaining)),
-        );
+        let budget = Duration::from_millis(deadline.saturating_sub(now_ms()?).min(remaining));
+        let source_refresh = match prepared.as_mut() {
+            Some(prepared) => {
+                prepared.refresh_source_mtimes(&sandbox, runtime.path(), cancellation, budget)
+            }
+            None => sandbox.refresh_source_mtimes(None, cancellation, budget),
+        };
         super::super::control::check(cancellation)?;
         if source_refresh
             .as_ref()
