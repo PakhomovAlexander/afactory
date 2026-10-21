@@ -67,6 +67,80 @@ def prepared(path):
     return Ready.prepared.clone(path)
 
 
+
+class MixedHostedGroups(unittest.TestCase):
+    """Each case uses its own paired shard's CPU, even in a mixed-host whole trial."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="af-perf-mixed-groups-")
+        cls.other_cpu = "Synthetic second CPU"
+        cls.groups = [
+            {"group_id": "hosted_x86", "cpu_model": fixtures.CPU, "image": fixtures.IMAGE},
+            {"group_id": "second", "cpu_model": cls.other_cpu, "image": fixtures.IMAGE}]
+        cls.options = {"baseline_ms": {fixtures.CPU: Fraction(100), cls.other_cpu: Fraction(200)},
+                       "loop_cost_ns": {fixtures.CPU: Fraction(50), cls.other_cpu: Fraction(25)}}
+        cls.cpus = {0: fixtures.CPU, 1: cls.other_cpu}
+        cls.lab = fixtures.Lab(os.path.join(cls.tmp, "source"), groups=cls.groups)
+        for index, member in enumerate(cls.lab.cohort["members"]):
+            if member["kind"] in ("aa", "preparation"):
+                cpus = cls.cpus if index % 2 == 0 else {0: cls.other_cpu, 1: fixtures.CPU}
+                cls.lab.run(member["member_id"], minute=index, cpu=cpus, **cls.options)
+        cls.sealed = cls.lab.prepare()
+        cls.prepared = cls.lab.clone(os.path.join(cls.tmp, "prepared"))
+        cls.lab.run_phase(("injection", "power"), cpu=cls.cpus, **cls.options)
+        cls.doc = cls.lab.readiness()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, True)
+
+    def test_mixed_shards_preserve_per_case_preparation_and_whole_trial_counts(self):
+        self.assertTrue(self.doc["ready"])
+        self.assertEqual(self.doc["tallies"]["aa_within_tolerance"], 20)
+        self.assertEqual(self.doc["tallies"]["power_qualifying"], 10)
+        self.assertEqual(self.doc["tallies"]["power_by_group"], {
+            "hosted_x86": {"members": 10, "qualifying": 10},
+            "second": {"members": 10, "qualifying": 10}})
+        for case in self.lab.cohort["cases"]:
+            first = contracts.calibration_group(self.sealed, case["instance_id"], "hosted_x86")
+            second = contracts.calibration_group(self.sealed, case["instance_id"], "second")
+            self.assertEqual(first["a0"], format_rational(Fraction(100)))
+            self.assertEqual(second["a0"], format_rational(Fraction(200)))
+            self.assertEqual(first["iterations"]["power"], 200000)
+            self.assertEqual(second["iterations"]["power"], 800000)
+        member = next(item for item in self.doc["members"] if item["member_id"] == "power_01")
+        self.assertEqual(set(member["cpu_groups"].values()), {"hosted_x86", "second"})
+        for ident, case in member["cases"].items():
+            target = Fraction(10 if member["cpu_groups"][ident] == "hosted_x86" else 20)
+            self.assertEqual(case["target_ms"], format_rational(target))
+            self.assertTrue(case["injection_valid"])
+
+    def test_one_unknown_shard_invalidates_the_whole_original(self):
+        lab = self.prepared.clone(os.path.join(self.tmp, "unknown"))
+        lab.run("power_01", minute=1, cpu={0: fixtures.CPU, 1: "Unlisted CPU"}, **self.options)
+        doc = lab.readiness()
+        member = next(item for item in doc["members"] if item["member_id"] == "power_01")
+        self.assertEqual(member["status"], "invalid")
+        self.assertIn("cpu_group_mismatch", member["reasons"])
+        self.assertFalse(member["qualifies"])
+        self.assertEqual(doc["tallies"]["power_members"], 10)
+        self.assertEqual(doc["tallies"]["power_qualifying"], 0)
+
+    def test_missing_or_relabelled_case_group_cannot_validate(self):
+        for change in ("missing", "relabelled", "unknown"):
+            with self.subTest(change=change):
+                doc = copy.deepcopy(self.doc)
+                member = next(item for item in doc["members"] if item["member_id"] == "power_01")
+                ident = next(ident for ident, group in member["cpu_groups"].items()
+                             if group == "second")
+                if change == "missing":
+                    del member["cpu_groups"][ident]
+                else:
+                    member["cpu_groups"][ident] = "hosted_x86" if change == "relabelled" else "unknown"
+                with self.assertRaises(ContractError):
+                    contracts.validate_readiness(doc, cohort=self.lab.cohort, calibration=self.sealed)
+
 class ReadyCohort(unittest.TestCase):
     def setUp(self):
         self.lab, self.sealed, self.doc = Ready.lab, Ready.sealed, Ready.doc
@@ -1039,7 +1113,7 @@ class Arithmetic(unittest.TestCase):
         members = self.records()
         for member in members:
             if member["kind"] == "power" and member["member_id"] <= "power_02":
-                member["cpu_group"] = "elsewhere"
+                member["cpu_groups"] = {ident: "elsewhere" for ident in member["cases"]}
         tallies, _, _, ready = self.decide(members)
         self.assertEqual(tallies["power_by_group"], {
             "elsewhere": {"members": 2, "qualifying": 0},
