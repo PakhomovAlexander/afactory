@@ -230,6 +230,14 @@ fn entries(listing: &[u8]) -> Result<Vec<(String, String)>, String> {
     Ok(entries)
 }
 
+/// `af catalog digest`: the pin digest of one local Task package, after capture's validation.
+/// Reads the package's files and nothing else.
+pub(crate) fn digest(package: &Path) -> Result<(), String> {
+    let local = review_config::task::catalog::TaskPlanCompiler::local_package(package)?;
+    println!("{}", local.digest);
+    Ok(())
+}
+
 pub(crate) fn sync(
     source: &str,
     revision: &str,

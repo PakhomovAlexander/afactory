@@ -7,7 +7,8 @@ a small nextest JUnit and nextest config; the config reader is checked on the re
 `.config/nextest.toml` against that file's own raw text, so it holds whichever tests the file
 marks exclusive. The wiring scenarios prove that the report never changes the test step's exit
 status, whether the JUnit is there, left by an earlier run, miscounted, unreadable or the script
-is gone.
+is gone, and that overlapping runs in one checkout each report their own JUnit while the
+shared JUnit ends as the run that finished last left it.
 """
 import importlib.util
 import json
@@ -18,12 +19,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / 'scripts' / 'test-time-report.py'
 FIXTURE = ROOT / 'fixtures' / 'test-time-report'
 CONFIG = ['--nextest-config', str(FIXTURE / 'nextest.toml')]
 WARNING = 'warning: no test-time report'
+# Importing the script under test must not leave bytecode in the source tree.
+sys.dont_write_bytecode = True
 SPEC = importlib.util.spec_from_file_location('test_time_report', SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
@@ -400,7 +404,7 @@ def check_compare_per_side_config(tmp):
 
 
 FAKE_CARGO = '''
-import json, os, shutil, sys
+import json, os, shutil, sys, time
 from pathlib import Path
 args = sys.argv[1:]
 if args[:1] == ['test']:
@@ -413,6 +417,14 @@ if '--tool-config-file' in args:
 if os.environ.get('FAKE_JUNIT'):
     (store / 'ci').mkdir(parents=True, exist_ok=True)
     shutil.copyfile(os.environ['FAKE_JUNIT'], store / 'ci' / 'junit.xml')
+# An overlap test holds this nextest open, its JUnit written or not, until another run ends.
+if os.environ.get('FAKE_WROTE'):
+    Path(os.environ['FAKE_WROTE']).touch()
+if os.environ.get('FAKE_HOLD'):
+    deadline = time.monotonic() + 120
+    while not Path(os.environ['FAKE_HOLD']).exists():
+        assert time.monotonic() < deadline, 'the overlapping run never finished'
+        time.sleep(0.05)
 sys.exit(int(os.environ['FAKE_EXIT']))
 '''
 
@@ -516,6 +528,83 @@ def check_make_test_status(tmp):
           'report script')
 
 
+def check_concurrent_make_test(tmp):
+    """Two `make test` runs in one checkout overlap: the first one's nextest has ended its work
+    and is still running when the second runs from start to end. Each prints the totals of the
+    JUnit its own nextest wrote and keeps its own exit status, passing or failing. The first
+    finishes last, so the shared JUnit CI uploads is its own, or absent if it wrote none."""
+    small = junit(tmp / 'overlap-small.xml', [('b', 'one', '0.500'), ('b', 'two', '0.500'),
+                                              ('b', 'three', '1.000')], wall='2.000')
+    big = FIXTURE / 'junit.xml'
+    six, three = '### Test time: 6 tests in 7.000 s', '### Test time: 3 tests in 2.000 s'
+    for first_exit, first_junit, second_exit, second_junit in [
+            (101, big, 0, small), (0, big, 3, small), (0, None, 0, small), (1, None, 101, big)]:
+        with tempfile.TemporaryDirectory(prefix='af test time ') as scratch:
+            base = Path(scratch)
+            repo = project(base)
+
+            def env(name, exit_code, junit_path, **extra):
+                selected = environment(base, exit_code, junit_path)
+                selected.update(AF_CI_METRICS=str(base / f'{name}-metrics.jsonl'),
+                                GITHUB_STEP_SUMMARY=str(base / f'{name}-summary.md'), **extra)
+                return selected
+
+            wrote, release = base / 'first-wrote', base / 'release-first'
+            first = subprocess.Popen(
+                ['make', 'test'], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env('first', first_exit, first_junit, FAKE_WROTE=str(wrote),
+                                   FAKE_HOLD=str(release)))
+            try:
+                deadline = time.monotonic() + 120
+                while not wrote.exists():
+                    assert first.poll() is None, first.communicate()
+                    assert time.monotonic() < deadline, 'the first nextest never got going'
+                    time.sleep(0.05)
+                second = subprocess.run(['make', 'test'], cwd=repo, capture_output=True,
+                                        text=True, env=env('second', second_exit, second_junit))
+                # The second run has published its JUnit while the first is still running.
+                shared = repo / 'target/nextest/ci/junit.xml'
+                assert shared.read_bytes() == second_junit.read_bytes(), second.stderr
+            finally:
+                release.touch()
+                out, err = first.communicate(timeout=120)
+            runs = [('first', first.returncode, out, err, first_exit, first_junit),
+                    ('second', second.returncode, second.stdout, second.stderr, second_exit,
+                     second_junit)]
+            for name, code, out, err, exit_code, junit_path in runs:
+                label = (name, first_exit, first_junit, second_exit, second_junit, out, err)
+                totals = {big: six, small: three}.get(junit_path)
+                assert (code == 0) == (exit_code == 0), label
+                records = [json.loads(line) for line in
+                           (base / f'{name}-metrics.jsonl').read_text().splitlines()]
+                step = next(r for r in records if r['label'] == 'test')
+                assert step['exit_code'] == exit_code, (label, step)
+                summary = base / f'{name}-summary.md'
+                written = summary.read_text() if summary.exists() else ''
+                if totals:
+                    assert out.count('### Test time:') == 1 and totals in out, label
+                    assert ('Failed tests:' in out) == (junit_path == big), label
+                    assert WARNING not in err, label
+                    assert written.count('### Test time:') == 1 and totals in written, written
+                else:
+                    # A run that wrote no JUnit never reports the other run's.
+                    assert '### Test time:' not in out and '### Test time:' not in written, label
+                    assert f'{WARNING}: nextest wrote no JUnit' in err, label
+            # The shared path CI uploads ends as the run that finished last left it: its JUnit,
+            # whole, or nothing at all. No private run directory outlives its run.
+            if first_junit:
+                assert shared.read_bytes() == first_junit.read_bytes(), shared.read_text()
+                assert [p.name for p in shared.parent.iterdir()] == ['junit.xml']
+            else:
+                assert not shared.exists(), shared.read_text()
+                assert not list(shared.parent.iterdir())
+            reports = repo / 'target/nextest-reports'
+            assert [p.name for p in reports.iterdir()] == ['ci.lock'], list(reports.iterdir())
+    print('PASS: overlapping make test runs in one checkout each report their own JUnit\'s '
+          'totals and keep their own exit status, passing or failing, and the shared JUnit is '
+          'the last finished run\'s or absent when that run wrote none')
+
+
 def check_gate_entry_status():
     for exit_code in [0, 1, 7]:
         with tempfile.TemporaryDirectory(prefix='af test time ') as tmp:
@@ -589,6 +678,7 @@ def main():
         check_compare(tmp)
         check_compare_per_side_config(tmp)
         check_make_test_status(tmp)
+        check_concurrent_make_test(tmp)
     check_gate_entry_status()
     check_task_gate()
 

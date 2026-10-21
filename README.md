@@ -61,6 +61,17 @@ refuse to manage it. `af self status` identifies that state and prints the exact
 with a verified release and adopts the self-managed layout. It never replaces an unrelated file at
 the default path.
 
+After an eligible command (any but `help`, `--version`, `af self`, `af config`, `completions`
+and the browser), `af` spawns a detached `af self refresh-check` that caches the newest release
+and exits. Headless and `--json` runs check too: the command's output and exit status never change,
+and nothing waits for the network. `[self] check_every` (24h) throttles invocations; no timer,
+daemon or service runs between them. The cached notice reaches stderr only when stderr is a
+terminal and the run has no `--json`. `CI`, `AF_SELF_OFFLINE=1`, `[self] update_check = false` and
+`auto_update = "never"` turn the check off; `af help self` has the whole policy
+([ADR-0154](docs/adr/0154-check-for-updates-after-headless-and-json-commands.md)). While a
+background check runs, `af self uninstall` refuses rather than race an installation it may be
+making; run it again when the check has finished.
+
 `af` runs on Linux and macOS only. Windows and other non-unix hosts are unsupported, and so are the
 BSDs: a source build on any of them stops with a compile error.
 

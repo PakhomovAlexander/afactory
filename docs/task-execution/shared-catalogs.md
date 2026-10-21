@@ -51,6 +51,43 @@ configuration together. A mutated package, catalog provenance file or duplicate 
 fails admission. An existing Task uses its captured closure even after an import is edited or
 the original Git repository becomes unavailable.
 
+## Pin a package
+
+`af catalog digest PACKAGE_DIR` prints the `digest` a pin records for one local Task package
+directory, the directory its pin's `path` names. It is the recipe and validation Task capture
+uses ([ADR-0157](../adr/0157-print-a-task-package-digest-with-the-pin-recipe.md)), so a script
+needs no copy of either:
+
+```sh
+af catalog digest .af/task-packages/team/implementer
+# sha256:<64 lowercase hexadecimal digits>
+```
+
+Stdout is that one line and nothing else. Every regular file under the directory contributes:
+its path relative to the directory, with `/` separators, and its bytes. That includes the
+manifest, `instructions.md`, schemas, `outputs/` and any other file, however deep. File modes,
+timestamps, empty directories and the directory's own name or location do not contribute.
+Capture hashes the package's files in the captured Snapshot, so a file the Snapshot leaves out,
+such as an ignored one, changes the printed digest but not the captured one.
+
+The package must be one capture admits: exactly one `pipeline.toml`, `worker.toml` or
+`kind.toml` at its root, whose `name` is a package name, whose `version` is one exact
+`major.minor.patch` release and whose full manifest parses; regular files only, with no symlink
+and no path a catalog cannot hold; at most 4,096 files and 16 MiB, checked against each file's
+size before it is read, so an oversized package is refused without being loaded. Every entry is
+opened without following a symlink, so one swapped in while the package is read is refused, not
+followed, and the directory read must be the very one checked, so a package directory replaced
+meanwhile, even by another valid package, is refused rather than digested. A symlink named as the package is refused however it is spelled, `LINK/` and `LINK/.`
+included. An absent directory, a symlink, or an incomplete or malformed package prints nothing
+on stdout, says why on stderr and exits 1. The command never compares against or changes a
+catalog or pin, writes a file, runs a Worker, contacts a Provider or installs anything. It
+always runs as the `af` you invoke: a project's `af` pin never dispatches it to another
+release, and it schedules no update check, so it never installs or activates a release. Put the
+printed digest and the manifest's version in the package's `[packages."NAME"]` entry and review
+the change like any other pin.
+
+## Task-kind packages
+
 Task-kind packages add reusable business names for installed acceptance profiles. For example,
 `kind.toml` can declare:
 
