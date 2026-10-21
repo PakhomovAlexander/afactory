@@ -1,4 +1,4 @@
-//! The `[survey]` table of `.af/af.toml` (ADR-0158): the bounds and patterns a Survey measures
+//! The `[survey]` table of `.af/af.toml` (ADR-0159): the bounds and patterns a Survey measures
 //! by. Every pattern is matched by `crate::project::glob_matches`, the one grammar of
 //! `.af/af.toml`: `**` spans segments, `*` a run inside one, `?` one byte of the encoded path,
 //! and every other byte is literal, brackets included.
@@ -350,7 +350,7 @@ impl Policy {
 
     /// [`Self::language`] with `passed`, the Survey's deadline, asked before each configured
     /// pattern is matched: `None` when it passed first, so a deadline overruns the matching by
-    /// at most one pattern (ADR-0158 clause 14). The built-in map is an exact lookup of a name
+    /// at most one pattern (ADR-0159 clause 14). The built-in map is an exact lookup of a name
     /// or an extension, not a pattern match.
     pub(crate) fn language_within(
         &self,

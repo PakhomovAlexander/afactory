@@ -6,7 +6,7 @@
 //! `HOME`, `TMPDIR`, `AF_CHECK_SCRATCH` and `XDG_CACHE_HOME`) in one named `af-check-<pid>-<random>`.
 //! The Surveyor's Tree Digest spills its sorted manifest runs into one named
 //! `af-tree-digest-<pid>-<random>` (`review_source_git::digest::SPILL_PREFIX`), which the sweep
-//! treats the same way (ADR-0158 clause 9). The handle that owns the directory removes
+//! treats the same way (ADR-0159 clause 9). The handle that owns the directory removes
 //! it on drop, so a process that ends normally leaves nothing. A process that is killed, or
 //! that aborts, never runs its drops: its trees stay in the temporary root forever, and a tree
 //! that a Gate built into carries a whole `target/` directory. The pid in the name is what lets

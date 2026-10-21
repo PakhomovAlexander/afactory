@@ -1,4 +1,4 @@
-//! Project Briefs (ADR-0159): the bounded selection of one Survey a pipeline's declared
+//! Project Briefs (ADR-0160): the bounded selection of one Survey a pipeline's declared
 //! `project` port carries into the Workers it is wired to.
 //!
 //! A Task's initial capture, before any pipeline is selected and once its `source` binding is
@@ -405,7 +405,7 @@ fn ancestry(
 /// resolved: a pipeline selection may choose for `requested` (the named one alone when it
 /// refuses a fallback) declares a `project_brief` root port that `bound` leaves unbound, or a
 /// Planner may generate a root (a fallback of `generate`). A port the Task file binds is never
-/// constructed (ADR-0159 clause 6), so a Task whose every Brief port is bound reads no Survey
+/// constructed (ADR-0160 clause 6), so a Task whose every Brief port is bound reads no Survey
 /// and pins none.
 pub(crate) fn constructs(
     pipelines: &BTreeMap<String, PipelineDefinitionV1>,

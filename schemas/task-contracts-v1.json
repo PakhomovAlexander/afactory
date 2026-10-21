@@ -694,7 +694,7 @@
       ]
     },
     "briefPort": {
-      "description": "A port declaration of af.pipeline/2 (ADR-0159): a version-1 port, or the one optional unbound af/ProjectBrief@1 root port whose `project_brief` default renders the `brief` variant.",
+      "description": "A port declaration of af.pipeline/2 (ADR-0160): a version-1 port, or the one optional unbound af/ProjectBrief@1 root port whose `project_brief` default renders the `brief` variant.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -724,7 +724,7 @@
           ]
         },
         "brief": {
-          "description": "The `[brief.<name>]` variant a `project_brief` root default renders (ADR-0159); allowed only with it.",
+          "description": "The `[brief.<name>]` variant a `project_brief` root default renders (ADR-0160); allowed only with it.",
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
         },
@@ -850,7 +850,7 @@
       }
     },
     "contractV2": {
-      "description": "The contract of af.pipeline/2: its inputs may hold a Project Brief port, and at least one does (ADR-0159).",
+      "description": "The contract of af.pipeline/2: its inputs may hold a Project Brief port, and at least one does (ADR-0160).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -1554,7 +1554,7 @@
       }
     },
     "pipelineV2": {
-      "description": "af.pipeline/2: a pipeline whose contract declares a Project Brief port (ADR-0159); every other pipeline is af.pipeline/1, which carries none.",
+      "description": "af.pipeline/2: a pipeline whose contract declares a Project Brief port (ADR-0160); every other pipeline is af.pipeline/1, which carries none.",
       "type": "object",
       "additionalProperties": false,
       "required": [

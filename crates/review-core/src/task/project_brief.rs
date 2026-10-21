@@ -1,4 +1,4 @@
-//! The Project Brief (ADR-0159): the bounded selection of one Survey that a pipeline's declared
+//! The Project Brief (ADR-0160): the bounded selection of one Survey that a pipeline's declared
 //! `project` port carries into a Worker.
 //!
 //! Four records, each kernel-written and in the Task Store's CAS:
@@ -459,7 +459,7 @@ pub struct ProjectBriefDropV1 {
 
 /// `af/ProjectBrief@1`: one variant of one pinned Survey. Canonical JSON, numbers decimal
 /// text; no host path, Provider ID or author email, while repository text is the Survey's
-/// verbatim, `@` included (ADR-0158 clause 6).
+/// verbatim, `@` included (ADR-0159 clause 6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectBriefV1 {

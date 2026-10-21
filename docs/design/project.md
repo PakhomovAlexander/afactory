@@ -179,7 +179,7 @@ checked before a live checkout or entry is claimed or deleted; an entry whose de
 recorded resumes it from its container without the `gitdir` that deletion may have removed; and
 one gone from its container and its path, or recorded deleted, advances to done once its recorded
 container is verified, so a crash after the entry's unlink, part way through its deletion or
-after its container's removal finishes on the rerun and unregisters once (ADR-0157 clause 5).
+after its container's removal finishes on the rerun and unregisters once (ADR-0158 clause 5).
 The completed record outlives the unregistration: it is deleted only once `WorkspaceRemoved@1`
 is appended and the paths dropped, and a rerun, or a registration again at the same path,
 reconciles a completed record with the log and the paths idempotently before it deletes it, so a
@@ -187,7 +187,7 @@ worktree created at the path after such a crash is never inspected or deleted by
 
 `--workspace LABEL` on every `af task` subcommand that takes `--state` resolves `--state` (and,
 for `plan` and `start`, an absent `--bindings`) against the Workspace; `--workspace` together with
-`--state` is a usage error, exit 2, as ADR-0157 clause 6 decides. `af review run --workspace` and
+`--state` is a usage error, exit 2, as ADR-0158 clause 6 decides. `af review run --workspace` and
 a relative `--file` resolved against the Workspace are a separate later decision. The worktree `af task deliver`
 creates is registered as a Workspace of origin `delivered`, labelled by the Task ID, after
 delivery succeeds and best effort, so `af project workspaces` lists it and
@@ -331,7 +331,7 @@ sandbox and no Check runtime. A running Task is never affected: its Brief was pi
 time (§3.5), and a refresh writes only the Project Store. It publishes a record by staging its
 bytes beside its pending-publication entry and moving that inode to its CAS name only once the
 entry records the inode's identity (device, inode and birth time), so a crash at any point leaves
-nothing at a CAS name that no entry describes (§3.9, ADR-0158 clause 2).
+nothing at a CAS name that no entry describes (§3.9, ADR-0159 clause 2).
 
 Why no model: the kernel measures, and a model never writes a number the kernel did not record
 (ADR-0132). A model-written description of the project is a Report Task's Document, bound to
@@ -344,7 +344,7 @@ later feed a Brief section without changing this rule.
 the Survey head (commit, and Tree Digest when the Survey has one; preview and explain say
 `tree digest unavailable` otherwise), the rendered
 sections, the sections dropped with their reasons, and `rendered_bytes`. Its sections are the
-pinned Survey's, so it follows the Survey's rule for email (§3.3, ADR-0158 clause 6): no author
+pinned Survey's, so it follows the Survey's rule for email (§3.3, ADR-0159 clause 6): no author
 email enters it, an author name that holds one being the sanitized `h:` identity, while
 repository text (decision titles, paths, terms, check names, hot paths) is verbatim, `@`
 included; a decision title that holds an address enters `orient` unchanged.
@@ -537,7 +537,7 @@ ADR-0145: a later shape change is a new version.
 | `SurveyRecorded@1`, `SurveyFailed@1`, `SurveyCollected@1` | Project Store | Survey artifact ID, head, cutoff, completeness; or the failure reason; or the tombstone summary |
 | `af/ProjectSurvey@2` | Project Store CAS | §3.3 |
 | `af/ProjectBrief@1` | Task Store CAS | §3.5 |
-| `af/project@N`, `af/project-workspaces@N`, `af/project-tasks@1` | `--json` documents | the projections `af project` prints; every package that changes a typed shape bumps its version (ADR-0145 clause 2), writers, readers, schemas and parity fixtures moving together and the superseded version refused: `af/project` when Survey fields enter it, `af/project-workspaces` to `@2` when PJ5 adds Tasks and spend, `af/ProjectSurvey` to `@3` when PJ5 adds `activity` (`@2` since PJ2 added `stopped_record`), `af/storage` to `@3` and the prune document to `@2` when PJ2 adds the `survey` entry kind and the prune document to `@3` when its total may be `unknown`, and `af/survey-pending@2`, `af/ProjectSurveysSettled@2` and the Workspace removal record's `version = 2` when their identities gain the birth time, while `af/TaskStorageSweep@1` keeps its kinds and counts Survey removals in `omitted_removals` (ADR-0158 clause 13) |
+| `af/project@N`, `af/project-workspaces@N`, `af/project-tasks@1` | `--json` documents | the projections `af project` prints; every package that changes a typed shape bumps its version (ADR-0145 clause 2), writers, readers, schemas and parity fixtures moving together and the superseded version refused: `af/project` when Survey fields enter it, `af/project-workspaces` to `@2` when PJ5 adds Tasks and spend, `af/ProjectSurvey` to `@3` when PJ5 adds `activity` (`@2` since PJ2 added `stopped_record`), `af/storage` to `@3` and the prune document to `@2` when PJ2 adds the `survey` entry kind and the prune document to `@3` when its total may be `unknown`, and `af/survey-pending@2`, `af/ProjectSurveysSettled@2` and the Workspace removal record's `version = 2` when their identities gain the birth time, while `af/TaskStorageSweep@1` keeps its kinds and counts Survey removals in `omitted_removals` (ADR-0159 clause 13) |
 | `workspaces.toml` | beside the Project Store | machine-local paths, best effort, like `stores.toml` |
 
 ### 3.8 Configuration
@@ -704,7 +704,7 @@ and records exactly one `WorkspaceRemoved@1` on the retry.
 Deliverables: `af/ProjectSurvey@2` with `identity`, `tree`, `history`, `contributors`,
 `decisions`, `vocabulary` and `checks`; the Surveyor operator with its bounds, every git subprocess under the
 minimum of its own limit and the remaining Survey time with its process group terminated at the
-deadline, the digest-only capture path for the Tree Digest (ADR-0158 clause 9 amended to it),
+deadline, the digest-only capture path for the Tree Digest (ADR-0159 clause 9 amended to it),
 history measured through a private bare repository and one ref observation for key and
 statistics; `af onboard
 --apply` recording the first Survey; `af project survey|refresh|history`; the survey key and

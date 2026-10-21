@@ -39,7 +39,7 @@ path = "junit.xml"
 #   60.3 s for the single test it replaces. With E the exclusive seconds and S the sum, the
 #   expected wall time E*(T-1)/T + S/T is 50.5 s at 4 threads and 48.3 s at 7 (60.3 s single).
 # - af_help_and_af_project_help_answer_in_under_50_ms: the fastest of ten launches of `af --help`
-#   and of `af project --help` must answer in under 50 ms (ADR-0157); about 5 ms run directly on
+#   and of `af project --help` must answer in under 50 ms (ADR-0158); about 5 ms run directly on
 #   a 14-core macOS host.
 [[profile.ci.overrides]]
 filter = '''

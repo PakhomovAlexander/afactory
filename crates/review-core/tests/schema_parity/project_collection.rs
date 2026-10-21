@@ -1,11 +1,11 @@
-//! Survey collection (ADR-0158 clause 13): `SurveyCollected@1`, the tombstone a collected
+//! Survey collection (ADR-0159 clause 13): `SurveyCollected@1`, the tombstone a collected
 //! Survey leaves in its Project Store's log and that binds every identity field of its record,
 //! against its own schema, inside `run-event-v1.json` and through the Rust validator alike; and
 //! `af/TaskStorageSweep@2`, whose kind set Survey collection leaves unchanged, so a Survey's
 //! removal is counted and never listed; and `af/ProjectSurveysSettled@2`, the machine-local
 //! record of each collection's selected object and of the settled Surveys that collection keeps
 //! beside a Project Store's lock, against its schema and its typed contract alike. The
-//! pending-publication entry collection reads is the writer's `af/survey-pending@2` (ADR-0158
+//! pending-publication entry collection reads is the writer's `af/survey-pending@2` (ADR-0159
 //! clause 2), whose parity lives with the Survey's.
 
 use super::{assert_invalid, assert_valid};

@@ -24,12 +24,12 @@ pub struct ProjectFile {
     /// matches one of its patterns.
     #[serde(default)]
     routes: Vec<Route>,
-    /// What the Surveyor measures by (ADR-0158). Admitted here so the full-file parse refuses
+    /// What the Surveyor measures by (ADR-0159). Admitted here so the full-file parse refuses
     /// an unknown key; the Surveyor reads the merged ladder through `Policy::load`.
     #[serde(default)]
     #[allow(dead_code)]
     survey: Option<crate::projects::survey::policy::SurveyTable>,
-    /// The Project Brief variants (ADR-0159). Admitted here so the full-file parse refuses an
+    /// The Project Brief variants (ADR-0160). Admitted here so the full-file parse refuses an
     /// unknown key; capture and `af project brief` read the merged ladder through
     /// `project_brief::load_policy`, which also checks every value.
     #[serde(default)]
@@ -313,7 +313,7 @@ fn validate_pattern(pattern: &str, route: &str) -> Result<(), String> {
 /// percent-encoded byte three). Anchored at the repository root; `path` is the canonical
 /// (encoded) form.
 ///
-/// Matched by dynamic programming, never by backtracking (ADR-0158 clause 14): a match costs at
+/// Matched by dynamic programming, never by backtracking (ADR-0159 clause 14): a match costs at
 /// most (pattern length + 1) × (path length + 1) cells, so `*a` thirty times then `b` against
 /// thirty `a`s, which the recursive form took billions of steps to refuse, is refused in under
 /// a thousand.
@@ -707,7 +707,7 @@ mod tests {
         let bound = (pattern.len() * text.len()) as u64;
         assert_eq!((pattern.len(), text.len(), bound), (61, 30, 1830));
         assert!(cells <= bound, "{cells} cells, over {bound}");
-        assert_eq!(cells, 961, "the stated count of ADR-0158 clause 14");
+        assert_eq!(cells, 961, "the stated count of ADR-0159 clause 14");
         assert!(started.elapsed() < std::time::Duration::from_millis(100));
         // The same text in a deeper path and behind `**` costs no more than the bound either.
         for (pattern, path) in [
@@ -803,7 +803,7 @@ mod tests {
         }
     }
 
-    /// `?` consumes one byte of the canonical encoded spelling (ADR-0158 clause 14), through a
+    /// `?` consumes one byte of the canonical encoded spelling (ADR-0159 clause 14), through a
     /// route as through the Surveyor's `exclude` (`projects::survey::collect`'s tests and
     /// `tests/it/project_collect.rs` run the same cases).
     #[test]

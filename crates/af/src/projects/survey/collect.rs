@@ -1,4 +1,4 @@
-//! Survey collection (ADR-0158 clause 13) and the bounded patterns of clause 14.
+//! Survey collection (ADR-0159 clause 13) and the bounded patterns of clause 14.
 //!
 //! Every Survey is an entry of kind `survey` of the machine budget (ADR-0144 clause 4): its CAS
 //! bytes, last used at its cutoff. The Storage Budget collects Surveys in its own passes only:
@@ -98,7 +98,7 @@ use super::policy::Policy;
 
 /// The run of a Project Store's log that holds its Surveys' tombstones.
 pub(crate) const COLLECTION_RUN: &str = "survey-collection";
-/// The Store discovery ceilings (design note §3.3, ADR-0158 clause 13): where the inventory
+/// The Store discovery ceilings (design note §3.3, ADR-0159 clause 13): where the inventory
 /// walks Stores, it reads the Surveys of at most `stores` Project Stores, in path order, and
 /// each Store's log through one cursor of at most `rows` rows of at most `row_bytes` bytes each
 /// and `buffered_bytes` over all of them; beyond a ceiling the Store's Surveys are not read,
@@ -170,7 +170,7 @@ const REMOVING: &str = "removing";
 /// (`af/ProjectSurveysSettled@1`).
 pub(crate) const SETTLED: &str = "settled.json";
 /// The directory, beside the lock, of the pending-publication entries the Surveyor's writer
-/// keeps (`af/survey-pending@1`, ADR-0158 clause 2), one `<64 hex>.json` per Survey.
+/// keeps (`af/survey-pending@1`, ADR-0159 clause 2), one `<64 hex>.json` per Survey.
 pub(crate) const PENDING: &str = super::pending::DIRECTORY;
 /// Upper bound on one pending-publication entry collection reads: its Survey ID, two decimal
 /// identities and a length fit many times over.
@@ -1967,7 +1967,7 @@ struct StagedObject {
     bytes: u64,
 }
 
-/// The pending-publication entries of the Project Store at `store` (ADR-0158 clauses 2 and
+/// The pending-publication entries of the Project Store at `store` (ADR-0159 clauses 2 and
 /// 13), read once with the rest of [`look`] from `pending-surveys/`: each readable one, the
 /// Surveys every entry names, a readable one or not, and every object the writer staged there.
 /// What is neither is left `foreign`, an entry that cannot be read is refused and left with what
@@ -2089,7 +2089,7 @@ fn pending_entries(
 }
 
 /// Judge the pending-publication entries and the staged objects [`pending_entries`] read
-/// (ADR-0158 clause 13). Every staged object is reclaimed first, as the writer's own leftover
+/// (ADR-0159 clause 13). Every staged object is reclaimed first, as the writer's own leftover
 /// (no writer holds the lock between a sweep's look and its jobs, which take it): the bytes a
 /// crash staged before its entry named them, or the staged object an entry names whose CAS name
 /// never took it. Then each entry whose `SurveyRecorded@1` committed is cleared, and nothing
@@ -3521,7 +3521,7 @@ fn history_lines(
 }
 
 /// Refuse a `[survey]` pattern list over [`MAX_PATTERNS`] entries or holding a pattern over
-/// [`MAX_PATTERN_BYTES`], naming `key` (ADR-0158 clause 14). The error names no pattern, so a
+/// [`MAX_PATTERN_BYTES`], naming `key` (ADR-0159 clause 14). The error names no pattern, so a
 /// `SurveyFailed@1` may carry it.
 pub(crate) fn check_patterns(key: &str, patterns: &[String]) -> Result<(), String> {
     if patterns.len() > MAX_PATTERNS {
@@ -3689,7 +3689,7 @@ pub(super) fn any_match(patterns: &[String], text: &str) -> bool {
     }
 }
 
-/// Measure the head under one deadline from `started` (ADR-0158 clause 14), every pattern list
+/// Measure the head under one deadline from `started` (ADR-0159 clause 14), every pattern list
 /// checking it before each match.
 pub(super) fn measure(
     git: &Git,

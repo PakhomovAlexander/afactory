@@ -1,6 +1,6 @@
 //! The Store registry (ADR-0144): `$XDG_STATE_HOME/af/stores.toml`, every Task and review
 //! Store af opened or created outside its default roots (`--state`, `--state-root`), and every
-//! Project Store (ADR-0157), so the Storage Budget's sweep reaches Stores nothing else knows.
+//! Project Store (ADR-0158), so the Storage Budget's sweep reaches Stores nothing else knows.
 //!
 //! Recording is best effort and never fails a command: a registry that cannot be read or
 //! written is reported once on stderr and left as it is. The sweep visits every registered
@@ -21,7 +21,7 @@ pub(crate) enum StoreKind {
     Review,
     /// A directory of review campaign Stores (`af review … --state-root DIR`).
     ReviewRoot,
-    /// A Project Store, `$XDG_STATE_HOME/af/project/<hex>` (ADR-0157). The registry that can hold
+    /// A Project Store, `$XDG_STATE_HOME/af/project/<hex>` (ADR-0158). The registry that can hold
     /// it is version 2 (ADR-0145).
     Project,
 }
@@ -44,7 +44,7 @@ struct RegistryFile {
     stores: Vec<Registered>,
 }
 
-/// Version 2 added the kind `project` (ADR-0157); version 1 is refused (ADR-0145).
+/// Version 2 added the kind `project` (ADR-0158); version 1 is refused (ADR-0145).
 const VERSION: u32 = 2;
 
 /// Why a version-1 registry is refused, and the way out: nothing is lost by deleting it.

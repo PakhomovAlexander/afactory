@@ -50,7 +50,7 @@ impl WorkerRequest {
     /// The request [`WorkerContract::prepare`] renders: the installed protocol fields around a
     /// Worker's instructions, its declared inputs, its admitted retry feedback and its captured
     /// output schemas. A plan-time check renders the same request from the parts known then, so
-    /// both apply [`MAX_WORKER_BYTES`] to one accounting (ADR-0159).
+    /// both apply [`MAX_WORKER_BYTES`] to one accounting (ADR-0160).
     pub fn new(
         instructions: &str,
         inputs: BTreeMap<String, Vec<WorkerValue>>,
@@ -279,7 +279,7 @@ impl WorkerContract {
                     return Err("Worker input differs from its admitted type or Snapshot".into());
                 }
                 // A Project Brief is the one input a pipeline adds for orientation alone, so
-                // its entry names the port that asked for it (ADR-0159).
+                // its entry names the port that asked for it (ADR-0160).
                 let required_by =
                     if value.artifact_type == review_core::task::project_brief::PROJECT_BRIEF_V1 {
                         format!(

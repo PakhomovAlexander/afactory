@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-survey-pending:2",
   "title": "af/survey-pending@2",
-  "description": "One Survey the Surveyor is publishing (ADR-0158 clause 2): a machine-local file beside the Project Store's lock, `pending-surveys/<64 hex>.json`, never in the repository or the log. Written under the lock before any byte of the record is; given the identity of the staged object `pending-surveys/<64 hex>.object` once the record's bytes are durable there, and before that object takes its CAS name; and removed once SurveyRecorded@1 committed. One that outlives its refresh names a record no event references. Version 2 adds the object's birth time and the staging: `af/survey-pending@1` is a superseded version, refused. Canonical JSON, every number decimal text.",
+  "description": "One Survey the Surveyor is publishing (ADR-0159 clause 2): a machine-local file beside the Project Store's lock, `pending-surveys/<64 hex>.json`, never in the repository or the log. Written under the lock before any byte of the record is; given the identity of the staged object `pending-surveys/<64 hex>.object` once the record's bytes are durable there, and before that object takes its CAS name; and removed once SurveyRecorded@1 committed. One that outlives its refresh names a record no event references. Version 2 adds the object's birth time and the staging: `af/survey-pending@1` is a superseded version, refused. Canonical JSON, every number decimal text.",
   "type": "object",
   "additionalProperties": false,
   "required": [

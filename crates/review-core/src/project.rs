@@ -1,4 +1,4 @@
-//! The Project and its Workspaces (ADR-0157): the events a Project Store's log holds.
+//! The Project and its Workspaces (ADR-0158): the events a Project Store's log holds.
 //!
 //! A Project is the durable identity of one repository, derived from the `repository_id` every
 //! Snapshot origin already carries (its sorted root commits). A Workspace is one registered
@@ -7,7 +7,7 @@
 //! never in a record. The identities are derived by the `af` binary; these types fix their
 //! spelling and refuse anything that could carry a host path.
 //!
-//! A Survey (ADR-0158) is `af/ProjectSurvey@2`, one kernel-measured description of the Project at
+//! A Survey (ADR-0159) is `af/ProjectSurvey@2`, one kernel-measured description of the Project at
 //! one head, kept in the Project Store's CAS; `SurveyRecorded@1` and `SurveyFailed@1` record in
 //! the log that one was taken or could not be. Every number is decimal text, and neither the
 //! record nor an event holds a host path, a Provider ID or an email.
@@ -173,7 +173,7 @@ impl WorkspaceRemovedPayloadV1 {
 }
 
 // ------------------------------------------------------------------------------------------
-// Surveys (ADR-0158)
+// Surveys (ADR-0159)
 
 /// The record type of a Survey: one kernel-measured description of a Project at one head.
 /// Version 2 is the first that holds `stopped_record` in `history` and `contributors`.
@@ -232,7 +232,7 @@ pub const MAX_SURVEY_RECORD_BYTES: usize = 64 * 1024;
 /// The ceilings of `[survey] max_paths`, `max_entries` and `max_survey_bytes`: a project may only
 /// lower them. The Surveyor never writes a record longer than `MAX_SURVEY_BYTES`, af never reads
 /// one back as a Survey, and collection refuses one as `oversize` rather than taking it for
-/// corrupt (ADR-0158 clause 13).
+/// corrupt (ADR-0159 clause 13).
 pub const MAX_SURVEY_PATHS: u64 = 200_000;
 pub const MAX_SURVEY_ENTRIES: u64 = 1_000;
 pub const MAX_SURVEY_BYTES: u64 = 1_048_576;
@@ -389,7 +389,7 @@ impl SurveyReasonV1 {
     }
 }
 
-/// Why a Survey's Tree Digest is absent (ADR-0158 clause 9): never the digest of a part.
+/// Why a Survey's Tree Digest is absent (ADR-0159 clause 9): never the digest of a part.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SurveyTreeDigestReasonV1 {
@@ -935,7 +935,7 @@ pub struct SurveyChecksV1 {
     pub seen: SurveySeenV1,
 }
 
-/// Where a Survey that is not complete stopped (ADR-0158 clause 1), so a replay of its record
+/// Where a Survey that is not complete stopped (ADR-0159 clause 1), so a replay of its record
 /// reproduces it: the section the deadline cut first, or, when no deadline cut one, the first
 /// section that is not complete; that section's reason; how many of its items the Survey's
 /// clock charged; and the commit or the path the stop names, when it names one.
@@ -1915,7 +1915,7 @@ pub struct SurveyCollectedHistoryV1 {
     pub merges: DecimalU64,
 }
 
-/// Payload of `SurveyCollected@1` (ADR-0158 clause 13): the tombstone of a Survey the Storage
+/// Payload of `SurveyCollected@1` (ADR-0159 clause 13): the tombstone of a Survey the Storage
 /// Budget collected, appended before the record leaves the Project Store's CAS. It binds the
 /// Survey's `SurveyRecorded@1` once the record is gone: `head`, `cutoff_unix_s`, `completeness`,
 /// `refs_digest`, `policy_digest`, `surveyor_version` and `previous_survey_id`, copied from the
@@ -2055,7 +2055,7 @@ impl SurveyObjectIdentityV2 {
     }
 }
 
-/// `af/survey-pending@2`: one Survey the Surveyor is publishing (ADR-0158 clause 2), a
+/// `af/survey-pending@2`: one Survey the Surveyor is publishing (ADR-0159 clause 2), a
 /// machine-local file beside the Project Store's lock, never in the repository or the log. It is
 /// written under the lock before any byte of the record is, naming the Survey and the length of
 /// its bytes; given the identity of the staged object (`pending-surveys/<64 hex>.object`) once
@@ -2210,7 +2210,7 @@ mod collected_tests {
 }
 
 /// Schema of the machine-local record of what Survey collection selected and settled
-/// (ADR-0158 clause 13). Version 2 is the first that records each collection's selected object
+/// (ADR-0159 clause 13). Version 2 is the first that records each collection's selected object
 /// before its tombstone.
 pub const PROJECT_SURVEYS_SETTLED_V2: &str = "af/ProjectSurveysSettled@2";
 
@@ -2239,7 +2239,7 @@ fn settled_schema<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<S
     }
 }
 
-/// One collection's selected object (ADR-0158 clause 13): the record at a Survey's CAS name
+/// One collection's selected object (ADR-0159 clause 13): the record at a Survey's CAS name
 /// that the collection found under the Store's lock and recorded, with its identity and length,
 /// before it appended the Survey's tombstone. Recovery deletes nothing else at that name or in
 /// a dead pass's container.
@@ -2252,7 +2252,7 @@ pub struct SurveySelectedV2 {
     pub bytes: DecimalU64,
 }
 
-/// `af/ProjectSurveysSettled@2` (ADR-0158 clause 13): `settled.json` beside `project.lock`.
+/// `af/ProjectSurveysSettled@2` (ADR-0159 clause 13): `settled.json` beside `project.lock`.
 /// `selected` holds, per collected Survey, the object its collection selected, recorded under
 /// the Store's lock before the tombstone is appended, so recovery follows that identity and
 /// never a hash: another inode at the Survey's CAS name or in a dead pass's container is

@@ -1,4 +1,4 @@
-//! ADR-0158 clauses 13 and 14 end to end: Surveys in the Storage Budget, and bounded patterns.
+//! ADR-0159 clauses 13 and 14 end to end: Surveys in the Storage Budget, and bounded patterns.
 //!
 //! Every Survey is an `af storage` entry of kind `survey` with its CAS bytes and its cutoff as
 //! its last use. `af project refresh` collects nothing: 51 forced refreshes within the hour leave
@@ -1256,7 +1256,7 @@ fn a_corrupt_survey_is_collected_unreadable_and_an_unreadable_one_is_refused() {
     );
     assert_eq!(tombstone["unreadable"], "its bytes do not match its digest");
     assert!(tombstone.get("tree").is_none() && tombstone.get("history").is_none());
-    // An uncollected record af cannot read refuses replay (ADR-0158 clause 2) until it can.
+    // An uncollected record af cannot read refuses replay (ADR-0159 clause 2) until it can.
     let (history, refused) =
         machine.expect(&repo, &[], &["project", "history"], i32::from(enforced));
     if enforced {
@@ -2490,7 +2490,7 @@ fn unrecorded_object(machine: &Machine, bytes: &[u8]) -> String {
     survey_id
 }
 
-/// The pending-publication entry a writer keeps for `survey_id` (ADR-0158 clause 2,
+/// The pending-publication entry a writer keeps for `survey_id` (ADR-0159 clause 2,
 /// `af/survey-pending@2` at `pending-surveys/<64 hex>.json`), naming the record's length and
 /// `object` by device, inode and birth time when given. Returns its path.
 fn pending_entry(
@@ -2959,7 +2959,7 @@ fn a_settlement_whose_rollback_sync_fails_too_is_left_unverified_and_deletes_not
     assert_consistent(&machine);
 }
 
-/// A retry never discards a pending object's identity (ADR-0158 clause 2): a refresh that
+/// A retry never discards a pending object's identity (ADR-0159 clause 2): a refresh that
 /// stopped after its record's bytes and their identity leaves the entry naming the object; a
 /// retry of the same bytes whose write fails (the debug build's `AF_TEST_SURVEY_FAIL_PUT`)
 /// keeps that entry byte for byte, so it still names the first object, and collection reclaims
@@ -3005,7 +3005,7 @@ fn a_retry_whose_put_fails_keeps_the_first_objects_identity_for_collection() {
     assert!(machine.collected().is_empty());
 }
 
-/// A pending entry is cleared only once no file with its inode remains (ADR-0158 clause 13):
+/// A pending entry is cleared only once no file with its inode remains (ADR-0159 clause 13):
 /// the object truncated in place, grown in place and then moved into a pass's container at its
 /// new length is still the entry's inode, so the applied sweep keeps the entry, its outcome
 /// `kept: object changed, still present`, and lists the object `foreign`; once the operator
@@ -3248,7 +3248,7 @@ fn settled_record(machine: &Machine) -> Value {
     settled
 }
 
-/// Collection records the object it selects before its tombstone (ADR-0158 clause 13), and
+/// Collection records the object it selects before its tombstone (ADR-0159 clause 13), and
 /// recovery follows that identity, never a hash: stopped after the tombstone with the record
 /// still at its CAS name, a byte-identical copy born later in its place (another inode, or on
 /// ext4 the same inode number born later) is no record of the Survey, though its bytes hash to
@@ -3364,7 +3364,7 @@ fn entry_of(machine: &Machine, survey_id: &str) -> Option<Value> {
 }
 
 /// The writer stages a record's bytes in its own `pending-surveys` and links them at their CAS
-/// name only once its entry records their identity (ADR-0158 clause 2), so a crash leaves
+/// name only once its entry records their identity (ADR-0159 clause 2), so a crash leaves
 /// nothing at the CAS name no entry describes. Stopped before the identity is recorded, the
 /// staged bytes are the writer's own leftover; stopped after it and before the CAS name, the
 /// staged object is the one its entry names. Either way a later `af storage prune --apply`,
@@ -3470,7 +3470,7 @@ fn a_survey_stopped_before_its_cas_name_leaves_staged_bytes_a_later_prune_reclai
 }
 
 /// On a file system that reports no birth time a Survey's record has no complete identity
-/// (ADR-0158 clauses 2 and 13): collection refuses it with one sentence naming the file system,
+/// (ADR-0159 clauses 2 and 13): collection refuses it with one sentence naming the file system,
 /// appends no tombstone and deletes nothing, and without that condition the same sweep collects
 /// it. The writer refuses to publish a Survey whose staged object has no birth time.
 #[cfg(debug_assertions)]

@@ -140,7 +140,7 @@ impl TaskProjection {
             }
         }
         // A generated root's Project Brief ports are receipted by the new revision itself
-        // (ADR-0159): its `af/ProjectBriefReceipt@1` records are the one provenance it adds
+        // (ADR-0160): its `af/ProjectBriefReceipt@1` records are the one provenance it adds
         // beside the artifacts of its new inputs.
         for id in &next.provenance.input_artifact_ids {
             let receipt = cas

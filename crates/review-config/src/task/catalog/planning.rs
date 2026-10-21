@@ -95,7 +95,7 @@ impl TaskPlanCompiler {
             .collect();
         let pipelines: BTreeMap<_, _> = self.pipelines.iter()
             // `af.planning-request/1` lists `af.pipeline/1` contracts, so a pipeline with a
-            // Project Brief port (`af.pipeline/2`) is not offered for composition (ADR-0159).
+            // Project Brief port (`af.pipeline/2`) is not offered for composition (ADR-0160).
             .filter(|(name, pipeline)| !self.preparation_roots.contains(*name) && !self.generated.contains_key(*name) && !pipeline.declares_brief())
             .map(|(name, pipeline)| (name, serde_json::json!({"version":pipeline.version, "digest":self.packages[name].bytes.digest, "contract":pipeline.contract, "accepts":pipeline.accepts, "slots":pipeline.slots, "max_attempts":pipeline.max_attempts, "max_parallel":pipeline.max_parallel})))
             .collect();

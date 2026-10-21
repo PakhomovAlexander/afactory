@@ -20,7 +20,7 @@ nontrivial permutations of every set family. They also cover exact approval matc
 independence, receipt-completeness/exit precedence and current-Subject repair assessment.
 
 `v2/pipeline-definition.json` is `af.pipeline/2`, the pipeline shape whose contract declares a
-Project Brief port (ADR-0159); its parity test also proves that the same pipeline labelled
+Project Brief port (ADR-0160); its parity test also proves that the same pipeline labelled
 `af.pipeline/1` is refused and that a version-2 pipeline without the port is not admitted.
 
 The existing synthetic review corpus remains unchanged. Later runtime packages must add their

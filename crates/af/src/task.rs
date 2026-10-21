@@ -234,7 +234,7 @@ impl DeliveryLock {
 /// The git command delivery runs, in `directory` with the private `home`: nothing inherited but
 /// `PATH`, no user or system configuration, attributes file, hooks, fsmonitor, sparse checkout,
 /// external diff, transport or credential helper. `af project workspace new` runs the same
-/// command (ADR-0157).
+/// command (ADR-0158).
 pub(crate) fn isolated_git(directory: &Path, home: &Path) -> ProcessCommand {
     let mut command = ProcessCommand::new("git");
     command.env_clear();

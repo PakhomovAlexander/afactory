@@ -1,4 +1,4 @@
-//! ADR-0158 end to end: the Surveyor measures a Project into Surveys.
+//! ADR-0159 end to end: the Surveyor measures a Project into Surveys.
 //!
 //! A fixture repository built with fixed dates, names, emails and messages, a merge, a rename,
 //! a binary change, a commit whose author date is a year before its committer date and agent
@@ -251,7 +251,7 @@ fn commit(repo: &Path, who: (&str, &str), days: u64, message: &[&str]) {
     git_as(repo, Some((who.0, who.1, days)), &args);
 }
 
-/// The fixture repository of ADR-0158's test (a): eight commits over 500 days by two people, a
+/// The fixture repository of ADR-0159's test (a): eight commits over 500 days by two people, a
 /// bot and an author named by an email address; a human commit with an agent trailer and one
 /// with two; a merge; a rename and a binary change in a commit authored a year before it was
 /// committed; two tags, two branches, several top-level directories, a tests directory, a
@@ -4242,7 +4242,7 @@ fn failure_reasons(machine: &Machine) -> Vec<String> {
         .collect()
 }
 
-/// The Project Store's lock honours the Survey deadline (ADR-0158 clause 2): while another
+/// The Project Store's lock honours the Survey deadline (ADR-0159 clause 2): while another
 /// process holds `project.lock`, a refresh tries it until its `max_wall_ms` deadline and then
 /// stops with the bounded failure `store_locked`, recorded in the log while the holder still
 /// holds the lock, and never hangs. Released, the next refresh records a Survey.

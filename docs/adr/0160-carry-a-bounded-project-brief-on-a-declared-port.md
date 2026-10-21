@@ -1,4 +1,4 @@
-# ADR-0159: Carry a bounded Project Brief on a declared port
+# ADR-0160: Carry a bounded Project Brief on a declared port
 
 **Status:** accepted (2026-10-20); clauses 1, 3, 4, 5, 7 and 9 amended (2026-10-21) by the PJ3
 close-out, before release: the Brief port is `af.pipeline/2`, the Survey is the resolved
@@ -8,9 +8,9 @@ and 9 amended again (2026-10-21) by the close-out's second round, before release
 decided over the Task file's bindings, a capture that resolved the source commit is kept, and the
 preview opens the Project Store strictly read-only. Package PJ3 of the
 [Project design note](../design/project.md). Builds on
-[ADR-0157](0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+[ADR-0158](0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
 (the Project and its Project Store),
-[ADR-0158](0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md) (Surveys),
+[ADR-0159](0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md) (Surveys),
 [ADR-0117](0117-bind-task-inputs-to-recorded-task-outputs.md) and
 [ADR-0134](0134-bind-any-declared-root-port-to-recorded-task-outputs.md) (root inputs resolved
 at plan time, pinned, bound only from recorded result outputs),
@@ -22,7 +22,7 @@ measures), [ADR-0135](0135-collect-finished-tasks-behind-a-tombstone-and-a-reach
 
 ## Context
 
-A Survey (ADR-0158) says how big a Project is, what it decided, which terms it defines and
+A Survey (ADR-0159) says how big a Project is, what it decided, which terms it defines and
 which checks it declares. A Worker still learns none of it unless it spends tool calls
 rediscovering it in every Attempt; the kernel's implementer is told to read `CONTEXT.md` and the
 ADRs whole. Giving every Worker the Survey would break minimum context (ADR-0028): a Survey is
@@ -38,7 +38,7 @@ the Task is planned so a later Survey can never change what an admitted plan agr
 - **Read the newest Survey when a Worker is dispatched.** Rejected: a refresh between plan and
   run would change a Worker's input under an admitted plan, and replay could not reproduce it
   (ADR-0117 resolves every root input once, at plan time).
-- **Let a model write the Brief.** Rejected for the reason ADR-0158 rejected a model-written
+- **Let a model write the Brief.** Rejected for the reason ADR-0159 rejected a model-written
   Survey: the kernel measures. A model-written project summary is a later, separate decision.
 - **Truncate an oversized Brief mid-section, or leave the port silently empty.** Rejected: a cut
   section misreports what it holds, and an empty port hides that the variant cannot fit. Whole
@@ -75,7 +75,7 @@ the Task is planned so a later Survey can never change what an admitted plan agr
    newest N (date descending, undated last, then number descending, then path), and
    `hot_paths`, the first N of `history.hot_paths`. `rendered_bytes` is the byte length of the
    record's own canonical JSON, that field included. A Brief holds no host path, Provider ID or
-   author-identity email, and keeps repository text verbatim, under ADR-0158 clause 6: its
+   author-identity email, and keeps repository text verbatim, under ADR-0159 clause 6: its
    sections are the pinned Survey's, in which no author email appears (an author name that holds
    one is the sanitized identity `h:` and the hash of that name, under both identity policies),
    while decision titles, paths, terms, check names and hot paths are recorded as committed, `@`
@@ -127,7 +127,7 @@ the Task is planned so a later Survey can never change what an admitted plan agr
    selected and after the Task file's bindings are resolved, selects the Project of the resolved
    source Snapshot's origin: the `repository_id` of the tree captured from the checkout, or of
    the Snapshot a bound `source` names (ADR-0117 keeps that identity, which need not be the
-   invoking checkout's), and the Project ID derived from it (ADR-0157). It pins the newest
+   invoking checkout's), and the Project ID derived from it (ADR-0158). It pins the newest
    complete, uncollected Survey of that Project whose own `repository_id` is that one, never one
    of the invoking checkout's Project when the two differ; when that Project has no complete
    Survey it pins nothing and the automatic port stays empty (`no_survey`). The pin is an

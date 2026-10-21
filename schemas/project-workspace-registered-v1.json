@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-workspace-registered:1",
   "title": "WorkspaceRegistered@1",
-  "description": "One checkout registered as a Workspace of the Project (ADR-0157): its opaque ID, its label and how it came to be one. The checkout, Store, bindings and Task-file paths live only in the machine-local workspaces.toml.",
+  "description": "One checkout registered as a Workspace of the Project (ADR-0158): its opaque ID, its label and how it came to be one. The checkout, Store, bindings and Task-file paths live only in the machine-local workspaces.toml.",
   "type": "object",
   "additionalProperties": false,
   "required": [

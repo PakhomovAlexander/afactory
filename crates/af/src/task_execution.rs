@@ -1602,7 +1602,7 @@ fn start_captured(
     }
     // The Project Brief's initial capture, before any pipeline is selected: the pinned Survey,
     // the `[brief]` policy and the ancestry of every Survey head against the source commit, so
-    // every later normalization renders from them alone (ADR-0159). The Survey is the Project's
+    // every later normalization renders from them alone (ADR-0160). The Survey is the Project's
     // of the resolved source: a bound `source` names its own repository, which need not be the
     // invoking checkout's. Construction is decided over the bound ports, so a Brief port the
     // Task file binds reads no Survey and writes no pin.

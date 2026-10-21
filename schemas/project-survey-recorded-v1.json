@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-survey-recorded:1",
   "title": "SurveyRecorded@1",
-  "description": "A Project Store event (ADR-0158): the Survey `survey_id` is in the Store's CAS. A complete Survey whose survey key (head, refs digest, policy digest, Surveyor version) equals the current one is reused and nothing is recorded.",
+  "description": "A Project Store event (ADR-0159): the Survey `survey_id` is in the Store's CAS. A complete Survey whose survey key (head, refs digest, policy digest, Surveyor version) equals the current one is reused and nothing is recorded.",
   "type": "object",
   "additionalProperties": false,
   "required": [

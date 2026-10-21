@@ -1,4 +1,4 @@
-//! ADR-0157 end to end: one Project per repository, its Workspaces, and `af project`.
+//! ADR-0158 end to end: one Project per repository, its Workspaces, and `af project`.
 //!
 //! Two worktrees of one repository register one Project with two Workspaces, and `af project
 //! show` answers the same from either; a shallow clone is refused with the way out; a repository
@@ -27,7 +27,7 @@
 //! the unregistration, so a crash on either side of it followed by a clean worktree at the same
 //! path leaves that worktree untouched and one `WorkspaceRemoved@1`. A git that outlives its deadline fails the command and
 //! leaves no child. The first `af task plan --workspace <checkout>` finds the checkout it
-//! registers. No command writes inside a checkout, the Surveyor's (ADR-0158) included, and the
+//! registers. No command writes inside a checkout, the Surveyor's (ADR-0159) included, and the
 //! help answers in under 50 ms.
 //!
 //! Every test runs with its own `XDG_STATE_HOME`, so the Projects it registers are its own.
@@ -1500,7 +1500,7 @@ fn administrative_entries(repo: &Path) -> Vec<String> {
 }
 
 /// What the undo says of a locked entry without a `gitdir` that it leaves where it is, the
-/// recovery line of ADR-0157 word for word.
+/// recovery line of ADR-0158 word for word.
 fn locked_left_behind(repo: &Path, name: &str) -> String {
     format!(
         "{}: a locked entry without a gitdir, created during this add and possibly another add's; delete that directory once no add is running (git worktree prune keeps a locked entry)",
@@ -2030,7 +2030,7 @@ fn no_project_command_and_no_workspace_plan_writes_inside_the_checkout() {
         &["project", "show", "--json"],
         &["project", "workspaces"],
         &["project", "workspaces", "--json"],
-        // The Surveyor (ADR-0158): a Survey, an unchanged second one, and every view of them.
+        // The Surveyor (ADR-0159): a Survey, an unchanged second one, and every view of them.
         &["project", "refresh"],
         &["project", "refresh", "--json"],
         &["project", "survey"],
@@ -4264,7 +4264,7 @@ fn the_rerun_of_every_step_checks_the_entry_before_it_acts() {
     }
 }
 
-/// A rerun's entry check follows the step it holds (ADR-0157 clause 5): stopped as a crash would
+/// A rerun's entry check follows the step it holds (ADR-0158 clause 5): stopped as a crash would
 /// once the entry is unlinked, or part way through its deletion with its `gitdir` gone, while a
 /// new directory another worktree's add made holds the entry's path, the rerun finds the
 /// recorded entry in neither place it can be (and keeps and reports the new one), or what is
@@ -4336,7 +4336,7 @@ fn a_rerun_after_the_entrys_unlink_or_part_of_its_deletion_finishes_beside_a_new
     }
 }
 
-/// A removal records only an identity that carries a birth time (ADR-0157 clause 5): on a file
+/// A removal records only an identity that carries a birth time (ADR-0158 clause 5): on a file
 /// system that reports none, `--delete-worktree` is refused at inspection with one sentence
 /// naming the file system, nothing changed and no record written; without that condition the
 /// same command removes the worktree.
@@ -4379,7 +4379,7 @@ fn a_file_system_without_birth_time_refuses_a_removal_and_changes_nothing() {
     assert!(!worktree.exists());
 }
 
-/// Every `*-moved` step checks its original path (ADR-0157 clause 5): stopped right after the
+/// Every `*-moved` step checks its original path (ADR-0158 clause 5): stopped right after the
 /// checkout or its administrative entry moved into its container, a directory found at the
 /// original path on the rerun is a replacement that stops the removal. The recorded directory
 /// stays in its container, nothing is deleted, the record stays byte for byte and the Workspace

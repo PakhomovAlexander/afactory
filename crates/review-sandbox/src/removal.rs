@@ -76,7 +76,7 @@ pub fn partial(error: &io::Error) -> Option<&PartlyRemoved> {
 /// same path, within the same second), so device and inode alone name a slot, not a file. The
 /// birth time survives `rename(2)` and differs for a file created later, so an identity that
 /// carries it ([`Identity::born_of`], [`born_at`], [`born_of_descriptor`]) names one file: the
-/// identities the Project's removals and Survey records compare (ADR-0157 clause 5, ADR-0158
+/// identities the Project's removals and Survey records compare (ADR-0158 clause 5, ADR-0159
 /// clauses 2 and 13). Those constructors refuse a file system that reports no birth time, never
 /// standing in the change time (a rename changes it) or the modification time (a replacement can
 /// set it). The device-and-inode identity of [`Identity::of`] and its siblings leaves it `None`,

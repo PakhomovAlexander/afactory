@@ -2,7 +2,7 @@
 //! a free-disk floor below which no check or Worker Attempt starts, and `af storage`.
 //!
 //! The budget counts entries — the unit af evicts whole: a warm toolchain key, a warm
-//! Workspace, a review campaign, a finished Task, a Survey (ADR-0158 clause 13), a Store this
+//! Workspace, a review campaign, a finished Task, a Survey (ADR-0159 clause 13), a Store this
 //! release cannot replay, an installed version. One sweep serves every trigger: the end of `af
 //! task run` and `af review run` (the budget; age-based collection too only when `auto_gc` is
 //! on, which it is not by default), a warm check about to create a new key (budget only),
@@ -117,10 +117,10 @@ pub(crate) enum Kind {
     /// What a Task Store holds beyond its finished Tasks: never evicted itself; its Tasks are,
     /// one at a time.
     TaskStore,
-    /// A Project Store (ADR-0157) beyond the Task Stores of its Workspaces and its Surveys:
+    /// A Project Store (ADR-0158) beyond the Task Stores of its Workspaces and its Surveys:
     /// never evicted, since it indexes the Project's Workspaces.
     ProjectStore,
-    /// One Survey's record in its Project Store's CAS (ADR-0158 clause 13), last used at its
+    /// One Survey's record in its Project Store's CAS (ADR-0159 clause 13), last used at its
     /// cutoff: collected one at a time behind a tombstone.
     Survey,
     UnreadableStore,
@@ -207,7 +207,7 @@ pub(crate) struct Entry {
     pub(crate) unmeasurable: Option<String>,
     /// What an entry that is not yet or no longer one af keeps is: `abandoned` for a removal a
     /// dead process left claimed, `pending` for a Survey published to its Project Store's CAS
-    /// whose `SurveyRecorded@1` never committed (ADR-0158 clause 13).
+    /// whose `SurveyRecorded@1` never committed (ADR-0159 clause 13).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) state: Option<&'static str>,
 }
@@ -232,7 +232,7 @@ pub(crate) struct Inventory {
     /// Each Store's directory identity as inventory reached it, opened from `/` without
     /// following a link: what collection and gate cleanup check again before they touch it.
     pub(crate) store_identities: BTreeMap<PathBuf, (PathBuf, review_sandbox::Identity)>,
-    /// Each readable Project Store as its one read found it (ADR-0158 clause 13): what a
+    /// Each readable Project Store as its one read found it (ADR-0159 clause 13): what a
     /// sweep's plan needs of its Surveys, in inventory order.
     pub(crate) projects: Vec<(PathBuf, crate::projects::survey::collect::Look)>,
     /// The removals dead processes left claimed, entries of kind `claim` with the identity and
@@ -747,7 +747,7 @@ fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
     }
 }
 
-/// A Project Store (ADR-0157): its own log and CAS, `workspaces.toml` and the Task files and
+/// A Project Store (ADR-0158): its own log and CAS, `workspaces.toml` and the Task files and
 /// bindings of the Workspaces `af project workspace new` made. Its Surveys are read with it
 /// unless `surveys` is off, past the Store discovery ceiling, which is then reported. The Task Stores below it are
 /// registered and counted on their own, so they are left out of its bytes. It is never evicted:
@@ -940,7 +940,7 @@ pub(crate) enum Rule {
     /// Idle at least `keep_days` beyond the newest `keep_*`.
     Collection,
     /// A Survey idle at least `keep_days` beyond the newest `[storage] keep_surveys` of its
-    /// Project (ADR-0158 clause 13).
+    /// Project (ADR-0159 clause 13).
     KeepSurveys,
     /// Least recently used while af held more than `max_bytes`.
     Budget,
@@ -974,7 +974,7 @@ pub(crate) struct Removal {
     /// way and could not measure what it left.
     #[serde(serialize_with = "total")]
     pub(crate) total_after: Option<u64>,
-    /// A Survey collected `unreadable` (ADR-0158 clause 13): why its record's bytes were no
+    /// A Survey collected `unreadable` (ADR-0159 clause 13): why its record's bytes were no
     /// Survey, as its tombstone says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) unreadable: Option<String>,
@@ -986,7 +986,7 @@ pub(crate) struct Removal {
     pub(crate) outcome: Option<String>,
 }
 
-/// One file or Survey a sweep's plan left where it is, with its reason (ADR-0158 clause 13). A
+/// One file or Survey a sweep's plan left where it is, with its reason (ADR-0159 clause 13). A
 /// preview lists exactly what its pass leaves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct Left {
@@ -2573,7 +2573,7 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-/// The Surveys of the readable Project Store at `path` (ADR-0158 clause 13), from its one look:
+/// The Surveys of the readable Project Store at `path` (ADR-0159 clause 13), from its one look:
 /// one entry of kind `survey` each, its record's CAS bytes, last used at its cutoff and stated
 /// by device and inode, taken out of the Project Store's own bytes; an object a
 /// pending-publication entry describes whose `SurveyRecorded@1` never committed is one too, its

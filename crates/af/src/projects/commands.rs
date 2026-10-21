@@ -891,7 +891,7 @@ fn added_entries(
 }
 
 /// What the undo says of a new entry named after `path` that is not attributably this add's,
-/// and so is left where it is. Each line is ADR-0157's, word for word.
+/// and so is left where it is. Each line is ADR-0158's, word for word.
 fn left_alone(administrative: &Path, entry: &NewEntry) -> String {
     let location = administrative.join(&entry.name);
     match &entry.gitdir {

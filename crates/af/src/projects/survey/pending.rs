@@ -1,4 +1,4 @@
-//! The pending-publication entries of a Project Store (ADR-0158 clause 2).
+//! The pending-publication entries of a Project Store (ADR-0159 clause 2).
 //!
 //! A Survey is published in two steps: its record goes into the Project Store's CAS, then
 //! `SurveyRecorded@1` into its log. A process that dies between the two leaves a record no event

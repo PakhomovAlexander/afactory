@@ -21,4 +21,4 @@
   [--json]` prints the exact bytes a plan would bind (`af/project-brief-preview@1`), recording and
   registering nothing: it opens the Project Store strictly read-only, so it changes no byte there
   and reads a Store nobody may write
-  ([ADR-0159](docs/adr/0159-carry-a-bounded-project-brief-on-a-declared-port.md)).
+  ([ADR-0160](docs/adr/0160-carry-a-bounded-project-brief-on-a-declared-port.md)).

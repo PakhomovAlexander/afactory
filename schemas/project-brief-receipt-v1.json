@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-brief-receipt:1",
   "title": "af/ProjectBriefReceipt@1",
-  "description": "The plan-time receipt of one Project Brief port of one Task revision (ADR-0159), kept in the revision's provenance, which the compiled plan pins: the Brief the port carries and its staleness, keyed by the Brief's ID and the Task's source commit and read from the capture's ancestry observation; or why the port carries none. Staleness is reported, never refused.",
+  "description": "The plan-time receipt of one Project Brief port of one Task revision (ADR-0160), kept in the revision's provenance, which the compiled plan pins: the Brief the port carries and its staleness, keyed by the Brief's ID and the Task's source commit and read from the capture's ancestry observation; or why the port carries none. Staleness is reported, never refused.",
   "type": "object",
   "additionalProperties": false,
   "required": [

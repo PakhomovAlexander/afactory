@@ -1,4 +1,4 @@
-//! ADR-0159 end to end: a Project Brief on a declared `project` port, through the real `af`.
+//! ADR-0160 end to end: a Project Brief on a declared `project` port, through the real `af`.
 //!
 //! Every test copies `fixtures/task-runtime/project-brief`, whose `fixture/oriented` Pipeline
 //! wires the port to its implementer and not to its evaluator, pins its package digests, commits
@@ -734,7 +734,7 @@ impl Fixture {
     }
 }
 
-/// The automatic Brief is the Project's of the resolved source Snapshot (ADR-0159 clause 4): a
+/// The automatic Brief is the Project's of the resolved source Snapshot (ADR-0160 clause 4): a
 /// Task planned in repository A whose `source` is bound to a tree of repository B never carries
 /// A's Survey. The port is empty while B has no complete Survey, although A has one, and once B
 /// is surveyed it carries B's Brief, whose staleness is unknown: the re-rooted tree is no commit.
@@ -811,7 +811,7 @@ fn a_bound_source_of_another_repository_pins_that_repositorys_survey_or_nothing(
     );
 }
 
-/// ADR-0158 clause 6 holds in a Brief: an author's email never enters it, while repository text
+/// ADR-0159 clause 6 holds in a Brief: an author's email never enters it, while repository text
 /// enters verbatim, `@` included. Under both identity policies the decision title keeps the
 /// address it was committed with, the author whose name is an email address is the sanitized
 /// identity `h:` and the hash of that name, and neither author's email appears.
@@ -1218,7 +1218,7 @@ fn a_node_over_the_request_cap_with_its_brief_is_refused_at_plan_time() {
     );
 }
 
-/// The plan-time cap is the renderer's own accounting (ADR-0159 clause 7): the serialized Worker
+/// The plan-time cap is the renderer's own accounting (ADR-0160 clause 7): the serialized Worker
 /// request, its JSON escaping, value wrappers and output schemas included. Here the instructions
 /// and the root inputs with the Brief sum to well under 1 MiB, but the instructions are quotes,
 /// each escaped to two bytes, and the report schema carries a long description, so the request
@@ -1585,7 +1585,7 @@ impl Drop for Unwritable {
     }
 }
 
-/// `af project brief` opens the Project Store strictly read-only (ADR-0159 clause 9): with the
+/// `af project brief` opens the Project Store strictly read-only (ADR-0160 clause 9): with the
 /// Store directory and its `events.sqlite` unwritable every preview form still renders, and no
 /// byte beneath the state root changes and nothing appears there: the Store's lock, log and
 /// CAS, its journal files, and the Store registry `af/stores.toml` with its last use included.
@@ -1667,7 +1667,7 @@ fn capture_of(cas: &Cas, revision_id: &str) -> Option<Value> {
         .map(|envelope| envelope["payload"].clone())
 }
 
-/// An explicit binding suppresses construction without reading a Survey (ADR-0159 clause 6).
+/// An explicit binding suppresses construction without reading a Survey (ADR-0160 clause 6).
 /// The Project Store keeps its complete Survey, and a named pipeline's one Brief port is bound
 /// to a recorded Brief: planning reads no Survey (its record is set aside while the Task is
 /// planned, and nothing misses it), writes no `af/ProjectSurveyPin@1`, and records a capture
@@ -1753,7 +1753,7 @@ fn a_bound_brief_port_reads_no_survey_and_a_later_refresh_changes_nothing() {
     assert_eq!(port_line(&f.task_text(&["task", "explain", "bound"])), line);
 }
 
-/// A `no_survey` receipt names the resolved source commit (ADR-0159 clause 5): a Task over a
+/// A `no_survey` receipt names the resolved source commit (ADR-0160 clause 5): a Task over a
 /// committed checkout with a Brief port, no complete Survey and no variant of the project's own
 /// keeps its capture, which holds that commit alone, and its receipt carries it.
 #[test]

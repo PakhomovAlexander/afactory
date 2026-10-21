@@ -1,4 +1,4 @@
-# ADR-0157: Give a repository one Project identity and register its checkouts as Workspaces
+# ADR-0158: Give a repository one Project identity and register its checkouts as Workspaces
 
 **Status:** accepted (2026-10-19); clauses 4, 5 and 8 amended (2026-10-20) by PJ1b, clause 5
 again (2026-10-20) by its second round, clauses 3 and 5 by its third, clause 5 by its

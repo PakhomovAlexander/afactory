@@ -68,7 +68,7 @@ A Project Brief port binds the same way, to a recorded result output of type
 `af/ProjectBrief@1`, never by exact artifact ID; the binding suppresses its `project_brief` root
 default, and a Brief the kernel did not construct from a pinned Survey is refused with the reason
 `not_kernel_constructed`
-([ADR-0159](../adr/0159-carry-a-bounded-project-brief-on-a-declared-port.md)).
+([ADR-0160](../adr/0160-carry-a-bounded-project-brief-on-a-declared-port.md)).
 
 The referenced Task must be recorded in this Store, finished, its result must carry the named
 port, and every artifact the port names must verify in the CAS. Only result outputs bind: a name
@@ -95,7 +95,7 @@ A root input the Task file does not bind is filled only by a constructor its por
 | `root_default` | Port | Fills it with |
 |---|---|---|
 | `empty_review_history` | one `af/ReviewHistory@1` | a typed empty review history |
-| `project_brief` | one optional, `unbound` `af/ProjectBrief@1`, naming its variant in `brief` | the Project Brief that `[brief.<variant>]` renders from the Survey the Task pinned when it was planned, or nothing without a Survey or with the variant `none` ([ADR-0159](../adr/0159-carry-a-bounded-project-brief-on-a-declared-port.md)) |
+| `project_brief` | one optional, `unbound` `af/ProjectBrief@1`, naming its variant in `brief` | the Project Brief that `[brief.<variant>]` renders from the Survey the Task pinned when it was planned, or nothing without a Survey or with the variant `none` ([ADR-0160](../adr/0160-carry-a-bounded-project-brief-on-a-declared-port.md)) |
 
 `brief` is allowed only beside `root_default = "project_brief"`. Both constructors run at plan
 time in `normalize_root_inputs` (`crates/review-config/src/task/catalog.rs`), for the Task-file

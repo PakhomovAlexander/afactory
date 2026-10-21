@@ -1,4 +1,4 @@
-//! A sweep's one plan (ADR-0144, ADR-0158 clause 13). [`make`] takes one inventory snapshot and
+//! A sweep's one plan (ADR-0144, ADR-0159 clause 13). [`make`] takes one inventory snapshot and
 //! returns, in order, every entry the sweep removes with the bytes it frees, its rule
 //! (`recovery`, `collection`, `keep_surveys`, `budget`) and the total after it, and every file
 //! or Survey it leaves with its reason (`held`, `foreign`, `oversize`, `unreadable_name`,

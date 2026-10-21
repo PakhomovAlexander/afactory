@@ -1,4 +1,4 @@
-//! The record `af/TaskStorageSweep@2` (ADR-0144, ADR-0158 clause 13): what the Storage Budget's
+//! The record `af/TaskStorageSweep@2` (ADR-0144, ADR-0159 clause 13): what the Storage Budget's
 //! sweep at the end of `af task run` removed and failed to remove, as an observation of the Task
 //! that run executed. It travels inline in one `storage_sweep` transition of the Task's log,
 //! references no artifact and never changes the Task's result. It is bounded like a gate
@@ -105,7 +105,7 @@ pub struct TaskStorageSweepV2 {
     pub removals: Vec<StorageSweepRemovalV1>,
     /// Removals counted but not listed: beyond [`MAX_SWEEP_REMOVALS`], with a path no record
     /// can name (not UTF-8, a control character, longer than [`MAX_SWEEP_PATH_BYTES`]), or of a
-    /// kind the record has none for, a Survey's (ADR-0158 clause 13).
+    /// kind the record has none for, a Survey's (ADR-0159 clause 13).
     pub omitted_removals: u64,
     /// Removals that failed, each bounded; the next sweep tries again.
     pub failures: Vec<String>,

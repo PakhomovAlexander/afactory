@@ -23,9 +23,11 @@ pub const TASK_PACKAGE_V1: &str = "af/TaskPackage@1";
 pub const COMPILED_TASK_V1: &str = "af/CompiledTask@1";
 
 pub mod export;
+mod local;
 pub mod planning;
 mod requirements;
 mod validation;
+pub use local::LocalTaskPackage;
 pub use validation::CapturedTaskPlanValidator;
 #[cfg(test)]
 mod tests;
@@ -140,7 +142,7 @@ fn validate_notes_ports(
     Ok(())
 }
 
-/// The constructor of a `project_brief` root default (ADR-0159), supplied by the host that owns
+/// The constructor of a `project_brief` root default (ADR-0160), supplied by the host that owns
 /// the Project Store, so this crate never reads one. Resolution is a pure function of what the
 /// Task revision's initial capture pinned: the same revision renders the same Brief at every
 /// `normalize_root_inputs` site, and none of them reads a Survey, a policy file or git.
@@ -660,7 +662,7 @@ impl TaskPlanCompiler {
                 }
                 worker.signature.contract.validate()?;
                 // A root default and its `brief` variant are a pipeline root port's, and the
-                // Brief port is `af.pipeline/2`'s alone (ADR-0159): `af.worker/1` keeps its shape.
+                // Brief port is `af.pipeline/2`'s alone (ADR-0160): `af.worker/1` keeps its shape.
                 if let Some(port) = worker
                     .signature
                     .contract

@@ -1,7 +1,7 @@
 # project-brief
 
 Project Briefs on a declared port, for
-[ADR-0159](../../../docs/adr/0159-carry-a-bounded-project-brief-on-a-declared-port.md) and
+[ADR-0160](../../../docs/adr/0160-carry-a-bounded-project-brief-on-a-declared-port.md) and
 `crates/af/tests/it/project_brief.rs`:
 
 - `fixture/oriented` declares the root port `project` (`root_default = "project_brief"`,

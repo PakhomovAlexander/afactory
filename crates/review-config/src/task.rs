@@ -92,7 +92,7 @@ mod tests {
         assert!(parse_task_pipeline(&text.replace("af.pipeline/1", "af.pipeline/2")).is_err());
     }
 
-    /// A pipeline with a Project Brief port is `af.pipeline/2` (ADR-0159); the same file
+    /// A pipeline with a Project Brief port is `af.pipeline/2` (ADR-0160); the same file
     /// labelled `af.pipeline/1` is refused when it loads, naming the version it needs.
     #[test]
     fn a_brief_port_loads_only_under_af_pipeline_2() {

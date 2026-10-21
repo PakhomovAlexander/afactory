@@ -1,4 +1,4 @@
-//! Every git process `af project` and registration start (ADR-0157, ADR-0026).
+//! Every git process `af project` and registration start (ADR-0158, ADR-0026).
 //!
 //! Each runs through `review_process` in its own process group, with a deadline that ends the
 //! whole group, and in delivery's isolated command (`crate::task::isolated_git`): a cleared
@@ -108,7 +108,7 @@ impl Git {
 
     /// The deadline of one command the Surveyor starts: the lesser of a git command's own
     /// limit, the capture deadline of `review_source_git` (or a debug fixture's lower one), and
-    /// what `remaining` of the Survey's one deadline is left (ADR-0158 clause 9).
+    /// what `remaining` of the Survey's one deadline is left (ADR-0159 clause 9).
     pub(crate) fn within(remaining: Duration) -> Duration {
         deadline(CAPTURE_DEADLINE).min(remaining)
     }
@@ -141,7 +141,7 @@ impl Git {
     }
 
     /// [`Git::run`] under `limit` instead of the plumbing deadline: the Surveyor gives each
-    /// command what remains of its one `max_wall_ms` (ADR-0158). A git stopped at `limit` is
+    /// command what remains of its one `max_wall_ms` (ADR-0159). A git stopped at `limit` is
     /// told apart from every other failure.
     pub(crate) fn run_within<I, S>(
         &self,
@@ -178,7 +178,7 @@ impl Git {
     }
 
     /// Run git under `limit` with its stdout handed to `reader` as it arrives, never buffered
-    /// whole, and its stdin written by `writer`: the Surveyor's streams (ADR-0158). A reader
+    /// whole, and its stdin written by `writer`: the Surveyor's streams (ADR-0159). A reader
     /// that returns early closes the pipe, which ends git; a git stopped at `limit` is told apart
     /// from every other failure.
     pub(crate) fn stream_within<I, R, F, G>(

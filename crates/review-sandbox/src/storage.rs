@@ -6,7 +6,7 @@
 //! reached through several hard links counts once. Directories and symbolic links count nothing:
 //! a file system that charges a directory its blocks (ext4, 4096 bytes each) and one that does
 //! not (APFS) give every total the same number, and a removal's bytes are those of the regular
-//! files it deleted (ADR-0158 clause 13). The walk never follows a link.
+//! files it deleted (ADR-0159 clause 13). The walk never follows a link.
 
 use std::collections::BTreeSet;
 use std::path::Path;

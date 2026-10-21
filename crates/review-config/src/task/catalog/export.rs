@@ -15,7 +15,7 @@ pub struct PipelineContractFixture {
 }
 
 /// `af.catalog-contract-fixtures/1` names no pipeline version, so it carries only
-/// `af.pipeline/1` contracts: a pipeline with a Project Brief port (`af.pipeline/2`, ADR-0159) is
+/// `af.pipeline/1` contracts: a pipeline with a Project Brief port (`af.pipeline/2`, ADR-0160) is
 /// neither exported nor admitted from a shared catalog.
 fn brief_not_shared(name: &str) -> String {
     format!(

@@ -1,4 +1,4 @@
-//! The digest-only path (ADR-0158 clause 9): the committed capture's content digest without a
+//! The digest-only path (ADR-0159 clause 9): the committed capture's content digest without a
 //! capture, equal to it whatever the tree holds, and absent with its reason, nothing left in
 //! temporary storage, when a ceiling stops it.
 

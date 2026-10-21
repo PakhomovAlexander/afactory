@@ -62,7 +62,7 @@ fn now() -> Result<u64, StoreError> {
 /// Every port's artifact identity, then the provenance records no port carries that a Task
 /// revision keeps across selection and source refresh: the `af/TaskInputBindings@1` record a
 /// Task file's `inputs` table produced (ADR-0117), and the `af/ProjectBriefCapture@1` and
-/// `af/ProjectBriefReceipt@1` records of its Project Briefs (ADR-0159). Nothing else is
+/// `af/ProjectBriefReceipt@1` records of its Project Briefs (ADR-0160). Nothing else is
 /// preserved, so a revision whose adapter recorded some other observation keeps byte for byte
 /// the list it had.
 ///

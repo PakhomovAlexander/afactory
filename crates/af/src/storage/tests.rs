@@ -1066,7 +1066,7 @@ fn dead_claim(layout: &Layout, name: &str, free: u64, kept: u64) -> PathBuf {
     claim
 }
 
-/// ADR-0158 clause 13's running total: a claim inventory measured at 10 MiB grows to 20 MiB
+/// ADR-0159 clause 13's running total: a claim inventory measured at 10 MiB grows to 20 MiB
 /// before its removal, and 12 MiB appear in it while its walk unlinks the 20, so its final
 /// `rmdir` fails and the walk freed 8 MiB net of what it still holds. The entry reports the 8
 /// MiB, and the total keeps the 12 MiB the claim retains in place of the 10 MiB inventory

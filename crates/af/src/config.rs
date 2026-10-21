@@ -189,7 +189,7 @@ pub(crate) struct StoragePolicy {
     pub(crate) keep_tasks: usize,
     /// The newest review campaigns kept.
     pub(crate) keep_campaigns: usize,
-    /// The newest Surveys collection keeps per Project (ADR-0158 clause 13): a target that the
+    /// The newest Surveys collection keeps per Project (ADR-0159 clause 13): a target that the
     /// Surveys it protects may exceed.
     pub(crate) keep_surveys: usize,
     /// Keep each Claude Attempt's project directory in the Claude config directory.

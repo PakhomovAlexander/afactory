@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-survey-pin:1",
   "title": "af/ProjectSurveyPin@1",
-  "description": "The complete Survey a Task's initial capture pinned (ADR-0159), in the Task Store's CAS: its identity and sections verbatim, and its Survey ID as provenance. It names no previous Survey and links to no other record, so collecting an earlier Task releases its pin while a later Task keeps its own.",
+  "description": "The complete Survey a Task's initial capture pinned (ADR-0160), in the Task Store's CAS: its identity and sections verbatim, and its Survey ID as provenance. It names no previous Survey and links to no other record, so collecting an earlier Task releases its pin while a later Task keeps its own.",
   "type": "object",
   "additionalProperties": false,
   "required": [

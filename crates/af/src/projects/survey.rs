@@ -1,4 +1,4 @@
-//! The Surveyor (ADR-0158): the token-free operator that measures a Project into Surveys.
+//! The Surveyor (ADR-0159): the token-free operator that measures a Project into Surveys.
 //!
 //! A Survey is `af/ProjectSurvey@2`, one canonical JSON record of the head: `identity`, `tree`,
 //! `history`, `contributors`, `decisions`, `vocabulary` and `checks`, every number decimal text,
@@ -275,7 +275,7 @@ fn untombstoned_field(
     .find_map(|(field, equal)| (!equal).then_some(field))
 }
 
-/// The identity a `SurveyCollected@1` binds (ADR-0158 clauses 2 and 13): what replay compares a
+/// The identity a `SurveyCollected@1` binds (ADR-0159 clauses 2 and 13): what replay compares a
 /// collected Survey's event with once its record is gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TombstoneIdentity {
@@ -1064,7 +1064,7 @@ fn attempt(
         .map_err(|error| Unrecorded::new(Some(&head), NOT_PUBLISHED, error))
 }
 
-/// Where `survey` stopped when it is not complete (ADR-0158 clause 1): the stopping point its
+/// Where `survey` stopped when it is not complete (ADR-0159 clause 1): the stopping point its
 /// sections determine, with the items the Clock charged in that section.
 fn stopped(
     survey: &ProjectSurveyV2,
@@ -1079,7 +1079,7 @@ fn stopped(
     Some(stop)
 }
 
-/// The newest recorded Survey of the Project while it is uncollected (ADR-0158 clause 13): a
+/// The newest recorded Survey of the Project while it is uncollected (ADR-0159 clause 13): a
 /// newest Survey a tombstone names is none, once its event is bound to that tombstone, and an
 /// uncollected one is read through [`ProjectStore::survey`], so no field of the newest event is
 /// used before it is verified.
@@ -1410,7 +1410,7 @@ fn survey_sections(sections: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
-/// The pattern limits of ADR-0158 clause 14, where the Surveyor loads its patterns: every
+/// The pattern limits of ADR-0159 clause 14, where the Surveyor loads its patterns: every
 /// pattern list, `[survey.languages]` included, at most 64 patterns and every pattern at most
 /// 256 bytes, refused naming the key.
 fn within_pattern_limits(policy: Policy) -> Result<Policy, String> {

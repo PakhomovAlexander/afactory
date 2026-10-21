@@ -1,4 +1,4 @@
-//! The Project Brief's records (ADR-0159) and the pipeline port that asks for one: each schema
+//! The Project Brief's records (ADR-0160) and the pipeline port that asks for one: each schema
 //! accepts what the Rust types write and refuses what they refuse.
 
 use review_core::project::ProjectSurveyV2;
@@ -457,7 +457,7 @@ fn admitted(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// ADR-0145 clause 2 applied to the Brief port (ADR-0159): the port declaration is
+/// ADR-0145 clause 2 applied to the Brief port (ADR-0160): the port declaration is
 /// `af.pipeline/2`'s, so an `af.pipeline/1` pipeline carrying it is refused by its schema and by
 /// Rust, and `af.pipeline/2` is the shape of a pipeline that declares it: one without the port
 /// is `af.pipeline/1`, never a second spelling of it.

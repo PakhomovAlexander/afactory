@@ -18,6 +18,7 @@ mod task_cli;
 mod af_layout;
 mod build_metadata;
 mod campaign_loop;
+mod catalog_digest;
 mod cli_surface;
 mod common_review_summaries;
 mod lock_af_version;

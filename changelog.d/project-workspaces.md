@@ -54,7 +54,7 @@
   and bindings. `af storage --json` is now `af/storage@2`, with the entry kind `project_store`,
   and `$XDG_STATE_HOME/af/stores.toml` is version 2: a version-1 file is refused until it is
   deleted, and Stores register again as commands use them
-  ([ADR-0157](docs/adr/0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)).
+  ([ADR-0158](docs/adr/0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)).
 - PJ1b close-out: this branch did not have it yet, so it is added here. Every `*-moved` step of
   `af project workspace remove --delete-worktree` checks its original path: stopped after
   `entry-moved` (or `checkout-moved`), a directory found at the entry's (or checkout's) original
@@ -63,7 +63,7 @@
   at <path> since this removal moved the recorded one; clear it or move the recorded entry back,
   then run the command again`; cleared or moved back, the same command finishes
   (`a_directory_at_the_original_path_after_any_moved_step_stops_the_removal`,
-  [ADR-0157](docs/adr/0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+  [ADR-0158](docs/adr/0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
   clause 5).
 - Second close-out: a rerun of `af project workspace remove --delete-worktree` checks the
   administrative entry as its recorded step needs. Identity, `gitdir` and lock are checked before
@@ -82,9 +82,9 @@
   is `version = 2` and a version-1 record is refused, an identity at the same inode born later is
   refused, and a file system that reports no birth time refuses the removal with nothing changed
   (`a_file_system_without_birth_time_refuses_a_removal_and_changes_nothing`); the undo of
-  `workspace new` compares the same identities. The Project ADR is renumbered ADR-0157, after
+  `workspace new` compares the same identities. The Project ADR is renumbered ADR-0158, after
   the numbers main took
-  ([ADR-0157](docs/adr/0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+  ([ADR-0158](docs/adr/0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
   clause 5).
 - Third close-out, Workspace removal: a completed `--delete-worktree` removal record now outlives
   the Workspace's unregistration and is deleted only after `WorkspaceRemoved@1` is appended and
@@ -93,5 +93,5 @@
   clean worktree created at the same path since is left untouched and exactly one
   `WorkspaceRemoved@1` is recorded; registering that path again settles the finished record first
   (`a_completed_removal_record_outlives_the_unregistration_and_a_replacement_survives_the_retry`)
-  ([ADR-0157](docs/adr/0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+  ([ADR-0158](docs/adr/0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
   clause 5).

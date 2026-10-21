@@ -214,7 +214,7 @@ pub(super) fn assess(
                 };
             }
             // Each Brief port's receipt is this revision's, and no Worker wired to a Brief may
-            // be handed more than the request renderer's cap (ADR-0159).
+            // be handed more than the request renderer's cap (ADR-0160).
             let briefs = candidate.pipelines().get(root).map_or(Ok(()), |pipeline| {
                 crate::project_brief::record_receipts(cas, &pipeline.contract, &mut revision)
             });

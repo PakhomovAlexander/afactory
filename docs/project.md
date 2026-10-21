@@ -4,8 +4,8 @@ What `af project` knows about the repository it runs in, where it keeps that, ho
 for one line of work becomes a **Workspace** with its own Task Store, Task files and bindings,
 and how the Surveyor measures the Project into **Surveys**. The terms are defined in
 [`../CONTEXT.md`](../CONTEXT.md); the decisions are
-[ADR-0157](adr/0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
-and [ADR-0158](adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md).
+[ADR-0158](adr/0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+and [ADR-0159](adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md).
 
 ## Identity
 
@@ -1024,7 +1024,7 @@ pattern list overruns `max_wall_ms` by at most one match, and the section it cut
 reason `max_wall_ms`. `?` is one byte of a path's canonical encoded spelling: `caf?.rs` does not
 match `café.rs`, whose `é` is two bytes, and `caf??.rs` does; a byte that is not UTF-8 is spelled
 `%E9`, three bytes
-([ADR-0158](adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md), clauses 13
+([ADR-0159](adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md), clauses 13
 and 14).
 
 ## Briefs
@@ -1033,7 +1033,7 @@ A **Project Brief** is the bounded selection of one Survey that a pipeline's dec
 port carries into the Workers it is wired to, and no other: the record `af/ProjectBrief@1`
 ([schema](../schemas/project-brief-v1.json)) in the Task Store's CAS, rendered by a variant from
 the Survey the Task pinned when it was planned
-([ADR-0159](adr/0159-carry-a-bounded-project-brief-on-a-declared-port.md)). Every section is
+([ADR-0160](adr/0160-carry-a-bounded-project-brief-on-a-declared-port.md)). Every section is
 that Survey's verbatim, except `decisions`, whose records are the variant's newest N (by date
 descending, undated last, then number descending, then path), and `hot_paths`, the first N of
 `history.hot_paths`. `rendered_bytes` is the byte length of the record's own canonical JSON.

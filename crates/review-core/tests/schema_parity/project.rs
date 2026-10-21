@@ -1,4 +1,4 @@
-//! The Project and its Workspaces (ADR-0157): the three Project Store events, each against its
+//! The Project and its Workspaces (ADR-0158): the three Project Store events, each against its
 //! own schema and inside `run-event-v1.json`, and the two `af project` documents.
 //!
 //! What must stay unrepresentable is a host path in a record: a Workspace is named by an opaque
@@ -323,7 +323,7 @@ fn the_project_documents_join_the_log_with_this_machines_paths() {
 }
 
 // ------------------------------------------------------------------------------------------
-// Surveys (ADR-0158): the record, its two events and the history document.
+// Surveys (ADR-0159): the record, its two events and the history document.
 
 const HEAD: &str = "89abcdef0123456789abcdef0123456789abcdef";
 

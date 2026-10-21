@@ -41,7 +41,7 @@ mod model_check;
 mod model_failures;
 mod onboard;
 mod project;
-/// Project Briefs (ADR-0159), beside the Surveyor they render from.
+/// Project Briefs (ADR-0160), beside the Surveyor they render from.
 #[path = "projects/brief.rs"]
 mod project_brief;
 mod projects;
@@ -1095,6 +1095,24 @@ fn main() {
         std::process::exit(code);
     }
     clap_complete::CompleteEnv::with_factory(cli::Af::command).complete();
+    // `af catalog digest` reads one directory and writes nothing (ADR-0157), so it runs and
+    // exits before every self-management hook: it never dispatches to or installs a pinned
+    // release, schedules an update check or touches af's own state.
+    if let Ok(cli::Af {
+        version: false,
+        command:
+            Some(cli::Command::Catalog {
+                command: cli::CatalogCommand::Digest { package },
+            }),
+        ..
+    }) = cli::Af::try_parse_from(&argv)
+    {
+        if let Err(error) = task_execution::catalog::digest(&package) {
+            eprintln!("af catalog digest: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     selfmgmt::maybe_dispatch(&argv);
     let parsed = cli::Af::parse_from(&argv);
     if parsed.version {
@@ -1144,14 +1162,14 @@ fn main() {
         std::process::exit(1);
     }
     let collects_after = collects_after_run(&command);
-    // Registered best effort (ADR-0157): `af task plan|start` before `--workspace` resolves,
+    // Registered best effort (ADR-0158): `af task plan|start` before `--workspace` resolves,
     // every other command once it ran.
     let registers = projects::lazy_target(&command);
     if let Some(lazy) = registers.as_ref().filter(|lazy| lazy.first) {
         projects::register_lazily(lazy);
     }
     let delivered = projects::delivered_target(&command);
-    // `af onboard --apply` records the first Survey once it registered (ADR-0158).
+    // `af onboard --apply` records the first Survey once it registered (ADR-0159).
     let surveyed = match &command {
         cli::Command::Onboard(args) if args.apply => Some((args.repo.clone(), args.json)),
         _ => None,
@@ -1203,6 +1221,12 @@ fn main() {
                 json,
             )
             .map(|()| 0),
+        ),
+        cli::Command::Catalog {
+            command: cli::CatalogCommand::Digest { package },
+        } => (
+            "af catalog digest",
+            task_execution::catalog::digest(&package).map(|()| 0),
         ),
         cli::Command::Catalog {
             command:

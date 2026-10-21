@@ -22,7 +22,7 @@ where
 }
 
 /// The version a pipeline declares in `schema`. Each pipeline has exactly one: `af.pipeline/2`
-/// is the shape whose contract declares a Project Brief port (ADR-0159), and every other
+/// is the shape whose contract declares a Project Brief port (ADR-0160), and every other
 /// pipeline is `af.pipeline/1`, which declares none, so no pipeline has two spellings and a
 /// version-1 pipeline that carries the port is refused rather than read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +46,7 @@ pub enum PortAffinityV1 {
 pub enum RootDefaultV1 {
     EmptyReviewHistory,
     /// The Project Brief the port's `brief` variant renders from the Survey the Task's initial
-    /// capture pinned (ADR-0159).
+    /// capture pinned (ADR-0160).
     ProjectBrief,
 }
 
@@ -64,7 +64,7 @@ pub struct PipelinePortV1 {
     )]
     pub root_default: Option<RootDefaultV1>,
     /// The `[brief.<name>]` variant a `project_brief` root default renders; allowed only with
-    /// it (ADR-0159).
+    /// it (ADR-0160).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -359,7 +359,7 @@ impl PipelineDefinitionV1 {
             .any(PipelinePortV1::declares_brief)
     }
 
-    /// The version rule of ADR-0145 applied to the Brief port (ADR-0159): the port is
+    /// The version rule of ADR-0145 applied to the Brief port (ADR-0160): the port is
     /// `af.pipeline/2`'s alone, and `af.pipeline/2` is the shape of a pipeline that declares it.
     fn validate_version(&self) -> Result<(), String> {
         let briefed = self

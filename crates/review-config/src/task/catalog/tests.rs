@@ -822,7 +822,7 @@ fn with_inputs(
 }
 
 /// A `project_brief` root default is filled only by the installed constructor, only for a port
-/// the Task does not bind, and stays empty when the constructor says so (ADR-0159).
+/// the Task does not bind, and stays empty when the constructor says so (ADR-0160).
 #[test]
 fn a_project_brief_port_is_constructed_only_by_the_installed_resolver() {
     use review_core::task::pipeline::{
@@ -939,7 +939,7 @@ fn a_project_brief_port_is_constructed_only_by_the_installed_resolver() {
     assert_eq!(built.1.lock().unwrap().len(), 1);
 }
 
-/// A pipeline with a Project Brief port is `af.pipeline/2` (ADR-0159), so the containers that
+/// A pipeline with a Project Brief port is `af.pipeline/2` (ADR-0160), so the containers that
 /// carry version-1 contracts without a version label never carry it: the Planner's request
 /// leaves it out, a shared catalog neither exports nor admits it, and a Worker manifest that
 /// declares the root default on its own port is refused when it loads.

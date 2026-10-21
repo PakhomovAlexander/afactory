@@ -1103,6 +1103,31 @@ pub(crate) enum CatalogCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print the digest a catalog pin records for one local Task package directory
+    #[command(
+        long_about = "Print the digest a catalog pin records for one local Task package \
+directory: the `digest` of its `[packages.\"NAME\"]` entry in `.af/task-catalog.toml` or a \
+shared catalog.\n\nThe output is one line, `sha256:` and 64 lowercase hexadecimal digits, and \
+nothing else. Every regular file under the directory contributes its relative path and its \
+bytes, the manifest included; file modes, timestamps, empty directories and the directory's own \
+name or location do not. Task capture hashes the package's files in the captured Snapshot, so \
+a file the Snapshot leaves out, such as an ignored one, changes this digest but not the \
+captured one.\n\n\
+The package is validated as Task capture validates it: exactly one `pipeline.toml`, \
+`worker.toml` or `kind.toml` at its root whose name and exact version the full manifest parse \
+accepts, regular files only, and capture's bounds of 4,096 files and 16 MiB. An absent \
+directory, a symlink, an incomplete or malformed package prints nothing on stdout, says why on \
+stderr and exits 1.\n\nNever: compares against or changes a catalog or pin, writes a file, runs a \
+Worker, contacts a Provider or installs anything. A project's `af` pin never dispatches it to \
+another release, and no update check follows it.",
+        after_long_help = "Examples:\n  af catalog digest .af/task-packages/team/implementer\n  \
+pin=$(af catalog digest .af/task-packages/team/implementer) || exit 1"
+    )]
+    Digest {
+        /// Task package directory, the `path` its catalog pin names
+        #[arg(value_name = "PACKAGE_DIR")]
+        package: PathBuf,
+    },
     /// Explicitly sync a Git catalog into an absent directory; runs no Workers or installers
     Sync {
         /// Local Git checkout or public HTTPS Git URL
@@ -1465,7 +1490,7 @@ pub(crate) fn survey_sections(argv: &[String]) -> Vec<String> {
 }
 
 /// `af project`: the commands of [`ProjectCommand`], then `brief`, which reads the Project
-/// Store and records nothing (ADR-0159).
+/// Store and records nothing (ADR-0160).
 #[derive(Debug, Subcommand)]
 pub(crate) enum ProjectCli {
     #[command(flatten)]

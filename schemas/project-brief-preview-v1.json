@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-brief-preview:1",
   "title": "af/project-brief-preview@1",
-  "description": "What `af project brief --json` prints (ADR-0159): the artifact ID a plan would bind, the Brief byte for byte as the text form prints it, and the context manifest entry a Worker wired to the port would see; or the `none` outcome and its reason. Recorded nowhere.",
+  "description": "What `af project brief --json` prints (ADR-0160): the artifact ID a plan would bind, the Brief byte for byte as the text form prints it, and the context manifest entry a Worker wired to the port would see; or the `none` outcome and its reason. Recorded nowhere.",
   "type": "object",
   "additionalProperties": false,
   "required": [

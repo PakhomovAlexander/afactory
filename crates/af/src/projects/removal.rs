@@ -1,4 +1,4 @@
-//! `af project workspace remove --delete-worktree`, bound to what it inspected (ADR-0157 clause 5).
+//! `af project workspace remove --delete-worktree`, bound to what it inspected (ADR-0158 clause 5).
 //!
 //! Names prove nothing; a record does. Before a removal moves or deletes anything it writes a
 //! machine-local removal record beside `workspaces.toml`, `removals/<workspace id>.toml` in the
@@ -285,7 +285,7 @@ pub(super) fn write(store: &Path, record: &Record) -> Result<(), String> {
         .write_all(
             format!(
                 "# An unfinished `af project workspace remove --delete-worktree`; the next run of \
-                 it finishes from here (ADR-0157).\n{text}"
+                 it finishes from here (ADR-0158).\n{text}"
             )
             .as_bytes(),
         )

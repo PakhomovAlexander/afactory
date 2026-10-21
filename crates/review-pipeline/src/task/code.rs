@@ -2339,7 +2339,7 @@ impl TaskDomain for CodeTaskDomain {
                 }
                 Ok(())
             }
-            // A Project Brief is the kernel's alone (ADR-0159): a Worker that declares one as
+            // A Project Brief is the kernel's alone (ADR-0160): a Worker that declares one as
             // an output is refused here, before anything could forward it.
             TaskOperatorV1::Worker { .. } => {
                 for value in output.outputs.values() {

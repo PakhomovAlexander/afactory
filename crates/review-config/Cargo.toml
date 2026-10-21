@@ -24,6 +24,8 @@ semver = "1.0.27"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 toml = "1.1.6"
+# Descriptor-relative, no-follow package reads without unsafe in this crate.
+nix = { version = "0.31.3", default-features = false, features = ["dir", "fs"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.58.4", default-features = false }

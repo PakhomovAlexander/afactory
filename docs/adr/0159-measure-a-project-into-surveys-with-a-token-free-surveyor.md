@@ -1,4 +1,4 @@
-# ADR-0158: Measure a Project into Surveys with a token-free Surveyor
+# ADR-0159: Measure a Project into Surveys with a token-free Surveyor
 
 **Status:** accepted (2026-10-20); clauses 1, 2, 10, 12 and 13 amended (2026-10-20) by the PJ2
 close-out, which adds clause 15, and clauses 2, 13 and 15 by the second close-out (2026-10-20:
@@ -9,7 +9,7 @@ regular files alone), and clause 13 by the third close-out (2026-10-21: a record
 `unreadable` is recovered by its selection alone, and a Task sweep whose total is unknown is
 recorded as `af/TaskStorageSweep@2`). Package PJ2 of the
 [Project design note](../design/project.md). Builds on
-[ADR-0157](0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+[ADR-0158](0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
 (the Project, its Project Store and every git process of `projects/git.rs`),
 [ADR-0132](0132-measure-and-compare-source-candidates-in-the-kernel.md) (the kernel measures; a
 model never writes a number), [ADR-0001](0001-tree-diff-behind-a-typed-method.md) (typed git
@@ -23,7 +23,7 @@ every changed shape).
 
 ## Context
 
-A Project (ADR-0157) has an identity and Workspaces, and nothing else: af still cannot say how
+A Project (ADR-0158) has an identity and Workspaces, and nothing else: af still cannot say how
 big the repository is, how fast it changes, who works on it or what has been decided. Every
 Worker rediscovers it with tool calls in each Attempt. The answer has to be a kernel record:
 counted the same way every time, bounded, and free of anything a later Brief must not carry, an
@@ -492,7 +492,7 @@ email first of all.
     discovery set reads under the same ceilings. This package's one CAS read, a Survey record read back by replay or reuse,
     is bounded before it is decoded: `get_bounded` at `MAX_SURVEY_BYTES` by its stated length,
     and only then parsed. PJ4 also adds collection: until
-    then every Survey stays in the Project Store, which ADR-0157 already never evicts, and
+    then every Survey stays in the Project Store, which ADR-0158 already never evicts, and
     `[storage] keep_surveys` and `SurveyCollected@1` do not exist.
 13. **Collection and the budget.** This clause replaces the collection sentence of clause 12:
     PJ2 ships Survey collection with the synchronous Surveyor, `SurveyCollected@1`, `[storage]

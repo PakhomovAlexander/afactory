@@ -72,7 +72,7 @@
   canonical encoded spelling, so a match costs at most (pattern length + 1) × (path length + 1)
   cells and `*a` thirty times then `b` no longer hangs; a `[survey]` pattern is at most 256 bytes
   and a list at most 64 patterns, and the Surveyor checks its deadline before each pattern it
-  matches ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md)).
+  matches ([ADR-0159](docs/adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md)).
 - PJ2c close-out, collection: a pending entry whose event never committed is cleared only once no
   file with its inode remains at its Survey's CAS name or in a pass's container, whatever its
   length; an object truncated or grown in place, or moved so, keeps the entry (`failed: … kept:
@@ -92,7 +92,7 @@
   `a_project_store_log_beyond_the_buffered_bytes_ceiling_keeps_its_surveys`). The 64 MiB
   per-Store activity CAS-read budget is out of scope here: it bounds the `activity` section, which
   does not exist yet and belongs to PJ5
-  ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  ([ADR-0159](docs/adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
   15).
 - Second close-out, collection: before its tombstone a collection records the object it selects,
   its device, inode, birth time and length, in `settled.json`, now `af/ProjectSurveysSettled@2`
@@ -113,7 +113,7 @@
   and reports the total and `stop` `unknown` when what a partial deletion left cannot be measured
   (`a_partial_deletion_whose_remainder_cannot_be_walked_reports_the_total_unknown`), so its
   document is now `af/storage-prune@3` (`schemas/storage-prune-v3.json`) and `@2` is refused
-  ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  ([ADR-0159](docs/adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
   13).
 - Third close-out, collection: a corrupt record collected `unreadable` whose pass stopped after
   its tombstone and before the record's move is reclaimed by the next sweep under `recovery` by
@@ -127,5 +127,5 @@
   bytes that left the disk, and `af task show` prints `→ unknown`; `af/TaskStorageSweep@1` is
   refused as a superseded version, so a Task log holding one does not replay
   (`a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its_task`)
-  ([ADR-0158](docs/adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  ([ADR-0159](docs/adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
   13).

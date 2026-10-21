@@ -796,7 +796,7 @@ fn unseal(root: &Path) {
     }
 }
 
-/// ADR-0144 clause 4 with ADR-0158 clause 13: the sweep that ends a run, one of whose removals
+/// ADR-0144 clause 4 with ADR-0159 clause 13: the sweep that ends a run, one of whose removals
 /// stopped part way and could not measure what it left, is recorded on the Task all the same:
 /// `af/TaskStorageSweep@2` with the removal that finished, the one that failed, the bytes that
 /// left the disk, and its total after it and its stop `unknown`, never a number. The Task's log

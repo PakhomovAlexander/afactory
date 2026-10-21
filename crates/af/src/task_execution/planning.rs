@@ -351,7 +351,7 @@ fn run_planner(
         next.previous_revision_id = Some(state.revision_id.clone());
         next.inputs = compiler.normalize_root_inputs(cas, &root, &next)?;
         // A generated root that introduces a Brief port renders it from the Survey the initial
-        // capture pinned, and receipts it from the capture's observation (ADR-0159).
+        // capture pinned, and receipts it from the capture's observation (ADR-0160).
         let contract = &compiler
             .pipelines()
             .get(&root)
