@@ -326,9 +326,9 @@ pending = ""
 [tiers.quick]
 description = "Pull requests and main pushes."
 profiles = [{ environment = "linux_x86_64_gnu_hosted", recipe = "linux_gnu_native_release" }]
-# Spread the full suite over eight bounded schedules. At most two execute together,
+# Spread the full suite over sixteen bounded schedules. At most two execute together,
 # preserving the original concurrency and wall-time bounds (ADR-0193).
-shards = 8
+shards = 16
 concurrent_jobs = 2
 shard_sampling_minutes = 15
 run_total_minutes = 60

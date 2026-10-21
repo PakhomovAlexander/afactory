@@ -14,6 +14,14 @@ packages, compiling the graph, proposing and admitting the Task for every sample
 the cost. The measured operations are the first current-plan check and runtime construction,
 with a cold validator and Store projection. Setup writes are already excluded from them.
 
+The seeded eight-shard trial `39659018121` completed every large authority sample with no
+sample failure, but still could not start later workloads within the conservative reserves.
+Shard 0 spent 633.565 seconds on 98 records before a CLI sample's 255-second worst case
+plus the terminal reserve no longer fit. Shard 2 spent 415.966 seconds on 182 records before
+the first state-projection sample's 565-second worst case no longer fit. These are retained
+incomplete runs, not successful full comparisons. The long authority workloads must not
+share a schedule with those later setup costs.
+
 ## Decision
 
 The two authority cases read one admitted Task seed per package size, side and shard, through
@@ -37,11 +45,14 @@ exercised by direct fixture-writer tests. Changed setup contracts are
 `authority_plan_check_v2` and `authority_runtime_new_v2`; the seed writer is
 `authority_seed_v1`. Earlier reader contracts are refused.
 
-The quick tier distributes its complete instance set over eight shards, with the original
+The quick tier distributes its complete instance set over sixteen shards, with the original
 maximum of two concurrent jobs. Each shard still has 15 sampling minutes and the whole run
 60 minutes. Pair counts, warmups, sentinels, tolerances, coverage and containment remain
 unchanged. Shards still contain whole instances with their paired same-host samples; a pair
-never crosses hosts. The existing explicit shard override remains available for experiments.
+never crosses hosts. In the current registry each authority workload shares only with a short
+CLI discovery case; state-projection and stateful CLI setup are on other shards. The existing
+explicit shard override remains available for experiments. All setup, containment and cleanup
+reserves remain enforced, including the refusal to start a sample whose worst case cannot fit.
 
 ## Consequences
 
