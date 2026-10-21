@@ -650,37 +650,40 @@ fn refresh_check_caches_the_latest_and_applies_always() {
     sandbox.publish(&newer, false);
     sandbox.sign(&newer, &signer, None);
     let real = sandbox.adopt_real_binary();
-    let refresh = sandbox
-        .command(&real)
-        .args(["self", "refresh-check"])
-        .output()
-        .unwrap();
+    let refresh = sandbox.refresh_check(&real).output().unwrap();
     assert!(refresh.status.success(), "{}", err(&refresh));
     let cache = std::fs::read_to_string(sandbox.path("cache/af/self/latest.toml")).unwrap();
     assert!(cache.contains(&format!("latest = \"{newer}\"")), "{cache}");
     assert!(sandbox.default_target().is_none(), "notify never installs");
 
+    // The check above answered for `check_every`; a day later the next one is due.
+    let aged: String = cache
+        .lines()
+        .map(|line| {
+            if line.starts_with("checked_at_epoch = ") {
+                "checked_at_epoch = 1\n".to_string()
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    write(&sandbox.path("cache/af/self/latest.toml"), &aged);
     write(
         &sandbox.path("config/af/config.toml"),
         "[self]\nauto_update = \"always\"\n",
     );
-    let always = sandbox
-        .command(&real)
-        .args(["self", "refresh-check"])
-        .output()
-        .unwrap();
+    let always = sandbox.refresh_check(&real).output().unwrap();
     assert!(always.status.success(), "{}", err(&always));
     assert_eq!(sandbox.default_target().as_deref(), Some(newer.as_str()));
     let cache = std::fs::read_to_string(sandbox.path("cache/af/self/latest.toml")).unwrap();
     assert!(
-        cache.contains(&format!("auto_updated_to = \"{newer}\"")),
+        cache.contains("[auto_updated]") && cache.contains(&format!("to = \"{newer}\"")),
         "{cache}"
     );
 
     // Offline, the check is a no-op and never fails a command.
     let offline = sandbox
-        .command(&real)
-        .args(["self", "refresh-check"])
+        .refresh_check(&real)
         .env("AF_SELF_OFFLINE", "1")
         .output()
         .unwrap();

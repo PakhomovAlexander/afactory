@@ -486,6 +486,42 @@ fn a_version_made_the_default_after_inventory_is_kept() {
     assert!(!other.exists());
 }
 
+#[test]
+fn a_killed_installers_staging_is_counted_and_evicted_but_a_live_one_is_kept() {
+    let layout = layout();
+    // Named after a process id no process can have: its installer is gone.
+    let staging = |name: &str| {
+        let path = layout.roots.installs.versions.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("af"), vec![6_u8; CHUNK]).unwrap();
+        path
+    };
+    let abandoned = staging(".0.9.5.2147483647");
+    let taken = staging(".0.9.6.2147483647");
+    let stock = inventory(&layout.roots, Detail::Tasks);
+    let entry = |path: &Path| {
+        stock
+            .entries
+            .iter()
+            .find(|entry| entry.path == path)
+            .unwrap()
+            .clone()
+    };
+    let (abandoned_entry, taken_entry) = (entry(&abandoned), entry(&taken));
+    assert_eq!(abandoned_entry.kind, Kind::Version);
+    assert!(abandoned_entry.bytes >= CHUNK as u64, "its bytes count");
+    assert_eq!(abandoned_entry.in_use, None);
+
+    // An installer took the other one between inventory and eviction: it holds it locked.
+    let held = std::fs::File::open(&taken).unwrap();
+    rustix::fs::flock(&held, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    let error = evict(&layout.roots, &policy(1), &stock, &taken_entry).unwrap_err();
+    assert!(error.contains("staged by a running installer"), "{error}");
+    assert!(taken.join("af").is_file(), "kept");
+    evict(&layout.roots, &policy(1), &stock, &abandoned_entry).unwrap();
+    assert!(!abandoned.exists());
+}
+
 fn volume(path: &str, free: Result<u64, &str>) -> Volume {
     Volume {
         path: PathBuf::from(path),

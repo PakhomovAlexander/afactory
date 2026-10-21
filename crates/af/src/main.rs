@@ -1091,6 +1091,24 @@ fn main() {
         std::process::exit(code);
     }
     clap_complete::CompleteEnv::with_factory(cli::Af::command).complete();
+    // `af catalog digest` reads one directory and writes nothing (ADR-0157), so it runs and
+    // exits before every self-management hook: it never dispatches to or installs a pinned
+    // release, schedules an update check or touches af's own state.
+    if let Ok(cli::Af {
+        version: false,
+        command:
+            Some(cli::Command::Catalog {
+                command: cli::CatalogCommand::Digest { package },
+            }),
+        ..
+    }) = cli::Af::try_parse_from(&argv)
+    {
+        if let Err(error) = task_execution::catalog::digest(&package) {
+            eprintln!("af catalog digest: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     selfmgmt::maybe_dispatch(&argv);
     let parsed = cli::Af::parse_from(&argv);
     if parsed.version {
@@ -1190,6 +1208,12 @@ fn main() {
                 json,
             )
             .map(|()| 0),
+        ),
+        cli::Command::Catalog {
+            command: cli::CatalogCommand::Digest { package },
+        } => (
+            "af catalog digest",
+            task_execution::catalog::digest(&package).map(|()| 0),
         ),
         cli::Command::Catalog {
             command:
