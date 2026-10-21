@@ -132,7 +132,7 @@ fn telemetry_overhead_smoke() {
         "telemetry-overhead.py",
         &[
             "--af",
-            crate::common::AF,
+            crate::common::af_binary().to_str().unwrap(),
             "--pairs",
             "1",
             "--scale",
@@ -820,7 +820,7 @@ fn telemetry_corpus_is_deterministic() {
             "--dir",
             first.to_str().unwrap(),
             "--af",
-            crate::common::AF,
+            crate::common::af_binary().to_str().unwrap(),
             "--repeat",
             "1",
             "--json",
