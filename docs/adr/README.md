@@ -286,3 +286,9 @@ future readers need.
   store](0156-give-every-make-test-run-a-private-junit-store.md)
 - [0157 — Print a Task package digest with the pin
   recipe](0157-print-a-task-package-digest-with-the-pin-recipe.md)
+- [0158 — Give a repository one Project identity and register its checkouts as
+  Workspaces](0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+- [0159 — Measure a Project into Surveys with a token-free
+  Surveyor](0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md)
+- [0160 — Carry a bounded Project Brief on a declared
+  port](0160-carry-a-bounded-project-brief-on-a-declared-port.md)

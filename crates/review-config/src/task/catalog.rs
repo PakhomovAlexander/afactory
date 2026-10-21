@@ -142,6 +142,24 @@ fn validate_notes_ports(
     Ok(())
 }
 
+/// The constructor of a `project_brief` root default (ADR-0160), supplied by the host that owns
+/// the Project Store, so this crate never reads one. Resolution is a pure function of what the
+/// Task revision's initial capture pinned: the same revision renders the same Brief at every
+/// `normalize_root_inputs` site, and none of them reads a Survey, a policy file or git.
+pub trait ProjectBriefResolver: std::fmt::Debug + Send + Sync {
+    /// The Brief `variant` renders for root `port` of `root`, published in `cas`; `None` when
+    /// the port stays empty (variant `none`, or no Survey was pinned). `nodes` are the root
+    /// nodes that wire the port, for an error that names them.
+    fn resolve(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        port: &str,
+        variant: &str,
+        nodes: &[String],
+    ) -> Result<Option<review_core::task::ArtifactInputV1>, String>;
+}
+
 /// Resolved by the host's Provider and invocation-policy admission, never by a Worker or a
 /// plan declaration. The principal in Model execution must come from Provider identity proof.
 #[derive(Debug, Clone)]
@@ -174,6 +192,7 @@ pub struct TaskPlanCompiler {
     /// Installed domain artifact types that establish authorship independently of a
     /// Worker's removable role/effect declarations (for example a data-only document draft).
     authored_artifacts: BTreeSet<String>,
+    project_briefs: Option<std::sync::Arc<dyn ProjectBriefResolver>>,
 }
 
 fn safe_path(path: &str) -> bool {
@@ -364,15 +383,27 @@ impl TaskPlanCompiler {
         }
         Ok(self)
     }
-    /// Apply only constructors explicitly declared on this root contract. A child call has
-    /// no access to this adapter operation and must bind every required input itself.
+    /// Install the host's `project_brief` constructor. Without one, a root port declaring that
+    /// default refuses to normalize rather than stay silently empty.
+    pub fn with_project_briefs(
+        mut self,
+        resolver: std::sync::Arc<dyn ProjectBriefResolver>,
+    ) -> Self {
+        self.project_briefs = Some(resolver);
+        self
+    }
+
+    /// Apply only constructors explicitly declared on this root contract to `task`'s inputs. A
+    /// child call has no access to this adapter operation and must bind every required input
+    /// itself. A port the Task already binds is never constructed.
     pub fn normalize_root_inputs(
         &self,
         cas: &Cas,
         root: &str,
-        mut inputs: BTreeMap<String, review_core::task::ArtifactInputV1>,
+        task: &TaskRevisionV1,
     ) -> Result<BTreeMap<String, review_core::task::ArtifactInputV1>, String> {
         use review_core::task::pipeline::RootDefaultV1;
+        let mut inputs = task.inputs.clone();
         let pipeline = self.pipelines.get(root).ok_or("Unknown root Pipeline")?;
         if inputs
             .keys()
@@ -405,6 +436,27 @@ impl TaskPlanCompiler {
                         snapshot_id: None,
                     },
                 );
+            } else if let Some(RootDefaultV1::ProjectBrief) = port.root_default {
+                let resolver = self.project_briefs.as_ref().ok_or_else(|| {
+                    format!("Root input {name} is a Project Brief, but no Brief constructor is installed")
+                })?;
+                let variant = port
+                    .brief
+                    .as_deref()
+                    .ok_or("Project Brief port names no variant")?;
+                let nodes: Vec<String> = pipeline
+                    .nodes
+                    .iter()
+                    .filter(|node| {
+                        node.inputs.values().any(|value| {
+                            matches!(value, review_core::task::pipeline::ValueRefV1::Input { port } if port == name)
+                        })
+                    })
+                    .map(|node| node.id.clone())
+                    .collect();
+                if let Some(brief) = resolver.resolve(cas, task, name, variant, &nodes)? {
+                    inputs.insert(name.clone(), brief);
+                }
             } else if !port.optional {
                 return Err(format!(
                     "Required Task input {name} has no declared root constructor"
@@ -449,6 +501,7 @@ impl TaskPlanCompiler {
             preparation_roots: BTreeSet::new(),
             experimental_slots: BTreeMap::new(),
             authored_artifacts: BTreeSet::new(),
+            project_briefs: None,
         })
     }
 
@@ -608,6 +661,23 @@ impl TaskPlanCompiler {
                     return Err("Worker manifest has incompatible identity or protocol".into());
                 }
                 worker.signature.contract.validate()?;
+                // A root default and its `brief` variant are a pipeline root port's, and the
+                // Brief port is `af.pipeline/2`'s alone (ADR-0160): `af.worker/1` keeps its shape.
+                if let Some(port) = worker
+                    .signature
+                    .contract
+                    .inputs
+                    .iter()
+                    .find(|(_, port)| port.declares_brief())
+                    .map(|(name, _)| name)
+                {
+                    return Err(format!(
+                        "Worker {} declares port {port} with a Project Brief root default or \
+                         `brief` variant; a Worker admits a Brief as a plain optional input, and \
+                         only an af.pipeline/2 root port names its variant",
+                        worker.name
+                    ));
+                }
                 validate_notes_ports(&worker.signature.contract)?;
                 let cost = worker
                     .signature
@@ -769,34 +839,44 @@ impl TaskPlanCompiler {
         name: &str,
         kernel_outputs: &BTreeSet<String>,
     ) -> Result<review_runner::task::WorkerContract, String> {
+        let outputs = self.worker_output_schemas(name, kernel_outputs)?;
+        let input = self.worker_schema(name, "input.schema.json")?;
+        review_runner::task::WorkerContract::capture(cas, input, outputs)
+    }
+
+    /// The output schemas the Worker request of `name` carries: one per declared output the
+    /// kernel does not produce itself. Read from the captured package, writing nothing.
+    pub fn worker_output_schemas(
+        &self,
+        name: &str,
+        kernel_outputs: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, serde_json::Value>, String> {
         let worker = self
             .worker(name)
             .ok_or("Missing captured Worker manifest")?;
-        let files = self
-            .package_files(name)
-            .ok_or("Missing captured Worker files")?;
-        let schema = |path: &str| -> Result<serde_json::Value, String> {
-            serde_json::from_slice(
-                files
-                    .get(path)
-                    .ok_or_else(|| format!("Worker {name} lacks {path}"))?,
-            )
-            .map_err(|e| e.to_string())
-        };
-        let outputs = worker
+        worker
             .signature
             .contract
             .outputs
             .keys()
             .filter(|port| !kernel_outputs.contains(*port))
             .map(|port| {
-                Ok((
-                    port.clone(),
-                    schema(&format!("outputs/{port}.schema.json"))?,
-                ))
+                let schema = self.worker_schema(name, &format!("outputs/{port}.schema.json"))?;
+                Ok((port.clone(), schema))
             })
-            .collect::<Result<_, String>>()?;
-        review_runner::task::WorkerContract::capture(cas, schema("input.schema.json")?, outputs)
+            .collect()
+    }
+
+    fn worker_schema(&self, name: &str, path: &str) -> Result<serde_json::Value, String> {
+        let files = self
+            .package_files(name)
+            .ok_or("Missing captured Worker files")?;
+        serde_json::from_slice(
+            files
+                .get(path)
+                .ok_or_else(|| format!("Worker {name} lacks {path}"))?,
+        )
+        .map_err(|e| e.to_string())
     }
     pub fn package_files(&self, name: &str) -> Option<&BTreeMap<String, Vec<u8>>> {
         self.packages.get(name).map(|package| &package.bytes.files)
@@ -821,7 +901,7 @@ impl TaskPlanCompiler {
             return Err("Task kind differs from its captured kind package".into());
         }
         let mut normalized = task.clone();
-        normalized.inputs = self.normalize_root_inputs(cas, root, normalized.inputs)?;
+        normalized.inputs = self.normalize_root_inputs(cas, root, task)?;
         let (graph, mut resources) = review_graph::task::compile_task_structure(
             &normalized,
             root,

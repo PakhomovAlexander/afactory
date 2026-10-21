@@ -78,6 +78,7 @@ pub(in crate::store::task::tests) fn round_fixture_with_source(
                 optional: false,
                 affinity: task::pipeline::PortAffinityV1::Unbound {},
                 root_default: None,
+                brief: None,
                 covers: BTreeSet::new(),
             },
         );

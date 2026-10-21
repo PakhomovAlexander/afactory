@@ -30,7 +30,22 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 171] = [
+const SCHEMAS: [&str; 189] = [
+    "project-registered-v1.json",
+    "project-brief-v1.json",
+    "project-survey-pin-v1.json",
+    "project-brief-capture-v1.json",
+    "project-brief-receipt-v1.json",
+    "project-brief-preview-v1.json",
+    "project-survey-v2.json",
+    "project-survey-recorded-v1.json",
+    "project-survey-failed-v1.json",
+    "project-survey-pending-v2.json",
+    "project-history-v2.json",
+    "project-workspace-registered-v1.json",
+    "project-workspace-removed-v1.json",
+    "project-v1.json",
+    "project-workspaces-v1.json",
     "task-report-v1.json",
     "provider-models-v1.json",
     "code-task-policy-v1.json",
@@ -146,7 +161,7 @@ const SCHEMAS: [&str; 171] = [
     "task-transition-v5.json",
     "task-collected-v1.json",
     "task-gate-cleanup-v1.json",
-    "task-storage-sweep-v1.json",
+    "task-storage-sweep-v2.json",
     "task-execution-started-v1.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
@@ -162,6 +177,7 @@ const SCHEMAS: [&str; 171] = [
     "task-result-v1.json",
     "task-phase-v1.json",
     "pipeline-definition-v1.json",
+    "pipeline-definition-v2.json",
     "execution-plan-v1.json",
     "plan-decision-v1.json",
     "review-history-v1.json",
@@ -202,6 +218,8 @@ const SCHEMAS: [&str; 171] = [
     "slice-set-v1.json",
     "source-snapshot-v1.json",
     "subject-v1.json",
+    "project-survey-collected-v1.json",
+    "project-surveys-settled-v2.json",
 ];
 
 fn workspace_root() -> PathBuf {
@@ -2536,19 +2554,20 @@ fn a_task_tombstone_is_one_closed_transition_referencing_no_artifact() {
     }
 }
 
-/// ADR-0144: a `storage_sweep` transition carries `af/TaskStorageSweep@1` inline, references no
+/// ADR-0144: a `storage_sweep` transition carries `af/TaskStorageSweep@2` inline, references no
 /// artifact, names a Task for a task removal and only for one, lists at most 256 removals and 64
-/// bounded failures, and is never empty; the schema and the typed contract refuse the same
-/// shapes.
+/// bounded failures, and is never empty; its total after it is `unknown` exactly when its stop
+/// is, and the superseded `@1` is refused (ADR-0145 clause 2); the schema and the typed contract
+/// refuse the same shapes.
 #[test]
 fn a_storage_sweep_is_one_closed_transition_referencing_no_artifact() {
     use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
     use review_core::task::storage_sweep::{
-        StorageSweepKindV1, StorageSweepRemovalV1, StorageSweepRuleV1, StorageSweepStopV1,
-        TASK_STORAGE_SWEEP_V1, TaskStorageSweepV1,
+        StorageSweepKindV1, StorageSweepRemovalV1, StorageSweepRuleV1, StorageSweepStopV2,
+        TASK_STORAGE_SWEEP_V2, TaskStorageSweepV2,
     };
-    let sweep = TaskStorageSweepV1 {
-        schema: TASK_STORAGE_SWEEP_V1.into(),
+    let sweep = TaskStorageSweepV2 {
+        schema: TASK_STORAGE_SWEEP_V2.into(),
         removals: vec![
             StorageSweepRemovalV1 {
                 kind: StorageSweepKindV1::Task,
@@ -2568,10 +2587,11 @@ fn a_storage_sweep_is_one_closed_transition_referencing_no_artifact() {
         omitted_removals: 0,
         failures: vec!["removing /x: it changed since it was measured".into()],
         omitted_failures: 0,
-        stop: StorageSweepStopV1::NothingEvictable,
+        freed_bytes: (1 << 20) + 4096,
+        stop: StorageSweepStopV2::NothingEvictable,
         max_bytes: 1 << 30,
         total_before: 2 << 30,
-        total_after: (2 << 30) - (1 << 20) - 4096,
+        total_after: Some((2 << 30) - (1 << 20) - 4096),
     };
     sweep.validate().unwrap();
     let transition = TaskTransitionV1 {
@@ -2587,7 +2607,32 @@ fn a_storage_sweep_is_one_closed_transition_referencing_no_artifact() {
     let value = serde_json::to_value(&transition).unwrap();
     assert_eq!(value["change"]["kind"], "storage_sweep");
     assert_valid("task-transition-v5.json", &value);
-    assert_valid("task-storage-sweep-v1.json", &value["change"]["sweep"]);
+    assert_valid("task-storage-sweep-v2.json", &value["change"]["sweep"]);
+    // A removal that stopped part way and could not measure what it left: recorded all the
+    // same, with what left the disk, its total after it and its stop `unknown`.
+    let unknown = TaskStorageSweepV2 {
+        failures: vec!["removing /c: only partly removed; what it left cannot be measured".into()],
+        freed_bytes: (1 << 20) + 4096 + 512,
+        stop: StorageSweepStopV2::Unknown,
+        total_after: None,
+        ..sweep.clone()
+    };
+    unknown.validate().unwrap();
+    let unknown = serde_json::to_value(TaskTransitionV1 {
+        change: TaskChangeV1::StorageSweep { sweep: unknown },
+        ..transition.clone()
+    })
+    .unwrap();
+    assert_eq!(unknown["change"]["sweep"]["total_after"], "unknown");
+    assert_eq!(unknown["change"]["sweep"]["stop"], "unknown");
+    assert_valid("task-transition-v5.json", &unknown);
+    assert_valid("task-storage-sweep-v2.json", &unknown["change"]["sweep"]);
+    review_core::event::validate_event_payload(EventType::TaskTransitionV5, &unknown).unwrap();
+    let sweep_of = |base: &Value, field: &str, bad: Value| {
+        let mut forged = base.clone();
+        forged["change"]["sweep"][field] = bad;
+        forged
+    };
     review_core::event::validate_event_payload(EventType::TaskTransitionV5, &value).unwrap();
     let removal = |field: &str, bad: Value| {
         let mut forged = value.clone();
@@ -2605,11 +2650,42 @@ fn a_storage_sweep_is_one_closed_transition_referencing_no_artifact() {
     let mut too_many = value.clone();
     too_many["change"]["sweep"]["failures"] = json!(vec!["x"; 65]);
     for (why, forged) in [
-        ("schema", {
-            let mut forged = value.clone();
-            forged["change"]["sweep"]["schema"] = json!("af/TaskStorageSweep@2");
+        (
+            "schema",
+            sweep_of(&value, "schema", json!("af/TaskStorageSweep@3")),
+        ),
+        (
+            "the superseded version",
+            sweep_of(&value, "schema", json!("af/TaskStorageSweep@1")),
+        ),
+        ("superseded shape", {
+            let mut forged = sweep_of(&value, "schema", json!("af/TaskStorageSweep@1"));
+            forged["change"]["sweep"]
+                .as_object_mut()
+                .unwrap()
+                .remove("freed_bytes");
             forged
         }),
+        ("no freed bytes", {
+            let mut forged = value.clone();
+            forged["change"]["sweep"]
+                .as_object_mut()
+                .unwrap()
+                .remove("freed_bytes");
+            forged
+        }),
+        (
+            "an unknown total with a known stop",
+            sweep_of(&unknown, "stop", json!("fits")),
+        ),
+        (
+            "a known total with an unknown stop",
+            sweep_of(&unknown, "total_after", json!(4096)),
+        ),
+        (
+            "a total that is a word",
+            sweep_of(&value, "total_after", json!("lots")),
+        ),
         ("kind", removal("kind", json!("task_store"))),
         ("relative path", removal("path", json!("relative/store"))),
         ("rule", removal("rule", json!("whim"))),
@@ -4024,6 +4100,8 @@ mod provider_onboarding;
 #[path = "schema_parity/task_recording.rs"]
 mod task_recording;
 
+#[path = "schema_parity/project.rs"]
+mod project;
 #[path = "schema_parity/remote_check.rs"]
 mod remote_check;
 #[path = "schema_parity/task_report.rs"]
@@ -4424,3 +4502,8 @@ fn measurements_and_comparisons_match_their_schemas_in_both_directions() {
         assert_eq!(rust, valid, "{operator}");
     }
 }
+
+#[path = "schema_parity/project_brief.rs"]
+mod project_brief;
+#[path = "schema_parity/project_collection.rs"]
+mod project_collection;

@@ -666,6 +666,7 @@ impl<'a> CapturedTaskHost<'a> {
             let mut payloads = Vec::new();
             for id in &value.artifact_ids {
                 let artifact = envelope(cas, id)?;
+                review_core::task::project_brief::refuse_worker_authored(&artifact.artifact_type)?;
                 for retained_port in worker.signature.retains.get(port).into_iter().flatten() {
                     let Some(retained) = input.inputs.get(retained_port) else {
                         if worker
@@ -1021,6 +1022,9 @@ impl<'a> CapturedTaskHost<'a> {
                             .flat_map(|i| i.artifact_ids.iter().cloned())
                     })
                     .collect();
+                review_core::task::project_brief::refuse_worker_authored(
+                    &declaration.artifact_type,
+                )?;
                 let mut ids = Vec::new();
                 for value in values {
                     ids.push(

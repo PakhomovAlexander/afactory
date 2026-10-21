@@ -2,15 +2,18 @@
 //! a free-disk floor below which no check or Worker Attempt starts, and `af storage`.
 //!
 //! The budget counts entries — the unit af evicts whole: a warm toolchain key, a warm
-//! Workspace, a review campaign, a finished Task, a Store this release cannot replay, an
-//! installed version. One sweep serves every trigger: the end of `af task run` and `af review
-//! run` (the budget; age-based collection too only when `auto_gc` is on, which it is not by
-//! default), a warm check about to create a new key (budget only),
+//! Workspace, a review campaign, a finished Task, a Survey (ADR-0159 clause 13), a Store this
+//! release cannot replay, an installed version. One sweep serves every trigger: the end of `af
+//! task run` and `af review run` (the budget; age-based collection too only when `auto_gc` is
+//! on, which it is not by default), a warm check about to create a new key (budget only),
 //! the free-disk floor, and `af storage prune --apply`. It never evicts an entry in use (a held
 //! lock, a live writer lease, a running campaign, the default or a pinned version, the running
 //! binary) or one used within the last hour, and it removes nothing without going through the
-//! rule that owns it: finished Tasks through the Store's own collection, so tombstones stay;
-//! directories without following a link.
+//! rule that owns it: finished Tasks through the Store's own collection and Surveys behind their
+//! `SurveyCollected@1`, so tombstones stay; directories without following a link. A sweep
+//! plans once over one inventory snapshot (`plan`), the claims dead processes left included:
+//! the preview prints that plan and the applied sweep runs it entry by entry, never choosing
+//! again and never removing what the plan does not list.
 //!
 //! Telemetry is one more kind (ADR-0153 clause 8, design §6): every registered telemetry
 //! directory, whatever the current level or `dir`, counted once as the physical union beneath
@@ -23,6 +26,7 @@
 
 pub(crate) mod gate;
 mod hint;
+pub(crate) mod plan;
 pub(crate) mod registry;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,6 +47,8 @@ const HOUR_MS: u64 = 3_600_000;
 const DAY_MS: u64 = 86_400_000;
 /// The lock file `af review run` holds while it runs a campaign, so a sweep never removes it.
 pub(crate) const RUNNING_LOCK: &str = "af-running.lock";
+/// How the outcome of a planned removal that failed begins.
+pub(crate) const FAILED: &str = "failed: ";
 
 pub(crate) fn now_unix_ms() -> u64 {
     SystemTime::now()
@@ -150,26 +156,37 @@ pub(crate) enum Kind {
     /// What a Task Store holds beyond its finished Tasks: never evicted itself; its Tasks are,
     /// one at a time.
     TaskStore,
+    /// A Project Store (ADR-0158) beyond the Task Stores of its Workspaces and its Surveys:
+    /// never evicted, since it indexes the Project's Workspaces.
+    ProjectStore,
+    /// One Survey's record in its Project Store's CAS (ADR-0159 clause 13), last used at its
+    /// cutoff: collected one at a time behind a tombstone.
+    Survey,
     UnreadableStore,
     Version,
     /// A telemetry segment (sealed, corrupt, live or unsealed), another telemetry version's
     /// directory, or a telemetry directory's shared remainder.
     Telemetry,
-    /// A removal a process that died left claimed under a private name: never inventoried, only
-    /// finished and reported.
+    /// A removal a process that died left claimed under a private name (`state` `abandoned`,
+    /// listed by `af storage` unless an entry measured it as part of its own), or a container a
+    /// dead Survey collection left: in the sweep's snapshot and finished by its plan under
+    /// `recovery`.
     Claim,
 }
 
 impl Kind {
-    const ALL: [Kind; 8] = [
+    const ALL: [Kind; 11] = [
         Kind::WarmKey,
         Kind::Workspace,
         Kind::Campaign,
         Kind::Task,
         Kind::TaskStore,
+        Kind::ProjectStore,
+        Kind::Survey,
         Kind::UnreadableStore,
         Kind::Version,
         Kind::Telemetry,
+        Kind::Claim,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -179,6 +196,8 @@ impl Kind {
             Kind::Campaign => "campaign",
             Kind::Task => "task",
             Kind::TaskStore => "task_store",
+            Kind::ProjectStore => "project_store",
+            Kind::Survey => "survey",
             Kind::UnreadableStore => "unreadable_store",
             Kind::Version => "version",
             Kind::Telemetry => "telemetry",
@@ -193,10 +212,12 @@ impl Kind {
             Kind::Campaign => "review campaigns",
             Kind::Task => "finished Tasks",
             Kind::TaskStore => "Task Stores (rest)",
+            Kind::ProjectStore => "Project Stores",
+            Kind::Survey => "Surveys",
             Kind::UnreadableStore => "unreadable Stores",
             Kind::Version => "installed versions",
             Kind::Telemetry => "telemetry",
-            Kind::Claim => "finished removals",
+            Kind::Claim => "abandoned removals",
         }
     }
 }
@@ -225,7 +246,9 @@ pub(crate) struct Entry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) segment_id: Option<String>,
     /// For a telemetry entry: `live`, `unsealed`, `sealed`, `corrupt`, `unreadable`, `shared` or
-    /// `overlapping`.
+    /// `overlapping`. What an entry that is not yet or no longer one af keeps is: `abandoned`
+    /// for a removal a dead process left claimed, `pending` for a Survey published to its
+    /// Project Store's CAS whose `SurveyRecorded@1` never committed (ADR-0159 clause 13).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) state: Option<String>,
     /// The directory inventory measured, by device and inode: a removal opens the entry through
@@ -236,7 +259,18 @@ pub(crate) struct Entry {
     /// found them, which an applied eviction checks again before it unlinks (ADR-0144).
     #[serde(skip)]
     pub(crate) found: Option<budget::Found>,
+    /// Nested deeper than the removal walk reaches (`review_sandbox::REMOVAL_MAX_DEPTH`), as
+    /// the walk that measured its bytes found it: in use, and left `too_deep` by every plan.
+    #[serde(skip)]
+    pub(crate) too_deep: bool,
+    /// A claim the walk could not measure (nested deeper than it reaches, or unreadable): why.
+    /// It holds no bytes the inventory knows of, and every plan leaves it.
+    #[serde(skip)]
+    pub(crate) unmeasurable: Option<String>,
 }
+
+/// Why an entry nested deeper than the removal walk is never removed.
+const TOO_DEEP: &str = "left: deeper than the removal walk, so no removal could take it whole";
 
 /// A directory the inventory could not judge: listed, never removed.
 #[derive(Debug, Clone, Serialize)]
@@ -258,6 +292,18 @@ pub(crate) struct Inventory {
     /// Every telemetry directory as measured, by its canonical root; an overlapping one has no
     /// model and is never evicted as telemetry.
     pub(crate) telemetry: BTreeMap<PathBuf, Option<budget::Directory>>,
+    /// Each readable Project Store as its one read found it (ADR-0159 clause 13): what a
+    /// sweep's plan needs of its Surveys, in inventory order.
+    pub(crate) projects: Vec<(PathBuf, crate::projects::survey::collect::Look)>,
+    /// The removals dead processes left claimed, entries of kind `claim` with the identity and
+    /// bytes listed: the sweep's plan finishes them first. `af storage` lists every one; those
+    /// no entry measured as part of its own ([`Inventory::counted_claims`]) are in
+    /// [`Inventory::total`].
+    pub(crate) claims: Vec<Entry>,
+    /// The registered paths that held no Store when inventory read the registry. Inventory is
+    /// taken over every registration as it is, so such a path (renamed into a dead process's
+    /// claim, say) is still reached through its parent; only the plan drops it.
+    pub(crate) gone_registrations: Vec<PathBuf>,
 }
 
 impl Inventory {
@@ -276,11 +322,23 @@ impl Inventory {
         }
     }
 
+    /// What af holds: every entry and every claim no entry measured as part of its own, the
+    /// total a sweep's plan starts from.
     pub(crate) fn total(&self) -> u64 {
         self.entries
             .iter()
+            .chain(self.counted_claims())
             .map(|entry| entry.bytes)
             .fold(0, u64::saturating_add)
+    }
+
+    /// The claims whose bytes count on their own: those no entry measured whole holds (a claim
+    /// under a Project Store is in that Store's bytes already, and `af storage` lists it
+    /// `counted_in` that Store), as the plan counts them.
+    pub(crate) fn counted_claims(&self) -> impl Iterator<Item = &Entry> {
+        self.claims
+            .iter()
+            .filter(|claim| plan::holder(&self.entries, &claim.path).is_none())
     }
 }
 
@@ -366,7 +424,7 @@ fn modified_ms(path: &Path) -> Option<u64> {
 
 /// Whether some process holds the advisory lock of the file at `path`: it cannot be locked
 /// exclusively right now. Taking it changes nothing about the file.
-fn lock_held(path: &Path) -> bool {
+pub(crate) fn lock_held(path: &Path) -> bool {
     let Ok(file) = std::fs::File::open(path) else {
         return false;
     };
@@ -565,11 +623,17 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         });
         Vec::new()
     });
+    inventory.gone_registrations = registered
+        .iter()
+        .filter(|entry| !holds_store(entry))
+        .map(|entry| entry.path.clone())
+        .collect();
     let mut campaigns: BTreeSet<PathBuf> = listed(&mut inventory, &roots.campaigns)
         .into_iter()
         .chain(listed(&mut inventory, &roots.local_reviews))
         .collect();
     let mut tasks: BTreeSet<PathBuf> = listed(&mut inventory, &roots.tasks).into_iter().collect();
+    let mut projects: BTreeSet<PathBuf> = BTreeSet::new();
     for entry in &registered {
         match entry.kind {
             StoreKind::Task => {
@@ -579,7 +643,20 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
                 campaigns.insert(entry.path.clone());
             }
             StoreKind::ReviewRoot => campaigns.extend(listed(&mut inventory, &entry.path)),
+            StoreKind::Project => {
+                projects.insert(entry.path.clone());
+            }
         }
+    }
+    // The Surveys of at most so many Project Stores are read, in path order (the Store
+    // discovery ceiling); every Project Store is measured all the same.
+    let discovery = crate::projects::survey::collect::Discovery::current();
+    for (index, path) in projects
+        .into_iter()
+        .filter(|path| has_store(path))
+        .enumerate()
+    {
+        project_store(&mut inventory, &path, index < discovery.stores, discovery);
     }
     for path in campaigns.into_iter().filter(|path| has_store(path)) {
         match written_by_another_release(&path) {
@@ -628,6 +705,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         }),
     }
     telemetry_inventory(roots, &mut inventory);
+    abandoned_claims(roots, &registered, &mut inventory);
     inventory
 }
 
@@ -764,6 +842,8 @@ fn telemetry_inventory(roots: &Roots, inventory: &mut Inventory) {
             state: Some("overlapping".into()),
             identity: None,
             found: None,
+            too_deep: false,
+            unmeasurable: None,
         });
         inventory.telemetry.insert(path.clone(), None);
     }
@@ -783,31 +863,45 @@ fn telemetry_entry(root: &Path, entry: budget::Entry) -> Entry {
         state: Some(entry.state.to_string()),
         identity: None,
         found: entry.found,
+        too_deep: false,
+        unmeasurable: None,
     }
 }
 
+/// Measure the entry at `path` with one walk: its bytes and, for a kind a removal walk takes
+/// whole, whether it is nested deeper than that walk reaches, which leaves it in use.
 fn measure_into(
     inventory: &mut Inventory,
     kind: Kind,
     path: &Path,
     judge: impl FnOnce(&Path) -> (u64, Option<String>),
 ) {
-    match review_sandbox::storage::allocated_bytes(path) {
-        Ok(bytes) => {
+    match review_sandbox::storage::allocated_bytes_and_depth(path) {
+        Ok((bytes, depth)) => {
             let (last_use_unix_ms, in_use) = judge(path);
+            let too_deep = matches!(
+                kind,
+                Kind::Workspace | Kind::Campaign | Kind::UnreadableStore | Kind::Version
+            ) && review_sandbox::deeper_than_removal_walk(depth);
             inventory.entries.push(Entry {
                 kind,
                 path: path.to_path_buf(),
                 task_id: None,
                 bytes,
                 last_use_unix_ms,
-                in_use,
+                in_use: if too_deep {
+                    Some(TOO_DEEP.into())
+                } else {
+                    in_use
+                },
                 reason: None,
                 directory: None,
                 segment_id: None,
                 state: None,
                 identity: review_sandbox::Identity::of(path).ok(),
                 found: None,
+                too_deep,
+                unmeasurable: None,
             });
         }
         Err(error) => inventory.problems.push(Problem {
@@ -867,6 +961,8 @@ fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
                     last_use_unix_ms,
                     in_use,
                     reason: None,
+                    too_deep: false,
+                    unmeasurable: None,
                 }),
                 Err(error) => inventory.problems.push(Problem {
                     path: key,
@@ -874,6 +970,66 @@ fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
                 }),
             }
         }
+    }
+}
+
+/// A Project Store (ADR-0158): its own log and CAS, `workspaces.toml` and the Task files and
+/// bindings of the Workspaces `af project workspace new` made. Its Surveys are read with it
+/// unless `surveys` is off, past the Store discovery ceiling, which is then reported. The Task Stores below it are
+/// registered and counted on their own, so they are left out of its bytes. It is never evicted:
+/// it indexes the Project's Workspaces, and one another release wrote is kept while it still
+/// holds a Workspace directory, whose Task Store this release may well read.
+fn project_store(
+    inventory: &mut Inventory,
+    path: &Path,
+    surveys: bool,
+    discovery: crate::projects::survey::collect::Discovery,
+) {
+    let workspace_stores: Vec<PathBuf> = real_directories(&path.join("workspaces"))
+        .into_iter()
+        .map(|workspace| workspace.join("state"))
+        .filter(|state| state.is_dir())
+        .collect();
+    match written_by_another_release(path) {
+        Ok(Some(reason)) => {
+            unreadable(inventory, path, reason);
+            if let Some(entry) = inventory.entries.last_mut()
+                && entry.kind == Kind::UnreadableStore
+                && entry.in_use.is_none()
+                && !real_directories(&path.join("workspaces")).is_empty()
+            {
+                entry.in_use = Some("it holds Workspace directories".into());
+            }
+        }
+        Ok(None) => {
+            measure_into(inventory, Kind::ProjectStore, path, |path| {
+                (
+                    newest_store_write(path),
+                    Some("the Project Store is kept: it indexes the Project's Workspaces".into()),
+                )
+            });
+            if let Some(entry) = inventory.entries.last_mut()
+                && entry.kind == Kind::ProjectStore
+            {
+                let below = workspace_stores
+                    .iter()
+                    .filter_map(|state| review_sandbox::storage::allocated_bytes(state).ok())
+                    .fold(0, u64::saturating_add);
+                entry.bytes = entry.bytes.saturating_sub(below);
+            }
+            if surveys {
+                surveys_into(inventory, path);
+            } else {
+                inventory.problems.push(Problem {
+                    path: path.to_path_buf(),
+                    reason: discovery.beyond_stores(),
+                });
+            }
+        }
+        Err(reason) => inventory.problems.push(Problem {
+            path: path.to_path_buf(),
+            reason,
+        }),
     }
 }
 
@@ -937,6 +1093,8 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
                 state: None,
                 identity: None,
                 found: None,
+                too_deep: false,
+                unmeasurable: None,
             });
             inventory.problems.push(Problem {
                 path: state.to_path_buf(),
@@ -987,6 +1145,8 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
             state: None,
             identity: None,
             found: None,
+            too_deep: false,
+            unmeasurable: None,
         });
     }
     inventory.entries.push(Entry {
@@ -1002,6 +1162,8 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
         state: None,
         identity: None,
         found: None,
+        too_deep: false,
+        unmeasurable: None,
     });
     record_store(inventory, roots, state.to_path_buf());
 }
@@ -1012,10 +1174,25 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
 pub(crate) enum Rule {
     /// Idle at least `keep_days` beyond the newest `keep_*`.
     Collection,
+    /// A Survey idle at least `keep_days` beyond the newest `[storage] keep_surveys` of its
+    /// Project (ADR-0159 clause 13).
+    KeepSurveys,
     /// Least recently used while af held more than `max_bytes`.
     Budget,
-    /// The finish of a removal a process that died left claimed.
+    /// The finish of a removal a process that died left claimed, or of a Survey's deletion an
+    /// interruption left.
     Recovery,
+}
+
+impl Rule {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Rule::Collection => "collection",
+            Rule::KeepSurveys => "keep_surveys",
+            Rule::Budget => "budget",
+            Rule::Recovery => "recovery",
+        }
+    }
 }
 
 /// One entry a sweep removed, or would remove.
@@ -1032,8 +1209,62 @@ pub(crate) struct Removal {
     /// directories can hold a segment of the same id).
     #[serde(skip)]
     pub(crate) directory: Option<PathBuf>,
+    /// What it frees: as planned in a preview, as freed by the applied sweep.
     pub(crate) bytes: u64,
     pub(crate) rule: Rule,
+    /// af's total after it, the same way; `unknown` (`None`) from a removal on that stopped part
+    /// way and could not measure what it left.
+    #[serde(serialize_with = "total")]
+    pub(crate) total_after: Option<u64>,
+    /// A Survey collected `unreadable` (ADR-0159 clause 13): why its record's bytes were no
+    /// Survey, as its tombstone says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) unreadable: Option<String>,
+    /// The applied sweep only, any kind: `failed: <reason>` when running the planned entry
+    /// failed (the lock lost, what it names replaced or gone since inventory, an I/O error), so
+    /// it freed nothing and the total after it is the one before it; or, when a deletion stopped
+    /// part way, `bytes` is what left the disk before it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) outcome: Option<String>,
+}
+
+/// One file or Survey a sweep's plan left where it is, with its reason (ADR-0159 clause 13). A
+/// preview lists exactly what its pass leaves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct Left {
+    pub(crate) kind: Kind,
+    /// Its path as text: as it is when it is UTF-8, otherwise in `review_core::encode_path`'s
+    /// spelling with `path_encoded`.
+    pub(crate) path: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) path_encoded: bool,
+    pub(crate) bytes: u64,
+    /// `held`, `foreign`, `oversize`, `unreadable_name`, `too_deep` or `unmeasurable`.
+    pub(crate) reason: &'static str,
+    pub(crate) detail: String,
+    /// The raw path, for the text output's lossy display.
+    #[serde(skip)]
+    pub(crate) raw: PathBuf,
+}
+
+impl Left {
+    fn of(left: plan::Left) -> Self {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = left.left.path;
+        let (path, path_encoded) = match raw.to_str() {
+            Some(text) => (text.to_string(), false),
+            None => (review_core::encode_path(raw.as_os_str().as_bytes()), true),
+        };
+        Self {
+            kind: left.kind,
+            path,
+            path_encoded,
+            bytes: left.left.bytes,
+            reason: left.left.reason.as_str(),
+            detail: left.left.detail,
+            raw,
+        }
+    }
 }
 
 /// The telemetry kind's part of one sweep (ADR-0153 clause 8).
@@ -1064,7 +1295,7 @@ pub(crate) struct TelemetrySweep {
 }
 
 /// One telemetry entry left in place because it changed since the inventory.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct TelemetryChanged {
     pub(crate) directory: PathBuf,
     pub(crate) segment_id: String,
@@ -1092,6 +1323,22 @@ pub(crate) enum Stop {
     Fits,
     /// Over the budget, and every remaining entry is in use or was used within the hour.
     NothingEvictable,
+    /// The total is unknown: a removal stopped part way and what it left could not be
+    /// measured, so neither is claimed.
+    Unknown,
+}
+
+/// A total as the prune document spells it: its bytes, or `unknown`.
+fn total<S: serde::Serializer>(total: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error> {
+    match total {
+        Some(bytes) => serializer.serialize_u64(*bytes),
+        None => serializer.serialize_str("unknown"),
+    }
+}
+
+/// A total as a line says it.
+fn total_text(total: Option<u64>) -> String {
+    total.map_or_else(|| "unknown".to_string(), human_bytes)
 }
 
 /// What one sweep did (or, previewed, would do).
@@ -1101,9 +1348,14 @@ pub(crate) struct SweepReport {
     pub(crate) collection: bool,
     pub(crate) max_bytes: u64,
     pub(crate) total_before: u64,
-    pub(crate) total_after: u64,
+    /// af's total after the sweep; `unknown` (`None`) once a removal stopped part way and could
+    /// not measure what it left.
+    #[serde(serialize_with = "total")]
+    pub(crate) total_after: Option<u64>,
     pub(crate) stop: Stop,
     pub(crate) removals: Vec<Removal>,
+    /// What the plan left where it is, with its reason.
+    pub(crate) left: Vec<Left>,
     /// Gate cleanups of finished Tasks this sweep tried (collection only).
     pub(crate) gate_cleanups: Vec<gate::Attempted>,
     /// Registry entries whose path no longer holds a Store.
@@ -1113,8 +1365,9 @@ pub(crate) struct SweepReport {
     pub(crate) telemetry: TelemetrySweep,
 }
 
-/// Run the sweep: collection first when `collection`, then the budget step. Without `apply`
-/// it only says what it would remove.
+/// Run the sweep over one snapshot: [`plan::make`] plans the recovery of interrupted Survey
+/// deletions, collection when `collection`, and the budget step, and without `apply` that plan
+/// is the report; with it, [`plan::run`] runs the same plan entry by entry.
 pub(crate) fn sweep(
     roots: &Roots,
     policy: &StoragePolicy,
@@ -1132,9 +1385,10 @@ pub(crate) fn sweep(
         collection,
         max_bytes: policy.max_bytes,
         total_before: 0,
-        total_after: 0,
+        total_after: Some(0),
         stop: Stop::Fits,
         removals: Vec::new(),
+        left: Vec::new(),
         gate_cleanups: Vec::new(),
         registry_dropped: Vec::new(),
         failures: Vec::new(),
@@ -1159,46 +1413,35 @@ pub(crate) fn sweep(
         // can be taken is recovered (a crashed writer's), so its references are a manifest.
         recover_telemetry(roots);
     }
-    if apply {
-        // Removals a process that died left claimed under a private name are finished first,
-        // so their bytes are neither lost from the count nor left behind (ADR-0144).
-        let (finished, left) = finish_abandoned_claims(roots);
-        // Bytes that were af's until this moment: counted, and said, like any removal.
-        for (path, bytes) in finished {
-            report.total_before = report.total_before.saturating_add(bytes);
-            report.removals.push(Removal {
-                kind: Kind::Claim,
-                path,
-                task_id: None,
-                segment_id: None,
-                directory: None,
-                bytes,
-                rule: Rule::Recovery,
-            });
-        }
-        report.failures.extend(left);
-    }
-    match drop_gone_registrations(roots, apply) {
-        Ok(dropped) => report.registry_dropped = dropped,
-        Err(error) => report.failures.push(error),
-    }
+    // The one snapshot: Task Stores are told apart into their finished Tasks only when it holds
+    // more than the budget, and nothing is measured twice. Removals dead processes left claimed
+    // are in it, so they are planned like every other removal, never finished beside the plan,
+    // and it is taken over the registrations as they are: one whose path holds no Store is
+    // dropped by the plan, after its parent's claims were inventoried, never before.
     let mut stock = inventory(roots, Detail::Stores);
-    report.total_before = report.total_before.saturating_add(stock.total());
+    if stock.total() > policy.max_bytes {
+        refine_tasks(roots, &mut stock);
+    }
     report.telemetry.total_before = telemetry_total(&stock);
     // What could not be measured is said with the result: a total that fits the budget is only
     // as complete as the inventory behind it.
-    report.failures.extend(
-        stock
-            .problems
-            .iter()
-            .map(|problem| format!("measuring {}: {}", problem.path.display(), problem.reason)),
-    );
+    for problem in &stock.problems {
+        let line = format!("measuring {}: {}", problem.path.display(), problem.reason);
+        if !report.failures.contains(&line) {
+            report.failures.push(line);
+        }
+    }
     // Gate leftovers of finished Tasks are retried by every applied sweep, whatever the budget
     // and whether age-based collection is on: the pull request and branches are GitHub's
     // clutter, not something the budget weighs (ADR-0144).
     let mut retried: BTreeMap<PathBuf, Vec<gate::Attempted>> = BTreeMap::new();
     if apply && !policy.keep_gate_pull_requests {
         for state in &stock.task_stores {
+            // A Store gone since inventory holds no gate leftovers to retry: no failure, as
+            // collection says of it below.
+            if !has_store(state) {
+                continue;
+            }
             if let Err(why) = stock.still_the_store(state) {
                 report.failures.push(format!("{}: {why}", state.display()));
                 continue;
@@ -1208,201 +1451,138 @@ pub(crate) fn sweep(
             retried.insert(state.clone(), tried);
         }
     }
-    if collection {
-        collect(roots, policy, &mut stock, now, apply, &retried, &mut report);
-        if apply {
-            stock = inventory(roots, Detail::Stores);
+    let picks = if collection {
+        task_picks(roots, policy, &stock, now, apply, &mut report)
+    } else {
+        Vec::new()
+    };
+    let mut entries = stock.entries.clone();
+    for entry in &mut entries {
+        // The sweep that ends a run never takes the Task the run executed.
+        if entry.in_use.is_none()
+            && entry
+                .task_id
+                .as_deref()
+                .is_some_and(|task_id| is_run_task(&entry.path, task_id))
+        {
+            entry.in_use = Some("the Task this run executed".into());
         }
     }
-    // Finished Tasks are told apart only when there is something to evict.
-    if stock.total() > policy.max_bytes {
-        let removed: BTreeSet<(PathBuf, Option<String>)> = report
-            .removals
-            .iter()
-            .map(|removal| (removal.path.clone(), removal.task_id.clone()))
-            .collect();
-        stock = inventory(roots, Detail::Tasks);
-        // Telling Tasks apart can meet problems the Store-level look did not: said too.
-        for problem in &stock.problems {
-            let line = format!("measuring {}: {}", problem.path.display(), problem.reason);
-            if !report.failures.contains(&line) {
-                report.failures.push(line);
-            }
-        }
-        if !apply {
-            // A preview keeps what its collection would have taken out of the count: each
-            // telemetry segment out of the model of the directory it was taken from only.
-            stock
-                .entries
-                .retain(|entry| !removed.contains(&(entry.path.clone(), entry.task_id.clone())));
-            for taken in report
-                .removals
-                .iter()
-                .filter(|removal| removal.kind == Kind::Telemetry)
-            {
-                if let (Some(directory), Some(id)) = (&taken.directory, &taken.segment_id)
-                    && let Some(Some(model)) = stock.telemetry.get_mut(directory)
-                {
-                    model.remove(id);
-                }
-            }
-        }
+    // Every telemetry directory's model: the plan takes each segment it evicts out of a copy, so
+    // a preview takes it out of the directory it was taken from only, and the applied sweep out
+    // of this one as each eviction runs.
+    let mut models = std::mem::take(&mut stock.telemetry);
+    let made = plan::make(
+        plan::Inputs {
+            entries,
+            claims: stock.claims.clone(),
+            projects: &stock.projects,
+            tasks: picks.clone(),
+            registrations: stock.gone_registrations.clone(),
+            collection,
+            max_bytes: policy.max_bytes,
+            keep_campaigns: policy.keep_campaigns,
+            keep_surveys: policy.keep_surveys,
+            idle_ms: policy.keep_days.saturating_mul(DAY_MS),
+            now,
+            telemetry: plan::Telemetry {
+                models: models.clone(),
+                max_bytes: roots.telemetry.max_bytes,
+                only: false,
+            },
+        },
+        &mut |store: &Path, live: &crate::projects::survey::collect::Live, inventoried| {
+            crate::projects::survey::collect::judge(store, live, inventoried)
+        },
+    );
+    report.total_before = made.total_before;
+    report.telemetry.total_after = made.telemetry_total_after;
+    report.telemetry.stop = made.telemetry_stop;
+    if !apply {
+        plan::preview(made, &mut report);
+        return report;
     }
-    budget_step(roots, policy, stock, now, apply, &mut report, false);
+    let registrations = made.registrations.clone();
+    let mut collected = BTreeMap::new();
+    plan::run(made, &mut report, &mut |planned| {
+        before_execute(planned);
+        execute_planned(
+            roots,
+            policy,
+            &stock,
+            (&picks, &retried, &mut collected),
+            &mut models,
+            planned,
+        )
+    });
+    reclaim_telemetry(&models, &stock, &mut report);
+    match drop_registrations(roots, &registrations) {
+        Ok(dropped) => report.registry_dropped = dropped,
+        Err(error) => report.failures.push(error),
+    }
     report
 }
 
-/// The budget step of a sweep, then telemetry past its own cap, then (applied) every telemetry
-/// directory's reclamation; with `only_telemetry` (`af telemetry gc`) nothing but telemetry is
-/// evicted.
-fn budget_step(
-    roots: &Roots,
-    policy: &StoragePolicy,
-    mut stock: Inventory,
-    now: u64,
-    apply: bool,
+/// Every applied sweep, once its plan ran, reclaims in every measured telemetry directory what
+/// no entry owns alone: temporaries and blobs no remaining segment references, then the index's
+/// free pages; measured as allocated bytes, the directory measured again after. `models` are
+/// the directories' models as the plan's evictions left them.
+fn reclaim_telemetry(
+    models: &BTreeMap<PathBuf, Option<budget::Directory>>,
+    stock: &Inventory,
     report: &mut SweepReport,
-    only_telemetry: bool,
 ) {
-    let mut total = stock.total();
-    let mut models = std::mem::take(&mut stock.telemetry);
-    let mut candidates: Vec<&Entry> = stock
-        .entries
-        .iter()
-        .filter(|entry| {
-            entry.kind != Kind::TaskStore
-                && (!only_telemetry || entry.kind == Kind::Telemetry)
-                && entry.in_use.is_none()
-                && entry.last_use_unix_ms.saturating_add(HOUR_MS) <= now
-                && !entry
-                    .task_id
-                    .as_deref()
-                    .is_some_and(|task_id| is_run_task(&entry.path, task_id))
-        })
-        .collect();
-    candidates.sort_by(least_recently_used);
-    // Removed, or found changed and left in place: either way not tried again.
-    let mut evicted: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut candidates = candidates.into_iter();
-    while total > policy.max_bytes {
-        let Some(entry) = candidates.next() else {
-            report.stop = Stop::NothingEvictable;
-            break;
+    let estimate = models_total(models, &stock.entries);
+    let mut measured = 0;
+    for (root, model) in models {
+        let Some(model) = model else {
+            measured += telemetry_counted(&stock.entries, root);
+            continue;
         };
-        let removed = if entry.kind == Kind::Telemetry {
-            match evict_telemetry(&mut models, entry, apply) {
-                Ok(Evicted::Freed(freed)) => Ok(freed),
-                Ok(Evicted::Changed(changed)) => {
-                    evicted.insert(entry.path.clone());
-                    report.telemetry.changed.push(changed);
-                    continue;
-                }
-                Err(error) => Err(error),
-            }
-        } else if apply {
-            evict(roots, policy, &stock, entry).map(|freed| freed.max(entry.bytes))
-        } else {
-            Ok(entry.bytes)
-        };
-        match removed {
-            // What the removal freed, measured: a Task's collection can free more than the
-            // Task's own bytes, and the loop stops as soon as af fits. A telemetry segment frees
-            // what it alone holds now, its shared blobs going with the last segment naming them.
-            Ok(freed) => {
-                total = total.saturating_sub(freed);
-                evicted.insert(entry.path.clone());
-                report.removals.push(removal(entry, freed, Rule::Budget));
-            }
-            Err(error) => report.failures.push(error),
-        }
-    }
-    // Telemetry past its own cap, under the same rules.
-    let mut telemetry = models_total(&models, &stock);
-    if let Some(cap) = roots.telemetry.max_bytes {
-        let mut more: Vec<&Entry> = stock
-            .entries
+        let gone: Vec<String> = report
+            .removals
             .iter()
-            .filter(|entry| {
-                entry.kind == Kind::Telemetry
-                    && entry.in_use.is_none()
-                    && entry.last_use_unix_ms.saturating_add(HOUR_MS) <= now
-                    && !evicted.contains(&entry.path)
-            })
+            .filter(|removal| removal.kind == Kind::Telemetry && removal.outcome.is_none())
+            .filter(|removal| removal.directory.as_ref() == Some(root))
+            .filter_map(|removal| removal.segment_id.clone())
             .collect();
-        more.sort_by(least_recently_used);
-        let mut more = more.into_iter();
-        while telemetry > cap {
-            let Some(entry) = more.next() else {
-                report.telemetry.stop = Stop::NothingEvictable;
-                break;
-            };
-            match evict_telemetry(&mut models, entry, apply) {
-                Ok(Evicted::Freed(freed)) => {
-                    total = total.saturating_sub(freed);
-                    telemetry = telemetry.saturating_sub(freed);
-                    report.removals.push(removal(entry, freed, Rule::Budget));
-                }
-                Ok(Evicted::Changed(changed)) => report.telemetry.changed.push(changed),
-                Err(error) => report.failures.push(error),
+        match budget::reclaim(root, &gone, SystemTime::now()) {
+            Ok(reclaimed) => {
+                report.telemetry.notes.extend(
+                    reclaimed
+                        .notes
+                        .iter()
+                        .map(|note| format!("{}: {note}", root.display())),
+                );
+                report
+                    .telemetry
+                    .problems
+                    .extend(reclaimed.notes.iter().cloned());
+                report.telemetry.reclaimed.push(TelemetryReclaimed {
+                    directory: root.clone(),
+                    temporary_bytes: reclaimed.temporary_bytes,
+                    blob_bytes: reclaimed.blob_bytes,
+                    index_bytes: reclaimed.index_bytes,
+                    index: reclaimed.index,
+                });
             }
+            Err(error) => report
+                .failures
+                .push(format!("reclaiming {}: {error}", root.display())),
         }
+        measured += budget::Directory::measure(root, false)
+            .ok()
+            .flatten()
+            .map_or(model.total, |directory| directory.total);
     }
-    if apply {
-        // Every applied sweep reclaims what no entry owns alone: temporaries and blobs no
-        // remaining segment references, then the index's free pages; measured as allocated
-        // bytes, the directory measured again after.
-        let estimate = telemetry;
-        let mut measured = 0;
-        for (root, model) in &models {
-            let Some(model) = model else {
-                measured += telemetry_counted(&stock, root);
-                continue;
-            };
-            let gone: Vec<String> = report
-                .removals
-                .iter()
-                .filter(|removal| removal.kind == Kind::Telemetry)
-                .filter(|removal| removal.path.starts_with(root))
-                .filter_map(|removal| removal.segment_id.clone())
-                .collect();
-            match budget::reclaim(root, &gone, SystemTime::now()) {
-                Ok(reclaimed) => {
-                    report.telemetry.notes.extend(
-                        reclaimed
-                            .notes
-                            .iter()
-                            .map(|note| format!("{}: {note}", root.display())),
-                    );
-                    report
-                        .telemetry
-                        .problems
-                        .extend(reclaimed.notes.iter().cloned());
-                    report.telemetry.reclaimed.push(TelemetryReclaimed {
-                        directory: root.clone(),
-                        temporary_bytes: reclaimed.temporary_bytes,
-                        blob_bytes: reclaimed.blob_bytes,
-                        index_bytes: reclaimed.index_bytes,
-                        index: reclaimed.index,
-                    });
-                }
-                Err(error) => report
-                    .failures
-                    .push(format!("reclaiming {}: {error}", root.display())),
-            }
-            measured += budget::Directory::measure(root, false)
-                .ok()
-                .flatten()
-                .map_or(model.total, |directory| directory.total);
-        }
-        total = total.saturating_sub(estimate).saturating_add(measured);
-        telemetry = measured;
-    }
-    report.telemetry.total_after = telemetry;
-    report.total_after = total;
+    report.total_after = report
+        .total_after
+        .map(|total| total.saturating_sub(estimate).saturating_add(measured));
+    report.telemetry.total_after = measured;
 }
 
 /// Least recently used first; among equals a corrupt telemetry segment first, then by path.
-fn least_recently_used(a: &&Entry, b: &&Entry) -> std::cmp::Ordering {
+fn least_recently_used(a: &Entry, b: &Entry) -> std::cmp::Ordering {
     let corrupt = |entry: &Entry| entry.state.as_deref() != Some("corrupt");
     a.last_use_unix_ms
         .cmp(&b.last_use_unix_ms)
@@ -1420,6 +1600,9 @@ fn removal(entry: &Entry, bytes: u64, rule: Rule) -> Removal {
         directory: entry.directory.clone(),
         bytes,
         rule,
+        total_after: None,
+        unreadable: None,
+        outcome: None,
     }
 }
 
@@ -1434,9 +1617,8 @@ fn telemetry_total(stock: &Inventory) -> u64 {
 }
 
 /// What an overlapping telemetry directory's entry counts.
-fn telemetry_counted(stock: &Inventory, root: &Path) -> u64 {
-    stock
-        .entries
+fn telemetry_counted(entries: &[Entry], root: &Path) -> u64 {
+    entries
         .iter()
         .filter(|entry| entry.kind == Kind::Telemetry && entry.directory.as_deref() == Some(root))
         .map(|entry| entry.bytes)
@@ -1445,12 +1627,12 @@ fn telemetry_counted(stock: &Inventory, root: &Path) -> u64 {
 
 /// The telemetry kind's bytes now: every measured directory's model and what each overlapping
 /// one counts.
-fn models_total(models: &BTreeMap<PathBuf, Option<budget::Directory>>, stock: &Inventory) -> u64 {
+fn models_total(models: &BTreeMap<PathBuf, Option<budget::Directory>>, entries: &[Entry]) -> u64 {
     models
         .iter()
         .map(|(root, model)| match model {
             Some(model) => model.total,
-            None => telemetry_counted(stock, root),
+            None => telemetry_counted(entries, root),
         })
         .fold(0, u64::saturating_add)
 }
@@ -1557,11 +1739,231 @@ fn recover_telemetry(roots: &Roots) {
     }
 }
 
-/// Finish the removals dead processes left claimed in every directory af removes entries from:
-/// each warm project level, the Workspaces, campaigns, local reviews, Task Stores and installed
-/// versions, and the parent of every registered Store. Returns each claim it finished with its
-/// bytes, and why any claim was left.
-fn finish_abandoned_claims(roots: &Roots) -> (Vec<(PathBuf, u64)>, Vec<String>) {
+#[cfg(test)]
+type BeforeExecute = Box<dyn FnMut(&plan::Planned)>;
+
+#[cfg(test)]
+thread_local! {
+    /// A unit test's hook, run on the sweeping thread just before each planned entry of an
+    /// applied sweep: where a test changes what the plan measured, as another process could.
+    static BEFORE_EXECUTE: std::cell::RefCell<Option<BeforeExecute>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn before_execute(planned: &plan::Planned) {
+    #[cfg(test)]
+    BEFORE_EXECUTE.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(planned);
+        }
+    });
+    #[cfg(debug_assertions)]
+    seal_before_removal(planned);
+    #[cfg(not(any(test, debug_assertions)))]
+    let _ = planned;
+}
+
+/// A debug build's fixture may name a directory (`AF_TEST_STORAGE_SEAL_BEFORE_REMOVAL`) that is
+/// made unreadable, mode 0, just before the applied sweep removes the entry it lies in, as
+/// another process could: that removal stops part way and what it left cannot be measured, so
+/// the sweep's total after it is unknown. Release binaries never read it.
+#[cfg(debug_assertions)]
+fn seal_before_removal(planned: &plan::Planned) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(sealed) = std::env::var_os("AF_TEST_STORAGE_SEAL_BEFORE_REMOVAL").map(PathBuf::from)
+        && sealed.starts_with(&planned.removal.path)
+        && sealed != planned.removal.path
+    {
+        let _ = std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000));
+    }
+}
+
+/// Tell the snapshot's readable Task Stores apart into their finished Tasks and the rest, in
+/// place: only their entries change, so what the snapshot says of every other entry, a Survey's
+/// pending recovery included, stays as it was read.
+fn refine_tasks(roots: &Roots, stock: &mut Inventory) {
+    for state in stock.task_stores.clone() {
+        let mut told = Inventory::default();
+        task_store(&mut told, roots, &state);
+        stock
+            .entries
+            .retain(|entry| !(entry.kind == Kind::TaskStore && entry.path == state));
+        stock.entries.extend(told.entries);
+        for problem in told.problems {
+            if !stock
+                .problems
+                .iter()
+                .any(|known| known.path == problem.path && known.reason == problem.reason)
+            {
+                stock.problems.push(problem);
+            }
+        }
+    }
+}
+
+/// What one Task collection did, per Task of one Store.
+type Collected = BTreeMap<PathBuf, BTreeMap<String, Result<u64, String>>>;
+
+/// Run one planned entry of an applied sweep: what it freed, and for a Survey why it was
+/// collected `unreadable`. The finished Tasks of one Store are collected together, at that
+/// Store's first planned Task.
+fn execute_planned(
+    roots: &Roots,
+    policy: &StoragePolicy,
+    stock: &Inventory,
+    (picks, retried, collected): (
+        &[plan::TaskPick],
+        &BTreeMap<PathBuf, Vec<gate::Attempted>>,
+        &mut Collected,
+    ),
+    models: &mut BTreeMap<PathBuf, Option<budget::Directory>>,
+    planned: &plan::Planned,
+) -> plan::Outcome {
+    let removal = &planned.removal;
+    match &planned.job {
+        plan::Job::Survey(job) => {
+            let verb = match removal.rule {
+                Rule::Recovery => "finishing",
+                Rule::Budget => "removing",
+                Rule::Collection | Rule::KeepSurveys => "collecting",
+            };
+            let failed = |why: String| format!("{verb} {}: {why}", removal.path.display());
+            stock.still_the_store(job.store()).map_err(failed)?;
+            crate::projects::survey::collect::execute(job)
+                .map(|done| plan::Ran {
+                    freed: done.bytes,
+                    unreadable: done.unreadable,
+                    started: None,
+                    changed: None,
+                })
+                .map_err(|why| failed(why).into())
+        }
+        plan::Job::Evict(entry) => {
+            evict(roots, policy, stock, entry).map(|(freed, started)| match started {
+                // What it held when its removal started is what left the disk.
+                Some(started) => plan::Ran {
+                    freed: started,
+                    unreadable: None,
+                    started: Some(started),
+                    changed: None,
+                },
+                // At least what inventory measured is gone; a Task's collection may free more.
+                None if removal.rule == Rule::Budget => plan::Ran::freed(freed.max(entry.bytes)),
+                None => plan::Ran::freed(entry.bytes),
+            })
+        }
+        // What it frees comes from its directory's model; one found changed when checked
+        // again is left in place whole and reported, never as removed.
+        plan::Job::Telemetry(entry) => match evict_telemetry(models, entry, true) {
+            Ok(Evicted::Freed(freed)) => Ok(plan::Ran::freed(freed)),
+            Ok(Evicted::Changed(changed)) => Ok(plan::Ran {
+                changed: Some(Box::new(changed)),
+                ..plan::Ran::freed(0)
+            }),
+            Err(error) => Err(error.into()),
+        },
+        plan::Job::Task => {
+            let state = &removal.path;
+            let task_id = removal.task_id.clone().unwrap_or_default();
+            if !collected.contains_key(state) {
+                let ids: Vec<String> = picks
+                    .iter()
+                    .filter(|pick| pick.state == *state)
+                    .map(|pick| pick.task_id.clone())
+                    .collect();
+                let tried = retried.get(state).cloned().unwrap_or_default();
+                let outcome = collect_tasks(stock, policy, state, &ids, &tried);
+                collected.insert(state.clone(), outcome);
+            }
+            collected
+                .get_mut(state)
+                .and_then(|outcome| outcome.remove(&task_id))
+                .unwrap_or_else(|| {
+                    Err(format!(
+                        "collecting {}: Task `{task_id}` was not collected",
+                        state.display()
+                    ))
+                })
+                .map(plan::Ran::freed)
+                .map_err(plan::Failed::from)
+        }
+    }
+}
+
+/// Collect the planned finished Tasks `task_ids` of the Store at `state`: gate leftovers go
+/// first, so a Task whose cleanup does not end done stays and the next sweep tries again (one
+/// this sweep already tried and failed is not tried twice); then exactly the Tasks whose
+/// leftovers are gone, through the Store's own collection, each with the bytes only it reached.
+fn collect_tasks(
+    stock: &Inventory,
+    policy: &StoragePolicy,
+    state: &Path,
+    task_ids: &[String],
+    tried: &[gate::Attempted],
+) -> BTreeMap<String, Result<u64, String>> {
+    let failed = |why: String| format!("collecting {}: {why}", state.display());
+    let mut outcome = BTreeMap::new();
+    if let Err(why) = stock.still_the_store(state) {
+        for task_id in task_ids {
+            outcome.insert(task_id.clone(), Err(failed(why.clone())));
+        }
+        return outcome;
+    }
+    let mut cleared = BTreeSet::new();
+    for task_id in task_ids {
+        let failed_now = tried.iter().find(|attempted| {
+            attempted.task_id == *task_id
+                && attempted.outcome != review_core::task::remote_check::GateCleanupOutcomeV1::Done
+        });
+        let verdict = match failed_now {
+            Some(attempted) => Err(gate::stays(task_id, &attempted.summary)),
+            None => gate::before_collection(state, task_id, policy.keep_gate_pull_requests),
+        };
+        match verdict {
+            Ok(()) => {
+                cleared.insert(task_id.clone());
+            }
+            Err(why) => {
+                outcome.insert(task_id.clone(), Err(failed(why)));
+            }
+        }
+    }
+    if cleared.is_empty() {
+        return outcome;
+    }
+    // Exactly the planned Tasks whose leftovers are gone: the plan already applied the age and
+    // newest rules, so a cleanup recorded just now does not make one recent.
+    let applied = (|| -> Result<_, String> {
+        let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+        let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+        store
+            .apply_task_collection_of(&cas, &cleared)
+            .map_err(|e| e.to_string())
+    })();
+    for task_id in cleared {
+        let result = match &applied {
+            Err(error) => Err(failed(error.clone())),
+            Ok(done) if done.tombstoned.contains(&task_id) => Ok(done
+                .plan
+                .tasks
+                .iter()
+                .find(|task| task.task_id == task_id)
+                .map_or(0, |task| task.footprint.exclusive_bytes)),
+            Ok(_) => Err(failed(format!(
+                "Task `{task_id}` is protected now, so it is kept"
+            ))),
+        };
+        outcome.insert(task_id, result);
+    }
+    outcome
+}
+
+/// List, reading only, the removals dead processes left claimed in every directory af removes
+/// entries from: each warm project level, the Workspaces, campaigns, local reviews, Task Stores
+/// and installed versions, the parent of every registered Store and the Claude project
+/// directories. Each is an entry of kind `claim` with the identity and bytes the listing found,
+/// which its removal checks again (ADR-0144).
+fn abandoned_claims(roots: &Roots, registered: &[registry::Registered], inventory: &mut Inventory) {
     let mut parents: Vec<PathBuf> = real_directories(&roots.warm);
     parents.extend([
         roots.workspaces.clone(),
@@ -1570,13 +1972,11 @@ fn finish_abandoned_claims(roots: &Roots) -> (Vec<(PathBuf, u64)>, Vec<String>) 
         roots.tasks.clone(),
         roots.installs.versions.clone(),
     ]);
-    if let Ok(registered) = registry::read(&roots.registry) {
-        parents.extend(
-            registered
-                .iter()
-                .filter_map(|entry| entry.path.parent().map(Path::to_path_buf)),
-        );
-    }
+    parents.extend(
+        registered
+            .iter()
+            .filter_map(|entry| entry.path.parent().map(Path::to_path_buf)),
+    );
     // Claude Attempt and probe histories are removed through the same claim.
     parents.extend(
         crate::providers::registered_claude_config_dirs()
@@ -1585,22 +1985,40 @@ fn finish_abandoned_claims(roots: &Roots) -> (Vec<(PathBuf, u64)>, Vec<String>) 
     );
     parents.sort();
     parents.dedup();
-    let mut finished = Vec::new();
-    let mut left = Vec::new();
     for parent in parents {
-        let (removed, failures) = review_sandbox::finish_abandoned_claims(&parent);
-        finished.extend(
-            removed
-                .into_iter()
-                .map(|(name, bytes)| (parent.join(name), bytes)),
-        );
-        left.extend(
-            failures
-                .into_iter()
-                .map(|failure| format!("finishing a removal in {}: {failure}", parent.display())),
-        );
+        for claim in review_sandbox::abandoned_claims(&parent) {
+            // A claim the walk cannot measure holds no bytes the plan could account for: it is
+            // left, never planned, and said.
+            let (bytes, too_deep, unmeasurable) = match claim.measured {
+                Ok(size) => (
+                    size.bytes,
+                    review_sandbox::deeper_than_removal_walk(size.depth),
+                    None,
+                ),
+                Err(review_sandbox::Unmeasured::TooDeep(_)) => (0, true, None),
+                Err(review_sandbox::Unmeasured::Unreadable(why)) => (0, false, Some(why)),
+            };
+            inventory.claims.push(Entry {
+                kind: Kind::Claim,
+                path: parent.join(&claim.name),
+                task_id: None,
+                bytes,
+                last_use_unix_ms: 0,
+                in_use: match &unmeasurable {
+                    Some(why) => Some(format!("left: unmeasurable: {why}")),
+                    None => too_deep.then(|| TOO_DEEP.into()),
+                },
+                reason: None,
+                directory: None,
+                segment_id: None,
+                identity: Some(claim.identity),
+                found: None,
+                too_deep,
+                unmeasurable,
+                state: Some("abandoned".into()),
+            });
+        }
     }
-    (finished, left)
 }
 
 /// Registered telemetry directories that no longer exist: dropped from the registry when
@@ -1641,9 +2059,10 @@ pub(crate) fn sweep_telemetry(
         collection: true,
         max_bytes: policy.max_bytes,
         total_before: 0,
-        total_after: 0,
+        total_after: Some(0),
         stop: Stop::Fits,
         removals: Vec::new(),
+        left: Vec::new(),
         gate_cleanups: Vec::new(),
         registry_dropped: Vec::new(),
         failures: Vec::new(),
@@ -1667,7 +2086,6 @@ pub(crate) fn sweep_telemetry(
         recover_telemetry(roots);
     }
     let mut stock = inventory(roots, Detail::Stores);
-    report.total_before = stock.total();
     report.telemetry.total_before = telemetry_total(&stock);
     let entries: Vec<Entry> = stock
         .entries
@@ -1676,54 +2094,102 @@ pub(crate) fn sweep_telemetry(
         .cloned()
         .collect();
     let problems = stock.problems.clone();
-    let taken = collect_telemetry(policy, &mut stock, now, apply, &mut report);
-    stock
-        .entries
-        .retain(|entry| !(entry.kind == Kind::Telemetry && taken.contains(&entry.path)));
-    budget_step(roots, policy, stock, now, apply, &mut report, true);
+    // The same one plan as every sweep's, of telemetry alone: no other kind is planned, so no
+    // Survey is ever judged, and the claims dead processes left are counted, never finished.
+    let mut models = std::mem::take(&mut stock.telemetry);
+    let made = plan::make(
+        plan::Inputs {
+            entries: stock
+                .entries
+                .iter()
+                .chain(stock.counted_claims())
+                .cloned()
+                .collect(),
+            claims: Vec::new(),
+            projects: &[],
+            tasks: Vec::new(),
+            registrations: Vec::new(),
+            collection: true,
+            max_bytes: policy.max_bytes,
+            keep_campaigns: policy.keep_campaigns,
+            keep_surveys: policy.keep_surveys,
+            idle_ms: policy.keep_days.saturating_mul(DAY_MS),
+            now,
+            telemetry: plan::Telemetry {
+                models: models.clone(),
+                max_bytes: roots.telemetry.max_bytes,
+                only: true,
+            },
+        },
+        &mut |_, _, _| {
+            crate::projects::survey::collect::Judged::Refused(
+                "never judged by a telemetry-only sweep".into(),
+            )
+        },
+    );
+    report.total_before = made.total_before;
+    report.telemetry.total_after = made.telemetry_total_after;
+    report.telemetry.stop = made.telemetry_stop;
+    if !apply {
+        plan::preview(made, &mut report);
+        return (report, entries, problems);
+    }
+    plan::run(made, &mut report, &mut |planned| {
+        before_execute(planned);
+        execute_planned(
+            roots,
+            policy,
+            &stock,
+            (&[], &BTreeMap::new(), &mut BTreeMap::new()),
+            &mut models,
+            planned,
+        )
+    });
+    reclaim_telemetry(&models, &stock, &mut report);
     (report, entries, problems)
 }
 
-fn drop_gone_registrations(roots: &Roots, apply: bool) -> Result<Vec<PathBuf>, String> {
-    let holds = |entry: &registry::Registered| match entry.kind {
-        StoreKind::Task | StoreKind::Review => has_store(&entry.path),
+/// Whether a registered path still holds what it was registered for.
+fn holds_store(entry: &registry::Registered) -> bool {
+    match entry.kind {
+        StoreKind::Task | StoreKind::Review | StoreKind::Project => has_store(&entry.path),
         StoreKind::ReviewRoot => entry.path.is_dir(),
-    };
-    if !apply {
-        return Ok(registry::read(&roots.registry)?
-            .into_iter()
-            .filter(|entry| !holds(entry))
-            .map(|entry| entry.path)
-            .collect());
     }
-    if !roots.registry.exists() {
-        return Ok(Vec::new());
-    }
-    Ok(registry::retain(&roots.registry, holds)?
-        .into_iter()
-        .map(|entry| entry.path)
-        .collect())
 }
 
-/// Collection: gate leftovers of finished Tasks, finished Tasks beyond the newest `keep_tasks`
-/// of each Store idle at least `keep_days`, campaigns beyond the newest `keep_campaigns` idle
-/// at least `keep_days`, and Stores this release cannot read idle at least `keep_days`.
-fn collect(
+/// Drop the registrations the applied sweep's plan listed, each only while its path still holds
+/// no Store, and return those it dropped. One that holds a Store again is kept, and one another
+/// sweep dropped meanwhile is already what the plan wanted: neither is a failure.
+fn drop_registrations(roots: &Roots, planned: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    if planned.is_empty() || !roots.registry.exists() {
+        return Ok(Vec::new());
+    }
+    Ok(registry::retain(&roots.registry, |entry| {
+        !planned.contains(&entry.path) || holds_store(entry)
+    })?
+    .into_iter()
+    .map(|entry| entry.path)
+    .collect())
+}
+
+/// The finished Tasks collection takes: per readable Task Store, those beyond the newest
+/// `keep_tasks` idle at least `keep_days`, as the Store's own read-only plan names them, never
+/// the Task the run executed. An unchanged Store whose last look found nothing to do until
+/// later is not read again, and an applied sweep that finds nothing writes that look down.
+fn task_picks(
     roots: &Roots,
     policy: &StoragePolicy,
-    stock: &mut Inventory,
+    stock: &Inventory,
     now: u64,
     apply: bool,
-    retried: &BTreeMap<PathBuf, Vec<gate::Attempted>>,
     report: &mut SweepReport,
-) {
+) -> Vec<plan::TaskPick> {
     let idle_ms = policy.keep_days.saturating_mul(DAY_MS);
-    let idle = |entry: &Entry| entry.last_use_unix_ms.saturating_add(idle_ms) <= now;
     // A Store that went away since inventory, or one still being created that has no CAS yet,
     // holds nothing to collect: neither is a failure.
     let gone = |state: &Path| !has_store(state) || !state.join("cas").is_dir();
-    let stores = stock.task_stores.clone();
-    for state in &stores {
+    let mut picks = Vec::new();
+    for state in &stock.task_stores {
         if gone(state) {
             continue;
         }
@@ -1733,7 +2199,6 @@ fn collect(
                 .push(format!("collecting {}: {why}", state.display()));
             continue;
         }
-        // An unchanged Store whose last look found nothing to do until later is not read again.
         let hint = hint::Hint::read(roots, state);
         if hint
             .as_ref()
@@ -1741,199 +2206,52 @@ fn collect(
         {
             continue;
         }
-        // This sweep already retried the Store's gate leftovers; a Task whose retry did not end
-        // done stays below.
-        let tried = retried.get(state).cloned().unwrap_or_default();
-        let mut kept = Vec::new();
-        let collected = (|| -> Result<Vec<(String, u64)>, String> {
+        let planned = (|| -> Result<Vec<plan::TaskPick>, String> {
             let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
-            // The plan reads only; the Store's writer lock is taken only when it names a Task.
             let plan = EventStore::open_read_only(state.join("events.sqlite"))
                 .and_then(|store| store.plan_task_collection(&cas, idle_ms, policy.keep_tasks))
                 .map_err(|e| e.to_string())?;
-            let planned: Vec<(String, u64)> = plan
+            let picked: Vec<plan::TaskPick> = plan
                 .tasks
                 .iter()
                 .filter(|task| task.disposition.collects() && !is_run_task(state, &task.task_id))
-                .map(|task| (task.task_id.clone(), task.footprint.exclusive_bytes))
+                .map(|task| plan::TaskPick {
+                    state: state.clone(),
+                    task_id: task.task_id.clone(),
+                    bytes: task.footprint.exclusive_bytes,
+                })
                 .collect();
-            if apply && planned.is_empty() {
+            if apply && picked.is_empty() {
                 hint::Hint::after(&plan, state, policy, gate::has_pending(state))
                     .write(roots, state);
             }
-            if !apply || planned.is_empty() {
-                return Ok(planned);
-            }
-            // Gate leftovers go first: a planned Task whose cleanup does not end done stays,
-            // and the next sweep tries again. One this sweep already tried and failed is not
-            // tried twice.
-            let mut cleared = BTreeSet::new();
-            for (task_id, _) in &planned {
-                let failed_now = tried.iter().find(|attempted| {
-                    attempted.task_id == *task_id
-                        && attempted.outcome
-                            != review_core::task::remote_check::GateCleanupOutcomeV1::Done
-                });
-                let verdict = match failed_now {
-                    Some(attempted) => Err(gate::stays(task_id, &attempted.summary)),
-                    None => gate::before_collection(state, task_id, policy.keep_gate_pull_requests),
-                };
-                match verdict {
-                    Ok(()) => {
-                        cleared.insert(task_id.clone());
-                    }
-                    Err(why) => kept.push(format!("collecting {}: {why}", state.display())),
-                }
-            }
-            if cleared.is_empty() {
-                return Ok(Vec::new());
-            }
-            // Exactly the planned Tasks whose leftovers are gone: the plan already applied the
-            // age and newest rules, so a cleanup recorded just now does not make one recent.
-            let mut store =
-                EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
-            let outcome = store
-                .apply_task_collection_of(&cas, &cleared)
-                .map_err(|e| e.to_string())?;
-            Ok(outcome
-                .plan
-                .tasks
-                .iter()
-                .filter(|task| outcome.tombstoned.contains(&task.task_id))
-                .map(|task| (task.task_id.clone(), task.footprint.exclusive_bytes))
-                .collect())
+            Ok(picked)
         })();
-        match collected {
-            Ok(tasks) => {
-                for (task_id, bytes) in tasks {
-                    report.removals.push(Removal {
-                        kind: Kind::Task,
-                        path: state.clone(),
-                        task_id: Some(task_id.clone()),
-                        segment_id: None,
-                        directory: None,
-                        bytes,
-                        rule: Rule::Collection,
-                    });
-                    stock.entries.retain(|entry| {
-                        !(entry.kind == Kind::Task
-                            && entry.path == *state
-                            && entry.task_id.as_deref() == Some(task_id.as_str()))
-                    });
-                }
-            }
+        match planned {
+            Ok(picked) => picks.extend(picked),
             Err(_) if gone(state) => {}
             Err(error) => report
                 .failures
                 .push(format!("collecting {}: {error}", state.display())),
         }
-        report.failures.extend(kept);
     }
-    let mut campaigns: Vec<&Entry> = stock
-        .entries
-        .iter()
-        .filter(|entry| entry.kind == Kind::Campaign)
-        .collect();
-    campaigns.sort_by(|a, b| b.last_use_unix_ms.cmp(&a.last_use_unix_ms));
-    let mut taken: Vec<PathBuf> = Vec::new();
-    for entry in campaigns.into_iter().skip(policy.keep_campaigns) {
-        if entry.in_use.is_some() || !idle(entry) {
-            continue;
-        }
-        match if apply {
-            evict(roots, policy, stock, entry)
-        } else {
-            Ok(entry.bytes)
-        } {
-            Ok(_) => {
-                report
-                    .removals
-                    .push(removal(entry, entry.bytes, Rule::Collection));
-                taken.push(entry.path.clone());
-            }
-            Err(error) => report.failures.push(error),
-        }
-    }
-    for entry in stock
-        .entries
-        .iter()
-        .filter(|entry| entry.kind == Kind::UnreadableStore)
-    {
-        if entry.in_use.is_some() || !idle(entry) {
-            continue;
-        }
-        match if apply {
-            evict(roots, policy, stock, entry)
-        } else {
-            Ok(entry.bytes)
-        } {
-            Ok(_) => {
-                report
-                    .removals
-                    .push(removal(entry, entry.bytes, Rule::Collection));
-                taken.push(entry.path.clone());
-            }
-            Err(error) => report.failures.push(error),
-        }
-    }
-    taken.extend(collect_telemetry(policy, stock, now, apply, report));
-    stock.entries.retain(|entry| {
-        !(matches!(
-            entry.kind,
-            Kind::Campaign | Kind::UnreadableStore | Kind::Telemetry
-        ) && taken.contains(&entry.path))
-    });
+    picks
 }
 
-/// Collection of telemetry: every segment (and other version's directory) idle at least
-/// `keep_days`, never one in use or used within the hour. Returns the paths taken.
-fn collect_telemetry(
-    policy: &StoragePolicy,
-    stock: &mut Inventory,
-    now: u64,
-    apply: bool,
-    report: &mut SweepReport,
-) -> Vec<PathBuf> {
-    let idle_ms = policy.keep_days.saturating_mul(DAY_MS);
-    let mut idle: Vec<&Entry> = stock
-        .entries
-        .iter()
-        .filter(|entry| {
-            entry.kind == Kind::Telemetry
-                && entry.in_use.is_none()
-                && entry.last_use_unix_ms.saturating_add(HOUR_MS) <= now
-                && entry.last_use_unix_ms.saturating_add(idle_ms) <= now
-        })
-        .collect();
-    idle.sort_by(least_recently_used);
-    let mut taken = Vec::new();
-    for entry in idle {
-        match evict_telemetry(&mut stock.telemetry, entry, apply) {
-            Ok(Evicted::Freed(freed)) => {
-                report
-                    .removals
-                    .push(removal(entry, freed, Rule::Collection));
-                taken.push(entry.path.clone());
-            }
-            // Left in place, and not tried again by this sweep's budget step.
-            Ok(Evicted::Changed(changed)) => {
-                report.telemetry.changed.push(changed);
-                taken.push(entry.path.clone());
-            }
-            Err(error) => report.failures.push(error),
-        }
-    }
-    taken
-}
-
-/// Remove one entry through the rule that owns it. Returns the bytes removed.
+/// Remove one entry through the rule that owns it. Returns the bytes removed and, for a
+/// directory removed through descriptors, what it held when its removal started; a removal that
+/// stopped part way fails with the bytes it freed before it did and what it left.
 fn evict(
     roots: &Roots,
     policy: &StoragePolicy,
     stock: &Inventory,
     entry: &Entry,
-) -> Result<u64, String> {
+) -> Result<(u64, Option<u64>), plan::Failed> {
     let failed = |error: String| format!("removing {}: {error}", entry.path.display());
+    let partly = |failure: plan::Failed| plan::Failed {
+        reason: failed(failure.reason),
+        ..failure
+    };
     match entry.kind {
         Kind::WarmKey => {
             let toolchain = entry.path.file_name().and_then(|name| name.to_str());
@@ -1943,7 +2261,7 @@ fn evict(
                 .and_then(|parent| parent.file_name())
                 .and_then(|name| name.to_str());
             let (Some(project), Some(toolchain)) = (project, toolchain) else {
-                return Err(failed("not a toolchain key".into()));
+                return Err(failed("not a toolchain key".into()).into());
             };
             match review_sandbox::lock_task_build_cache_key(
                 &roots.warm,
@@ -1959,19 +2277,25 @@ fn evict(
                     let Some(measured) = entry.identity else {
                         return Err(failed(
                             "its identity was not measured, so it is not removed".into(),
-                        ));
+                        )
+                        .into());
                     };
                     match key.identity() {
-                        Ok(locked) if locked == measured => key.remove_key().map_err(failed),
+                        Ok(locked) if locked == measured => {
+                            Ok((key.remove_key().map_err(failed)?, None))
+                        }
                         Ok(_) => Err(failed(
                             "another directory holds its name since it was measured; left in \
                              place"
                                 .into(),
-                        )),
-                        Err(error) => Err(failed(format!("inspecting the locked key: {error}"))),
+                        )
+                        .into()),
+                        Err(error) => {
+                            Err(failed(format!("inspecting the locked key: {error}")).into())
+                        }
                     }
                 }
-                None => Err(failed("a check holds it now".into())),
+                None => Err(failed("a check holds it now".into()).into()),
             }
         }
         Kind::Workspace => {
@@ -1979,19 +2303,19 @@ fn evict(
             still_measured(entry).map_err(failed)?;
             // Held exclusively until it is gone: no run clones from it in between.
             let _held = review_sandbox::hold_workspace_for_removal(&entry.path).map_err(failed)?;
-            remove_entry(roots, entry).map_err(failed)
+            remove_entry(roots, entry).map_err(partly)
         }
         Kind::Campaign => {
             still_measured(entry).map_err(failed)?;
             // Held exclusively until it is gone: no `af review run` starts on it in between.
             let _held = hold_campaign_for_removal(&entry.path).map_err(failed)?;
-            remove_entry(roots, entry).map_err(failed)
+            remove_entry(roots, entry).map_err(partly)
         }
         Kind::UnreadableStore => {
             if let Some(why) = unreadable_in_use(&entry.path) {
-                return Err(failed(why));
+                return Err(failed(why).into());
             }
-            remove_entry(roots, entry).map_err(failed)
+            remove_entry(roots, entry).map_err(partly)
         }
         Kind::Version => {
             let version = entry
@@ -2006,9 +2330,10 @@ fn evict(
             if let Some(why) = crate::selfmgmt::protected_now(&roots.installs, version) {
                 return Err(failed(format!(
                     "af {version} became {why} since it was measured, so it is kept"
-                )));
+                ))
+                .into());
             }
-            remove_entry(roots, entry).map_err(failed)
+            remove_entry(roots, entry).map_err(partly)
         }
         Kind::Task => {
             let task_id = entry
@@ -2033,21 +2358,38 @@ fn evict(
                 // Collection also sweeps whatever no Task reaches any more, an interrupted
                 // earlier collection's leftovers included: what the Store freed is measured.
                 let after = review_sandbox::storage::allocated_bytes(&entry.path).ok();
-                Ok(match (before, after) {
-                    (Some(before), Some(after)) => before.saturating_sub(after).max(entry.bytes),
-                    _ => entry.bytes,
-                })
+                Ok((
+                    match (before, after) {
+                        (Some(before), Some(after)) => {
+                            before.saturating_sub(after).max(entry.bytes)
+                        }
+                        _ => entry.bytes,
+                    },
+                    None,
+                ))
             } else {
-                Err(failed(format!("Task `{task_id}` is protected now")))
+                Err(failed(format!("Task `{task_id}` is protected now")).into())
             }
         }
-        Kind::TaskStore => Err(failed("a Task Store is never removed whole".into())),
+        Kind::TaskStore => Err(failed("a Task Store is never removed whole".into()).into()),
         Kind::Telemetry => Err(failed(
             "a telemetry segment is evicted through its directory's model".into(),
-        )),
-        Kind::Claim => Err(failed(
-            "a claim is finished by recovery, never evicted".into(),
-        )),
+        )
+        .into()),
+        Kind::ProjectStore => Err(failed("a Project Store is never evicted".into()).into()),
+        Kind::Survey => Err(failed(
+            "a Survey is collected by its planned job, behind its tombstone".into(),
+        )
+        .into()),
+        Kind::Claim => {
+            // The claim's parent is its anchor, as the listing opened it; only the directory the
+            // listing stated is removed.
+            let parent = entry
+                .path
+                .parent()
+                .ok_or_else(|| failed("names no claim".into()))?;
+            remove_directory(parent, &entry.path, entry.identity, entry.bytes).map_err(partly)
+        }
     }
 }
 
@@ -2067,53 +2409,88 @@ fn still_measured(entry: &Entry) -> Result<(), String> {
 }
 
 /// Remove an entry's directory from its anchor through descriptors, never following a link
-/// below the anchor, and only when it is still the directory inventory measured. The measured
-/// bytes are what was removed.
-fn remove_entry(roots: &Roots, entry: &Entry) -> Result<u64, String> {
+/// below the anchor, and only when it is still the directory inventory measured. Returns what
+/// was removed and what the directory held when its removal started ([`remove_directory`]).
+fn remove_entry(roots: &Roots, entry: &Entry) -> Result<(u64, Option<u64>), plan::Failed> {
     let identity = entry
         .identity
-        .ok_or("its identity was not measured, so it is not removed")?;
-    remove_directory(roots.anchor_of(&entry.path), &entry.path, Some(identity))
+        .ok_or("its identity was not measured, so it is not removed".to_string())?;
+    remove_directory(
+        roots.anchor_of(&entry.path),
+        &entry.path,
+        Some(identity),
+        entry.bytes,
+    )
 }
 
 /// Remove `path`, strictly below `anchor`, and everything below it through descriptors opened
-/// from `anchor` without following a link, refusing any directory but `identity`. The measured
-/// bytes are what was removed.
+/// from `anchor` without following a link, refusing any directory but `identity`. What was
+/// removed is what the directory held when its removal started, stated through its own
+/// descriptor immediately before anything was unlinked (`measured`, the bytes inventory
+/// counted, when that cannot be stated), and that start is returned with it so the sweep's
+/// running total reconciles a directory that grew or shrank since inventory. A removal that
+/// stopped part way (a tree grown deeper than the removal walk since inventory, a child that
+/// cannot be unlinked, a final `rmdir` that failed) fails with what left the disk, accounted
+/// from that same start: its bytes then less what its claim still holds, so a tree that grew
+/// since inventory never reports nothing for what the walk unlinked; and with what the claim
+/// still holds, which takes the place of inventory's bytes in the total. When the start cannot
+/// be measured nothing is counted freed, and when what the claim still holds cannot be
+/// measured the total is unknown from there on.
 fn remove_directory(
     anchor: &Path,
     path: &Path,
     identity: Option<review_sandbox::Identity>,
-) -> Result<u64, String> {
-    let bytes = review_sandbox::storage::allocated_bytes(path).unwrap_or(0);
-    review_sandbox::remove_beneath(anchor, path, identity)
-        .map(|()| bytes)
-        .map_err(|error| format!("{error}; it is left, and the next sweep tries again"))
+    measured: u64,
+) -> Result<(u64, Option<u64>), plan::Failed> {
+    let error = match review_sandbox::remove_beneath_measured(anchor, path, identity) {
+        Ok(started) => return Ok((started.unwrap_or(measured), started)),
+        Err(error) => error,
+    };
+    match review_sandbox::partial(&error) {
+        None => Err(format!("{error}; it is left, and the next sweep tries again").into()),
+        Some(partly) => {
+            let remains = match partly.remaining {
+                Some(left) => plan::Remains::Measured(left),
+                None => plan::Remains::Unmeasured,
+            };
+            Err(match (partly.freed, partly.remaining) {
+                (Some(freed), Some(left)) => plan::Failed {
+                    reason: format!(
+                        "{error}; {freed} bytes of it were freed and the rest, {left} bytes, is \
+                         left under its claim"
+                    ),
+                    freed,
+                    remains,
+                },
+                (None, Some(left)) => plan::Failed {
+                    reason: format!(
+                        "{error}; what it held when its removal started cannot be measured, so \
+                         nothing of it is counted freed, and the rest, {left} bytes, is left \
+                         under its claim"
+                    ),
+                    freed: 0,
+                    remains,
+                },
+                (_, None) => plan::Failed {
+                    reason: format!(
+                        "{error}; what is left under its claim cannot be measured, so nothing of \
+                         it is counted freed and af's total after it is unknown"
+                    ),
+                    freed: 0,
+                    remains,
+                },
+            })
+        }
+    }
 }
 
 /// Print a sweep's removals and problems to stderr, one line each.
 pub(crate) fn report_to_stderr(report: &SweepReport) {
     for removal in &report.removals {
-        eprintln!(
-            "af storage: {} {} {}{} ({}, {})",
-            if report.applied {
-                "removed"
-            } else {
-                "would remove"
-            },
-            removal.kind.as_str(),
-            removal.path.display(),
-            removal
-                .task_id
-                .as_deref()
-                .map(|task| format!(" Task {task}"))
-                .unwrap_or_default(),
-            human_bytes(removal.bytes),
-            match removal.rule {
-                Rule::Collection => "collection",
-                Rule::Budget => "budget",
-                Rule::Recovery => "recovery",
-            }
-        );
+        eprintln!("af storage: {}", removal_line(removal, report.applied));
+    }
+    for left in &report.left {
+        eprintln!("af storage: {}", left_line(left));
     }
     for cleanup in &report.gate_cleanups {
         eprintln!(
@@ -2121,16 +2498,21 @@ pub(crate) fn report_to_stderr(report: &SweepReport) {
             cleanup.task_id, cleanup.summary
         );
     }
-    for failure in &report.failures {
+    for failure in unmarked_failures(report) {
         eprintln!("af storage: warning: {failure}");
     }
-    if report.stop == Stop::NothingEvictable {
-        eprintln!(
+    match report.stop {
+        Stop::NothingEvictable => eprintln!(
             "af storage: warning: af holds {} against a budget of {}, and nothing else may be \
              removed now (in use, or used within the hour); see `af storage`",
-            human_bytes(report.total_after),
+            total_text(report.total_after),
             human_bytes(report.max_bytes)
-        );
+        ),
+        Stop::Unknown => eprintln!(
+            "af storage: warning: what af holds after this sweep is unknown: a removal stopped \
+             part way and what it left cannot be measured; see `af storage`"
+        ),
+        Stop::Fits => {}
     }
 }
 
@@ -2166,20 +2548,33 @@ fn is_run_task(state: &Path, task_id: &str) -> bool {
 }
 
 /// What a sweep removed and failed, as the bounded record a Task keeps: `None` for a preview,
-/// and for a sweep that removed nothing and failed nothing.
+/// and for a sweep that removed nothing and failed nothing. Every other sweep is recorded, one
+/// whose total after it is unknown included: `af/TaskStorageSweep@2` spells that total and its
+/// stop `unknown` and still says what left the disk (ADR-0144 clause 4).
 pub(crate) fn observation(
     report: &SweepReport,
-) -> Option<review_core::task::storage_sweep::TaskStorageSweepV1> {
+) -> Option<review_core::task::storage_sweep::TaskStorageSweepV2> {
     use review_core::task::storage_sweep::{
         MAX_SWEEP_FAILURE_BYTES, MAX_SWEEP_FAILURES, MAX_SWEEP_PATH_BYTES, MAX_SWEEP_REMOVALS,
-        StorageSweepKindV1, StorageSweepRemovalV1, StorageSweepRuleV1, StorageSweepStopV1,
-        TASK_STORAGE_SWEEP_V1, TaskStorageSweepV1,
+        StorageSweepKindV1, StorageSweepRemovalV1, StorageSweepRuleV1, StorageSweepStopV2,
+        TASK_STORAGE_SWEEP_V2, TaskStorageSweepV2,
     };
-    if !report.applied || (report.removals.is_empty() && report.failures.is_empty()) {
+    // What failed freed nothing: a failure of the record, never a removal.
+    let removed: Vec<&Removal> = report
+        .removals
+        .iter()
+        .filter(|removal| removal.outcome.is_none())
+        .collect();
+    if !report.applied || (removed.is_empty() && report.failures.is_empty()) {
         return None;
     }
-    let listable: Vec<StorageSweepRemovalV1> = report
+    // What left the disk: every applied entry's bytes, a removal that failed part way with what
+    // it freed before it stopped, one that failed outright with nothing.
+    let freed_bytes = report
         .removals
+        .iter()
+        .fold(0_u64, |freed, removal| freed.saturating_add(removal.bytes));
+    let listable: Vec<StorageSweepRemovalV1> = removed
         .iter()
         .filter_map(|removal| {
             let kind = match removal.kind {
@@ -2190,9 +2585,11 @@ pub(crate) fn observation(
                 Kind::UnreadableStore => StorageSweepKindV1::UnreadableStore,
                 Kind::Version => StorageSweepKindV1::Version,
                 Kind::Claim => StorageSweepKindV1::Claim,
-                // `af/TaskStorageSweep@1` names no telemetry kind: a telemetry removal is counted
-                // among the omitted ones, never listed under another kind.
-                Kind::TaskStore | Kind::Telemetry => return None,
+                // A telemetry removal and a Survey's have no kind in `af/TaskStorageSweep@2`:
+                // each is counted among the omitted removals, never listed under another kind.
+                Kind::TaskStore | Kind::ProjectStore | Kind::Survey | Kind::Telemetry => {
+                    return None;
+                }
             };
             let path = removal.path.to_str()?.to_string();
             (path.len() <= MAX_SWEEP_PATH_BYTES && !path.chars().any(char::is_control)).then(|| {
@@ -2202,7 +2599,8 @@ pub(crate) fn observation(
                     task_id: removal.task_id.clone(),
                     bytes: removal.bytes,
                     rule: match removal.rule {
-                        Rule::Collection => StorageSweepRuleV1::Collection,
+                        // A Survey's rule: never listed, as its kind is not.
+                        Rule::Collection | Rule::KeepSurveys => StorageSweepRuleV1::Collection,
                         Rule::Budget => StorageSweepRuleV1::Budget,
                         Rule::Recovery => StorageSweepRuleV1::Recovery,
                     },
@@ -2212,7 +2610,7 @@ pub(crate) fn observation(
         .collect();
     let removals: Vec<_> = listable.into_iter().take(MAX_SWEEP_REMOVALS).collect();
     // Beyond the bound, or with a path no record can name: counted, not listed.
-    let omitted_removals = report.removals.len().saturating_sub(removals.len()) as u64;
+    let omitted_removals = removed.len().saturating_sub(removals.len()) as u64;
     let failures: Vec<String> = report
         .failures
         .iter()
@@ -2227,8 +2625,8 @@ pub(crate) fn observation(
         })
         .collect();
     let omitted_failures = report.failures.len().saturating_sub(MAX_SWEEP_FAILURES) as u64;
-    let sweep = TaskStorageSweepV1 {
-        schema: TASK_STORAGE_SWEEP_V1.into(),
+    let sweep = TaskStorageSweepV2 {
+        schema: TASK_STORAGE_SWEEP_V2.into(),
         omitted_removals,
         removals,
         omitted_failures: if failures.len() == MAX_SWEEP_FAILURES {
@@ -2237,13 +2635,16 @@ pub(crate) fn observation(
             0
         },
         failures,
-        stop: match report.stop {
-            Stop::Fits => StorageSweepStopV1::Fits,
-            Stop::NothingEvictable => StorageSweepStopV1::NothingEvictable,
+        freed_bytes,
+        // A total af cannot vouch for is `unknown`, and so is its stop, together.
+        stop: match (report.stop, report.total_after) {
+            (_, None) | (Stop::Unknown, _) => StorageSweepStopV2::Unknown,
+            (Stop::Fits, Some(_)) => StorageSweepStopV2::Fits,
+            (Stop::NothingEvictable, Some(_)) => StorageSweepStopV2::NothingEvictable,
         },
         max_bytes: report.max_bytes,
         total_before: report.total_before,
-        total_after: report.total_after,
+        total_after: report.total_after.filter(|_| report.stop != Stop::Unknown),
     };
     sweep.validate().is_ok().then_some(sweep)
 }
@@ -2606,7 +3007,7 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
     }
     for entry in &registered {
         let stores = match entry.kind {
-            StoreKind::Task | StoreKind::Review => vec![entry.path.clone()],
+            StoreKind::Task | StoreKind::Review | StoreKind::Project => vec![entry.path.clone()],
             StoreKind::ReviewRoot => real_directories(&entry.path),
         };
         for store in stores.into_iter().filter(|path| has_store(path)) {
@@ -2622,9 +3023,9 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
                     continue;
                 }
             };
-            match remove_directory(Path::new("/"), &store, Some(identity)) {
+            match remove_directory(Path::new("/"), &store, Some(identity), 0) {
                 Ok(_) => lines.push(format!("removed {}", store.display())),
-                Err(error) => lines.push(format!("left {}: {error}", store.display())),
+                Err(failure) => lines.push(format!("left {}: {}", store.display(), failure.reason)),
             }
         }
     }
@@ -2711,28 +3112,55 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
         .iter()
         .filter_map(|volume| volume.free.as_ref().ok().map(|free| (*free, &volume.path)))
         .min_by_key(|(free, _)| *free);
+    // Every entry, and every abandoned claim inventory found, wherever it sits, as the plan of a
+    // sweep recovers them: a claim inside an entry measured whole is listed `counted_in` that
+    // entry, whose bytes hold its own, so `kinds` and the total count its bytes once.
+    let listed: Vec<(&Entry, Option<&Path>)> = stock
+        .entries
+        .iter()
+        .map(|entry| (entry, None))
+        .chain(stock.claims.iter().map(|claim| {
+            let holder = plan::holder(&stock.entries, &claim.path);
+            (claim, holder.map(|holder| holder.path.as_path()))
+        }))
+        .collect();
+    let counted = |of: &[&(&Entry, Option<&Path>)]| {
+        of.iter()
+            .filter(|(_, counted_in)| counted_in.is_none())
+            .map(|(entry, _)| entry.bytes)
+            .fold(0, u64::saturating_add)
+    };
     let mut kinds = Vec::new();
     for kind in Kind::ALL {
-        let of: Vec<&Entry> = stock.entries.iter().filter(|e| e.kind == kind).collect();
-        let bytes = of.iter().map(|e| e.bytes).fold(0, u64::saturating_add);
+        let of: Vec<&(&Entry, Option<&Path>)> =
+            listed.iter().filter(|(e, _)| e.kind == kind).collect();
+        let bytes = counted(&of);
         kinds.push(json!({
             "kind": kind.as_str(),
             "entries": of.len(),
             "bytes": bytes,
-            "oldest_use_unix_ms": of.iter().map(|e| e.last_use_unix_ms).min(),
-            "newest_use_unix_ms": of.iter().map(|e| e.last_use_unix_ms).max(),
+            "oldest_use_unix_ms": of.iter().map(|(e, _)| e.last_use_unix_ms).min(),
+            "newest_use_unix_ms": of.iter().map(|(e, _)| e.last_use_unix_ms).max(),
         }));
     }
     let total = stock.total();
     if json_output {
+        let mut entries = Vec::new();
+        for (entry, counted_in) in &listed {
+            let mut value = serde_json::to_value(entry).map_err(|e| e.to_string())?;
+            if let Some(counted_in) = counted_in {
+                value["counted_in"] = json!(counted_in);
+            }
+            entries.push(value);
+        }
         let document = json!({
-            "schema": "af/storage@2",
+            "schema": "af/storage@4",
             "max_bytes": policy.max_bytes,
             "total_bytes": total,
             "min_free_bytes": policy.min_free_bytes,
             "free_bytes": free.as_ref().map(|(free, _)| *free),
             "kinds": kinds,
-            "entries": stock.entries,
+            "entries": entries,
             "problems": stock.problems,
         });
         println!(
@@ -2746,17 +3174,28 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
         "KIND", "ENTRIES", "BYTES", "OLDEST USE", "NEWEST USE"
     );
     for kind in Kind::ALL {
-        let of: Vec<&Entry> = stock.entries.iter().filter(|e| e.kind == kind).collect();
-        let bytes = of.iter().map(|e| e.bytes).fold(0, u64::saturating_add);
+        let of: Vec<&(&Entry, Option<&Path>)> =
+            listed.iter().filter(|(e, _)| e.kind == kind).collect();
+        let bytes = counted(&of);
         let when = |value: Option<u64>| value.filter(|ms| *ms > 0).map_or("-".to_string(), iso);
         println!(
             "{:<20} {:>7} {:>10}  {:<20}  {:<20}",
             kind.label(),
             of.len(),
             human_bytes(bytes),
-            when(of.iter().map(|e| e.last_use_unix_ms).min()),
-            when(of.iter().map(|e| e.last_use_unix_ms).max()),
+            when(of.iter().map(|(e, _)| e.last_use_unix_ms).min()),
+            when(of.iter().map(|(e, _)| e.last_use_unix_ms).max()),
         );
+    }
+    for (claim, counted_in) in &listed {
+        if let Some(counted_in) = counted_in {
+            println!(
+                "abandoned removal {} ({}) counted in {}",
+                claim.path.display(),
+                human_bytes(claim.bytes),
+                counted_in.display()
+            );
+        }
     }
     for entry in stock
         .entries
@@ -2829,31 +3268,18 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
     let report = sweep(&roots, &policy, true, apply);
     if json_output {
         let mut document = serde_json::to_value(&report).map_err(|e| e.to_string())?;
-        document["schema"] = json!("af/storage-prune@2");
+        document["schema"] = json!("af/storage-prune@4");
         println!(
             "{}",
             serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?
         );
         return Ok(0);
     }
-    let verb = if apply { "removed" } else { "would remove" };
     for removal in &report.removals {
-        println!(
-            "{verb} {} {}{} {} ({})",
-            removal.kind.as_str(),
-            removal.path.display(),
-            removal
-                .task_id
-                .as_deref()
-                .map(|task| format!(" Task {task}"))
-                .unwrap_or_default(),
-            human_bytes(removal.bytes),
-            match removal.rule {
-                Rule::Collection => "collection",
-                Rule::Budget => "budget",
-                Rule::Recovery => "recovery",
-            }
-        );
+        println!("{}", removal_line(removal, apply));
+    }
+    for left in &report.left {
+        println!("{}", left_line(left));
     }
     for changed in &report.telemetry.changed {
         println!(
@@ -2875,18 +3301,20 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
             cleanup.task_id, cleanup.summary
         );
     }
-    for failure in &report.failures {
+    for failure in unmarked_failures(&report) {
         println!("failed: {failure}");
     }
     println!(
         "{} → {} of a {} budget; {}{}",
         human_bytes(report.total_before),
-        human_bytes(report.total_after),
+        total_text(report.total_after),
         human_bytes(report.max_bytes),
         match report.stop {
             Stop::Fits => "fits",
             Stop::NothingEvictable =>
                 "still over: everything left is in use or was used within the hour",
+            Stop::Unknown =>
+                "unknown: a removal stopped part way and what it left cannot be measured",
         },
         if apply {
             String::new()
@@ -2895,6 +3323,152 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
         }
     );
     Ok(0)
+}
+
+/// The Surveys of the readable Project Store at `path` (ADR-0159 clause 13), from its one look:
+/// one entry of kind `survey` each, its record's CAS bytes, last used at its cutoff and stated
+/// by device and inode, taken out of the Project Store's own bytes; an object a
+/// pending-publication entry describes whose `SurveyRecorded@1` never committed is one too, its
+/// `state` `pending`, in use, last used when its entry was written. A record an interruption
+/// moved under `cas/removing`, a foreign file at a collected Survey's name and an object no
+/// event or entry names stay in the Project Store's bytes, never a Survey's. The Store's identity is recorded as a registered Task
+/// Store's is, so a Survey's collection reaches only the directory inventory measured.
+fn surveys_into(inventory: &mut Inventory, path: &Path) {
+    let look = match crate::projects::survey::collect::look(path) {
+        Ok(look) => look,
+        Err(reason) => {
+            inventory.problems.push(Problem {
+                path: path.to_path_buf(),
+                reason: format!("its Surveys cannot be listed, so they are kept: {reason}"),
+            });
+            return;
+        }
+    };
+    let reached = plain_path(Path::new("/"), path);
+    match &reached {
+        Ok(identity) => {
+            inventory
+                .store_identities
+                .insert(path.to_path_buf(), (PathBuf::from("/"), *identity));
+        }
+        Err(reason) => inventory.problems.push(Problem {
+            path: path.to_path_buf(),
+            reason: reason.clone(),
+        }),
+    }
+    let bytes = look
+        .surveys
+        .iter()
+        .map(|survey| survey.bytes)
+        .fold(0, u64::saturating_add);
+    if let Some(entry) = inventory
+        .entries
+        .iter_mut()
+        .rev()
+        .find(|entry| entry.kind == Kind::ProjectStore && entry.path == path)
+    {
+        entry.bytes = entry.bytes.saturating_sub(bytes);
+    }
+    for survey in &look.surveys {
+        let in_use = match &reached {
+            Ok(_) => survey.in_use.clone(),
+            Err(_) => Some("its Project Store cannot be reached without a link".into()),
+        };
+        inventory.entries.push(Entry {
+            kind: Kind::Survey,
+            path: survey.object.clone(),
+            task_id: None,
+            bytes: survey.bytes,
+            last_use_unix_ms: survey.last_use_unix_ms,
+            in_use,
+            reason: None,
+            directory: None,
+            segment_id: None,
+            identity: survey.identity,
+            found: None,
+            too_deep: false,
+            unmeasurable: None,
+            state: survey.pending.then(|| "pending".into()),
+        });
+    }
+    if reached.is_ok() {
+        inventory.projects.push((path.to_path_buf(), look));
+    }
+}
+
+/// One removal as a line: what it freed, or would, its rule, and a Survey's note; a failed one
+/// says so, with what a deletion that stopped part way freed.
+fn removal_line(removal: &Removal, applied: bool) -> String {
+    let what = format!(
+        "{} {}{}",
+        removal.kind.as_str(),
+        removal.path.display(),
+        removal
+            .task_id
+            .as_deref()
+            .map(|task| format!(" Task {task}"))
+            .unwrap_or_default()
+    );
+    match &removal.outcome {
+        Some(outcome) if removal.bytes > 0 => format!(
+            "planned {what} ({}) partly removed ({} freed), {outcome}",
+            removal.rule.as_str(),
+            human_bytes(removal.bytes)
+        ),
+        Some(outcome) => format!(
+            "planned {what} ({}) not removed, {outcome}",
+            removal.rule.as_str()
+        ),
+        None => format!(
+            "{} {what} ({}, {}){}",
+            if applied { "removed" } else { "would remove" },
+            human_bytes(removal.bytes),
+            removal.rule.as_str(),
+            unreadable_note(removal)
+        ),
+    }
+}
+
+/// The failures a removal's line does not already say.
+fn unmarked_failures(report: &SweepReport) -> impl Iterator<Item = &String> {
+    report.failures.iter().filter(|failure| {
+        !report.removals.iter().any(|removal| {
+            removal
+                .outcome
+                .as_deref()
+                .and_then(|outcome| outcome.strip_prefix(FAILED))
+                == Some(failure.as_str())
+        })
+    })
+}
+
+/// The note a removal line gives a Survey collected `unreadable`.
+fn unreadable_note(removal: &Removal) -> String {
+    removal
+        .unreadable
+        .as_deref()
+        .map(|why| format!(": collected (unreadable), {why}"))
+        .unwrap_or_default()
+}
+
+/// The line that says the plan left a file or a Survey, and why: `held survey …` while a lock
+/// holds it, `left survey …, <reason>` otherwise; a name that is not UTF-8 is shown lossily.
+fn left_line(left: &Left) -> String {
+    let what = format!(
+        "{} {} ({})",
+        left.kind.as_str(),
+        left.raw.display(),
+        human_bytes(left.bytes)
+    );
+    if left.reason == "held" {
+        format!("held {what}: {}", left.detail)
+    } else {
+        format!(
+            "left {what}, {}: {}",
+            left.reason.replace('_', " "),
+            left.detail
+        )
+    }
 }
 
 /// The kinds and totals of an inventory, by kind, for a caller that only needs bytes.

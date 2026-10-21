@@ -947,7 +947,8 @@ pub(crate) fn gc(json: bool, apply: bool) -> Result<i32, String> {
         total_before: report.telemetry.total_before,
         total_after: report.telemetry.total_after,
         storage_total_before: report.total_before,
-        storage_total_after: report.total_after,
+        // A telemetry eviction never stops part way, so a telemetry-only sweep's total is known.
+        storage_total_after: report.total_after.unwrap_or(report.total_before),
         stop: if report.stop == storage::Stop::NothingEvictable
             || report.telemetry.stop == storage::Stop::NothingEvictable
             || over_telemetry
@@ -957,11 +958,22 @@ pub(crate) fn gc(json: bool, apply: bool) -> Result<i32, String> {
             "fits".into()
         },
         entries: to_values(&entries)?,
+        // As `af/telemetry-gc@1` carries a removal: a planned eviction that failed is one of
+        // `failures`, and the running total `af/storage-prune@4` adds is not part of it.
         removals: report
             .removals
             .iter()
-            .map(|removal| serde_json::to_value(removal).map_err(|error| error.to_string()))
-            .collect::<Result<_, _>>()?,
+            .filter(|removal| removal.outcome.is_none())
+            .map(|removal| {
+                let mut value = serde_json::to_value(removal).map_err(|error| error.to_string())?;
+                if let Some(fields) = value.as_object_mut() {
+                    for added in ["total_after", "unreadable", "outcome"] {
+                        fields.remove(added);
+                    }
+                }
+                Ok(value)
+            })
+            .collect::<Result<_, String>>()?,
         reclaimed: report
             .telemetry
             .reclaimed

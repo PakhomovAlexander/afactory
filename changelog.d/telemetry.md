@@ -38,8 +38,9 @@
   guidance, once the followed Store's pending records are printed, a second Store that starts
   the same run id while it is followed, even in a segment sealed during its startup or between
   two of its looks.
-  Telemetry is the kind `telemetry` of the Storage Budget (`af/storage@2`,
-  `af/storage-prune@2`): every registered directory counted once, one entry per segment by what
+  Telemetry is the kind `telemetry` of the Storage Budget (`af/storage@4`,
+  `af/storage-prune@4`, the Project Store, Survey and claim kinds' `@3` documents extended, both
+  planned by the one sweep plan): every registered directory counted once, one entry per segment by what
   its eviction frees, a sealed one last used at its seal time, evicted under ADR-0144's rules
   past `[telemetry] max_bytes` or the whole budget, every file of an entry, its manifest
   included, checked again before either is unlinked and the whole entry left in place, reported

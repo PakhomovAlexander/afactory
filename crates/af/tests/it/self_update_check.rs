@@ -152,7 +152,7 @@ fn storage_document(output: &Output) -> serde_json::Value {
     assert!(output.status.success(), "{}", err(output));
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {}", out(output)));
-    assert_eq!(document["schema"], "af/storage@2");
+    assert_eq!(document["schema"], "af/storage@4");
     document
 }
 
@@ -463,7 +463,7 @@ fn a_cached_notice_reaches_a_terminal_but_never_a_json_run() {
     assert!(!stdout.contains("is available"), "{stdout}");
     let document: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {stdout}"));
-    assert_eq!(document["schema"], "af/storage@2");
+    assert_eq!(document["schema"], "af/storage@4");
 
     assert_eq!(scheduled(&sandbox), 0, "a fresh cache is not refreshed");
 }

@@ -1313,7 +1313,7 @@ fn telemetry_dirs_registry_reaches_every_directory() {
     );
     let off = [("AF_TELEMETRY__LEVEL", "off")];
     let shown = json(&machine.af(&repo, &off, &["storage", "--json"]));
-    crate::schemas::valid(&crate::schemas::validator("storage-v2.json"), &shown);
+    crate::schemas::valid(&crate::schemas::validator("storage-v4.json"), &shown);
     let entries = telemetry_entries(&shown);
     for directory in [&a, &b] {
         assert!(
@@ -1333,7 +1333,7 @@ fn telemetry_dirs_registry_reaches_every_directory() {
         &[off[0], ("AF_STORAGE__KEEP_DAYS", "14")],
         &["storage", "prune", "--apply", "--json"],
     ));
-    crate::schemas::valid(&crate::schemas::validator("storage-prune-v2.json"), &pruned);
+    crate::schemas::valid(&crate::schemas::validator("storage-prune-v4.json"), &pruned);
     for directory in [&a, &b] {
         assert!(
             pruned["removals"]
@@ -1458,7 +1458,7 @@ fn telemetry_eviction_refuses_a_replaced_segment() {
         ".jsonl.gz",
         b"not the segment the prune inventoried\n",
     );
-    crate::schemas::valid(&crate::schemas::validator("storage-prune-v2.json"), &pruned);
+    crate::schemas::valid(&crate::schemas::validator("storage-prune-v4.json"), &pruned);
     let [changed] = pruned["telemetry"]["changed"]
         .as_array()
         .unwrap()
@@ -1544,7 +1544,7 @@ fn telemetry_eviction_refuses_a_replaced_manifest() {
         ".refs",
         b"not the manifest the prune inventoried\n",
     );
-    crate::schemas::valid(&crate::schemas::validator("storage-prune-v2.json"), &pruned);
+    crate::schemas::valid(&crate::schemas::validator("storage-prune-v4.json"), &pruned);
     let [changed] = pruned["telemetry"]["changed"]
         .as_array()
         .unwrap()

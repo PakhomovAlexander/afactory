@@ -453,7 +453,7 @@ fn telemetry_status_reports_unknown_overlap_when_the_registry_is_unreadable() {
     }
     let stores = machine.root.join("state/af/stores.toml");
     let store = format!(
-        "version = 1\n\n[[store]]\npath = \"{}\"\nkind = \"task\"\nfirst_use_unix_ms = 1\n\
+        "version = 2\n\n[[store]]\npath = \"{}\"\nkind = \"task\"\nfirst_use_unix_ms = 1\n\
          last_use_unix_ms = 1\n",
         machine.root.join("stores/task-a").display()
     );
@@ -493,7 +493,7 @@ fn telemetry_status_reports_unknown_overlap_when_the_registry_is_unreadable() {
     // Unreadable (not TOML) and unsupported (another version): unknown, never `none`.
     for contents in [
         "this is not toml [[[".to_string(),
-        store.replace("version = 1", "version = 9"),
+        store.replace("version = 2", "version = 9"),
     ] {
         std::fs::write(&stores, &contents).unwrap();
         let output = machine.af(&[], &["telemetry", "status", "--json"]);

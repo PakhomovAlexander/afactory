@@ -35,6 +35,7 @@ fn port(kind: &str, affinity: PortAffinityV1) -> PipelinePortV1 {
         optional: false,
         affinity,
         root_default: None,
+        brief: None,
         covers: BTreeSet::new(),
     }
 }
@@ -91,7 +92,7 @@ fn pipeline(implement: &OperatorSignature, evaluate: &OperatorSignature) -> Pipe
     );
     verification.covers.insert("verified".into());
     PipelineDefinitionV1 {
-        schema: PipelineSchemaV1::V1,
+        schema: PipelineSchema::V1,
         name: "fixture/implementation".into(),
         version: "1.0.0".into(),
         contract: PipelineContractV1 {

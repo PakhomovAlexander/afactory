@@ -67,7 +67,7 @@ pub(super) fn definition(
     attempts: u32,
 ) -> PipelineDefinitionV1 {
     PipelineDefinitionV1 {
-        schema: PipelineSchemaV1::V1,
+        schema: PipelineSchema::V1,
         name: format!("builtin/{name}"),
         version: "1.0.0".into(),
         contract: PipelineContractV1 {

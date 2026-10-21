@@ -1234,12 +1234,17 @@ fn a_task_with_gate_leftovers_is_collected_only_after_its_cleanup_is_done() {
     ];
     std::thread::sleep(std::time::Duration::from_millis(20));
     let pruned = fixture.prune(&eager);
+    // Planned, it keeps its place in the applied document only as failed, freeing nothing.
     assert!(
         pruned["removals"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|removal| removal["task_id"] != TASK),
+            .filter(|removal| removal["task_id"] == TASK)
+            .all(|removal| removal["bytes"] == 0
+                && removal["outcome"]
+                    .as_str()
+                    .is_some_and(|outcome| outcome.starts_with("failed: "))),
         "{pruned}"
     );
     assert!(

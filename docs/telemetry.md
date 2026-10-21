@@ -639,7 +639,7 @@ document
 ## Telemetry in the Storage Budget
 
 Every byte beneath every registered telemetry directory is counted once in `af storage` as the
-kind `telemetry` (`af/storage@2`, [`schemas/storage-v2.json`](../schemas/storage-v2.json)),
+kind `telemetry` (`af/storage@4`, [`schemas/storage-v4.json`](../schemas/storage-v4.json)),
 whatever the current level or `dir`, Telemetry `off` included:
 
 - one entry per sealed or corrupt segment, whose bytes are its **marginal** bytes — what its
@@ -670,7 +670,7 @@ unlinked; a file that took either name restores what was staged wherever its nam
 entry any file of which changed —
 replaced, locked, used — is left in place whole and reported with what changed, never as
 removed
-(`telemetry.changed` in `af/storage-prune@2`, `changed` in `af/telemetry-gc@1`). Before it measures or collects anything an applied sweep recovers every
+(`telemetry.changed` in `af/storage-prune@4`, `changed` in `af/telemetry-gc@1`). Before it measures or collects anything an applied sweep recovers every
 unsealed segment whose lock it can take, and reads the flushed prefix of every one it cannot for
 the blobs it references, whether or not Telemetry is on. Every applied sweep then removes
 temporary files under `segments/` and `blobs/` older than an hour, and the stale staging beside a
@@ -679,7 +679,7 @@ temporary files under `segments/` and `blobs/` older than an hour, and the stale
 references; then it drops the evicted segments' rows from the index and, when its free pages
 exceed 16 MiB and a quarter of the file, runs `VACUUM` — deleting the index under `index.lock`
 when there is no room to vacuum (the next reader rebuilds it), deferring without the lock. What
-it reclaims is measured as allocated bytes (`telemetry.reclaimed` in `af/storage-prune@2`). It
+it reclaims is measured as allocated bytes (`telemetry.reclaimed` in `af/storage-prune@4`). It
 reads only structural metadata: file sizes and times, lock state, manifests, a sealed segment's
 header and seal records and the `blob_ref` records of a live or unsealed segment's valid prefix,
 read by a structural scanner that checks each line's framing, record type and sequence and
