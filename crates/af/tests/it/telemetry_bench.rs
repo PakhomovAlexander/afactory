@@ -300,6 +300,89 @@ fn telemetry_overhead_copy_is_writable_from_a_read_only_source() {
     });
 }
 
+/// A fixture repository runs no background git work: `prepare` writes `gc.auto=0`,
+/// `maintenance.auto=false` and `gc.autoDetach=false` into the pristine repository's own config,
+/// a run's copy made by `copy_writable` carries them too, and no `*.lock` (a detached `git
+/// maintenance run --auto` holds `objects/maintenance.lock`) remains under either `.git`.
+#[test]
+fn telemetry_overhead_prepare_runs_no_background_git() {
+    fn locks(path: &Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(path).unwrap().flatten() {
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                locks(&path, found);
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "lock")
+            {
+                found.push(path);
+            }
+        }
+    }
+    let machine = Machine::new();
+    let work = machine.root.join("work/prepared");
+    let program = "import importlib.util, pathlib, sys\n\
+         spec = importlib.util.spec_from_file_location('overhead', sys.argv[1])\n\
+         overhead = importlib.util.module_from_spec(spec)\n\
+         spec.loader.exec_module(overhead)\n\
+         work = pathlib.Path(sys.argv[2])\n\
+         pristine = overhead.prepare('telemetry-bench-dense', 'smoke', work)\n\
+         overhead.copy_writable(pristine, work / 'run' / 'repo')\n";
+    let output = Command::new("python3")
+        .arg("-I")
+        .arg("-c")
+        .arg(program)
+        .arg(workspace().join("scripts/telemetry-overhead.py"))
+        .arg(&work)
+        .current_dir(&machine.root)
+        .env("HOME", machine.root.join("home"))
+        .env("XDG_CONFIG_HOME", machine.root.join("config"))
+        .env("XDG_STATE_HOME", machine.root.join("state"))
+        .env("XDG_DATA_HOME", machine.root.join("data"))
+        .env("XDG_CACHE_HOME", machine.root.join("cache"))
+        .env("TMPDIR", machine.root.join("work"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", text(&output));
+    for repo in [
+        work.join("telemetry-bench-dense/pristine"),
+        work.join("run/repo"),
+    ] {
+        for (key, value) in [
+            ("gc.auto", "0"),
+            ("maintenance.auto", "false"),
+            ("gc.autoDetach", "false"),
+        ] {
+            let read = Command::new("git")
+                .args(["config", "--local", "--get", key])
+                .current_dir(&repo)
+                .env("HOME", machine.root.join("home"))
+                .env("XDG_CONFIG_HOME", machine.root.join("config"))
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_CONFIG")
+                .output()
+                .unwrap();
+            assert!(
+                read.status.success(),
+                "{}: {key}: {}",
+                repo.display(),
+                text(&read)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&read.stdout).trim(),
+                value,
+                "{}: {key}",
+                repo.display()
+            );
+        }
+        let mut found = Vec::new();
+        locks(&repo.join(".git"), &mut found);
+        assert!(found.is_empty(), "{}: {found:?}", repo.display());
+    }
+}
+
 /// Recorded wall times, `off` then `spans`, in milliseconds: 20 pairs per fixture.
 const CONCURRENT: [(f64, f64); 20] = [
     (2911.4, 2930.2),

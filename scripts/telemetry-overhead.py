@@ -99,6 +99,13 @@ GIT_IDENTITY = {
     'GIT_AUTHOR_DATE': '2026-10-21T00:00:00Z', 'GIT_COMMITTER_DATE': '2026-10-21T00:00:00Z',
     'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
 }
+# No background git work in a fixture repository: a commit otherwise starts a detached `git
+# maintenance run --auto`, which holds `.git/objects/maintenance.lock` while a copy lists the
+# repository and can run inside a measured command. Every `git` here carries these values, and
+# `prepare` writes them into the pristine repository's config, which every copy inherits.
+NO_BACKGROUND_GIT = (('gc.auto', '0'), ('maintenance.auto', 'false'),
+                     ('gc.autoDetach', 'false'))
+GIT_OPTIONS = [option for key, value in NO_BACKGROUND_GIT for option in ('-c', f'{key}={value}')]
 
 
 class BenchError(Exception):
@@ -265,11 +272,16 @@ def prepare(fixture, scale, work):
             keep_checks(pristine, SMOKE_CHECKS[fixture])
     env = {name: value for name, value in os.environ.items() if not name.startswith('GIT_')}
     env.update(GIT_IDENTITY)
-    for args in (['init', '-q', '-b', 'main'], ['add', '-A'], ['commit', '-qm', fixture]):
-        done = subprocess.run(['git', *args], cwd=pristine, env=env, capture_output=True,
-                              text=True)
+    for args in (['init', '-q', '-b', 'main'],
+                 *(['config', key, value] for key, value in NO_BACKGROUND_GIT),
+                 ['add', '-A'], ['commit', '-qm', fixture]):
+        done = subprocess.run(['git', *GIT_OPTIONS, *args], cwd=pristine, env=env,
+                              capture_output=True, text=True)
         if done.returncode != 0:
             raise BenchError(f'{fixture}: git {" ".join(args)}: {done.stderr.strip()}')
+    locks = sorted(str(path) for path in (pristine / '.git').rglob('*.lock'))
+    if locks:
+        raise BenchError(f'{fixture}: a git lock remains after the commit: {", ".join(locks)}')
     return pristine
 
 
