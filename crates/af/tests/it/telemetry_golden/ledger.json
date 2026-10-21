@@ -24,9 +24,9 @@
           "span_id": "070736a0b9e2591b",
           "ordinal": 1,
           "start_unix_ns": "1700000200003000000",
-          "end_unix_ns": "1700000200015000000",
+          "end_unix_ns": "1700000200029000000",
           "open": false,
-          "wall_us": 12000,
+          "wall_us": 26000,
           "segment": "sealed"
         }
       ]
@@ -46,8 +46,8 @@
     {
       "entry": "event",
       "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 4,
-      "time_unix_ns": "1700000200004000000",
+      "seq": 5,
+      "time_unix_ns": "1700000200005000000",
       "log": "campaign-telemetry",
       "sequence": 0,
       "name": "CampaignOpened@1",
@@ -62,8 +62,8 @@
     {
       "entry": "event",
       "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 5,
-      "time_unix_ns": "1700000200005000000",
+      "seq": 8,
+      "time_unix_ns": "1700000200008000000",
       "log": "campaign-telemetry",
       "sequence": 1,
       "name": "RoundStarted@1",
@@ -83,8 +83,8 @@
     {
       "entry": "event",
       "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 6,
-      "time_unix_ns": "1700000200006000000",
+      "seq": 13,
+      "time_unix_ns": "1700000200013000000",
       "log": "campaign-telemetry",
       "sequence": 2,
       "name": "DemandRecorded@1",
@@ -99,8 +99,8 @@
     {
       "entry": "event",
       "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 7,
-      "time_unix_ns": "1700000200007000000",
+      "seq": 14,
+      "time_unix_ns": "1700000200014000000",
       "log": "campaign-telemetry",
       "sequence": 3,
       "name": "FindingReported@1",
@@ -115,15 +115,15 @@
     {
       "entry": "demand",
       "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 8,
+      "seq": 15,
       "demand_id": "sha256:50b27998ddc3fa9d498b4c839b63f5f7ff5fbbb40b93b52525638f6921014c25",
       "status": "open"
     },
     {
       "entry": "lifecycle",
       "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 9,
-      "time_unix_ns": "1700000200008000000",
+      "seq": 16,
+      "time_unix_ns": "1700000200015000000",
       "log": "campaign-telemetry",
       "sequence": 2,
       "name": "af.demand.opened",
@@ -133,15 +133,15 @@
     {
       "entry": "finding",
       "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 10,
+      "seq": 17,
       "finding_key": "sha256:0b754e7e4920b3b0a152813097b08f90cd9be7f1d90b472f4010b0f600082092",
       "status": "open"
     },
     {
       "entry": "event",
       "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 11,
-      "time_unix_ns": "1700000200009000000",
+      "seq": 24,
+      "time_unix_ns": "1700000200022000000",
       "log": "campaign-telemetry",
       "sequence": 4,
       "name": "FindingResolved@1",
@@ -153,15 +153,15 @@
     {
       "entry": "finding",
       "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 12,
+      "seq": 25,
       "finding_key": "sha256:0b754e7e4920b3b0a152813097b08f90cd9be7f1d90b472f4010b0f600082092",
       "status": "wontfix"
     },
     {
       "entry": "lifecycle",
       "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 13,
-      "time_unix_ns": "1700000200010000000",
+      "seq": 26,
+      "time_unix_ns": "1700000200023000000",
       "log": "campaign-telemetry",
       "sequence": 4,
       "name": "af.finding.disposition",
@@ -228,7 +228,7 @@
         "walls": [
           {
             "execution_id": "1700000200000-4244-0c1d2e3f",
-            "wall_sequence": 15,
+            "wall_sequence": 29,
             "started_unix_ms": 1000,
             "elapsed_ms": 15,
             "counters": {

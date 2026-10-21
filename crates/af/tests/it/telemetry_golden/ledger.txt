@@ -17,6 +17,6 @@ Finding sha256:0b754e7e4920b3b0a152813097b08f90cd9be7f1d90b472f4010b0f600082092 
 Demand sha256:50b27998ddc3fa9d498b4c839b63f5f7ff5fbbb40b93b52525638f6921014c25 open (required) Subject sha256:077080848ec1147e5b13de979ef8596be3b9c42ce1f206ba3d186433ea549fdb
   opened at #2
 Attempt attempt-1 root.nodes.cross: charge 9 (settled at sequence 5, complete; input 9)
-  sidecar, execution 1700000200000-4244-0c1d2e3f write 15: usage charge 8; input 8
+  sidecar, execution 1700000200000-4244-0c1d2e3f write 29: usage charge 8; input 8
 Attempt attempt-2 root.nodes.cross: charge 0 (settled at sequence 7, unknown: lease_expired)
 charge 9 over 2 Attempts (+1 unknown) — retained executions 1–1
