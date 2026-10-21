@@ -79,8 +79,10 @@ pub use workspace::{
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
-use review_source_git::{Manifest, materialize};
+use review_source_git::{EntryKind, Manifest, fs_path, materialize};
 use review_store::Cas;
 
 /// What a provider genuinely enforces. Ordered: a stronger level satisfies a weaker requirement.
@@ -471,6 +473,18 @@ impl Sandbox {
         self.baseline.as_ref()
     }
 
+    /// Make this check's regular source files newer than a build left in a shared Cargo target.
+    /// Call after materialization and acquiring any warm target lock, before dispatch. A small
+    /// lead covers coarse mtimes; the stored value must be newer than lock acquisition. Changes
+    /// only in the private sandbox, never the CAS or its manifest.
+    pub fn refresh_source_mtimes(
+        &self,
+        cancellation: Option<&AtomicBool>,
+        budget: Duration,
+    ) -> std::io::Result<usize> {
+        refresh_source_mtimes(&self.root, &self.baseline, cancellation, budget)
+    }
+
     fn apply_read_only(&self) -> std::io::Result<()> {
         // Files first, then directories: a read-only directory cannot have its contents chmod'd.
         let mut level = vec![self.root.clone()];
@@ -528,6 +542,209 @@ impl Sandbox {
         let root = std::mem::take(&mut self.root);
         let baseline = std::mem::take(&mut self.baseline);
         (root, baseline, dir)
+    }
+}
+
+fn refresh_source_mtimes(
+    root: &Path,
+    manifest: &Manifest,
+    cancellation: Option<&AtomicBool>,
+    budget: Duration,
+) -> std::io::Result<usize> {
+    refresh_source_mtimes_observed(root, manifest, cancellation, budget, &mut |_| {})
+}
+
+fn refresh_source_mtimes_observed(
+    root: &Path,
+    manifest: &Manifest,
+    cancellation: Option<&AtomicBool>,
+    budget: Duration,
+    stamped: &mut dyn FnMut(&Path),
+) -> std::io::Result<usize> {
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::Mode as FileMode;
+    use std::fs::{File, FileTimes};
+    use std::time::SystemTime;
+
+    let started = Instant::now();
+    let after = SystemTime::now();
+    let modified = after
+        .checked_add(Duration::from_secs(2))
+        .ok_or_else(|| std::io::Error::other("source freshness time overflow"))?;
+    let times = FileTimes::new().set_modified(modified);
+    check_refresh_budget(cancellation, started, budget)?;
+    let root = open(
+        root,
+        OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW,
+        FileMode::empty(),
+    )?;
+    let mut touched = 0;
+    for entry in &manifest.entries {
+        check_refresh_budget(cancellation, started, budget)?;
+        if !matches!(entry.kind, EntryKind::File | EntryKind::Executable) {
+            continue;
+        }
+        // Anchor traversal in the private root and refuse replacements of any component,
+        // not just a final symlink. Keep the opened file bound while changing its metadata.
+        let path = fs_path(&entry.path);
+        let parent = open_beneath(&root, path.parent().unwrap_or_else(|| Path::new("")))?;
+        let file = File::from(openat(
+            &parent,
+            path.file_name()
+                .ok_or_else(|| std::io::Error::other("source has no filename"))?,
+            OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK,
+            FileMode::empty(),
+        )?);
+        if !file.metadata()?.is_file() {
+            return Err(std::io::Error::other(
+                "materialized source is not a regular file",
+            ));
+        }
+        check_refresh_budget(cancellation, started, budget)?;
+        file.set_times(times)?;
+        if file.metadata()?.modified()? <= after {
+            return Err(std::io::Error::other(
+                "filesystem did not store a source mtime newer than warm preparation",
+            ));
+        }
+        stamped(&path);
+        touched += 1;
+    }
+    check_refresh_budget(cancellation, started, budget)?;
+    Ok(touched)
+}
+
+fn check_refresh_budget(
+    cancellation: Option<&AtomicBool>,
+    started: Instant,
+    budget: Duration,
+) -> std::io::Result<()> {
+    if cancellation.is_some_and(|cancelled| cancelled.load(Ordering::Acquire)) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "source freshness refresh cancelled",
+        ));
+    }
+    if started.elapsed() >= budget {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "source freshness refresh exceeded check deadline",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod source_mtime_tests {
+    use super::*;
+    use review_source_git::Entry;
+
+    #[test]
+    fn refreshing_replaced_source_components_refuses_symlinks_without_touching_their_targets() {
+        for path in ["source.rs", "nested/source.rs"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("tree");
+            let outside = temporary.path().join("outside");
+            std::fs::create_dir(&root).unwrap();
+            std::fs::create_dir(&outside).unwrap();
+            let target = outside.join("source.rs");
+            std::fs::write(&target, b"untouched").unwrap();
+            let before = std::fs::metadata(&target).unwrap().modified().unwrap();
+            if path.contains('/') {
+                std::os::unix::fs::symlink(&outside, root.join("nested")).unwrap();
+            } else {
+                std::os::unix::fs::symlink(&target, root.join(path)).unwrap();
+            }
+            let manifest = Manifest::new(vec![Entry {
+                path: path.into(),
+                kind: EntryKind::File,
+                content: review_source_git::digest_bytes(b"source"),
+                size: 6,
+            }])
+            .unwrap();
+
+            assert!(refresh_source_mtimes(&root, &manifest, None, Duration::from_secs(1)).is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+            assert_eq!(
+                std::fs::metadata(target).unwrap().modified().unwrap(),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn cancellation_inside_a_flat_manifest_stops_before_the_next_stamp_and_after_the_last() {
+        for cancel_after in [1, 3] {
+            let temporary = tempfile::tempdir().unwrap();
+            let old = std::time::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+            let entries = (0..3)
+                .map(|index| {
+                    let path = format!("source-{index}.rs");
+                    let file = std::fs::File::create(temporary.path().join(&path)).unwrap();
+                    file.set_times(std::fs::FileTimes::new().set_modified(old))
+                        .unwrap();
+                    Entry {
+                        path,
+                        kind: EntryKind::File,
+                        content: review_source_git::digest_bytes(b""),
+                        size: 0,
+                    }
+                })
+                .collect();
+            let manifest = Manifest::new(entries).unwrap();
+            let cancelled = AtomicBool::new(false);
+            let mut count = 0;
+            let error = refresh_source_mtimes_observed(
+                temporary.path(),
+                &manifest,
+                Some(&cancelled),
+                Duration::from_secs(60),
+                &mut |_| {
+                    count += 1;
+                    if count == cancel_after {
+                        cancelled.store(true, Ordering::Release);
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+            assert_eq!(count, cancel_after);
+            for (index, entry) in manifest.entries.iter().enumerate() {
+                let modified = std::fs::metadata(temporary.path().join(&entry.path))
+                    .unwrap()
+                    .modified()
+                    .unwrap();
+                assert_eq!(modified == old, index >= cancel_after);
+            }
+        }
+    }
+
+    #[test]
+    fn refresh_refuses_cancellation_and_expired_budget_before_touching_a_file() {
+        let temporary = tempfile::tempdir().unwrap();
+        let file = temporary.path().join("source.rs");
+        std::fs::write(&file, b"source").unwrap();
+        let before = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let manifest = Manifest::new(vec![Entry {
+            path: "source.rs".into(),
+            kind: EntryKind::File,
+            content: review_source_git::digest_bytes(b"source"),
+            size: 6,
+        }])
+        .unwrap();
+        let cancelled = AtomicBool::new(true);
+        let error = refresh_source_mtimes(
+            temporary.path(),
+            &manifest,
+            Some(&cancelled),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        let error =
+            refresh_source_mtimes(temporary.path(), &manifest, None, Duration::ZERO).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(std::fs::metadata(file).unwrap().modified().unwrap(), before);
     }
 }
 
