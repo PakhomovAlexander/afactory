@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
-const AF: &str = env!("CARGO_BIN_EXE_af");
 const ROWS: usize = 30;
 const COLS: usize = 100;
 /// The bar's columns before its `|` separator.
@@ -314,7 +313,7 @@ impl Browser {
             pixel_height: 0,
         };
         let pair = native_pty_system().openpty(size).unwrap();
-        let mut command = CommandBuilder::new(AF);
+        let mut command = CommandBuilder::new(crate::common::af_binary());
         command.env_clear();
         command.cwd(cwd);
         for (name, value) in environment(home) {
@@ -349,19 +348,38 @@ impl Browser {
 
     /// The screen once `ready` holds for it; a timeout shows the last screen.
     fn wait_for(&mut self, what: &str, ready: impl Fn(&Screen) -> bool) -> Screen {
+        self.wait_written(0, what, |screen, _| ready(screen))
+    }
+
+    /// The screen once `ready` holds for it and for what the browser wrote from the byte offset
+    /// `from` on; a timeout shows the last screen.
+    fn wait_written(
+        &mut self,
+        from: usize,
+        what: &str,
+        ready: impl Fn(&Screen, &[u8]) -> bool,
+    ) -> Screen {
         let deadline = Instant::now() + Duration::from_secs(300);
         loop {
             while let Ok(chunk) = self.output.try_recv() {
                 self.bytes.extend(chunk);
             }
             let screen = Screen::parse(&self.bytes, self.rows, self.columns);
-            if ready(&screen) {
+            if ready(&screen, &self.bytes[from..]) {
                 return screen;
             }
             let shown = screen.text();
             assert!(Instant::now() < deadline, "no {what} on:\n{shown}");
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Everything the browser has written so far; the offset where what it writes next begins.
+    fn drained(&mut self) -> usize {
+        while let Ok(chunk) = self.output.try_recv() {
+            self.bytes.extend(chunk);
+        }
+        self.bytes.len()
     }
 
     /// Type keys; each batch gets its own read by the browser.
@@ -934,13 +952,24 @@ fn exit_line(line: &str, ended: &str) -> String {
 }
 
 /// Type `:LINE` in the browser and wait for the released screen's exit line; return the screen
-/// and the row the exit line is on.
+/// and the row the exit line is on. A repeated command's earlier exit lines stay on the main
+/// screen, so only the line written after these keys counts: an Enter sent on a stale line
+/// would reach the terminal while the command still runs, and be flushed with its keys.
 fn hand_off(browser: &mut Browser, line: &str, ended: &str) -> (Screen, usize) {
+    let from = browser.drained();
     browser.keys(format!(":{line}\r").as_bytes());
     let shown = exit_line(line, ended);
-    let ended = |screen: &Screen| screen.lines().contains(&shown);
-    let screen = browser.wait_for("the exit line", ended);
-    let at = screen.lines().iter().position(|row| *row == shown).unwrap();
+    let fresh = |screen: &Screen, written: &[u8]| {
+        let needle = shown.as_bytes();
+        screen.lines().contains(&shown)
+            && written.windows(needle.len()).any(|window| window == needle)
+    };
+    let screen = browser.wait_written(from, "this hand-off's own exit line", fresh);
+    let at = screen
+        .lines()
+        .iter()
+        .rposition(|row| *row == shown)
+        .unwrap();
     (screen, at)
 }
 

@@ -135,6 +135,27 @@ fn version_is_a_line_or_a_document() {
 }
 
 #[test]
+fn a_shipped_build_refuses_the_calibration_loop_control() {
+    // Only a laboratory calibration build has the loop (ADR-0181); every other build refuses
+    // its control, whatever its value, before doing anything, and never measures without it.
+    for value in ["0", "1000", "not-a-count"] {
+        let refused = crate::common::af()
+            .arg("--version")
+            .env("AF_SELF_OFFLINE", "1")
+            .env("AF_PERF_CALIBRATION_ITERATIONS", value)
+            .output()
+            .unwrap();
+        assert_eq!(refused.status.code(), Some(2), "{value}: {}", err(&refused));
+        assert!(out(&refused).is_empty(), "{value}: {}", out(&refused));
+        assert!(
+            err(&refused).contains("AF_PERF_CALIBRATION_ITERATIONS is set, but this build has no perf-calibration feature"),
+            "{value}: {}",
+            err(&refused)
+        );
+    }
+}
+
+#[test]
 fn completion_scripts_delegate_to_the_binary() {
     for shell in ["bash", "zsh", "fish", "elvish", "powershell"] {
         let script = af(&["completions", shell]);

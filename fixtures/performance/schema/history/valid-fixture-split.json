@@ -1,0 +1,137 @@
+{
+  "schema": "af.perf-history/1",
+  "comparison": "trend_across_runs",
+  "runs": [
+    {
+      "run_id": "fixture_run",
+      "plan_digest": "sha256:4efb6064cb01da8d3736f9b9707920fbd454d8aac168e0016a5236b5e4900c64",
+      "input": "input 1",
+      "source": "run_dir",
+      "scope": "partial_scope",
+      "tier": "quick",
+      "trigger": "manual",
+      "provenance": "synthetic",
+      "result": "pass",
+      "satisfies_required_check": false,
+      "baseline_sha": "996c656ae4f1e7102aa6737f319071b695cfeb7c",
+      "candidate_sha": "ee1d102f56c84e336281cc85eec6d5effa771720",
+      "started_unix_ms": 1759999940000,
+      "report": "runs/fixture_run/report.html",
+      "retention": null,
+      "views": []
+    },
+    {
+      "run_id": "fixture_run_b",
+      "plan_digest": "sha256:ed3372014753abecaa6f363b499c3dd4e029b7b62d01dd515f2c919f4023652e",
+      "input": "input 2",
+      "source": "run_dir",
+      "scope": "partial_scope",
+      "tier": "quick",
+      "trigger": "manual",
+      "provenance": "synthetic",
+      "result": "pass",
+      "satisfies_required_check": false,
+      "baseline_sha": "996c656ae4f1e7102aa6737f319071b695cfeb7c",
+      "candidate_sha": "ee1d102f56c84e336281cc85eec6d5effa771720",
+      "started_unix_ms": 1759999940000,
+      "report": "runs/fixture_run_b/report.html",
+      "retention": null,
+      "views": []
+    }
+  ],
+  "groups": [
+    {
+      "group_id": "sha256:21d4a292f95c5c964d834a3e0309bc2d81b15309c975d4577ae6348c469f283f",
+      "identity": {
+        "case_id": "synthetic_fast",
+        "instance_id": "synthetic_fast",
+        "parameters": {},
+        "workload": "sha256:7d1a86344254f2e2b326471298ed1d9d57d2a00e98bbc36b5f9c410ab63f10d3",
+        "fixture": "sha256:e2ebf8044a839719c47876d4b3697901c3d14f0f814d8d7097112bf18b568310",
+        "policy": "sha256:b0fed9b5352b9fe20a9758330bef788c78c5bb694011e5bbf23fc25b8a81f402",
+        "recipe": "linux_gnu_native_release sha256:1b809cf6a48945727f1d46cd603fb12b4fe92e2b5c8d711d554b2e26c9b8d5bc",
+        "environment": "linux_x86_64_gnu_hosted sha256:c07dfc1ced04ccc0833dc16a5e8e76ca927dce8ba92448dbb2ff48d9b28b88b1",
+        "provenance": "synthetic"
+      },
+      "points": [
+        {
+          "run_id": "fixture_run_b",
+          "started_unix_ms": 1759999940000,
+          "status": "within_tolerance",
+          "outcome": "pass",
+          "classification": "within_tolerance",
+          "interval": {
+            "lower": "0",
+            "upper": "0"
+          },
+          "baseline_median": "11",
+          "candidate_median": "11",
+          "change": "0",
+          "missing_records": 0,
+          "failures": {
+            "baseline": 0,
+            "candidate": 0
+          },
+          "baseline_sha": "996c656ae4f1e7102aa6737f319071b695cfeb7c",
+          "candidate_sha": "ee1d102f56c84e336281cc85eec6d5effa771720",
+          "seeds": []
+        }
+      ],
+      "related": [
+        {
+          "group_id": "sha256:a00b8991ddc846417d6e526205f85edf55e9a0a8d8631d504cca712ba819734f",
+          "differs": [
+            "fixture"
+          ]
+        }
+      ]
+    },
+    {
+      "group_id": "sha256:a00b8991ddc846417d6e526205f85edf55e9a0a8d8631d504cca712ba819734f",
+      "identity": {
+        "case_id": "synthetic_fast",
+        "instance_id": "synthetic_fast",
+        "parameters": {},
+        "workload": "sha256:7d1a86344254f2e2b326471298ed1d9d57d2a00e98bbc36b5f9c410ab63f10d3",
+        "fixture": "sha256:3520fe82656f3b3c4a64d816647f7bd07d89a4f075e1576d223e74a3a9004cf6",
+        "policy": "sha256:b0fed9b5352b9fe20a9758330bef788c78c5bb694011e5bbf23fc25b8a81f402",
+        "recipe": "linux_gnu_native_release sha256:1b809cf6a48945727f1d46cd603fb12b4fe92e2b5c8d711d554b2e26c9b8d5bc",
+        "environment": "linux_x86_64_gnu_hosted sha256:c07dfc1ced04ccc0833dc16a5e8e76ca927dce8ba92448dbb2ff48d9b28b88b1",
+        "provenance": "synthetic"
+      },
+      "points": [
+        {
+          "run_id": "fixture_run",
+          "started_unix_ms": 1759999940000,
+          "status": "within_tolerance",
+          "outcome": "pass",
+          "classification": "within_tolerance",
+          "interval": {
+            "lower": "0",
+            "upper": "0"
+          },
+          "baseline_median": "21/2",
+          "candidate_median": "21/2",
+          "change": "0",
+          "missing_records": 0,
+          "failures": {
+            "baseline": 0,
+            "candidate": 0
+          },
+          "baseline_sha": "996c656ae4f1e7102aa6737f319071b695cfeb7c",
+          "candidate_sha": "ee1d102f56c84e336281cc85eec6d5effa771720",
+          "seeds": []
+        }
+      ],
+      "related": [
+        {
+          "group_id": "sha256:21d4a292f95c5c964d834a3e0309bc2d81b15309c975d4577ae6348c469f283f",
+          "differs": [
+            "fixture"
+          ]
+        }
+      ]
+    }
+  ],
+  "unavailable": []
+}

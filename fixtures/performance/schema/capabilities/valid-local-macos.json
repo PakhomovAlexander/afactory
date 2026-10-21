@@ -1,0 +1,83 @@
+{
+  "environments": {
+    "linux_x86_64_gnu_hosted": {
+      "reasons": [
+        "declares linux, this host is macos",
+        "declares x86_64, this host is aarch64",
+        "no verified disk-bounded scratch: no dedicated disk-bounded scratch filesystem is configured; tmpfs, the container root layer and an unbounded bind mount do not satisfy the per-sample scratch contract",
+        "registry: p3a/p3b: native PID-1 supervisor, container capability probe and host fingerprint."
+      ],
+      "status": "unavailable"
+    },
+    "linux_x86_64_musl_hosted": {
+      "reasons": [
+        "declares linux, this host is macos",
+        "declares x86_64, this host is aarch64",
+        "no verified disk-bounded scratch: no dedicated disk-bounded scratch filesystem is configured; tmpfs, the container root layer and an unbounded bind mount do not satisfy the per-sample scratch contract",
+        "registry: p3a/p3b: native PID-1 supervisor, container capability probe and host fingerprint."
+      ],
+      "status": "unavailable"
+    },
+    "macos_arm64_local": {
+      "reasons": [
+        "registry: p3b: trusted local process-group execution and host fingerprint."
+      ],
+      "status": "unavailable"
+    }
+  },
+  "host": {
+    "arch": "aarch64",
+    "kernel": "27.0.0",
+    "platform": "macos",
+    "python": "3.11.0"
+  },
+  "linux_container": {
+    "capability": {
+      "reasons": [
+        "no verified disk-bounded scratch: no dedicated disk-bounded scratch filesystem is configured; tmpfs, the container root layer and an unbounded bind mount do not satisfy the per-sample scratch contract"
+      ],
+      "status": "unavailable"
+    },
+    "scratch": {
+      "backend": "none",
+      "capability": {
+        "reasons": [
+          "no dedicated disk-bounded scratch filesystem is configured; tmpfs, the container root layer and an unbounded bind mount do not satisfy the per-sample scratch contract"
+        ],
+        "status": "unavailable"
+      },
+      "capacity_bytes": null,
+      "enforcement": "not_verified",
+      "filesystem": null,
+      "fill": null,
+      "path": null
+    }
+  },
+  "schema": "af.perf-capabilities/2",
+  "tools": {
+    "docker_client": {
+      "identity": "27.4.0",
+      "unavailable": null
+    },
+    "docker_server": {
+      "identity": "linux aarch64 cgroup2 27.4.0",
+      "unavailable": null
+    },
+    "git": {
+      "identity": "git version 2.54.0 (Apple Git-157)",
+      "unavailable": null
+    },
+    "rustc": {
+      "identity": "rustc 1.88.0 (6b00bc388 2025-06-23)",
+      "unavailable": null
+    }
+  },
+  "trusted_local": {
+    "capability": {
+      "reasons": [],
+      "status": "available"
+    },
+    "same_user_isolation": "not_provided",
+    "scope": "discovery_and_nonspawning_library_cases"
+  }
+}

@@ -193,6 +193,7 @@ impl Cas {
     /// Store content bytes, returning their content digest. Idempotent: storing the same bytes twice is one
     /// object and one digest.
     pub fn put(&self, bytes: &[u8]) -> Result<String, CasError> {
+        let _span = review_core::perf_trace::span(review_core::perf_trace::Phase::CasPut);
         let digest = canonical::blob_content_id(bytes);
         let final_path = self.path_for(&digest);
         if final_path.exists() {
@@ -512,6 +513,7 @@ impl Cas {
 
     /// Verify and read one object only when its authoritative stored length fits `max_bytes`.
     pub fn get_bounded(&self, digest: &str, max_bytes: u64) -> Result<Vec<u8>, CasError> {
+        let _span = review_core::perf_trace::span(review_core::perf_trace::Phase::CasGet);
         let bytes = self.read_bounded_bytes(digest, max_bytes)?;
         // Verify on read: a CAS that trusts its own filenames cannot detect corruption at all.
         verify_object_bytes(digest, &bytes)?;
@@ -522,6 +524,7 @@ impl Cas {
     /// canonical stored bytes and the requested artifact ID are checked on every call.
     /// Returning the decoded envelope avoids repeating this work at the caller boundary.
     pub fn get_artifact(&self, digest: &str) -> Result<review_core::ArtifactEnvelope, CasError> {
+        let _span = review_core::perf_trace::span(review_core::perf_trace::Phase::CasGetArtifact);
         let bytes = self.read_bounded_bytes(digest, MAX_ARTIFACT_ENVELOPE_BYTES)?;
         decode_artifact_bytes(digest, &bytes)
     }

@@ -1155,6 +1155,10 @@ fn help_command(words: &[String]) -> Result<i32, String> {
 
 fn main() {
     use clap::{CommandFactory as _, Parser as _};
+    use review_core::perf_trace::{self, Phase};
+    // Inert outside a `perf-trace` diagnostic build (ADR-0174): startup composition, then the
+    // dispatched command, exported when the command returns through here.
+    let startup = perf_trace::span(Phase::CliStartup);
     let argv: Vec<String> = match std::env::args_os()
         .map(|argument| argument.into_string())
         .collect()
@@ -1168,6 +1172,17 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // The calibration loop of a laboratory slowdown trial runs inside this process, before
+    // anything else (ADR-0181); a build without `perf-calibration` refuses its control.
+    if let Err(error) = review_core::perf_calibration::configure_from_env() {
+        eprintln!("af: {error}");
+        std::process::exit(2);
+    }
+    if review_core::perf_calibration::inject().is_some()
+        && let Some(line) = review_core::perf_calibration::report_line()
+    {
+        eprintln!("{line}");
+    }
     if let Some(code) = providers::auth_handoff::supervise_early(&argv) {
         std::process::exit(code);
     }
@@ -1191,12 +1206,22 @@ fn main() {
         return;
     }
     selfmgmt::maybe_dispatch(&argv);
-    let parsed = cli::Af::parse_from(&argv);
+    // `parse_from`, with the trace exported before help, usage and errors exit.
+    let parsed = match cli::Af::try_parse_from(&argv) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            drop(startup);
+            perf_trace::finish();
+            error.exit()
+        }
+    };
     if parsed.version {
         if let Err(error) = selfmgmt::print_version(parsed.json) {
             eprintln!("af: {}", terminal_lines(&error.to_string()));
             std::process::exit(1);
         }
+        drop(startup);
+        perf_trace::finish();
         return;
     }
     let Some(command) = parsed.command else {
@@ -1252,6 +1277,8 @@ fn main() {
         cli::Command::Onboard(args) if args.apply => Some((args.repo.clone(), args.json)),
         _ => None,
     };
+    drop(startup);
+    let dispatched = perf_trace::span(Phase::CliCommand);
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
         cli::Command::Review(namespace) => ("af review", review_command(namespace)),
         cli::Command::Provider { command } => ("af provider", provider_command(command)),
@@ -1459,6 +1486,8 @@ fn main() {
         // before the process ends, so a stale directory never outlives two Task-running commands.
         let _ = sweep.join();
     }
+    drop(dispatched);
+    perf_trace::finish();
     selfmgmt::after_command(&argv);
     if code != 0 {
         std::process::exit(code);

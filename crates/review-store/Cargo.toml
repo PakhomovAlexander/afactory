@@ -29,5 +29,9 @@ reflink-copy = "0.1.30"
 # directory through its descriptor (local_fs.rs).
 nix = { version = "0.31.3", default-features = false, features = ["dir", "fs", "user"] }
 
+[features]
+# Phase spans of canonicalization, CAS and projection for diagnostic builds only (ADR-0174).
+perf-trace = ["review-core/perf-trace"]
+
 [lints]
 workspace = true

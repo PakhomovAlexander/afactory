@@ -70,11 +70,29 @@ fn invoke_af(
         actual.splice(1..1, authority);
     }
     let out = command.args(actual).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     (
-        out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
+        exit_code(out.status, args, &stdout, &stderr),
+        stdout,
+        stderr,
     )
+}
+
+/// The exit code of an `af` that exited. One that ended without a code (a signal) fails here
+/// with its actual `ExitStatus`, signal and core-dump flag, never as a made-up `-1` that an
+/// assertion would report as an ordinary wrong exit code.
+fn exit_code(status: std::process::ExitStatus, args: &[&str], stdout: &str, stderr: &str) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    status.code().unwrap_or_else(|| {
+        panic!(
+            "af review {args:?} ended without an exit code: {status:?} (signal {:?}, core \
+             dumped {}, stopped {:?})\nstdout: {stdout}\nstderr: {stderr}",
+            status.signal(),
+            status.core_dumped(),
+            status.stopped_signal()
+        )
+    })
 }
 
 /// Existing Campaign lifecycle tests exercise the explicit convergence workflow.

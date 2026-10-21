@@ -13,12 +13,18 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-nix = { version = "0.31.3", default-features = false, features = ["signal", "process"] }
+nix = { version = "0.31.3", default-features = false, features = ["fs", "signal", "process", "resource", "user"] }
 
 # Observing a child's exit without reaping it is `waitid(WNOWAIT)` on Linux and a kqueue
 # `NOTE_EXIT` on the BSDs and macOS; see `wait_without_reaping`.
 [target.'cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd", target_os = "dragonfly"))'.dependencies]
-nix = { version = "0.31.3", default-features = false, features = ["signal", "process", "event"] }
+nix = { version = "0.31.3", default-features = false, features = ["fs", "signal", "process", "resource", "user", "event"] }
+
+# The authority-built `perf-supervisor` example (ADR-0166) parses its closed request with these;
+# the library itself stays dependency-neutral.
+[dev-dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 
 [lints]
 workspace = true
