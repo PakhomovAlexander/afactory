@@ -299,6 +299,25 @@ impl CodeTaskDomain {
             // measured result: the Attempt fails, exactly as the check it mirrors does not run.
             return Err(refusal);
         }
+        // Hold the warm key before refreshing, for every repetition: another holder may
+        // have built a newer artifact while preparation waited for the lock.
+        let source_refresh = sandbox.refresh_source_mtimes(
+            cancellation,
+            Duration::from_millis(deadline.saturating_sub(now_ms()?).min(remaining)),
+        );
+        super::super::control::check(cancellation)?;
+        if source_refresh
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::TimedOut)
+        {
+            if let (Some(session), Some(prepared)) = (session, prepared) {
+                session.finish(prepared.key_lock, prepared.directories, None)?;
+            }
+            return Ok(never_started(
+                "the measure Attempt's deadline ran out while source mtimes were refreshed",
+            ));
+        }
+        source_refresh.map_err(|e| format!("refresh measure source mtimes: {e}"))?;
         // What the warm layer actually gave this repetition's cargo target: the kind's
         // observation says whether the warm directory was bound, its bytes and, when the
         // repetition ran cold instead, why — a busy key, a discarded directory, an unresolved

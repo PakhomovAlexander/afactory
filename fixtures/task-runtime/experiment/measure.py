@@ -3,6 +3,9 @@
 # last stdout line. mode.txt selects a misbehaviour the kernel must record.
 import json
 import os
+import re
+import stat
+import subprocess
 import signal
 import sys
 import time
@@ -22,6 +25,28 @@ if mode == 'warm':
     os.makedirs(os.path.dirname(built), exist_ok=True)
     if not os.path.exists(built):
         open(built, 'wb').write(b'x' * 4096)
+if mode == 'cargo':
+    # ADR-0161 through the real measure operator, every repetition and A -> B -> A.
+    # Source mtimes must be newer than every product from the previous key holder.
+    target_dir = os.environ['CARGO_TARGET_DIR']
+    stamps = {os.lstat(os.path.join(parent, name)).st_mtime_ns
+              for parent, _, files in os.walk('.') for name in files
+              if stat.S_ISREG(os.lstat(os.path.join(parent, name)).st_mode)}
+    assert len(stamps) == 1, sorted(stamps)
+    stamp = stamps.pop()
+    for parent, _, files in os.walk(target_dir):
+        for name in files:
+            left = os.lstat(os.path.join(parent, name)).st_mtime_ns
+            assert stamp > left, 'a source is not newer than ' + os.path.join(parent, name)
+    expected = int(re.search(r'\{\s*(\d+)\s*\}', open('word/src/lib.rs').read()).group(1))
+    subprocess.run(['cargo', 'build', '--offline', '--locked', '--quiet'], check=True)
+    printed = subprocess.run([os.path.join(target_dir, 'debug', 'app')], check=True,
+                             capture_output=True, text=True).stdout.strip()
+    print('built', printed, 'from a source of', expected)
+    if int(printed) != expected:
+        raise SystemExit('the build linked another Snapshot: printed %s, the source says %d'
+                         % (printed, expected))
+    size = int(printed)
 target = os.path.join(os.environ['TMPDIR'], 'out.bin')
 with open(target, 'wb') as out:
     out.write(b'x' * size)

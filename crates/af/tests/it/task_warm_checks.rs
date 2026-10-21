@@ -62,6 +62,24 @@ const ODD_NAME: &str = "import os\n\
 key = os.path.dirname(os.environ['CARGO_TARGET_DIR']).encode()\n\
 open(os.path.join(key, b'\\xff\\xfe-junk'), 'wb').write(b'x' * 8192)\n";
 
+/// A check that finds every regular file of its private tree stamped
+/// with one modification time (ADR-0161). The stamp is later than its private `HOME`, which the
+/// kernel creates after the tree is materialized and before the check holds the warm key, and
+/// later than the build product the previous warm check left; it leaves its own product behind.
+const STAMPED: &str = "import os, stat\n\
+stamps = set()\n\
+paths = [os.path.join(p, n) for p, ds, fs in os.walk('.') for n in ds + fs]\n\
+entries = [os.lstat(path) for path in paths]\n\
+stamps |= {e.st_mtime_ns for e in entries if stat.S_ISREG(e.st_mode)}\n\
+assert len(stamps) == 1, sorted(stamps)\n\
+stamp = stamps.pop()\n\
+assert stamp > os.lstat(os.environ['HOME']).st_mtime_ns, 'stamped before the key was held'\n\
+target = os.environ['CARGO_TARGET_DIR']\n\
+os.makedirs(target, exist_ok=True)\n\
+product = os.path.join(target, 'built')\n\
+if os.path.exists(product):\n    assert stamp > os.lstat(product).st_mtime_ns\n\
+open(product, 'w').write('x')\n";
+
 const TOOLCHAIN: &str = "[toolchain]\nchannel = \"1.88.0\"\n";
 
 struct Fixture {
@@ -542,6 +560,60 @@ fn a_second_task_reuses_the_warm_directory_and_changes_no_snapshot_candidate_out
         first_receipt["target"]["repository_id"],
         second_receipt["target"]["repository_id"]
     );
+}
+
+#[test]
+fn a_warm_check_runs_on_sources_stamped_after_the_build_it_reuses() {
+    let fixture = fixture(code_policy(
+        STAMPED,
+        60_000,
+        false,
+        Some("build_cache = [\"cargo_target\"]"),
+    ));
+    let first = start(&fixture, "stamped-one", 0);
+    // Hold the already-warm key until the next check has probed its toolchain. A product
+    // written three seconds after that probe is newer than a premature two-second source
+    // stamp, so this catches a refresh placed before the lock wait as well as no refresh.
+    let target = warm_directories(&fixture).pop().unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(target.parent().unwrap().join("warm.lock"))
+        .unwrap();
+    fs2::FileExt::lock_exclusive(&lock).unwrap();
+    let cargo = fixture.bin.join("cargo");
+    let stub = std::fs::read_to_string(&cargo).unwrap();
+    std::fs::write(
+        &cargo,
+        format!("{stub}\ntouch \"$(dirname \"$0\")/probed\"\n"),
+    )
+    .unwrap();
+    let marker = fixture.bin.join("probed");
+    let holder = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "next check never probed its toolchain"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        std::fs::write(target.join("built"), b"x").unwrap();
+        drop(lock);
+    });
+    let second = start(&fixture, "stamped-two", 0);
+    holder.join().unwrap();
+    assert_eq!(observations(&first)[0]["bytes_available"], 0);
+    assert_eq!(
+        observations(&second)[0]["bytes_available"],
+        1,
+        "the second check reused the first one's directory"
+    );
+    let cas = cas(&fixture);
+    for outcome in [&first, &second] {
+        assert_eq!(check_receipt(&cas, outcome)["outcome"], "passed");
+    }
 }
 
 #[test]
