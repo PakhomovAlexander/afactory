@@ -435,7 +435,11 @@ impl ProjectStore {
             .map_err(|error| format!("creating {}: {error}", directory.display()))?;
         let _ = review_store::local_fs::narrow_owned_dir(&state_home.join("af"));
         let _ = review_store::local_fs::narrow_owned_dir(&directory);
+        // Never through a link: the lock is af's own file, and narrowing it must not reach
+        // anything else.
+        use std::os::unix::fs::OpenOptionsExt as _;
         let lock = review_store::local_fs::private_file_options()
+            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
             .create(true)
             .truncate(false)
             .write(true)

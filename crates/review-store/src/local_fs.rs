@@ -77,15 +77,20 @@ pub fn narrow_owned_dir(path: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-/// Narrow the open file `file` to 0600 when this process's effective user owns it and its group
-/// or others have any access, as [`narrow_owned_dir`] does for a directory. Returns whether it
-/// changed the mode.
+/// Narrow the open regular file `file` to 0600 when this process's effective user owns it and its
+/// group or others have any access, as [`narrow_owned_dir`] does for a directory. Returns whether
+/// it changed the mode; anything but a regular file is left as it is.
 pub fn narrow_owned_file(file: impl std::os::fd::AsFd) -> io::Result<bool> {
     use nix::sys::stat::{Mode, fchmod, fstat};
     let stat = fstat(file.as_fd())?;
     #[allow(clippy::unnecessary_cast)]
     let mode = stat.st_mode as u32;
-    if stat.st_uid != nix::unistd::geteuid().as_raw() || mode & 0o077 == 0 {
+    let kind =
+        nix::sys::stat::SFlag::from_bits_truncate(stat.st_mode) & nix::sys::stat::SFlag::S_IFMT;
+    if kind != nix::sys::stat::SFlag::S_IFREG
+        || stat.st_uid != nix::unistd::geteuid().as_raw()
+        || mode & 0o077 == 0
+    {
         return Ok(false);
     }
     fchmod(file.as_fd(), Mode::S_IRUSR | Mode::S_IWUSR)?;

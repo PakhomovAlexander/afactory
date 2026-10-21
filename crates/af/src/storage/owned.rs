@@ -218,8 +218,9 @@ pub(crate) fn af_bytes_and_depth(state: &Path) -> std::io::Result<(u64, u32)> {
 #[derive(Debug, Default)]
 pub(crate) struct Removed {
     pub(crate) bytes: u64,
-    /// What the Store held when its whole removal started ([`super::remove_directory`]); always
-    /// `None` here: a Store outside af's roots goes entry by entry.
+    /// What left the disk, as measured entry by entry just before each removal: the sweep's
+    /// running total takes it in place of inventory's count, so a Store that shrank or grew since
+    /// is accounted as it was removed.
     pub(crate) started: Option<u64>,
     /// What is still there: entries that are not af's, and the directory itself when it was not
     /// removed whole.
@@ -267,16 +268,26 @@ pub(crate) fn remove_with(
     let whole = marked && names.iter().all(|name| is_af_entry(&opened, name));
     let mut removed = Removed::default();
     let mut failures = Vec::new();
-    // The event log goes last, and only once everything else of af's went: while it is there
-    // the Store stays registered, and the next sweep finishes what this one could not.
-    let (log, rest): (Vec<&OsString>, Vec<&OsString>) =
-        names.iter().partition(|name| is_event_log(name));
-    for name in rest.into_iter().chain(log) {
+    // The event log goes after everything else of af's, and the owner marker last, each only
+    // once everything before it went: while the log is there the Store stays registered, and
+    // while the marker is there the next sweep still knows the Store as af's, so it finishes
+    // what this one could not.
+    let last = |name: &OsString| match name {
+        name if name == MARKER => 2,
+        name if is_event_log(name) => 1,
+        _ => 0,
+    };
+    let mut ordered: Vec<&OsString> = names.iter().collect();
+    ordered.sort_by_key(|name| last(name));
+    // af's bytes before anything goes: a removal that stops part way inside an entry still
+    // accounts what left the disk, as this less what af holds there afterwards.
+    let before = af_bytes(path).ok();
+    for name in ordered {
         if !is_af_entry(&opened, name) {
             removed.left.push(path.join(name));
             continue;
         }
-        if !failures.is_empty() && is_event_log(name) {
+        if !failures.is_empty() && last(name) > 0 {
             continue;
         }
         let bytes = review_sandbox::storage::allocated_bytes(&path.join(name)).unwrap_or(0);
@@ -289,7 +300,12 @@ pub(crate) fn remove_with(
         // Proven af's and emptied of af's entries: the directory goes by `rmdir`, so an entry
         // created in it since the listing keeps it, and is reported.
         match remove_emptied(anchor, path, identity) {
-            Ok(()) => return Ok(removed),
+            Ok(()) => {
+                return Ok(Removed {
+                    started: Some(removed.bytes),
+                    ..removed
+                });
+            }
             Err(_) => {
                 let names = local_fs::entry_names(&opened).unwrap_or_default();
                 removed
@@ -301,15 +317,30 @@ pub(crate) fn remove_with(
     // Not proven af's, holding what is not, or given something since: the directory stays.
     removed.left.insert(0, path.to_path_buf());
     if failures.is_empty() {
-        Ok(removed)
-    } else {
-        Err(format!(
+        // What left the disk is exactly what was measured entry by entry, not inventory's count.
+        return Ok(Removed {
+            started: Some(removed.bytes),
+            ..removed
+        });
+    }
+    // Stopped part way: what af still holds there replaces inventory's count (unknown when it
+    // cannot be measured), and what went is counted freed.
+    let after = af_bytes(path).ok();
+    Err(super::plan::Failed {
+        reason: format!(
             "af's entries were only partly removed ({}); the rest is left, and the next sweep \
              tries again",
             failures.join("; ")
-        )
-        .into())
-    }
+        ),
+        freed: match (before, after) {
+            (Some(before), Some(after)) => before.saturating_sub(after),
+            _ => removed.bytes,
+        },
+        remains: after.map_or(
+            super::plan::Remains::Unmeasured,
+            super::plan::Remains::Measured,
+        ),
+    })
 }
 
 /// Remove the emptied Store directory `path`, strictly below `anchor`, by `rmdir` from its
@@ -492,6 +523,44 @@ mod tests {
         if marked {
             std::fs::write(path.join(MARKER), MARKER_TEXT).unwrap();
         }
+    }
+
+    /// A removal that stops part way keeps the event log and the owner marker (the next sweep
+    /// still knows the Store as af's), counts what went as freed and measures what af still holds
+    /// there; once nothing stands in the way, the next removal takes the rest and the directory,
+    /// accounting exactly what it measured.
+    #[test]
+    fn a_partial_removal_keeps_the_marker_and_the_log_and_accounts_what_went() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let identity = |path: &Path| review_sandbox::Identity::of(path).unwrap();
+        let stuck = root.join("stuck");
+        store(&stuck, true);
+        std::fs::write(stuck.join("git-home/config"), vec![3; 8192]).unwrap();
+        // A tree grown deeper than the removal walk stops the removal of `cas` part way.
+        let deep = (0..=review_sandbox::REMOVAL_MAX_DEPTH)
+            .fold(stuck.join("cas/deep"), |path, _| path.join("d"));
+        std::fs::create_dir_all(&deep).unwrap();
+        let failed = remove_with(&root, &stuck, identity(&stuck)).unwrap_err();
+        // What stopped it, under `cas` or the claim the removal renamed `cas` to, goes by hand.
+        for entry in std::fs::read_dir(&stuck).unwrap() {
+            let entry = entry.unwrap().path();
+            if entry.is_dir() {
+                std::fs::remove_dir_all(entry).unwrap();
+            }
+        }
+        assert!(stuck.join(MARKER).exists(), "{failed:?}");
+        assert!(stuck.join("events.sqlite").exists());
+        assert!(failed.freed >= 8192, "git-home went: {failed:?}");
+        assert!(
+            matches!(failed.remains, crate::storage::plan::Remains::Measured(bytes) if bytes > 0),
+            "{failed:?}"
+        );
+
+        let removed = remove_with(&root, &stuck, identity(&stuck)).unwrap();
+        assert!(!stuck.exists());
+        assert!(removed.left.is_empty());
+        assert_eq!(removed.started, Some(removed.bytes));
     }
 
     /// The last step of removing a proven Store is `rmdir`: a file created in it after its
