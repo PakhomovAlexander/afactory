@@ -95,6 +95,8 @@ pub enum LockError {
     TooLarge {
         name: String,
         root: PathBuf,
+        /// The package-relative file whose turn crossed a bound.
+        at: String,
         files: usize,
         bytes: usize,
         file_bytes: usize,
@@ -190,13 +192,14 @@ impl std::fmt::Display for LockError {
             LockError::TooLarge {
                 name,
                 root,
+                at,
                 files,
                 bytes,
                 file_bytes,
             } => write!(
                 f,
-                "package `{name}` at {} exceeds {files} files, {file_bytes} bytes in one file or \
-                 {bytes} bytes",
+                "package `{name}` at {} is refused at `{at}`: a package is at most {files} files \
+                 and {bytes} bytes, a package file is at most {file_bytes} bytes",
                 root.display()
             ),
             LockError::Io { path, error } => write!(f, "{}: {error}", path.display()),
@@ -607,9 +610,10 @@ fn collect_no_follow(
     // `O_NONBLOCK` keeps a FIFO swapped in for a file from hanging the open.
     let file_flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK;
 
-    let too_large = |bounds: PackageBounds| LockError::TooLarge {
+    let too_large = |bounds: PackageBounds, at: &str| LockError::TooLarge {
         name: name.to_string(),
         root: root.to_path_buf(),
+        at: at.to_string(),
         files: bounds.files,
         bytes: bounds.bytes,
         file_bytes: bounds.file_bytes,
@@ -752,7 +756,7 @@ fn collect_no_follow(
                     if let Some(bounds) = bounds
                         && files.len() >= bounds.files
                     {
-                        return Err(too_large(bounds));
+                        return Err(too_large(bounds, &relative));
                     }
                     before_open(&path);
                     let fd = openat(
@@ -783,7 +787,7 @@ fn collect_no_follow(
                             // The size is checked before anything is read, and the read takes at
                             // most one byte past what is left, enough to tell growth from fit.
                             if usize::try_from(stat.st_size).map_or(true, |size| size > left) {
-                                return Err(too_large(bounds));
+                                return Err(too_large(bounds, &relative));
                             }
                             let limit = u64::try_from(left).unwrap_or(u64::MAX).saturating_add(1);
                             (&file)
@@ -791,7 +795,7 @@ fn collect_no_follow(
                                 .read_to_end(&mut bytes)
                                 .map_err(|e| io(&path, e))?;
                             if bytes.len() > left {
-                                return Err(too_large(bounds));
+                                return Err(too_large(bounds, &relative));
                             }
                             total += bytes.len();
                         }
