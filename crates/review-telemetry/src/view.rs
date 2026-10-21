@@ -1312,10 +1312,32 @@ pub fn tail_start(
         .into_iter()
         .collect();
     let (index, _, unreadable) = open(root)?;
+    // Index ingestion forgets every `.corrupt` segment's rows, so the index alone cannot tell
+    // whether one held the run: the listing names them, taken after the ingest.
+    let layout = Layout::new(root);
+    let segments = Confined::versioned(&layout, "segments")
+        .map_err(|error| format!("{}: {error}", layout.segments().display()))?;
+    let corrupt = match &segments {
+        Some(segments) => reader::list_in(segments)?.corrupt,
+        None => Vec::new(),
+    };
     Ok(match resolve(&index, run_id, store)? {
         Resolved::Run {
             store_id, trace_id, ..
         } => {
+            // A `.corrupt` segment that could hold an execution of the run fails the tail: it
+            // would finish over the readable executions while omitting that one.
+            if let Some(segments) = &segments {
+                for id in &corrupt {
+                    if let Some(why) = corrupt_could_hold(segments, id, run_id, store)? {
+                        return Err(format!(
+                            "{}: an unreadable segment (interior corruption; {why}); never \
+                             read, so run {run_id} cannot be followed whole",
+                            segments.join(&format!("{id}{}", layout::CORRUPT)).display()
+                        ));
+                    }
+                }
+            }
             // Every execution in a segment sealed before the lookup: nobody writes the run.
             let executed = execution_segments(&index, &trace_id)?;
             let sealed_run =
@@ -1344,10 +1366,62 @@ pub fn tail_start(
                     segment.path, segment.reason
                 ));
             }
+            // A `.corrupt` segment may hold the run's only execution: never called unknown.
+            if let (Some(segments), Some(id)) = (&segments, corrupt.first()) {
+                return Err(format!(
+                    "{}: an unreadable segment (interior corruption; renamed {id}{}); never \
+                     read, so run {run_id} cannot be resolved",
+                    segments.join(&format!("{id}{}", layout::CORRUPT)).display(),
+                    layout::CORRUPT
+                ));
+            }
             TailStart::Unknown
         }
         Resolved::Ambiguous(stores) => TailStart::Ambiguous(stores),
     })
+}
+
+/// Why the `.corrupt` segment `segment_id` could hold an execution of `run_id` (within `store`
+/// when one is named), or `None` when it cannot. Its records are never taken as telemetry; each
+/// line is judged alone, whatever the corruption around it: a valid `af.run` start of the run
+/// holds one, and so does a line that is no record but names the run id, since it may be that
+/// `af.run` damaged. Without `store` an `af.run` of the run in any Store counts: it could make
+/// the run ambiguous. A file that cannot be read (past the segment bound included) could hold
+/// one; a file gone since the listing holds nothing any more.
+fn corrupt_could_hold(
+    segments: &Confined,
+    segment_id: &str,
+    run_id: &str,
+    store: Option<&str>,
+) -> Result<Option<String>, String> {
+    let bytes = match reader::read_corrupt_in(segments, segment_id) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Ok(Some(format!("it cannot be judged: {error}"))),
+    };
+    let needle = run_id.as_bytes();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        match Record::parse_line(line) {
+            Ok(Record::SpanStart(start)) if start.name == "af.run" => {
+                let text = |key: &str| start.attributes.get(key).and_then(Value::as_str);
+                if text("af.run_id") == Some(run_id)
+                    && store.is_none_or(|store| text("af.store_id") == Some(store))
+                {
+                    return Ok(Some(format!("it holds an `af.run` of run {run_id}")));
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {
+                if !needle.is_empty() && line.windows(needle.len()).any(|window| window == needle) {
+                    return Ok(Some(format!("an invalid line in it names run {run_id}")));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The segments holding the `af.run` spans of the trace `trace_id`'s executions.

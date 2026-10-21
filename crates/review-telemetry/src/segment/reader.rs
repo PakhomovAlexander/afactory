@@ -309,6 +309,14 @@ pub fn read_live_in(segments: &Confined, segment_id: &str) -> std::io::Result<Ve
     live_bytes(segments.open_file(&format!("{segment_id}{}", layout::LIVE))?)
 }
 
+/// The bytes of the `.corrupt` segment `segment_id`, opened relative to `segments` and judged
+/// by length before any byte is read, as a live segment's are. Its records are never read as
+/// telemetry: only `tail RUN` looks into it, to learn whether it could hold the run it refuses
+/// to follow without it.
+pub fn read_corrupt_in(segments: &Confined, segment_id: &str) -> std::io::Result<Vec<u8>> {
+    live_bytes(segments.open_file(&format!("{segment_id}{}", layout::CORRUPT))?)
+}
+
 /// The valid prefix of a live or unsealed segment, read without its lock.
 pub fn read_live(path: &Path) -> Result<Prefix, String> {
     let bytes = read_live_bytes(path).map_err(|error| format!("{}: {error}", path.display()))?;

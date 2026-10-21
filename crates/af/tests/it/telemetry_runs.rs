@@ -3352,3 +3352,147 @@ fn telemetry_tail_refuses_a_segment_recovered_as_corrupt_underneath() {
         "names the .corrupt file: {error}"
     );
 }
+
+/// An unsealed segment `segment` of the golden run's execution `ordinal`: its `af.run`, an
+/// invalid complete line, then a valid record, its writer dead before its seal. `af telemetry
+/// reindex` recovers it, finds the interior corruption and renames it `.corrupt`; the path of
+/// that file.
+fn corrupt_execution(machine: &Machine, segment: &str, start_ms: u64, ordinal: u64) -> PathBuf {
+    use review_telemetry::record::{Attrs, SpanKind};
+    let writer = golden_writer(&machine.telemetry(), segment, start_ms);
+    let execution = review_telemetry::trace::Execution {
+        store_id: GOLDEN_STORE.into(),
+        run_id: GOLDEN_RUN.into(),
+        execution_id: segment.into(),
+        ordinal,
+        store_sequence_at_start: 2,
+    };
+    let trace = execution.trace_id();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let run = writer
+        .span_start(
+            Some(&trace),
+            Some(command.as_str()),
+            "af.run",
+            SpanKind::Internal,
+            execution.attributes().enumerated("af.run.kind", "task"),
+        )
+        .unwrap();
+    writer.flush();
+    let path = writer.path().unwrap();
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"{\"t\":\"event\",\"not\":\"a record\"}\n")
+            .unwrap();
+    }
+    writer.event(&run, "af.after", Attrs::new());
+    writer.flush();
+    // Killed before its seal: its lock ends with it.
+    writer.abandon();
+    let reindexed = json(&machine.af(&machine.root, &[], &["telemetry", "reindex", "--json"]));
+    assert_eq!(
+        reindexed["corrupt"],
+        serde_json::json!([segment]),
+        "{reindexed}"
+    );
+    let corrupt =
+        review_telemetry::layout::Layout::new(machine.telemetry()).corrupt_segment(segment);
+    assert!(corrupt.is_file() && !path.exists());
+    corrupt
+}
+
+/// `tail` with `args` exits 1 with the fail-closed refusal naming `corrupt`, printing nothing
+/// else and never calling the run unknown.
+fn tail_refuses_naming(machine: &Machine, corrupt: &Path) {
+    let corrupt = corrupt.display().to_string();
+    for args in [
+        &["telemetry", "tail", GOLDEN_RUN][..],
+        &["telemetry", "tail", GOLDEN_RUN, "--store", GOLDEN_STORE],
+        &["telemetry", "tail", GOLDEN_RUN, "--json"],
+        &[
+            "telemetry",
+            "tail",
+            GOLDEN_RUN,
+            "--store",
+            GOLDEN_STORE,
+            "--json",
+        ],
+    ] {
+        let mut tail = machine
+            .command(&machine.root, &[], args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (status, stderr) = exited(
+            &mut tail,
+            std::time::Duration::from_secs(60),
+            "tail followed a run with a corrupt execution",
+        );
+        let mut stdout = String::new();
+        std::io::Read::read_to_string(&mut tail.stdout.take().unwrap(), &mut stdout).unwrap();
+        assert_eq!(status.code(), Some(1), "{args:?}: {stderr}");
+        let error = if args.contains(&"--json") {
+            // The refusal is the `af/error@1` document, and nothing else.
+            let refusal: Value = serde_json::from_str(stdout.trim()).unwrap();
+            assert_eq!(refusal["schema"], "af/error@1", "{refusal}");
+            assert_eq!(refusal["exit_code"], 1, "{refusal}");
+            refusal["error"].as_str().unwrap().to_string()
+        } else {
+            assert!(stdout.is_empty(), "{args:?}: nothing followed: {stdout}");
+            stderr
+        };
+        assert!(
+            error.contains(&corrupt) && error.contains("interior corruption"),
+            "{args:?}: names the .corrupt file: {error}"
+        );
+        assert!(
+            !error.contains("unknown run"),
+            "{args:?}: never claims the run is unknown: {error}"
+        );
+    }
+}
+
+/// Design §6 and §10: a reader refuses what it cannot read. RUN's only execution is in a
+/// segment recovery renamed `.corrupt` (index ingestion omits it, so the index cannot resolve
+/// the run): `tail RUN`, with and without `--store`, names the `.corrupt` file and exits 1,
+/// never reporting the run as unknown.
+#[test]
+fn telemetry_tail_refuses_a_corrupt_segment_of_an_unknown_run() {
+    let machine = Machine::new();
+    let corrupt = corrupt_execution(
+        &machine,
+        "1700000000000-4242-0a1b2c3d",
+        1_700_000_000_000,
+        1,
+    );
+    tail_refuses_naming(&machine, &corrupt);
+}
+
+/// Design §6 and §10: RUN has a sealed execution and a second one in a segment recovery renamed
+/// `.corrupt`. `tail RUN`, with and without `--store`, refuses naming the `.corrupt` file
+/// instead of finishing over the valid execution while omitting the corrupt one.
+#[test]
+fn telemetry_tail_refuses_a_corrupt_execution_beside_a_valid_one() {
+    let machine = Machine::new();
+    golden_execution(
+        &machine.telemetry(),
+        "1700000000000-4242-0a1b2c3d",
+        1_700_000_000_000,
+        1,
+        &mut |_| {},
+    );
+    let corrupt = corrupt_execution(
+        &machine,
+        "1700000100000-4243-0b1c2d3e",
+        1_700_000_100_000,
+        2,
+    );
+    tail_refuses_naming(&machine, &corrupt);
+}
