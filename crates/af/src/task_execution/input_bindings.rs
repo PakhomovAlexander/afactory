@@ -623,6 +623,12 @@ pub(super) fn resolve(
             }
             return Err(refuse(port, reference, reason));
         }
+        // A bound Project Brief is the kernel's rendering of a pinned Survey or nothing
+        // (ADR-0160): its provenance is established before it suppresses construction.
+        if want_type == review_core::task::project_brief::PROJECT_BRIEF_V1 {
+            let admitted = crate::project_brief::admit_bound(cas, &recorded);
+            admitted.map_err(|e| refuse(port, reference, e))?;
+        }
         let (resolved, binding) = if port.as_str() == "source" {
             let bound = bind_source(cas, recorded, task.as_ref());
             let (input, binding, manifest) = bound.map_err(|e| refuse(port, reference, e))?;
@@ -699,6 +705,25 @@ pub(super) fn resolve(
         ports,
         record_id,
         source_manifest,
+    })
+}
+
+/// Where the Snapshot a bound `source` port carries came from, read from its origin: the
+/// repository a root capture names and the commit it is, or, for a re-rooted tree, the repository
+/// of the tree it was bound from and no commit. A bound source keeps its repository identity
+/// whatever checkout the Task is planned in (ADR-0117), so this, not the invoking checkout, is the
+/// Project whose Survey the Task's Brief is rendered from (ADR-0160).
+pub(super) fn bound_source_origin(
+    cas: &Cas,
+    port: &ArtifactInputV1,
+) -> Result<crate::project_brief::SourceOrigin, String> {
+    let snapshot_id = port.snapshot_id.as_deref();
+    let snapshot_id = snapshot_id.ok_or("a bound source names the Snapshot it carries")?;
+    let (snapshot, _) = read_snapshot(cas, snapshot_id)?;
+    let origin = read_origin(cas, &snapshot.origin_id)?;
+    Ok(crate::project_brief::SourceOrigin {
+        repository_id: origin.repository_id().to_owned(),
+        commit: origin.source_revision().map(str::to_owned),
     })
 }
 

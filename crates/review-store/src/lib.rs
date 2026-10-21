@@ -32,7 +32,7 @@ pub use ledger::{
     ScopeAuthorityFailure, ScopeAuthorityKind, Status, Verdict,
 };
 pub use shared::SharedEventStore;
-pub use store::{EventStore, NewEvent, StoreError, TaskAttemptWall};
+pub use store::{EventStore, NewEvent, ReplayBudget, ReplayCeiling, StoreError, TaskAttemptWall};
 pub use subject::{
     ResolvedChangeSet, ResolvedSubject, ResolvedSubjectScope, resolve_subject,
     resolve_subject_scope,

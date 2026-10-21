@@ -11,6 +11,7 @@
 //! `.gitattributes` in the candidate tree has nothing to interpose on during capture.
 
 pub mod capture;
+pub mod digest;
 pub mod git;
 pub mod manifest;
 pub mod materialize;
@@ -18,12 +19,13 @@ pub mod rebase;
 pub mod task;
 
 pub use capture::{Capture, CaptureError, CaptureObserver, Snapshot, worktree_state};
+pub use digest::committed_digest;
 pub use git::{
-    DEFAULT_GIT_TIMEOUT_SECONDS, GitError, Repo, TreeChange, TreeChangeKind, TreeDiff, TreeId,
-    manifest_diff,
+    DEFAULT_GIT_TIMEOUT_SECONDS, GitError, ObjectRepository, Repo, TreeChange, TreeChangeKind,
+    TreeDiff, TreeId, manifest_diff,
 };
 pub use manifest::{
-    Entry, EntryKind, Manifest, ManifestError, decode_path, digest_bytes,
+    Entry, EntryKind, Manifest, ManifestDigest, ManifestError, decode_path, digest_bytes,
     digest_reader_with_buffer, encode_path, fs_path,
 };
 pub use materialize::{MaterializeError, materialize};

@@ -21,10 +21,16 @@ where
     Ok(set)
 }
 
+/// The version a pipeline declares in `schema`. Each pipeline has exactly one: `af.pipeline/2`
+/// is the shape whose contract declares a Project Brief port (ADR-0160), and every other
+/// pipeline is `af.pipeline/1`, which declares none, so no pipeline has two spellings and a
+/// version-1 pipeline that carries the port is refused rather than read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PipelineSchemaV1 {
+pub enum PipelineSchema {
     #[serde(rename = "af.pipeline/1")]
     V1,
+    #[serde(rename = "af.pipeline/2")]
+    V2,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +45,9 @@ pub enum PortAffinityV1 {
 #[serde(rename_all = "snake_case")]
 pub enum RootDefaultV1 {
     EmptyReviewHistory,
+    /// The Project Brief the port's `brief` variant renders from the Survey the Task's initial
+    /// capture pinned (ADR-0160).
+    ProjectBrief,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,11 +63,25 @@ pub struct PipelinePortV1 {
         deserialize_with = "super::present_option"
     )]
     pub root_default: Option<RootDefaultV1>,
+    /// The `[brief.<name>]` variant a `project_brief` root default renders; allowed only with
+    /// it (ADR-0160).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub brief: Option<String>,
     #[serde(deserialize_with = "super::unique_set")]
     pub covers: BTreeSet<String>,
 }
 
 impl PipelinePortV1 {
+    /// Whether this declaration uses what only `af.pipeline/2` admits: the `project_brief` root
+    /// default or a `brief` variant.
+    pub fn declares_brief(&self) -> bool {
+        self.root_default == Some(RootDefaultV1::ProjectBrief) || self.brief.is_some()
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         require(
             is_artifact_type(&self.artifact_type),
@@ -74,12 +97,26 @@ impl PipelinePortV1 {
             self.covers.iter().all(|s| is_name(s)),
             "Invalid public coverage name",
         )?;
-        if self.root_default.is_some() {
-            require(
+        match self.root_default {
+            Some(RootDefaultV1::EmptyReviewHistory) => require(
                 self.artifact_type == REVIEW_HISTORY_V1 && self.cardinality == PortCardinality::One,
                 "Empty review history is only a default for a single ReviewHistory port",
-            )?;
+            )?,
+            Some(RootDefaultV1::ProjectBrief) => require(
+                self.artifact_type == super::project_brief::PROJECT_BRIEF_V1
+                    && self.cardinality == PortCardinality::One
+                    && self.optional
+                    && self.affinity == PortAffinityV1::Unbound {}
+                    && self.brief.as_deref().is_some_and(is_name),
+                "A project_brief root default is one optional unbound af/ProjectBrief@1 port \
+                 naming its variant in `brief`",
+            )?,
+            None => {}
         }
+        require(
+            self.brief.is_none() || self.root_default == Some(RootDefaultV1::ProjectBrief),
+            "A port names a `brief` variant only with root_default = \"project_brief\"",
+        )?;
         Ok(())
     }
 }
@@ -298,7 +335,7 @@ pub struct PipelineApplicabilityV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineDefinitionV1 {
-    pub schema: PipelineSchemaV1,
+    pub schema: PipelineSchema,
     pub name: String,
     pub version: String,
     pub contract: PipelineContractV1,
@@ -312,12 +349,50 @@ pub struct PipelineDefinitionV1 {
 }
 
 impl PipelineDefinitionV1 {
+    /// Whether the contract declares a Project Brief port: what makes a pipeline
+    /// `af.pipeline/2`.
+    pub fn declares_brief(&self) -> bool {
+        self.contract
+            .inputs
+            .values()
+            .chain(self.contract.outputs.values())
+            .any(PipelinePortV1::declares_brief)
+    }
+
+    /// The version rule of ADR-0145 applied to the Brief port (ADR-0160): the port is
+    /// `af.pipeline/2`'s alone, and `af.pipeline/2` is the shape of a pipeline that declares it.
+    fn validate_version(&self) -> Result<(), String> {
+        let briefed = self
+            .contract
+            .inputs
+            .iter()
+            .chain(&self.contract.outputs)
+            .find(|(_, port)| port.declares_brief())
+            .map(|(name, _)| name);
+        match (self.schema, briefed) {
+            (PipelineSchema::V1, Some(port)) => Err(format!(
+                "Pipeline {} declares the Project Brief port {port} under af.pipeline/1, which \
+                 has no Brief port: a pipeline with a `project_brief` port declares schema = \
+                 \"af.pipeline/2\"",
+                self.name
+            )),
+            (PipelineSchema::V2, None) => Err(format!(
+                "Pipeline {} is af.pipeline/2 but declares no `project_brief` port: \
+                 af.pipeline/2 is the shape of a pipeline with a Project Brief port, and every \
+                 other pipeline declares schema = \"af.pipeline/1\"",
+                self.name
+            )),
+            _ => Ok(()),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         require(
             is_package_name(&self.name) && !self.version.trim().is_empty(),
             "Invalid Pipeline name/version",
         )?;
         self.contract.validate()?;
+        self.validate_version()?;
         require(
             !self.nodes.is_empty() && self.nodes.len() <= 64,
             "Pipeline must contain one to 64 static nodes",

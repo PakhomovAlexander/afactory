@@ -24,6 +24,17 @@ pub struct ProjectFile {
     /// matches one of its patterns.
     #[serde(default)]
     routes: Vec<Route>,
+    /// What the Surveyor measures by (ADR-0159). Admitted here so the full-file parse refuses
+    /// an unknown key; the Surveyor reads the merged ladder through `Policy::load`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    survey: Option<crate::projects::survey::policy::SurveyTable>,
+    /// The Project Brief variants (ADR-0160). Admitted here so the full-file parse refuses an
+    /// unknown key; capture and `af project brief` read the merged ladder through
+    /// `project_brief::load_policy`, which also checks every value.
+    #[serde(default)]
+    #[allow(dead_code)]
+    brief: Option<std::collections::BTreeMap<String, crate::project_brief::BriefTable>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -298,37 +309,72 @@ fn validate_pattern(pattern: &str, route: &str) -> Result<(), String> {
 }
 
 /// Segment-wise glob: `**` spans any number of segments, `*` any run within a segment, `?` one
-/// character. Anchored at the repository root; `path` is the canonical (encoded) form.
+/// byte of the canonical encoded spelling (`review_core::encode_path`'s: `é` is two bytes, a
+/// percent-encoded byte three). Anchored at the repository root; `path` is the canonical
+/// (encoded) form.
+///
+/// Matched by dynamic programming, never by backtracking (ADR-0159 clause 14): a match costs at
+/// most (pattern length + 1) × (path length + 1) cells, so `*a` thirty times then `b` against
+/// thirty `a`s, which the recursive form took billions of steps to refuse, is refused in under
+/// a thousand.
 pub(crate) fn glob_matches(pattern: &str, path: &str) -> bool {
-    fn segment(pattern: &[u8], text: &[u8]) -> bool {
-        match (pattern.first(), text.first()) {
-            (None, None) => true,
-            (None, Some(_)) => false,
-            (Some(b'*'), _) => {
-                segment(&pattern[1..], text) || (!text.is_empty() && segment(pattern, &text[1..]))
-            }
-            (Some(b'?'), Some(_)) => segment(&pattern[1..], &text[1..]),
-            (Some(&expected), Some(&actual)) if expected == actual => {
-                segment(&pattern[1..], &text[1..])
-            }
-            _ => false,
-        }
-    }
-    fn segments(pattern: &[&str], path: &[&str]) -> bool {
-        match pattern.split_first() {
-            None => path.is_empty(),
-            Some((&"**", rest)) => (0..=path.len()).any(|skip| segments(rest, &path[skip..])),
-            Some((head, rest)) => match path.split_first() {
-                Some((first, remaining)) => {
-                    segment(head.as_bytes(), first.as_bytes()) && segments(rest, remaining)
+    glob_match_cells(pattern, path).0
+}
+
+/// [`glob_matches`] and the cells it evaluated: one per pair of a pattern segment and a path
+/// segment it compared, one per pair of a pattern byte and a text byte inside them.
+pub(crate) fn glob_match_cells(pattern: &str, path: &str) -> (bool, u64) {
+    let mut cells = 0_u64;
+    let pattern: Vec<&[u8]> = pattern.split('/').map(str::as_bytes).collect();
+    let path: Vec<&[u8]> = path.split('/').map(str::as_bytes).collect();
+    // `reached[j]`: the pattern segments so far match the first `j` path segments.
+    let mut reached = vec![false; path.len() + 1];
+    reached[0] = true;
+    for head in &pattern {
+        let mut next = vec![false; path.len() + 1];
+        let Some(first) = reached.iter().position(|reached| *reached) else {
+            return (false, cells);
+        };
+        if *head == b"**" {
+            // Any number of segments from the first prefix reached on.
+            cells += (path.len() + 1 - first) as u64;
+            next[first..].fill(true);
+        } else {
+            for j in first..path.len() {
+                if reached[j] {
+                    cells += 1;
+                    next[j + 1] = segment_matches(head, path[j], &mut cells);
                 }
-                None => false,
-            },
+            }
         }
+        reached = next;
     }
-    let pattern: Vec<&str> = pattern.split('/').collect();
-    let path: Vec<&str> = path.split('/').collect();
-    segments(&pattern, &path)
+    (reached[path.len()], cells)
+}
+
+/// One segment against one pattern segment: `*` a run, `?` one byte, anything else itself.
+/// `reached[j]`: the pattern bytes so far match the first `j` text bytes; only the text bytes at
+/// or after the first prefix reached are visited, and a pattern byte that reaches none ends it.
+fn segment_matches(pattern: &[u8], text: &[u8], cells: &mut u64) -> bool {
+    let mut reached = vec![false; text.len() + 1];
+    reached[0] = true;
+    for &expected in pattern {
+        let Some(first) = reached.iter().position(|reached| *reached) else {
+            return false;
+        };
+        let mut next = vec![false; text.len() + 1];
+        if expected == b'*' {
+            *cells += (text.len() + 1 - first) as u64;
+            next[first..].fill(true);
+        } else {
+            for j in first..text.len() {
+                *cells += 1;
+                next[j + 1] = reached[j] && (expected == b'?' || expected == text[j]);
+            }
+        }
+        reached = next;
+    }
+    reached[text.len()]
 }
 
 fn validate_safe_name(value: &str, label: &str) -> Result<(), String> {
@@ -609,5 +655,205 @@ mod tests {
             .unwrap_err();
             assert!(error.contains(expected), "{error}");
         }
+    }
+
+    /// The recursive matcher `glob_matches` replaced: the semantics the dynamic programme keeps.
+    fn backtracking(pattern: &str, path: &str) -> bool {
+        fn segment(pattern: &[u8], text: &[u8]) -> bool {
+            match (pattern.first(), text.first()) {
+                (None, None) => true,
+                (None, Some(_)) => false,
+                (Some(b'*'), _) => {
+                    segment(&pattern[1..], text)
+                        || (!text.is_empty() && segment(pattern, &text[1..]))
+                }
+                (Some(b'?'), Some(_)) => segment(&pattern[1..], &text[1..]),
+                (Some(&expected), Some(&actual)) if expected == actual => {
+                    segment(&pattern[1..], &text[1..])
+                }
+                _ => false,
+            }
+        }
+        fn segments(pattern: &[&str], path: &[&str]) -> bool {
+            match pattern.split_first() {
+                None => path.is_empty(),
+                Some((&"**", rest)) => (0..=path.len()).any(|skip| segments(rest, &path[skip..])),
+                Some((head, rest)) => match path.split_first() {
+                    Some((first, remaining)) => {
+                        segment(head.as_bytes(), first.as_bytes()) && segments(rest, remaining)
+                    }
+                    None => false,
+                },
+            }
+        }
+        let pattern: Vec<&str> = pattern.split('/').collect();
+        let path: Vec<&str> = path.split('/').collect();
+        segments(&pattern, &path)
+    }
+
+    /// `*a` thirty times then `b`, against thirty `a`s: the failing match the recursive form
+    /// took billions of steps to refuse.
+    fn adversarial() -> (String, String) {
+        (format!("{}b", "*a".repeat(30)), "a".repeat(30))
+    }
+
+    #[test]
+    fn the_adversarial_pattern_fails_within_pattern_length_times_text_length_cells() {
+        use super::glob_match_cells;
+        let (pattern, text) = adversarial();
+        let started = std::time::Instant::now();
+        let (matched, cells) = glob_match_cells(&pattern, &text);
+        assert!(!matched);
+        let bound = (pattern.len() * text.len()) as u64;
+        assert_eq!((pattern.len(), text.len(), bound), (61, 30, 1830));
+        assert!(cells <= bound, "{cells} cells, over {bound}");
+        assert_eq!(cells, 961, "the stated count of ADR-0159 clause 14");
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        // The same text in a deeper path and behind `**` costs no more than the bound either.
+        for (pattern, path) in [
+            (format!("**/{pattern}"), format!("x/y/{text}")),
+            (format!("x/{pattern}/**"), format!("x/{text}/z")),
+        ] {
+            let (matched, cells) = glob_match_cells(&pattern, &path);
+            assert!(!matched, "{pattern}");
+            assert!(cells <= ((pattern.len() + 1) * (path.len() + 1)) as u64);
+        }
+    }
+
+    #[test]
+    fn the_matching_form_of_the_adversarial_pattern_matches() {
+        let text = "a".repeat(30);
+        assert!(glob_matches(&"*a".repeat(30), &text));
+        assert!(!glob_matches(&"*a".repeat(31), &text));
+        assert!(glob_matches(&format!("{}*", "*a".repeat(30)), &text));
+    }
+
+    #[test]
+    fn the_dynamic_programme_keeps_the_recursive_semantics_and_its_bound() {
+        let patterns = [
+            "",
+            "*",
+            "**",
+            "?",
+            "a",
+            "a*",
+            "*a",
+            "a?c",
+            "**/a",
+            "a/**",
+            "a/**/b",
+            "**/*.md",
+            "*.md",
+            "docs/**",
+            "src/*/lib.rs",
+            "*[bot]",
+            "[0-9]",
+            "a**b",
+            "**/**",
+            "*/*",
+            "a/*",
+            "??",
+            "*?*",
+            "a*b*c",
+            "**/tests/**",
+            "**/*_test.*",
+            "v?.*",
+        ];
+        let paths = [
+            "",
+            "a",
+            "b",
+            "ab",
+            "abc",
+            "a/b",
+            "a/x/b",
+            "a/x/y/b",
+            "README.md",
+            "docs/README.md",
+            "docs",
+            "src/core/lib.rs",
+            "src/core/inner/lib.rs",
+            "dependabot[bot]",
+            "robot",
+            "[0-9]",
+            "0",
+            "a/",
+            "/a",
+            "aXbYc",
+            "acb",
+            "crates/af/tests/it/main.rs",
+            "pkg/a_test.go",
+            "v1.2",
+            "a//b",
+        ];
+        for pattern in patterns {
+            for path in paths {
+                let (matched, cells) = super::glob_match_cells(pattern, path);
+                assert_eq!(
+                    matched,
+                    backtracking(pattern, path),
+                    "`{pattern}` against `{path}`"
+                );
+                let bound = ((pattern.len() + 1) * (path.len() + 1)) as u64;
+                assert!(
+                    cells <= bound,
+                    "`{pattern}` against `{path}`: {cells} > {bound}"
+                );
+            }
+        }
+    }
+
+    /// `?` consumes one byte of the canonical encoded spelling (ADR-0159 clause 14), through a
+    /// route as through the Surveyor's `exclude` (`projects::survey::collect`'s tests and
+    /// `tests/it/project_collect.rs` run the same cases).
+    #[test]
+    fn a_question_mark_is_one_byte_of_the_encoded_spelling_in_a_route() {
+        for (pattern, raw, matches) in [
+            ("caf?.rs", "café.rs".as_bytes(), false),
+            ("caf??.rs", "café.rs".as_bytes(), true),
+            ("caf?.rs", b"caf\xe9.rs".as_slice(), false),
+            ("caf???.rs", b"caf\xe9.rs".as_slice(), true),
+            ("50?.txt", b"50%.txt".as_slice(), false),
+            ("50???.txt", b"50%.txt".as_slice(), true),
+            ("caf*.rs", "café.rs".as_bytes(), true),
+        ] {
+            let path = review_core::encode_path(raw);
+            let project = routed(
+                "",
+                &format!(
+                    "[[routes]]\nname = \"x\"\npaths = [\"{pattern}\"]\npipeline = \"docs\"\n"
+                ),
+            );
+            let decision = project.select_route(std::slice::from_ref(&path)).unwrap();
+            assert_eq!(
+                decision.name.is_some(),
+                matches,
+                "`{pattern}` against `{path}`"
+            );
+            assert_eq!(glob_matches(pattern, &path), matches);
+        }
+    }
+
+    #[test]
+    fn a_route_with_the_adversarial_pattern_is_refused_within_its_bound() {
+        let (pattern, text) = adversarial();
+        let failing = routed(
+            "",
+            &format!("[[routes]]\nname = \"x\"\npaths = [\"{pattern}\"]\npipeline = \"docs\"\n"),
+        );
+        let started = std::time::Instant::now();
+        let decision = failing.select_route(&paths(&[&text])).unwrap();
+        assert_eq!(decision.policy, "default");
+        assert!(decision.matched.is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        let matching = routed(
+            "",
+            &format!(
+                "[[routes]]\nname = \"x\"\npaths = [\"{}\"]\npipeline = \"docs\"\n",
+                "*a".repeat(30)
+            ),
+        );
+        let decision = matching.select_route(&paths(&[&text])).unwrap();
+        assert_eq!(decision.name.as_deref(), Some("x"));
     }
 }

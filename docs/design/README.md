@@ -37,6 +37,17 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   cache key, one machine-wide budget evicted least recently used and enforced after every run,
   collection that reaches every Store, an af-owned scratch directory and `HOME` for every check, and removal of
   what Workers and gates leave in Claude and GitHub. Accepted 2026-10-07; package D1–D5 in flight.
+- [`project.md`](project.md) — one **Project** entity per repository (identified by the root
+  commits every Snapshot already carries), its **Workspaces** (one registered checkout per
+  workstream, adopting the `workstreams/` habit), kernel-measured **Surveys** of tree, history,
+  contributors, decisions and af activity recorded by a token-free **Surveyor** at onboarding and
+  after runs, and bounded **Project Briefs** that a pipeline carries to chosen Workers on a
+  declared port; all behind `af project`. Proposed 2026-10-19; package PJ1, PJ1b, PJ2 and its collection
+  companion implemented on branch `design/project` with
+  [ADR-0158](../adr/0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+  and [`../project.md`](../project.md), [ADR-0159](../adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md),
+  verified by af Tasks, and PJ3 (Project Brief) with
+  [ADR-0160](../adr/0160-carry-a-bounded-project-brief-on-a-declared-port.md); PJ4–PJ5 not started.
 - [`telemetry.md`](telemetry.md) — Telemetry: a separate, machine-only, bounded store of spans,
   events and content-addressed blobs that the kernel writes and never reads — kernel phases,
   supervised processes with their resource use, harness turns, tool calls and reasoning, the

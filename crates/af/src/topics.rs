@@ -61,7 +61,8 @@ Everything a human writes is TOML; everything af writes goes to the Store, excep
 The project file is `.af/af.toml` at the git toplevel. `version`, `[project]` `name` and
 `min_af`, and `[defaults]` `pipeline` are required: they name the project, the minimum `af`
 release it needs and its default review pipeline. Optional `[[routes]]` pick a pipeline by the
-changed paths. Worker packages live under `.af/workers/`, pinned in `.af/af.lock`; pipelines
+changed paths, and an optional `[survey]` table bounds what the Surveyor measures into a Survey
+(`af project refresh --help`). Worker packages live under `.af/workers/`, pinned in `.af/af.lock`; pipelines
 name them.
 
   version = 1
@@ -152,8 +153,8 @@ never under --json.";
 
 const STORAGE: &str = "\
 af keeps a bounded amount of disk between runs (ADR-0144). One budget covers warm build keys,
-warm Workspaces, review campaign Stores, the finished Tasks of every Task Store, Stores this
-release cannot read, and installed versions. When af holds more than the budget, the least
+warm Workspaces, review campaign Stores, the finished Tasks of every Task Store, Project Stores
+(counted, never evicted; ADR-0158), Stores this release cannot read, and installed versions. When af holds more than the budget, the least
 recently used entry goes first; nothing in use and nothing used within the last hour ever goes.
 
   af storage                  what af holds, per kind, against the budget and the free-disk floor
@@ -175,6 +176,7 @@ repository's .af/af.toml cannot set it:
   keep_days = 14               collection never takes anything used in the last keep_days
   keep_tasks = 20              newest finished Tasks kept per Store
   keep_campaigns = 20          newest review campaigns kept
+  keep_surveys = 50            newest Surveys kept per Project; protected ones may exceed it
   keep_worker_transcripts = false   keep the history each Claude Worker Attempt and provider
                                     probe leaves in its config dir
   keep_gate_pull_requests = false   leave a finished Task's gate pull request and branches open

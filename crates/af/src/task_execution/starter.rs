@@ -46,6 +46,7 @@ fn port(ty: &str) -> PipelinePortV1 {
         optional: false,
         affinity: PortAffinityV1::Unbound {},
         root_default: None,
+        brief: None,
         covers: BTreeSet::new(),
     }
 }
@@ -231,7 +232,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut verification = port(DOCUMENT_VERIFICATION_V1);
     verification.covers.insert("verified".into());
     let pipeline = PipelineDefinitionV1 {
-        schema: PipelineSchemaV1::V1,
+        schema: PipelineSchema::V1,
         name: "builtin/release-notes".into(),
         version: "1.0.0".into(),
         contract: PipelineContractV1 {

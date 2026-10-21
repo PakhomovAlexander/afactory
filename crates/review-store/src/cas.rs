@@ -805,8 +805,10 @@ impl Cas {
     }
 
     /// Remove one object. Only Task collection calls this (ADR-0135), under the event store's
-    /// exclusive write lock and only for an object no uncollected record reaches; no other
-    /// command removes a CAS object.
+    /// exclusive write lock and only for an object no uncollected record reaches. Survey
+    /// collection (ADR-0159 clause 13) removes a Survey's record itself, through directory
+    /// descriptors that follow no link, under the Project Store's lock and only after the
+    /// Survey's tombstone is in the log; no other command removes a CAS object.
     pub fn remove_unreachable(&self, digest: &str) -> Result<u64, CasError> {
         if !valid_digest(digest) {
             return Err(CasError::InvalidDigest(digest.to_string()));

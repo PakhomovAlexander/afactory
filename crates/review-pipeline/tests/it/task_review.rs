@@ -33,6 +33,7 @@ fn port(ty: &str, affinity: PortAffinityV1) -> PipelinePortV1 {
         optional: false,
         affinity,
         root_default: None,
+        brief: None,
         covers: BTreeSet::new(),
     }
 }
@@ -261,7 +262,7 @@ fn run_case(case: &str) {
             }),
         };
         let mut pipeline = PipelineDefinitionV1 {
-            schema: PipelineSchemaV1::V1,
+            schema: PipelineSchema::V1,
             name: "fixture/review".into(),
             version: "1.0.0".into(),
             contract: PipelineContractV1 {

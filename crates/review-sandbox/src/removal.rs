@@ -15,34 +15,105 @@ use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Component, Path};
 
-/// What names one directory on this machine independent of its path: its device and inode.
+/// The deepest directory level below the directory it removes that [`remove_tree_at`]'s walk
+/// reaches, the directory itself at level 0: a tree nested deeper is only ever partly removed.
+pub const REMOVAL_MAX_DEPTH: u32 = crate::stale::MAX_DEPTH;
+
+/// Whether a tree whose deepest directory is at level `depth` (as
+/// [`crate::storage::allocated_bytes_and_depth`] measures it) is deeper than the removal walk:
+/// [`remove_tree_at`] would leave part of it, so a planner leaves all of it.
+pub fn deeper_than_removal_walk(depth: u32) -> bool {
+    depth > REMOVAL_MAX_DEPTH
+}
+
+/// A removal that unlinked some of a tree and left the rest under its claim: the error
+/// [`remove_tree_at`] returns then, which names the claim, and, from a measured removal
+/// ([`remove_tree_measured_at`]), the bytes that left the disk.
+#[derive(Debug)]
+pub struct PartlyRemoved {
+    /// The private name in the parent that holds what is left, `.af-removing-<pid>-…`.
+    pub claim: String,
+    /// The allocated bytes that left the disk: what the claim held immediately before the walk
+    /// began unlinking ([`PartlyRemoved::started`]), less what it still holds after it stopped
+    /// ([`PartlyRemoved::remaining`]), both stated through the claim's own descriptor and within
+    /// the walk's reach. `None` when the removal measured nothing or either could not be
+    /// measured.
+    pub freed: Option<u64>,
+    /// What the claim held immediately before the walk began unlinking; `None` when the removal
+    /// measured nothing or it could not be measured.
+    pub started: Option<u64>,
+    /// What the claim still holds after the walk stopped; `None` when the removal measured
+    /// nothing or it could not be measured.
+    pub remaining: Option<u64>,
+    message: String,
+}
+
+impl std::fmt::Display for PartlyRemoved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for PartlyRemoved {}
+
+/// The claim a removal that failed part way left, when `error` is that failure: the name in
+/// the removed directory's parent that holds what is left of it.
+pub fn partly_removed(error: &io::Error) -> Option<&str> {
+    partial(error).map(|partly| partly.claim.as_str())
+}
+
+/// The failure part way that `error` is, when it is one.
+pub fn partial(error: &io::Error) -> Option<&PartlyRemoved> {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<PartlyRemoved>())
+}
+
+/// What names one directory or file on this machine independent of its path: its device and
+/// inode, and, where a later file at a reused inode must be told from it, its birth time.
+///
+/// A file system may hand a freed inode number to the next file it creates (ext4 does, at the
+/// same path, within the same second), so device and inode alone name a slot, not a file. The
+/// birth time survives `rename(2)` and differs for a file created later, so an identity that
+/// carries it ([`Identity::born_of`], [`born_at`], [`born_of_descriptor`]) names one file: the
+/// identities the Project's removals and Survey records compare (ADR-0158 clause 5, ADR-0159
+/// clauses 2 and 13). Those constructors refuse a file system that reports no birth time, never
+/// standing in the change time (a rename changes it) or the modification time (a replacement can
+/// set it). The device-and-inode identity of [`Identity::of`] and its siblings leaves it `None`,
+/// as ADR-0144's removals compare it. Two identities are equal only when all three are, so a
+/// born identity never equals a later file's, nor one without a birth time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Identity {
     pub device: u64,
     pub inode: u64,
+    /// When the file was born, in nanoseconds since the Unix epoch; `None` for a
+    /// device-and-inode identity.
+    pub born: Option<u64>,
 }
 
 impl Identity {
-    /// The identity of what `path` names, without following a final link.
+    /// The device-and-inode identity of what `path` names, without following a final link.
     pub fn of(path: &Path) -> io::Result<Self> {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::symlink_metadata(path)?;
         Ok(Self {
             device: metadata.dev(),
             inode: metadata.ino(),
+            born: None,
         })
     }
 
-    /// The identity a `stat` reports.
+    /// The device-and-inode identity a `stat` reports.
     #[allow(clippy::unnecessary_cast)]
     pub fn of_stat(stat: &nix::sys::stat::FileStat) -> Self {
         Self {
             device: stat.st_dev as u64,
             inode: stat.st_ino as u64,
+            born: None,
         }
     }
 
-    /// The identity of the directory or file `descriptor` holds open.
+    /// The device-and-inode identity of the directory or file `descriptor` holds open.
     #[allow(clippy::unnecessary_cast)]
     pub fn of_descriptor(descriptor: impl AsFd) -> io::Result<Self> {
         let stat = nix::sys::stat::fstat(descriptor).map_err(io::Error::from)?;
@@ -50,7 +121,260 @@ impl Identity {
         Ok(Self {
             device: stat.st_dev as u64,
             inode: stat.st_ino as u64,
+            born: None,
         })
+    }
+
+    /// The born identity of what `path` names, without following a final link; an error naming
+    /// the file system when it reports no birth time ([`is_incomplete`]).
+    pub fn born_of(path: &Path) -> io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(path)?;
+        let born = metadata
+            .created()
+            .ok()
+            .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|since| u64::try_from(since.as_nanos()).ok());
+        let identity = Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            born: born.filter(|&born| born > 0 && !test_no_birth_time()),
+        };
+        identity.complete(&path.display().to_string(), || file_system_at_path(path))
+    }
+
+    /// This identity when it carries a birth time; otherwise the error [`is_incomplete`] tells
+    /// apart, naming what `shown` is and the file system `kind` names.
+    fn complete(self, shown: &str, kind: impl FnOnce() -> String) -> io::Result<Self> {
+        match self.born {
+            Some(_) => Ok(self),
+            None => Err(io::Error::other(Incomplete(format!(
+                "{shown} is on a file system ({}) that reports no birth time, so af cannot tell \
+                 it from a file created later at the same inode and leaves it",
+                kind()
+            )))),
+        }
+    }
+}
+
+/// The error a born identity's constructor returns on a file system that reports no birth time:
+/// told apart from every other failure by [`is_incomplete`].
+#[derive(Debug)]
+struct Incomplete(String);
+
+impl std::fmt::Display for Incomplete {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Incomplete {}
+
+/// Whether `error` says a born identity could not be stated because the file system reports no
+/// birth time, rather than that the file could not be stated at all.
+pub fn is_incomplete(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.downcast_ref::<Incomplete>().is_some())
+}
+
+/// What one no-follow `stat` of a name found, with its born identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stated {
+    /// Its device, inode and birth time; `born` is `None` where the file system reports none,
+    /// which [`Stated::complete`] refuses.
+    pub identity: Identity,
+    pub kind: Kind,
+    /// Its length.
+    pub size: u64,
+    /// Its allocated bytes, `st_blocks * 512`.
+    pub allocated: u64,
+    pub links: u64,
+}
+
+/// What kind of entry a [`Stated`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    File,
+    Directory,
+    Symlink,
+    Other,
+}
+
+impl Stated {
+    /// Its identity when it carries a birth time; otherwise the error [`is_incomplete`] tells
+    /// apart, naming `shown` and the file system of `directory`, which holds it.
+    pub fn complete(&self, shown: &str, directory: impl AsFd) -> io::Result<Identity> {
+        self.identity
+            .complete(shown, || file_system_of(directory.as_fd()))
+    }
+
+    /// The allocated bytes it holds as the Storage Budget counts them: a regular file's, and
+    /// nothing for a directory, a link or anything else ([`crate::storage`]).
+    pub fn counted(&self) -> u64 {
+        if self.kind == Kind::File {
+            self.allocated
+        } else {
+            0
+        }
+    }
+}
+
+/// `name` of `directory`, stated without following a link, with its birth time where the file
+/// system reports one; `None` when nothing is there.
+pub fn born_at(directory: impl AsFd, name: &OsStr) -> io::Result<Option<Stated>> {
+    match stat_born(directory.as_fd(), name, false) {
+        Ok(stated) => Ok(Some(stated)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The directory or file `descriptor` holds open, stated with its birth time where the file
+/// system reports one.
+pub fn born_of_descriptor(descriptor: impl AsFd) -> io::Result<Stated> {
+    stat_born(descriptor.as_fd(), OsStr::new(""), true)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn stat_born(
+    directory: std::os::fd::BorrowedFd<'_>,
+    name: &OsStr,
+    itself: bool,
+) -> io::Result<Stated> {
+    use rustix::fs::{AtFlags, FileType, StatxFlags};
+    let flags = if itself {
+        AtFlags::EMPTY_PATH
+    } else {
+        AtFlags::SYMLINK_NOFOLLOW
+    };
+    // One call states everything, the birth time with the inode it belongs to.
+    let stat = rustix::fs::statx(
+        directory,
+        name,
+        flags,
+        StatxFlags::BASIC_STATS | StatxFlags::BTIME,
+    )?;
+    let born = (stat.stx_mask & StatxFlags::BTIME.bits() != 0)
+        .then(|| {
+            u64::try_from(stat.stx_btime.tv_sec)
+                .ok()
+                .and_then(|seconds| {
+                    seconds
+                        .checked_mul(1_000_000_000)?
+                        .checked_add(u64::from(stat.stx_btime.tv_nsec))
+                })
+        })
+        .flatten();
+    Ok(Stated {
+        identity: Identity {
+            device: rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor),
+            inode: stat.stx_ino,
+            born: born.filter(|&born| born > 0 && !test_no_birth_time()),
+        },
+        kind: match FileType::from_raw_mode(u32::from(stat.stx_mode)) {
+            FileType::RegularFile => Kind::File,
+            FileType::Directory => Kind::Directory,
+            FileType::Symlink => Kind::Symlink,
+            _ => Kind::Other,
+        },
+        size: stat.stx_size,
+        allocated: stat.stx_blocks.saturating_mul(512),
+        links: u64::from(stat.stx_nlink),
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[allow(clippy::unnecessary_cast)]
+fn stat_born(
+    directory: std::os::fd::BorrowedFd<'_>,
+    name: &OsStr,
+    itself: bool,
+) -> io::Result<Stated> {
+    use nix::sys::stat::SFlag;
+    let stat = if itself {
+        nix::sys::stat::fstat(directory)
+    } else {
+        nix::sys::stat::fstatat(directory, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW)
+    }
+    .map_err(io::Error::from)?;
+    // `st_birthtime` is the birth time on every file system macOS mounts; one that keeps none
+    // reports the epoch, which no file af makes was born at.
+    let born = u64::try_from(stat.st_birthtime)
+        .ok()
+        .and_then(|seconds| {
+            seconds
+                .checked_mul(1_000_000_000)?
+                .checked_add(u64::try_from(stat.st_birthtime_nsec).ok()?)
+        })
+        .filter(|&born| born > 0 && !test_no_birth_time());
+    Ok(Stated {
+        identity: Identity {
+            device: stat.st_dev as u64,
+            inode: stat.st_ino as u64,
+            born,
+        },
+        kind: match SFlag::from_bits_truncate(stat.st_mode as nix::libc::mode_t) & SFlag::S_IFMT {
+            SFlag::S_IFREG => Kind::File,
+            SFlag::S_IFDIR => Kind::Directory,
+            SFlag::S_IFLNK => Kind::Symlink,
+            _ => Kind::Other,
+        },
+        size: u64::try_from(stat.st_size).unwrap_or(0),
+        allocated: (stat.st_blocks as u64).saturating_mul(512),
+        links: stat.st_nlink as u64,
+    })
+}
+
+/// What a message calls the file system that holds `directory`: its type as the operating
+/// system names it.
+fn file_system_of(directory: std::os::fd::BorrowedFd<'_>) -> String {
+    match nix::sys::statfs::fstatfs(directory) {
+        Ok(statfs) => file_system_kind(&statfs),
+        Err(errno) => format!("of an unknown type: {errno}"),
+    }
+}
+
+fn file_system_at_path(path: &Path) -> String {
+    match nix::sys::statfs::statfs(path) {
+        Ok(statfs) => file_system_kind(&statfs),
+        Err(errno) => format!("of an unknown type: {errno}"),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn file_system_kind(statfs: &nix::sys::statfs::Statfs) -> String {
+    statfs.filesystem_type_name().to_string()
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn file_system_kind(statfs: &nix::sys::statfs::Statfs) -> String {
+    format!("type {:#x}", statfs.filesystem_type().0)
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static NO_BIRTH_TIME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A debug build's test hook: on this thread, every born identity is stated as on a file system
+/// that reports no birth time. A fixture's process asks the same with
+/// `AF_TEST_NO_BIRTH_TIME=1`. Release builds have neither.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn set_no_birth_time(on: bool) {
+    NO_BIRTH_TIME.with(|slot| slot.set(on));
+}
+
+fn test_no_birth_time() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        NO_BIRTH_TIME.with(std::cell::Cell::get)
+            || std::env::var_os("AF_TEST_NO_BIRTH_TIME").is_some_and(|value| value == "1")
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
     }
 }
 
@@ -110,12 +434,39 @@ pub fn open_beneath(anchor: impl AsFd, relative: &Path) -> io::Result<OwnedFd> {
 /// claimed under a private name in `parent` and checked there by identity, emptied through its
 /// own descriptor (an entry below it, a link included, is unlinked, never followed) and unlinked
 /// under its private name. A name that is a symlink, no directory, or another directory than
-/// `expected` is left and is an error; so is a directory that changed while being claimed.
+/// `expected` is left and is an error; so is a directory that changed while being claimed. A
+/// tree emptied only part way (nested deeper than [`REMOVAL_MAX_DEPTH`], a child that cannot be
+/// unlinked) is a [`PartlyRemoved`] error naming the claim that holds the rest, and so is one
+/// whose children were unlinked but whose final `unlinkat` failed (a child appeared meanwhile,
+/// or the claim's name holds another directory).
 pub fn remove_tree_at(
     parent: impl AsFd,
     name: &OsStr,
     expected: Option<Identity>,
 ) -> io::Result<()> {
+    remove_tree(parent, name, expected, false).map(drop)
+}
+
+/// [`remove_tree_at`], accounting from the removal's own start: once the directory is claimed,
+/// its allocated bytes are stated through its own descriptor, within the walk's reach,
+/// immediately before anything is unlinked. Returns those bytes (`None` when they cannot be
+/// measured); a removal that stops part way is a [`PartlyRemoved`] whose `freed` is those bytes
+/// less what the claim still holds, stated the same way after it stopped, so a tree that grew
+/// since an inventory measured it never reports nothing for what the walk did unlink.
+pub fn remove_tree_measured_at(
+    parent: impl AsFd,
+    name: &OsStr,
+    expected: Option<Identity>,
+) -> io::Result<Option<u64>> {
+    remove_tree(parent, name, expected, true)
+}
+
+fn remove_tree(
+    parent: impl AsFd,
+    name: &OsStr,
+    expected: Option<Identity>,
+    measure: bool,
+) -> io::Result<Option<u64>> {
     use nix::dir::Dir;
     use nix::fcntl::OFlag;
     use nix::fcntl::renameat;
@@ -160,12 +511,7 @@ pub fn remove_tree_at(
         nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
     )
     .map_err(io::Error::from)?;
-    #[allow(clippy::unnecessary_cast)]
-    let claimed_identity = Identity {
-        device: at_claim.st_dev as u64,
-        inode: at_claim.st_ino as u64,
-    };
-    if claimed_identity != found {
+    if Identity::of_stat(&at_claim) != found {
         // Not ours: return it to its name, unless that name was taken again meanwhile.
         let _ = renameat(&parent, claimed.as_str(), &parent, name);
         return Err(io::Error::other(format!(
@@ -173,39 +519,164 @@ pub fn remove_tree_at(
             name.to_string_lossy()
         )));
     }
+    // What the claim holds now, immediately before the walk unlinks anything, through the
+    // descriptor the walk empties: the start every partial removal is accounted from.
+    let before = if measure {
+        within_reach(&directory).ok()
+    } else {
+        None
+    };
+    // What is left stays under its claim: renaming it back could replace whatever took the old
+    // name since. Once this process has exited, a later sweep finishes the claim
+    // ([`finish_abandoned_claims`]) and reports it while it cannot.
+    let partly = |directory: &Dir, why: String| {
+        let remaining = if measure {
+            within_reach(directory).ok()
+        } else {
+            None
+        };
+        let freed = before
+            .zip(remaining)
+            .map(|(before, remaining)| before.saturating_sub(remaining));
+        io::Error::other(PartlyRemoved {
+            message: format!(
+                "`{}` was only partly removed ({why}); the rest is left under `{claimed}` for a \
+                 later sweep",
+                name.to_string_lossy()
+            ),
+            claim: claimed.clone(),
+            freed,
+            started: before,
+            remaining,
+        })
+    };
     if let Err(errno) = crate::stale::remove_children_nofollow(&mut directory, 0) {
-        // What is left stays under its claim: renaming it back could replace whatever took the
-        // old name since. Once this process has exited, a later sweep finishes the claim
-        // ([`finish_abandoned_claims`]) and reports it while it cannot.
-        return Err(io::Error::other(format!(
-            "`{}` was only partly removed ({errno}); the rest is left under `{claimed}` for a \
-             later sweep",
-            name.to_string_lossy()
-        )));
+        return Err(partly(&directory, errno.to_string()));
     }
-    drop(directory);
     // The claimed name is checked once more right before it is unlinked. POSIX has no unlink by
     // descriptor, so a directory put at this private name in the instant between the two could
     // still go; only an empty one can (`unlinkat` removes no other), and nothing af or a user
-    // works with is ever named like a claim (ADR-0144).
+    // works with is ever named like a claim (ADR-0144). The descriptor stays open until then,
+    // so what a failure here leaves is measured through it.
+    before_final_unlink(&claimed);
     let still = nix::sys::stat::fstatat(
         &parent,
         claimed.as_str(),
         nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
     )
-    .map_err(io::Error::from)?;
-    #[allow(clippy::unnecessary_cast)]
-    let still = Identity {
-        device: still.st_dev as u64,
-        inode: still.st_ino as u64,
-    };
-    if still != found {
-        return Err(io::Error::other(format!(
-            "`{}` changed while it was being removed; what holds its claim is left",
-            name.to_string_lossy()
-        )));
+    .map_err(|errno| partly(&directory, format!("inspecting its claim: {errno}")))?;
+    if Identity::of_stat(&still) != found {
+        return Err(partly(
+            &directory,
+            "its claim changed while it was being removed, so what holds it is left".into(),
+        ));
     }
-    unlinkat(&parent, claimed.as_str(), UnlinkatFlags::RemoveDir).map_err(io::Error::from)
+    unlinkat(&parent, claimed.as_str(), UnlinkatFlags::RemoveDir)
+        .map_err(|errno| partly(&directory, format!("removing its claim: {errno}")))?;
+    Ok(before)
+}
+
+/// Allocated bytes of the regular files below the directory `directory` holds open that the
+/// removal walk reaches ([`REMOVAL_MAX_DEPTH`] levels of directories and their entries), stated
+/// through descriptors without following a link; a file reached through several hard links
+/// counts once, and a directory or a link counts nothing, as [`crate::storage`] counts. What lies
+/// deeper is never touched by the walk, so it is in neither of the two measurements a partial
+/// removal is accounted from.
+fn within_reach(directory: &impl AsFd) -> io::Result<u64> {
+    let mut seen = std::collections::BTreeSet::new();
+    below(directory, 0, &mut seen)
+}
+
+#[allow(clippy::unnecessary_cast)]
+fn allocated(stat: &nix::sys::stat::FileStat) -> u64 {
+    (stat.st_blocks as u64).saturating_mul(512)
+}
+
+/// The entries of the directory at level `depth`, as [`within_reach`] counts them.
+fn below(
+    directory: &impl AsFd,
+    depth: u32,
+    seen: &mut std::collections::BTreeSet<Identity>,
+) -> io::Result<u64> {
+    use nix::errno::Errno;
+    use nix::fcntl::{AtFlags, OFlag, openat};
+    use nix::sys::stat::{Mode, SFlag, fstatat};
+    if depth > REMOVAL_MAX_DEPTH {
+        return Ok(0);
+    }
+    let mut listing = nix::dir::Dir::openat(directory, ".", directory_flags(), Mode::empty())
+        .map_err(io::Error::from)?;
+    let mut names = Vec::new();
+    for entry in listing.iter() {
+        let entry = entry.map_err(io::Error::from)?;
+        let name = entry.file_name();
+        if !matches!(name.to_bytes(), b"." | b"..") {
+            names.push(std::ffi::CString::from(name));
+        }
+    }
+    let mut total = 0_u64;
+    for name in names {
+        let stat = match fstatat(directory, name.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            // Unlinked between the listing and the stat: it holds nothing now.
+            Err(Errno::ENOENT) => continue,
+            Err(errno) => return Err(errno.into()),
+        };
+        #[allow(clippy::unnecessary_cast)]
+        let kind = SFlag::from_bits_truncate(stat.st_mode as nix::libc::mode_t) & SFlag::S_IFMT;
+        if kind != SFlag::S_IFDIR {
+            if kind != SFlag::S_IFREG
+                || (stat.st_nlink > 1 && !seen.insert(Identity::of_stat(&stat)))
+            {
+                continue;
+            }
+            total = total.saturating_add(allocated(&stat));
+            continue;
+        }
+        match openat(
+            directory,
+            name.as_c_str(),
+            directory_flags() | OFlag::O_NOFOLLOW,
+            Mode::empty(),
+        ) {
+            Ok(child) => total = total.saturating_add(below(&child, depth + 1, seen)?),
+            // Gone, or no directory any more: counted as it was stated.
+            Err(Errno::ENOENT | Errno::ENOTDIR | Errno::ELOOP) => {}
+            Err(errno) => return Err(errno.into()),
+        }
+    }
+    Ok(total)
+}
+
+/// The hook [`set_before_final_unlink`] installs.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub type BeforeFinalUnlink = Box<dyn FnMut(&str)>;
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static BEFORE_FINAL_UNLINK: std::cell::RefCell<Option<BeforeFinalUnlink>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A debug build's test hook, run on the removing thread with the claim's name after its
+/// children were unlinked and before its final `unlinkat`: where a test makes a child appear,
+/// as another process could. Release builds have no such hook.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn set_before_final_unlink(hook: Option<BeforeFinalUnlink>) {
+    BEFORE_FINAL_UNLINK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+fn before_final_unlink(claim: &str) {
+    #[cfg(debug_assertions)]
+    BEFORE_FINAL_UNLINK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook(claim);
+        }
+    });
+    #[cfg(not(debug_assertions))]
+    let _ = claim;
 }
 
 /// Whether `name` is a claim [`remove_tree_at`] makes, and the pid of the process that made it.
@@ -217,22 +688,52 @@ fn claim_owner(name: &str) -> Option<u32> {
         .ok()
 }
 
-/// Finish the removals a process that has since died left claimed in `parent`: every
-/// `.af-removing-<pid>-…` directory whose process is gone is removed through
-/// [`remove_tree_at`]. A claim of a live process is its own business and stays. Returns the
-/// names it removed with the bytes each held, and why each other one was left.
-pub fn finish_abandoned_claims(parent: &Path) -> (Vec<(String, u64)>, Vec<String>) {
-    let mut removed = Vec::new();
-    let mut left = Vec::new();
+/// A removal a process that has since died left claimed, as one listing found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbandonedClaim {
+    /// Its private name in its parent, `.af-removing-<pid>-…`.
+    pub name: String,
+    /// The directory the listing stated, without following a link.
+    pub identity: Identity,
+    /// Its allocated bytes and the level of its deepest directory, as one walk measured them,
+    /// or why that walk could not: an unmeasurable claim is never finished, since nothing could
+    /// say what its removal freed.
+    pub measured: Result<ClaimSize, Unmeasured>,
+}
+
+/// What the listing's walk measured of a claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClaimSize {
+    pub bytes: u64,
+    /// The level of its deepest directory: one deeper than [`REMOVAL_MAX_DEPTH`] cannot be
+    /// finished whole.
+    pub depth: u32,
+}
+
+/// Why the listing's walk could not measure a claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unmeasured {
+    /// Nested deeper than the measurement walk reaches.
+    TooDeep(String),
+    /// Anything else the walk could not read.
+    Unreadable(String),
+}
+
+/// List, reading only, the removals a process that has since died left claimed in `parent`:
+/// every `.af-removing-<pid>-…` directory whose process is gone, with its identity and what
+/// the walk measured of it, or why it could not. A claim of a live process is its own business
+/// and is not listed.
+pub fn abandoned_claims(parent: &Path) -> Vec<AbandonedClaim> {
     let Ok(entries) = std::fs::read_dir(parent) else {
-        return (removed, left);
+        return Vec::new();
     };
-    let Ok(anchor) = open_anchor(parent) else {
-        return (removed, left);
-    };
+    let mut claims = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(pid) = name.to_str().and_then(claim_owner) else {
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(pid) = claim_owner(name) else {
             continue;
         };
         if crate::stale::process_exists(pid) {
@@ -241,10 +742,51 @@ pub fn finish_abandoned_claims(parent: &Path) -> (Vec<(String, u64)>, Vec<String
         let Ok(identity) = Identity::of(&entry.path()) else {
             continue;
         };
-        let bytes = crate::storage::allocated_bytes(&entry.path()).unwrap_or(0);
-        match remove_tree_at(&anchor, &name, Some(identity)) {
-            Ok(()) => removed.push((name.to_string_lossy().into_owned(), bytes)),
-            Err(error) => left.push(format!("{}: {error}", name.to_string_lossy())),
+        let measured = match crate::storage::allocated_bytes_and_depth(&entry.path()) {
+            Ok((bytes, depth)) => Ok(ClaimSize { bytes, depth }),
+            Err(error) if crate::storage::is_nested_too_deep(&error) => {
+                Err(Unmeasured::TooDeep(error.to_string()))
+            }
+            Err(error) => Err(Unmeasured::Unreadable(error.to_string())),
+        };
+        claims.push(AbandonedClaim {
+            name: name.to_string(),
+            identity,
+            measured,
+        });
+    }
+    claims.sort_by(|a, b| a.name.cmp(&b.name));
+    claims
+}
+
+/// Finish the removals a process that has since died left claimed in `parent`: every claim
+/// [`abandoned_claims`] lists and measured is removed through [`remove_tree_at`], only while
+/// it is the directory that was listed. Returns the names it removed with the bytes each held,
+/// and why each other one was left, an unmeasurable claim included.
+pub fn finish_abandoned_claims(parent: &Path) -> (Vec<(String, u64)>, Vec<String>) {
+    let mut removed = Vec::new();
+    let mut left = Vec::new();
+    let claims = abandoned_claims(parent);
+    if claims.is_empty() {
+        return (removed, left);
+    }
+    let Ok(anchor) = open_anchor(parent) else {
+        return (removed, left);
+    };
+    for claim in claims {
+        let size = match &claim.measured {
+            Ok(size) => *size,
+            Err(Unmeasured::TooDeep(why) | Unmeasured::Unreadable(why)) => {
+                left.push(format!(
+                    "{}: cannot be measured, so it is left: {why}",
+                    claim.name
+                ));
+                continue;
+            }
+        };
+        match remove_tree_at(&anchor, OsStr::new(&claim.name), Some(claim.identity)) {
+            Ok(()) => removed.push((claim.name, size.bytes)),
+            Err(error) => left.push(format!("{}: {error}", claim.name)),
         }
     }
     (removed, left)
@@ -287,6 +829,30 @@ pub fn remove_beneath(anchor: &Path, target: &Path, expected: Option<Identity>) 
     remove_tree_at(&parent, name, expected)
 }
 
+/// [`remove_beneath`] through [`remove_tree_measured_at`]: the bytes the directory held when its
+/// removal started, and a partial removal's freed bytes accounted from them.
+pub fn remove_beneath_measured(
+    anchor: &Path,
+    target: &Path,
+    expected: Option<Identity>,
+) -> io::Result<Option<u64>> {
+    let relative = target.strip_prefix(anchor).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not below {}", target.display(), anchor.display()),
+        )
+    })?;
+    let (Some(parent), Some(name)) = (relative.parent(), relative.file_name()) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is the anchor itself", target.display()),
+        ));
+    };
+    let anchor = open_anchor(anchor)?;
+    let parent = open_beneath(&anchor, parent)?;
+    remove_tree_measured_at(&parent, name, expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,9 +885,14 @@ mod tests {
         std::fs::create_dir_all(&deep).unwrap();
         let identity = Identity::of(&parent.join("target")).unwrap();
         let fd = open_anchor(&parent).unwrap();
+        let (_, depth) = crate::storage::allocated_bytes_and_depth(&parent.join("target")).unwrap();
+        assert_eq!(depth, crate::stale::MAX_DEPTH + 2);
+        assert!(deeper_than_removal_walk(depth));
         let error = remove_tree_at(&fd, OsStr::new("target"), Some(identity)).unwrap_err();
         assert!(error.to_string().contains("left under"), "{error}");
         assert!(!parent.join("target").exists(), "it is never renamed back");
+        let claim = partly_removed(&error).expect("the error names its claim");
+        assert!(parent.join(claim).is_dir(), "what is left is under {claim}");
         let claims: Vec<String> = std::fs::read_dir(&parent)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -334,10 +905,212 @@ mod tests {
         // A claim whose process is gone is finished; one that is not a claim is never touched.
         std::fs::create_dir_all(parent.join(".af-removing-999999999-1-0/inner")).unwrap();
         std::fs::create_dir(parent.join("neighbour")).unwrap();
+        // Listing reads only: the dead owner's claim with what it is, and nothing else.
+        let listed = abandoned_claims(&parent);
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].name, ".af-removing-999999999-1-0");
+        assert_eq!(
+            listed[0].identity,
+            Identity::of(&parent.join(".af-removing-999999999-1-0")).unwrap()
+        );
+        assert!(parent.join(".af-removing-999999999-1-0/inner").is_dir());
         let (removed, _) = finish_abandoned_claims(&parent);
         assert_eq!(removed.len(), 1);
         assert_eq!(removed[0].0, ".af-removing-999999999-1-0");
         assert!(parent.join("neighbour").is_dir());
+    }
+
+    /// The claim `parent` holds after a removal that stopped part way.
+    fn the_claim(parent: &Path, error: &io::Error) -> std::path::PathBuf {
+        parent.join(partly_removed(error).expect("the error names its claim"))
+    }
+
+    #[test]
+    fn a_partial_removal_frees_what_its_claim_held_when_it_started_less_what_it_still_holds() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("parent");
+        let target = parent.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        for n in 0..8 {
+            std::fs::write(target.join(format!("blob-{n}")), vec![5_u8; 64 * 1024]).unwrap();
+        }
+        // Deeper than the walk reaches, a file at every level.
+        let mut deep = target.join("deep");
+        for n in 0..=REMOVAL_MAX_DEPTH + 2 {
+            std::fs::create_dir_all(&deep).unwrap();
+            std::fs::write(deep.join(format!("f{n}")), vec![9_u8; 4096]).unwrap();
+            deep = deep.join("d");
+        }
+        let identity = Identity::of(&target).unwrap();
+        let before = crate::storage::allocated_bytes(&target).unwrap();
+        let fd = open_anchor(&parent).unwrap();
+        let error = remove_tree_measured_at(&fd, OsStr::new("target"), Some(identity)).unwrap_err();
+        let claim = the_claim(&parent, &error);
+        let remaining = crate::storage::allocated_bytes(&claim).unwrap();
+        assert!(remaining > 0, "the walk could not reach all of it");
+        let partly = partial(&error).unwrap();
+        assert_eq!(partly.freed, Some(before - remaining), "{error}");
+        // What it held when it started and what it still holds, within the walk's reach: the
+        // files deeper than it are in neither, so the difference is what the walk unlinked.
+        let (started, still) = (partly.started.unwrap(), partly.remaining.unwrap());
+        assert!(started <= before && still <= remaining, "{started} {still}");
+        assert_eq!(started - still, before - remaining);
+        // An unmeasured removal says nothing of what it freed.
+        let again = Identity::of(&claim).unwrap();
+        let name = claim.file_name().unwrap().to_os_string();
+        let error = remove_tree_at(&fd, &name, Some(again)).unwrap_err();
+        let partly = partial(&error).unwrap();
+        assert_eq!(
+            (partly.freed, partly.started, partly.remaining),
+            (None, None, None)
+        );
+        std::fs::remove_dir_all(the_claim(&parent, &error)).unwrap();
+    }
+
+    /// A born identity names one file: it survives a rename, and a file created later at the
+    /// same path is another, also where a file system hands it the freed inode number, since its
+    /// birth time is later. A device-and-inode identity of the same file never equals it.
+    #[test]
+    fn a_born_identity_survives_a_rename_and_refuses_a_later_file_at_a_reused_inode() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("record");
+        std::fs::write(&path, b"one").unwrap();
+        let born = Identity::born_of(&path).unwrap();
+        assert!(born.born.is_some());
+        let moved = root.path().join("moved");
+        std::fs::rename(&path, &moved).unwrap();
+        assert_eq!(
+            Identity::born_of(&moved).unwrap(),
+            born,
+            "a rename keeps it"
+        );
+        let anchor = open_anchor(root.path()).unwrap();
+        let stated = born_at(&anchor, OsStr::new("moved")).unwrap().unwrap();
+        assert_eq!(
+            stated.identity, born,
+            "stated relative to a directory, the same"
+        );
+        assert_eq!(
+            (stated.kind, stated.size, stated.counted()),
+            (Kind::File, 3, stated.allocated)
+        );
+        let file = std::fs::File::open(&moved).unwrap();
+        assert_eq!(born_of_descriptor(&file).unwrap().identity, born);
+        assert_ne!(
+            Identity::of(&moved).unwrap(),
+            born,
+            "no birth time, another identity"
+        );
+        // Created later at the old path, the same bytes: another file.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, b"one").unwrap();
+        let later = Identity::born_of(&path).unwrap();
+        assert_ne!(later, born);
+        assert!(later.born > born.born, "born later");
+        // A file system that reuses the inode gives it the same device and inode: the later
+        // birth time alone tells it apart, and the identity refuses it.
+        let reused = Identity {
+            born: later.born,
+            ..born
+        };
+        assert_ne!(reused, born);
+        assert_eq!(born_at(&anchor, OsStr::new("absent")).unwrap(), None);
+    }
+
+    /// On a file system that reports no birth time a born identity is incomplete: its
+    /// constructor refuses with one sentence naming the file system, never standing in another
+    /// time, and a stated name carries no birth time to compare.
+    #[test]
+    fn a_file_system_without_birth_time_leaves_a_born_identity_incomplete() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("record");
+        std::fs::write(&path, b"one").unwrap();
+        set_no_birth_time(true);
+        let refused = Identity::born_of(&path);
+        let anchor = open_anchor(root.path()).unwrap();
+        let stated = born_at(&anchor, OsStr::new("record")).unwrap().unwrap();
+        let incomplete = stated.complete("the record", &anchor);
+        set_no_birth_time(false);
+        let error = refused.unwrap_err();
+        assert!(is_incomplete(&error), "{error}");
+        assert!(
+            error.to_string().contains("reports no birth time"),
+            "{error}"
+        );
+        assert_eq!(stated.identity.born, None);
+        let error = incomplete.unwrap_err();
+        assert!(
+            is_incomplete(&error)
+                && error
+                    .to_string()
+                    .starts_with("the record is on a file system ("),
+            "{error}"
+        );
+        assert!(!is_incomplete(&io::Error::other("permission denied")));
+        let again = born_at(&anchor, OsStr::new("record")).unwrap().unwrap();
+        assert!(again.complete("the record", &anchor).is_ok());
+    }
+
+    #[test]
+    fn a_child_that_appears_before_the_final_unlink_makes_the_removal_partial() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("parent");
+        let target = parent.join("target");
+        std::fs::create_dir_all(target.join("inner")).unwrap();
+        std::fs::write(target.join("inner/file"), vec![4_u8; 128 * 1024]).unwrap();
+        std::fs::write(target.join("file"), vec![4_u8; 64 * 1024]).unwrap();
+        let identity = Identity::of(&target).unwrap();
+        let before = crate::storage::allocated_bytes(&target).unwrap();
+        let late = parent.clone();
+        set_before_final_unlink(Some(Box::new(move |claim: &str| {
+            std::fs::write(late.join(claim).join("late"), b"").unwrap();
+        })));
+        let fd = open_anchor(&parent).unwrap();
+        let outcome = remove_tree_measured_at(&fd, OsStr::new("target"), Some(identity));
+        set_before_final_unlink(None);
+        let error = outcome.unwrap_err();
+        assert!(error.to_string().contains("removing its claim"), "{error}");
+        let claim = the_claim(&parent, &error);
+        assert!(claim.join("late").is_file(), "what holds the claim is left");
+        let remaining = crate::storage::allocated_bytes(&claim).unwrap();
+        let freed = partial(&error).unwrap().freed.unwrap();
+        assert_eq!(freed, before - remaining);
+        assert!(freed >= 192 * 1024, "the children it removed: {freed}");
+    }
+
+    #[test]
+    fn a_measured_removal_returns_what_it_held_when_it_started() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("parent");
+        std::fs::create_dir_all(parent.join("target/inner")).unwrap();
+        std::fs::write(parent.join("target/inner/file"), vec![1_u8; 64 * 1024]).unwrap();
+        let before = crate::storage::allocated_bytes(&parent.join("target")).unwrap();
+        let removed = remove_beneath_measured(root.path(), &parent.join("target"), None).unwrap();
+        assert_eq!(removed, Some(before));
+        assert!(!parent.join("target").exists());
+    }
+
+    #[test]
+    fn an_unmeasurable_dead_claim_is_listed_as_such_and_never_finished() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("parent");
+        let claim = parent.join(".af-removing-999999999-2-0");
+        let mut deep = claim.clone();
+        for _ in 0..300 {
+            deep = deep.join("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("file"), b"x").unwrap();
+        let listed = abandoned_claims(&parent);
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert!(
+            matches!(listed[0].measured, Err(Unmeasured::TooDeep(_))),
+            "{listed:?}"
+        );
+        let (removed, left) = finish_abandoned_claims(&parent);
+        assert!(removed.is_empty());
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert!(deep.join("file").is_file(), "nothing inside it is deleted");
     }
 
     #[test]

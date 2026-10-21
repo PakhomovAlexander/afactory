@@ -139,8 +139,53 @@ bounds everything af keeps, how many keys included.
 
 **Store registry**:
 `$XDG_STATE_HOME/af/stores.toml`: every Task or review Store af opened or created outside its
-default roots (`--state`, `--state-root`), recorded best effort so the Storage Budget's sweep
-reaches it, and dropped once its path holds no Store.
+default roots (`--state`, `--state-root`), and every Project Store, recorded best effort so the
+Storage Budget's sweep reaches it, and dropped once its path holds no Store.
+
+**Project**:
+The durable identity of one repository across every clone, worktree and fork af has seen:
+identified by its `repository_id` (the sorted root commits every Snapshot origin already
+carries), labelled by `[project] name` in `.af/af.toml`, and owning one Project Store under
+`$XDG_STATE_HOME/af/project/<id>/` that indexes its Workspaces and holds its Surveys.
+_Avoid_: the `.af/` directory, which is a declaration the Project's tree carries, not the
+entity; a checkout path, which is a Workspace; a Snapshot, which is one tree the Project had.
+
+**Workspace**:
+One registered checkout of a Project for one line of work: a worktree or clone, its Task Store,
+its Task files and its bindings file, under one label. Every default Task Store af has ever
+created is the Store of an unlabelled Workspace, adopted as such.
+_Avoid_: **Warm Workspace**, a per-node template root inside one Campaign that is never a
+checkout; and "workstream" as a second entity — the Workspace's label *is* the workstream's
+name, and the owner's `workstreams/<name>/` directories are Workspaces made by hand.
+
+**Survey**:
+One immutable, kernel-measured description of a Project at one exact head, `af/ProjectSurvey@2`
+in its Project Store: identity, tree, history, contributors, decisions, vocabulary and checks,
+every number decimal text, each section bounded by the `[survey]` policy and marked complete,
+partial or unavailable with the bound it reached. A model never writes one, it never holds an
+author email, and a complete one is reused, nothing recorded, while its survey key (head
+commit, refs digest, policy digest, Surveyor version) is unchanged and no `--force` asks for
+another.
+_Avoid_: **Measurement**, one declared command run against one Snapshot; **History Capture**,
+the optimizer's economics observations; **Report**, one reviewer's claim; and the README.
+
+**Surveyor**:
+The kernel-installed, token-free operator that records Surveys: synchronously at
+`af onboard --apply` and on `af project refresh`, reading the head only through supervised git
+plumbing under one `max_wall_ms` deadline, and never while the survey key is unchanged.
+_Avoid_: a daemon — it is one call that reads, writes one record and returns; and a Worker — it
+has no Provider, no Attempt and no budget.
+
+**Project Brief**:
+The bounded, named selection of Survey sections, `af/ProjectBrief@1`, that a pipeline's declared
+`project_brief` root port carries into the Workers it is wired to and no other: a
+`[brief.<name>]` variant of project policy (built in: `orient` and `none`) rendered
+deterministically from the Survey the Task's initial capture pinned, whole sections dropped
+last-declared first until it fits `max_bytes`, pinned by artifact ID in the Execution Plan and
+listed in the Attempt's context manifest. Its staleness is the consuming Task's receipt, never a
+field of the Brief.
+_Avoid_: the Survey itself, which never enters a prompt; ambient context; a prose summary a
+model wrote.
 
 **Telemetry**:
 What af records about its own work — spans, events and, at the `content` level, redacted
