@@ -130,8 +130,11 @@ class Registry(unittest.TestCase):
         toolchain = re.search(r'channel = "([^"]+)"',
                               read(os.path.join(ROOT, "rust-toolchain.toml")).decode()).group(1)
         release = read(os.path.join(ROOT, ".github/workflows/release.yml")).decode()
-        zigbuild = re.search(r"CARGO_ZIGBUILD: cargo-zigbuild==([0-9.]+)", release).group(1)
-        zig = re.search(r"ZIG: ziglang==([0-9.]+)", release).group(1)
+        pins = read(os.path.join(ROOT, "scripts/release-toolchain.txt")).decode()
+        self.assertIn("--require-hashes --only-binary=:all: -r scripts/release-toolchain.txt",
+                      release)
+        zigbuild = re.search(r"^cargo-zigbuild==([0-9.]+)", pins, re.MULTILINE).group(1)
+        zig = re.search(r"^ziglang==([0-9.]+)", pins, re.MULTILINE).group(1)
         for key, recipe in self.suite.doc["recipes"].items():
             self.assertEqual(recipe["toolchain"], toolchain, key)
             if recipe["builder"] == "cargo_zigbuild":

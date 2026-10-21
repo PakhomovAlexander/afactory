@@ -838,8 +838,11 @@ class RealToolchain(TempDir):
             "crates/review-pipeline/examples/perf-probe-v1.rs":
                 'fn main() { println!("bridge {}", review_pipeline::answer()); }\n'})
         tier, environment = REAL_PROFILES[REAL.host]
+        # This fixture intentionally compiles on the test host. Its purpose is commit and
+        # adapter provenance, and it makes no container-isolation claim on Linux either.
         plan = plan_for(repo, base, head, authority, run_id="real_build_run", tier=tier,
-                        environment=environment)
+                        environment=environment,
+                        trusted_host_build=environment.startswith("linux_"))
         builder = builds.Builder(repo.path, plan, REAL, registry(), free_bytes=PLENTY)
         doc = builder.build()
         base_side, cand = doc["sides"]["baseline"], doc["sides"]["candidate"]
