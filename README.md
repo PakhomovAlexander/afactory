@@ -253,6 +253,7 @@ and budgets are described in [`docs/architecture.md`](docs/architecture.md).
 - [`CONTEXT.md`](CONTEXT.md) — the vocabulary: Snapshot, Subject, Campaign, Round, Finding, Attempt.
 - [`docs/adr/README.md`](docs/adr/README.md) — the binding design decisions.
 - [`docs/tasks.md`](docs/tasks.md) — the `af task` guide.
+- [`docs/project.md`](docs/project.md) — `af project`: the repository's Project and its Workspaces.
 - [`docs/values.md`](docs/values.md) — the engineering values, in priority order, with their tests.
 - [`CHANGELOG.md`](CHANGELOG.md) — every release and its authority compatibility.
 

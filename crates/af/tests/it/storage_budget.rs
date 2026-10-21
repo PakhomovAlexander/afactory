@@ -1,7 +1,8 @@
 //! ADR-0144 end to end: the Storage Budget through the real CLI, over a private HOME and private
 //! XDG roots, so nothing here reads or writes the machine's own af directories, Claude config or
 //! GitHub. `af storage` and `af storage prune` over planted entries; the free-disk floor through
-//! the debug-only `AF_TEST_FREE_BYTES` hook; collection after `af task start --execute`; and the
+//! the debug-only `AF_TEST_FREE_BYTES` hook; collection after `af task start --execute`, and the
+//! `af/TaskStorageSweep@2` receipt it leaves on the Task, an unknown total included; and the
 //! Claude history a Worker Attempt and an admission probe leave, removed by the adapter.
 
 use std::os::unix::fs::PermissionsExt;
@@ -135,7 +136,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
     let fresh = warm_key(&machine, '3', 600 * 1024, Duration::from_secs(5));
 
     let shown = json(&machine.af(&machine.root, &[], &["storage", "--json"]));
-    schemas::valid(&schemas::validator("storage-v1.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v3.json"), &shown);
     assert_eq!(shown["max_bytes"], 20_u64 << 30);
     assert_eq!(shown["min_free_bytes"], 10_u64 << 30);
     let warm = shown["kinds"]
@@ -156,7 +157,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
     // 1 MiB of budget: the two older keys go, least recently used first; the fresh one stays.
     let budget = [("AF_STORAGE__MAX_BYTES", "1MiB")];
     let preview = json(&machine.af(&machine.root, &budget, &["storage", "prune", "--json"]));
-    schemas::valid(&schemas::validator("storage-prune-v1.json"), &preview);
+    schemas::valid(&schemas::validator("storage-prune-v3.json"), &preview);
     assert_eq!(preview["applied"], false);
     let paths = |document: &Value| -> Vec<String> {
         document["removals"]
@@ -176,7 +177,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
         &budget,
         &["storage", "prune", "--apply", "--json"],
     ));
-    schemas::valid(&schemas::validator("storage-prune-v1.json"), &applied);
+    schemas::valid(&schemas::validator("storage-prune-v3.json"), &applied);
     assert_eq!(applied["applied"], true);
     assert_eq!(paths(&applied), paths(&preview));
     assert_eq!(applied["stop"], "fits");
@@ -754,8 +755,8 @@ fn the_sweep_that_ends_a_run_is_an_observation_of_its_task() {
     let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
         panic!("one storage sweep: {shown}");
     };
-    schemas::valid(&schemas::validator("task-storage-sweep-v1.json"), sweep);
-    assert_eq!(sweep["schema"], "af/TaskStorageSweep@1");
+    schemas::valid(&schemas::validator("task-storage-sweep-v2.json"), sweep);
+    assert_eq!(sweep["schema"], "af/TaskStorageSweep@2");
     let removal = sweep["removals"]
         .as_array()
         .unwrap()
@@ -766,6 +767,7 @@ fn the_sweep_that_ends_a_run_is_an_observation_of_its_task() {
     assert_eq!(removal["rule"], "collection");
     assert_eq!(removal["path"], state.display().to_string());
     assert!(sweep["total_before"].as_u64().unwrap() >= sweep["total_after"].as_u64().unwrap());
+    assert!(sweep["freed_bytes"].as_u64().unwrap() >= removal["bytes"].as_u64().unwrap());
     assert_eq!(shown["result"], json(&show("gc-newer", true))["result"]);
     let (stdout, stderr) = text(&show("gc-newer", false));
     let line = stdout
@@ -960,7 +962,7 @@ fn a_registered_store_keeps_the_users_files_through_prune_and_the_sweep_after_a_
         &budget,
         &["storage", "prune", "--apply", "--json"],
     ));
-    schemas::valid(&schemas::validator("storage-prune-v1.json"), &pruned);
+    schemas::valid(&schemas::validator("storage-prune-v3.json"), &pruned);
     let removal = pruned["removals"]
         .as_array()
         .unwrap()
@@ -1013,4 +1015,132 @@ fn a_registered_store_keeps_the_users_files_through_prune_and_the_sweep_after_a_
         &["storage", "prune", "--apply", "--json"],
     ));
     assert!(!whole.exists(), "{pruned}");
+}
+
+/// Every directory below `root`, made readable and writable again, so the machine's temporary
+/// root can go.
+fn unseal(root: &Path) {
+    let Ok(metadata) = std::fs::symlink_metadata(root) else {
+        return;
+    };
+    if !metadata.is_dir() {
+        return;
+    }
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for entry in std::fs::read_dir(root).unwrap() {
+        unseal(&entry.unwrap().path());
+    }
+}
+
+/// ADR-0144 clause 4 with ADR-0159 clause 13: the sweep that ends a run, one of whose removals
+/// stopped part way and could not measure what it left, is recorded on the Task all the same:
+/// `af/TaskStorageSweep@2` with the removal that finished, the one that failed, the bytes that
+/// left the disk, and its total after it and its stop `unknown`, never a number. The Task's log
+/// replays it: `af task show` prints and carries it.
+#[test]
+fn a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its_task() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let campaigns = machine.state_home().join("af/review/campaigns");
+    // Two removals dead processes left claimed: one the sweep finishes, and one in which a
+    // directory turns unreadable just before its removal, as another process could make it.
+    let whole = crate::common::af_claim(&campaigns, 999_999_999);
+    let partly = crate::common::af_claim(&campaigns, 999_999_998);
+    for (claim, directories) in [(&whole, &["free"][..]), (&partly, &["free", "kept"][..])] {
+        for directory in directories {
+            std::fs::create_dir_all(claim.join(directory)).unwrap();
+            std::fs::write(claim.join(directory).join("00"), vec![7_u8; 1 << 20]).unwrap();
+        }
+    }
+    let sealed = partly.join("kept");
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let enforced = std::fs::read_dir(&sealed).is_err();
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if !enforced {
+        eprintln!("skipped: directory permissions are not enforced for this user");
+        return;
+    }
+
+    let run = start(
+        &machine,
+        &repo,
+        &state,
+        "gc-older.json",
+        &[(
+            "AF_TEST_STORAGE_SEAL_BEFORE_REMOVAL",
+            sealed.to_str().unwrap(),
+        )],
+    );
+    unseal(&campaigns);
+    let (stdout, stderr) = text(&run);
+    assert!(run.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("what af holds after this sweep is unknown"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("was not recorded on Task"), "{stderr}");
+    assert!(!whole.exists(), "the whole claim is finished");
+
+    let show = |json_output: bool| {
+        let mut args = vec![
+            "task",
+            "show",
+            "gc-older",
+            "--state",
+            state.to_str().unwrap(),
+        ];
+        if json_output {
+            args.push("--json");
+        }
+        machine.af(&repo, &[], &args)
+    };
+    let shown = json(&show(true));
+    schemas::valid(&schemas::validator("task-inspection-v11.json"), &shown);
+    let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
+        panic!("one storage sweep: {shown}");
+    };
+    schemas::valid(&schemas::validator("task-storage-sweep-v2.json"), sweep);
+    assert_eq!(sweep["schema"], "af/TaskStorageSweep@2");
+    assert_eq!(sweep["total_after"], "unknown", "{sweep}");
+    assert_eq!(sweep["stop"], "unknown", "{sweep}");
+    // The deletion outcome: the claim that went, listed with its bytes, and the one that
+    // stopped part way among the failures.
+    let finished = sweep["removals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|removal| removal["path"] == whole.to_str().unwrap())
+        .unwrap_or_else(|| panic!("the finished claim is listed: {sweep}"));
+    assert_eq!(finished["kind"], "claim");
+    assert_eq!(finished["rule"], "recovery");
+    let freed = finished["bytes"].as_u64().unwrap();
+    assert!(freed >= 1 << 20, "{finished}");
+    let failures = sweep["failures"].as_array().unwrap();
+    assert_eq!(failures.len(), 1, "{sweep}");
+    assert!(
+        failures[0].as_str().unwrap().contains("cannot be measured"),
+        "{sweep}"
+    );
+    assert!(
+        !sweep["removals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|removal| removal["path"] == partly.to_str().unwrap()),
+        "a failed removal is no removal: {sweep}"
+    );
+    // What left the disk is what was measured to leave: the finished claim's bytes, and none
+    // the partial removal could not vouch for.
+    assert_eq!(sweep["freed_bytes"].as_u64().unwrap(), freed, "{sweep}");
+    assert!(sweep["total_before"].as_u64().unwrap() >= freed);
+
+    // Replayed again, the text says the same.
+    let (stdout, stderr) = text(&show(false));
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with("storage sweep: "))
+        .unwrap_or_else(|| panic!("no storage sweep line:\n{stdout}\n{stderr}"));
+    assert!(line.contains(", 1 removal failed; "), "{line}");
+    assert!(line.contains(" → unknown of a "), "{line}");
+    assert!(line.ends_with("what it left cannot be measured"), "{line}");
 }

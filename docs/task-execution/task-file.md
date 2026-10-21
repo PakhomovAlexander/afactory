@@ -26,6 +26,19 @@ including after local files change. Inspection remains possible with a newer exe
 execution currently requires the exact recorded engine. A finished Task returns its recorded
 result on another `run`, with unchanged Attempt count and spend.
 
+Task files belong outside every checkout too, in a Workspace's `tasks/` directory:
+`af project workspace new LABEL` creates one beside the Workspace's Store and bindings file, and
+`af project workspaces` shows where each Workspace keeps it. A Task file that git would track
+rides along in every later Snapshot. On the `af task` commands, `--workspace LABEL` stands for
+that Workspace's `--state`, and on `plan` and `start` also for its `--bindings`
+([Projects and Workspaces](../project.md)):
+
+```sh
+af project workspace new pagination
+cd ../pagination-wt-pagination
+af task plan --workspace pagination --file "$TASKS/ticket.json" --json
+```
+
 `af task start --execute --file ticket.json` combines planning and execution. Without an explicit Pipeline,
 selection uses captured applicability facts, strategy priorities and resource feasibility.
 Generation requires a captured Planner and developer signing policy; its exact proposed plan

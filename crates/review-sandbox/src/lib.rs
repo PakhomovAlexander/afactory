@@ -55,13 +55,17 @@ pub use check_runtime::{CONTAINER_CHECK_RUNTIME, CheckRuntime};
 pub use container::{Availability, ContainerProvider};
 #[cfg(unix)]
 pub use removal::{
-    Identity, claim_name, claim_owner_at, finish_abandoned_claims, open_anchor, open_beneath,
-    remove_beneath, remove_tree_at,
+    AbandonedClaim, ClaimSize, Identity, PartlyRemoved, REMOVAL_MAX_DEPTH, Stated, Unmeasured,
+    abandoned_claims, born_at, born_of_descriptor, claim_name, claim_owner_at,
+    deeper_than_removal_walk, finish_abandoned_claims, is_incomplete, open_anchor, open_beneath,
+    partial, partly_removed, remove_beneath, remove_beneath_measured, remove_tree_at,
+    remove_tree_measured_at,
 };
 pub use seal::{MutationSet, SealedSandbox};
 pub use stale::{
     SweepReport, attempt_directory, is_af_directory_name, remove_tree_nofollow,
-    sweep_stale_sandboxes, sweep_stale_sandboxes_in,
+    sweep_stale_sandboxes, sweep_stale_sandboxes_in, sweep_stale_tree_digests,
+    sweep_stale_tree_digests_in,
 };
 pub use task_build_cache::{
     Ensured, KEY_LOCK, TaskBuildCacheKeyLock, TaskBuildCacheLock, Uninspectable, WARM_KINDS,

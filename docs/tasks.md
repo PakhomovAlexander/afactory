@@ -52,8 +52,9 @@ Its `--destination`, like that of `af catalog sync`, is a safe path relative to 
 (default `.`); an absolute path is refused.
 `af catalog sync` imports shared definitions from Git
 ([shared catalogs](task-execution/shared-catalogs.md)). The catalog pins every package by digest,
-so changing any package byte requires a newly reviewed pin. Checks are project-specific, so the
-code policy is written per repository.
+so changing any package byte requires a newly reviewed pin; `af catalog digest PACKAGE_DIR`
+prints that digest ([pin a package](task-execution/shared-catalogs.md#pin-a-package)). Checks
+are project-specific, so the code policy is written per repository.
 
 Trusting that committed authority and running `af task start --execute`, or confirming the
 previewed plan, authorizes Afactory to deliver each Worker its exact declared inputs for every
@@ -95,10 +96,11 @@ The Task ID is chosen here and must be new to the state directory. Without `pipe
 Run from the clean repository at committed `HEAD`. State defaults to a directory outside the
 repository under the user's XDG state directory; `--state` selects another external directory,
 which must be absent, empty or already an af Store: it becomes af-owned, so a directory holding
-anything else is refused.
-Save the Task request outside the checkout too (for example, `../ticket.json`); Afactory captures
-its contents into Task state. `--file` selects the request, not the source repository, so remain
-in the source checkout or select it with `--repo`.
+anything else is refused. `--workspace LABEL` selects a Workspace's Store and bindings file
+([Projects and Workspaces](project.md)).
+Save the Task request outside the checkout too (for example, `../ticket.json`, or a Workspace's
+`tasks/` directory); Afactory captures its contents into Task state. `--file` selects the request,
+not the source repository, so remain in the source checkout or select it with `--repo`.
 
 ```sh
 af provider status
@@ -299,14 +301,15 @@ the lock `af self` holds while it changes the default or a pin, so one that beca
 stays.
 
 `af storage` prints what af holds, per kind, against the budget, and the free bytes against
-`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@1` document.
+`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@3` document.
 After every `af task run` and `af review run` the sweep holds af to `max_bytes`, evicting least
 recently used entries; it does not collect by age unless `[storage] auto_gc = true`. `af storage
 prune` previews the sweep with collection; `af storage prune --apply` performs it now. It collects
 first: finished Tasks beyond the
-newest `keep_tasks` (20) of each Store, review campaigns beyond the newest `keep_campaigns` (20)
-and Stores this release cannot read, each idle at least `keep_days` (14); then it evicts until
-af fits. A Store made with `--state` is recorded in `$XDG_STATE_HOME/af/stores.toml`, so the
+newest `keep_tasks` (20) of each Store, review campaigns beyond the newest `keep_campaigns` (20),
+the Surveys of each Project beyond the newest `keep_surveys` (50) and Stores this release cannot
+read, each idle at least `keep_days` (14); then it evicts until af fits. A Survey goes behind its
+`SurveyCollected@1` tombstone, and never the newest complete one ([Collection](project.md#collection)). A Store made with `--state` is recorded in `$XDG_STATE_HOME/af/stores.toml`, so the
 sweep reaches it too; it counts only af's own entries, and it is removed whole only while it
 carries the owner marker `.af-store` af wrote when it created the directory and holds nothing
 else. Otherwise only af's entries go, and the sweep names what it left in place. A finished

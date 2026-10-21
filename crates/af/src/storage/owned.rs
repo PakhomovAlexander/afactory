@@ -188,37 +188,65 @@ pub(crate) fn private_dir(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("creating {}: {error}", path.display()))
 }
 
-/// The allocated bytes of af's entries in the Store `state`: what a Store outside af's roots
-/// counts against the budget. Anything else in the directory is not af's to count.
+/// The allocated bytes of af's entries in the Store `state` ([`af_bytes_and_depth`]).
 pub(crate) fn af_bytes(state: &Path) -> std::io::Result<u64> {
+    af_bytes_and_depth(state).map(|(bytes, _)| bytes)
+}
+
+/// The allocated bytes of af's entries in the Store `state`, and the level of the deepest
+/// directory among them (the Store itself at level 0): what a Store outside af's roots counts
+/// against the budget. Anything else in the directory is not af's to count.
+pub(crate) fn af_bytes_and_depth(state: &Path) -> std::io::Result<(u64, u32)> {
     let directory = review_sandbox::open_anchor(state)?;
-    let mut bytes = 0_u64;
+    let (mut bytes, mut depth) = (0_u64, 0_u32);
     for entry in std::fs::read_dir(state)? {
         let entry = entry?;
         if is_af_entry(&directory, &entry.file_name()) {
-            bytes = bytes.saturating_add(review_sandbox::storage::allocated_bytes(&entry.path())?);
+            let (held, below) = review_sandbox::storage::allocated_bytes_and_depth(&entry.path())?;
+            bytes = bytes.saturating_add(held);
+            if entry.file_type()?.is_dir() {
+                depth = depth.max(below.saturating_add(1));
+            }
         }
     }
-    Ok(bytes)
+    Ok((bytes, depth))
 }
 
 /// What removing a Store outside af's roots did.
 #[derive(Debug, Default)]
 pub(crate) struct Removed {
     pub(crate) bytes: u64,
+    /// What the Store held when its whole removal started ([`super::remove_directory`]); `None`
+    /// when only af's entries went, entry by entry.
+    pub(crate) started: Option<u64>,
     /// What is still there: entries that are not af's, and the directory itself when it was not
     /// removed whole.
     pub(crate) left: Vec<PathBuf>,
 }
 
 /// Remove the Store `path`, strictly below `anchor`, reached from `anchor` without following a
-/// link and only while it is still `identity`. Whole when it is marked and holds nothing but af's
-/// entries; otherwise af's entries alone, through the opened directory, and the rest is left.
+/// link and only while it is still `identity`. Whole when it is marked and holds nothing but
+/// af's entries; otherwise af's entries alone, through the opened directory, and the rest is
+/// left.
 pub(crate) fn remove(
     anchor: &Path,
     path: &Path,
     identity: review_sandbox::Identity,
 ) -> Result<Removed, String> {
+    remove_with(anchor, path, identity, || {
+        super::remove_directory(anchor, path, Some(identity), 0)
+    })
+    .map_err(|failure| failure.reason)
+}
+
+/// [`remove`], the whole removal through `whole` (the sweep's measured removal of the
+/// directory, whose partial-removal accounting it keeps).
+pub(crate) fn remove_with(
+    anchor: &Path,
+    path: &Path,
+    identity: review_sandbox::Identity,
+    whole: impl FnOnce() -> Result<(u64, Option<u64>), super::plan::Failed>,
+) -> Result<Removed, super::plan::Failed> {
     let relative = path
         .strip_prefix(anchor)
         .map_err(|_| format!("{} is not below {}", path.display(), anchor.display()))?;
@@ -231,17 +259,19 @@ pub(crate) fn remove(
         .map_err(|error| format!("inspecting it: {error}"))?;
     if found != identity {
         return Err(
-            "it is not the directory that was measured; it changed since and is left".into(),
+            "it is not the directory that was measured; it changed since and is left"
+                .to_string()
+                .into(),
         );
     }
     let names = local_fs::entry_names(&opened).map_err(|error| format!("listing it: {error}"))?;
     let marked = names.iter().any(|name| name == MARKER);
     if marked && names.iter().all(|name| is_af_entry(&opened, name)) {
-        let bytes = review_sandbox::storage::allocated_bytes(path).unwrap_or(0);
-        review_sandbox::remove_beneath(anchor, path, Some(identity))
-            .map_err(|error| format!("{error}; it is left, and the next sweep tries again"))?;
+        drop(opened);
+        let (bytes, started) = whole()?;
         return Ok(Removed {
             bytes,
+            started,
             left: Vec::new(),
         });
     }
@@ -274,7 +304,8 @@ pub(crate) fn remove(
             "af's entries were only partly removed ({}); the rest is left, and the next sweep \
              tries again",
             failures.join("; ")
-        ))
+        )
+        .into())
     }
 }
 

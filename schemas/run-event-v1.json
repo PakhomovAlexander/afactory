@@ -72,7 +72,13 @@
         "WarmSetSelected@2",
         "WorkerNotesRecorded@1",
         "BuildCacheCaptured@1",
-        "WorkspaceRebased@1"
+        "WorkspaceRebased@1",
+        "ProjectRegistered@1",
+        "WorkspaceRegistered@1",
+        "WorkspaceRemoved@1",
+        "SurveyRecorded@1",
+        "SurveyFailed@1",
+        "SurveyCollected@1"
       ]
     },
     "occurred_at": {
@@ -489,6 +495,120 @@
         "properties": {
           "payload": {
             "$ref": "#/$defs/workspace_rebased"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectRegistered@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-registered:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "WorkspaceRegistered@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-workspace-registered:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "WorkspaceRemoved@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-workspace-removed:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "SurveyRecorded@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-survey-recorded:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "SurveyFailed@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-survey-failed:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "SurveyCollected@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-survey-collected:1"
           }
         }
       }

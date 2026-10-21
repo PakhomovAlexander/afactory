@@ -267,21 +267,43 @@ impl Manifest {
     /// manifest with the same bytes — a manifest of one file named `a\nb` must not collide with
     /// a manifest of two files.
     pub fn content_digest(&self) -> String {
+        let mut digest = ManifestDigest::new(self.entries.len() as u64);
+        for entry in &self.entries {
+            digest.entry(&entry.path, entry.kind, &entry.content, entry.size);
+        }
+        digest.finish()
+    }
+}
+
+/// [`Manifest::content_digest`] fed one entry at a time, for a caller that never holds the
+/// manifest: the entry count first, then each entry in canonical path order. The one framing
+/// both share, so a streamed digest cannot drift from a held manifest's.
+pub struct ManifestDigest {
+    hasher: Sha256,
+}
+
+impl ManifestDigest {
+    pub fn new(entries: u64) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"review.kernel/source-manifest/v1\0");
-        hasher.update((self.entries.len() as u64).to_be_bytes());
-        for entry in &self.entries {
-            for field in [
-                entry.path.as_bytes(),
-                entry.kind.mode().as_bytes(),
-                entry.content.as_bytes(),
-            ] {
-                hasher.update((field.len() as u64).to_be_bytes());
-                hasher.update(field);
-            }
-            hasher.update(entry.size.to_be_bytes());
+        hasher.update(entries.to_be_bytes());
+        Self { hasher }
+    }
+
+    /// The next entry, in the byte order of its encoded path.
+    pub fn entry(&mut self, path: &str, kind: EntryKind, content: &str, size: u64) {
+        for field in [path.as_bytes(), kind.mode().as_bytes(), content.as_bytes()] {
+            self.hasher.update((field.len() as u64).to_be_bytes());
+            self.hasher.update(field);
         }
-        format!("sha256:{}", review_core::hex::encode(&hasher.finalize()))
+        self.hasher.update(size.to_be_bytes());
+    }
+
+    pub fn finish(self) -> String {
+        format!(
+            "sha256:{}",
+            review_core::hex::encode(&self.hasher.finalize())
+        )
     }
 }
 

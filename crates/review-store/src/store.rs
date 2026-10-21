@@ -227,6 +227,127 @@ pub struct TaskAttemptWall {
     pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
 }
 
+/// The ceilings one bounded projection reads a Store's log under (`EventStore::replay_within`):
+/// rows, the bytes of one row (its payload and artifact references) and the bytes of every row
+/// it read, over every run it reads from the Store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayBudget {
+    rows_left: u64,
+    max_row_bytes: u64,
+    buffered_left: u64,
+}
+
+impl ReplayBudget {
+    pub fn new(max_rows: u64, max_row_bytes: u64, max_buffered_bytes: u64) -> Self {
+        Self {
+            rows_left: max_rows,
+            max_row_bytes,
+            buffered_left: max_buffered_bytes,
+        }
+    }
+
+    /// Charge one row of `bytes`, before it is decoded.
+    fn charge(&mut self, bytes: usize) -> Result<(), ReplayCeiling> {
+        let bytes = bytes as u64;
+        if self.rows_left == 0 {
+            return Err(ReplayCeiling::Rows);
+        }
+        if bytes > self.max_row_bytes {
+            return Err(ReplayCeiling::RowBytes { bytes });
+        }
+        if bytes > self.buffered_left {
+            return Err(ReplayCeiling::BufferedBytes);
+        }
+        self.rows_left -= 1;
+        self.buffered_left -= bytes;
+        Ok(())
+    }
+}
+
+/// Which ceiling of a [`ReplayBudget`] stopped a bounded read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayCeiling {
+    /// More rows than the budget allows.
+    Rows,
+    /// One row of `bytes`, more than one row may hold.
+    RowBytes { bytes: u64 },
+    /// More bytes over every row read than the budget buffers.
+    BufferedBytes,
+}
+
+impl ReplayCeiling {
+    /// Its typed name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReplayCeiling::Rows => "max_rows",
+            ReplayCeiling::RowBytes { .. } => "max_row_bytes",
+            ReplayCeiling::BufferedBytes => "max_buffered_bytes",
+        }
+    }
+}
+
+impl std::fmt::Display for ReplayCeiling {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReplayCeiling::Rows => write!(
+                f,
+                "its log holds more rows than a read may take ({})",
+                self.as_str()
+            ),
+            ReplayCeiling::RowBytes { bytes } => write!(
+                f,
+                "a row of its log holds {bytes} bytes, more than one row may ({})",
+                self.as_str()
+            ),
+            ReplayCeiling::BufferedBytes => write!(
+                f,
+                "its log holds more bytes than a read may buffer ({})",
+                self.as_str()
+            ),
+        }
+    }
+}
+
+/// Why a bounded replay stopped.
+enum Bounded {
+    Store(StoreError),
+    Ceiling(ReplayCeiling),
+}
+
+impl From<StoreError> for Bounded {
+    fn from(error: StoreError) -> Self {
+        Bounded::Store(error)
+    }
+}
+
+impl From<rusqlite::Error> for Bounded {
+    fn from(error: rusqlite::Error) -> Self {
+        Bounded::Store(error.into())
+    }
+}
+
+impl From<ReplayCeiling> for Bounded {
+    fn from(ceiling: ReplayCeiling) -> Self {
+        Bounded::Ceiling(ceiling)
+    }
+}
+
+/// The SQLite URI that opens the database at `path` immutable: every byte of the path that is not
+/// unreserved, `/` aside, percent-encoded, so `?`, `#` and `%` in a directory name stay path.
+fn immutable_uri(path: &Path) -> String {
+    let mut uri = String::from("file:");
+    for byte in path.as_os_str().as_encoded_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                uri.push(char::from(*byte));
+            }
+            other => uri.push_str(&format!("%{other:02X}")),
+        }
+    }
+    uri.push_str("?immutable=1");
+    uri
+}
+
 impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         // Created private before SQLite sees it: SQLite creates a missing database 0644 under
@@ -241,6 +362,40 @@ impl EventStore {
 
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        Ok(Self {
+            conn,
+            task_cache: std::cell::RefCell::new(None),
+            validated_change_sets: std::collections::BTreeMap::new(),
+        })
+    }
+
+    /// Open an existing database to read it and change nothing: no file is created, no schema is
+    /// initialized and no journal mode is set. A plain read-only connection to a write-ahead-log
+    /// database creates its `-wal` and `-shm` files beside it and fails where it cannot, so a
+    /// database whose `-wal` is absent or empty, which holds every committed event in the file
+    /// itself, is opened `immutable`: SQLite then takes no lock and writes nothing at all. One whose
+    /// `-wal` still holds frames (its writer is open or stopped before a checkpoint) is opened
+    /// read-only instead, so those events are read, through the `-shm` index SQLite keeps.
+    ///
+    /// An immutable reader does not see a write made while it is open: the caller excludes
+    /// writers for the life of the value, as a Project Store's lock does.
+    pub fn open_unchanged(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let path = path.as_ref();
+        let mut wal = path.as_os_str().to_owned();
+        wal.push("-wal");
+        if std::fs::metadata(&wal).is_ok_and(|log| log.len() > 0) {
+            return Self::open_read_only(path);
+        }
+        if !std::fs::metadata(path).is_ok_and(|database| database.is_file()) {
+            return Err(StoreError::Conflict(format!(
+                "no database file at {}",
+                path.display()
+            )));
+        }
+        let conn = Connection::open_with_flags(
+            immutable_uri(path),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -541,6 +696,22 @@ impl EventStore {
         self.replay_from(run_id, 0)
     }
 
+    /// The ordered events of `run_id` read through one cursor under `budget`, shared by every
+    /// run one projection reads from the same Store: each row is charged before it is decoded,
+    /// and the first row past a ceiling stops the read with that ceiling, nothing of the run
+    /// returned. `Ok(Err(ceiling))` says which.
+    pub fn replay_within(
+        &self,
+        run_id: &str,
+        budget: &mut ReplayBudget,
+    ) -> Result<Result<Vec<RunEvent>, ReplayCeiling>, StoreError> {
+        match self.replay_bounded(run_id, 0, Some(budget)) {
+            Ok(events) => Ok(Ok(events)),
+            Err(Bounded::Ceiling(ceiling)) => Ok(Err(ceiling)),
+            Err(Bounded::Store(error)) => Err(error),
+        }
+    }
+
     /// The ordered suffix beginning at `first_sequence`, for advancing a watermarked projection
     /// without parsing and validating the prefix it already covers.
     pub fn replay_from(
@@ -548,6 +719,19 @@ impl EventStore {
         run_id: &str,
         first_sequence: u64,
     ) -> Result<Vec<RunEvent>, StoreError> {
+        self.replay_bounded(run_id, first_sequence, None)
+            .map_err(|bounded| match bounded {
+                Bounded::Store(error) => error,
+                Bounded::Ceiling(ceiling) => StoreError::Conflict(ceiling.to_string()),
+            })
+    }
+
+    fn replay_bounded(
+        &self,
+        run_id: &str,
+        first_sequence: u64,
+        mut budget: Option<&mut ReplayBudget>,
+    ) -> Result<Vec<RunEvent>, Bounded> {
         let first_sequence_sql = i64::try_from(first_sequence).map_err(|_| {
             StoreError::Conflict("event replay sequence exceeds SQLite range".into())
         })?;
@@ -593,21 +777,26 @@ impl EventStore {
             // A row that does not parse is refused, never degraded: replaying it as an empty
             // event would rebuild a different state than the run committed, silently — the
             // exact failure the publication ordering exists to prevent, on the read side.
-            let (mut event, raw_sequence, refs, payload) = row?;
+            let (mut event, raw_sequence, refs, payload) = row.map_err(StoreError::from)?;
+            if let Some(budget) = budget.as_deref_mut() {
+                budget.charge(refs.len() + payload.len())?;
+            }
             let sequence = u64::try_from(raw_sequence).map_err(|_| {
                 StoreError::Conflict(format!("negative sequence {raw_sequence} in run {run_id}"))
             })?;
             if sequence != expected_sequence {
                 return Err(StoreError::Conflict(format!(
                     "event sequence gap in run {run_id}: expected {expected_sequence}, found {sequence}"
-                )));
+                ))
+                .into());
             }
             let expected_id = derive_event_id(run_id, raw_sequence);
             if event.event_id != expected_id {
                 return Err(StoreError::Conflict(format!(
                     "event {} has invalid derived id; expected {expected_id}",
                     event.event_id
-                )));
+                ))
+                .into());
             }
             event.sequence = sequence;
             event.artifact_refs = serde_json::from_str(&refs).map_err(StoreError::Json)?;
@@ -4814,6 +5003,144 @@ mod tests {
                 if message.contains("unknown review-kernel event type: RunReport@5")),
             "{error}"
         );
+    }
+
+    /// Every file beneath `directory` and its bytes.
+    fn files(directory: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut found: Vec<_> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let name = entry.file_name().into_string().unwrap();
+                (name, std::fs::read(entry.path()).unwrap())
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// A reader that changes nothing reads every committed event and leaves the directory byte
+    /// for byte as it found it: no `-wal`, no `-shm`, no schema, even where it may write, and it
+    /// still reads where neither the directory nor the database is writable. A directory name
+    /// that holds URI syntax stays a path.
+    #[test]
+    fn an_unchanged_reader_writes_nothing_and_reads_an_unwritable_database() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("a?b#c%d e");
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("events.sqlite");
+        {
+            let mut store = EventStore::open(&path).unwrap();
+            let cas = Cas::open(root.path().join("cas")).unwrap();
+            store
+                .append(
+                    "run",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({ "i": 1 })),
+                )
+                .unwrap();
+        }
+        let before = files(&directory);
+        assert_eq!(before.len(), 1, "a closed writer leaves its database alone");
+        {
+            let reader = EventStore::open_unchanged(&path).unwrap();
+            assert_eq!(reader.replay("run").unwrap().len(), 1);
+            assert!(reader.replay("other").unwrap().is_empty());
+        }
+        assert_eq!(files(&directory), before);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let read = EventStore::open_unchanged(&path).and_then(|reader| reader.replay("run"));
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(read.unwrap().len(), 1);
+        assert_eq!(files(&directory), before);
+        assert!(EventStore::open_unchanged(directory.join("absent.sqlite")).is_err());
+        assert_eq!(files(&directory), before);
+    }
+
+    /// While a writer's log still holds frames the reader reads them, events the database file
+    /// does not hold yet.
+    #[test]
+    fn an_unchanged_reader_reads_the_frames_of_an_open_log() {
+        let (dir, mut store, cas) = fixture();
+        store
+            .append(
+                "run",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({ "i": 1 })),
+            )
+            .unwrap();
+        let wal = dir.path().join("events.sqlite-wal");
+        assert!(std::fs::metadata(&wal).unwrap().len() > 0);
+        let reader = EventStore::open_unchanged(dir.path().join("events.sqlite")).unwrap();
+        assert_eq!(reader.replay("run").unwrap(), store.replay("run").unwrap());
+    }
+
+    /// One bounded read over the runs of a Store charges every row before it is decoded: the
+    /// rows, one row's bytes and the bytes of every row read, across runs, each stop the read
+    /// with its own ceiling and return nothing of that run; within them it is `replay`.
+    #[test]
+    fn a_bounded_replay_stops_at_each_discovery_ceiling() {
+        let (_dir, mut store, cas) = fixture();
+        for (run, count) in [("run-a", 5), ("run-b", 2)] {
+            for i in 0..count {
+                store
+                    .append(
+                        run,
+                        &cas,
+                        NewEvent::new(EventType::SourceCapturedV1, json!({ "i": i })),
+                    )
+                    .unwrap();
+            }
+        }
+        let row = |i: u64| (json!({ "i": i }).to_string().len() + "[]".len()) as u64;
+        let mut ample = ReplayBudget::new(7, 1 << 20, 16 << 20);
+        let read = store.replay_within("run-a", &mut ample).unwrap().unwrap();
+        assert_eq!(read, store.replay("run-a").unwrap());
+        assert_eq!(
+            store
+                .replay_within("run-b", &mut ample)
+                .unwrap()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        // Rows: the budget is shared by the runs of one projection.
+        let mut rows = ReplayBudget::new(6, 1 << 20, 16 << 20);
+        assert_eq!(
+            store
+                .replay_within("run-a", &mut rows)
+                .unwrap()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(
+            store.replay_within("run-b", &mut rows).unwrap(),
+            Err(ReplayCeiling::Rows)
+        );
+        // One row's bytes.
+        let mut row_bytes = ReplayBudget::new(100, row(0) - 1, 16 << 20);
+        assert_eq!(
+            store.replay_within("run-a", &mut row_bytes).unwrap(),
+            Err(ReplayCeiling::RowBytes { bytes: row(0) })
+        );
+        // Every row's bytes.
+        let mut buffered = ReplayBudget::new(100, 1 << 20, row(0) * 3);
+        assert_eq!(
+            store.replay_within("run-a", &mut buffered).unwrap(),
+            Err(ReplayCeiling::BufferedBytes)
+        );
+        for (ceiling, name) in [
+            (ReplayCeiling::Rows, "max_rows"),
+            (ReplayCeiling::RowBytes { bytes: 1 }, "max_row_bytes"),
+            (ReplayCeiling::BufferedBytes, "max_buffered_bytes"),
+        ] {
+            assert_eq!(ceiling.as_str(), name);
+            assert!(ceiling.to_string().contains(name));
+        }
     }
 
     #[test]

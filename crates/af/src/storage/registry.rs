@@ -1,6 +1,6 @@
 //! The Store registry (ADR-0144): `$XDG_STATE_HOME/af/stores.toml`, every Task and review
-//! Store af opened or created outside its default roots (`--state`, `--state-root`), so the
-//! Storage Budget's sweep reaches Stores nothing else knows.
+//! Store af opened or created outside its default roots (`--state`, `--state-root`), and every
+//! Project Store (ADR-0158), so the Storage Budget's sweep reaches Stores nothing else knows.
 //!
 //! Recording is best effort and never fails a command: a registry that cannot be read or
 //! written is reported once on stderr and left as it is. The sweep visits every registered
@@ -21,6 +21,9 @@ pub(crate) enum StoreKind {
     Review,
     /// A directory of review campaign Stores (`af review … --state-root DIR`).
     ReviewRoot,
+    /// A Project Store, `$XDG_STATE_HOME/af/project/<hex>` (ADR-0158). The registry that can hold
+    /// it is version 2 (ADR-0145).
+    Project,
 }
 
 /// One registered Store.
@@ -41,7 +44,13 @@ struct RegistryFile {
     stores: Vec<Registered>,
 }
 
-const VERSION: u32 = 1;
+/// Version 2 added the kind `project` (ADR-0158); version 1 is refused (ADR-0145).
+const VERSION: u32 = 2;
+
+/// Why a version-1 registry is refused, and the way out: nothing is lost by deleting it.
+const VERSION_1: &str = "version 1 is the Store registry of an earlier release, which this \
+     release does not read; delete $XDG_STATE_HOME/af/stores.toml: Stores register again as \
+     commands use them, and the Stores under af's default roots were never in it";
 
 /// The registry's location below a state home.
 pub(crate) fn location(state_home: &Path) -> PathBuf {
@@ -98,10 +107,19 @@ pub(crate) fn read(location: &Path) -> Result<Vec<Registered>, String> {
 }
 
 fn parse(text: &str) -> Result<Vec<Registered>, String> {
-    let file: RegistryFile = toml::from_str(text).map_err(|error| error.to_string())?;
-    if file.version != VERSION {
-        return Err(format!("version {} is not {VERSION}", file.version));
+    // The version first, so a file of another version is refused for its version, whatever its
+    // entries hold.
+    #[derive(Deserialize)]
+    struct Versioned {
+        version: u32,
     }
+    let versioned: Versioned = toml::from_str(text).map_err(|error| error.to_string())?;
+    match versioned.version {
+        VERSION => {}
+        1 => return Err(VERSION_1.into()),
+        other => return Err(format!("version {other} is not {VERSION}")),
+    }
+    let file: RegistryFile = toml::from_str(text).map_err(|error| error.to_string())?;
     Ok(file.stores)
 }
 
@@ -201,7 +219,57 @@ mod tests {
             Path::new("/home/me/.local/state/af/task/local/0123")
         ));
         assert!(!under_default_roots(home, Path::new("/tmp/state")));
-        assert!(parse("version = 2\n").is_err());
-        assert!(parse("version = 1\n").unwrap().is_empty());
+        assert!(parse("version = 3\n").is_err());
+        assert!(parse("version = 2\n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_version_1_registry_is_refused_with_the_way_out() {
+        let directory = tempfile::tempdir().unwrap();
+        let location = location(directory.path());
+        std::fs::create_dir_all(location.parent().unwrap()).unwrap();
+        let written = "version = 1\n\n[[store]]\npath = \"/elsewhere/state\"\nkind = \"task\"\n\
+                       first_use_unix_ms = 1\nlast_use_unix_ms = 1\n";
+        std::fs::write(&location, written).unwrap();
+        let error = read(&location).unwrap_err();
+        assert!(error.contains("version 1"), "{error}");
+        assert!(
+            error.contains("delete $XDG_STATE_HOME/af/stores.toml"),
+            "{error}"
+        );
+        assert!(error.contains("register again"), "{error}");
+        assert!(error.contains("default roots were never in it"), "{error}");
+        // An update refuses it too and leaves the file as it was.
+        assert!(update(&location, |_| {}).is_err());
+        assert_eq!(std::fs::read_to_string(&location).unwrap(), written);
+    }
+
+    #[test]
+    fn a_fresh_registry_is_version_2_and_keeps_every_entry_and_kind() {
+        let directory = tempfile::tempdir().unwrap();
+        let location = location(directory.path());
+        let kinds = [
+            StoreKind::Task,
+            StoreKind::Review,
+            StoreKind::ReviewRoot,
+            StoreKind::Project,
+        ];
+        let entries: Vec<Registered> = kinds
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| Registered {
+                path: PathBuf::from(format!("/elsewhere/{index}")),
+                kind: *kind,
+                first_use_unix_ms: index as u64,
+                last_use_unix_ms: 10 + index as u64,
+            })
+            .collect();
+        update(&location, |stores| stores.extend(entries.iter().cloned())).unwrap();
+        let text = std::fs::read_to_string(&location).unwrap();
+        assert!(text.contains("\nversion = 2\n"), "{text}");
+        assert_eq!(read(&location).unwrap(), entries);
+        // A rewrite keeps every entry and kind.
+        update(&location, |_| {}).unwrap();
+        assert_eq!(read(&location).unwrap(), entries);
     }
 }

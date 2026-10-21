@@ -8,7 +8,7 @@
   (`.af-removing-<pid>-<device>-<inode>`, as removals now name it) binds the very directory it
   holds, so a user's `.af-removing-1-2-3` is kept, reported and not measured, and the sweep
   finishes only such proven claims; otherwise they remove af's entries alone and name what they
-  left (`left` in `af/storage-prune@1`), and such a Store counts only af's entries against the
+  left (`left` in `af/storage-prune@3`), and such a Store counts only af's entries against the
   budget. af's state and telemetry directories are created `0700` and its files there `0600`
   (the SQLite `-wal` and `-shm` included) whatever the umask, and an open af-owned root is
   narrowed to `0700`; the checkout keeps the user's umask. Route patterns match in

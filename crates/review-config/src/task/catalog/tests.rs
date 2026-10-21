@@ -92,6 +92,7 @@ fn notes_port(optional: bool, affinity: PortAffinityV1) -> PipelinePortV1 {
         optional,
         affinity,
         root_default: None,
+        brief: None,
         covers: BTreeSet::new(),
     }
 }
@@ -809,6 +810,219 @@ fn local_worker_cannot_weaken_schema_evidence_role_effects_or_slot_permission() 
     }
 }
 
+/// `task` with exactly `inputs`.
+fn with_inputs(
+    task: &TaskRevisionV1,
+    inputs: BTreeMap<String, review_core::task::ArtifactInputV1>,
+) -> TaskRevisionV1 {
+    TaskRevisionV1 {
+        inputs,
+        ..task.clone()
+    }
+}
+
+/// A `project_brief` root default is filled only by the installed constructor, only for a port
+/// the Task does not bind, and stays empty when the constructor says so (ADR-0160).
+#[test]
+fn a_project_brief_port_is_constructed_only_by_the_installed_resolver() {
+    use review_core::task::pipeline::{
+        PipelinePortV1, PortAffinityV1, RootDefaultV1, TaskNodeV1, ValueRefV1,
+    };
+    use review_core::task::project_brief::PROJECT_BRIEF_V1;
+    #[derive(Debug)]
+    struct Fake(
+        Option<String>,
+        std::sync::Mutex<Vec<(String, String, Vec<String>)>>,
+    );
+    impl super::ProjectBriefResolver for Fake {
+        fn resolve(
+            &self,
+            _: &Cas,
+            _: &TaskRevisionV1,
+            port: &str,
+            variant: &str,
+            nodes: &[String],
+        ) -> Result<Option<review_core::task::ArtifactInputV1>, String> {
+            self.1
+                .lock()
+                .unwrap()
+                .push((port.into(), variant.into(), nodes.to_vec()));
+            Ok(self.0.clone().map(|id| review_core::task::ArtifactInputV1 {
+                artifact_ids: vec![id],
+                artifact_type: PROJECT_BRIEF_V1.into(),
+                cardinality: review_core::PortCardinality::One,
+                snapshot_id: None,
+            }))
+        }
+    }
+    let mut f = Fixture::new();
+    let port = PipelinePortV1 {
+        artifact_type: PROJECT_BRIEF_V1.into(),
+        cardinality: review_core::PortCardinality::One,
+        optional: true,
+        affinity: PortAffinityV1::Unbound {},
+        root_default: Some(RootDefaultV1::ProjectBrief),
+        brief: Some("orient".into()),
+        covers: BTreeSet::new(),
+    };
+    assert_eq!(port.validate(), Ok(()));
+    for invalid in [
+        PipelinePortV1 {
+            optional: false,
+            ..port.clone()
+        },
+        PipelinePortV1 {
+            brief: None,
+            ..port.clone()
+        },
+        PipelinePortV1 {
+            artifact_type: review_core::task::REVIEW_HISTORY_V1.into(),
+            ..port.clone()
+        },
+        PipelinePortV1 {
+            root_default: None,
+            ..port.clone()
+        },
+    ] {
+        assert!(invalid.validate().is_err(), "{invalid:?}");
+    }
+    let pipeline = f.compiler.pipelines.get_mut("builtin/document").unwrap();
+    pipeline.contract.inputs.insert("project".into(), port);
+    pipeline.schema = review_core::task::pipeline::PipelineSchema::V2;
+    let wired: Vec<String> = pipeline
+        .nodes
+        .iter_mut()
+        .take(1)
+        .map(|node: &mut TaskNodeV1| {
+            node.inputs.insert(
+                "project".into(),
+                ValueRefV1::Input {
+                    port: "project".into(),
+                },
+            );
+            node.id.clone()
+        })
+        .collect();
+    let refused = f
+        .compiler
+        .normalize_root_inputs(&f.cas, "builtin/document", &f.task)
+        .unwrap_err();
+    assert!(refused.contains("no Brief constructor"), "{refused}");
+
+    let empty = std::sync::Arc::new(Fake(None, Default::default()));
+    let compiler = f.compiler.clone().with_project_briefs(empty.clone());
+    let inputs = compiler
+        .normalize_root_inputs(&f.cas, "builtin/document", &f.task)
+        .unwrap();
+    assert!(!inputs.contains_key("project"));
+    assert_eq!(
+        *empty.1.lock().unwrap(),
+        [("project".to_string(), "orient".to_string(), wired)]
+    );
+
+    let id = format!("sha256:{}", "b".repeat(64));
+    let built = std::sync::Arc::new(Fake(Some(id.clone()), Default::default()));
+    let compiler = f.compiler.clone().with_project_briefs(built.clone());
+    let inputs = compiler
+        .normalize_root_inputs(&f.cas, "builtin/document", &f.task)
+        .unwrap();
+    assert_eq!(inputs["project"].artifact_ids, [id.clone()]);
+    // A bound port is the Task's own: the constructor is never asked.
+    let bound = compiler
+        .normalize_root_inputs(
+            &f.cas,
+            "builtin/document",
+            &with_inputs(&f.task, inputs.clone()),
+        )
+        .unwrap();
+    assert_eq!(bound, inputs);
+    assert_eq!(built.1.lock().unwrap().len(), 1);
+}
+
+/// A pipeline with a Project Brief port is `af.pipeline/2` (ADR-0160), so the containers that
+/// carry version-1 contracts without a version label never carry it: the Planner's request
+/// leaves it out, a shared catalog neither exports nor admits it, and a Worker manifest that
+/// declares the root default on its own port is refused when it loads.
+#[test]
+fn a_brief_pipeline_stays_out_of_version_1_containers_and_worker_ports_name_no_variant() {
+    use review_core::task::pipeline::{PipelineSchema, RootDefaultV1};
+    use review_core::task::project_brief::PROJECT_BRIEF_V1;
+    let mut f = Fixture::new();
+    let request = f.compiler.planning_request(&f.task).unwrap();
+    assert!(request["pipelines"].get("builtin/document").is_some());
+    let port = PipelinePortV1 {
+        artifact_type: PROJECT_BRIEF_V1.into(),
+        cardinality: review_core::PortCardinality::One,
+        optional: true,
+        affinity: PortAffinityV1::Unbound {},
+        root_default: Some(RootDefaultV1::ProjectBrief),
+        brief: Some("orient".into()),
+        covers: BTreeSet::new(),
+    };
+    let exported = f
+        .compiler
+        .export_catalog("builtin/document", "team/document")
+        .unwrap();
+    let pipeline = f.compiler.pipelines.get_mut("builtin/document").unwrap();
+    pipeline
+        .contract
+        .inputs
+        .insert("project".into(), port.clone());
+    pipeline.schema = PipelineSchema::V2;
+    pipeline.validate().unwrap();
+    let request = f.compiler.planning_request(&f.task).unwrap();
+    assert!(
+        request["pipelines"].get("builtin/document").is_none(),
+        "{request}"
+    );
+    let refused = f
+        .compiler
+        .export_catalog("builtin/document", "team/document")
+        .unwrap_err();
+    assert!(
+        refused.contains("Cannot share builtin/document"),
+        "{refused}"
+    );
+    let refused = f
+        .compiler
+        .check_contract_fixtures(&exported.contracts)
+        .unwrap_err();
+    assert!(
+        refused.contains("af.catalog-contract-fixtures/1"),
+        "{refused}"
+    );
+
+    let name = "fixture/briefed-worker";
+    let mut worker = f.compiler.workers["builtin/document-author"].clone();
+    worker.name = name.into();
+    worker
+        .signature
+        .contract
+        .inputs
+        .insert("project".into(), port);
+    let files = BTreeMap::from([(
+        "worker.toml".to_string(),
+        toml::to_string(&worker).unwrap().into_bytes(),
+    )]);
+    let pin = TaskPackagePin {
+        version: worker.version.clone(),
+        digest: package_digest_from_files(&files),
+        path: "packages/briefed-worker".into(),
+    };
+    let project = files
+        .iter()
+        .map(|(path, bytes)| (format!("{}/{path}", pin.path), bytes.clone()))
+        .collect();
+    let refused = f
+        .compiler
+        .capture_package(&f.cas, name, &pin, &project)
+        .unwrap_err();
+    assert!(
+        refused.contains("declares port project with a Project Brief root default"),
+        "{refused}"
+    );
+}
+
 #[test]
 fn root_constructors_are_explicit_and_never_fill_unrelated_required_inputs() {
     use review_core::task::pipeline::{PipelinePortV1, PortAffinityV1, RootDefaultV1};
@@ -822,17 +1036,22 @@ fn root_constructors_are_explicit_and_never_fill_unrelated_required_inputs() {
             optional: false,
             affinity: PortAffinityV1::Unbound {},
             root_default: Some(RootDefaultV1::EmptyReviewHistory),
+            brief: None,
             covers: BTreeSet::new(),
         },
     );
     assert!(
         f.compiler
-            .normalize_root_inputs(&f.cas, "builtin/document", BTreeMap::new())
+            .normalize_root_inputs(
+                &f.cas,
+                "builtin/document",
+                &with_inputs(&f.task, BTreeMap::new())
+            )
             .is_err()
     );
     let inputs = f
         .compiler
-        .normalize_root_inputs(&f.cas, "builtin/document", f.task.inputs.clone())
+        .normalize_root_inputs(&f.cas, "builtin/document", &f.task)
         .unwrap();
     assert_eq!(inputs["requirements"], f.task.inputs["requirements"]);
     let history = read_envelope(
@@ -844,7 +1063,11 @@ fn root_constructors_are_explicit_and_never_fill_unrelated_required_inputs() {
     assert_eq!(history.payload, json!({"kind":"empty"}));
     assert_eq!(
         f.compiler
-            .normalize_root_inputs(&f.cas, "builtin/document", inputs.clone())
+            .normalize_root_inputs(
+                &f.cas,
+                "builtin/document",
+                &with_inputs(&f.task, inputs.clone())
+            )
             .unwrap(),
         inputs
     );
@@ -859,7 +1082,7 @@ fn root_constructors_are_explicit_and_never_fill_unrelated_required_inputs() {
         .root_default = None;
     assert!(
         f.compiler
-            .normalize_root_inputs(&f.cas, "builtin/document", f.task.inputs.clone())
+            .normalize_root_inputs(&f.cas, "builtin/document", &f.task)
             .is_err()
     );
 }

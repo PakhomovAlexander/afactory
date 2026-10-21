@@ -27,10 +27,12 @@ tempfile = "3.27.0"
 # An installed Docker client with a wedged daemon must not hang the review gate forever.
 # `process` and `signal` give the stale-sandbox sweep its pid liveness check (`kill(pid, 0)`).
 nix = { version = "0.31.3", default-features = false, features = ["dir", "fs", "process", "signal", "user"] }
+# `statx` states a file's birth time on Linux with the inode it belongs to, the
+# generation a born identity carries (ADR-0159 clause 2).
+rustix = { version = "1.1.4", features = ["fs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 exacl = "0.13.0"
-rustix = { version = "1.1.4", features = ["fs"] }
 xattr = "1.6.1"
 
 [dev-dependencies]

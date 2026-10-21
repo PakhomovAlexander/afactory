@@ -114,7 +114,8 @@ remote check left two branches and a draft pull request open.
    totals on the Task that run executed — a Task that sweep never collects or evicts, so the
    record always has its Task; a later sweep takes it under the same rules as any other — as one
    `storage_sweep` transition carrying
-   `af/TaskStorageSweep@1` inline (at most 256 removals and 64 failures listed, the rest counted;
+   `af/TaskStorageSweep@1` inline (`@2` since ADR-0159 clause 13, which can say its total after
+   is `unknown`; at most 256 removals and 64 failures listed, the rest counted;
    a sweep that removed nothing and failed nothing records nothing), which `af task show` prints
    as one line. Triggers: the end of every `af task run`, `af task start --execute` and `af
    review run` whatever the outcome, a run refused before it started work included (the budget
@@ -211,7 +212,7 @@ is no longer a trusted anchor for removing a registered Store whole: the sweep, 
 --apply`, `af review gc --state-root` and `af self uninstall --purge` remove a Store outside af's
 own roots whole only while it is marked and holds nothing but af's entries; otherwise they remove
 af's entries alone through the opened directory and report the directory and everything else as
-left in place (`left` in `af/storage-prune@1`). A Store an earlier release made carries no marker
+left in place (`left` in `af/storage-prune@3`). A Store an earlier release made carries no marker
 and is not proven af's, so its directory stays. Such a Store is measured by its af entries alone.
 Every directory af creates for its state (state and telemetry roots, Stores, `cas/`, `git-home/`)
 is `0700` and every file there `0600`, the SQLite database and its `-wal` and `-shm` included,

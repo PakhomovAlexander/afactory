@@ -499,6 +499,7 @@ fn port(artifact_type: &str, affinity: PortAffinityV1) -> PipelinePortV1 {
         optional: false,
         affinity,
         root_default: None,
+        brief: None,
         covers: BTreeSet::new(),
     }
 }
@@ -2338,7 +2339,20 @@ impl TaskDomain for CodeTaskDomain {
                 }
                 Ok(())
             }
-            TaskOperatorV1::Worker { .. } => Ok(()),
+            // A Project Brief is the kernel's alone (ADR-0160): a Worker that declares one as
+            // an output is refused here, before anything could forward it.
+            TaskOperatorV1::Worker { .. } => {
+                for value in output.outputs.values() {
+                    review_core::task::project_brief::refuse_worker_authored(&value.artifact_type)?;
+                    for id in &value.artifact_ids {
+                        let artifact = envelope(cas, id)?;
+                        review_core::task::project_brief::refuse_worker_authored(
+                            &artifact.artifact_type,
+                        )?;
+                    }
+                }
+                Ok(())
+            }
             _ => Err("Unsupported code output admission".into()),
         }
     }

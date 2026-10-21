@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:storage:3",
+  "title": "af/storage@3",
+  "description": "`af storage --json` (ADR-0144): every entry af keeps between runs on this machine, per kind and one by one, against the `[storage]` budget and the free-disk floor. An entry is the unit the budget evicts whole; its bytes are the allocated bytes of the regular files it holds, directories and links counting nothing, so they are the same on every file system (a finished Task's are the bytes only it reaches). `in_use` says why an entry is never evicted now; `reason` why a Store cannot be read by this release. The kind `project_store` is a Project Store (ADR-0158), counted and never evicted, since it indexes its Project's Workspaces. Version 3 adds the kind `survey` (ADR-0159 clause 13): one Survey's record in its Project Store's CAS, its `path` the CAS object, last used at the Survey's cutoff, collected behind a `SurveyCollected@1` tombstone; the Project Store's own bytes no longer hold its Surveys'. The kind `claim` is a removal a dead process left claimed under `.af-removing-<pid>-…`, every one inventory found, its `state` `abandoned` and its measured bytes: one no other entry measured as part of its own is counted in `kinds` and `total_bytes` as the sweep's plan counts it, and one inside an entry measured whole (a Project Store) is listed with `counted_in`, that entry, whose bytes hold its own, so its bytes are counted once; so the listed claims are the claims the sweep's plan recovers, and `af storage` and `af storage prune` agree on what the directory holds; one its walk could not measure holds no bytes and is in use. A Survey whose `state` is `pending` is the object a pending-publication entry (`af/survey-pending@1`) describes at an unrecorded Survey's CAS name, in use until recovery reclaims it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "max_bytes",
+    "total_bytes",
+    "min_free_bytes",
+    "free_bytes",
+    "kinds",
+    "entries",
+    "problems"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/storage@3"
+    },
+    "max_bytes": {
+      "$ref": "#/$defs/bytes"
+    },
+    "total_bytes": {
+      "$ref": "#/$defs/bytes"
+    },
+    "min_free_bytes": {
+      "$ref": "#/$defs/bytes"
+    },
+    "free_bytes": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/bytes"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kinds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "entries",
+          "bytes",
+          "oldest_use_unix_ms",
+          "newest_use_unix_ms"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/kind"
+          },
+          "entries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "oldest_use_unix_ms": {
+            "$ref": "#/$defs/optional_time"
+          },
+          "newest_use_unix_ms": {
+            "$ref": "#/$defs/optional_time"
+          }
+        }
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path",
+          "bytes",
+          "last_use_unix_ms"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/kind"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "last_use_unix_ms": {
+            "$ref": "#/$defs/bytes"
+          },
+          "in_use": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "description": "`abandoned` for a `claim`; `pending` for a `survey` whose `SurveyRecorded@1` never committed.",
+            "enum": [
+              "abandoned",
+              "pending"
+            ]
+          },
+          "counted_in": {
+            "description": "For a `claim` inside an entry measured whole (a Workspace's `state` a dead process renamed into its claim under a Project Store): that entry's `path`. Its bytes are in that entry's and counted there, in `kinds` and `total_bytes` alike, never again as the claim's.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "claim"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "state"
+              ],
+              "properties": {
+                "state": {
+                  "const": "abandoned"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "state": {
+                  "const": "pending"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "state"
+              ],
+              "properties": {
+                "state": {
+                  "const": "pending"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "in_use"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "survey"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "counted_in"
+              ]
+            },
+            "then": {
+              "properties": {
+                "kind": {
+                  "const": "claim"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "optional_time": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "enum": [
+        "warm_key",
+        "workspace",
+        "campaign",
+        "task",
+        "task_store",
+        "project_store",
+        "survey",
+        "unreadable_store",
+        "version",
+        "claim"
+      ]
+    }
+  }
+}

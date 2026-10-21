@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:storage-prune:3",
+  "title": "af/storage-prune@3",
+  "description": "`af storage prune --json` (ADR-0144): what one sweep removed, or without --apply would remove. A sweep plans once over one inventory snapshot and the applied sweep runs that plan entry by entry, never choosing again (ADR-0159 clause 13): first the deletions interruptions left (rule `recovery`), then collection (rule `collection`, and `keep_surveys` for the Surveys of a Project beyond `[storage] keep_surveys`), then the budget, least recently used first (rule `budget`), until the total fits `max_bytes` or nothing else may be removed (`stop`). Each removal says what it frees and af's total after it: as planned in a preview, as freed by the applied sweep. Gate cleanups of finished Tasks are those the sweep tried; registry entries whose path holds no Store any more are dropped; a failed removal is listed and tried again by the next sweep. Version 2 added the removal kind `survey` (ADR-0159 clause 13): a Survey's record in its Project Store's CAS, its `path` the CAS object, taken behind a `SurveyCollected@1` tombstone. A Survey whose record's bytes were no Survey is removed with `unreadable`, the reason its tombstone carries. The removals dead processes left claimed and the containers of dead Survey collections are in the one inventory snapshot and planned first (kind `claim`, rule `recovery`), a container that held a moved record after that record, so the preview lists exactly what the applied sweep removes; a claim inside a Project Store is counted once, in that Store's bytes. A registry entry whose path holds no Store is dropped by the plan (`registry_dropped`, the same in the preview and the applied sweep), after the inventory reached its parent's claims. A planned entry of any kind whose removal failed (the lock lost, what it names replaced or gone since inventory, an I/O error) keeps its place in the applied sweep's removals with `outcome` `failed: <reason>` and nothing freed (`bytes` 0, the total after it unchanged), unless a deletion stopped part way (its walk could not reach or unlink everything, or its final `rmdir` failed): its `bytes` are then what left the disk, what the directory held when its removal started, stated immediately before anything was unlinked, less what its claim still holds. Version 3 makes the running total reconcile what it cannot have known: a removal that measured what its entry held when it started puts those bytes in place of the inventory's before what left the disk is taken out, so a claim that grew since inventory and was removed part way leaves exactly what it still holds in the total; and when what a deletion that stopped part way left cannot be measured, the total after it and after the sweep is `unknown`, and so is `stop`, never `fits`. Every `bytes` is the allocated bytes of the regular files an entry holds or a removal deleted: directories and links count nothing, on every file system. What the plan leaves is listed under `left`, by the preview and the applied sweep alike, with its reason: `held` (its Project Store's `project.lock` cannot be taken now), `foreign` (a file at a collected Survey's CAS name after its record was moved, or anything under `cas/removing` that is no collected Survey's record; never deleted, and counted in its Project Store's bytes, never a Survey's), `oversize` (a record over 1 MiB), `unreadable_name` (a name under `cas/removing` that is not UTF-8, a file's or its container's), `too_deep` (a directory entry or claim nested deeper than the removal walk's 128 levels, which no removal could take whole: listed in use by `af storage`, never removed) or `unmeasurable` (a claim a dead process left whose walk could not measure it: it holds no bytes the plan could account for, so it is never planned). A Survey whose record cannot be reached without a link or read is a failure, and keeps its record and its place in the log.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "applied",
+    "collection",
+    "max_bytes",
+    "total_before",
+    "total_after",
+    "stop",
+    "removals",
+    "left",
+    "gate_cleanups",
+    "registry_dropped",
+    "failures"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/storage-prune@3"
+    },
+    "applied": {
+      "type": "boolean"
+    },
+    "collection": {
+      "type": "boolean"
+    },
+    "max_bytes": {
+      "$ref": "#/$defs/bytes"
+    },
+    "total_before": {
+      "$ref": "#/$defs/bytes"
+    },
+    "total_after": {
+      "description": "af's total after the sweep: as planned in a preview; after what the applied sweep freed, or `unknown` once a removal stopped part way and what it left cannot be measured.",
+      "$ref": "#/$defs/total"
+    },
+    "stop": {
+      "description": "`fits`: the total fits the budget; `nothing_evictable`: still over it, and the rest is in use or was used within the hour; `unknown`: the total is unknown, so neither is claimed.",
+      "enum": [
+        "fits",
+        "nothing_evictable",
+        "unknown"
+      ]
+    },
+    "removals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path",
+          "bytes",
+          "rule",
+          "total_after"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "warm_key",
+              "workspace",
+              "campaign",
+              "task",
+              "survey",
+              "unreadable_store",
+              "version",
+              "claim"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "rule": {
+            "enum": [
+              "collection",
+              "keep_surveys",
+              "budget",
+              "recovery"
+            ]
+          },
+          "total_after": {
+            "description": "af's total after this removal: as planned in a preview, after what the applied sweep freed, or `unknown` from a removal on that stopped part way and could not measure what it left.",
+            "$ref": "#/$defs/total"
+          },
+          "unreadable": {
+            "description": "A `survey` removal only: why its record's bytes were no Survey, as its `SurveyCollected@1` tombstone says.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "outcome": {
+            "description": "The applied sweep, any kind: `failed: <reason>` when its removal failed, so it freed nothing (`bytes` 0) and `total_after` is the total before it, unless a deletion stopped part way and `bytes` is what left the disk; the next sweep plans again.",
+            "type": "string",
+            "pattern": "^failed: .",
+            "minLength": 1
+          },
+          "left": {
+            "description": "What the removal left in place: a Store outside af's roots that carries no owner marker, or holds what is not af's, loses only af's entries, and keeps its directory and everything else (ADR-0144).",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "survey"
+                }
+              }
+            },
+            "else": {
+              "allOf": [
+                {
+                  "not": {
+                    "required": [
+                      "unreadable"
+                    ]
+                  }
+                },
+                {
+                  "properties": {
+                    "rule": {
+                      "not": {
+                        "const": "keep_surveys"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "left": {
+      "description": "What the plan leaves where it is (ADR-0159 clause 13), by the preview and the applied sweep alike. The next pass plans again.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path",
+          "bytes",
+          "reason",
+          "detail"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "survey",
+              "workspace",
+              "campaign",
+              "unreadable_store",
+              "version",
+              "claim"
+            ]
+          },
+          "path": {
+            "description": "The path as it is when it is UTF-8; otherwise in the canonical percent-encoded spelling of `review_core::encode_path`, with `path_encoded`.",
+            "type": "string",
+            "minLength": 1
+          },
+          "path_encoded": {
+            "const": true
+          },
+          "bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "reason": {
+            "enum": [
+              "held",
+              "foreign",
+              "oversize",
+              "unreadable_name",
+              "too_deep",
+              "unmeasurable"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "if": {
+          "properties": {
+            "reason": {
+              "enum": [
+                "too_deep",
+                "unmeasurable"
+              ]
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "kind": {
+              "not": {
+                "const": "survey"
+              }
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "kind": {
+              "const": "survey"
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "reason": {
+                  "const": "unmeasurable"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "kind": {
+                  "const": "claim"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "gate_cleanups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_id",
+          "outcome",
+          "summary"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "enum": [
+              "done",
+              "failed"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "registry_dropped": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "total": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/bytes"
+        },
+        {
+          "const": "unknown"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "total_after": {
+            "const": "unknown"
+          }
+        },
+        "required": [
+          "total_after"
+        ]
+      },
+      "then": {
+        "properties": {
+          "stop": {
+            "const": "unknown"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "stop": {
+            "not": {
+              "const": "unknown"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -436,3 +436,19 @@ pub fn out(output: &std::process::Output) -> String {
 pub fn err(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
+
+/// An empty directory in `parent` (created when absent) named as a removal of process `pid`
+/// claims it, `.af-removing-<pid>-<device>-<inode>`, binding its own device and inode: a claim
+/// af can prove it made (ADR-0144), unlike a name that is only claim-shaped.
+pub fn af_claim(parent: &Path, pid: u32) -> PathBuf {
+    std::fs::create_dir_all(parent).unwrap();
+    let made = tempfile::Builder::new()
+        .prefix("claimed-")
+        .tempdir_in(parent)
+        .unwrap()
+        .keep();
+    let identity = review_sandbox::Identity::of(&made).unwrap();
+    let claim = parent.join(review_sandbox::claim_name(pid, identity));
+    std::fs::rename(&made, &claim).unwrap();
+    claim
+}

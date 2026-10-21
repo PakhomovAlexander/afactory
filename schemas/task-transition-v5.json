@@ -506,7 +506,7 @@
               "const": "storage_sweep"
             },
             "sweep": {
-              "$ref": "urn:af:schema:task-storage-sweep:1"
+              "$ref": "urn:af:schema:task-storage-sweep:2"
             }
           }
         }

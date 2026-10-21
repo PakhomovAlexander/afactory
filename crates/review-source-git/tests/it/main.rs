@@ -10,3 +10,4 @@ mod git_deadline;
 mod hostile_git_config;
 mod task_identity;
 mod tree_diff;
+mod tree_digest;

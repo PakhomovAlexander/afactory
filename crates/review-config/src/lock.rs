@@ -90,11 +90,14 @@ pub enum LockError {
         name: String,
         root: PathBuf,
     },
-    /// A package beyond [`MAX_PACKAGE_FILES`] files or [`MAX_PACKAGE_BYTES`] bytes, or a file of
-    /// it beyond [`MAX_AUTHORITY_FILE_BYTES`]: refused before it is read whole.
+    /// The package holds more files or bytes, or one file of it more bytes, than the walk was
+    /// bounded to ([`PackageBounds`]); refused before the excess is read.
     TooLarge {
         name: String,
-        reason: String,
+        root: PathBuf,
+        files: usize,
+        bytes: usize,
+        file_bytes: usize,
     },
     Io {
         path: PathBuf,
@@ -184,7 +187,18 @@ impl std::fmt::Display for LockError {
                 "reviewer `{name}` at {} has no reviewer.toml",
                 root.display()
             ),
-            LockError::TooLarge { name, reason } => write!(f, "reviewer `{name}` {reason}"),
+            LockError::TooLarge {
+                name,
+                root,
+                files,
+                bytes,
+                file_bytes,
+            } => write!(
+                f,
+                "package `{name}` at {} exceeds {files} files, {file_bytes} bytes in one file or \
+                 {bytes} bytes",
+                root.display()
+            ),
             LockError::Io { path, error } => write!(f, "{}: {error}", path.display()),
         }
     }
@@ -383,20 +397,39 @@ impl Registry {
     }
 
     fn read(&self, name: &str) -> Result<(PathBuf, BTreeMap<String, Vec<u8>>), LockError> {
+        self.read_with(name, &mut |_| {})
+    }
+
+    /// [`Registry::read`], with `before_open` run between the walk's checks and its opens, the
+    /// package root's included; only the race regressions give it a body.
+    fn read_with(
+        &self,
+        name: &str,
+        before_open: &mut dyn FnMut(&Path),
+    ) -> Result<(PathBuf, BTreeMap<String, Vec<u8>>), LockError> {
         if let Some(files) = self.captured.get(name) {
             return Ok((
                 PathBuf::from("<captured-authority>").join(name),
                 files.clone(),
             ));
         }
-        let root = self.locate(name)?;
-        let files = collect(name, &root)?;
+        let (root, located) = self.locate(name)?;
+        // The directory `locate` checked is the one read: its root is opened without following a
+        // symlink and must still be that very directory, so a package swapped after the check is
+        // refused rather than read from wherever the swap points.
+        let files = collect_no_follow(
+            name,
+            &root,
+            RootLink::Located(located),
+            Some(AUTHORITY_PACKAGE_BOUNDS),
+            before_open,
+        )?;
         Ok((root, files))
     }
 
-    /// The package directory for `name` under the registry root. Whether that copy verifies is
-    /// the next question.
-    fn locate(&self, name: &str) -> Result<PathBuf, LockError> {
+    /// The package directory for `name` under the registry root, with the device and inode it
+    /// was found to have. Whether that copy verifies is the next question.
+    fn locate(&self, name: &str) -> Result<(PathBuf, (u64, u64)), LockError> {
         if name.is_empty()
             || !name.bytes().enumerate().all(|(index, byte)| {
                 byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
@@ -418,7 +451,10 @@ impl Registry {
                 name: name.to_string(),
                 path: candidate,
             }),
-            Ok(metadata) if metadata.is_dir() => Ok(candidate),
+            Ok(metadata) if metadata.is_dir() => {
+                use std::os::unix::fs::MetadataExt;
+                Ok((candidate, (metadata.dev(), metadata.ino())))
+            }
             Ok(_) => Err(LockError::UnsupportedFileType {
                 name: name.to_string(),
                 path: candidate,
@@ -476,6 +512,34 @@ pub const MAX_PACKAGE_BYTES: u64 = 8 * 1024 * 1024;
 /// The most files one Worker package on disk may hold.
 pub const MAX_PACKAGE_FILES: usize = 256;
 
+/// Whether the package root itself may be reached through a symlink. [`package_digest`] follows
+/// one; a directory an author names must be the package itself; a registry reads exactly the
+/// directory, by device and inode, that it located.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootLink {
+    Follow,
+    Refuse,
+    Located((u64, u64)),
+}
+
+/// The most regular files and bytes, in total and in one file, one walk may read. Each is
+/// enforced before the bytes that would exceed it are read, never after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackageBounds {
+    pub files: usize,
+    pub bytes: usize,
+    /// The most bytes of any one file.
+    pub file_bytes: usize,
+}
+
+/// The bounds of a Worker package af reads as authority: a pinned reviewer package and its
+/// digest ([`package_digest`], [`Registry`]).
+pub const AUTHORITY_PACKAGE_BOUNDS: PackageBounds = PackageBounds {
+    files: MAX_PACKAGE_FILES,
+    bytes: MAX_PACKAGE_BYTES as usize,
+    file_bytes: MAX_AUTHORITY_FILE_BYTES as usize,
+};
+
 /// Read every regular file in the package into memory, keyed by `/`-separated relative path.
 ///
 /// One read serves both the digest and the manifest parse, so what was verified is what is
@@ -483,79 +547,280 @@ pub const MAX_PACKAGE_FILES: usize = 256;
 /// following a link and within [`MAX_AUTHORITY_FILE_BYTES`]; the package within
 /// [`MAX_PACKAGE_FILES`] files and [`MAX_PACKAGE_BYTES`] bytes.
 fn collect(name: &str, root: &Path) -> Result<BTreeMap<String, Vec<u8>>, LockError> {
-    let mut files = BTreeMap::new();
-    let mut total = 0_u64;
-    let too_large = |reason: String| LockError::TooLarge {
-        name: name.to_string(),
-        reason,
-    };
-    let mut pending = vec![root.to_path_buf()];
+    collect_no_follow(
+        name,
+        root,
+        RootLink::Follow,
+        Some(AUTHORITY_PACKAGE_BOUNDS),
+        &mut |_| {},
+    )
+}
+
+/// The walk behind [`collect`]. Every directory and file below the root is opened relative to
+/// its parent's descriptor with `O_NOFOLLOW`, and the opened object must be the very one that
+/// was classified, so an entry swapped for a symlink (or anything else) between the check and
+/// the open is refused instead of read: nothing outside the root is ever reached. `before_open`
+/// runs between the two for every entry and before the root is opened; only the race regressions
+/// give it a body. `bounds`, when given, is checked against each file's size before it is read,
+/// and no read takes more than what is left of it, so a file that grows meanwhile is refused too.
+fn collect_no_follow(
+    name: &str,
+    root: &Path,
+    root_link: RootLink,
+    bounds: Option<PackageBounds>,
+    before_open: &mut dyn FnMut(&Path),
+) -> Result<BTreeMap<String, Vec<u8>>, LockError> {
+    use nix::errno::Errno;
+    use nix::fcntl::{AtFlags, OFlag, open, openat};
+    use nix::sys::stat::{FileStat, Mode, SFlag, fstat, fstatat};
+    use std::ffi::OsString;
+    use std::io::Read;
+    use std::os::fd::{AsFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::rc::Rc;
+
     let io = |path: &Path, error: std::io::Error| LockError::Io {
         path: path.to_path_buf(),
         error: error.to_string(),
     };
+    // A no-follow open of a symlink fails with `ELOOP`, or with `ENOTDIR` when a directory was
+    // asked for; `is_symlink` tells the latter apart from an entry that is simply no directory.
+    let opened = |path: &Path, error: Errno, is_symlink: &dyn Fn() -> bool| match error {
+        Errno::ELOOP => LockError::Symlink {
+            name: name.to_string(),
+            path: path.to_path_buf(),
+        },
+        Errno::ENOTDIR if is_symlink() => LockError::Symlink {
+            name: name.to_string(),
+            path: path.to_path_buf(),
+        },
+        other => io(path, other.into()),
+    };
+    let kind = |stat: &FileStat| SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
+    let same = |a: &FileStat, b: &FileStat| a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+    let replaced = |path: &Path| LockError::Io {
+        path: path.to_path_buf(),
+        error: "was replaced while the package was read".into(),
+    };
+    let directory_flags =
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    // `O_NONBLOCK` keeps a FIFO swapped in for a file from hanging the open.
+    let file_flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK;
 
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir).map_err(|e| io(&dir, e))? {
-            let entry = entry.map_err(|e| io(&dir, e))?;
-            let path = entry.path();
-            let kind = std::fs::symlink_metadata(&path).map_err(|e| io(&path, e))?;
-            if kind.file_type().is_symlink() {
-                return Err(LockError::Symlink {
-                    name: name.to_string(),
-                    path,
-                });
+    let too_large = |bounds: PackageBounds| LockError::TooLarge {
+        name: name.to_string(),
+        root: root.to_path_buf(),
+        files: bounds.files,
+        bytes: bounds.bytes,
+        file_bytes: bounds.file_bytes,
+    };
+
+    before_open(root);
+    // A root that must not be a symlink is opened as its last component, relative to its parent,
+    // never through the spelling given: `O_NOFOLLOW` binds only the final component, and in
+    // `link/` or `link/.` that is no longer the link. Trailing separators and `.` components are
+    // dropped lexically first; a root ending in `..` or naming `/` or `.` has no component that
+    // could be a symlink and is opened as given.
+    let lexical = root_final_component(root);
+    let as_given = |flags: OFlag| {
+        open(root, flags, Mode::empty()).map_err(|e| {
+            opened(root, e, &|| {
+                std::fs::symlink_metadata(root).is_ok_and(|meta| meta.file_type().is_symlink())
+            })
+        })
+    };
+    let root_fd = match (root_link, lexical) {
+        (RootLink::Follow, _) => as_given(directory_flags & !OFlag::O_NOFOLLOW)?,
+        (RootLink::Refuse | RootLink::Located(_), None) => as_given(directory_flags)?,
+        (RootLink::Refuse | RootLink::Located(_), Some((parent, last))) => {
+            let parent = open(
+                &parent,
+                OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| io(root, e.into()))?;
+            openat(
+                parent.as_fd(),
+                last.as_os_str(),
+                directory_flags,
+                Mode::empty(),
+            )
+            .map_err(|e| {
+                opened(root, e, &|| {
+                    fstatat(
+                        parent.as_fd(),
+                        last.as_os_str(),
+                        AtFlags::AT_SYMLINK_NOFOLLOW,
+                    )
+                    .is_ok_and(|stat| kind(&stat) == SFlag::S_IFLNK)
+                })
+            })?
+        }
+    };
+    if let RootLink::Located(located) = root_link {
+        use std::os::unix::fs::MetadataExt;
+        let opened = std::fs::File::from(root_fd.try_clone().map_err(|e| io(root, e))?)
+            .metadata()
+            .map_err(|e| io(root, e))?;
+        if (opened.dev(), opened.ino()) != located {
+            return Err(replaced(root));
+        }
+    }
+    let mut files = BTreeMap::new();
+    let mut total: usize = 0;
+    // A directory is opened only when its turn comes, relative to its parent's descriptor,
+    // which the pending entry keeps open with the identity the directory was classified with.
+    // The root has no parent: it is open already.
+    type Parent = Option<(Rc<OwnedFd>, FileStat)>;
+    let mut pending: Vec<(Parent, Vec<OsString>)> = vec![(None, Vec::new())];
+    let mut root_fd = Some(root_fd);
+
+    while let Some((parent, relative)) = pending.pop() {
+        let at = relative.iter().fold(root.to_path_buf(), |at, c| at.join(c));
+        let directory = match parent {
+            None => root_fd.take().expect("the root is walked once"),
+            Some((parent, checked)) => {
+                let entry = relative.last().expect("a child has a name");
+                let fd = openat(
+                    parent.as_fd(),
+                    entry.as_os_str(),
+                    directory_flags,
+                    Mode::empty(),
+                )
+                .map_err(|e| {
+                    opened(&at, e, &|| {
+                        fstatat(
+                            parent.as_fd(),
+                            entry.as_os_str(),
+                            AtFlags::AT_SYMLINK_NOFOLLOW,
+                        )
+                        .is_ok_and(|stat| kind(&stat) == SFlag::S_IFLNK)
+                    })
+                })?;
+                let stat = fstat(&fd).map_err(|e| io(&at, e.into()))?;
+                if !same(&stat, &checked) {
+                    return Err(replaced(&at));
+                }
+                fd
             }
-            if kind.is_dir() {
-                pending.push(path);
-            } else {
-                if !kind.is_file() {
+        };
+        let directory = Rc::new(directory);
+        let listing = directory.try_clone().map_err(|e| io(&at, e))?;
+        let mut listing = nix::dir::Dir::from_fd(listing).map_err(|e| io(&at, e.into()))?;
+        let mut names = Vec::new();
+        for entry in listing.iter() {
+            let entry = entry.map_err(|e| io(&at, e.into()))?;
+            let bytes = entry.file_name().to_bytes();
+            if bytes != b"." && bytes != b".." {
+                names.push(OsString::from(std::ffi::OsStr::from_bytes(bytes)));
+            }
+        }
+        drop(listing);
+
+        for entry in names {
+            let path = at.join(&entry);
+            let checked = fstatat(
+                directory.as_fd(),
+                entry.as_os_str(),
+                AtFlags::AT_SYMLINK_NOFOLLOW,
+            )
+            .map_err(|e| io(&path, e.into()))?;
+            let mut child = relative.clone();
+            child.push(entry.clone());
+            match kind(&checked) {
+                SFlag::S_IFLNK => {
+                    return Err(LockError::Symlink {
+                        name: name.to_string(),
+                        path,
+                    });
+                }
+                SFlag::S_IFDIR => {
+                    before_open(&path);
+                    pending.push((Some((Rc::clone(&directory), checked)), child));
+                }
+                SFlag::S_IFREG => {
+                    let mut components = Vec::with_capacity(child.len());
+                    for component in &child {
+                        components.push(component.to_str().ok_or_else(|| {
+                            LockError::UnsupportedPath {
+                                name: name.to_string(),
+                                path: path.clone(),
+                            }
+                        })?);
+                    }
+                    let relative = components.join("/");
+                    if let Some(bounds) = bounds
+                        && files.len() >= bounds.files
+                    {
+                        return Err(too_large(bounds));
+                    }
+                    before_open(&path);
+                    let fd = openat(
+                        directory.as_fd(),
+                        entry.as_os_str(),
+                        file_flags,
+                        Mode::empty(),
+                    )
+                    .map_err(|e| opened(&path, e, &|| false))?;
+                    let stat = fstat(&fd).map_err(|e| io(&path, e.into()))?;
+                    if kind(&stat) != SFlag::S_IFREG {
+                        return Err(LockError::UnsupportedFileType {
+                            name: name.to_string(),
+                            path,
+                        });
+                    }
+                    if !same(&stat, &checked) {
+                        return Err(replaced(&path));
+                    }
+                    let mut bytes = Vec::new();
+                    let file = std::fs::File::from(fd);
+                    match bounds {
+                        None => {
+                            (&file).read_to_end(&mut bytes).map_err(|e| io(&path, e))?;
+                        }
+                        Some(bounds) => {
+                            let left = (bounds.bytes - total).min(bounds.file_bytes);
+                            // The size is checked before anything is read, and the read takes at
+                            // most one byte past what is left, enough to tell growth from fit.
+                            if usize::try_from(stat.st_size).map_or(true, |size| size > left) {
+                                return Err(too_large(bounds));
+                            }
+                            let limit = u64::try_from(left).unwrap_or(u64::MAX).saturating_add(1);
+                            (&file)
+                                .take(limit)
+                                .read_to_end(&mut bytes)
+                                .map_err(|e| io(&path, e))?;
+                            if bytes.len() > left {
+                                return Err(too_large(bounds));
+                            }
+                            total += bytes.len();
+                        }
+                    }
+                    files.insert(relative, bytes);
+                }
+                _ => {
                     return Err(LockError::UnsupportedFileType {
                         name: name.to_string(),
                         path,
                     });
                 }
-                let relative_path = path
-                    .strip_prefix(root)
-                    .expect("walked paths live under the root");
-                let mut components = Vec::new();
-                for component in relative_path.components() {
-                    let component = component.as_os_str().to_str().ok_or_else(|| {
-                        LockError::UnsupportedPath {
-                            name: name.to_string(),
-                            path: path.clone(),
-                        }
-                    })?;
-                    components.push(component);
-                }
-                let relative = components.join("/");
-                if files.len() >= MAX_PACKAGE_FILES {
-                    return Err(too_large(format!(
-                        "holds more than {MAX_PACKAGE_FILES} files; a package is at most \
-                         {MAX_PACKAGE_FILES} files"
-                    )));
-                }
-                if kind.len() > MAX_AUTHORITY_FILE_BYTES {
-                    return Err(too_large(format!(
-                        "file `{relative}` is {} bytes; a package file is at most \
-                         {MAX_AUTHORITY_FILE_BYTES} bytes",
-                        kind.len()
-                    )));
-                }
-                let bytes = review_store::local_fs::read_bounded(&path, MAX_AUTHORITY_FILE_BYTES)
-                    .map_err(|e| io(&path, e))?;
-                total = total.saturating_add(bytes.len() as u64);
-                if total > MAX_PACKAGE_BYTES {
-                    return Err(too_large(format!(
-                        "holds more than {MAX_PACKAGE_BYTES} bytes; a package is at most \
-                         {MAX_PACKAGE_BYTES} bytes"
-                    )));
-                }
-                files.insert(relative, bytes);
             }
         }
     }
     Ok(files)
+}
+
+/// The directory holding `root` and the name of `root` in it, once trailing separators and `.`
+/// components are dropped; `None` when what is left ends in `..` or is `/` or `.`, none of which
+/// can be a symlink. Nothing is resolved: `link/.` yields `link` itself, never its target.
+fn root_final_component(root: &Path) -> Option<(PathBuf, std::ffi::OsString)> {
+    let lexical: PathBuf = root.components().collect();
+    let last = lexical.file_name()?.to_os_string();
+    let parent = match lexical.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    Some((parent, last))
 }
 
 pub fn package_digest_from_files(files: &BTreeMap<String, Vec<u8>>) -> String {
@@ -575,6 +840,39 @@ pub fn package_digest_from_files(files: &BTreeMap<String, Vec<u8>>) -> String {
 /// The content digest of a package on disk — what a pin records.
 pub fn package_digest(name: &str, root: &Path) -> Result<String, LockError> {
     Ok(package_digest_from_files(&collect(name, root)?))
+}
+
+/// Every regular file of the package directory `root`, keyed as [`package_digest_from_files`]
+/// hashes them: the same walk [`package_digest`] makes, except that `root` itself must not be a
+/// symlink and the walk stops at `bounds`. A symlink, a non-regular file, a path that is not
+/// UTF-8, an entry replaced while it is read or a package past `bounds` is refused, never
+/// skipped, followed or truncated.
+pub fn package_files(
+    name: &str,
+    root: &Path,
+    bounds: PackageBounds,
+) -> Result<BTreeMap<String, Vec<u8>>, LockError> {
+    collect_no_follow(name, root, RootLink::Refuse, Some(bounds), &mut |_| {})
+}
+
+/// [`package_files`] for a root the caller already checked: the directory opened must still be
+/// the one with `located`'s device and inode, so a root replaced after the check, by a symlink or
+/// by another directory, is refused rather than read. `before_open` runs as in
+/// [`collect_no_follow`]; only the race regressions give it a body.
+pub(crate) fn located_package_files(
+    name: &str,
+    root: &Path,
+    located: (u64, u64),
+    bounds: PackageBounds,
+    before_open: &mut dyn FnMut(&Path),
+) -> Result<BTreeMap<String, Vec<u8>>, LockError> {
+    collect_no_follow(
+        name,
+        root,
+        RootLink::Located(located),
+        Some(bounds),
+        before_open,
+    )
 }
 
 /// Only the `af` pin, read leniently: dispatch must find the pin in any lock a *newer* release
@@ -811,3 +1109,6 @@ impl Lockfile {
         Ok(manifest)
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -1511,6 +1511,8 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
     // `self optimize` is the exception: it reads project authority, so it dispatches (ADR-0105).
     let binary_management_self = first == Some("self")
         && argv.get(command_index + 1).map(String::as_str) != Some("optimize");
+    // `catalog digest` is read-only (ADR-0157): even a malformed invocation that reaches here
+    // instead of running early neither dispatches, installs nor schedules a check.
     matches!(first, None | Some("help" | "completions" | "config"))
         || binary_management_self
         || matches!(
@@ -1518,7 +1520,7 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
             (
                 Some("provider"),
                 Some("setup" | "remove" | "recover" | "auth")
-            )
+            ) | (Some("catalog"), Some("digest"))
         )
         || argv
             .iter()
@@ -4003,6 +4005,13 @@ mod tests {
             "codex-main"
         ])));
         assert!(!exempt_from_dispatch(&argv(&["af", "provider", "status"])));
+        assert!(exempt_from_dispatch(&argv(&[
+            "af", "catalog", "digest", "pkg"
+        ])));
+        assert!(exempt_from_dispatch(&argv(&[
+            "af", "--repo", "x", "catalog", "digest"
+        ])));
+        assert!(!exempt_from_dispatch(&argv(&["af", "catalog", "sync"])));
         assert!(exempt_from_dispatch(&argv(&[
             "af", "--repo", "/tmp/x", "provider", "auth", "begin"
         ])));
