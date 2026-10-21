@@ -512,9 +512,10 @@ mod tests {
         let replaced = root.join("replaced");
         std::fs::create_dir(&replaced).unwrap();
         let measured = review_sandbox::Identity::of(&replaced).unwrap();
-        std::fs::remove_dir(&replaced).unwrap();
-        std::fs::create_dir(root.join("other")).unwrap();
-        std::fs::rename(root.join("other"), &replaced).unwrap();
+        // The measured directory stays alive beside it, so its replacement cannot reuse its
+        // inode (Linux file systems hand a freed inode straight back).
+        std::fs::rename(&replaced, root.join("measured")).unwrap();
+        std::fs::create_dir(&replaced).unwrap();
         assert!(remove_emptied(&root, &replaced, measured).is_err());
         assert!(replaced.exists());
 

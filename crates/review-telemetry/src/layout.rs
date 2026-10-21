@@ -376,6 +376,8 @@ impl Confined {
     /// Create the telemetry root `path` when it is absent (through whatever the user's path
     /// names), private (0700, whatever the umask), and open it. A root this process's effective
     /// user owns whose group or others have any access is narrowed to 0700.
+    // `mode_t` is `u16` on macOS and `u32` on Linux, so the `into()` is needed on one only.
+    #[allow(clippy::useless_conversion)]
     pub fn create_root(path: &Path) -> std::io::Result<Self> {
         use std::os::unix::fs::DirBuilderExt as _;
         std::fs::DirBuilder::new()
