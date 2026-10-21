@@ -8,7 +8,9 @@ use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignRevie
 use review_core::task::execution::*;
 use review_core::task::pipeline::*;
 use review_core::task::plan::*;
-use review_core::task::usage::{TASK_TOKEN_USAGE_V3, TaskTokenUsageV3};
+use review_core::task::usage::{
+    TASK_TOKEN_USAGE_V3, TASK_USAGE_OBSERVATION_V1, TaskTokenUsageV3, TaskUsageObservationV1,
+};
 use review_core::task::{self, ArtifactInputV1, EXECUTION_PLAN_V1, TaskResultV1, TaskRevisionV1};
 use review_graph::task::{
     CompileContext, CompiledOperator, OperatorAttemptCost, OperatorSignature, ReviewOperation,
@@ -493,6 +495,12 @@ impl TaskFixture {
     /// Commit a cumulative usage observation of `attempt`.
     pub fn observe(&mut self, attempt: &str, usage: TaskTokenUsageV3) {
         self.renew();
+        self.observe_raw(attempt, usage, vec![]);
+    }
+
+    /// Commit a cumulative usage observation of `attempt` naming the raw artifacts `raw`, on
+    /// the lease as it is.
+    pub fn observe_raw(&mut self, attempt: &str, usage: TaskTokenUsageV3, raw: Vec<String>) {
         let usage_id = self.usage(&usage);
         self.store
             .observe_task_usage(
@@ -502,10 +510,30 @@ impl TaskFixture {
                     attempt_id: attempt.into(),
                     charged_tokens: usage.chargeable_tokens.get(),
                     usage_id,
-                    raw_artifact_ids: vec![],
+                    raw_artifact_ids: raw,
                 },
             )
             .unwrap();
+    }
+
+    /// The native usage observation `native` of the Attempt `attempt` of `node`, in the CAS as
+    /// its Worker would put it; its id.
+    pub fn native(&self, attempt: &str, node: &str, native: &TaskUsageObservationV1) -> String {
+        let context = self.cas.put_json(&json!({ "context": node })).unwrap();
+        self.cas
+            .put_artifact(
+                TASK_USAGE_OBSERVATION_V1,
+                review_core::Producer::Attempt {
+                    run_id: self.run_id.clone(),
+                    node_id: format!("root.nodes.{node}"),
+                    attempt_id: attempt.into(),
+                },
+                vec![context],
+                None,
+                serde_json::to_value(native).unwrap(),
+            )
+            .unwrap()
+            .0
     }
 
     /// Write the sidecar row of `attempt` (no Task event).

@@ -565,7 +565,9 @@ not open the Attempt) records the Attempt as the Task projection holds it after 
 `af.usage.chargeable_tokens` (the retained charge, as `af task show` reports it), the counters of
 the usage the transition named, `af.usage.observation` (`complete`, `incomplete`, `unknown`) and
 `af.usage.unknown_cause`, the native usage observation when the transition carried one
-(`af.usage.native.observation` and `af.usage.native.*_tokens`), `af.usage.source`
+(`af.usage.native.observation` and `af.usage.native.*_tokens`; a raw artifact of the transition
+the CAS holds but cannot read is an `observer` problem naming it, and the event is recorded
+without a native observation), `af.usage.source`
 (`usage_observed`, `settled`, `released`) and `af.usage.sequence`, the committed event's own
 sequence in the Task's log. Every committed write of the `attempt_wall` sidecar records the
 event `af.usage.wall` with the merged row (`af.usage.wall.started_unix_ms`,
@@ -943,7 +945,11 @@ seal, the compression and the sweep's telemetry inventory are inside it. Every c
 fresh copy of its fixture — every directory and file it creates given user write, whatever the
 modes of the source tree, which the gate materializes read-only — with private `HOME`, XDG
 directories, `TMPDIR` and Store, and must exit
-as the fixture expects, leaving no telemetry directory at `off` and a segment at `spans`. Per
+as the fixture expects, leaving no telemetry directory at `off` and a segment at `spans`. The
+fixture repositories run no background git maintenance (every `git` the script runs carries, and
+the pristine repository's own config that every copy inherits holds, `gc.auto=0`,
+`maintenance.auto=false` and `gc.autoDetach=false`), because a detached `git maintenance run
+--auto` after a commit holds a lock the copy trips over and can run inside a measured command. Per
 fixture the script reports the paired differences `(spans - off) / off`, their median and a 95%
 percentile-bootstrap interval of the median (10,000 resamples, seeded). **Drain latency** is
 measured on the dense fixture's runs: from the harness's last write (its final stderr line names
