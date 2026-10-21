@@ -46,7 +46,7 @@ use review_core::{EventType, RunEvent};
 use review_store::store::observer::{Commit, CommitObserver, WallCommit};
 use review_store::store::task::execution::read_execution_record;
 use review_store::store::task::read_task_transition;
-use review_store::{Cas, EventStore, LedgerProjection};
+use review_store::{Cas, CasError, EventStore, LedgerProjection};
 use review_telemetry::level::Level;
 use review_telemetry::record::{Attrs, Demand, Finding, ProblemWhat};
 use review_telemetry::segment::writer::Writer;
@@ -345,13 +345,27 @@ impl StoreMirror {
                 .map(|id| token_usage(commit.cas, id))
                 .transpose()
                 .and_then(|usage| Ok((usage, native_observation(commit.cas, &raw)?)));
-            let (usage, native) = match read {
+            let (usage, (native, unreadable)) = match read {
                 Ok(read) => read,
                 Err(reason) => {
                     self.failed(writer, Some(store_id), &reason);
                     continue;
                 }
             };
+            // A raw artifact the CAS cannot read is the observer's failure: the snapshot keeps
+            // the projection's figures without the observation it may have held.
+            for (artifact, why) in &unreadable {
+                self.failed(
+                    writer,
+                    Some(store_id),
+                    &format!(
+                        "the raw artifact {artifact} of the committed {source} record at Task \
+                         log sequence {} cannot be read ({why}); its native usage observation \
+                         is not recorded",
+                        event.sequence
+                    ),
+                );
+            }
             let mut attrs = Attrs::new()
                 .id("af.store_id", store_id)
                 .id("af.run_id", event.run_id.clone())
@@ -882,22 +896,55 @@ fn token_usage(cas: &Cas, id: &str) -> Result<TaskTokenUsageV3, String> {
         .map_err(|error| format!("a committed usage record cannot be read: {error}"))
 }
 
-/// The native usage observation among a committed record's raw artifacts, when it has one.
-fn native_observation(cas: &Cas, raw: &[String]) -> Result<Option<TaskUsageObservationV1>, String> {
+/// A native usage observation, when there is one, and each raw artifact the CAS could not read,
+/// named for a problem, with why.
+type NativeRead = (Option<TaskUsageObservationV1>, Vec<(String, String)>);
+
+/// The native usage observation among a committed record's raw artifacts, when it has one,
+/// and the raw artifacts the CAS holds but cannot read.
+fn native_observation(cas: &Cas, raw: &[String]) -> Result<NativeRead, String> {
     let unreadable =
         |error: String| format!("a committed usage observation cannot be read: {error}");
+    let mut failed = Vec::new();
     for id in raw {
-        // Raw captures may name provider-native identities rather than CAS objects.
-        let Ok(Some(envelope)) = cas.get_optional_artifact(id) else {
-            continue;
+        let envelope = match cas.get_optional_artifact(id) {
+            Ok(Some(envelope)) => envelope,
+            // A raw blob, not a typed envelope.
+            Ok(None) => continue,
+            // The Store read every raw artifact before it committed the record, so one it
+            // cannot read now is corrupt or unreadable, never a blob to pass over.
+            Err(error) => {
+                failed.push((artifact_name(id), cas_failure(&error)));
+                continue;
+            }
         };
         if envelope.artifact_type == TASK_USAGE_OBSERVATION_V1 {
             return serde_json::from_value(envelope.payload)
-                .map(Some)
+                .map(|native| (Some(native), failed))
                 .map_err(|error| unreadable(error.to_string()));
         }
     }
-    Ok(None)
+    Ok((None, failed))
+}
+
+/// A CAS id as a problem can carry it: a digest's first 16 hex digits, since the whole digest
+/// is a hex run the credential rule withholds, and with it the problem's whole reason.
+fn artifact_name(id: &str) -> String {
+    match id.strip_prefix("sha256:") {
+        Some(hex) => format!("sha256:{}…", hex.chars().take(16).collect::<String>()),
+        None => "named by no digest".into(),
+    }
+}
+
+/// Why the CAS could not read an object, without the digest its errors spell out.
+fn cas_failure(error: &CasError) -> String {
+    match error {
+        CasError::Corrupt { .. } => "its stored bytes do not match its digest".into(),
+        CasError::NotFound { .. } => "it is not in the CAS".into(),
+        CasError::InvalidDigest(_) => "its id is no CAS digest".into(),
+        CasError::Canonical(_) => "its stored bytes are not canonical".into(),
+        CasError::Io(error) => format!("it cannot be read: {}", error.kind()),
+    }
 }
 
 /// The exact token counters of `usage` under `prefix`, each a canonical decimal string; a

@@ -12,6 +12,8 @@ mod provider_cli;
 mod review_memo;
 #[path = "support/schemas.rs"]
 mod schemas;
+#[path = "support/sockets.rs"]
+mod sockets;
 #[path = "support/task_cli.rs"]
 mod task_cli;
 

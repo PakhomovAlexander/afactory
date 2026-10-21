@@ -360,11 +360,21 @@ fn telemetry_default_opens_no_socket() {
     while child.try_wait().unwrap().is_none() {
         let fds = PathBuf::from(format!("/proc/{pid}/fd"));
         if fds.is_dir() {
+            // Each socket descriptor is judged by the child's own tables: the standard library's
+            // spawn plumbing is no listener and no connection (`crate::sockets`).
+            let mut inodes = Vec::new();
             for entry in std::fs::read_dir(&fds).into_iter().flatten().flatten() {
                 if let Ok(target) = std::fs::read_link(entry.path())
-                    && target.to_string_lossy().starts_with("socket:")
+                    && let Some(inode) = crate::sockets::inode(&target.to_string_lossy())
                 {
-                    sockets.push(target.display().to_string());
+                    inodes.push(inode);
+                }
+            }
+            let net = PathBuf::from(format!("/proc/{pid}/net"));
+            for violation in crate::sockets::violations(&net, &inodes) {
+                let violation = violation.to_string();
+                if !sockets.contains(&violation) {
+                    sockets.push(violation);
                 }
             }
             looks += 1;

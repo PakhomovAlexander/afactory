@@ -564,7 +564,9 @@ not open the Attempt) records the Attempt as the Task projection holds it after 
 `af.usage.chargeable_tokens` (the retained charge, as `af task show` reports it), the counters of
 the usage the transition named, `af.usage.observation` (`complete`, `incomplete`, `unknown`) and
 `af.usage.unknown_cause`, the native usage observation when the transition carried one
-(`af.usage.native.observation` and `af.usage.native.*_tokens`), `af.usage.source`
+(`af.usage.native.observation` and `af.usage.native.*_tokens`; a raw artifact of the transition
+the CAS holds but cannot read is an `observer` problem naming it, and the event is recorded
+without a native observation), `af.usage.source`
 (`usage_observed`, `settled`, `released`) and `af.usage.sequence`, the committed event's own
 sequence in the Task's log. Every committed write of the `attempt_wall` sidecar records the
 event `af.usage.wall` with the merged row (`af.usage.wall.started_unix_ms`,

@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use review_core::task::usage::TaskTokenUsageV3;
+use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
 use review_pipeline::telemetry::StoreMirror;
+use review_store::store::observer::{Commit, CommitObserver, WallCommit};
 use review_store::{Cas, EventStore};
 use review_telemetry::ledger::Ledger;
 use review_telemetry::level::Level;
@@ -397,6 +398,116 @@ fn telemetry_mirror_skips_rolled_back_transactions() {
         assert_eq!(log.last_sequence + 1, committed.len() as u64);
     }
     assert_eq!(ledger.logs.len(), 2, "{:?}", ledger.logs);
+}
+
+/// Tells the mirror of every commit, first corrupting the stored bytes of the CAS object it was
+/// armed with on the first commit after it was armed: after the Store validated the commit's
+/// artifacts and before the mirror reads them.
+struct CorruptBeforeMirror {
+    mirror: Arc<StoreMirror>,
+    armed: std::sync::Mutex<Option<PathBuf>>,
+}
+
+impl CommitObserver for CorruptBeforeMirror {
+    fn committed(&self, commit: &Commit<'_>) {
+        if let Some(object) = self.armed.lock().unwrap().take() {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&object, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let mut bytes = std::fs::read(&object).unwrap();
+            bytes[0] = if bytes[0] == b' ' { b'\t' } else { b' ' };
+            std::fs::write(&object, bytes).unwrap();
+        }
+        self.mirror.committed(commit);
+    }
+
+    fn wall_recorded(&self, commit: &WallCommit<'_>) {
+        self.mirror.wall_recorded(commit);
+    }
+}
+
+/// Design §7.5: a committed usage observation whose raw native observation the CAS holds but
+/// cannot read (corrupt, not absent) is the mirror's failure, never a blob to pass over: one
+/// `observer` problem names the artifact, the ledger reads incomplete, and the charge snapshot
+/// keeps the projection's figures without a native observation.
+#[test]
+fn telemetry_mirror_corrupt_usage_artifact_marks_coverage_incomplete() {
+    let (_temp, root, store_dir) = directories();
+    let run_id = review_store::store::task::task_run_id(task_fixture::TASK_ID).unwrap();
+    let recording = Recording::start(&root, Level::Spans, store_dir.path(), &run_id, 1);
+    let observer = Arc::new(CorruptBeforeMirror {
+        mirror: recording.mirror(),
+        armed: std::sync::Mutex::new(None),
+    });
+    let mut f = recording
+        .within(|| TaskFixture::new(store_dir, |store| store.observe_commits(observer.clone())));
+    let (attempt, artifact) = recording.within(|| {
+        let attempt = f.start("write");
+        let artifact = f.native(
+            &attempt,
+            "write",
+            &TaskUsageObservationV1 {
+                reported_usage: Some(usage(Some(6), 6)),
+                charge_complete: true,
+            },
+        );
+        f.renew();
+        let hex = artifact.strip_prefix("sha256:").unwrap();
+        *observer.armed.lock().unwrap() = Some(
+            f.directory
+                .path()
+                .join("cas/objects")
+                .join(&hex[..2])
+                .join(&hex[2..]),
+        );
+        // The Store validates the observation and commits; the observer finds it corrupt.
+        f.observe_raw(&attempt, usage(Some(6), 6), vec![artifact.clone()]);
+        assert!(
+            observer.armed.lock().unwrap().is_none(),
+            "corrupted on commit"
+        );
+        assert!(f.cas.get_optional_artifact(&artifact).is_err());
+        (attempt, artifact)
+    });
+    recording.finish();
+    let ledger = read_ledger(&root, &run_id);
+    assert_eq!(ledger.coverage, "incomplete");
+    assert!(
+        ledger
+            .coverage_reasons
+            .iter()
+            .any(|reason| reason.contains("Store mirror problem")),
+        "{:?}",
+        ledger.coverage_reasons
+    );
+    let (index, _, _) = view::open(&root).unwrap();
+    let problems: Vec<(String, String)> = index
+        .connection()
+        .prepare("SELECT what, reason FROM problems ORDER BY seq")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(index);
+    let named = format!("raw artifact {}…", &artifact[..23]);
+    assert!(
+        problems.iter().any(|(what, reason)| what == "observer"
+            && reason.contains(&named)
+            && reason.contains("usage_observed")
+            && reason.contains("do not match its digest")),
+        "{named}: {problems:?}"
+    );
+    let charge = ledger
+        .accounting
+        .attempts
+        .iter()
+        .find(|recorded| recorded.attempt_id == attempt)
+        .and_then(|recorded| recorded.charge.clone())
+        .expect("the charge snapshot is kept");
+    assert_eq!(charge.source, "usage_observed");
+    assert_eq!(charge.counters.chargeable_tokens.as_deref(), Some("6"));
+    assert_eq!(charge.counters.input_tokens.as_deref(), Some("6"));
+    assert_eq!(charge.native, None, "no native observation");
 }
 
 // ------------------------------------------------------------------------------------------
