@@ -247,7 +247,9 @@ Every step below is a reviewed change or a dispatch, and every failure stays in 
    member's original (ADR-0183). The environment must be a GitHub-hosted one.
 
    `--group` names each allowed CPU model and the registry-pinned sample image a hosted runner
-   may report. `--repository` and `--branch` name the only producer of member runs: a
+   may report. Each case uses the group observed by its paired shard; different shards may
+   have different allowed CPU models. Readiness records that binding per case.
+   `--repository` and `--branch` name the only producer of member runs: a
    `workflow_dispatch` of `.github/workflows/performance.yml` on that branch of that repository. The cohort fixes 20 A/A members on days 0-1, the preparation members on day 2,
    and 30 descriptive and 10 power trials on the remaining days. A changed policy or
    environment starts a new named cohort; the old one is kept.

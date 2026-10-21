@@ -202,7 +202,7 @@ class Registry(unittest.TestCase):
         self.refuses("sample_timeout_seconds = 30", "sample_timeout_seconds = 121", "1..120")
         self.refuses("free_disk_floor_bytes = 10737418240", "free_disk_floor_bytes = 1073741824",
                      "free_disk_floor_bytes")
-        self.refuses("shard_sampling_minutes = 15", "shard_sampling_minutes = 31",
+        self.refuses("shard_sampling_minutes = 25", "shard_sampling_minutes = 31",
                      "hard maximum")
         self.refuses("serialized_envelope_bytes = 5605230", "serialized_envelope_bytes = 8388609",
                      "serialized_envelope_bytes")
@@ -270,10 +270,12 @@ class Registry(unittest.TestCase):
                   if suite.seed_of(self.suite.doc, item) is not None]
         self.assertEqual(sorted(set(suite.seed_of(self.suite.doc, item)["seed_id"]
                                     for item in seeded)), [
+            "authority_seed__package_issue_255_large",
+            "authority_seed__package_issue_255_medium",
             "source_capture_seed__files_10000_tree_source_files_128b",
             "source_capture_seed__files_100_tree_source_files_128b",
             "state_projection_seed__log_events_10000"])
-        self.assertEqual(len(seeded), 4)
+        self.assertEqual(len(seeded), 8)
 
     def test_a_recipe_pins_its_build_image_by_a_canonical_digest(self):
         pin = 'target = "x86_64-unknown-linux-gnu"\n'

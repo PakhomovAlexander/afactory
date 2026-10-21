@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-readiness/5",
+  "schema": "af.perf-readiness/6",
   "cohort_id": "synthetic_cohort",
   "cohort_digest": "sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c",
   "calibration_digest": "sha256:7370fd2786e97ab0cf728496a8e39c24f09eb1a3b2bceef31dc7ec14a76b9f1f",
@@ -35,7 +35,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:93d2f05614c0f1b9a236804822b7ceb1e334d73b733283765796dd6bf1561648",
       "cases": {
         "synthetic_advisory": {
@@ -57,7 +56,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_02",
@@ -84,7 +88,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:3a0de526213489c6e59b45e340bcad355bd392896d96903842ea8779c50b875b",
       "cases": {
         "synthetic_advisory": {
@@ -106,7 +109,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_03",
@@ -133,7 +141,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:d5339bdf1dd081e52f9369408dc5848a0b604c17d0a0bfcb7d70bbd00a1786bd",
       "cases": {
         "synthetic_advisory": {
@@ -155,7 +162,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_04",
@@ -182,7 +194,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:9e4d687f1c7a46dfad1a911082652cf8a7a3a7969aa628188169c2dbea3a1468",
       "cases": {
         "synthetic_advisory": {
@@ -204,7 +215,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_05",
@@ -231,7 +247,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:b7dc7c0d12fea9ee90b6b890e4b8f561a3485d4f4aafe9c5d2c04265f88d3b9b",
       "cases": {
         "synthetic_advisory": {
@@ -253,7 +268,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_06",
@@ -280,7 +300,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:62bf590f2de0deb15d087ddc275c0160dbc803d7d290563c543d16a8b6f8eb3b",
       "cases": {
         "synthetic_advisory": {
@@ -302,7 +321,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_07",
@@ -329,7 +353,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:7ffd9b2ea4d0a8c1dcbf687c0c2e0e8e2828d660352981e3b8a7e0861596e809",
       "cases": {
         "synthetic_advisory": {
@@ -351,7 +374,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_08",
@@ -378,7 +406,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:1e130b2b60b5bf6a1741ed774ea12c458425e2daf058a8676cf0cce3dade2622",
       "cases": {
         "synthetic_advisory": {
@@ -400,7 +427,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_09",
@@ -427,7 +459,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:56ccc3aad8ef37d941cadef69c2e07a4e812b56fbd3dd96fde86c8b7d3feb0c4",
       "cases": {
         "synthetic_advisory": {
@@ -449,7 +480,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_10",
@@ -476,7 +512,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:3458dfc8123e9a9a867f2d0ef40b74bf540ae615bb7c03d7dbf8a67caf5263c8",
       "cases": {
         "synthetic_advisory": {
@@ -498,7 +533,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_11",
@@ -525,7 +565,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:fe420f46ca31e6f6e94af692c8abdd7c33f2cc3363ab341acb1c5215e9366d98",
       "cases": {
         "synthetic_advisory": {
@@ -547,7 +586,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_12",
@@ -574,7 +618,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:0f89a92a647992653198c78880182103f3df586b04e7e3d2801f12b46cf474ab",
       "cases": {
         "synthetic_advisory": {
@@ -596,7 +639,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_13",
@@ -623,7 +671,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:8c53237a03375c2c637da045be1184e81148fc459d1dca191d8b1e6af1e06e1f",
       "cases": {
         "synthetic_advisory": {
@@ -645,7 +692,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_14",
@@ -672,7 +724,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:901d7fb9b3f1a6b9658984505d859e7425a58a939efde051b66e95418a3f8dff",
       "cases": {
         "synthetic_advisory": {
@@ -694,7 +745,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_15",
@@ -721,7 +777,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:6fca76f5b21014235c5b03952175e5fb4533a71084d56db9d78aa14487c478e9",
       "cases": {
         "synthetic_advisory": {
@@ -743,7 +798,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_16",
@@ -770,7 +830,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:38cfab52fc1ec2753b88d103b6008901e77f0e23ec7c1b7d021fc6d85ded3403",
       "cases": {
         "synthetic_advisory": {
@@ -792,7 +851,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_17",
@@ -819,7 +883,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:a9dc453c2420c2f512995838841c6ce900e65c3626357f6625e93a0823cfed09",
       "cases": {
         "synthetic_advisory": {
@@ -841,7 +904,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_18",
@@ -868,7 +936,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:9f18831540529ca374031dab1c8ff69548927320e31d55eb03b53bbc6d2d7006",
       "cases": {
         "synthetic_advisory": {
@@ -890,7 +957,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_19",
@@ -917,7 +989,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:9630f5b60eb844eee38acce35421d5f4923f11c4bf3bbd3440b5d44ba092bf6a",
       "cases": {
         "synthetic_advisory": {
@@ -939,7 +1010,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "aa_20",
@@ -966,7 +1042,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:d036a23048cb755881e331f2e20abdc963ba8c3b01e372cb8d4297664c9d2d0b",
       "cases": {
         "synthetic_advisory": {
@@ -988,7 +1063,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "prep_01",
@@ -1015,7 +1095,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:c13f55dad163c567ee5e6b9f759e5412e500f19da4827e507cc02c691368afca",
       "cases": {
         "synthetic_advisory": {
@@ -1037,7 +1116,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "prep_02",
@@ -1064,7 +1148,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:28b155bc91c6c120e3a7240c4425cd5a8d1afc0cbf6ed6651c925e58fcfc88c4",
       "cases": {
         "synthetic_advisory": {
@@ -1086,7 +1169,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj2_01",
@@ -1113,7 +1201,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:983eed9ff88ae41aa137fc713e9b61b294f220d75471fae7f2c273ace6be653f",
       "cases": {
         "synthetic_advisory": {
@@ -1135,7 +1222,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj2_02",
@@ -1162,7 +1254,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:73dc7f6e4cc7226e5ac52db1a907e92c7071d8f17ecef31c75da8058b3eaf0dc",
       "cases": {
         "synthetic_advisory": {
@@ -1184,7 +1275,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj2_03",
@@ -1211,7 +1307,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:2dd7d3c9644dcb6f13ba49f0c24c9160b84b391dec4ffd1c463c1a3e9df9ab23",
       "cases": {
         "synthetic_advisory": {
@@ -1233,7 +1328,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj2_04",
@@ -1260,7 +1360,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:8396d990f315e454a899a1390bd3a24b2090dbaef9c2b44cac7978b61b1612b9",
       "cases": {
         "synthetic_advisory": {
@@ -1282,7 +1381,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj2_05",
@@ -1309,7 +1413,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:0d8a3cd7677ea1ea3be711ca164f98a3229e4d43284111d096aac09caed1be9c",
       "cases": {
         "synthetic_advisory": {
@@ -1331,7 +1434,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj2_06",
@@ -1358,7 +1466,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:1da4407d487d625221297b0c66ffd1a6d25df7a9d7d7b96d0d38c9857e9799b9",
       "cases": {
         "synthetic_advisory": {
@@ -1380,7 +1487,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj2_07",
@@ -1407,7 +1519,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:b54554e91cba92e91ad20b13d09137ed96b84e3ac667a37e68d8a7b98cb814fb",
       "cases": {
         "synthetic_advisory": {
@@ -1429,7 +1540,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj2_08",
@@ -1456,7 +1572,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:b37ad976f2ecada8c30f03a4419fc5bfe379653c201cfebc364ce737185cf61d",
       "cases": {
         "synthetic_advisory": {
@@ -1478,7 +1593,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj2_09",
@@ -1505,7 +1625,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:4f51b344f15435bbe971b2e408b6a943658d103066cd7fb19b0d926870c93d14",
       "cases": {
         "synthetic_advisory": {
@@ -1527,7 +1646,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj2_10",
@@ -1554,7 +1678,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:3f5bd21164ce30745fd491ab2de5cb9a11c3964c2821acaaa019dcefe824ee3f",
       "cases": {
         "synthetic_advisory": {
@@ -1576,7 +1699,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj5_01",
@@ -1603,7 +1731,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:555aed5c7ec9ce12dba809fa57de5c0c44fb34b58ae43a014a9b09a95fa21718",
       "cases": {
         "synthetic_advisory": {
@@ -1625,7 +1752,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj5_02",
@@ -1652,7 +1784,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:92db8a7bf09562e0eee6dab54243a7834f1a96969d356352544fbf268fba3709",
       "cases": {
         "synthetic_advisory": {
@@ -1674,7 +1805,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj5_03",
@@ -1701,7 +1837,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:8b0b8cba57d88370fc1aaa37e99740e9c50d64192447a9a70fca1e1df8bd8904",
       "cases": {
         "synthetic_advisory": {
@@ -1723,7 +1858,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj5_04",
@@ -1750,7 +1890,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:cfa752242976e258421a2d19930e896bd680573c79bb1bfaed98159e2e0f4639",
       "cases": {
         "synthetic_advisory": {
@@ -1772,7 +1911,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj5_05",
@@ -1799,7 +1943,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:9b9aef2bb866283f0b5847b5c13fbfe3c7319542745a30a488fad695e66fa5a5",
       "cases": {
         "synthetic_advisory": {
@@ -1821,7 +1964,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj5_06",
@@ -1848,7 +1996,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:d14895cef53c53194a572cca560ac6576484623822625b77165bcc504b252c56",
       "cases": {
         "synthetic_advisory": {
@@ -1870,7 +2017,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj5_07",
@@ -1897,7 +2049,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:c85bb5f317e4b3fccf171966be3d7b9f36dbf4d9ca8a8a5826ba7e7a79967666",
       "cases": {
         "synthetic_advisory": {
@@ -1919,7 +2070,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj5_08",
@@ -1946,7 +2102,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:f6532bbd87d696b3ec398be434e7d5755ff13ac704acc2ef7b55999782cbea67",
       "cases": {
         "synthetic_advisory": {
@@ -1968,7 +2123,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj5_09",
@@ -1995,7 +2155,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:b2dbc53038fb579930c861ffef370fbcdabcba40e0d128d81e8c3ddbae2b1e69",
       "cases": {
         "synthetic_advisory": {
@@ -2017,7 +2176,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj5_10",
@@ -2044,7 +2208,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:88ccc460ed3ae041dd2d74486699f97c3af2520ebd2c0e9d2be51ba20f7ef92b",
       "cases": {
         "synthetic_advisory": {
@@ -2066,7 +2229,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": false
+      "qualifies": false,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj10_01",
@@ -2093,7 +2261,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:391b14ee9a963ccd3b51dddbb7c852ccafc8a0e9541d51ad62c1ee08ccc3f4b3",
       "cases": {
         "synthetic_advisory": {
@@ -2115,7 +2282,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj10_02",
@@ -2142,7 +2314,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:acd869d58eaad0315d9ed1f32f6ffa1079dd851cef5ae42efeee55cfcb380615",
       "cases": {
         "synthetic_advisory": {
@@ -2164,7 +2335,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj10_03",
@@ -2191,7 +2367,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:4b35d46aac117d1b2c5639fe30888d77de35db3959d6d0eb83a62e64125669e5",
       "cases": {
         "synthetic_advisory": {
@@ -2213,7 +2388,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj10_04",
@@ -2240,7 +2420,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:3723c526ce4bc65e2621d81eaf43b31e76e7ec0a4327786a30cfc1129d1635f9",
       "cases": {
         "synthetic_advisory": {
@@ -2262,7 +2441,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj10_05",
@@ -2289,7 +2473,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:0a19bf483dc245010c9893fcad15cf8d54469ec997a1e537be998b1da252787b",
       "cases": {
         "synthetic_advisory": {
@@ -2311,7 +2494,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj10_06",
@@ -2338,7 +2526,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:24fb07bfbaa35ea01f8adfa452fdba5df95c46477fa8990e6241c1d72c8a0202",
       "cases": {
         "synthetic_advisory": {
@@ -2360,7 +2547,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj10_07",
@@ -2387,7 +2579,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:24566f7db023b0a34aa850d66cddb7d960a8a20208f8e5c0573e219ac0cb7e51",
       "cases": {
         "synthetic_advisory": {
@@ -2409,7 +2600,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj10_08",
@@ -2436,7 +2632,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:23db8db43899a51c83fa6d64d7053bd12c121c61a0e0e466aeb5dadc981fa364",
       "cases": {
         "synthetic_advisory": {
@@ -2458,7 +2653,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj10_09",
@@ -2485,7 +2685,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:c886a88cf1ecd7556382abdf0c6cc53343cc32a0704b431c3228eb1cc4c0b3c7",
       "cases": {
         "synthetic_advisory": {
@@ -2507,7 +2706,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "inj10_10",
@@ -2534,7 +2738,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:f9e575276e395e92288bb9b224d2e6a8e7c6b4c2a00a8852e94abcb3c4c8f832",
       "cases": {
         "synthetic_advisory": {
@@ -2556,7 +2759,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "power_01",
@@ -2583,7 +2791,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:198f6ab9217361e2389e9deaa61aff0d299adee681743974e57c44c68ce0ae82",
       "cases": {
         "synthetic_advisory": {
@@ -2605,7 +2812,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "power_02",
@@ -2632,7 +2844,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:51d1fa0c0a19a3a7ab542f066cce4476d799f6001378ab90529f7aa9717e9d71",
       "cases": {
         "synthetic_advisory": {
@@ -2654,7 +2865,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "power_03",
@@ -2681,7 +2897,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:2c5f7038369268069588713b22aa5dd890378a36357faa1bb3d588a8ea484a91",
       "cases": {
         "synthetic_advisory": {
@@ -2703,7 +2918,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "power_04",
@@ -2730,7 +2950,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:b452e9df8902a57979bdc1eed7d6dfc7de919c238f7cb1b1de5217db18847c71",
       "cases": {
         "synthetic_advisory": {
@@ -2752,7 +2971,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "power_05",
@@ -2779,7 +3003,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:7bdfe8916ca00e9ae91538ae4e8af73b30e0786a9486192d0436b2436d5174fd",
       "cases": {
         "synthetic_advisory": {
@@ -2801,7 +3024,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "power_06",
@@ -2828,7 +3056,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:4438706da8ba28af13bee0afa01b9c4a94c55cf6da0df356bb500ef959b64582",
       "cases": {
         "synthetic_advisory": {
@@ -2850,7 +3077,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "power_07",
@@ -2877,7 +3109,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:28833912a5ac90242870331b055947bedb4361bb7db76999fe86934446cfaeae",
       "cases": {
         "synthetic_advisory": {
@@ -2899,7 +3130,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "power_08",
@@ -2926,7 +3162,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:e0cdb69d46b574710ee11c3b44a93c67addd3524bbdfbaa7fc5a0bf3f807b5f7",
       "cases": {
         "synthetic_advisory": {
@@ -2948,7 +3183,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "power_09",
@@ -2975,7 +3215,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:43e555b3fdcbb94233dc47d2eb06ec9e9e5503ad2c8641f6c8b62b951f0f1ded",
       "cases": {
         "synthetic_advisory": {
@@ -2997,7 +3236,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     },
     {
       "member_id": "power_10",
@@ -3024,7 +3268,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:6296c8d00c3b72aee32dcb31c89e11ca03047e3ace9d60b5fadbdffc064e28d6",
       "cases": {
         "synthetic_advisory": {
@@ -3046,7 +3289,12 @@
           "injection_valid": true
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     }
   ],
   "refused_evidence": [],
@@ -3096,5 +3344,5 @@
     }
   },
   "ready": true,
-  "claim": "9 of 10 power trials is a readiness decision for the demonstrated targets, not proof of 90% population detection power; group tallies are descriptive"
+  "claim": "9 of 10 power trials is a readiness decision for the demonstrated targets, not proof of 90% population detection power; group tallies are descriptive and a mixed-host trial appears in each observed critical-case group"
 }

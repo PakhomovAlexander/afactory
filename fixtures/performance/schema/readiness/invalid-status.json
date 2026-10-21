@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-readiness/5",
+  "schema": "af.perf-readiness/6",
   "cohort_id": "synthetic_cohort",
   "cohort_digest": "sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c",
   "calibration_digest": "sha256:b1baa203c2544a2edaf9beda2e5d99e4c32dcd9e69bcae82663d99597df3c0b6",
@@ -35,7 +35,6 @@
           "jobs": 3
         }
       },
-      "cpu_group": "hosted_x86",
       "verdict_sha256": "sha256:f2092bfc540490e21388e58fd410bd12269846e6b207f9692f18e9e10af6b4d4",
       "cases": {
         "synthetic_advisory": {
@@ -57,7 +56,12 @@
           "injection_valid": null
         }
       },
-      "qualifies": true
+      "qualifies": true,
+      "cpu_groups": {
+        "synthetic_advisory": "hosted_x86",
+        "synthetic_fast": "hosted_x86",
+        "synthetic_process__size_1": "hosted_x86"
+      }
     }
   ],
   "refused_evidence": [],
@@ -107,5 +111,5 @@
     }
   },
   "ready": true,
-  "claim": "9 of 10 power trials is a readiness decision for the demonstrated targets, not proof of 90% population detection power; group tallies are descriptive"
+  "claim": "9 of 10 power trials is a readiness decision for the demonstrated targets, not proof of 90% population detection power; group tallies are descriptive and a mixed-host trial appears in each observed critical-case group"
 }
