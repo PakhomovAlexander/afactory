@@ -12,7 +12,12 @@ only the result envelope, under `stream-json` every message as a line — init, 
 `tool_use` and one user `tool_result` per chunk, the final assistant message, then the very same
 result line. Its last write is one stderr line naming the unix nanosecond it was made at and the
 bytes it wrote to stdout (unless `report` is false). The `af` integration tests use the shape
-`requested`, which prints the shape af asked for.
+`requested`, which prints the shape af asked for, and these optional keys, all absent in the
+measurements: `record_stdin` (a file name in the auth directory the request bytes are written
+to, as received), `thinking` (texts printed as `thinking` blocks under `stream-json`: the first
+in the first assistant message, the rest in the final one, in order), `say` (a text block
+printed before the final reply under `stream-json`) and `tool_output_prefix` (text that begins
+the first tool result).
 Credential-free; never touches the network.
 """
 
@@ -90,6 +95,10 @@ def main():
         return
     with open(os.path.join(os.environ['CLAUDE_CONFIG_DIR'], 'bench.json'), encoding='utf-8') as file:
         harness = json.load(file)['harness']
+    if harness.get('record_stdin'):
+        with open(os.path.join(os.environ['CLAUDE_CONFIG_DIR'], harness['record_stdin']), 'wb') as file:
+            file.write(request)
+    thinking = [{'type': 'thinking', 'thinking': text} for text in harness.get('thinking', [])]
     # The shape is the fixture's, whatever af asked for: the measurement compares what each
     # shape costs af at one level. `requested` prints the shape af asked for (the af fixtures).
     if harness['shape'] == 'requested':
@@ -108,11 +117,17 @@ def main():
         size = min(chunk, remaining)
         remaining -= size
         output = (WORDS * (size // len(WORDS) + 1))[:size]
+        if index == 0 and harness.get('tool_output_prefix'):
+            output = harness['tool_output_prefix'] + output
         tool = 'toolu_bench_%08d' % index
+        content = [{'type': 'tool_use', 'id': tool, 'name': 'Read',
+                    'input': {'file_path': 'lib.rs'}}]
+        if index == 0 and thinking:
+            content = thinking[:1] + content
+            thinking = thinking[1:]
         call = line({'type': 'assistant', 'message': {
             'id': 'msg_bench_%08d' % index, 'model': MODEL, 'stop_reason': 'tool_use',
-            'usage': USAGE, 'content': [{'type': 'tool_use', 'id': tool, 'name': 'Read',
-                                         'input': {'file_path': 'lib.rs'}}]}})
+            'usage': USAGE, 'content': content}})
         result = line({'type': 'user', 'message': {'content': [
             {'type': 'tool_result', 'tool_use_id': tool, 'content': output}]}})
         index += 1
@@ -123,9 +138,10 @@ def main():
                 written += len(batch)
                 batch = bytearray()
     if stream:
+        said = [{'type': 'text', 'text': harness['say']}] if harness.get('say') else []
         batch += line({'type': 'assistant', 'message': {
             'id': 'msg_bench_final', 'model': MODEL, 'stop_reason': 'end_turn', 'usage': USAGE,
-            'content': [{'type': 'text', 'text': reply}]}})
+            'content': thinking + said + [{'type': 'text', 'text': reply}]}})
     batch += envelope(reply, REPLY)
     write(1, batch)
     written += len(batch)

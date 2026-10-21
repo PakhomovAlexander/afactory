@@ -2,7 +2,10 @@
 //! evidence of anything.
 //!
 //! It holds `segments`, `runs`, `executions`, `spans` (with `self_ns` computed at ingest),
-//! `events`, `configs`, `nodes`, `findings`, `demands`, `blobs`, `blob_refs` and `problems`.
+//! `events`, `configs`, `nodes`, `findings`, `demands`, `blobs`, `blob_refs` and `problems`, and
+//! the FTS5 table `content_fts` over the text blobs the retained occurrences reference, kept at
+//! ingest when `[telemetry] content_index` is on ([`set_content_index`]), with `content_index`
+//! recording which digests it has read.
 //! Ingest reads every sealed segment the index has not seen and the tail of each `.jsonl`
 //! segment beyond its last ingested byte offset, in one transaction, idempotently by `span_id`,
 //! segment id with `seq`, and digest. Exact counters stay `TEXT` and are aggregated in Rust
@@ -43,7 +46,22 @@ use crate::trace;
 pub const BLOB_CODEC: &str = "gzip";
 
 /// The index's own shape; an index of another is refused and rebuilt by `reindex`.
-pub const INDEX_SCHEMA: &str = "af/telemetry-index@2";
+pub const INDEX_SCHEMA: &str = "af/telemetry-index@3";
+
+/// Whether ingest keeps `content_fts` (`[telemetry] content_index`); on unless the command that
+/// opens the index turned it off.
+static CONTENT_INDEX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Keep `content_fts` at every ingest of this process (`[telemetry] content_index`), or not.
+/// Turned off, the table keeps no rows a retained occurrence does not reference and gains none.
+pub fn set_content_index(enabled: bool) {
+    CONTENT_INDEX.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether ingest keeps `content_fts` in this process.
+pub fn content_index() -> bool {
+    CONTENT_INDEX.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 const SCHEMA_SQL: &str = "
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -174,10 +192,15 @@ CREATE TABLE problems(
     reason TEXT NOT NULL,
     PRIMARY KEY(segment_id, seq)
 );
+CREATE TABLE content_index(
+    digest TEXT PRIMARY KEY,
+    state TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE content_fts USING fts5(digest UNINDEXED, body, tokenize = 'unicode61');
 ";
 
 /// The tables, in dump order, each with the columns that order its rows.
-const TABLES: [(&str, &str); 13] = [
+const TABLES: [(&str, &str); 15] = [
     ("segments", "segment_id"),
     ("runs", "trace_id"),
     ("executions", "span_id"),
@@ -190,6 +213,8 @@ const TABLES: [(&str, &str); 13] = [
     ("blobs", "digest"),
     ("blob_refs", "occurrence_id"),
     ("problems", "segment_id, seq"),
+    ("content_index", "digest"),
+    ("content_fts", "digest"),
     ("meta", "key"),
 ];
 
@@ -213,6 +238,8 @@ pub struct Index {
     _lock: Option<Held>,
     /// The `v1/` the connection was opened through, held until after the connection closes.
     versioned: Option<Confined>,
+    /// Whether ingest keeps `content_fts`: the process's [`content_index`] when opened.
+    content_index: bool,
 }
 
 /// What one ingest read.
@@ -474,6 +501,7 @@ impl Index {
             note: None,
             _lock: Some(lock),
             versioned: Some(versioned),
+            content_index: content_index(),
         })
     }
 
@@ -500,11 +528,18 @@ impl Index {
             note: Some(note.to_string()),
             _lock: None,
             versioned,
+            content_index: content_index(),
         })
     }
 
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// Keep `content_fts` at this connection's ingests, or not, whatever the process's
+    /// [`content_index`].
+    pub fn keep_content_index(&mut self, keep: bool) {
+        self.content_index = keep;
     }
 
     pub fn connection(&self) -> &Connection {
@@ -704,6 +739,7 @@ impl Index {
             forget(&transaction, segment_id)?;
         }
         self_times(&transaction, &ended)?;
+        index_content(&transaction, self.versioned.as_ref(), self.content_index)?;
         transaction.commit().map_err(sql)?;
         Ok((ingested, refused))
     }
@@ -892,6 +928,84 @@ impl Index {
             .optional()
             .map_err(sql)
     }
+}
+
+/// Keep `content_fts` over the retained text blobs: rows of digests no stored occurrence
+/// references any more go; with `content_index` on, every referenced digest not read yet is read
+/// (under `gc.lock` shared, through the held `v1/`) and its text indexed. A blob a collection
+/// holds is read at the next ingest; a missing or corrupt one is recorded `unavailable`, a
+/// non-UTF-8 one `binary`, and neither is indexed.
+fn index_content(
+    transaction: &Transaction<'_>,
+    versioned: Option<&Confined>,
+    keep: bool,
+) -> Result<(), String> {
+    const REFERENCED: &str =
+        "SELECT digest FROM blob_refs WHERE state = 'stored' AND digest IS NOT NULL";
+    // An ingest with nothing to change writes nothing, so readers that ingest side by side never
+    // contend for the write lock.
+    for table in ["content_fts", "content_index"] {
+        let stale: i64 = transaction
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE digest NOT IN ({REFERENCED})"),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        if stale > 0 {
+            transaction
+                .execute(
+                    &format!("DELETE FROM {table} WHERE digest NOT IN ({REFERENCED})"),
+                    [],
+                )
+                .map_err(sql)?;
+        }
+    }
+    let Some(versioned) = versioned.filter(|_| keep) else {
+        return Ok(());
+    };
+    let unread: Vec<String> = {
+        let mut statement = transaction
+            .prepare(&format!(
+                "SELECT DISTINCT digest FROM ({REFERENCED})
+                 WHERE digest NOT IN (SELECT digest FROM content_index) ORDER BY digest"
+            ))
+            .map_err(sql)?;
+        statement
+            .query_map([], |row| row.get(0))
+            .map_err(sql)?
+            .collect::<Result<_, _>>()
+            .map_err(sql)?
+    };
+    for digest in unread {
+        let state = match crate::blob::reader::read_in(versioned, &digest) {
+            crate::blob::reader::Content::Bytes(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => {
+                    transaction
+                        .execute(
+                            "INSERT INTO content_fts(digest, body) VALUES (?1, ?2)",
+                            params![digest, text],
+                        )
+                        .map_err(sql)?;
+                    "indexed"
+                }
+                Err(_) => "binary",
+            },
+            crate::blob::reader::Content::Unavailable(reason)
+                if reason == crate::blob::reader::COLLECTING =>
+            {
+                continue;
+            }
+            crate::blob::reader::Content::Unavailable(_) => "unavailable",
+        };
+        transaction
+            .execute(
+                "INSERT INTO content_index(digest, state) VALUES (?1, ?2)",
+                params![digest, state],
+            )
+            .map_err(sql)?;
+    }
+    Ok(())
 }
 
 fn rows(statement: &mut rusqlite::Statement<'_>) -> Result<Vec<Vec<String>>, String> {
@@ -1501,6 +1615,7 @@ pub fn replace_in(layout: &Layout, versioned: Confined) -> Result<Replaced, Stri
         note: None,
         _lock: Some(lock),
         versioned: Some(versioned),
+        content_index: content_index(),
     };
     let (ingested, refused) = index.ingest()?;
     Ok(Replaced { ingested, refused })

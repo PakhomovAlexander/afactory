@@ -230,6 +230,12 @@ unwritable directory, a full segment) is one problem and the run continues.
   af telemetry tail [RUN]       follow the live segments: every span end and event as written
   af telemetry ledger RUN       committed Store events, Finding and Demand summaries and each
                                 Attempt's charge, in order, with the coverage and history
+  af telemetry context RUN ATTEMPT   at content: the Attempt's composed Worker input (the
+                                prompt bytes and the manifest); --raw prints the prompt alone
+  af telemetry reasoning RUN ATTEMPT at content: the Attempt's thinking blocks and reasoning
+                                summaries, in order
+  af telemetry search TEXT      at content: the text blobs holding TEXT, with span paths and
+                                bounded excerpts; refused below content
   af telemetry gc [--apply]     what the Storage Budget's sweep evicts from the telemetry kind
 
 Recorded: the commands that run a kernel run (af task run, af task start --execute, af review
@@ -295,6 +301,25 @@ content and for json at off and metrics; the adapter reads the result line and n
 either way, and the Store keeps that line and stderr (Codex: its turn and error lines and the
 -o final message), so accounting, classification and the Store's bytes are the same at every
 level.
+
+At content, and only there, Telemetry also keeps content as blobs, each redacted whole before
+any truncation and named by one event: the composed Worker input of af.context.compose (the
+prompt bytes, gen_ai.content.input, and the manifest, gen_ai.content.system); once the release
+decision withheld nothing, a harness's assistant text and Codex agent messages
+(gen_ai.content.output), its thinking blocks and reasoning items (af.content.reasoning, only
+with content_reasoning) and its tool arguments and results (af.content.tool_input and
+af.content.tool_output, only with content_tool_io); a check's stdout and stderr
+(af.check.output); every mirrored Store event's payload; an admitted Finding's body
+(af.finding.body); and .af/af.toml (af.config.text). An Attempt's content is bounded by
+content_attempt_max_bytes and content outside any Attempt by content_process_max_bytes: past
+either, further content is dropped and counted (a dropped occurrence, the seal's dropped, one
+budget problem) and nothing about the Worker changes. The content is the operator's: no
+prompt, Warm Set, Worker Notes or optimization source ever reads it. `af telemetry context
+RUN ATTEMPT [--raw]` prints an Attempt's composed input, `af telemetry reasoning RUN ATTEMPT`
+its thinking and reasoning in order, and `af telemetry search 'text' [--since D] [--run RUN]`
+searches the full-text index content_fts that every af telemetry command keeps at ingest when
+content_index = true; below content context and reasoning say the content was not captured
+and search is refused (exit 2).
 
 The [telemetry] table, machine layers only (built-in, system, user, AF_TELEMETRY__<KEY>); a
 repository's .af/af.toml cannot set it, and a value outside its bound refuses the load naming

@@ -43,8 +43,19 @@
 //! every pending identifier of the process is withheld (`af.stream.withheld`). Otherwise the
 //! pending content passes the grant replacement and the credential rules on its assembled,
 //! complete lines — so a grant split across two chunks is still replaced — and is handed on
-//! ([`Released`]; package P7 writes it as blobs), and one `af.harness.ids` event lists each
-//! correlation id with its original, each original having passed the credential rules.
+//! ([`Released`]), and one `af.harness.ids` event lists each correlation id with its original,
+//! each original having passed the credential rules.
+//!
+//! **Content** (package P7, [`crate::content`]). At `content`, after a release that withheld
+//! nothing, the pending content becomes blobs, each named by one event on the turn or tool span
+//! it came from, in the order it arrived: assistant text and Codex agent messages as
+//! `gen_ai.content.output`, thinking blocks and reasoning items as `af.content.reasoning` (only
+//! with `content_reasoning`), tool arguments and results as `af.content.tool_input` and
+//! `af.content.tool_output` (only with `content_tool_io`; a switched-off kind is never even
+//! pended). Each is judged from its original bytes by the grant replacement and the credential
+//! rules, so its occurrence's source identity is the original's, and counted against the
+//! Attempt's content allowance. A harness's error texts, its stderr and its unparsed lines stay
+//! sizes only.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -52,6 +63,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::blob::Media;
+use crate::content::{self, Scope};
 use crate::level::Level;
 use crate::record::{Attrs, SpanKind, SpanStatus};
 use crate::redact::{self, Redactor};
@@ -150,6 +162,12 @@ pub struct TapOptions {
     pub content_allowance_bytes: u64,
     /// The Provider grants the process received, replaced in released content.
     pub grants: Vec<(String, String)>,
+    /// `content_reasoning`: thinking blocks and reasoning items are pended and published.
+    pub content_reasoning: bool,
+    /// `content_tool_io`: tool arguments and results are pended and published.
+    pub content_tool_io: bool,
+    /// Whose content allowance the released content counts against: the process's Attempt.
+    pub scope: Scope,
 }
 
 /// Telemetry's own release decision over a process's complete output (design §7.3).
@@ -209,6 +227,35 @@ pub struct Content {
     pub kind: &'static str,
     pub media: Media,
     pub bytes: Vec<u8>,
+    /// The span it came from: its turn, its tool call, or the harness outside both.
+    pub span_id: String,
+}
+
+/// The event a released content of `kind` is published as at `content`; `None` for the kinds
+/// that stay sizes only (error texts, stderr and unparsed lines).
+pub fn published_as(kind: &str) -> Option<&'static str> {
+    match kind {
+        "text" | "agent_message" => Some(content::event::OUTPUT),
+        "thinking" | "reasoning" => Some(content::event::REASONING),
+        "tool_input" => Some(content::event::TOOL_INPUT),
+        "tool_output" => Some(content::event::TOOL_OUTPUT),
+        _ => None,
+    }
+}
+
+/// A content kind's closed spelling, for `af.content.kind`.
+fn kind_member(kind: &str) -> &'static str {
+    member(
+        Some(kind),
+        &[
+            "text",
+            "thinking",
+            "tool_input",
+            "tool_output",
+            "agent_message",
+            "reasoning",
+        ],
+    )
 }
 
 /// What a release hands on: the pending content, redacted, and the identifiers that passed the
@@ -223,6 +270,8 @@ pub struct Released {
     pub dropped_contents: u64,
     /// Identifiers the credential rules withheld.
     pub withheld_ids: u64,
+    /// Contents published as blob occurrences at `content`.
+    pub published: u64,
 }
 
 /// The longest harness identifier pended for `af.harness.ids`: anything longer is no id.
@@ -531,10 +580,43 @@ impl Tap {
         corr
     }
 
-    /// Pend an untrusted string's bytes at `content`; at every other level only its size is
-    /// ever recorded. The oldest pending content goes first when the allowance is exhausted.
+    /// The span content arriving now belongs to: the open turn, else the harness.
+    fn content_span(&self) -> String {
+        self.turn
+            .as_ref()
+            .and_then(|turn| turn.span_id.clone())
+            .unwrap_or_else(|| self.harness_span().to_string())
+    }
+
+    /// The span of the open tool call `corr`, else the content span.
+    fn tool_span(&self, corr: &str) -> String {
+        self.tools
+            .get(corr)
+            .and_then(|tool| tool.span_id.clone())
+            .unwrap_or_else(|| self.content_span())
+    }
+
+    /// Whether content of `kind` is kept at all: thinking and reasoning only with
+    /// `content_reasoning`, tool arguments and results only with `content_tool_io`.
+    fn keeps(&self, kind: &str) -> bool {
+        match kind {
+            "thinking" | "reasoning" => self.options.content_reasoning,
+            "tool_input" | "tool_output" => self.options.content_tool_io,
+            _ => true,
+        }
+    }
+
+    /// Pend an untrusted string's bytes at `content`, as content of the current span; at
+    /// every other level only its size is ever recorded.
     fn pend(&mut self, kind: &'static str, media: Media, bytes: &[u8]) {
-        if !self.content || bytes.is_empty() {
+        let span = self.content_span();
+        self.pend_on(kind, media, bytes, span);
+    }
+
+    /// Pend content of `span`. The oldest pending content goes first when the allowance is
+    /// exhausted; a kind its switch turned off is never pended.
+    fn pend_on(&mut self, kind: &'static str, media: Media, bytes: &[u8], span: String) {
+        if !self.content || bytes.is_empty() || !self.keeps(kind) {
             return;
         }
         let size = bytes.len() as u64;
@@ -554,22 +636,28 @@ impl Tap {
             kind,
             media,
             bytes: bytes.to_vec(),
+            span_id: span,
         });
     }
 
     fn pend_value(&mut self, kind: &'static str, value: Option<&Value>) {
-        if !self.content {
+        let span = self.content_span();
+        self.pend_value_on(kind, value, span);
+    }
+
+    fn pend_value_on(&mut self, kind: &'static str, value: Option<&Value>, span: String) {
+        if !self.content || !self.keeps(kind) {
             return;
         }
         match value {
             None | Some(Value::Null) => {}
             Some(Value::String(text)) => {
                 let bytes = text.as_bytes().to_vec();
-                self.pend(kind, Media::Text, &bytes);
+                self.pend_on(kind, Media::Text, &bytes, span);
             }
             Some(value) => {
                 if let Ok(bytes) = serde_json::to_vec(value) {
-                    self.pend(kind, Media::Json, &bytes);
+                    self.pend_on(kind, Media::Json, &bytes, span);
                 }
             }
         }
@@ -1123,14 +1211,21 @@ impl Tap {
                     let id = block.get("id").and_then(Value::as_str).unwrap_or("");
                     let corr = self.call_key(id);
                     let name = block.get("name").and_then(Value::as_str);
-                    opened.push((corr, name.map(str::to_string), size_of(block.get("input"))));
-                    self.pend_value("tool_input", block.get("input"));
+                    opened.push((
+                        corr,
+                        name.map(str::to_string),
+                        size_of(block.get("input")),
+                        block.get("input"),
+                    ));
                 }
                 _ => {}
             }
         }
-        for (corr, name, input) in opened {
-            self.open_tool(writer, corr, name.as_deref(), input, arrival);
+        for (corr, name, size, input) in opened {
+            self.open_tool(writer, corr.clone(), name.as_deref(), size, arrival);
+            // The arguments are the tool call's content, pended once its span is open.
+            let span = self.tool_span(&corr);
+            self.pend_value_on("tool_input", input, span);
         }
     }
 
@@ -1151,7 +1246,8 @@ impl Tap {
             let corr = self.corr(id);
             let failed = block.get("is_error").and_then(Value::as_bool) == Some(true);
             let attrs = Attrs::new().int("af.tool.output_bytes", size_of(block.get("content")));
-            self.pend_value("tool_output", block.get("content"));
+            let span = self.tool_span(&corr);
+            self.pend_value_on("tool_output", block.get("content"), span);
             self.close_tool(
                 writer,
                 &corr,
@@ -1245,8 +1341,9 @@ impl Tap {
         if let Some((input, output)) = tool {
             if !self.tools.contains_key(&corr) && kind != "item.updated" {
                 let size = size_of(item.get(input));
-                self.pend_value("tool_input", item.get(input));
                 self.open_tool(writer, corr.clone(), Some(item_type), size, arrival);
+                let span = self.tool_span(&corr);
+                self.pend_value_on("tool_input", item.get(input), span);
             }
             if kind != "item.completed" {
                 return;
@@ -1254,7 +1351,8 @@ impl Tap {
             let mut attrs = Attrs::new().enumerated("af.tool.status", status);
             let produced = item.get(output).or_else(|| item.get("error"));
             attrs = attrs.int("af.tool.output_bytes", size_of(produced));
-            self.pend_value("tool_output", produced);
+            let span = self.tool_span(&corr);
+            self.pend_value_on("tool_output", produced, span);
             let exit = item.get("exit_code").and_then(Value::as_i64);
             if let Some(exit) = exit {
                 attrs = attrs.int("af.tool.exit_code", exit);
@@ -1320,8 +1418,9 @@ impl Tap {
     /// The process ended and every chunk the observer queued was handed over: frame what is
     /// left (a final line without its newline, a trailing gap), end every open turn and tool
     /// as `incomplete`, then apply `release`, Telemetry's own decision over the complete
-    /// streams, and record `af.harness.ids`. What a release hands on is returned (package P7
-    /// writes it as blobs); nothing is published when the decision withheld it.
+    /// streams, publish the released content as blobs at `content`, and record
+    /// `af.harness.ids`. What a release hands on is returned; nothing is published when the
+    /// decision withheld it.
     pub fn finish(&mut self, writer: &Writer, release: &Release) -> Released {
         if self.finished {
             return Released::default();
@@ -1365,6 +1464,14 @@ impl Tap {
         }
         self.finished = true;
         let released = self.release(writer, release);
+        if released.dropped_contents > 0 {
+            // The pending buffer is the Attempt's content allowance too: past it, the one
+            // problem says so, and `af.content.dropped` below counts what went.
+            writer.problem(
+                crate::record::ProblemWhat::Budget,
+                content::ATTEMPT_EXHAUSTED,
+            );
+        }
         let mut attrs = Attrs::new()
             .boolean("af.stream.withheld", release.withheld)
             .boolean("af.native.withheld", release.native_withheld)
@@ -1388,6 +1495,7 @@ impl Tap {
                     .sum(),
             )
             .int("af.content.dropped", released.dropped_contents as i64)
+            .int("af.content.published", released.published as i64)
             .enumerated(
                 "af.stream.analysis",
                 if self.gaps == 0 && self.frames_withheld == 0 {
@@ -1396,6 +1504,12 @@ impl Tap {
                     "incomplete"
                 },
             );
+        if self.content {
+            // The switches the content was kept under, for a reader that finds none.
+            attrs = attrs
+                .boolean("af.content.reasoning", self.options.content_reasoning)
+                .boolean("af.content.tool_io", self.options.content_tool_io);
+        }
         if !released.withheld {
             attrs = attrs.texts(
                 "af.harness.ids",
@@ -1421,6 +1535,7 @@ impl Tap {
                 ids: Vec::new(),
                 dropped_contents: self.dropped_contents,
                 withheld_ids: ids.len() as u64,
+                published: 0,
             };
         }
         let mut redactor: Redactor = writer.options().redactor.clone();
@@ -1441,20 +1556,46 @@ impl Tap {
                 }
             })
             .collect();
+        let mut published = 0;
         let contents = pending
             .into_iter()
             .map(|content| {
+                // At `content` the original becomes a blob, judged by the same rules as the
+                // bytes handed on below, so its source identity is the original's.
+                if self.content
+                    && let Some(name) = published_as(content.kind)
+                {
+                    let attrs = Attrs::new()
+                        .enumerated("af.content.kind", kind_member(content.kind))
+                        .int("af.content.ordinal", published + 1);
+                    if writer
+                        .content_event_judged(
+                            &content.span_id,
+                            name,
+                            attrs,
+                            &content.bytes,
+                            content.media,
+                            &self.options.scope,
+                            &redactor,
+                        )
+                        .is_some()
+                    {
+                        published += 1;
+                    }
+                }
                 let bytes = match content.media {
-                    Media::Json => match serde_json::from_slice::<Value>(&content.bytes) {
-                        Ok(mut document) => {
-                            redactor.json(&mut document);
-                            serde_json::to_vec(&document).unwrap_or_default()
+                    Media::Json | Media::Kernel(_) => {
+                        match serde_json::from_slice::<Value>(&content.bytes) {
+                            Ok(mut document) => {
+                                redactor.json(&mut document);
+                                serde_json::to_vec(&document).unwrap_or_default()
+                            }
+                            Err(_) => redactor
+                                .text(&String::from_utf8_lossy(&content.bytes))
+                                .0
+                                .into_bytes(),
                         }
-                        Err(_) => redactor
-                            .text(&String::from_utf8_lossy(&content.bytes))
-                            .0
-                            .into_bytes(),
-                    },
+                    }
                     Media::Text => redactor
                         .text(&String::from_utf8_lossy(&content.bytes))
                         .0
@@ -1469,6 +1610,7 @@ impl Tap {
             ids,
             dropped_contents: self.dropped_contents,
             withheld_ids,
+            published: u64::try_from(published).unwrap_or(0),
         }
     }
 }

@@ -74,8 +74,8 @@ Every phase below the run, the supervised processes and the configuration record
 too ([below](#phases-processes-and-the-configuration-record)), and the Store mirror, the Finding
 and Demand summaries and the accounting snapshots under [The Store mirror and the
 ledger](#the-store-mirror-and-the-ledger), and every harness's turns and tool calls under
-[Harness streams](#harness-streams); the content blobs arrive with a later package of the
-design.
+[Harness streams](#harness-streams); at `content` the content blobs too, under
+[Content](#content).
 
 ## Phases, processes and the configuration record
 
@@ -253,7 +253,7 @@ none of this.
 | `off` | nothing: no directory, no subscriber, no registry entry |
 | `metrics` | command, run, gate, check, node, Attempt, harness and sweep spans with identity and numeric attributes; failures; resource use |
 | `spans` (default) | every span and event, the configuration record, the Store mirror and Finding summaries; sizes and digests of content, never content |
-| `content` | `spans` plus content blobs: Worker inputs, assistant text, reasoning, tool arguments and results, check output |
+| `content` | `spans` plus content blobs: Worker inputs, assistant text, reasoning, tool arguments and results, check output, Store event payloads, Finding bodies, `.af/af.toml` ([Content](#content)) |
 
 `AF_TELEMETRY__LEVEL=content af task run TASK_ID` raises the level for one run. `content` is
 labelled *perturbing* by `af telemetry status`: it keeps blobs and is not bounded by the
@@ -392,7 +392,7 @@ directory cannot be read (or `--dir` names none) or its index is of another sche
 A `.jsonl` segment in which an invalid line precedes a valid one is unreadable at once: none of
 it is indexed, and it is listed as unreadable until `reindex` renames it `.corrupt`. A line over
 the 16 KiB record bound is an invalid line, so a sealed segment holding one is refused and
-listed, never indexed. An `index.sqlite` of a schema version other than this release's (`af/telemetry-index@2`) is
+listed, never indexed. An `index.sqlite` of a schema version other than this release's (`af/telemetry-index@3`) is
 refused, never migrated or read around: `status` exits 1 naming the file and both schemas, and
 `af telemetry reindex` replaces it. Only when another command is replacing the index does
 `status` read the segments directly, saying so on stderr; its answer is the same. The index
@@ -889,7 +889,9 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
     `reader::list_in`, `read_live_in`, `read_sealed_in`, `recover_in`, `recover_all_in`,
     `manifest_digests_in`; `collect::collect_in`, `collect::roots_in`; `blob::stage_in`,
     `blob::place`, `blob::reader::exists_in`, `blob::reader::present_in`,
-    `blob::reader::read_in`; `layout::lock_in`; and
+    `blob::reader::read_in` (with which `Index::ingest` keeps `content_fts` and
+    `content_view::{context, reasoning, search}` read content, through the index's held `v1/`);
+    `layout::lock_in`; and
     `status`'s `verify_blobs`, `blob_bytes` and `unrecognized`. `status` and `reindex` open
     `v1/` once and hand it to the index, to recovery, to the blob checks and to direct reading
     when `index.lock` is not had in time.
@@ -918,12 +920,118 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
 - **Versions.** A release that changes a record shape writes `v2/`; this release lists any other
   version's directory as unreadable and never reads it.
 
+## Content
+
+At `[telemetry] level = "content"`, and only there, Telemetry keeps content beside the
+structure every level records, each piece a blob named by one event:
+
+| Content | Event | On | Allowance |
+| --- | --- | --- | --- |
+| The prompt bytes the Worker receives, as the kernel composed them | `gen_ai.content.input` | `af.context.compose` | the Attempt's |
+| The context manifest the prompt was composed by | `gen_ai.content.system` | `af.context.compose` | the Attempt's |
+| A harness's assistant `text` blocks and Codex `agent_message` items | `gen_ai.content.output` | the turn | the Attempt's |
+| Its `thinking` blocks and Codex `reasoning` items, with `content_reasoning = true` | `af.content.reasoning` | the turn | the Attempt's |
+| Its tool arguments and results, with `content_tool_io = true` | `af.content.tool_input`, `af.content.tool_output` | the tool call | the Attempt's |
+| A check's stdout and stderr (`af.stream`) | `af.check.output` | `af.check` | the process's |
+| A mirrored Store event's payload | `af.store.event` | as the mirror records it | the process's |
+| An admitted Finding's body, keyed by `af.finding.id`, whenever it changes | `af.finding.body` | the run | the process's |
+| `.af/af.toml` | `af.config.text` | the run | the process's |
+
+`gen_ai.input.messages`, `gen_ai.output.messages` and `gen_ai.system_instructions` are never
+attributes: content is only ever a blob. The pipeline's and the Task file's `af.config.text`
+events name their texts by digest and size at every level, and keep no blob yet.
+
+- **Redaction before truncation.** Every piece is redacted whole under the rules of
+  [Credentials](#credentials) — text line by line, JSON as one document — and only then cut to
+  `content_max_blob_bytes`, head and tail; a line or document too long to be judged whole is
+  withheld whole. A JSON document `af` composed itself keeps its typed values where its kind
+  declares them and judges everything else: in the Worker request, each input and feedback
+  value's `artifact_id` and `snapshot_id`, and inside its admitted payload the members named
+  `id`, `*_id`, `digest`, `*_digest`, the elements of `*_ids` and `artifact_refs`, the token
+  counters `tokens` and `*_tokens`, and the receipt ids of a check receipt's `checks`; in a
+  Store payload and the manifest the same names. A value there keeps only when it is exactly a
+  kernel identity or a number; the instructions, the output schemas and every other value are
+  untrusted text. Each occurrence's `source_digest` and `original_bytes` describe the bytes as
+  they were, so `context` shows that the prompt it prints is the one the Worker received.
+- **Harness content follows the release decision.** A harness's text, thinking and tool
+  content is pended while its process runs and never written live; once the process has ended
+  and Telemetry's own release decision withheld nothing, each piece is judged from its
+  original bytes — the Provider grants replaced, credential lines withheld — and kept, in the
+  order it arrived, on the turn or tool call it came from. When the decision withholds the
+  process's content, none of it is kept. Its error texts, its stderr and its unparsed lines stay
+  sizes. A switched-off kind is never even pended; `af.harness.ids` records the switches the
+  content was kept under (`af.content.reasoning`, `af.content.tool_io`) and how many pieces were
+  kept (`af.content.published`) and dropped (`af.content.dropped`).
+- **Allowances.** An Attempt's content — its composed input and its harness's content — is
+  bounded by `content_attempt_max_bytes`, and content outside any Attempt by
+  `content_process_max_bytes`, counted in retained bytes. A harness's pending content past the
+  Attempt's allowance drops its oldest pieces; at publication, past either allowance every
+  further piece of that scope is dropped. A dropped piece still has its event and an
+  occurrence with `state = dropped` and no object, the seal's `dropped` counts it, and one
+  `budget` problem says which allowance was reached. Nothing about the Worker changes: no
+  process is terminated, nothing is cut from what the Store receives, and the run continues.
+- **On disk.** A blob is compressed alone, with `flate2`'s gzip. On this repository's own
+  sources and documents (558 files, 10.6 MiB), each compressed alone as a blob is, the ratio is
+  3.8:1, and 4.2:1 as the JSON strings of tool results; so an Attempt that fills the default
+  512 MiB allowance keeps about 135 MiB on disk, and the default stays. Model-written text and
+  thinking were not part of that measurement.
+- **Search.** Every `af telemetry` command keeps the FTS5 table `content_fts` over the text
+  blobs the retained occurrences reference at ingest, when `[telemetry] content_index = true`
+  (the default); a blob no occurrence references any more leaves it, and `reindex` rebuilds it
+  identically. The index's schema is `af/telemetry-index@3`.
+
+**The content is the operator's and never a Worker's.** Nothing Telemetry keeps is read by any
+code that composes a prompt, a Warm Set, Worker Notes or an optimization source; the
+self-optimizer's sources are unchanged. A Worker's prompt is the same byte for byte whether the
+telemetry directory is empty or full of earlier runs' content. Content is also the operator's to
+protect: it is the run's model inputs, outputs and reasoning, kept on this machine under the
+storage budget, redacted but not anonymized.
+
+## `af telemetry context`
+
+`af telemetry context RUN ATTEMPT [--store ID] [--raw] [--json] [--dir PATH]` prints the
+composed Worker input of one Attempt (`ATTEMPT` is the kernel Attempt id `show` names): its
+`af.context.compose` span with the manifest digest, the rendered size, the estimated tokens and
+the layers; each blob's occurrence, digest, retained and original sizes; then the prompt.
+`--raw` prints only the prompt's retained bytes, exactly. Below `content` it says the content
+was not captured, naming the level the execution recorded at; a dropped piece or a missing blob
+file is reported for its occurrence. `--json` prints `af/telemetry-context@1`
+([`schemas/telemetry-context-v1.json`](../schemas/telemetry-context-v1.json)); `--turn`, the
+request the model saw at one turn, comes with the harnesses' own telemetry. Exit codes: 0; 1
+when the directory cannot be read or the run or Attempt is unknown; 2 for a wrong command
+line, a run two Stores share without `--store`, or a refused `[telemetry]` key.
+
+## `af telemetry reasoning`
+
+`af telemetry reasoning RUN ATTEMPT [--store ID] [--json] [--dir PATH]` prints an Attempt's
+thinking blocks and reasoning summaries in the order they arrived, each with its turn, its
+occurrence and its retained text, after each of the Attempt's harness processes with the level
+it recorded at and its state: `captured`, `not_captured` (below `content`, or
+`content_reasoning = false`), `withheld` (the release decision withheld the process's content)
+or `open` (not released yet). `--json` prints `af/telemetry-reasoning@1`
+([`schemas/telemetry-reasoning-v1.json`](../schemas/telemetry-reasoning-v1.json)). Exit codes as
+for `context`.
+
+## `af telemetry search`
+
+`af telemetry search TEXT [--since D] [--run RUN [--store ID]] [--json] [--dir PATH]` finds the
+retained text blobs holding `TEXT` as one phrase (no query operators) in `content_fts`, at most
+50 blobs and 20 occurrences each, and prints each blob's digest with an excerpt of at most 320
+bytes of its redacted text and its occurrences: the event that names it, its time, its run, its
+Attempt and its span path from `af.command` down. `--since` keeps occurrences of the last `D`
+(`30m`, `12h`, `14d`, `2w`); `--run` keeps one run's. It exists only at `content`: below it, or
+with `content_index = false`, it is refused with exit 2 and a message saying why, because
+nothing searchable is kept. `--json` prints `af/telemetry-search@1`
+([`schemas/telemetry-search-v1.json`](../schemas/telemetry-search-v1.json)). Exit codes: 0; 1
+when the directory cannot be read or the run is unknown; 2 for a wrong command line, a refused
+`[telemetry]` key, or a level below `content`.
+
 ## Not yet captured
 
-Content blobs (the harness streams' text, thinking, tool arguments and results, Store event
-payloads and Finding bodies among them), the harnesses' own OpenTelemetry export, the OTLP sink,
-and the commands `context`, `reasoning`, the analytics, `search`, `sql` and `export` all belong
-to later packages of the design note.
+The harnesses' own OpenTelemetry export (with `context --turn`), the OTLP sink, and the
+analytics, `sql` and `export` commands belong to later packages of the design note. The
+pipeline's and the Task file's texts become blobs once their `af.config.text` events name the
+files' own bytes rather than the CAS artifacts they were admitted as.
 
 ## Performance
 

@@ -136,7 +136,7 @@ fn events(state: &Path) -> Vec<Vec<String>> {
         .collect()
 }
 
-fn copy_tree(from: &Path, to: &Path) {
+pub(crate) fn copy_tree(from: &Path, to: &Path) {
     assert!(
         Command::new("cp")
             .arg("-a")

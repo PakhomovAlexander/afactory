@@ -67,6 +67,7 @@ mod task_warm_checks;
 mod telemetry;
 mod telemetry_bench;
 mod telemetry_config;
+mod telemetry_content;
 mod telemetry_ledger;
 mod telemetry_phases;
 mod telemetry_runs;

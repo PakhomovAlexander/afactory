@@ -26,6 +26,8 @@ pub(super) fn root_of(
         Ok(settings) => settings,
         Err(refusal) => return Ok(Err(super::refused(command, json, &refusal))),
     };
+    // Every ingest of this command keeps the full-text index as the machine says.
+    review_telemetry::index::set_content_index(settings.content_index);
     Ok(Ok(super::chosen(dir, &settings)?))
 }
 

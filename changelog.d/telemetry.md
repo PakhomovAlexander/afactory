@@ -124,3 +124,22 @@
   at every level. `af telemetry turns` and `tools` (`--json`: `af/telemetry-turns@1`,
   `af/telemetry-tools@1`) print one row per turn or tool call with its timing, usage, outcome
   and sizes.
+- Telemetry, seventh package: at `[telemetry] level = "content"`, and only there, Telemetry
+  keeps content as blobs, each redacted whole before any truncation with its source's digest
+  and size intact and named by one event: the composed Worker input of `af.context.compose`
+  (`gen_ai.content.input`, `gen_ai.content.system`); once Telemetry's release decision withheld
+  nothing, a harness's assistant text and Codex agent messages (`gen_ai.content.output`), its
+  thinking blocks and reasoning items (`af.content.reasoning`, with `content_reasoning`) and its
+  tool arguments and results (`af.content.tool_input`, `af.content.tool_output`, with
+  `content_tool_io`); a check's stdout and stderr (`af.check.output`); every mirrored Store
+  event's payload; an admitted Finding's body (`af.finding.body`); and `.af/af.toml`
+  (`af.config.text`). A document `af` composed keeps its identities and counters only in the
+  positions its kind declares. Past `content_attempt_max_bytes` for an Attempt or
+  `content_process_max_bytes` outside one, further content is dropped and counted with one
+  `budget` problem, and nothing about the Worker changes. The index (now
+  `af/telemetry-index@3`; an earlier one is refused until `af telemetry reindex`) keeps the FTS5
+  table `content_fts` at ingest when `content_index` is on. `af telemetry context RUN ATTEMPT
+  [--raw]`, `reasoning RUN ATTEMPT` and `search TEXT [--since D] [--run RUN]` (`--json`:
+  `af/telemetry-context@1`, `af/telemetry-reasoning@1`, `af/telemetry-search@1`) read it back;
+  below `content` the first two say the content was not captured and `search` is refused. No
+  prompt, Warm Set, Worker Notes or optimization source reads any of it.

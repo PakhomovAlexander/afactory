@@ -7,8 +7,9 @@
 //!
 //! - at `spans` and above, one event `af.store.event` per committed event on the current span,
 //!   with `af.store.event.type`, `.sequence`, `.id`, `.causation_id`, `artifact_refs`, and the
-//!   payload's digest and size (`af.store.event.payload_digest`, `.payload_bytes`); the payload
-//!   itself is never recorded here;
+//!   payload's digest and size (`af.store.event.payload_digest`, `.payload_bytes`); at `content`
+//!   the payload itself is a blob the event names, redacted as a record of the kernel's own (its
+//!   identity members kept) and counted against the process's content allowance;
 //! - at `spans` and above, for a Campaign's log, a `finding` record (`af/TelemetryFinding@2`)
 //!   for every Report admitted into the Ledger and whenever a summarized field of a Finding
 //!   changes, with the event `af.finding.disposition` keyed by the Finding key when its status
@@ -18,7 +19,9 @@
 //!   `af.demand.stale` and `af.demand.waived`, keyed by the Demand id and never by a Finding
 //!   key (ADR-0007). Every summary carries the log and committed sequence of its cause. They come from the Ledger projection the committed
 //!   events fold into — the Reports the events reference, read from the CAS — so a reader
-//!   needs no Store;
+//!   needs no Store. At `content` an admitted Finding's body is a blob named by
+//!   `af.finding.body`, keyed by the Finding key, whenever it differs from the body last
+//!   recorded;
 //! - at `metrics` and above, after every committed Task event that changes an Attempt's
 //!   accounting (`UsageObserved`, `Settled` — recovery's included — and `Released`), the event
 //!   `af.usage.state`: the Attempt's charge and counters as the Task projection holds them after
@@ -47,6 +50,8 @@ use review_store::store::observer::{Commit, CommitObserver, WallCommit};
 use review_store::store::task::execution::read_execution_record;
 use review_store::store::task::read_task_transition;
 use review_store::{Cas, CasError, EventStore, LedgerProjection};
+use review_telemetry::blob::{Document, Media};
+use review_telemetry::content::{Scope, event::FINDING_BODY};
 use review_telemetry::level::Level;
 use review_telemetry::record::{Attrs, Demand, Finding, ProblemWhat};
 use review_telemetry::segment::writer::Writer;
@@ -109,6 +114,8 @@ struct LedgerWatch {
     nodes: BTreeMap<String, String>,
     /// Each Finding's admitting Worker's bound model, when the kernel recorded the binding.
     models: BTreeMap<String, String>,
+    /// The digest of each Finding's body as last recorded at `content`.
+    bodies: BTreeMap<String, String>,
     /// Each Demand's last recorded summary, its record position fields cleared.
     demands: BTreeMap<String, Demand>,
     /// The Snapshot bound to each Subject the log made active, by Subject id.
@@ -191,6 +198,20 @@ impl StoreMirror {
         name: &str,
         attrs: Attrs,
     ) -> bool {
+        self.content_event(writer, store_id, span, name, attrs, None)
+    }
+
+    /// [`Self::event`], naming `content` as a blob at `content` (a payload, a Finding body),
+    /// counted against the process's content allowance.
+    fn content_event(
+        &self,
+        writer: &Writer,
+        store_id: &str,
+        span: Option<&RecordedSpan>,
+        name: &str,
+        attrs: Attrs,
+        content: Option<(&[u8], Media)>,
+    ) -> bool {
         if self.failing {
             self.failed(
                 writer,
@@ -207,7 +228,13 @@ impl StoreMirror {
             );
             return false;
         };
-        if writer.event(&span.span_id, name, attrs).is_none() {
+        let written = match content {
+            Some((bytes, media)) if writer.level().keeps_content() => {
+                writer.content_event(&span.span_id, name, attrs, bytes, media, &Scope::Process)
+            }
+            _ => writer.event(&span.span_id, name, attrs),
+        };
+        if written.is_none() {
             super::mark_ledger_incomplete(Some(store_id));
             return false;
         }
@@ -271,7 +298,8 @@ impl StoreMirror {
                     "af.store.event.payload_bytes",
                     i64::try_from(payload.len()).unwrap_or(i64::MAX),
                 );
-            if !self.event(writer, store_id, span.as_ref(), STORE_EVENT, attrs) {
+            let content = Some((payload.as_bytes(), Media::Kernel(Document::Record)));
+            if !self.content_event(writer, store_id, span.as_ref(), STORE_EVENT, attrs, content) {
                 return;
             }
         }
@@ -462,6 +490,7 @@ impl StoreMirror {
                 findings: BTreeMap::new(),
                 nodes: BTreeMap::new(),
                 models: BTreeMap::new(),
+                bodies: BTreeMap::new(),
                 demands: BTreeMap::new(),
                 subjects: BTreeMap::new(),
                 epoch: None,
@@ -558,6 +587,7 @@ impl StoreMirror {
             .flatten();
         let span_id = span.map(|span| span.span_id.clone()).unwrap_or_default();
         let mut findings = Vec::new();
+        let keeps_content = writer.level().keeps_content();
         for finding in ledger.findings() {
             let report = finding.reports.last();
             let summary = Finding {
@@ -598,9 +628,19 @@ impl StoreMirror {
             }
             let previous_status = previous.map(|previous| previous.status.clone());
             watch.findings.insert(finding.key.clone(), summary.clone());
-            findings.push((summary, previous_status));
+            // At `content` the body goes beside the summary whenever it is new.
+            let body = (keeps_content && !finding.body.is_empty())
+                .then(|| {
+                    let digest = review_telemetry::trace::sha256_digest(finding.body.as_bytes());
+                    (watch.bodies.get(&finding.key) != Some(&digest)).then(|| {
+                        watch.bodies.insert(finding.key.clone(), digest);
+                        finding.body.clone()
+                    })
+                })
+                .flatten();
+            findings.push((summary, previous_status, body));
         }
-        for (summary, previous) in findings {
+        for (summary, previous, body) in findings {
             let (key, status) = (summary.key.clone(), summary.status.clone());
             let record = Finding {
                 span_id: span_id.clone(),
@@ -610,6 +650,13 @@ impl StoreMirror {
             };
             if !self.summary(writer, store_id, span, |writer| writer.finding(record)) {
                 return;
+            }
+            if let Some(body) = body {
+                let attrs = base().id("af.finding.id", key.clone());
+                let content = Some((body.as_bytes(), Media::Text));
+                if !self.content_event(writer, store_id, span, FINDING_BODY, attrs, content) {
+                    return;
+                }
             }
             if let Some(previous) = previous.filter(|previous| *previous != status) {
                 let attrs = base()

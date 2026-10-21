@@ -1,6 +1,7 @@
-//! `af telemetry` (ADR-0153): `status`, `reindex`, `runs`, `show`, `config`, `tail`, `ledger` and
-//! `gc` — the reader side of Telemetry, which only `af telemetry`, `af storage` and the TUI link —
-//! and the recording a command that runs a kernel run does ([`begin`], [`Recording::finish`]).
+//! `af telemetry` (ADR-0153): `status`, `reindex`, `runs`, `show`, `config`, `tail`, `ledger`,
+//! `turns`, `tools`, `context`, `reasoning`, `search` and `gc` — the reader side of Telemetry,
+//! which only `af telemetry`, `af storage` and the TUI link — and the recording a command that
+//! runs a kernel run does ([`begin`], [`Recording::finish`]).
 //!
 //! The `[telemetry]` table is read from machine layers only. A refused key exits 2, an
 //! unreadable telemetry directory, a busy index or an unknown run exits 1; no `af telemetry`
@@ -19,10 +20,12 @@ use crate::config;
 use crate::storage::{self, human_bytes};
 
 mod config_record;
+mod content;
 mod harness;
 mod recording;
 mod views;
 
+pub(crate) use content::{context, reasoning, search};
 pub(crate) use harness::{tools, turns};
 pub(crate) use recording::begin;
 pub(crate) use views::{config, gc, ledger, runs, show, tail};
@@ -112,6 +115,7 @@ pub(crate) fn status(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
         Ok(settings) => settings,
         Err(refusal) => return Ok(refused(COMMAND, json, &refusal)),
     };
+    review_telemetry::index::set_content_index(settings.content_index);
     let root = chosen(dir, &settings)?;
     let (accounted, accounted_unknown) = accounted()?;
     let (status, note) = telemetry_status::status(&StatusInput {
@@ -276,6 +280,7 @@ pub(crate) fn reindex(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
         Ok(settings) => settings,
         Err(refusal) => return Ok(refused(COMMAND, json, &refusal)),
     };
+    review_telemetry::index::set_content_index(settings.content_index);
     let root = chosen(dir, &settings)?;
     if !root.is_dir() {
         return Err(format!(

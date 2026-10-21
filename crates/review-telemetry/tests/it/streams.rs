@@ -49,6 +49,9 @@ fn harness(root: &std::path::Path, level: Level, kind: Harness) -> (Writer, TapO
         frame_max_bytes: 64 * 1024,
         content_allowance_bytes: 16 << 20,
         grants: vec![("CODEX_HOME".into(), "/grants/codex-home-value".into())],
+        content_reasoning: true,
+        content_tool_io: true,
+        scope: review_telemetry::content::Scope::Process,
     };
     (writer, options)
 }

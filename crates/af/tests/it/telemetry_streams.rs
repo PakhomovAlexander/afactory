@@ -168,6 +168,9 @@ fn record_golden(root: &Path, lines: &[String]) {
             frame_max_bytes: 16 << 20,
             content_allowance_bytes: 512 << 20,
             grants: vec![],
+            content_reasoning: true,
+            content_tool_io: true,
+            scope: review_telemetry::content::Scope::Process,
         },
     );
     let start = 1_700_000_300_010 * 1_000_000;
@@ -213,7 +216,7 @@ fn af(root: &Path, args: &[&str]) -> std::process::Output {
     crate::telemetry_ledger::af(root, args)
 }
 
-fn json_of(output: &std::process::Output) -> Value {
+pub(crate) fn json_of(output: &std::process::Output) -> Value {
     assert!(
         output.status.success(),
         "{}",
@@ -597,14 +600,14 @@ fn telemetry_stalled_consumer_never_blocks_drain() {
 // ------------------------------------------------------------------------------------------
 // the Claude fake through the Task runtime
 
-fn workspace() -> PathBuf {
+pub(crate) fn workspace() -> PathBuf {
     std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
 /// Every committed event of the Store at `state`, as text.
-fn store_events(state: &Path) -> Vec<Vec<String>> {
+pub(crate) fn store_events(state: &Path) -> Vec<Vec<String>> {
     let connection = rusqlite::Connection::open_with_flags(
         state.join("events.sqlite"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -639,7 +642,7 @@ fn store_events(state: &Path) -> Vec<Vec<String>> {
 }
 
 /// Every object of the Store's CAS, by its digest's hex, with its bytes.
-fn cas_objects(state: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+pub(crate) fn cas_objects(state: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
     let mut objects = std::collections::BTreeMap::new();
     for prefix in std::fs::read_dir(state.join("cas/objects"))
         .unwrap()
@@ -672,7 +675,7 @@ fn walk_entries(path: &Path, visit: &mut dyn FnMut(&Path, std::fs::FileType)) {
 /// the source tree read-only and `cp -R` keeps those modes, so before anything writes into the
 /// copy or runs git in it every directory gets `0o700` and every file `0o600` on top of its
 /// mode, symlinks untouched (`copy_writable` of `scripts/telemetry-overhead.py`).
-fn fixture_repo(source: &Path, repo: &Path) {
+pub(crate) fn fixture_repo(source: &Path, repo: &Path) {
     use std::os::unix::fs::PermissionsExt;
     assert!(
         std::process::Command::new("cp")
@@ -723,13 +726,42 @@ fn fixture_repo(source: &Path, repo: &Path) {
 /// harness of `fixtures/telemetry-bench/invocation-claude.py` printing the shape af asks for, with
 /// three chunks of intermediate tool output: the machine, the run's Store and its inspection.
 fn claude_task(level: &str) -> (crate::telemetry_runs::Machine, PathBuf, Value) {
-    use std::os::unix::fs::PermissionsExt;
     let machine = crate::telemetry_runs::Machine::new();
+    let run = claude_run(&machine, "run", level, &json!({}), &[]);
+    (machine, run.state, run.inspection)
+}
+
+/// One run of the one-Attempt invocation fixture on `machine`, its files below `name`.
+pub(crate) struct ClaudeRun {
+    /// The run's Store.
+    pub(crate) state: PathBuf,
+    /// `af task start --execute --json`.
+    pub(crate) inspection: Value,
+    /// The scripted harness's auth directory, where `record_stdin` writes.
+    pub(crate) auth: PathBuf,
+    /// The committed fixture repository the command ran in.
+    pub(crate) repo: PathBuf,
+}
+
+/// The one-Attempt invocation fixture's Task run once at `level` on `machine`, its repository,
+/// harness and Store below `name`: the scripted Claude harness prints the shape af asks for, with
+/// three 64 KiB chunks of intermediate tool output, its `bench.json` harness table extended by
+/// `harness` (the optional keys of `invocation-claude.py`), and `env` set on the command.
+pub(crate) fn claude_run(
+    machine: &crate::telemetry_runs::Machine,
+    name: &str,
+    level: &str,
+    harness: &Value,
+    env: &[(&str, &str)],
+) -> ClaudeRun {
+    use std::os::unix::fs::PermissionsExt;
     let fixture = workspace().join("fixtures/telemetry-bench/telemetry-bench-invocation-one");
-    let repo = machine.root.join("repo");
+    let base = machine.root.join(name);
+    std::fs::create_dir_all(&base).unwrap();
+    let repo = base.join("repo");
     fixture_repo(&fixture.join("repo"), &repo);
-    let bin = machine.root.join("bin");
-    let auth = machine.root.join("auth");
+    let bin = base.join("bin");
+    let auth = base.join("auth");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::create_dir_all(&auth).unwrap();
     std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -739,14 +771,17 @@ fn claude_task(level: &str) -> (crate::telemetry_runs::Machine, PathBuf, Value) 
     )
     .unwrap();
     std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut table = json!({"shape":"requested","tool_output_bytes":3 * 65536,"chunk_bytes":65536,
+                           "report":false});
+    for (key, value) in harness.as_object().into_iter().flatten() {
+        table[key] = value.clone();
+    }
     std::fs::write(
         auth.join("bench.json"),
-        json!({"harness":{"shape":"requested","tool_output_bytes":3 * 65536,"chunk_bytes":65536,
-                          "report":false}})
-        .to_string(),
+        json!({ "harness": table }).to_string(),
     )
     .unwrap();
-    let providers = machine.root.join("providers.toml");
+    let providers = base.join("providers.toml");
     std::fs::write(
         &providers,
         format!(
@@ -760,16 +795,18 @@ fn claude_task(level: &str) -> (crate::telemetry_runs::Machine, PathBuf, Value) 
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap();
-    let state = machine.root.join("store");
+    let state = base.join("store");
+    let mut variables = vec![
+        ("AF_TELEMETRY__LEVEL", level),
+        ("AF_PROVIDERS_FILE", providers.to_str().unwrap()),
+        ("PATH", path.to_str().unwrap()),
+        ("USER", "fixture"),
+    ];
+    variables.extend_from_slice(env);
     let output = machine
         .command(
             &repo,
-            &[
-                ("AF_TELEMETRY__LEVEL", level),
-                ("AF_PROVIDERS_FILE", providers.to_str().unwrap()),
-                ("PATH", path.to_str().unwrap()),
-                ("USER", "fixture"),
-            ],
+            &variables,
             &[
                 "task",
                 "start",
@@ -791,7 +828,12 @@ fn claude_task(level: &str) -> (crate::telemetry_runs::Machine, PathBuf, Value) 
     );
     let inspection: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(inspection["phase"]["kind"], "finished", "{level}");
-    (machine, state, inspection)
+    ClaudeRun {
+        state,
+        inspection,
+        auth,
+        repo,
+    }
 }
 
 /// The gate materializes the source tree read-only: `claude_task`'s copy of a read-only fixture
@@ -865,7 +907,7 @@ fn telemetry_streams_fixture_copies_are_writable() {
 /// The raw evidence the Store records for the Claude harness's Attempts (the Worker's and the
 /// Provider admission probe's), in order: the CAS ids its usage and settlement records name
 /// whose object is the harness's `result` line.
-fn raw_evidence(inspection: &Value, state: &Path) -> Vec<String> {
+pub(crate) fn raw_evidence(inspection: &Value, state: &Path) -> Vec<String> {
     let objects = cas_objects(state);
     inspection["execution_records"]
         .as_array()

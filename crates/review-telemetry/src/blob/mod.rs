@@ -31,14 +31,48 @@ use crate::trace::{hex, sha256_digest};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Media {
     Text,
+    /// A JSON document from any source: nothing in it is exempt.
     Json,
+    /// A JSON document af itself composed: redacted as [`Media::Json`], except that the identity
+    /// positions its kind declares ([`Document`]) keep a value that is exactly a kernel identity.
+    Kernel(Document),
+}
+
+/// The kinds of JSON document af composes itself, each with its closed set of identity
+/// positions (design §8: only the fields af's own schema types as identities are exempt, by
+/// position, in af's own records).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Document {
+    /// The Worker request (`af.worker-request/1`) the kernel composed for an Attempt: the
+    /// artifact and Snapshot ids of its input and feedback values and the identity positions of
+    /// their admitted payloads ([`redact::worker_request_identity_position`]); everything else
+    /// in it is judged whole.
+    WorkerRequest,
+    /// A typed record of the kernel's own (a Store event payload, a context manifest): a member
+    /// named `id`, `*_id`, `digest` or `*_digest`, an element of an array member named `*_ids`
+    /// or `artifact_refs`, and a token counter named `tokens` or `*_tokens`
+    /// ([`redact::record_identity_position`]).
+    Record,
 }
 
 impl Media {
     pub fn media_type(self) -> &'static str {
         match self {
             Self::Text => "text/plain; charset=utf-8",
-            Self::Json => "application/json",
+            Self::Json | Self::Kernel(_) => "application/json",
+        }
+    }
+
+    /// Redact one parsed JSON document under this media's rules.
+    fn redact_json(self, redactor: &Redactor, document: &mut serde_json::Value) -> u32 {
+        match self {
+            Self::Kernel(Document::WorkerRequest) => {
+                redactor.kernel_json_where(document, &redact::worker_request_identity_position)
+            }
+            Self::Kernel(Document::Record) => {
+                redactor.kernel_json_where(document, &redact::record_identity_position)
+            }
+            Self::Text | Self::Json => redactor.json(document),
         }
     }
 }
@@ -179,15 +213,18 @@ fn withheld_json() -> Vec<u8> {
 pub fn prepare(source: &[u8], media: Media, max_blob_bytes: u64, redactor: &Redactor) -> Prepared {
     let max = usize::try_from(max_blob_bytes).unwrap_or(usize::MAX);
     let (retained, truncated, withheld_whole, redacted, media) = match media {
-        Media::Json if source.len() > max => (withheld_json(), false, true, 1, Media::Json),
-        Media::Json => match serde_json::from_slice::<serde_json::Value>(source) {
+        Media::Json | Media::Kernel(_) if source.len() > max => {
+            (withheld_json(), false, true, 1, media)
+        }
+        Media::Json | Media::Kernel(_) => match serde_json::from_slice::<serde_json::Value>(source)
+        {
             Ok(mut document) => {
-                let redacted = redactor.json(&mut document);
+                let redacted = media.redact_json(redactor, &mut document);
                 let bytes = serde_json::to_vec(&document).expect("a value serializes");
                 if bytes.len() > max {
-                    (withheld_json(), false, true, redacted + 1, Media::Json)
+                    (withheld_json(), false, true, redacted + 1, media)
                 } else {
-                    (bytes, false, false, redacted, Media::Json)
+                    (bytes, false, false, redacted, media)
                 }
             }
             // Not JSON after all: judged as text, per line.
@@ -212,6 +249,23 @@ pub fn prepare(source: &[u8], media: Media, max_blob_bytes: u64, redactor: &Reda
         media_type: media.media_type(),
         compressed,
         retained,
+    }
+}
+
+/// Content dropped before it was redacted (an exhausted content allowance): no retained bytes
+/// and no object identity, only the source's — its digest over the original bytes and its
+/// length — for the `dropped` occurrence that stands where it would have been.
+pub fn unprepared(source: &[u8], media: Media) -> Prepared {
+    Prepared {
+        retained: Vec::new(),
+        digest: String::new(),
+        source_digest: sha256_digest(source),
+        original_bytes: source.len() as u64,
+        truncated: false,
+        withheld_whole: false,
+        redacted: 0,
+        media_type: media.media_type(),
+        compressed: Vec::new(),
     }
 }
 

@@ -252,3 +252,87 @@ fn telemetry_rusage_is_absent_not_zero() {
     assert!(!text.contains("\"af.git\""), "{text}");
     assert!(!text.contains("\"af.store."), "{text}");
 }
+
+/// Design §8 and §15 P7: a check's stdout and stderr are blobs named by `af.check.output` on its
+/// `af.check` span at `content` and only there, each judged per line before it is kept — a
+/// credential line on stderr is withheld — and counted against the process's allowance.
+#[test]
+fn telemetry_check_output_is_content_only_at_content() {
+    for level in [Level::Spans, Level::Content] {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let root = temp.path().join("telemetry");
+        let writer = Writer::new(WriterOptions::new(&root, level)).unwrap();
+        let dispatch = tracing::Dispatch::new(TelemetrySubscriber::new(writer.clone()));
+        tracing::dispatcher::with_default(&dispatch, || {
+            let command = tracing::info_span!("af.command");
+            let _command = command.enter();
+            let run = tracing::info_span!(
+                "af.run",
+                af.store_id = "e".repeat(64).as_str(),
+                af.run_id = "run-1",
+                af.run.kind = "task",
+                af.execution_id = "execution-1",
+            );
+            let _run = run.enter();
+            let result = CheckRunner::new(&cas, &work).run(&CheckDefinition::new(
+                "lint",
+                sh("echo out-words; echo 'password=hunter2-planted' >&2; echo err-words >&2; exit 1"),
+            ));
+            assert!(result.reason.is_none() || result.exit_code == Some(1));
+        });
+        writer.flush();
+        let text = std::fs::read_to_string(writer.path().unwrap()).unwrap();
+        writer.finish(SealExit::Ok).unwrap();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let outputs: Vec<&Value> = lines
+            .iter()
+            .filter(|line| line["t"] == "event" && line["name"] == "af.check.output")
+            .collect();
+        assert!(!text.contains("hunter2"));
+        if level == Level::Spans {
+            assert!(outputs.is_empty(), "{text}");
+            continue;
+        }
+        assert_eq!(outputs.len(), 2, "{text}");
+        // What each stream keeps, judged line by line: the blob a stored occurrence names is
+        // exactly these bytes, compressed as the writer compresses them (this crate never
+        // links the reader module, so the file is compared, not read back).
+        let expected = [
+            ("stdout", "out-words\n".to_string()),
+            (
+                "stderr",
+                format!("{}\nerr-words\n", review_telemetry::redact::WITHHELD_LINE),
+            ),
+        ];
+        for (stream, kept) in expected {
+            let output = outputs
+                .iter()
+                .find(|output| output["attributes"]["af.stream"] == stream)
+                .unwrap();
+            let occurrence = output["blob"].as_str().unwrap();
+            let reference = lines
+                .iter()
+                .find(|line| line["t"] == "blob_ref" && line["occurrence_id"] == occurrence)
+                .unwrap();
+            assert_eq!(reference["state"], "stored");
+            let digest = review_telemetry::trace::sha256_digest(kept.as_bytes());
+            assert_eq!(reference["digest"], digest.as_str(), "{stream}");
+            let hex = digest.strip_prefix("sha256:").unwrap();
+            let file = root
+                .join("v1/blobs")
+                .join(&hex[..2])
+                .join(format!("{hex}.gz"));
+            assert_eq!(
+                std::fs::read(&file).unwrap(),
+                review_telemetry::blob::compress(kept.as_bytes()),
+                "{stream}"
+            );
+        }
+    }
+}

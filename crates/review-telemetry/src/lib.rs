@@ -4,9 +4,10 @@
 //!
 //! A leaf crate: it links nothing in the workspace, and `review-process` never links it
 //! (ADR-0026). The write side — [`record`], [`segment::writer`], [`blob`], [`redact`],
-//! [`level`], [`subscriber`], [`trace`], [`dirs`], [`process`], [`stream`] — is for every crate
-//! that records. The read side — [`segment::reader`], [`index`], [`status`], [`view`], [`ledger`],
-//! [`accounting`], [`budget`], [`blob::reader`] and [`blob::collect`] — is linked only by
+//! [`level`], [`subscriber`], [`trace`], [`dirs`], [`process`], [`stream`], [`content`] — is
+//! for every crate that records. The read side — [`segment::reader`], [`index`], [`status`],
+//! [`view`], [`ledger`], [`accounting`], [`turns`], [`content_view`], [`budget`],
+//! [`blob::reader`] and [`blob::collect`] — is linked only by
 //! `af telemetry`, `af storage` and the TUI (clause 1); a source test holds every other crate
 //! to that.
 //!
@@ -18,6 +19,8 @@
 pub mod accounting;
 pub mod blob;
 pub mod budget;
+pub mod content;
+pub mod content_view;
 pub mod dirs;
 pub mod index;
 pub mod layout;

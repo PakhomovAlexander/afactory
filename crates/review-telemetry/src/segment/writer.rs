@@ -70,6 +70,7 @@ use serde_json::Value;
 
 use super::{Clock, TERMINAL_RESERVE_BYTES, new_segment_id};
 use crate::blob::{self, Media, Prepared};
+use crate::content::{self, Scope};
 use crate::dirs::{self, Accounted};
 use crate::layout::{self, Confined, FileIdentity, Held, Layout};
 use crate::level::{Level, Settings};
@@ -169,8 +170,17 @@ pub struct WriterOptions {
     pub content_max_blob_bytes: u64,
     /// `[telemetry] observer_queue_bytes`: the bound of each harness stream observer's queue.
     pub observer_queue_bytes: u64,
-    /// `[telemetry] content_attempt_max_bytes`: the bound of an Attempt's pending content.
+    /// `[telemetry] content_attempt_max_bytes`: the bound of an Attempt's pending content and of
+    /// the content its blobs retain.
     pub content_attempt_max_bytes: u64,
+    /// `[telemetry] content_process_max_bytes`: the bound of the content retained outside any
+    /// Attempt.
+    pub content_process_max_bytes: u64,
+    /// `[telemetry] content_reasoning`: keep thinking blocks and reasoning summaries at
+    /// `content`.
+    pub content_reasoning: bool,
+    /// `[telemetry] content_tool_io`: keep tool arguments and results at `content`.
+    pub content_tool_io: bool,
     pub af_version: String,
     pub af_commit: String,
     pub argv: Vec<String>,
@@ -201,6 +211,9 @@ impl WriterOptions {
             content_max_blob_bytes: defaults.content_max_blob_bytes,
             observer_queue_bytes: defaults.observer_queue_bytes,
             content_attempt_max_bytes: defaults.content_attempt_max_bytes,
+            content_process_max_bytes: defaults.content_process_max_bytes,
+            content_reasoning: defaults.content_reasoning,
+            content_tool_io: defaults.content_tool_io,
             af_version: env!("CARGO_PKG_VERSION").to_string(),
             af_commit: "unknown".to_string(),
             argv: std::env::args().collect(),
@@ -223,6 +236,9 @@ impl WriterOptions {
         self.content_max_blob_bytes = settings.content_max_blob_bytes;
         self.observer_queue_bytes = settings.observer_queue_bytes;
         self.content_attempt_max_bytes = settings.content_attempt_max_bytes;
+        self.content_process_max_bytes = settings.content_process_max_bytes;
+        self.content_reasoning = settings.content_reasoning;
+        self.content_tool_io = settings.content_tool_io;
         self.flush_latency_ms = settings.flush_latency_ms;
         self
     }
@@ -411,6 +427,17 @@ pub struct Shared {
     writes: std::sync::atomic::AtomicU64,
     /// Set once, when the consumer opens the segment.
     tree: OnceLock<Tree>,
+    /// The content each allowance has retained so far (design §8).
+    allowances: Mutex<Allowances>,
+}
+
+/// The retained content bytes counted against each allowance: an Attempt's by its `af.attempt`
+/// span, and the process's outside any Attempt. An exhausted allowance stays exhausted.
+#[derive(Default)]
+struct Allowances {
+    attempts: BTreeMap<String, u64>,
+    process: u64,
+    exhausted: BTreeSet<Scope>,
 }
 
 /// A sealed segment.
@@ -569,7 +596,8 @@ fn publication<T>(
                     seq: 0,
                     schema: schema::BLOB_REF.into(),
                     occurrence_id: occurrence.clone(),
-                    digest: Some(prepared.digest.clone()),
+                    // Content an exhausted allowance dropped was never redacted or digested.
+                    digest: content.admitted.then(|| prepared.digest.clone()),
                     span_id: span_id.clone(),
                     event_seq: owner_seq,
                     source_digest: prepared.source_digest.clone(),
@@ -681,8 +709,15 @@ fn load1() -> Option<f64> {
 struct Bounded {
     attributes: Attributes,
     counters: Counters,
-    contents: Vec<Prepared>,
+    contents: Vec<Offered>,
     named: Vec<String>,
+}
+
+/// One content offered for publication: prepared, and whether its allowance admitted it. A
+/// content its allowance refused is published as a `dropped` occurrence, never staged.
+struct Offered {
+    prepared: Prepared,
+    admitted: bool,
 }
 
 /// Name each pending blob's occurrence in the attribute that held its value; an attribute
@@ -701,8 +736,20 @@ fn fill(attributes: &mut Attributes, named: &[String], occurrences: &[String]) {
 /// One content waiting for publication, and how far it got.
 struct Content {
     prepared: Prepared,
+    /// Its allowance admitted it; otherwise it is never staged and its occurrence is `dropped`.
+    admitted: bool,
     staged: Option<blob::Staged>,
     stored: bool,
+}
+
+/// What an event's own content is: its bytes, how they are judged, whose allowance they count
+/// against, and the rules that judge them when they are not the writer's own (a released
+/// harness stream's, with the Provider grants it received).
+struct Source<'a> {
+    bytes: &'a [u8],
+    media: Media,
+    scope: &'a Scope,
+    redactor: Option<&'a Redactor>,
 }
 
 impl Writer {
@@ -756,6 +803,7 @@ impl Writer {
                 consumer_thread: OnceLock::new(),
                 writes: std::sync::atomic::AtomicU64::new(0),
                 tree: OnceLock::new(),
+                allowances: Mutex::new(Allowances::default()),
                 options,
             }),
         })
@@ -1143,7 +1191,14 @@ impl Writer {
     /// Whether it was written.
     fn flush_now(&self) -> bool {
         let mut pending = lock(&self.shared.pending);
-        if pending.mode == Mode::Inline {
+        // The consumer thread publishing a released harness stream's content (design §7.3) is
+        // the segment's owner: it writes its references itself, never waiting on itself.
+        let on_consumer = self
+            .shared
+            .consumer_thread
+            .get()
+            .is_some_and(|thread| thread.id() == std::thread::current().id());
+        if pending.mode == Mode::Inline || on_consumer {
             drop(pending);
             self.consume(true);
             return true;
@@ -1461,19 +1516,40 @@ impl Writer {
                 // Both arrive as the writer gave them, so the occurrence's source identity is
                 // the original's: text is redacted per line before it is retained, an array as
                 // one JSON document, measured before it is encoded so an array over the blob
-                // bound is withheld before anything proportional to it is allocated.
-                contents.push(match value {
-                    Oversized::Text(text) => blob::prepare(
-                        text.as_bytes(),
-                        Media::Text,
-                        options.content_max_blob_bytes,
-                        &options.redactor,
-                    ),
-                    Oversized::Texts(values) => blob::prepare_texts(
-                        values,
-                        options.content_max_blob_bytes,
-                        &options.redactor,
-                    ),
+                // bound is withheld before anything proportional to it is allocated. Either
+                // counts against the process's content allowance.
+                let process = Scope::Process;
+                contents.push(if self.exhausted(&process) {
+                    let source = match value {
+                        Oversized::Text(text) => text.as_bytes().to_vec(),
+                        Oversized::Texts(values) => {
+                            serde_json::to_vec(values).expect("strings serialize")
+                        }
+                    };
+                    let media = match value {
+                        Oversized::Text(_) => Media::Text,
+                        Oversized::Texts(_) => Media::Json,
+                    };
+                    Offered {
+                        prepared: blob::unprepared(&source, media),
+                        admitted: false,
+                    }
+                } else {
+                    let prepared = match value {
+                        Oversized::Text(text) => blob::prepare(
+                            text.as_bytes(),
+                            Media::Text,
+                            options.content_max_blob_bytes,
+                            &options.redactor,
+                        ),
+                        Oversized::Texts(values) => blob::prepare_texts(
+                            values,
+                            options.content_max_blob_bytes,
+                            &options.redactor,
+                        ),
+                    };
+                    let admitted = self.admit(&process, prepared.retained.len() as u64);
+                    Offered { prepared, admitted }
                 });
                 named.push(key.to_string());
                 Some(String::new())
@@ -1508,7 +1584,7 @@ impl Writer {
     /// batch accepted.
     fn publish<T>(
         &self,
-        contents: Vec<Prepared>,
+        contents: Vec<Offered>,
         span: Option<&str>,
         flush: bool,
         mut build: impl FnMut(&mut Batch<'_>, &[String]) -> Option<T>,
@@ -1545,13 +1621,17 @@ impl Writer {
         };
         let mut contents: Vec<Content> = contents
             .into_iter()
-            .map(|prepared| Content {
-                prepared,
+            .map(|offered| Content {
+                prepared: offered.prepared,
+                admitted: offered.admitted,
                 staged: None,
                 stored: false,
             })
             .collect();
         for content in &mut contents {
+            if !content.admitted {
+                continue;
+            }
             let staged = tree
                 .prefix(blob::prefix_of(&content.prepared.digest))
                 .and_then(|directory| blob::stage_in(directory, &content.prepared));
@@ -1789,7 +1869,8 @@ impl Writer {
     }
 
     /// An event naming content: at `content` the content becomes a blob occurrence the event
-    /// names; at every other level the event is recorded without it. Returns the event's `seq`.
+    /// names, counted against the process's content allowance; at every other level the event
+    /// is recorded without it. Returns the event's `seq`.
     pub fn event_with_content(
         &self,
         span_id: &str,
@@ -1798,7 +1879,93 @@ impl Writer {
         content: &[u8],
         media: Media,
     ) -> Option<u64> {
-        self.event_with(span_id, name, attrs, Some((content, media)), None)
+        self.content_event(span_id, name, attrs, content, media, &Scope::Process)
+    }
+
+    /// An event naming content counted against `scope`'s allowance (design §8): at `content`
+    /// the content is redacted whole under the writer's rules, then bounded, and becomes a blob
+    /// occurrence the event names — a `dropped` one, never staged, once the allowance is
+    /// exhausted; at every other level the event is recorded without it. Returns the event's
+    /// `seq`.
+    pub fn content_event(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        content: &[u8],
+        media: Media,
+        scope: &Scope,
+    ) -> Option<u64> {
+        let source = Source {
+            bytes: content,
+            media,
+            scope,
+            redactor: None,
+        };
+        self.event_with(span_id, name, attrs, Some(source), None)
+    }
+
+    /// [`Self::content_event`] judged by `redactor` instead of the writer's own rules: a
+    /// released harness stream's content, whose rules replace the Provider grants the process
+    /// received (design §7.3). The occurrence's source identity is the original bytes'.
+    #[allow(clippy::too_many_arguments)]
+    pub fn content_event_judged(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        content: &[u8],
+        media: Media,
+        scope: &Scope,
+        redactor: &Redactor,
+    ) -> Option<u64> {
+        let source = Source {
+            bytes: content,
+            media,
+            scope,
+            redactor: Some(redactor),
+        };
+        self.event_with(span_id, name, attrs, Some(source), None)
+    }
+
+    /// Whether `scope`'s content allowance is exhausted.
+    fn exhausted(&self, scope: &Scope) -> bool {
+        lock(&self.shared.allowances).exhausted.contains(scope)
+    }
+
+    /// Count `bytes` of retained content against `scope`'s allowance; whether it fits. The
+    /// first content that does not exhausts the allowance for good and records its one `budget`
+    /// problem.
+    fn admit(&self, scope: &Scope, bytes: u64) -> bool {
+        let options = &self.shared.options;
+        let (limit, reason) = match scope {
+            Scope::Attempt(_) => (
+                options.content_attempt_max_bytes,
+                content::ATTEMPT_EXHAUSTED,
+            ),
+            Scope::Process => (
+                options.content_process_max_bytes,
+                content::PROCESS_EXHAUSTED,
+            ),
+        };
+        {
+            let mut allowances = lock(&self.shared.allowances);
+            let allowances = &mut *allowances;
+            if allowances.exhausted.contains(scope) {
+                return false;
+            }
+            let used = match scope {
+                Scope::Attempt(attempt) => allowances.attempts.entry(attempt.clone()).or_default(),
+                Scope::Process => &mut allowances.process,
+            };
+            if used.saturating_add(bytes) <= limit {
+                *used += bytes;
+                return true;
+            }
+            allowances.exhausted.insert(scope.clone());
+        }
+        self.problem(ProblemWhat::Budget, reason);
+        false
     }
 
     fn event_with(
@@ -1806,7 +1973,7 @@ impl Writer {
         span_id: &str,
         name: &str,
         attrs: Attrs,
-        content: Option<(&[u8], Media)>,
+        content: Option<Source<'_>>,
         sequence: Option<&'static str>,
     ) -> Option<u64> {
         let options = &self.shared.options;
@@ -1817,18 +1984,28 @@ impl Writer {
             named,
         } = self.bound(attrs);
         let mut media_type = None;
-        if let Some((bytes, media)) = content
+        if let Some(source) = content
             && options.level.keeps_content()
         {
-            let prepared = blob::prepare(
-                bytes,
-                media,
-                options.content_max_blob_bytes,
-                &options.redactor,
-            );
-            media_type = Some(prepared.media_type.to_string());
+            // Past its allowance the content is not even judged: the occurrence stands for it.
+            let offered = if self.exhausted(source.scope) {
+                Offered {
+                    prepared: blob::unprepared(source.bytes, source.media),
+                    admitted: false,
+                }
+            } else {
+                let prepared = blob::prepare(
+                    source.bytes,
+                    source.media,
+                    options.content_max_blob_bytes,
+                    source.redactor.unwrap_or(&options.redactor),
+                );
+                let admitted = self.admit(source.scope, prepared.retained.len() as u64);
+                Offered { prepared, admitted }
+            };
+            media_type = Some(offered.prepared.media_type.to_string());
             // The event's own content is the first occurrence.
-            contents.insert(0, prepared);
+            contents.insert(0, offered);
         }
         let own = media_type.is_some();
         let time = ns(self.now_unix_ns());

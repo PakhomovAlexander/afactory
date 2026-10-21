@@ -564,6 +564,14 @@ impl Redactor {
         })
     }
 
+    /// A JSON document af itself produced whose identity positions follow a rule rather than a
+    /// list: `exempt` judges each JSON pointer, and a value there skips the heuristic only when
+    /// it is exactly a kernel identity, a canonical decimal, a number or a boolean, as in
+    /// [`Self::kernel_json`].
+    pub fn kernel_json_where(&self, value: &mut Value, exempt: &dyn Fn(&str) -> bool) -> u32 {
+        self.json_at(value, "", exempt)
+    }
+
     fn json_at(&self, value: &mut Value, pointer: &str, exempt: &dyn Fn(&str) -> bool) -> u32 {
         if exempt(pointer) && typed_value(value) {
             return 0;
@@ -633,6 +641,54 @@ fn typed_value(value: &Value) -> bool {
     }
 }
 
+/// The identity positions of the Worker request the kernel composes (`af.worker-request/1`):
+/// each input and feedback value's `artifact_id` and `snapshot_id`, and inside its `payload` —
+/// the artifact af admitted, typed by its schema — the record's typed positions
+/// ([`record_identity_position`]) and the receipt ids `af/TaskCheckReceipt@1` maps check names
+/// to (`payload/checks/*`). The instructions, the reply format, the output schemas and every
+/// other payload value are judged whole.
+pub fn worker_request_identity_position(pointer: &str) -> bool {
+    let segments: Vec<&str> = pointer.split('/').skip(1).collect();
+    let rest = match segments.as_slice() {
+        ["inputs", _, _, rest @ ..] | ["feedback", _, rest @ ..] => rest,
+        _ => return false,
+    };
+    match rest {
+        ["artifact_id" | "snapshot_id"] => true,
+        ["payload", "checks", _] => true,
+        ["payload", _, ..] => record_identity_position(pointer),
+        _ => false,
+    }
+}
+
+/// The typed positions of a record of the kernel's own (a Store event payload, a context
+/// manifest), by the naming its schemas follow: identities — a member named `id`, `*_id`,
+/// `digest` or `*_digest`, an element of an array member named `*_ids` or `artifact_refs` — and
+/// token counters, a member named `tokens` or `*_tokens`. A value there keeps only when it is
+/// exactly a kernel identity, a canonical decimal or a number; any other is judged, and every
+/// other position is untrusted text.
+pub fn record_identity_position(pointer: &str) -> bool {
+    let mut segments = pointer.rsplit('/');
+    let Some(last) = segments.next() else {
+        return false;
+    };
+    let typed_name = |name: &str| {
+        name == "id"
+            || name.ends_with("_id")
+            || name == "digest"
+            || name.ends_with("_digest")
+            || name == "tokens"
+            || name.ends_with("_tokens")
+    };
+    if typed_name(last) {
+        return true;
+    }
+    last.parse::<usize>().is_ok()
+        && segments
+            .next()
+            .is_some_and(|parent| parent.ends_with("_ids") || parent == "artifact_refs")
+}
+
 fn escape_pointer(name: &str) -> String {
     name.replace('~', "~0").replace('/', "~1")
 }
@@ -686,6 +742,57 @@ pub fn redact_json(value: &mut Value) -> u32 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A document af composed keeps its identities and counters only in the positions its kind
+    /// declares, and only when their values are typed; a credential anywhere else is withheld,
+    /// a digest-shaped credential outside those positions included.
+    #[test]
+    fn kernel_documents_keep_typed_values_only_in_declared_positions() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let mut request = json!({
+            "instructions": format!("use {digest}"),
+            "inputs": {"source": [{"artifact_id": digest, "snapshot_id": digest,
+                "payload": {"snapshot_id": digest, "checks": {"syntax": digest},
+                            "note": digest, "plan_id": "password=violet"}}]},
+            "feedback": [{"artifact_id": digest}],
+            "output_schemas": {"result": {"artifact_id": digest}},
+        });
+        let withheld =
+            Redactor::new().kernel_json_where(&mut request, &worker_request_identity_position);
+        let source = &request["inputs"]["source"][0];
+        for kept in [
+            &source["artifact_id"],
+            &source["snapshot_id"],
+            &source["payload"]["snapshot_id"],
+            &source["payload"]["checks"]["syntax"],
+            &request["feedback"][0]["artifact_id"],
+        ] {
+            assert_eq!(kept, &json!(digest));
+        }
+        for gone in [
+            &request["instructions"],
+            &source["payload"]["note"],
+            &source["payload"]["plan_id"],
+            &request["output_schemas"]["result"]["artifact_id"],
+        ] {
+            assert_eq!(gone, &json!(WITHHELD));
+        }
+        assert_eq!(withheld, 4);
+        let mut record = json!({"artifact_refs": [digest], "event_id": "run-1",
+            "usage": {"input_tokens": 12, "estimated_tokens": "42", "api_token": 12},
+            "subject_id": "sk-proj-0123456789abcdefghijklmnop", "diagnostic": digest});
+        Redactor::new().kernel_json_where(&mut record, &record_identity_position);
+        assert_eq!(record["artifact_refs"][0], json!(digest));
+        assert_eq!(record["event_id"], "run-1");
+        assert_eq!(record["usage"]["input_tokens"], 12);
+        assert_eq!(record["usage"]["estimated_tokens"], "42");
+        assert_eq!(record["usage"]["api_token"], WITHHELD);
+        assert_eq!(
+            record["subject_id"], WITHHELD,
+            "an untyped value in a typed position"
+        );
+        assert_eq!(record["diagnostic"], WITHHELD);
+    }
 
     #[test]
     fn option_values_under_secret_names_are_withheld() {

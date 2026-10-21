@@ -4,6 +4,7 @@ mod blobs;
 mod budget;
 mod config;
 mod consumer;
+mod content;
 mod dirs;
 mod history;
 mod identity;

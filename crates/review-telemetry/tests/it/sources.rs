@@ -1,6 +1,7 @@
-//! ADR-0153 clause 1 and ADR-0026 in the source: no crate but `af` links the reader module
-//! (`segment::reader`, `index`, `status`, `view`, `ledger`, `accounting`, `turns`, `budget`,
-//! `blob::reader`, `blob::collect`),
+//! ADR-0153 clauses 1 and 2 and ADR-0026 in the source: no crate but `af` links the reader
+//! module (`segment::reader`, `index`, `status`, `view`, `ledger`, `accounting`, `turns`,
+//! `content_view`, `budget`, `blob::reader`, `blob::collect`), no code that composes a prompt,
+//! a Warm Set, Worker Notes or an optimization source reads Telemetry in any form,
 //! `review-process` links nothing of Telemetry, and Telemetry links nothing in the workspace.
 
 use std::path::{Path, PathBuf};
@@ -25,7 +26,7 @@ fn rust_files(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-const READER: [&str; 10] = [
+const READER: [&str; 11] = [
     "segment::reader",
     "index",
     "status",
@@ -33,6 +34,7 @@ const READER: [&str; 10] = [
     "ledger",
     "accounting",
     "turns",
+    "content_view",
     "budget",
     "blob::reader",
     "blob::collect",
@@ -105,6 +107,95 @@ fn only_af_links_the_reader_module_and_review_process_links_nothing() {
     );
     assert!(names_reader("use review_telemetry::{redact, index::Index};").is_some());
     assert!(names_reader("review_telemetry::segment::reader::list").is_some());
+}
+
+/// The code that composes what a Worker receives, in every crate, `af` included: the Worker
+/// request and the model prompt (`review-runner`), every Task host's context, Warm Set and
+/// Worker Notes (`review-pipeline`'s `task/` and its warm paths, `review-core`'s Warm Set), and
+/// the self-optimizer's sources and History Capture (`af`, `review-store`, `review-core`,
+/// `review-config`).
+const WORKER_INPUT: [&str; 12] = [
+    "crates/review-runner/src/task.rs",
+    "crates/review-runner/src/task",
+    "crates/review-runner/src/model.rs",
+    "crates/review-pipeline/src/task",
+    "crates/review-pipeline/src/warm.rs",
+    "crates/review-pipeline/src/review_domain.rs",
+    "crates/review-pipeline/src/build_cache.rs",
+    "crates/review-core/src/warm.rs",
+    "crates/review-core/src/task/optimization.rs",
+    "crates/review-store/src/optimization.rs",
+    "crates/review-config/src/layout.rs",
+    "crates/af/src/self_optimizer.rs",
+];
+
+/// Design §16 item 2 and ADR-0153 clause 2 in the source: no prompt-composing, Warm Set, Worker
+/// Notes or optimization-source code imports Telemetry's reader module — `content_view`, the
+/// index, the blob reader or any other — or `af telemetry`'s readers, or names the telemetry
+/// directory, its blobs or its registry; the self-optimizer declares no Telemetry source.
+#[test]
+fn telemetry_content_reaches_no_worker_input() {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    for path in WORKER_INPUT {
+        let path = root.join(path);
+        if path.is_dir() {
+            rust_files(&path, &mut files);
+        } else {
+            assert!(
+                path.is_file(),
+                "{} is gone: update the list",
+                path.display()
+            );
+            files.push(path);
+        }
+    }
+    assert!(files.len() > 20, "{files:?}");
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        assert_eq!(
+            names_reader(&text),
+            None,
+            "{} reads Telemetry's reader module",
+            file.display()
+        );
+        for needle in [
+            "content_view",
+            "blob::reader",
+            "telemetry::views",
+            "telemetry::content",
+            "telemetry::harness",
+            "telemetry-dirs",
+            "v1/blobs",
+            "index.sqlite",
+            "\"telemetry\")",
+        ] {
+            assert!(
+                !text.contains(needle),
+                "{} names `{needle}`: a Worker's input never reads Telemetry",
+                file.display()
+            );
+        }
+    }
+    // The self-optimizer's declared native sources hold no Telemetry source.
+    for sources in [
+        root.join(".af/optimization-sources.toml"),
+        root.join("crates/review-config/src/layout.rs"),
+    ] {
+        if let Ok(text) = std::fs::read_to_string(&sources) {
+            assert!(
+                !text.to_lowercase().contains("telemetry"),
+                "{} declares a Telemetry source",
+                sources.display()
+            );
+        }
+    }
+    assert!(names_reader("use review_telemetry::content_view::context;").is_some());
+    assert!(names_reader("use review_telemetry::{content, content_view::Search};").is_some());
+    assert_eq!(
+        names_reader("use review_telemetry::content::on_span;"),
+        None
+    );
 }
 
 /// Every span name the catalogue in `docs/architecture.md` lists.

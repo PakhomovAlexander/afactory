@@ -7,7 +7,8 @@
 //! attaches it to the writer as a stream queue the consumer drains into a
 //! [`review_telemetry::stream::Tap`]. The supervisor returns as soon as its drain ends; the
 //! consumer finishes the process's queued chunks afterwards, and only once it has every chunk
-//! and this process's release decision does it end the tap.
+//! and this process's release decision does it end the tap, which at `content` publishes the
+//! released content as blobs counted against the Attempt's content allowance.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -115,7 +116,7 @@ impl StreamQueue for Queue {
             return false;
         }
         if closed && let Some(release) = *lock(&self.release) {
-            // Package P7 writes the released content as blobs; until then it stays sizes only.
+            // At `content` the tap publishes the released content as blobs itself.
             let _released = tap.finish(writer, &release);
             // The observer's drops of this process, in the segment's seal too.
             writer.count_dropped_chunks(self.output.dropped_chunks());
@@ -177,6 +178,9 @@ impl Observation {
                 frame_max_bytes: options.content_max_blob_bytes,
                 content_allowance_bytes: options.content_attempt_max_bytes,
                 grants,
+                content_reasoning: options.content_reasoning,
+                content_tool_io: options.content_tool_io,
+                scope: review_telemetry::subscriber::content_scope(span),
             },
         );
         let (observer, output) =

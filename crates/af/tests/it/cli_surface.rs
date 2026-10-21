@@ -372,6 +372,46 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
             "af/telemetry-tools@1",
             ["--store <ID>", "--attempt <ID>", "--dir <PATH>", "tool set"].as_slice(),
         ),
+        // P7 (design §9, §10): the content level read back.
+        (
+            "context",
+            "Usage: af telemetry context [OPTIONS] <RUN> <ATTEMPT>",
+            "af/telemetry-context@1",
+            [
+                "--store <ID>",
+                "--raw",
+                "--dir <PATH>",
+                "gen_ai.content.input",
+                "not captured",
+            ]
+            .as_slice(),
+        ),
+        (
+            "reasoning",
+            "Usage: af telemetry reasoning [OPTIONS] <RUN> <ATTEMPT>",
+            "af/telemetry-reasoning@1",
+            [
+                "--store <ID>",
+                "--dir <PATH>",
+                "content_reasoning",
+                "release decision",
+            ]
+            .as_slice(),
+        ),
+        (
+            "search",
+            "Usage: af telemetry search [OPTIONS] <TEXT>",
+            "af/telemetry-search@1",
+            [
+                "--since <D>",
+                "--run <RUN>",
+                "--store <ID>",
+                "--dir <PATH>",
+                "content_fts",
+                "content_index = false",
+            ]
+            .as_slice(),
+        ),
     ] {
         for help in [
             af(&["telemetry", command, "--help"]),
@@ -413,6 +453,9 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "af telemetry ledger",
         "af telemetry turns",
         "af telemetry tools",
+        "af telemetry context",
+        "af telemetry reasoning",
+        "af telemetry search",
         "af telemetry gc",
         "machine layers only",
     ] {
@@ -432,6 +475,9 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "af-telemetry-ledger.1",
         "af-telemetry-turns.1",
         "af-telemetry-tools.1",
+        "af-telemetry-context.1",
+        "af-telemetry-reasoning.1",
+        "af-telemetry-search.1",
         "af-telemetry-gc.1",
         "af-telemetry.7",
     ] {

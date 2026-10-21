@@ -35,7 +35,12 @@ fn machine() -> MachineConfig {
         harnesses: vec![row("harness", "claude_code.managed_settings", "", None)],
         host: vec![row("host", "host.os", std::env::consts::OS, None)],
         variables: vec![row("variable", "AF_TELEMETRY__LEVEL", "", None)],
-        texts: vec![("af_toml", AF_TOML.into(), 12)],
+        texts: vec![review_pipeline::telemetry::ConfigText {
+            kind: "af_toml",
+            digest: AF_TOML.into(),
+            bytes: 12,
+            content: None,
+        }],
     }
 }
 

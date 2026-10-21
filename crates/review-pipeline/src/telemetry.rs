@@ -93,8 +93,21 @@ pub struct MachineConfig {
     pub host: Vec<ConfigRow>,
     /// The names, never the values, of the `AF_*` and `OTEL_*` variables present.
     pub variables: Vec<ConfigRow>,
-    /// The texts a `content` level names by the event `af.config.text`: kind, digest, bytes.
-    pub texts: Vec<(&'static str, String, u64)>,
+    /// The texts the event `af.config.text` names: kind, digest and size at every level that
+    /// records the configuration; the bytes a blob at `content`.
+    pub texts: Vec<ConfigText>,
+}
+
+/// One configuration text the record names (design §7.4).
+#[derive(Debug, Clone, Default)]
+pub struct ConfigText {
+    /// `af_toml`, `pipeline` or `task_file`.
+    pub kind: &'static str,
+    /// The text's digest.
+    pub digest: String,
+    pub bytes: u64,
+    /// The text itself, kept as a blob at `content` only.
+    pub content: Option<Vec<u8>>,
 }
 
 /// What the command hands every run it opens: computed when the record is written, so the
@@ -256,9 +269,42 @@ fn config_owner(
 }
 
 /// The event `af.config.text` on `span`: one text the run's configuration names, by kind,
-/// digest and size, at every level that records the configuration; its bytes are a blob only
-/// at `content`.
-fn config_text(span: &tracing::Span, kind: &'static str, digest: &str, bytes: Option<u64>) {
+/// digest and size, at every level that records the configuration; its bytes (`content`, when
+/// the caller has them) are a blob only at `content`, counted against the process's content
+/// allowance.
+fn config_text(
+    span: &tracing::Span,
+    kind: &'static str,
+    digest: &str,
+    bytes: Option<u64>,
+    content: Option<&[u8]>,
+) {
+    if let Some(content) = content
+        && review_telemetry::content::recording()
+    {
+        let mut attrs =
+            review_telemetry::record::Attrs::new().enumerated("af.config.text.kind", kind);
+        if let Some(digest) = identity(digest) {
+            attrs = attrs.id("af.config.text.digest", digest.to_string());
+        }
+        if let Some(bytes) = bytes {
+            attrs = attrs.int(
+                "af.config.text.bytes",
+                i64::try_from(bytes).unwrap_or(i64::MAX),
+            );
+        }
+        if review_telemetry::content::on_span_outside_attempts(
+            span,
+            review_telemetry::content::event::CONFIG_TEXT,
+            attrs,
+            content,
+            review_telemetry::blob::Media::Text,
+        )
+        .is_some()
+        {
+            return;
+        }
+    }
     let digest = identity(digest);
     tracing::info!(
         parent: span,
@@ -298,8 +344,14 @@ fn record_opening_config(span: &tracing::Span, run_id: &str) {
         rows.extend(machine.variables);
         writer.config(&owner, "machine", rows);
     }
-    for (kind, digest, bytes) in machine.texts {
-        config_text(span, kind, &digest, Some(bytes));
+    for text in machine.texts {
+        config_text(
+            span,
+            text.kind,
+            &text.digest,
+            Some(text.bytes),
+            text.content.as_deref(),
+        );
     }
 }
 
@@ -680,7 +732,9 @@ impl RunTelemetry {
                 size(&plan.task_revision_id),
             ),
         ] {
-            config_text(&self.run, kind, &digest, bytes);
+            // The pipeline's and the Task file's own bytes are not at hand here (the event names
+            // their CAS artifacts), so they stay digests and sizes at every level.
+            config_text(&self.run, kind, &digest, bytes, None);
         }
     }
 
@@ -923,12 +977,16 @@ pub(crate) fn warm_end(
 }
 
 /// `af.context.compose`: the composed Worker input an Attempt is bound to — its manifest
-/// digest, rendered bytes, estimated tokens and layer list — never its bytes.
-pub(crate) fn context_compose(
+/// digest, rendered bytes, estimated tokens and layer list. Below `content` never its bytes; at
+/// `content` the prompt bytes the Worker receives (`rendered`) and the manifest they were
+/// composed by (`manifest`) are blobs named by `gen_ai.content.input` and
+/// `gen_ai.content.system`, counted against the Attempt's content allowance (design §7.1, §8).
+pub(crate) fn context_compose<M: serde::Serialize>(
     manifest_id: &str,
     layers: Vec<String>,
     bytes: u64,
     estimated_tokens: u64,
+    content: Option<(&[u8], &M)>,
 ) {
     if !review_telemetry::subscriber::in_run() {
         return;
@@ -944,6 +1002,33 @@ pub(crate) fn context_compose(
         af.context.layers = layers.join(",").as_str(),
         af.status = "ok",
     );
+    if let Some((rendered, manifest)) = content
+        && review_telemetry::content::recording()
+    {
+        use review_telemetry::blob::{Document, Media};
+        use review_telemetry::content::{event, on_span};
+        use review_telemetry::record::Attrs;
+        let attrs = || match identity(manifest_id) {
+            Some(id) => Attrs::new().id("af.context.manifest", id.to_string()),
+            None => Attrs::new(),
+        };
+        on_span(
+            &span,
+            event::INPUT,
+            attrs(),
+            rendered,
+            Media::Kernel(Document::WorkerRequest),
+        );
+        if let Ok(manifest) = serde_json::to_vec(manifest) {
+            on_span(
+                &span,
+                event::SYSTEM,
+                attrs(),
+                &manifest,
+                Media::Kernel(Document::Record),
+            );
+        }
+    }
     drop(span);
 }
 

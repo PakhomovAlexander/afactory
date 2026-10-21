@@ -851,6 +851,8 @@ fn telemetry_corpus_is_deterministic() {
     }
     assert_eq!(corpus["name"], "telemetry-corpus-4");
     assert_eq!(corpus["seed"], 7);
+    // Read from the index the reads built: its `content_fts` indexed the corpus's text blobs.
+    assert_eq!(corpus["content_index"], true, "{corpus}");
     assert_eq!(corpus["segment_bytes"], segment_bytes);
     let names: Vec<&str> = measured["measurements"]
         .as_array()

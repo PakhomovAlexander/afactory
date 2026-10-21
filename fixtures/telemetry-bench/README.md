@@ -52,4 +52,7 @@ login and catalog checks and the admission probe, and runs one scripted Attempt 
 intermediate tool output (64 KiB tool results), so the repository and its Snapshot are the same
 for both shapes; under either it builds the same output and answers the same final result. The
 pins in each `.af/task-catalog.toml` are recomputed with `af catalog digest PACKAGE_DIR` after a
-change.
+change. The `af` integration tests of the content level also set optional keys the measurements
+never set: `record_stdin` (a file in the auth directory the request is written to as received),
+`thinking` (thinking blocks under `stream-json`), `say` (a text block before the final reply)
+and `tool_output_prefix` (text that begins the first tool result).

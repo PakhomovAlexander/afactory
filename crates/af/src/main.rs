@@ -1564,6 +1564,38 @@ fn main() {
                 "af telemetry tools",
                 telemetry::tools(json, dir, run, store, attempt),
             ),
+            cli::TelemetryCommand::Context {
+                run,
+                attempt,
+                store,
+                raw,
+                json,
+                dir,
+            } => (
+                "af telemetry context",
+                telemetry::context(json, raw, dir, run, attempt, store),
+            ),
+            cli::TelemetryCommand::Reasoning {
+                run,
+                attempt,
+                store,
+                json,
+                dir,
+            } => (
+                "af telemetry reasoning",
+                telemetry::reasoning(json, dir, run, attempt, store),
+            ),
+            cli::TelemetryCommand::Search {
+                text,
+                since,
+                run,
+                store,
+                json,
+                dir,
+            } => (
+                "af telemetry search",
+                telemetry::search(json, dir, text, since, run, store),
+            ),
             cli::TelemetryCommand::Config {
                 run,
                 store,
