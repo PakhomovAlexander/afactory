@@ -130,7 +130,7 @@
   `content_tool_io`); a check's stdout and stderr (`af.check.output`); every mirrored Store
   event's payload; an admitted Finding's body (`af.finding.body`); and `.af/af.toml`, the
   pipeline's `pipeline.toml` and the Task file (`af.config.text`). A document `af` composed
-  keeps its identities and counters only in the positions its kind declares — in a Worker
+  treats its identities and counters as typed only in the positions its kind declares — in a Worker
   request's input payloads only where the schema of an artifact type `af` owns declares one, the
   Task's requirements always judged whole. Past `content_attempt_max_bytes` for an Attempt or
   `content_process_max_bytes` outside one, further content is dropped and counted with one

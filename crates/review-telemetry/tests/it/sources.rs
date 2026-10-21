@@ -40,6 +40,36 @@ const READER: [&str; 11] = [
     "blob::collect",
 ];
 
+/// `text` without its in-file test modules: from a `#[cfg(test)]` marker that a `mod … {` line
+/// follows, to that module's closing brace at column 0 (rustfmt's layout; a column-0 `}` inside
+/// one of its string literals only ends the cut early, which judges more, never less). A marker
+/// on anything else, and an out-of-line `mod tests;`, cuts nothing. The rule is about the code
+/// a Worker's input passes through: a test module of one of these files may write Telemetry to
+/// exercise the spans of its own file.
+fn without_test_modules(text: &str) -> String {
+    const MARKER: &str = "#[cfg(test)]";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(MARKER) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + MARKER.len()..];
+        let opens_module = after
+            .trim_start()
+            .lines()
+            .next()
+            .is_some_and(|line| line.starts_with("mod ") && line.trim_end().ends_with('{'));
+        rest = match (opens_module, after.find("\n}\n")) {
+            (true, Some(end)) => &after[end + "\n}\n".len()..],
+            _ => {
+                out.push_str(MARKER);
+                after
+            }
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Whether `text` names the reader module through the `review_telemetry` path.
 fn names_reader(text: &str) -> Option<String> {
     for (at, _) in text.match_indices("review_telemetry::") {
@@ -152,7 +182,7 @@ fn telemetry_content_reaches_no_worker_input() {
     }
     assert!(files.len() > 20, "{files:?}");
     for file in &files {
-        let text = std::fs::read_to_string(file).unwrap();
+        let text = without_test_modules(&std::fs::read_to_string(file).unwrap());
         assert_eq!(
             names_reader(&text),
             None,
@@ -189,6 +219,17 @@ fn telemetry_content_reaches_no_worker_input() {
                 sources.display()
             );
         }
+    }
+    assert_eq!(
+        without_test_modules("a\n#[cfg(test)]\nmod tests {\n    let x = \"telemetry\";\n}\nb\n"),
+        "a\nb\n"
+    );
+    for kept in [
+        "a\n#[cfg(test)]\nmod tests;\nb\n",
+        "a\n#[cfg(test)]\n#[path = \"x/tests.rs\"]\nmod tests;\nb\n",
+        "a\n#[cfg(test)]\nfn helper() {\n}\nb\n",
+    ] {
+        assert_eq!(without_test_modules(kept), kept);
     }
     assert!(names_reader("use review_telemetry::content_view::context;").is_some());
     assert!(names_reader("use review_telemetry::{content, content_view::Search};").is_some());

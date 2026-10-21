@@ -914,6 +914,36 @@ fn cut_array(redacted: Vec<String>, counters: &mut Counters) -> Value {
     Value::Array(kept.into_iter().map(Value::String).collect())
 }
 
+/// Bound the identifier list of `af.harness.ids` (an `af.harness.ids.part` event's too): each
+/// element is a correlation id Telemetry minted (16 hex digits) and, after one space, the
+/// original it stands for, which the release decision admitted by the credential rules. The
+/// correlation id is Telemetry's own, no text to judge, and judged together with the original
+/// the pair fails the joined-words rule (sixteen hex digits and a twenty-character identifier
+/// make one secret run), so the original is judged alone, with the grants replaced, and the
+/// element is withheld whole when it fails; an element of any other shape is judged whole.
+fn bound_harness_ids(values: &[String], redactor: &Redactor, counters: &mut Counters) -> Value {
+    let correlation = |corr: &str| corr.len() == 16 && corr.bytes().all(|b| b.is_ascii_hexdigit());
+    let judged = values
+        .iter()
+        .map(|element| {
+            let (text, withheld) = match element.split_once(' ') {
+                Some((corr, original)) if correlation(corr) => {
+                    let (original, withheld) = redactor.value(original);
+                    (format!("{corr} {original}"), withheld)
+                }
+                _ => redactor.value(element),
+            };
+            if withheld {
+                counters.redacted += 1;
+                redact::WITHHELD.to_string()
+            } else {
+                text
+            }
+        })
+        .collect();
+    cut_array(judged, counters)
+}
+
 /// Bound one identity array: each element a kernel identity in its identity position or judged
 /// whole, then cut at the array bounds.
 fn bound_ids(key: &str, ids: Vec<String>, redactor: &Redactor, counters: &mut Counters) -> Value {
@@ -1163,6 +1193,9 @@ pub fn bound_attributes(
                 }
             },
             Attr::Bool(value) => Value::Bool(value),
+            Attr::Texts(values) if key == crate::stream::event::IDS => {
+                bound_harness_ids(&values, redactor, &mut counters)
+            }
             Attr::Texts(values) => bound_texts(&key, &values, redactor, &mut counters, oversized),
             Attr::Ids(ids) => bound_ids(&key, ids, redactor, &mut counters),
         };

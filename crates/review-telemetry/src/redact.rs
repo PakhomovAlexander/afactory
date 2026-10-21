@@ -1327,9 +1327,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// A document af composed keeps its identities and counters only in the positions its kind
-    /// declares, and only when their values are typed; a credential anywhere else is withheld,
-    /// a digest-shaped credential outside those positions included.
+    /// Design §16 item 2: a kernel-composed Worker request keeps typed identities only in the
+    /// positions its kind declares — each value's `artifact_id` and `snapshot_id`, and inside a
+    /// payload only what the schema of an artifact type af owns declares; every other position
+    /// is untrusted JSON judged whole: a credential under an `_id` name and a secret-named
+    /// member are withheld, while a digest there is text, and a digest is no credential (the
+    /// 2026-10-20 audit's rule), so it stays — as text, not as a typed identity.
     #[test]
     fn kernel_documents_keep_typed_values_only_in_declared_positions() {
         let digest = format!("sha256:{}", "a".repeat(64));
@@ -1368,20 +1371,29 @@ mod tests {
             assert_eq!(kept, &json!(digest));
         }
         // A user-controlled payload is untrusted JSON whatever its members are named: a
-        // credential under an `_id` name, a digest-shaped value anywhere in it.
+        // credential under an `_id` name and a secret-named member are withheld.
         for gone in [
-            &request["instructions"],
-            &receipt["payload"]["note"],
             &receipt["payload"]["plan_id"],
             &requirements["payload"]["specification"]["api_token_id"],
+        ] {
+            assert_eq!(gone, &json!(WITHHELD));
+        }
+        // A digest outside a declared position is judged as text, and a digest is no
+        // credential: it stays, as text.
+        for text in [
+            &request["instructions"],
+            &receipt["payload"]["note"],
             &requirements["payload"]["specification"]["plan_id"],
             &requirements["payload"]["snapshot_id"],
             &request["inputs"]["result"][0]["payload"]["subject_id"],
             &request["output_schemas"]["result"]["artifact_id"],
         ] {
-            assert_eq!(gone, &json!(WITHHELD));
+            assert!(
+                text.as_str().is_some_and(|text| text.contains(&digest)),
+                "{text}"
+            );
         }
-        assert_eq!(withheld, 8);
+        assert_eq!(withheld, 2);
         let mut record = json!({"artifact_refs": [digest], "event_id": "run-1",
             "usage": {"input_tokens": 12, "estimated_tokens": "42", "api_token": 12},
             "subject_id": "sk-proj-0123456789abcdefghijklmnop", "diagnostic": digest});
@@ -1395,7 +1407,11 @@ mod tests {
             record["subject_id"], WITHHELD,
             "an untyped value in a typed position"
         );
-        assert_eq!(record["diagnostic"], WITHHELD);
+        assert_eq!(
+            record["diagnostic"],
+            json!(digest),
+            "a digest in text is no credential"
+        );
     }
 
     #[test]
