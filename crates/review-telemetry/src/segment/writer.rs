@@ -293,6 +293,10 @@ struct Pending {
     terminal: bool,
     /// Set by [`Writer::begin_terminal`]: the one bound every wait of the shutdown shares.
     terminal_deadline: Option<Instant>,
+    /// The seal's bound, once [`Writer::finish`] set it: 2 s from its call or the shutdown's
+    /// start, moved to 2 s beyond each content a released stream publishes under it
+    /// ([`Writer::renew_shutdown`]).
+    shutdown: Option<Instant>,
     flush_requested: bool,
     /// Bytes of every record accepted, written or buffered.
     accepted_bytes: u64,
@@ -647,6 +651,14 @@ fn wait_until(pending: &Pending) -> Instant {
         .map_or(own, |shutdown| own.min(shutdown))
 }
 
+/// The seal's bound now: `deadline`, the one `finish` set, or the later one a released stream's
+/// publication moved it to ([`Writer::renew_shutdown`]).
+fn bound(pending: &Pending, deadline: Instant) -> Instant {
+    pending
+        .shutdown
+        .map_or(deadline, |renewed| renewed.max(deadline))
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -761,6 +773,9 @@ struct Source<'a> {
     media: Media,
     scope: &'a Scope,
     redactor: Option<&'a Redactor>,
+    /// Published from a kernel thread inside a Store commit (design §7.5): the thread appends
+    /// and signals, never waiting for the consumer's flush (§6).
+    detached: bool,
 }
 
 impl Writer {
@@ -780,6 +795,7 @@ impl Writer {
                     buffer: Vec::new(),
                     terminal: false,
                     terminal_deadline: None,
+                    shutdown: None,
                     flush_requested: false,
                     accepted_bytes: 0,
                     exhausted: false,
@@ -1616,6 +1632,7 @@ impl Writer {
         contents: Vec<Offered>,
         span: Option<&str>,
         flush: bool,
+        wait: bool,
         build: impl FnMut(&mut Batch<'_>, &[String]) -> Option<T>,
     ) -> Option<T> {
         // What each admitted content charged its allowance; a content whose occurrence is not
@@ -1633,7 +1650,7 @@ impl Writer {
             })
             .collect();
         let mut stored = vec![false; contents.len()];
-        let value = self.publish_contents(contents, span, flush, build, &mut stored);
+        let value = self.publish_contents(contents, span, flush, wait, build, &mut stored);
         for (charge, stored) in charges.into_iter().zip(stored) {
             if let Some((scope, bytes)) = charge.filter(|_| !stored) {
                 self.refund(&scope, bytes);
@@ -1643,12 +1660,15 @@ impl Writer {
     }
 
     /// [`Self::publish`]'s protocol; `stored` says, once the batch is accepted, which contents
-    /// were stored.
+    /// were stored. `wait` is the protocol's bounded wait for the consumer's flush at its two
+    /// points (design §6 publication); a detached publication (a Store commit's mirrored
+    /// payload, [`Self::content_event_detached`]) signals the consumer and goes on.
     fn publish_contents<T>(
         &self,
         contents: Vec<Offered>,
         span: Option<&str>,
         flush: bool,
+        wait: bool,
         mut build: impl FnMut(&mut Batch<'_>, &[String]) -> Option<T>,
         stored: &mut [bool],
     ) -> Option<T> {
@@ -1664,7 +1684,11 @@ impl Writer {
                 return None;
             }
         }
-        self.flush_now();
+        if wait {
+            self.flush_now();
+        } else {
+            self.signal();
+        }
         if self.failed() {
             return None;
         }
@@ -1813,8 +1837,11 @@ impl Writer {
             return None;
         }
         // The references are written before gc.lock is released. A consumer that does not
-        // write them within the bounded wait leaves the blob to its one-hour protection.
-        self.flush_now();
+        // write them within the bounded wait, and a detached publication's consumer, which is
+        // not waited for, leave the blob to its one-hour protection.
+        if wait {
+            self.flush_now();
+        }
         if gc.is_some() && !self.hook(PublishStep::Flushed) {
             return None;
         }
@@ -1852,7 +1879,7 @@ impl Writer {
         let trace_id = trace_id.map(|id| self.typed("trace_id", id, MAX_KEY_BYTES));
         let parent_span_id =
             parent_span_id.map(|id| self.typed("parent_span_id", id, MAX_KEY_BYTES));
-        self.publish(contents, None, false, |batch, occurrences| {
+        self.publish(contents, None, false, true, |batch, occurrences| {
             fill(&mut attributes, &named, occurrences);
             let span_id = trace::span_id(batch.segment_id(), batch.seq());
             batch.push(
@@ -1886,20 +1913,26 @@ impl Writer {
             named,
         } = self.bound(attrs);
         let end = ns(self.now_unix_ns());
-        self.publish(contents, Some(span_id), depth <= 2, |batch, occurrences| {
-            fill(&mut attributes, &named, occurrences);
-            batch.push(
-                Record::SpanEnd(SpanEnd {
-                    seq: 0,
-                    schema: schema::SPAN.into(),
-                    span_id: span_id.to_string(),
-                    end_unix_ns: Some(end.clone()),
-                    status,
-                    attributes: attributes.clone(),
-                }),
-                counters,
-            )
-        });
+        self.publish(
+            contents,
+            Some(span_id),
+            depth <= 2,
+            true,
+            |batch, occurrences| {
+                fill(&mut attributes, &named, occurrences);
+                batch.push(
+                    Record::SpanEnd(SpanEnd {
+                        seq: 0,
+                        schema: schema::SPAN.into(),
+                        span_id: span_id.to_string(),
+                        end_unix_ns: Some(end.clone()),
+                        status,
+                        attributes: attributes.clone(),
+                    }),
+                    counters,
+                )
+            },
+        );
     }
 
     /// The root span (`af.command`) ends: its end and every later record are terminal, set apart
@@ -1967,6 +2000,33 @@ impl Writer {
             media,
             scope,
             redactor: None,
+            detached: false,
+        };
+        self.event_with(span_id, name, attrs, Some(source), None)
+    }
+
+    /// [`Self::content_event`] from a kernel thread inside a Store commit — the Store mirror's
+    /// payload at `content` (design §7.5). The thread appends the records and signals the
+    /// consumer, and never waits for its flush (§6: kernel threads only append to the buffer
+    /// and signal it), so a consumer busy publishing a released harness stream delays no Store
+    /// append and no lease renewal. The blob file is placed and its references are appended in
+    /// the protocol's order; they reach the segment within `flush_latency_ms` of the consumer's
+    /// next wake, and until then the file is a young blob the sweep never collects.
+    pub fn content_event_detached(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        content: &[u8],
+        media: Media,
+        scope: &Scope,
+    ) -> Option<u64> {
+        let source = Source {
+            bytes: content,
+            media,
+            scope,
+            redactor: None,
+            detached: true,
         };
         self.event_with(span_id, name, attrs, Some(source), None)
     }
@@ -1990,8 +2050,28 @@ impl Writer {
             media,
             scope,
             redactor: Some(redactor),
+            detached: false,
         };
-        self.event_with(span_id, name, attrs, Some(source), None)
+        let seq = self.event_with(span_id, name, attrs, Some(source), None);
+        self.renew_shutdown();
+        seq
+    }
+
+    /// A released stream made progress under the seal — a content judged, published or handed
+    /// on (design §6): the shutdown's bound moves to [`layout::LOCK_WAIT`] from now, so a
+    /// release that outlasts the bound completes while it progresses, and a consumer that makes
+    /// no progress — a write blocked on the volume, a stalled queue — is still abandoned at the
+    /// bound. Nothing moves before [`Self::finish`] set the bound.
+    pub(crate) fn renew_shutdown(&self) {
+        let mut pending = lock(&self.shared.pending);
+        let Some(shutdown) = pending.shutdown else {
+            return;
+        };
+        let renewed = shutdown.max(Instant::now() + layout::LOCK_WAIT);
+        pending.shutdown = Some(renewed);
+        if let Some(terminal) = pending.terminal_deadline.as_mut() {
+            *terminal = (*terminal).max(renewed);
+        }
     }
 
     /// Whether `scope`'s content allowance is exhausted.
@@ -2063,6 +2143,7 @@ impl Writer {
             named,
         } = self.bound(attrs);
         let mut media_type = None;
+        let wait = !content.as_ref().is_some_and(|source| source.detached);
         if let Some(source) = content
             && options.level.keeps_content()
         {
@@ -2094,32 +2175,42 @@ impl Writer {
         let own = media_type.is_some();
         let time = ns(self.now_unix_ns());
         let name = self.name(name, &mut counters);
-        self.publish(contents, Some(span_id), false, |batch, occurrences| {
-            // The attributes' contents follow the event's own.
-            let attribute_occurrences = if own { &occurrences[1..] } else { occurrences };
-            fill(&mut attributes, &named, attribute_occurrences);
-            let mut attributes = attributes.clone();
-            if let Some(key) = sequence {
-                attributes.shift_insert(0, key.to_string(), serde_json::Value::from(batch.seq()));
-            }
-            batch.push(
-                Record::Event(Event {
-                    seq: 0,
-                    schema: schema::EVENT.into(),
-                    span_id: span_id.to_string(),
-                    time_unix_ns: time.clone(),
-                    name: name.clone(),
-                    attributes,
-                    blob: if own {
-                        occurrences.first().cloned()
-                    } else {
-                        None
-                    },
-                    blob_media_type: media_type.clone(),
-                }),
-                counters,
-            )
-        })
+        self.publish(
+            contents,
+            Some(span_id),
+            false,
+            wait,
+            |batch, occurrences| {
+                // The attributes' contents follow the event's own.
+                let attribute_occurrences = if own { &occurrences[1..] } else { occurrences };
+                fill(&mut attributes, &named, attribute_occurrences);
+                let mut attributes = attributes.clone();
+                if let Some(key) = sequence {
+                    attributes.shift_insert(
+                        0,
+                        key.to_string(),
+                        serde_json::Value::from(batch.seq()),
+                    );
+                }
+                batch.push(
+                    Record::Event(Event {
+                        seq: 0,
+                        schema: schema::EVENT.into(),
+                        span_id: span_id.to_string(),
+                        time_unix_ns: time.clone(),
+                        name: name.clone(),
+                        attributes,
+                        blob: if own {
+                            occurrences.first().cloned()
+                        } else {
+                            None
+                        },
+                        blob_media_type: media_type.clone(),
+                    }),
+                    counters,
+                )
+            },
+        )
     }
 
     /// Unix nanoseconds of `instant` on the writer's clock: a stream observer's arrival time. A
@@ -2487,6 +2578,7 @@ impl Writer {
             pending.runs_open = 0;
             pending.seal_result = None;
             pending.seal_request = Some((exit, ended, deadline));
+            pending.shutdown = Some(deadline);
         }
         if !self.start_consumer() {
             // No consumer, so no seal: the segment stays for the next reader.
@@ -2502,6 +2594,8 @@ impl Writer {
         let mut pending = lock(&self.shared.pending);
         while !pending.consumer_exited {
             let now = Instant::now();
+            // The bound a released stream's publication may have moved since the last wake.
+            let deadline = bound(&pending, deadline);
             if now >= deadline {
                 // The consumer published the seal before the deadline and has not exited yet.
                 if pending.state == State::Sealed
@@ -2546,9 +2640,11 @@ impl Writer {
         deadline: Instant,
     ) -> Result<Option<Sealed>, String> {
         // Every stream queue drained, each tap that has its release decision ended; within
-        // the shutdown's bound. What a queue still holds then is never written and counts in
-        // the seal as dropped chunks.
-        while !self.drain_streams() && Instant::now() < deadline {}
+        // the shutdown's bound, which each content a release publishes renews. What a queue
+        // still holds then is never written and counts in the seal as dropped chunks.
+        while !self.drain_streams() && Instant::now() < bound(&lock(&self.shared.pending), deadline)
+        {
+        }
         let streams: Vec<(u64, Arc<dyn StreamQueue>)> = lock(&self.shared.streams).clone();
         for (id, queue) in streams {
             if !queue.finished() {
@@ -2602,11 +2698,13 @@ impl Writer {
             write_hook: &|| in_phase(Phase::Compressed, || self.write_hook()),
             publish_hook: &|| in_phase(Phase::Publish, || self.publish_hook()),
             expired: &|| {
-                Instant::now() >= deadline || lock(&shared.pending).state == State::Abandoned
+                let pending = lock(&shared.pending);
+                pending.state == State::Abandoned || Instant::now() >= bound(&pending, deadline)
             },
             last: &|unlink, sealed| {
                 let mut pending = lock(&shared.pending);
-                if pending.state == State::Abandoned || Instant::now() >= deadline {
+                if pending.state == State::Abandoned || Instant::now() >= bound(&pending, deadline)
+                {
                     return None;
                 }
                 let unlinked = unlink();

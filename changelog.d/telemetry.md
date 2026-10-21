@@ -128,7 +128,9 @@
   thinking blocks and reasoning items (`af.content.reasoning`, with `content_reasoning`) and its
   tool arguments and results (`af.content.tool_input`, `af.content.tool_output`, with
   `content_tool_io`); a check's stdout and stderr (`af.check.output`); every mirrored Store
-  event's payload; an admitted Finding's body (`af.finding.body`); and `.af/af.toml`, the
+  event's payload (published without waiting for the consumer: a busy consumer delays no Store
+  append and no lease renewal; a released stream published under the seal renews the 2 s
+  shutdown bound with each content, so a release that outlasts it completes); an admitted Finding's body (`af.finding.body`); and `.af/af.toml`, the
   pipeline's `pipeline.toml` and the Task file (`af.config.text`). A document `af` composed
   treats its identities and counters as typed only in the positions its kind declares — in a Worker
   request's input payloads only where the schema of an artifact type `af` owns declares one, the

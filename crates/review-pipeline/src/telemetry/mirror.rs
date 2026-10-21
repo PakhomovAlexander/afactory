@@ -228,10 +228,12 @@ impl StoreMirror {
             );
             return false;
         };
+        // Inside a Store commit: the payload's blob is published detached — appended and
+        // signalled, never waiting for the consumer's flush — so a consumer busy with a released
+        // harness stream delays no Store append and no lease renewal (design §6, §7.5).
         let written = match content {
-            Some((bytes, media)) if writer.level().keeps_content() => {
-                writer.content_event(&span.span_id, name, attrs, bytes, media, &Scope::Process)
-            }
+            Some((bytes, media)) if writer.level().keeps_content() => writer
+                .content_event_detached(&span.span_id, name, attrs, bytes, media, &Scope::Process),
             _ => writer.event(&span.span_id, name, attrs),
         };
         if written.is_none() {

@@ -13,8 +13,19 @@ use serde_json::{Value, json};
 
 /// A writer with an open `af.harness` span, and the tap's options below it.
 fn harness(root: &std::path::Path, level: Level, kind: Harness) -> (Writer, TapOptions) {
+    harness_with(root, level, kind, |_| {})
+}
+
+/// [`harness`] with `configure` applied to the writer's options first.
+fn harness_with(
+    root: &std::path::Path,
+    level: Level,
+    kind: Harness,
+    configure: impl FnOnce(&mut review_telemetry::segment::writer::WriterOptions),
+) -> (Writer, TapOptions) {
     let mut options = crate::options(root, level);
     options.content_max_blob_bytes = 64 * 1024;
+    configure(&mut options);
     let writer = Writer::new(options).unwrap();
     let span_id = writer
         .span_start(
@@ -1000,4 +1011,90 @@ fn chunks_still_queued_at_the_seal_count_as_dropped() {
         })
         .unwrap();
     assert_eq!(seal.dropped_chunks, Some(7));
+}
+
+/// Design §6 and §7.3: a released stream published under the seal renews the shutdown bound
+/// with each content, so a release that outlasts the 2 s completes — every content published,
+/// the segment sealed, nothing dropped — where a consumer that makes no progress is abandoned
+/// at the bound. The hook holds each write of the publication 400 ms: the session's contents
+/// take well over the bound between them.
+#[test]
+fn telemetry_release_under_the_seal_renews_the_shutdown_bound() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Releasing {
+        tap: std::sync::Mutex<Option<Tap>>,
+        lines: Vec<String>,
+        done: AtomicBool,
+    }
+    impl review_telemetry::segment::writer::StreamQueue for Releasing {
+        fn drain(&self, writer: &Writer) -> bool {
+            let mut slot = self.tap.lock().unwrap();
+            if let Some(mut tap) = slot.take() {
+                let bytes = feed(
+                    &mut tap,
+                    writer,
+                    Stream::Stdout,
+                    &self.lines,
+                    1_700_000_000_000_000_000,
+                );
+                tap.finish(writer, &release(bytes, 0, false));
+                self.done.store(true, Ordering::SeqCst);
+            }
+            true
+        }
+        fn has_pending(&self) -> bool {
+            self.tap.lock().unwrap().is_some()
+        }
+        fn finished(&self) -> bool {
+            self.done.load(Ordering::SeqCst)
+        }
+        fn discard(&self) -> u64 {
+            0
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let sealing = std::sync::Arc::new(AtomicBool::new(false));
+    let flag = sealing.clone();
+    let (writer, options) = harness_with(dir.path(), Level::Content, Harness::Claude, |options| {
+        options.write_hook = Some(std::sync::Arc::new(move |_| {
+            use review_telemetry::segment::writer::{Phase, phase};
+            if flag.load(Ordering::SeqCst) && matches!(phase(), Phase::Records | Phase::Terminal) {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            }
+            Ok(())
+        }));
+    });
+    let queue = std::sync::Arc::new(Releasing {
+        tap: std::sync::Mutex::new(Some(Tap::new(&writer, options))),
+        lines: claude_session("released under the seal"),
+        done: AtomicBool::new(false),
+    });
+    writer.attach_stream(queue.clone());
+    sealing.store(true, Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    let sealed = writer
+        .finish(review_telemetry::record::SealExit::Ok)
+        .expect("the release completes under the renewed bound")
+        .unwrap();
+    let took = started.elapsed();
+    assert!(queue.done.load(Ordering::SeqCst));
+    let records = crate::sealed_records(&sealed.path);
+    let ids = &events(&records, "af.harness.ids")[0].attributes;
+    let published = ids["af.content.published"].as_u64().unwrap();
+    assert!(published >= 3, "{ids:?}");
+    assert_eq!(ids["af.content.dropped"], 0);
+    // Two held writes per content: the publication outlasted the bound, and completed.
+    assert!(
+        took > review_telemetry::layout::LOCK_WAIT,
+        "{took:?} for {published} contents"
+    );
+    let seal = records
+        .iter()
+        .find_map(|record| match record {
+            Record::Seal(seal) => Some(seal),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(seal.dropped_chunks, Some(0));
+    assert_eq!(seal.blobs, published);
 }

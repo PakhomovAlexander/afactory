@@ -1717,6 +1717,9 @@ impl Tap {
         let contents = pending
             .into_iter()
             .map(|content| {
+                // Each content is progress under the seal (design §6): judged for its blob,
+                // published, then judged for the records it is handed on with.
+                writer.renew_shutdown();
                 // At `content` the original becomes a blob, judged by the same rules as the
                 // bytes handed on below, so its source identity is the original's.
                 if self.content
@@ -1758,6 +1761,7 @@ impl Tap {
                         .0
                         .into_bytes(),
                 };
+                writer.renew_shutdown();
                 Content { bytes, ..content }
             })
             .collect();

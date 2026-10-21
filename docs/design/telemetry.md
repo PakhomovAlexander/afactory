@@ -337,7 +337,9 @@ Content outside an Attempt (check output, configuration texts) is bounded by
 **Sealing and recovery.** At exit the consumer writes the `.refs` manifest (the sorted digests
 of every blob its records reference, one per line), appends `seal`, compresses the segment and
 renames it. **Shutdown** is bounded: when the run ends the main thread signals the consumer and
-joins it for at most 2 s; a consumer that does not stop in time — a write blocked on the volume,
+joins it for at most 2 s beyond its last progress — each content a released stream publishes
+under the seal renews the bound, so a release that outlasts it completes, at most the Attempt's
+allowance of content; a consumer that makes no progress for 2 s — a write blocked on the volume,
 a stalled queue — is abandoned, and the process exits with the segment unsealed: no other thread
 seals, compresses or replaces it, the records never written are simply absent, the exit status
 is the run's, and the lock ends with the process, so the next reader recovers the segment as
@@ -534,8 +536,9 @@ or accounting. The queue's **consumer** is Telemetry's one thread (§6), alive f
 frames, redacts and writes the records and flushes the segment whenever the queue runs empty.
 Process completion never waits on it: the supervisor returns its result as soon as the drain
 ends, the consumer finishes that process's queued chunks afterwards, and when the run ends with
-the consumer still busy it is joined for at most 2 s, then abandoned as §6 says: the process
-exits with the segment unsealed, nothing else seals or replaces it, and the next reader recovers
+the consumer still busy it is joined while it publishes a released stream's contents and for at
+most 2 s beyond its last one, then abandoned as §6 says: the process exits with the segment
+unsealed, nothing else seals or replaces it, and the next reader recovers
 what was flushed. A stalled consumer (a fixture injects a blocking write) leaves the drain, the
 collected output and the supervision outcome unchanged, and so do a held stdout and a held
 stderr, each with its existing classification and its retained bytes; the stalled consumer
@@ -681,8 +684,11 @@ path inserted it: `append`, `append_batch`, the ordinary Task transitions throug
 observer on `EventStore`, invoked once per successful transaction commit with that transaction's
 events in committed order, and never for a rolled-back transaction. Each event becomes
 `af.store.event` on the current span with `af.store.event.*` and `artifact_refs`; at `content`
-the payload is a blob. A mirror failure is a `problem`, never a Store error, and marks the run
-`af.ledger.coverage = incomplete`.
+the payload is a blob, published detached: the committing thread places the file, appends the
+records and signals the consumer, and never waits for its flush (§6), so a consumer busy
+publishing a released harness stream delays no Store append and no lease renewal; the blob is
+a young file the sweep never collects until its reference is flushed. A mirror failure is a
+`problem`, never a Store error, and marks the run `af.ledger.coverage = incomplete`.
 
 **Accounting snapshot.** Telemetry never re-derives usage, and no single kernel write is the
 charge: the `attempt_wall` sidecar merges only its own earlier values and appends no Store
