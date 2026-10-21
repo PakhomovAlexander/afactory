@@ -243,6 +243,23 @@ fn read_envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope
     Ok(envelope)
 }
 
+/// One file of the Task package captured at `artifact_id`, as the package declares it (a
+/// pipeline's `pipeline.toml`), once the package's digest is verified against its files; `None`
+/// when the package has no such file.
+pub fn captured_package_file(
+    cas: &Cas,
+    artifact_id: &str,
+    name: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let envelope = read_envelope(cas, artifact_id, TASK_PACKAGE_V1)?;
+    let mut bytes: PackageBytes =
+        serde_json::from_value(envelope.payload).map_err(|e| e.to_string())?;
+    if package_digest_from_files(&bytes.files) != bytes.digest {
+        return Err("Captured Task package digest disagrees with its bytes".into());
+    }
+    Ok(bytes.files.remove(name))
+}
+
 impl TaskPlanCompiler {
     /// Validate an exact TaskPackage artifact as a Worker without installing it into the
     /// compiler's ordinary trusted package map.

@@ -699,10 +699,25 @@ fn bounded(text: &str, max: usize) -> String {
     format!("{}…", &text[..at])
 }
 
+/// The occurrences a search selects: stored, at or after `?2` when given, in the run of trace
+/// `?3` when given. Over `blob_refs r`, `events e` and `spans s`.
+const SELECTED: &str = "r.state = 'stored'
+     AND (?2 IS NULL OR e.time_unix_ns >= ?2)
+     AND (?3 IS NULL OR s.trace_id = ?3)";
+
 /// `af telemetry search 'text'`: the blobs whose retained text holds `text` as a phrase, each
 /// with a bounded excerpt and its occurrences with their span paths; `since_unix_ns` keeps the
 /// occurrences at or after it, `run` (`run_id`, `trace_id`) the run's. Reads `content_fts`,
 /// which ingest keeps when `[telemetry] content_index` is on.
+///
+/// Bounded whatever the corpus: the matching blobs are read in pages, in digest order, with the
+/// filters applied in the query, and no more than [`SEARCH_LIMIT`] are kept, one more only to say
+/// `more`; each blob's occurrences likewise, [`OCCURRENCE_LIMIT`] and one. Every excerpt is
+/// returned only after its blob was read under `gc.lock` shared and verified against its digest,
+/// as the content readers read it: a blob that is missing or corrupt is listed in `unreadable`
+/// with the reader's reason, never shown, and leaves `content_fts` (its `content_index` row says
+/// `unavailable`, as an ingest that found it so would), so no later search returns its text; a
+/// blob a collection holds is listed and left for the next search.
 pub fn search(
     index: &Index,
     directory: &Path,
@@ -726,182 +741,245 @@ pub fn search(
     if text.trim().is_empty() {
         return Ok(document);
     }
-    let candidates: Vec<(String, String)> = {
-        let mut statement = index
-            .connection()
-            .prepare(
-                "SELECT digest, snippet(content_fts, 1, '', '', '…', 24) FROM content_fts
-                 WHERE content_fts MATCH ?1 ORDER BY digest",
-            )
-            .map_err(sql)?;
-        statement
-            .query_map(params![phrase(text)], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(sql)?
-            .collect::<Result<_, _>>()
-            .map_err(sql)?
-    };
-    let spans = SpanIndex::read(index)?;
-    let mut statement = index
-        .connection()
+    let query = phrase(text);
+    let trace = run.map(|(_, trace)| trace);
+    let connection = index.connection();
+    let mut page = connection
+        .prepare(&format!(
+            "SELECT content_fts.rowid, content_fts.digest FROM content_fts
+             WHERE content_fts MATCH ?1 AND content_fts.digest > ?4
+               AND EXISTS (SELECT 1 FROM blob_refs r
+                   JOIN events e ON e.segment_id = r.segment_id AND e.seq = r.event_seq
+                   LEFT JOIN spans s ON s.span_id = r.span_id
+                   WHERE r.digest = content_fts.digest AND {SELECTED})
+             ORDER BY content_fts.digest LIMIT ?5"
+        ))
+        .map_err(sql)?;
+    let mut excerpt = connection
         .prepare(
+            "SELECT snippet(content_fts, 1, '', '', '…', 24) FROM content_fts
+             WHERE content_fts MATCH ?1 AND rowid = ?2",
+        )
+        .map_err(sql)?;
+    let mut occurrences_of = connection
+        .prepare(&format!(
             "SELECT r.occurrence_id, e.name, e.time_unix_ns, r.span_id, s.trace_id
              FROM blob_refs r
              JOIN events e ON e.segment_id = r.segment_id AND e.seq = r.event_seq
              LEFT JOIN spans s ON s.span_id = r.span_id
-             WHERE r.digest = ?1 AND r.state = 'stored'
-             ORDER BY e.time_unix_ns, r.occurrence_id",
-        )
+             WHERE r.digest = ?1 AND {SELECTED}
+             ORDER BY e.time_unix_ns, r.occurrence_id LIMIT ?4"
+        ))
         .map_err(sql)?;
-    for (digest, excerpt) in candidates {
-        let rows: Vec<(String, String, i64, String, Option<String>)> = statement
-            .query_map(params![digest], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            })
+    let mut spans = SpanIndex::default();
+    let layout = crate::layout::Layout::new(directory);
+    let page_size = i64::try_from(SEARCH_LIMIT + 1).unwrap_or(i64::MAX);
+    let mut after = String::new();
+    'pages: loop {
+        let candidates: Vec<(i64, String)> = page
+            .query_map(
+                params![query, since_unix_ns, trace, after, page_size],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .map_err(sql)?
             .collect::<Result<_, _>>()
             .map_err(sql)?;
-        let selected: Vec<_> = rows
-            .into_iter()
-            .filter(|(_, _, time, _, _)| since_unix_ns.is_none_or(|since| *time >= since))
-            .filter(|(_, _, _, _, trace)| {
-                run.is_none_or(|(_, wanted)| trace.as_deref() == Some(wanted))
-            })
-            .collect();
-        if selected.is_empty() {
-            continue;
-        }
-        if document.matches.len() == SEARCH_LIMIT {
-            document.more = true;
-            break;
-        }
-        let more_occurrences = selected.len() > OCCURRENCE_LIMIT;
-        let occurrences = selected
-            .into_iter()
-            .take(OCCURRENCE_LIMIT)
-            .map(|(occurrence_id, event, time, span_id, trace)| {
-                let (store_id, run_id) = trace
-                    .as_deref()
-                    .and_then(|trace| spans.runs.get(trace).cloned())
-                    .unzip();
-                Occurrence {
+        let last_page = candidates.len() < SEARCH_LIMIT + 1;
+        for (rowid, digest) in candidates {
+            after.clone_from(&digest);
+            // The excerpt is the blob's text: shown only once the blob reads and verifies.
+            let read = match index.versioned() {
+                Some(versioned) => reader::read_in(versioned, &digest),
+                None => Read::Unavailable(reader::MISSING.into()),
+            };
+            if let Read::Unavailable(reason) = read {
+                if reason != reader::COLLECTING {
+                    forget_text(index, rowid, &digest)?;
+                }
+                document.unreadable.push(Unreadable {
+                    path: layout.blob(&digest).display().to_string(),
+                    reason,
+                });
+                continue;
+            }
+            if document.matches.len() == SEARCH_LIMIT {
+                document.more = true;
+                break 'pages;
+            }
+            let found: String = excerpt
+                .query_row(params![query, rowid], |row| row.get(0))
+                .map_err(sql)?;
+            let mut rows: Vec<(String, String, i64, String, Option<String>)> = occurrences_of
+                .query_map(
+                    params![
+                        digest,
+                        since_unix_ns,
+                        trace,
+                        i64::try_from(OCCURRENCE_LIMIT + 1).unwrap_or(i64::MAX)
+                    ],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .map_err(sql)?
+                .collect::<Result<_, _>>()
+                .map_err(sql)?;
+            let more_occurrences = rows.len() > OCCURRENCE_LIMIT;
+            rows.truncate(OCCURRENCE_LIMIT);
+            let mut occurrences = Vec::with_capacity(rows.len());
+            for (occurrence_id, event, time, span_id, trace) in rows {
+                let (store_id, run_id) = match trace.as_deref() {
+                    Some(trace) => spans.run(index, trace)?.unzip(),
+                    None => (None, None),
+                };
+                occurrences.push(Occurrence {
                     occurrence_id,
                     event,
                     time_unix_ns: ns_text(time),
-                    span_path: spans.path(&span_id),
-                    attempt_id: spans.attempt(&span_id),
+                    span_path: spans.path(index, &span_id)?,
+                    attempt_id: spans.attempt(index, &span_id)?,
                     span_id,
                     store_id,
                     run_id,
-                }
-            })
-            .collect();
-        document.matches.push(Match {
-            digest,
-            excerpt: bounded(&excerpt, EXCERPT_MAX_BYTES),
-            occurrences,
-            more_occurrences,
-        });
+                });
+            }
+            document.matches.push(Match {
+                digest,
+                excerpt: bounded(&found, EXCERPT_MAX_BYTES),
+                occurrences,
+                more_occurrences,
+            });
+        }
+        if last_page {
+            break;
+        }
     }
     Ok(document)
 }
 
-/// What a search names an occurrence by: every span's name, parent and Attempt id, and every
-/// run by trace.
+/// Take the text of a blob that is missing or corrupt out of the search index, in step with what
+/// an ingest that found it so records: no `content_fts` row, and `content_index` saying
+/// `unavailable`, so it is not read again until it is referenced anew.
+fn forget_text(index: &Index, rowid: i64, digest: &str) -> Result<(), String> {
+    let transaction = index.connection().unchecked_transaction().map_err(sql)?;
+    transaction
+        .execute("DELETE FROM content_fts WHERE rowid = ?1", params![rowid])
+        .map_err(sql)?;
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO content_index(digest, state) VALUES (?1, 'unavailable')",
+            params![digest],
+        )
+        .map_err(sql)?;
+    transaction.commit().map_err(sql)
+}
+
+/// A span's name, its parent and the Attempt id an `af.attempt` names.
+type SpanNames = (String, Option<String>, Option<String>);
+
+/// What a search names an occurrence by, looked up span by span as occurrences are listed and
+/// kept for the search: each span's name, parent and Attempt id, and each run by trace. Never
+/// more than the listed occurrences' paths.
+#[derive(Default)]
 struct SpanIndex {
-    spans: BTreeMap<String, (String, Option<String>, Option<String>)>,
-    runs: BTreeMap<String, (String, String)>,
+    spans: BTreeMap<String, Option<SpanNames>>,
+    runs: BTreeMap<String, Option<(String, String)>>,
 }
 
 impl SpanIndex {
-    fn read(index: &Index) -> Result<Self, String> {
-        let mut spans = BTreeMap::new();
-        let mut statement = index
+    /// The name, parent and Attempt id of `span_id`, when the index holds it.
+    fn span(&mut self, index: &Index, span_id: &str) -> Result<Option<SpanNames>, String> {
+        if let Some(known) = self.spans.get(span_id) {
+            return Ok(known.clone());
+        }
+        let found = index
             .connection()
-            .prepare(
-                "SELECT span_id, name, parent_span_id,
+            .query_row(
+                "SELECT name, parent_span_id,
                         CASE WHEN name = 'af.attempt' THEN attributes ELSE '{}' END
-                 FROM spans",
+                 FROM spans WHERE span_id = ?1",
+                params![span_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )
-            .map_err(sql)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })
-            .map_err(sql)?;
-        for row in rows {
-            let (span_id, name, parent, attributes) = row.map_err(sql)?;
-            let attempt = (name == "af.attempt")
-                .then(|| object(Some(attributes)).get("af.attempt_id").cloned())
-                .flatten()
-                .and_then(|value| value.as_str().map(str::to_string));
-            spans.insert(span_id, (name, parent, attempt));
+            .optional()
+            .map_err(sql)?
+            .map(|(name, parent, attributes)| {
+                let attempt = (name == "af.attempt")
+                    .then(|| object(Some(attributes)).get("af.attempt_id").cloned())
+                    .flatten()
+                    .and_then(|value| value.as_str().map(str::to_string));
+                (name, parent, attempt)
+            });
+        self.spans.insert(span_id.to_string(), found.clone());
+        Ok(found)
+    }
+
+    /// The Store and run of `trace`.
+    fn run(&mut self, index: &Index, trace: &str) -> Result<Option<(String, String)>, String> {
+        if let Some(known) = self.runs.get(trace) {
+            return Ok(known.clone());
         }
-        let mut runs = BTreeMap::new();
-        let mut statement = index
+        let found = index
             .connection()
-            .prepare("SELECT trace_id, store_id, run_id FROM runs")
+            .query_row(
+                "SELECT store_id, run_id FROM runs WHERE trace_id = ?1",
+                params![trace],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
             .map_err(sql)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(sql)?;
-        for row in rows {
-            let (trace, store, run) = row.map_err(sql)?;
-            runs.insert(trace, (store, run));
-        }
-        Ok(Self { spans, runs })
+        self.runs.insert(trace.to_string(), found.clone());
+        Ok(found)
     }
 
     /// The names from the root down to `span_id` (at most 64 deep).
-    fn path(&self, span_id: &str) -> Vec<String> {
+    fn path(&mut self, index: &Index, span_id: &str) -> Result<Vec<String>, String> {
         let mut path = Vec::new();
         let mut cursor = Some(span_id.to_string());
         while let Some(id) = cursor {
-            let Some((name, parent, _)) = self.spans.get(&id) else {
+            let Some((name, parent, _)) = self.span(index, &id)? else {
                 break;
             };
-            path.push(name.clone());
+            path.push(name);
             if path.len() == 64 {
                 break;
             }
-            cursor = parent.clone();
+            cursor = parent;
         }
         path.reverse();
-        path
+        Ok(path)
     }
 
     /// The Attempt id of the nearest `af.attempt` at or above `span_id`.
-    fn attempt(&self, span_id: &str) -> Option<String> {
+    fn attempt(&mut self, index: &Index, span_id: &str) -> Result<Option<String>, String> {
         let mut cursor = Some(span_id.to_string());
         let mut depth = 0;
         while let Some(id) = cursor {
-            let (_, parent, attempt) = self.spans.get(&id)?;
+            let Some((_, parent, attempt)) = self.span(index, &id)? else {
+                return Ok(None);
+            };
             if attempt.is_some() {
-                return attempt.clone();
+                return Ok(attempt);
             }
             depth += 1;
             if depth == 64 {
-                return None;
+                return Ok(None);
             }
-            cursor = parent.clone();
+            cursor = parent;
         }
-        None
+        Ok(None)
     }
 }
 

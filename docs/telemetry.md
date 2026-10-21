@@ -137,7 +137,10 @@ the digest of the resolved program's bytes, the toolchain snapshot id when one i
 digest of the effective environment — every name and value the check ran with, after the runtime
 paths the check node introduced (the sandbox root, its runtime directory with `HOME`, `TMPDIR`
 and a cold `CARGO_TARGET_DIR`, `RUSTUP_HOME`, the warm cache directories) became placeholders,
-hashed and never retained — and the Snapshot digest. The program resolves as the check's own
+hashed and never retained — and the Snapshot digest. A runtime path becomes its placeholder only
+where a value names it or a path under it (the next character is `/`, a separator between
+values or the value's end): a sibling such as `/tmp/a-extra` beside `/tmp/a` is another path and
+stays as it is. The program resolves as the check's own
 lookup resolves it: a bare name through the effective `PATH`, whose relative entries (and an
 empty one) are the check's working directory's, so `PATH=bin:/usr/bin` digests the Snapshot's
 `bin/probe`, never a file below af's own directory. Two checks declared identically on the same
@@ -184,8 +187,12 @@ So an execution refused while the runtime checks its current plan still has the 
 the credential rules (a secret-named key withholds its value); a row keyed by an identity
 position (`af.policy_rev`, `af.pipeline.digest`, `af.af_toml.digest`, `af.af_lock.digest`) keeps
 a value that is exactly a digest. At every level that records the configuration, `spans`
-included, the record names the texts of the pipeline, the Task file and `.af/af.toml` by the
-event `af.config.text` with their digest and size; only their bytes wait for the content level.
+included, the record names three texts by the event `af.config.text`, each by the SHA-256 of
+its own bytes and their size: the pipeline's `pipeline.toml` as its package declares it (a
+Review Campaign's pipeline file as captured), the Task file as `af task start --file` read it,
+and `.af/af.toml` — never the CAS artifacts that carry them. A text whose bytes are not at hand
+(a Task no Task file made) is named by its kind alone. Their bytes are blobs only at
+[`content`](#content).
 
 ## `af telemetry config`
 
@@ -680,9 +687,12 @@ collected ends in a trailing gap. `af.harness` counts the drops and gaps (`dropp
 tool analysis.
 
 **The release decision** is Telemetry's own, taken when the process has ended, over its
-complete stdout and stderr, before any pending byte goes anywhere: when either stream carries
-login-challenge material (a device code beside a challenge URL, in one record or several, in
-one stream or across both, a successful reply's included), when the adapter replaced both
+complete stdout and stderr and the output the harness left outside them — a Codex Attempt's
+`-o` final-message file, read in full before the tap ends — before any pending byte goes
+anywhere: when any of them carries login-challenge material (a device code beside a challenge
+URL, in one record or several, in one stream or across both, or a code in a stream identifier
+with its URL only in the final message, a successful reply's included), when the adapter
+replaced both
 streams with its closed diagnostic, or when a failed process's stderr classifies as an
 authentication failure, everything pending for the process — content and identifiers — is
 withheld, and `af.harness` records `af.stream.withheld = true` and `af.native.withheld = true`
@@ -690,8 +700,12 @@ withheld, and `af.harness` records `af.stream.withheld = true` and `af.native.wi
 no adapter behaviour. Otherwise the pending content passes the grant replacement and the
 credential rules on its assembled, complete lines — a grant value split across two chunks is
 replaced all the same — and one `af.harness.ids` event per process lists each correlation id
-with its original (`af.harness.ids`, `corr original` pairs, within the record bound), each
-original having passed the credential rules; it also carries the stream's counts and its
+with its original (`af.harness.ids`, `corr original` pairs), each original having passed the
+credential rules; a list longer than one record's array holds whole (32 pairs, 4 KiB) goes on
+in the `af.harness.ids.part` events that follow it, as many as its `af.harness.ids.parts`
+says, each numbered by `af.harness.ids.part`, so no admitted mapping is cut. The event also
+carries `af.harness.ids.count`, every identifier admitted to the pending buffer, and
+`af.harness.ids.withheld`, those the rules or the decision withheld, the stream's counts and its
 `af.stream.analysis` (`complete` or `incomplete`). Because the `af.harness` span records that
 decision, it ends once the adapter's in-memory filter has read the complete streams, not at the
 process's exit.
@@ -702,12 +716,24 @@ Attempt runs `claude -p --output-format stream-json --verbose`; at `off` and `me
 ([Performance](#performance)). `claude --help` must declare both `--output-format` and
 `--verbose` either way. Under both shapes the adapter's envelope parsing, accounting, refusal
 classification and model-identity check read the `result` line, which is the envelope `json`
-prints, and nothing else; the Store CAS keeps that line and stderr (a stdout without a `result`
-line keeps its native text and no stream message; one that frames no message at all is kept
-whole). A Codex Attempt's Store keeps its `turn.completed`, `turn.failed` and `error` lines, the
-native text outside the event framing that classification reads, the `-o` last-message file and
-stderr. So an Attempt's accounting, classification and raw evidence are the same at every
-level; every other line reaches Telemetry at `spans` and above and nothing at all below.
+prints; without one, failure classification reads the native text around the messages, from the
+complete capture in memory. The Store CAS keeps the `result` line (or a `json` envelope that
+frames no message) and stderr, never another message or native text, however large. A Codex
+Attempt's Store keeps its `turn.completed`, `turn.failed` and `error` lines, the `-o`
+last-message file and stderr; the native text outside the event framing is classified in memory
+and not kept. When the adapter replaced a failed capture with its closed diagnostic, that
+diagnostic is what the Store keeps. So an Attempt's accounting, classification and raw evidence
+are the same at every level; every other line reaches Telemetry at `spans` and above and nothing
+at all below.
+
+**Claude thinking under `--safe-mode`.** Checked by hand on 2026-10-21 with Claude Code 2.1.305
+and the model af binds, `claude-opus-5-5` at efforts `high` and `xhigh`, one short `-p`
+invocation each with the adapter's flags (`--output-format stream-json --verbose --safe-mode
+--restricted --permission-mode dontAsk --strict-mcp-config --tools Read,Glob,Grep`) and its
+environment: the stream carries `thinking` blocks — one per message that reasoned, beside its
+`text` block — but each holds an empty `thinking` text and only its `signature`. So Claude
+reasoning is sizes only: `af.turn.thinking_*` counts the blocks, their size is 0, and at
+`content` `af telemetry reasoning` has no Claude text to show.
 
 ## `af telemetry turns`
 
@@ -935,23 +961,29 @@ structure every level records, each piece a blob named by one event:
 | A check's stdout and stderr (`af.stream`) | `af.check.output` | `af.check` | the process's |
 | A mirrored Store event's payload | `af.store.event` | as the mirror records it | the process's |
 | An admitted Finding's body, keyed by `af.finding.id`, whenever it changes | `af.finding.body` | the run | the process's |
-| `.af/af.toml` | `af.config.text` | the run | the process's |
+| `.af/af.toml`, the pipeline's `pipeline.toml`, the Task file | `af.config.text` | the run | the process's |
 
 `gen_ai.input.messages`, `gen_ai.output.messages` and `gen_ai.system_instructions` are never
-attributes: content is only ever a blob. The pipeline's and the Task file's `af.config.text`
-events name their texts by digest and size at every level, and keep no blob yet.
+attributes: content is only ever a blob. A configuration text's blob has the text's own
+SHA-256, the `af.config.text.digest` every level records, as its `source_digest`.
 
 - **Redaction before truncation.** Every piece is redacted whole under the rules of
   [Credentials](#credentials) — text line by line, JSON as one document — and only then cut to
   `content_max_blob_bytes`, head and tail; a line or document too long to be judged whole is
   withheld whole. A JSON document `af` composed itself keeps its typed values where its kind
-  declares them and judges everything else: in the Worker request, each input and feedback
-  value's `artifact_id` and `snapshot_id`, and inside its admitted payload the members named
-  `id`, `*_id`, `digest`, `*_digest`, the elements of `*_ids` and `artifact_refs`, the token
-  counters `tokens` and `*_tokens`, and the receipt ids of a check receipt's `checks`; in a
-  Store payload and the manifest the same names. A value there keeps only when it is exactly a
-  kernel identity or a number; the instructions, the output schemas and every other value are
-  untrusted text. Each occurrence's `source_digest` and `original_bytes` describe the bytes as
+  declares them and judges everything else. In the Worker request those are each input and
+  feedback value's `artifact_id` and `snapshot_id`, and inside its payload only the identity
+  positions the schema of an artifact type `af` owns declares (`af/SourceTree@1`,
+  `af/TaskCheckReceipt@1`, `af/TaskRetryFeedback@1`, `af/TaskReviewAssignment@1`,
+  `af/TaskReviewSubject@2`, `af/ReviewHistory@1`, `af/TaskRepairContext@1`,
+  `af/DocumentContext@1`, `af/WorkerNotes@1`); every other payload — the Task's requirements
+  (`af/Requirements@1`, its `specification` included), another Worker's output — is untrusted
+  JSON, whatever its members are named (`api_token_id`) or its values look like. In a Store
+  payload and the manifest the typed positions are the members named `id`, `*_id`, `digest`,
+  `*_digest`, the elements of `*_ids` and `artifact_refs`, and the token counters `tokens` and
+  `*_tokens`. A value there keeps only when it is exactly a kernel identity or a number; the
+  instructions, the output schemas and every other value are untrusted text, so a digest an
+  untrusted payload carries is withheld and `context --raw` then differs from the prompt there. Each occurrence's `source_digest` and `original_bytes` describe the bytes as
   they were, so `context` shows that the prompt it prints is the one the Worker received.
 - **Harness content follows the release decision.** A harness's text, thinking and tool
   content is pended while its process runs and never written live; once the process has ended
@@ -964,7 +996,9 @@ events name their texts by digest and size at every level, and keep no blob yet.
   kept (`af.content.published`) and dropped (`af.content.dropped`).
 - **Allowances.** An Attempt's content — its composed input and its harness's content — is
   bounded by `content_attempt_max_bytes`, and content outside any Attempt by
-  `content_process_max_bytes`, counted in retained bytes. A harness's pending content past the
+  `content_process_max_bytes`, counted in retained bytes of the pieces stored: a piece that
+  fits but that publication drops (a sweep holds `gc.lock`, a blob file cannot be staged) is
+  given back to its allowance. A harness's pending content past the
   Attempt's allowance drops its oldest pieces; at publication, past either allowance every
   further piece of that scope is dropped. A dropped piece still has its event and an
   occurrence with `state = dropped` and no object, the seal's `dropped` counts it, and one
@@ -978,7 +1012,9 @@ events name their texts by digest and size at every level, and keep no blob yet.
 - **Search.** Every `af telemetry` command keeps the FTS5 table `content_fts` over the text
   blobs the retained occurrences reference at ingest, when `[telemetry] content_index = true`
   (the default); a blob no occurrence references any more leaves it, and `reindex` rebuilds it
-  identically. The index's schema is `af/telemetry-index@3`.
+  identically. With `content_index = false` no full-text index is kept: ingest empties
+  `content_fts` and its bookkeeping table `content_index`, and rebuilds both from the retained
+  blobs once the switch is on again. The index's schema is `af/telemetry-index@3`.
 
 **The content is the operator's and never a Worker's.** Nothing Telemetry keeps is read by any
 code that composes a prompt, a Warm Set, Worker Notes or an optimization source; the
@@ -1019,7 +1055,14 @@ retained text blobs holding `TEXT` as one phrase (no query operators) in `conten
 50 blobs and 20 occurrences each, and prints each blob's digest with an excerpt of at most 320
 bytes of its redacted text and its occurrences: the event that names it, its time, its run, its
 Attempt and its span path from `af.command` down. `--since` keeps occurrences of the last `D`
-(`30m`, `12h`, `14d`, `2w`); `--run` keeps one run's. It exists only at `content`: below it, or
+(`30m`, `12h`, `14d`, `2w`); `--run` keeps one run's. Both filters are part of the query, which
+reads matches in pages of at most 51 and stops once it can say `more`, so a common phrase over
+a large directory costs no more than the rows it shows. An excerpt is shown only once its blob
+was read under `gc.lock` and verified against its digest, as `context` reads it: a blob file
+that is missing or corrupt is listed under `unreadable` with the reader's reason (`content
+unavailable: missing blob`, `… corrupt blob`), shows nothing, and leaves the full-text index, so
+no later search returns its text; one a collection holds is listed and left for the next
+search. It exists only at `content`: below it, or
 with `content_index = false`, it is refused with exit 2 and a message saying why, because
 nothing searchable is kept. `--json` prints `af/telemetry-search@1`
 ([`schemas/telemetry-search-v1.json`](../schemas/telemetry-search-v1.json)). Exit codes: 0; 1
@@ -1029,9 +1072,7 @@ when the directory cannot be read or the run is unknown; 2 for a wrong command l
 ## Not yet captured
 
 The harnesses' own OpenTelemetry export (with `context --turn`), the OTLP sink, and the
-analytics, `sql` and `export` commands belong to later packages of the design note. The
-pipeline's and the Task file's texts become blobs once their `af.config.text` events name the
-files' own bytes rather than the CAS artifacts they were admitted as.
+analytics, `sql` and `export` commands belong to later packages of the design note.
 
 ## Performance
 

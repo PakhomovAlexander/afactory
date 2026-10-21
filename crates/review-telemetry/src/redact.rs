@@ -24,6 +24,8 @@
 //!
 //! Every rule change bumps [`REDACTION_VERSION`], so a reader can tell which rules a blob passed.
 
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 
 /// The version of these rules a blob records (`af/TelemetryBlob@1` `redaction`).
@@ -642,24 +644,177 @@ fn typed_value(value: &Value) -> bool {
 }
 
 /// The identity positions of the Worker request the kernel composes (`af.worker-request/1`):
-/// each input and feedback value's `artifact_id` and `snapshot_id`, and inside its `payload` —
-/// the artifact af admitted, typed by its schema — the record's typed positions
-/// ([`record_identity_position`]) and the receipt ids `af/TaskCheckReceipt@1` maps check names
-/// to (`payload/checks/*`). The instructions, the reply format, the output schemas and every
-/// other payload value are judged whole.
-pub fn worker_request_identity_position(pointer: &str) -> bool {
-    let segments: Vec<&str> = pointer.split('/').skip(1).collect();
-    let rest = match segments.as_slice() {
-        ["inputs", _, _, rest @ ..] | ["feedback", _, rest @ ..] => rest,
-        _ => return false,
-    };
-    match rest {
-        ["artifact_id" | "snapshot_id"] => true,
-        ["payload", "checks", _] => true,
-        ["payload", _, ..] => record_identity_position(pointer),
-        _ => false,
+/// each input and feedback value's `artifact_id` and `snapshot_id`, which the request's schema
+/// types as digests, and inside its `payload` only the positions the schema of an artifact type
+/// af owns declares as identities ([`KERNEL_PAYLOAD_IDENTITIES`]). Every other payload — the
+/// Task's requirements (`af/Requirements@1`, its `specification` included), another Worker's
+/// output, any type the table does not name — is untrusted JSON whatever its members are named
+/// or its values look like, and so are the instructions, the reply format and the output
+/// schemas: all are judged whole. Read from the document itself (each value's `artifact_type`).
+#[derive(Debug, Clone, Default)]
+pub struct WorkerRequestPositions {
+    /// Each input and feedback value's JSON pointer, with its type's declared payload positions.
+    values: BTreeMap<String, &'static [&'static str]>,
+}
+
+impl WorkerRequestPositions {
+    pub fn of(document: &Value) -> Self {
+        let mut values = BTreeMap::new();
+        let mut value = |pointer: String, value: &Value| {
+            let declared = value
+                .get("artifact_type")
+                .and_then(Value::as_str)
+                .and_then(|kind| {
+                    KERNEL_PAYLOAD_IDENTITIES
+                        .iter()
+                        .find(|(owned, _)| *owned == kind)
+                })
+                .map_or(&[][..], |(_, positions)| *positions);
+            values.insert(pointer, declared);
+        };
+        if let Some(inputs) = document.get("inputs").and_then(Value::as_object) {
+            for (port, items) in inputs {
+                for (index, item) in items.as_array().into_iter().flatten().enumerate() {
+                    value(format!("/inputs/{}/{index}", escape_pointer(port)), item);
+                }
+            }
+        }
+        for (index, item) in document
+            .get("feedback")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            value(format!("/feedback/{index}"), item);
+        }
+        Self { values }
+    }
+
+    /// Whether `pointer` is one of the request's identity positions.
+    pub fn contains(&self, pointer: &str) -> bool {
+        let segments: Vec<&str> = pointer.split('/').skip(1).collect();
+        let prefix = match segments.first() {
+            Some(&"inputs") => 3,
+            Some(&"feedback") => 2,
+            _ => return false,
+        };
+        if segments.len() <= prefix {
+            return false;
+        }
+        let Some(declared) = self
+            .values
+            .get(&format!("/{}", segments[..prefix].join("/")))
+        else {
+            return false;
+        };
+        match &segments[prefix..] {
+            ["artifact_id" | "snapshot_id"] => true,
+            ["payload", rest @ ..] => declared.iter().any(|position| {
+                let position: Vec<&str> = position.split('/').collect();
+                position.len() == rest.len()
+                    && position
+                        .iter()
+                        .zip(rest)
+                        .all(|(want, have)| *want == "*" || want == have)
+            }),
+            _ => false,
+        }
     }
 }
+
+/// The artifact types af owns that can reach a Worker request, each with the payload positions
+/// its schema under `schemas/` types as identities (digests, and the retry feedback's Attempt
+/// id); `*` is any member of a map or element of an array. Admission validated each payload
+/// against that schema before the request was composed; a position not listed here is judged.
+pub const KERNEL_PAYLOAD_IDENTITIES: [(&str, &[&str]); 9] = [
+    // source-tree-v1.json
+    ("af/SourceTree@1", &["snapshot_id"]),
+    // task-check-receipt-v1.json
+    (
+        "af/TaskCheckReceipt@1",
+        &["plan_id", "snapshot_id", "policy_id", "checks/*"],
+    ),
+    // task-retry-feedback-v1.json
+    (
+        "af/TaskRetryFeedback@1",
+        &["attempt_id", "contract_id", "compiler/proposal_id"],
+    ),
+    // task-review-assignment-v1.json
+    (
+        "af/TaskReviewAssignment@1",
+        &["subject_id", "prior_history_id", "findings/*/report_ids/*"],
+    ),
+    // task-review-subject-v2.json
+    (
+        "af/TaskReviewSubject@2",
+        &[
+            "subject_id",
+            "snapshot_id",
+            "prior_history_id",
+            "continuation_id",
+            "subject/head_snapshot_id",
+            "subject/base_snapshot_id",
+            "subject/change_set_id",
+            "change_scope/patch/content_id",
+        ],
+    ),
+    // review-history-v1.json
+    (
+        "af/ReviewHistory@1",
+        &[
+            "lineage_id",
+            "subject_id",
+            "finding_set_id",
+            "demand_set_id",
+            "round_report_id",
+        ],
+    ),
+    // task-repair-context-v1.json
+    (
+        "af/TaskRepairContext@1",
+        &[
+            "claims/*/attestation/change_set_id",
+            "claims/*/attestation/evidence_ids/*",
+            "claims/*/attestation/expected_finding_view_id",
+            "claims/*/attestation/subject_id",
+            "claims/*/attestation_id",
+            "claims/*/current_view_id",
+            "claims/*/original_view_id",
+            "continuation/claims/*",
+            "continuation/current_snapshot_id",
+            "continuation/current_subject_id",
+            "continuation/plan_id",
+            "continuation/policy_id",
+            "continuation/previous_subject_id",
+            "continuation/prior_history_id",
+            "continuation/task_revision_id",
+            "continuation_id",
+            "invocation/inputs/*/artifact_ids/*",
+            "invocation/inputs/*/snapshot_id",
+            "invocation/plan_id",
+            "previous_snapshot_id",
+            "subject/base_snapshot_id",
+            "subject/change_set_id",
+            "subject/head_snapshot_id",
+        ],
+    ),
+    // document-context-v1.json
+    (
+        "af/DocumentContext@1",
+        &[
+            "feedback_ids/*",
+            "invocation/inputs/*/artifact_ids/*",
+            "invocation/inputs/*/snapshot_id",
+            "invocation/plan_id",
+        ],
+    ),
+    // worker-notes-v1.json
+    (
+        "af/WorkerNotes@1",
+        &["head_snapshot_id", "inspected/*/tree_entry_digest"],
+    ),
+];
 
 /// The typed positions of a record of the kernel's own (a Store event payload, a context
 /// manifest), by the naming its schemas follow: identities — a member named `id`, `*_id`,
@@ -749,35 +904,55 @@ mod tests {
     #[test]
     fn kernel_documents_keep_typed_values_only_in_declared_positions() {
         let digest = format!("sha256:{}", "a".repeat(64));
+        let hex = "0123456789abcdef".repeat(4);
         let mut request = json!({
             "instructions": format!("use {digest}"),
-            "inputs": {"source": [{"artifact_id": digest, "snapshot_id": digest,
-                "payload": {"snapshot_id": digest, "checks": {"syntax": digest},
-                            "note": digest, "plan_id": "password=violet"}}]},
-            "feedback": [{"artifact_id": digest}],
+            "inputs": {
+                "receipt": [{"artifact_id": digest, "artifact_type": "af/TaskCheckReceipt@1",
+                    "snapshot_id": digest,
+                    "payload": {"snapshot_id": digest, "checks": {"syntax": digest},
+                                "note": digest, "plan_id": "password=violet"}}],
+                "requirements": [{"artifact_id": digest, "artifact_type": "af/Requirements@1",
+                    "payload": {"specification": {"api_token_id": hex, "plan_id": digest},
+                                "snapshot_id": digest}}],
+                "result": [{"artifact_id": digest, "artifact_type": "custom/Result@1",
+                    "payload": {"subject_id": digest}}]},
+            "feedback": [{"artifact_id": digest, "artifact_type": "af/TaskRetryFeedback@1",
+                "payload": {"contract_id": digest, "code": "process_failure"}}],
             "output_schemas": {"result": {"artifact_id": digest}},
         });
+        let positions = WorkerRequestPositions::of(&request);
         let withheld =
-            Redactor::new().kernel_json_where(&mut request, &worker_request_identity_position);
-        let source = &request["inputs"]["source"][0];
+            Redactor::new().kernel_json_where(&mut request, &|pointer| positions.contains(pointer));
+        let receipt = &request["inputs"]["receipt"][0];
+        let requirements = &request["inputs"]["requirements"][0];
         for kept in [
-            &source["artifact_id"],
-            &source["snapshot_id"],
-            &source["payload"]["snapshot_id"],
-            &source["payload"]["checks"]["syntax"],
+            &receipt["artifact_id"],
+            &receipt["snapshot_id"],
+            &receipt["payload"]["snapshot_id"],
+            &receipt["payload"]["checks"]["syntax"],
+            &requirements["artifact_id"],
+            &request["inputs"]["result"][0]["artifact_id"],
             &request["feedback"][0]["artifact_id"],
+            &request["feedback"][0]["payload"]["contract_id"],
         ] {
             assert_eq!(kept, &json!(digest));
         }
+        // A user-controlled payload is untrusted JSON whatever its members are named: a
+        // credential under an `_id` name, a digest-shaped value anywhere in it.
         for gone in [
             &request["instructions"],
-            &source["payload"]["note"],
-            &source["payload"]["plan_id"],
+            &receipt["payload"]["note"],
+            &receipt["payload"]["plan_id"],
+            &requirements["payload"]["specification"]["api_token_id"],
+            &requirements["payload"]["specification"]["plan_id"],
+            &requirements["payload"]["snapshot_id"],
+            &request["inputs"]["result"][0]["payload"]["subject_id"],
             &request["output_schemas"]["result"]["artifact_id"],
         ] {
             assert_eq!(gone, &json!(WITHHELD));
         }
-        assert_eq!(withheld, 4);
+        assert_eq!(withheld, 8);
         let mut record = json!({"artifact_refs": [digest], "event_id": "run-1",
             "usage": {"input_tokens": 12, "estimated_tokens": "42", "api_token": 12},
             "subject_id": "sk-proj-0123456789abcdefghijklmnop", "diagnostic": digest});

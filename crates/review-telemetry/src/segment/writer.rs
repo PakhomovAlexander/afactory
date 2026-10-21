@@ -718,6 +718,9 @@ struct Bounded {
 struct Offered {
     prepared: Prepared,
     admitted: bool,
+    /// The allowance it counts against: an admitted content's charge stands only once its
+    /// occurrence is stored, and is refunded when staging or publication drops it.
+    scope: Scope,
 }
 
 /// Name each pending blob's occurrence in the attribute that held its value; an attribute
@@ -1533,6 +1536,7 @@ impl Writer {
                     Offered {
                         prepared: blob::unprepared(&source, media),
                         admitted: false,
+                        scope: process,
                     }
                 } else {
                     let prepared = match value {
@@ -1549,7 +1553,11 @@ impl Writer {
                         ),
                     };
                     let admitted = self.admit(&process, prepared.retained.len() as u64);
-                    Offered { prepared, admitted }
+                    Offered {
+                        prepared,
+                        admitted,
+                        scope: process,
+                    }
                 });
                 named.push(key.to_string());
                 Some(String::new())
@@ -1587,7 +1595,41 @@ impl Writer {
         contents: Vec<Offered>,
         span: Option<&str>,
         flush: bool,
+        build: impl FnMut(&mut Batch<'_>, &[String]) -> Option<T>,
+    ) -> Option<T> {
+        // What each admitted content charged its allowance; a content whose occurrence is not
+        // stored — staging or publication dropped it, or the batch was refused — is refunded,
+        // so content that never reached `blobs/` never exhausts an allowance.
+        let charges: Vec<Option<(Scope, u64)>> = contents
+            .iter()
+            .map(|offered| {
+                offered.admitted.then(|| {
+                    (
+                        offered.scope.clone(),
+                        offered.prepared.retained.len() as u64,
+                    )
+                })
+            })
+            .collect();
+        let mut stored = vec![false; contents.len()];
+        let value = self.publish_contents(contents, span, flush, build, &mut stored);
+        for (charge, stored) in charges.into_iter().zip(stored) {
+            if let Some((scope, bytes)) = charge.filter(|_| !stored) {
+                self.refund(&scope, bytes);
+            }
+        }
+        value
+    }
+
+    /// [`Self::publish`]'s protocol; `stored` says, once the batch is accepted, which contents
+    /// were stored.
+    fn publish_contents<T>(
+        &self,
+        contents: Vec<Offered>,
+        span: Option<&str>,
+        flush: bool,
         mut build: impl FnMut(&mut Batch<'_>, &[String]) -> Option<T>,
+        stored: &mut [bool],
     ) -> Option<T> {
         if contents.is_empty() {
             let value = self.commit(false, |batch| build(batch, &[]));
@@ -1739,6 +1781,9 @@ impl Writer {
             return None;
         }
         self.accept(pending, lines);
+        for (stored, content) in stored.iter_mut().zip(&contents) {
+            *stored = content.stored;
+        }
         // Dropped because the sweep held gc.lock or the file could not be placed.
         pending.dropped += contents.iter().filter(|content| !content.stored).count() as u64;
         drop(guard);
@@ -1968,6 +2013,19 @@ impl Writer {
         false
     }
 
+    /// Give back `bytes` an admitted content charged to `scope` when it was not stored. An
+    /// allowance already exhausted stays exhausted.
+    fn refund(&self, scope: &Scope, bytes: u64) {
+        let mut allowances = lock(&self.shared.allowances);
+        let used = match scope {
+            Scope::Attempt(attempt) => allowances.attempts.get_mut(attempt),
+            Scope::Process => Some(&mut allowances.process),
+        };
+        if let Some(used) = used {
+            *used = used.saturating_sub(bytes);
+        }
+    }
+
     fn event_with(
         &self,
         span_id: &str,
@@ -1992,6 +2050,7 @@ impl Writer {
                 Offered {
                     prepared: blob::unprepared(source.bytes, source.media),
                     admitted: false,
+                    scope: source.scope.clone(),
                 }
             } else {
                 let prepared = blob::prepare(
@@ -2001,7 +2060,11 @@ impl Writer {
                     source.redactor.unwrap_or(&options.redactor),
                 );
                 let admitted = self.admit(source.scope, prepared.retained.len() as u64);
-                Offered { prepared, admitted }
+                Offered {
+                    prepared,
+                    admitted,
+                    scope: source.scope.clone(),
+                }
             };
             media_type = Some(offered.prepared.media_type.to_string());
             // The event's own content is the first occurrence.

@@ -391,7 +391,7 @@ fn telemetry_content_reads_back_on_the_claude_fake() {
     );
     // A thought and the tool results are searchable too, with `--run`: the first result (its
     // planted line withheld) and the two identical later ones, stored once.
-    for (words, blobs) in [("tide tables", 1), ("captured source", 2)] {
+    for (words, blobs) in [("tide tables", 1), ("tool reports what it read", 2)] {
         let found = json_of(&af_at(
             &machine,
             &run.repo,
@@ -549,7 +549,12 @@ fn telemetry_content_switches_hold() {
         "the composed input and the text are blobs"
     );
     for text in &texts {
-        for absent in ["tide tables", "weigh the lamp", "captured source", "lib.rs"] {
+        for absent in [
+            "tide tables",
+            "weigh the lamp",
+            "tool reports what it read",
+            "lib.rs",
+        ] {
             assert!(!text.contains(absent), "{absent} reached a blob");
         }
     }
@@ -557,7 +562,11 @@ fn telemetry_content_switches_hold() {
         texts.iter().any(|text| text.contains(PHRASE)),
         "the assistant's text is kept"
     );
-    for (words, expected) in [("tide tables", 0), ("captured source", 0), (PHRASE, 1)] {
+    for (words, expected) in [
+        ("tide tables", 0),
+        ("tool reports what it read", 0),
+        (PHRASE, 1),
+    ] {
         let found = json_of(&af_at(
             &machine,
             &run.repo,
@@ -1224,5 +1233,77 @@ fn telemetry_content_mirror_keeps_payloads_and_finding_bodies() {
         );
         let joined: String = records.iter().map(|record| format!("{record:?}")).collect();
         assert!(!joined.contains("hunter2"));
+    }
+}
+
+/// Design §7.4 and §15 P7 decision 1: a Task run's `af.config.text` events name the texts
+/// themselves — the pipeline's `pipeline.toml` as its package declares it, the Task file as
+/// `af task start --file` read it — by the SHA-256 of their bytes and their size, never the CAS
+/// artifacts that carry them; at `content` each is a blob holding those bytes as the credential
+/// rules keep them, whose source identity is that digest; at `spans` it is no blob.
+#[test]
+fn telemetry_config_texts_are_the_file_bytes() {
+    let fixture = workspace().join("fixtures/telemetry-bench/telemetry-bench-invocation-one");
+    let files = [
+        (
+            "pipeline",
+            std::fs::read(fixture.join("repo/.af/task-packages/bench/invocation/pipeline.toml"))
+                .unwrap(),
+        ),
+        (
+            "task_file",
+            std::fs::read(fixture.join("task.json")).unwrap(),
+        ),
+    ];
+    for level in ["spans", "content"] {
+        let machine = Machine::new();
+        claude_run(&machine, "run", level, &json!({}), &[]);
+        let telemetry = machine.telemetry();
+        let texts = events_named(&telemetry, "af.config.text");
+        let occurrences: Vec<review_telemetry::record::BlobRef> = records(&telemetry)
+            .into_iter()
+            .filter_map(|record| match record {
+                Record::BlobRef(occurrence) => Some(occurrence),
+                _ => None,
+            })
+            .collect();
+        for (kind, bytes) in &files {
+            let named: Vec<&review_telemetry::record::Event> = texts
+                .iter()
+                .filter(|event| event.attributes["af.config.text.kind"] == *kind)
+                .collect();
+            assert!(!named.is_empty(), "{level}: no {kind} text");
+            for event in named {
+                assert_eq!(
+                    event.attributes["af.config.text.digest"],
+                    sha256_digest(bytes),
+                    "{level} {kind}: the SHA-256 of the file's bytes"
+                );
+                assert_eq!(event.attributes["af.config.text.bytes"], bytes.len());
+                match (level, &event.blob) {
+                    ("content", Some(occurrence)) => {
+                        let occurrence = occurrences
+                            .iter()
+                            .find(|found| &found.occurrence_id == occurrence)
+                            .unwrap();
+                        assert_eq!(occurrence.source_digest, sha256_digest(bytes));
+                        // The file's bytes as the credential rules keep them: the Task
+                        // file's `"tokens": …` lines fall under the secret-name rule.
+                        let kept = review_telemetry::redact::redact_text(
+                            &String::from_utf8(bytes.clone()).unwrap(),
+                        )
+                        .0;
+                        let layout = review_telemetry::layout::Layout::new(&telemetry);
+                        assert_eq!(
+                            review_telemetry::blob::reader::content(&layout, occurrence),
+                            review_telemetry::blob::reader::Content::Bytes(kept.into_bytes()),
+                            "{kind}: the blob holds the file's bytes, redacted"
+                        );
+                    }
+                    ("spans", None) => {}
+                    (_, blob) => panic!("{level} {kind}: {blob:?}"),
+                }
+            }
+        }
     }
 }

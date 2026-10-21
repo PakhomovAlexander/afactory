@@ -315,6 +315,51 @@ fn config_text(
     );
 }
 
+/// The pipeline's TOML as the plan's pipeline declares it: `pipeline.toml` of the root package
+/// (`af/TaskPackage@1`, its digest verified), or the one captured file a Review Campaign's plan
+/// names as its pipeline. `None` when neither is at hand.
+fn pipeline_text(cas: &Cas, pipeline_id: &str) -> Option<Vec<u8>> {
+    match cas.get_optional_artifact(pipeline_id).ok()? {
+        Some(envelope)
+            if envelope.artifact_type == review_config::task::catalog::TASK_PACKAGE_V1 =>
+        {
+            review_config::task::catalog::captured_package_file(cas, pipeline_id, "pipeline.toml")
+                .ok()
+                .flatten()
+        }
+        Some(_) => None,
+        None => cas.get(pipeline_id).ok(),
+    }
+}
+
+/// The Task file as `af task start --file` read it: the file its revision's adapter
+/// (`af.task-file-adapter/1`) names, reached through the selection's wrapper
+/// (`af.selected-task-adapter/1`, its `source_adapter_id`) when the pipeline was selected.
+/// `None` for a revision no Task file made.
+fn task_file_text(cas: &Cas, revision_id: &str) -> Option<Vec<u8>> {
+    let revision = cas.get_artifact(revision_id).ok()?;
+    let mut adapter_id = revision
+        .payload
+        .get("provenance")?
+        .get("adapter_id")?
+        .as_str()?
+        .to_string();
+    // A selection wraps the adapter once; a bounded walk, never a loop.
+    for _ in 0..4 {
+        let adapter = cas.get_json(&adapter_id).ok()?;
+        match adapter.get("schema")?.as_str()? {
+            "af.task-file-adapter/1" => {
+                return cas.get(adapter.get("source_file_id")?.as_str()?).ok();
+            }
+            "af.selected-task-adapter/1" => {
+                adapter_id = adapter.get("source_adapter_id")?.as_str()?.to_string();
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// The sections of the configuration record of the run `run_id`, whose `af.run` span is
 /// `span`, that the command knows when the run opens (design §7.4): `configuration` (`af
 /// --version --json`, the effective configuration, the policy files' digests) and `machine`
@@ -648,8 +693,8 @@ impl RunTelemetry {
     /// §7.4), once per execution and run, at `spans` and above, when the plan resolves: the
     /// policy revision, the pipeline's name, digest and nodes, the Task's id, kind and
     /// pipeline, and the bindings, as many `config` parts as the record bound needs; beside it
-    /// the events `af.config.text` naming the pipeline and the Task file by digest and size
-    /// (their bytes are blobs only at `content`).
+    /// the events `af.config.text` naming the pipeline's TOML and the Task file by the SHA-256
+    /// of their bytes and their size (their bytes are blobs only at `content`).
     fn record_config(
         &self,
         cas: &Cas,
@@ -719,22 +764,22 @@ impl RunTelemetry {
             run_span_id: &run_span,
         };
         writer.config(&owner, "plan", rows);
-        let size = |id: &str| cas.get(id).map(|bytes| bytes.len() as u64).ok();
-        for (kind, digest, bytes) in [
-            (
-                "pipeline",
-                plan.pipeline_id.clone(),
-                size(&plan.pipeline_id),
-            ),
-            (
-                "task_file",
-                plan.task_revision_id.clone(),
-                size(&plan.task_revision_id),
-            ),
+        // The texts themselves, by the SHA-256 of their bytes, never the CAS artifacts that
+        // carry them: a text whose bytes are not at hand is named by kind alone.
+        for (kind, text) in [
+            ("pipeline", pipeline_text(cas, &plan.pipeline_id)),
+            ("task_file", task_file_text(cas, &plan.task_revision_id)),
         ] {
-            // The pipeline's and the Task file's own bytes are not at hand here (the event names
-            // their CAS artifacts), so they stay digests and sizes at every level.
-            config_text(&self.run, kind, &digest, bytes, None);
+            match text {
+                Some(text) => config_text(
+                    &self.run,
+                    kind,
+                    &review_telemetry::trace::sha256_digest(&text),
+                    Some(text.len() as u64),
+                    Some(&text),
+                ),
+                None => config_text(&self.run, kind, "", None, None),
+            }
         }
     }
 

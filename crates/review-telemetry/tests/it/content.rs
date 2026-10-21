@@ -22,6 +22,8 @@ use crate::{options, sealed_records};
 const STORE: &str = "5555555555555555555555555555555555555555555555555555555555555555";
 const RUN: &str = "task:sha256:7777777777777777777777777777777777777777777777777777777777777777";
 const ATTEMPT: &str = "content-attempt-1";
+/// A 64-character lowercase hex credential, the shape a digest has without its `sha256:`.
+const TOKEN_ID: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
 /// A digest the fixtures plant beside the credentials: an identity, kept wherever it is one.
 const DIGEST: &str = "sha256:abababababababababababababababababababababababababababababababab";
 
@@ -529,7 +531,10 @@ fn telemetry_content_credentials_withheld_on_every_blob_path() {
         "instructions": format!("review the lamp\n{token}"),
         "inputs": {"source": [{"artifact_id": DIGEST, "artifact_type": "af/SourceTree@1",
                                "snapshot_id": DIGEST,
-                               "payload": {"snapshot_id": DIGEST, "note": password}}]},
+                               "payload": {"snapshot_id": DIGEST, "note": password}}],
+                   "requirements": [{"artifact_id": DIGEST, "artifact_type": "af/Requirements@1",
+                               "payload": {"specification": {"api_token_id": TOKEN_ID,
+                                                             "package": "harbour"}}}]},
         "feedback": [],
     })
     .to_string();
@@ -615,6 +620,7 @@ fn telemetry_content_credentials_withheld_on_every_blob_path() {
         "eyJhbGciOiJIUzI1NiJ9",
         "violet",
         "/grants/home-value",
+        TOKEN_ID,
     ] {
         assert!(!texts.contains(secret), "{secret} reached a blob");
     }
@@ -650,6 +656,11 @@ fn telemetry_content_credentials_withheld_on_every_blob_path() {
     assert_eq!(source["payload"]["snapshot_id"], DIGEST);
     assert_eq!(source["payload"]["note"], WITHHELD);
     assert_eq!(input["instructions"], WITHHELD, "judged whole as one value");
+    // The requirements are untrusted JSON: a credential under an `_id` name is no identity.
+    let specification = &input["inputs"]["requirements"][0]["payload"]["specification"];
+    assert_eq!(specification["api_token_id"], WITHHELD);
+    assert_eq!(specification["package"], "harbour");
+    assert_eq!(input["inputs"]["requirements"][0]["artifact_id"], DIGEST);
     let payload: Value = serde_json::from_slice(&retained(
         dir.path(),
         &records,
@@ -686,7 +697,12 @@ fn telemetry_content_credentials_withheld_on_every_blob_path() {
         }
         assert!(review_telemetry::redact::is_digest(&found.digest));
     }
-    for secret in ["hunter2", "plantedplanted", "eyJhbGciOiJIUzI1NiJ9"] {
+    for secret in [
+        "hunter2",
+        "plantedplanted",
+        "eyJhbGciOiJIUzI1NiJ9",
+        TOKEN_ID,
+    ] {
         let none = review_telemetry::content_view::search(
             &index,
             dir.path(),
@@ -715,6 +731,7 @@ fn telemetry_content_credentials_withheld_on_every_blob_path() {
     assert!(
         !shown.contains("hunter2") && !shown.contains("sk-proj") && !shown.contains("eyJhbGci")
     );
+    assert!(!shown.contains(TOKEN_ID), "{shown}");
     assert!(shown.contains(DIGEST));
     let reasoning = review_telemetry::content_view::reasoning(
         &index,
@@ -888,4 +905,302 @@ fn a_withheld_stream_leaves_no_blob_and_no_search_hit() {
         assert_eq!(reasoning.state, "withheld");
         assert!(reasoning.thoughts.is_empty());
     }
+}
+
+/// One search over `root`, as `af telemetry search TEXT` runs it.
+fn search_in(root: &Path, text: &str) -> review_telemetry::content_view::Search {
+    let (index, read, unreadable) = review_telemetry::view::open(root).unwrap();
+    review_telemetry::content_view::search(&index, root, read, unreadable, text, None, None)
+        .unwrap()
+}
+
+/// Design §10 `search` is bounded whatever the corpus: with more matching blobs than it lists it
+/// keeps [`SEARCH_LIMIT`] and says `more`, with more occurrences of one blob than it lists it
+/// keeps [`OCCURRENCE_LIMIT`] and says so, and it reads no candidate past the one that says
+/// `more` — the blob files of every later candidate are gone, and none of them is read (none is
+/// reported unreadable, none leaves the index). The `--since` and `--run` filters are applied in
+/// the query: a window after every occurrence and another run find nothing.
+#[test]
+fn telemetry_search_reads_a_bounded_number_of_matches() {
+    use review_telemetry::content_view::{OCCURRENCE_LIMIT, SEARCH_LIMIT};
+    let dir = tempfile::tempdir().unwrap();
+    let run = run(dir.path(), Level::Content, |_| {});
+    for number in 0..SEARCH_LIMIT + 20 {
+        run.writer.content_event(
+            &run.attempt,
+            event::OUTPUT,
+            Attrs::new(),
+            format!("the periwinkle lamp number {number}").as_bytes(),
+            Media::Text,
+            &Scope::Attempt(run.attempt.clone()),
+        );
+    }
+    for _ in 0..OCCURRENCE_LIMIT + 5 {
+        run.writer.content_event(
+            &run.attempt,
+            event::OUTPUT,
+            Attrs::new(),
+            b"the periwinkle lamp, said again",
+            Media::Text,
+            &Scope::Attempt(run.attempt.clone()),
+        );
+    }
+    run.finish();
+    let found = search_in(dir.path(), "periwinkle lamp");
+    assert_eq!(found.matches.len(), SEARCH_LIMIT);
+    assert!(found.more);
+    assert!(found.unreadable.is_empty(), "{:?}", found.unreadable);
+    let repeated = search_in(dir.path(), "said again");
+    assert_eq!(repeated.matches.len(), 1);
+    assert!(!repeated.more);
+    assert_eq!(repeated.matches[0].occurrences.len(), OCCURRENCE_LIMIT);
+    assert!(repeated.matches[0].more_occurrences);
+    for found in &found.matches {
+        assert!(found.occurrences.len() <= OCCURRENCE_LIMIT);
+    }
+    // Every candidate after the one that said `more`, in digest order, loses its blob file: a
+    // search that read past the bound would report them and take them out of the index.
+    let layout = Layout::new(dir.path());
+    let (index, _, _) = review_telemetry::view::open(dir.path()).unwrap();
+    let mut digests: Vec<String> = {
+        let mut statement = index
+            .connection()
+            .prepare("SELECT digest FROM content_fts ORDER BY digest")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let indexed = digests.len() as u64;
+    assert_eq!(indexed, SEARCH_LIMIT as u64 + 21);
+    drop(index);
+    for digest in digests.split_off(SEARCH_LIMIT + 1) {
+        std::fs::remove_file(layout.blob(&digest)).unwrap();
+    }
+    let again = search_in(dir.path(), "periwinkle lamp");
+    assert_eq!(again.matches.len(), SEARCH_LIMIT);
+    assert!(again.more);
+    assert!(again.unreadable.is_empty(), "{:?}", again.unreadable);
+    let (index, read, unreadable) = review_telemetry::view::open(dir.path()).unwrap();
+    assert_eq!(
+        index.count("SELECT count(*) FROM content_fts").unwrap(),
+        indexed
+    );
+    // The filters are part of the query.
+    let later = review_telemetry::content_view::search(
+        &index,
+        dir.path(),
+        read.clone(),
+        unreadable.clone(),
+        "periwinkle lamp",
+        Some(i64::MAX),
+        None,
+    )
+    .unwrap();
+    assert!(later.matches.is_empty() && !later.more, "{later:?}");
+    let other = review_telemetry::content_view::search(
+        &index,
+        dir.path(),
+        read,
+        unreadable,
+        "periwinkle lamp",
+        None,
+        Some(("task:other", &"0".repeat(32))),
+    )
+    .unwrap();
+    assert!(other.matches.is_empty() && !other.more, "{other:?}");
+}
+
+/// Design §6 Blobs: a search shows an excerpt only of a blob it read and verified under
+/// `gc.lock`, as the content readers do. Once a referenced blob file is removed, or its bytes no
+/// longer match its digest, the search that finds it in `content_fts` lists it unreadable with
+/// the reader's reason, shows nothing of it, and takes its text out of the index (its
+/// `content_index` row says `unavailable`), so a later search returns nothing stale either.
+#[test]
+fn telemetry_search_verifies_each_blob_before_its_excerpt() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = run(dir.path(), Level::Content, |_| {});
+    for words in [
+        "the amber lamp is lit",
+        "the amber lamp is dim",
+        "the amber lamp is out",
+    ] {
+        run.writer.content_event(
+            &run.attempt,
+            event::OUTPUT,
+            Attrs::new(),
+            words.as_bytes(),
+            Media::Text,
+            &Scope::Attempt(run.attempt.clone()),
+        );
+    }
+    run.finish();
+    assert_eq!(search_in(dir.path(), "amber lamp").matches.len(), 3);
+    let layout = Layout::new(dir.path());
+    let missing = sha256_digest(b"the amber lamp is dim");
+    let corrupt = sha256_digest(b"the amber lamp is out");
+    std::fs::remove_file(layout.blob(&missing)).unwrap();
+    std::fs::write(layout.blob(&corrupt), b"not a gzip stream").unwrap();
+    for (digest, reason) in [
+        (&missing, review_telemetry::blob::reader::MISSING),
+        (&corrupt, "content unavailable: corrupt blob"),
+    ] {
+        assert_eq!(
+            review_telemetry::blob::reader::read(&layout, digest),
+            review_telemetry::blob::reader::Content::Unavailable(reason.into()),
+            "the reader's answer"
+        );
+    }
+    let found = search_in(dir.path(), "amber lamp");
+    assert_eq!(found.matches.len(), 1, "{found:?}");
+    assert_eq!(
+        found.matches[0].digest,
+        sha256_digest(b"the amber lamp is lit")
+    );
+    let shown = serde_json::to_string(&found.matches).unwrap();
+    assert!(
+        !shown.contains("dim") && !shown.contains("is out"),
+        "{shown}"
+    );
+    let reported: std::collections::BTreeSet<(String, String)> = found
+        .unreadable
+        .iter()
+        .map(|unreadable| (unreadable.path.clone(), unreadable.reason.clone()))
+        .collect();
+    let expected: std::collections::BTreeSet<(String, String)> = [
+        (&missing, review_telemetry::blob::reader::MISSING),
+        (&corrupt, "content unavailable: corrupt blob"),
+    ]
+    .into_iter()
+    .map(|(digest, reason)| {
+        (
+            layout.blob(digest).display().to_string(),
+            reason.to_string(),
+        )
+    })
+    .collect();
+    assert_eq!(reported, expected);
+    assert_eq!(found.unreadable.len(), 2);
+    // The index is in step: neither text is searchable any more, and both are `unavailable`.
+    let (index, _, _) = review_telemetry::view::open(dir.path()).unwrap();
+    assert_eq!(index.count("SELECT count(*) FROM content_fts").unwrap(), 1);
+    assert_eq!(
+        index
+            .count("SELECT count(*) FROM content_index WHERE state = 'unavailable'")
+            .unwrap(),
+        2
+    );
+    drop(index);
+    let later = search_in(dir.path(), "amber lamp");
+    assert_eq!(later.matches.len(), 1);
+    assert!(later.unreadable.is_empty(), "{:?}", later.unreadable);
+    assert!(search_in(dir.path(), "lamp is dim").matches.is_empty());
+}
+
+/// Design §8 `content_index`: with it off, ingest keeps no full-text index — `content_fts` and
+/// `content_index` are emptied though blobs a content run indexed are still referenced — and
+/// with it on again ingest rebuilds both from the retained blobs, as they were.
+#[test]
+fn telemetry_content_index_off_clears_the_derived_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = run(dir.path(), Level::Content, |_| {});
+    for words in ["the periwinkle lamp", "the tide tables"] {
+        run.writer.content_event(
+            &run.attempt,
+            event::OUTPUT,
+            Attrs::new(),
+            words.as_bytes(),
+            Media::Text,
+            &Scope::Attempt(run.attempt.clone()),
+        );
+    }
+    run.finish();
+    let layout = Layout::new(dir.path());
+    let tables = |index: &review_telemetry::index::Index| {
+        let dump = index.dump().unwrap();
+        (dump["content_fts"].clone(), dump["content_index"].clone())
+    };
+    let mut index = review_telemetry::index::Index::open(&layout).unwrap();
+    index.keep_content_index(true);
+    index.ingest().unwrap();
+    let kept = tables(&index);
+    assert_eq!(kept.0.len(), 2);
+    assert_eq!(kept.1.len(), 2);
+    drop(index);
+    let mut index = review_telemetry::index::Index::open(&layout).unwrap();
+    index.keep_content_index(false);
+    index.ingest().unwrap();
+    assert_eq!(index.count("SELECT count(*) FROM content_fts").unwrap(), 0);
+    assert_eq!(
+        index.count("SELECT count(*) FROM content_index").unwrap(),
+        0
+    );
+    assert!(index.count("SELECT count(*) FROM blob_refs").unwrap() > 0);
+    drop(index);
+    let mut index = review_telemetry::index::Index::open(&layout).unwrap();
+    index.keep_content_index(true);
+    index.ingest().unwrap();
+    assert_eq!(tables(&index), kept, "rebuilt from the retained blobs");
+}
+
+/// Design §8: an allowance counts the content Telemetry kept, so a piece that fits but that
+/// publication drops — a sweep holds `gc.lock` — is refunded: once the lock is released another
+/// piece that fits beside the first is stored, for an Attempt's allowance and the process's
+/// alike, and neither allowance records itself exhausted.
+#[test]
+fn telemetry_content_dropped_by_publication_is_refunded() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = run(dir.path(), Level::Content, |options| {
+        options.content_attempt_max_bytes = 100;
+        options.content_process_max_bytes = 100;
+    });
+    let layout = Layout::new(dir.path());
+    for scope in [Scope::Attempt(run.attempt.clone()), Scope::Process] {
+        for (piece, held) in [(1, true), (2, false)] {
+            let sweep = held.then(|| {
+                review_telemetry::layout::exclusive_within(
+                    &layout.gc_lock(),
+                    std::time::Duration::from_secs(3600),
+                )
+                .unwrap()
+                .unwrap()
+            });
+            run.writer.content_event(
+                &run.attempt,
+                event::OUTPUT,
+                Attrs::new(),
+                format!("{} {scope:?} {piece}", "x".repeat(55)).as_bytes(),
+                Media::Text,
+                &scope,
+            );
+            drop(sweep);
+        }
+    }
+    let path = run.finish();
+    let records = sealed_records(&path);
+    let states: Vec<BlobState> = occurrences(&records)
+        .iter()
+        .map(|occurrence| occurrence.state)
+        .collect();
+    assert_eq!(
+        states,
+        [
+            BlobState::Dropped,
+            BlobState::Stored,
+            BlobState::Dropped,
+            BlobState::Stored
+        ]
+    );
+    // Dropped for the lock, with a digest: never for the allowance.
+    for occurrence in occurrences(&records) {
+        assert!(occurrence.digest.is_some(), "{occurrence:?}");
+    }
+    assert!(
+        !records.iter().any(|record| matches!(record,
+            Record::Problem(problem)
+                if problem.what == review_telemetry::record::ProblemWhat::Budget)),
+        "no allowance was exhausted"
+    );
 }

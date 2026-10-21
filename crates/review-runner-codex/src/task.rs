@@ -151,13 +151,13 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         // The `-o` final message, read only for a process that exited 0 with no `error` or
         // `turn.failed` event; `None` for every other ending.
         let mut reply: Option<Result<Option<Vec<u8>>, String>> = None;
-        let mut capture = runner.capture_observed(
+        let mut capture = runner.capture_observed_with_output(
             cas,
             &command,
             input,
             cancellation,
             &review_runner::stream::HarnessStream::codex(),
-            |failed, stdout, stderr| {
+            |failed, stdout, stderr, further| {
                 'classify: {
                     // Parse the bill before privacy filtering removes an authentication envelope.
                     events = TaskEvents::parse(stdout);
@@ -166,6 +166,11 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                     said = WorkerStderr::read(stderr, stdout);
                     if !failed && events.error.is_none() {
                         reply = Some(read_final_message(&output_directory));
+                    }
+                    // The final message is harness output too: Telemetry's release decision
+                    // reads all of it before the tap ends (design §7.3).
+                    if let Some(Ok(Some(bytes))) = &reply {
+                        further.include(bytes);
                     }
                     if matches!(reply, Some(Ok(Some(_)))) {
                         break 'classify;
@@ -193,10 +198,12 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                         stderr,
                     );
                 }
-                // The raw-output rule: the Store keeps the lines accounting and failure
-                // classification read, whatever came of them above; Telemetry has the rest.
-                if let std::borrow::Cow::Owned(kept) = kept_output(stdout) {
-                    *stdout = kept;
+                // The raw-output rule: the Store keeps the event lines accounting and failure
+                // classification read, whatever came of them above, or the adapter's
+                // whole-capture replacement when it took one; Telemetry has the rest. Native text
+                // outside the framing was classified above, from the complete capture.
+                if !NativeFailureKind::replaced_capture(stdout, stderr) {
+                    *stdout = kept_output(stdout);
                 }
             },
         );
@@ -432,24 +439,20 @@ impl TaskEvents {
 
 /// The raw-output rule for Codex (design §7.3): of an Attempt's JSONL stdout, what the Store
 /// keeps — the `turn.completed`, `turn.failed` and `error` lines the accounting and failure
-/// classification read, and the native text outside the event framing that classification reads
-/// too ([`unframed`]), each line as it was. A stdout that frames no event is kept whole.
-pub fn kept_output(stdout: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+/// classification read, each as it was, and nothing else: no other event, and no native text
+/// outside the event framing, which classification reads from the complete in-memory capture
+/// ([`unframed`]).
+pub fn kept_output(stdout: &[u8]) -> Vec<u8> {
     use review_runner::stream::{lines, message_type};
-    if !lines(stdout).any(|line| message_type(line).is_some()) {
-        return std::borrow::Cow::Borrowed(stdout);
-    }
-    std::borrow::Cow::Owned(
-        lines(stdout)
-            .filter(|line| {
-                message_type(line).is_none_or(|kind| {
-                    matches!(kind.as_str(), "turn.completed" | "turn.failed" | "error")
-                })
+    lines(stdout)
+        .filter(|line| {
+            message_type(line).is_some_and(|kind| {
+                matches!(kind.as_str(), "turn.completed" | "turn.failed" | "error")
             })
-            .flatten()
-            .copied()
-            .collect(),
-    )
+        })
+        .flatten()
+        .copied()
+        .collect()
 }
 
 /// Stdout lines outside the JSONL event framing: native text a failing client wrote around

@@ -7,7 +7,7 @@ use crate::load_safe_wall::LOAD_SAFE_WALL;
 use crate::telemetry_levels::{LEVELS, at_level};
 use review_core::{Arg, Command};
 use review_runner::task::{ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
-use review_runner_claude::task::{ClaudeTaskAdapter, result_output};
+use review_runner_claude::task::{ClaudeTaskAdapter, native_output, result_output};
 use review_store::Cas;
 use review_telemetry::level::Level;
 use serde_json::{Value, json};
@@ -139,12 +139,13 @@ fn claude_stream_result_envelope_is_the_json_envelope() {
     for (name, json, stream) in pairs() {
         // The rule itself: the stream's result line is the json envelope, byte for byte.
         assert_eq!(
-            result_output(stream.as_bytes()).as_ref(),
-            result_output(json.as_bytes()).as_ref(),
+            result_output(stream.as_bytes()),
+            result_output(json.as_bytes()),
             "{name}"
         );
+        assert_eq!(result_output(json.as_bytes()), json.as_bytes(), "{name}");
         assert_eq!(
-            result_output(json.as_bytes()).as_ref(),
+            native_output(stream.as_bytes()).as_ref(),
             json.as_bytes(),
             "{name}"
         );
@@ -159,17 +160,90 @@ fn claude_stream_result_envelope_is_the_json_envelope() {
         assert_eq!(seen[0], seen[1], "{name}");
         assert!(!seen[1].contains("the final words"), "{name}: {}", seen[1]);
     }
-    // A stream with no result line keeps its native text and nothing else; a stdout that frames
-    // no message is kept whole.
+    // The adapter reads the native text of a stream with no result line, and a stdout that
+    // frames no message whole; the Store keeps none of that native text, only a `json` document.
     let lines = format!(
         "{}\nError: something native went wrong\n",
         json!({"type":"system","subtype":"init","session_id":"s"})
     );
     assert_eq!(
-        result_output(lines.as_bytes()).as_ref(),
+        native_output(lines.as_bytes()).as_ref(),
         b"Error: something native went wrong\n"
     );
-    assert_eq!(result_output(b"plain text").as_ref(), b"plain text");
+    assert_eq!(result_output(lines.as_bytes()), b"");
+    assert_eq!(native_output(b"plain text").as_ref(), b"plain text");
+    assert_eq!(result_output(b"plain text"), b"");
+    let typeless = b"{\"is_error\":false,\"result\":\"OK\"}\n";
+    assert_eq!(result_output(typeless), typeless);
+}
+
+/// The raw-output rule (design §7.3) at every level: native text outside the message framing —
+/// beside valid messages and a result line, or in a stream with no result line — is classified
+/// from the complete capture and never reaches the Store, however large; with a result line the
+/// Store keeps it and stderr, without one stderr alone (or the adapter's replacement).
+#[test]
+fn claude_store_keeps_no_unframed_output() {
+    let envelope = json!({"type":"result","subtype":"success","is_error":false,"result":"OK",
+        "usage":{"input_tokens":8,"output_tokens":10,"cache_creation_input_tokens":0},
+        "modelUsage":{MODEL:{"inputTokens":8,"outputTokens":10}}});
+    let json = envelope.to_string() + "\n";
+    let stream = stream_of(&envelope, "the final words", "pub fn example() {}");
+    let noise = format!("native noise {}\n", "n".repeat(256 * 1024));
+    let beside: String = stream
+        .lines()
+        .flat_map(|line| [line.to_string() + "\n", noise.clone()])
+        .collect();
+    let mut no_result: Vec<&str> = stream.lines().collect();
+    no_result.pop();
+    let no_result =
+        no_result.join("\n") + "\nError: something native went wrong\n" + noise.as_str();
+    let auth = format!(
+        "{}\nInvalid API key · Please run /login\n",
+        json!({"type":"system","subtype":"init","session_id":"s"})
+    );
+    for (name, printed) in [
+        ("beside a result line", &beside),
+        ("no result line", &no_result),
+        ("an authentication failure", &auth),
+    ] {
+        let mut seen = Vec::new();
+        for level in LEVELS {
+            let dir = tempfile::tempdir().unwrap();
+            let cas = Cas::open(dir.path().join("cas")).unwrap();
+            let program = fake(dir.path(), printed, None, "diagnostic\n");
+            let (returned, _) = at_level(level, &dir.path().join("telemetry"), || {
+                invoke(&program, &cas, dir.path())
+            });
+            let raw: Vec<Vec<u8>> = returned
+                .raw_artifact_ids
+                .iter()
+                .map(|id| cas.get(id).unwrap())
+                .collect();
+            match name {
+                "beside a result line" => {
+                    assert_eq!(returned.message.as_deref(), Ok(&b"OK"[..]), "{level:?}");
+                    assert_eq!(raw, [json.as_bytes(), b"diagnostic\n"], "{level:?}");
+                }
+                "no result line" => {
+                    let message = returned.message.as_ref().unwrap_err();
+                    assert!(message.starts_with("Claude Worker"), "{level:?}: {message}");
+                    assert_eq!(raw, [b"diagnostic\n"], "{level:?}");
+                }
+                _ => {
+                    // The adapter's replacement is what the Store keeps.
+                    let kind = returned.native_failure.unwrap();
+                    assert!(kind.is_auth(), "{level:?}: {kind:?}");
+                    assert_eq!(raw, [kind.diagnostic().as_bytes()], "{level:?}");
+                }
+            }
+            seen.push(outcome(&returned, &cas));
+        }
+        for (level, outcome) in LEVELS.iter().zip(&seen) {
+            assert_eq!(outcome, &seen[0], "{name} at {level:?}");
+            assert!(!outcome.contains("native noise"), "{name} at {level:?}");
+            assert!(!outcome.contains("\"type\":\"assistant\""), "{name}");
+        }
+    }
 }
 
 #[test]

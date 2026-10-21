@@ -53,7 +53,8 @@ pub const INDEX_SCHEMA: &str = "af/telemetry-index@3";
 static CONTENT_INDEX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// Keep `content_fts` at every ingest of this process (`[telemetry] content_index`), or not.
-/// Turned off, the table keeps no rows a retained occurrence does not reference and gains none.
+/// Turned off, ingest empties `content_fts` and `content_index`; turned on again, it rebuilds
+/// them from the retained blobs.
 pub fn set_content_index(enabled: bool) {
     CONTENT_INDEX.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
@@ -934,7 +935,8 @@ impl Index {
 /// references any more go; with `content_index` on, every referenced digest not read yet is read
 /// (under `gc.lock` shared, through the held `v1/`) and its text indexed. A blob a collection
 /// holds is read at the next ingest; a missing or corrupt one is recorded `unavailable`, a
-/// non-UTF-8 one `binary`, and neither is indexed.
+/// non-UTF-8 one `binary`, and neither is indexed. With `content_index` off no full-text index is
+/// kept: both tables are emptied, and rebuilt from the retained blobs once it is on again.
 fn index_content(
     transaction: &Transaction<'_>,
     versioned: Option<&Confined>,
@@ -944,6 +946,21 @@ fn index_content(
         "SELECT digest FROM blob_refs WHERE state = 'stored' AND digest IS NOT NULL";
     // An ingest with nothing to change writes nothing, so readers that ingest side by side never
     // contend for the write lock.
+    if !keep {
+        for table in ["content_fts", "content_index"] {
+            let kept: i64 = transaction
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .map_err(sql)?;
+            if kept > 0 {
+                transaction
+                    .execute(&format!("DELETE FROM {table}"), [])
+                    .map_err(sql)?;
+            }
+        }
+        return Ok(());
+    }
     for table in ["content_fts", "content_index"] {
         let stale: i64 = transaction
             .query_row(
@@ -961,7 +978,7 @@ fn index_content(
                 .map_err(sql)?;
         }
     }
-    let Some(versioned) = versioned.filter(|_| keep) else {
+    let Some(versioned) = versioned else {
         return Ok(());
     };
     let unread: Vec<String> = {

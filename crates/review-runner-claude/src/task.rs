@@ -303,53 +303,67 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             cancellation,
             &review_runner::stream::HarnessStream::claude(task_tools(access)),
             |failed, stdout, stderr| {
-                // The raw-output rule: the result line is all the adapter reads and all the
-                // Store keeps of stdout, whichever shape printed it; Telemetry has the rest.
-                if let std::borrow::Cow::Owned(kept) = result_output(stdout) {
-                    *stdout = kept;
-                }
-                // Keep the original in-memory usage envelope, but never capture an auth
-                // challenge or token-bearing error as ordinary Task evidence.
-                parsed = serde_json::from_slice::<serde_json::Value>(stdout).ok();
-                enveloped = parsed
-                    .as_ref()
-                    .is_some_and(|value| is_envelope(value, output_schema.is_some()));
-                let envelope = parsed.as_ref().filter(|_| enveloped);
-                let native_failed = envelope.is_some_and(|value| {
-                    value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true)
-                });
-                // A classifier refusal is never a success, whatever `is_error` says.
-                refused = envelope.is_some_and(refusal_reported);
-                // The Worker's own last words, bounded and filtered, before the privacy filter
-                // below may replace the stream.
-                said = WorkerStderr::read(stderr, stdout);
-                let stderr_kind = classify_native_failure(&String::from_utf8_lossy(stderr));
-                let (kind, auth_seen) = match envelope {
-                    // No parsable result, whatever the exit status or transport outcome: the
-                    // one place its classification is decided. Stdout is native output here.
-                    None => {
-                        let native_stdout = String::from_utf8_lossy(stdout);
-                        let candidates = [classify_native_failure(&native_stdout), stderr_kind];
-                        (
-                            classify_without_result(stderr, &native_stdout, &candidates),
-                            strongest_native_failure(&candidates).is_auth(),
-                        )
-                    }
-                    // A parsed envelope speaks only through its native fields, so model text
-                    // cannot choose the category. A reported refusal is one whatever else the
-                    // streams say.
-                    Some(_) if refused => (NativeFailureKind::ModelRefused, false),
-                    Some(value) if failed || native_failed => {
-                        let kind = strongest_native_failure(&[
-                            native_failure(value, native_failed),
-                            stderr_kind,
-                        ]);
-                        (kind, kind.is_auth())
-                    }
-                    Some(_) => return,
+                // The raw-output rule: of stdout the Store keeps the result line alone (or the
+                // `json` document); Telemetry has the rest. Taken from the complete capture,
+                // before the adapter reads it.
+                let kept = result_output(stdout);
+                // What the adapter reads of the complete in-memory capture: the result line,
+                // else the native text around the messages, whichever shape printed it.
+                let mut read = match native_output(stdout) {
+                    std::borrow::Cow::Owned(read) => read,
+                    std::borrow::Cow::Borrowed(_) => std::mem::take(stdout),
                 };
-                failure = (kind != NativeFailureKind::Unknown).then_some(kind);
-                kind.redact_capture(auth_seen, stdout, stderr);
+                'classify: {
+                    // Keep the original in-memory usage envelope, but never capture an auth
+                    // challenge or token-bearing error as ordinary Task evidence.
+                    parsed = serde_json::from_slice::<serde_json::Value>(&read).ok();
+                    enveloped = parsed
+                        .as_ref()
+                        .is_some_and(|value| is_envelope(value, output_schema.is_some()));
+                    let envelope = parsed.as_ref().filter(|_| enveloped);
+                    let native_failed = envelope.is_some_and(|value| {
+                        value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true)
+                    });
+                    // A classifier refusal is never a success, whatever `is_error` says.
+                    refused = envelope.is_some_and(refusal_reported);
+                    // The Worker's own last words, bounded and filtered, before the privacy
+                    // filter below may replace the stream.
+                    said = WorkerStderr::read(stderr, &read);
+                    let stderr_kind = classify_native_failure(&String::from_utf8_lossy(stderr));
+                    let (kind, auth_seen) = match envelope {
+                        // No parsable result, whatever the exit status or transport outcome: the
+                        // one place its classification is decided. Stdout is native output here.
+                        None => {
+                            let native_stdout = String::from_utf8_lossy(&read);
+                            let candidates = [classify_native_failure(&native_stdout), stderr_kind];
+                            (
+                                classify_without_result(stderr, &native_stdout, &candidates),
+                                strongest_native_failure(&candidates).is_auth(),
+                            )
+                        }
+                        // A parsed envelope speaks only through its native fields, so model text
+                        // cannot choose the category. A reported refusal is one whatever else
+                        // the streams say.
+                        Some(_) if refused => (NativeFailureKind::ModelRefused, false),
+                        Some(value) if failed || native_failed => {
+                            let kind = strongest_native_failure(&[
+                                native_failure(value, native_failed),
+                                stderr_kind,
+                            ]);
+                            (kind, kind.is_auth())
+                        }
+                        Some(_) => break 'classify,
+                    };
+                    failure = (kind != NativeFailureKind::Unknown).then_some(kind);
+                    kind.redact_capture(auth_seen, &mut read, stderr);
+                }
+                // The adapter's whole-capture replacement is what the Store keeps when it took
+                // one; otherwise only the result line, never native text or another message.
+                *stdout = if NativeFailureKind::replaced_capture(&read, stderr) {
+                    read
+                } else {
+                    kept
+                };
             },
         );
         // The process has exited, whatever its outcome: what it kept in the operator's Claude
@@ -431,15 +445,30 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
     }
 }
 
-/// The raw-output rule for Claude (design §7.3): of an Attempt's stdout, what the adapter's
-/// envelope parsing, accounting, refusal classification and model-identity check read, and what
-/// the Store keeps. Under `--output-format stream-json` every line is one message: the last
-/// `result` line, the envelope `--output-format json` prints, is kept alone, ending in its
-/// newline; with no `result` line, the lines that are no message (native text a failing CLI
-/// wrote), as they were. A stdout that frames no message at all — a `json` envelope without a
-/// `type`, plain text, a document over several lines — is kept whole. So the same final result
-/// gives the same bytes under both shapes and at every level.
-pub fn result_output(stdout: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+/// The raw-output rule for Claude (design §7.3): of an Attempt's complete stdout, what the Store
+/// keeps. Under `--output-format stream-json` every line is one message: the last `result` line,
+/// the envelope `--output-format json` prints, is kept alone, ending in its newline. A stdout
+/// that frames no message is kept only when it is one JSON object (a `json` envelope without a
+/// `type`), the document accounting reads. Nothing else is kept: no other message, and no
+/// native text around or instead of the messages, which the adapter classifies from the
+/// in-memory capture ([`native_output`]). So the same final result gives the same bytes under
+/// both shapes and at every level.
+pub fn result_output(stdout: &[u8]) -> Vec<u8> {
+    let (framed, result) = result_line(stdout);
+    if let Some(kept) = result {
+        return kept;
+    }
+    if !framed
+        && serde_json::from_slice::<serde_json::Value>(stdout)
+            .is_ok_and(|document| document.is_object())
+    {
+        return stdout.to_vec();
+    }
+    Vec::new()
+}
+
+/// Whether `stdout` frames any message, and its last `result` line ending in a newline.
+fn result_line(stdout: &[u8]) -> (bool, Option<Vec<u8>>) {
     use review_runner::stream::{lines, message_type};
     let mut framed = false;
     let mut result = None;
@@ -451,15 +480,30 @@ pub fn result_output(stdout: &[u8]) -> std::borrow::Cow<'_, [u8]> {
             }
         }
     }
+    let result = result.map(|line| {
+        let mut line = line.to_vec();
+        if !line.ends_with(b"\n") {
+            line.push(b'\n');
+        }
+        line
+    });
+    (framed, result)
+}
+
+/// What the adapter's envelope parsing, accounting, refusal classification and model-identity
+/// check read of an Attempt's complete in-memory stdout: the last `result` line when the stdout
+/// frames messages and has one; with no `result` line, the lines that are no message (native
+/// text a failing CLI wrote), as they were; a stdout that frames no message at all — a `json`
+/// envelope without a `type`, plain text, a document over several lines — whole. The Store
+/// keeps less ([`result_output`]).
+pub fn native_output(stdout: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    use review_runner::stream::{lines, message_type};
+    let (framed, result) = result_line(stdout);
     if !framed {
         return std::borrow::Cow::Borrowed(stdout);
     }
     if let Some(line) = result {
-        let mut kept = line.to_vec();
-        if !kept.ends_with(b"\n") {
-            kept.push(b'\n');
-        }
-        return std::borrow::Cow::Owned(kept);
+        return std::borrow::Cow::Owned(line);
     }
     std::borrow::Cow::Owned(
         lines(stdout)

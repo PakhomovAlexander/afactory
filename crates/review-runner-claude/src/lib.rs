@@ -8,7 +8,7 @@
 //! Telemetry records harness streams (`spans` and above) a Task Attempt asks for
 //! `--output-format stream-json --verbose` instead, a reporting flag: every message is a line,
 //! and the `result` line is the envelope `json` prints. The adapter reads that line and nothing
-//! else, and the Store keeps it with stderr ([`task::result_output`]), so accounting,
+//! else, and the Store keeps it alone with stderr ([`task::result_output`]), so accounting,
 //! classification and the Store's bytes are the same under both shapes (design §7.3, §12). The
 //! adapter appends `--safe-mode --restricted` and an explicit read-only tool grant after package
 //! model flags, so repository settings, Hooks, plugins, MCP servers, and package arguments cannot

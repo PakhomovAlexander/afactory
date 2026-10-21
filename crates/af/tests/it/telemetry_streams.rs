@@ -597,6 +597,98 @@ fn telemetry_stalled_consumer_never_blocks_drain() {
     drop(release);
 }
 
+/// Design §7.3 (P6): a successful Codex Attempt's `-o` final message is harness output that
+/// Telemetry's release decision reads in full before the tap ends. A bare device code in a
+/// stream identifier (the thread id) with its challenge URL only in the final message withholds
+/// the process's pending identifiers and content, so `af telemetry tail` of the sealed run shows
+/// `af.harness.ids` withheld and neither the code nor the URL, at `spans` and at `content`; the
+/// Attempt's reply is unchanged.
+#[test]
+fn telemetry_codex_final_message_joins_the_release_decision() {
+    use review_runner::task::{WorkerAccess, WorkerModelAdapter as _};
+    use std::os::unix::fs::PermissionsExt;
+    let stdout: String = [
+        json!({"type":"thread.started","thread_id":"WXYZ-9876"}),
+        json!({"type":"turn.started"}),
+        json!({"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"done"}}),
+        json!({"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":2,
+               "output_tokens":3,"reasoning_output_tokens":1}}),
+    ]
+    .iter()
+    .map(|line| line.to_string() + "\n")
+    .collect();
+    let reply = "Open https://auth.openai.com/codex/device to finish";
+    for level in [Level::Spans, Level::Content] {
+        let (temp, root, recording, cas) = recording(level);
+        let dir = temp.path().join("codex");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("out"), &stdout).unwrap();
+        std::fs::write(dir.join("reply"), reply).unwrap();
+        let program = dir.join("codex");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nout=; prev=; for arg in \"$@\"; do [ \"$prev\" = -o ] && out=$arg; prev=$arg; done\ncat '{dir}/reply' >\"$out\"\ncat '{dir}/out'\n",
+                dir = dir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter = review_runner_codex::task::CodexTaskAdapter::new(&Command::new(
+            program.to_str().unwrap(),
+            [
+                "--model",
+                "gpt-fixture-1",
+                "-c",
+                "model_reasoning_effort=\"high\"",
+            ]
+            .into_iter()
+            .map(Arg::literal)
+            .collect(),
+        ))
+        .unwrap();
+        let returned = recording.within(|| {
+            adapter.invoke(
+                &cas,
+                &dir,
+                b"review".to_vec(),
+                Duration::from_secs(120),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+            )
+        });
+        assert_eq!(
+            returned.message.as_deref(),
+            Ok(reply.as_bytes()),
+            "{level:?}"
+        );
+        recording.finish();
+        let run = "task:sha256:".to_string() + &"9".repeat(64);
+        let tail = af(&root, &["telemetry", "tail", &run, "--json"]);
+        assert!(
+            tail.status.success(),
+            "{level:?}: {}",
+            String::from_utf8_lossy(&tail.stderr)
+        );
+        let printed = String::from_utf8_lossy(&tail.stdout);
+        let ids: Vec<Value> = printed
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|line| line["name"] == "af.harness.ids")
+            .collect();
+        assert_eq!(ids.len(), 1, "{level:?}: {printed}");
+        assert_eq!(
+            ids[0]["attributes"]["af.stream.withheld"], true,
+            "{level:?}"
+        );
+        assert!(ids[0]["attributes"].get("af.harness.ids").is_none());
+        for words in ["WXYZ", "auth.openai.com", "codex/device"] {
+            assert!(!printed.contains(words), "{level:?} {words}: {printed}");
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------------
 // the Claude fake through the Task runtime
 

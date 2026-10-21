@@ -237,3 +237,103 @@ fn telemetry_release_decision_covers_success() {
         assert_eq!(charged[0], charged[1]);
     }
 }
+
+/// Design §7.3: the `-o` final message of a successful Attempt is harness output the release
+/// decision reads before the tap ends. A bare device code in a stream identifier (the thread id)
+/// with its challenge URL only in the final-message file withholds the Attempt's pending
+/// content, so `af.harness.ids` never publishes the code: neither is anywhere in the segment
+/// (`af telemetry tail` shows it in `af`'s
+/// `telemetry_streams::telemetry_codex_final_message_joins_the_release_decision`), no blob is
+/// kept, and the reply, its classification and its charge are as at `off`.
+#[test]
+fn telemetry_release_decision_reads_the_final_message() {
+    let stdout = session("done", "pub fn example() {}\n")
+        .replace("0199a213-81c0-7800-8aa1-bbab2a035a53", "WXYZ-9876");
+    let reply = "Open https://auth.openai.com/codex/device to finish";
+    let mut seen = Vec::new();
+    for level in [Level::Off, Level::Spans, Level::Content] {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = Cas::open(dir.path().join("cas")).unwrap();
+        let program = fake(dir.path(), &stdout, "", reply);
+        let root = dir.path().join("telemetry");
+        let (returned, recorded) = at_level(level, &root, || invoke(&program, &cas, dir.path()));
+        assert_eq!(
+            returned.message.as_deref(),
+            Ok(reply.as_bytes()),
+            "{level:?}"
+        );
+        seen.push(outcome(&returned, &cas));
+        let Some(recorded) = recorded else {
+            continue;
+        };
+        assert_eq!(recorded.ends("af.harness")[0]["af.stream.withheld"], true);
+        let ids = &recorded.events("af.harness.ids")[0];
+        assert_eq!(ids["af.stream.withheld"], true, "{level:?}");
+        assert!(ids.get("af.harness.ids").is_none(), "{level:?}");
+        for words in ["WXYZ", "auth.openai.com", "codex/device"] {
+            assert!(!recorded.text.contains(words), "{level:?} {words}");
+        }
+        let blobs = review_telemetry::layout::Layout::new(&root).blobs();
+        assert!(
+            std::fs::read_dir(&blobs).map_or(true, |mut entries| entries.next().is_none()),
+            "{level:?}: a blob in {}",
+            blobs.display()
+        );
+    }
+    for outcome in &seen[1..] {
+        assert_eq!(outcome, &seen[0]);
+    }
+}
+
+/// The raw-output rule (design §7.3) at every level: native text outside the event framing —
+/// beside valid events of a successful Attempt, however large, or around the events of a failed
+/// one — is classified from the complete capture and never reaches the Store, which keeps the
+/// `turn.completed`, `turn.failed` and `error` lines, the `-o` final message and stderr.
+#[test]
+fn codex_store_keeps_no_unframed_output() {
+    let noise = format!("native noise {}\n", "n".repeat(256 * 1024));
+    let session = session("OK", "pub fn example() {}\n");
+    let beside: String = session
+        .lines()
+        .flat_map(|line| [line.to_string() + "\n", noise.clone()])
+        .collect();
+    let turn_failed =
+        json!({"type":"turn.failed","error":{"message":"stream disconnected: connection refused"}})
+            .to_string()
+            + "\n";
+    let failed = json!({"type":"thread.started","thread_id":"t"}).to_string()
+        + "\n"
+        + noise.as_str()
+        + "Error: something native went wrong\n"
+        + turn_failed.as_str();
+    for (name, stdout, reply) in [("success", &beside, "OK"), ("failure", &failed, "")] {
+        let mut seen = Vec::new();
+        for level in LEVELS {
+            let dir = tempfile::tempdir().unwrap();
+            let cas = Cas::open(dir.path().join("cas")).unwrap();
+            let program = fake(dir.path(), stdout, "diagnostic\n", reply);
+            let (returned, _) = at_level(level, &dir.path().join("telemetry"), || {
+                invoke(&program, &cas, dir.path())
+            });
+            let raw: Vec<Vec<u8>> = returned
+                .raw_artifact_ids
+                .iter()
+                .map(|id| cas.get(id).unwrap())
+                .collect();
+            if name == "success" {
+                assert_eq!(returned.message.as_deref(), Ok(&b"OK"[..]), "{level:?}");
+                let turn = session.lines().last().unwrap().to_string() + "\n";
+                assert_eq!(raw, [turn.as_bytes(), b"diagnostic\n", b"OK"], "{level:?}");
+            } else {
+                assert!(returned.message.is_err(), "{level:?}");
+                assert_eq!(raw, [turn_failed.as_bytes(), b"diagnostic\n"], "{level:?}");
+            }
+            seen.push(outcome(&returned, &cas));
+        }
+        for (level, outcome) in LEVELS.iter().zip(&seen) {
+            assert_eq!(outcome, &seen[0], "{name} at {level:?}");
+            assert!(!outcome.contains("native noise"), "{name} at {level:?}");
+            assert!(!outcome.contains("something native"), "{name} at {level:?}");
+        }
+    }
+}

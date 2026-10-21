@@ -1303,6 +1303,31 @@ impl ModelRunner {
         stream: &HarnessStream,
         filter: impl FnOnce(bool, &mut Vec<u8>, &mut Vec<u8>),
     ) -> SettledCapture {
+        self.capture_observed_with_output(
+            cas,
+            command,
+            input,
+            cancellation,
+            stream,
+            |failed, stdout, stderr, _| filter(failed, stdout, stderr),
+        )
+    }
+
+    /// [`Self::capture_observed`] for a harness that also leaves output outside its streams,
+    /// read by the filter once the process has ended (Codex's `-o` final-message file): every
+    /// byte the filter hands to [`FurtherOutput::include`] is part of Telemetry's release
+    /// decision, so login-challenge material there withholds the process's pending content as
+    /// it would in a stream. The decision is taken before the harness tap ends; nothing about
+    /// the process, the filter, classification or accounting changes.
+    pub fn capture_observed_with_output(
+        &self,
+        cas: &Cas,
+        command: &Command,
+        input: Vec<u8>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        stream: &HarnessStream,
+        filter: impl FnOnce(bool, &mut Vec<u8>, &mut Vec<u8>, &mut FurtherOutput),
+    ) -> SettledCapture {
         let (mut capture, harness) = self.supervise(command, input, cancellation, Some(stream));
         let failed = !capture.status.as_ref().is_ok_and(|status| status.success());
         // What the decision reads, over the complete streams, before the filter changes them;
@@ -1314,11 +1339,20 @@ impl ModelRunner {
                 || failed
                     && classify_native_failure(&String::from_utf8_lossy(&capture.stderr))
                         .is_auth());
-        filter(failed, &mut capture.stdout, &mut capture.stderr);
+        let mut further = FurtherOutput {
+            observed,
+            auth: false,
+        };
+        filter(
+            failed,
+            &mut capture.stdout,
+            &mut capture.stderr,
+            &mut further,
+        );
         if let Some(harness) = harness {
             let replaced = NativeFailureKind::replaced_capture(&capture.stdout, &capture.stderr);
             harness.finish(Some(Released {
-                withheld: withheld_before || replaced,
+                withheld: withheld_before || further.auth || replaced,
             }));
         }
         self.store_raw(cas, &mut capture);
@@ -1481,6 +1515,23 @@ impl ModelRunner {
             },
         });
         (capture, Some(harness))
+    }
+}
+
+/// Harness output outside the streams that Telemetry's release decision reads
+/// ([`ModelRunner::capture_observed_with_output`]).
+pub struct FurtherOutput {
+    /// Whether Telemetry observed the process: nothing is read for one it did not.
+    observed: bool,
+    /// Whether any included output carries login-challenge material.
+    auth: bool,
+}
+
+impl FurtherOutput {
+    /// Include the complete `bytes` of one further output in the release decision.
+    pub fn include(&mut self, bytes: &[u8]) {
+        self.auth =
+            self.auth || self.observed && review_telemetry::redact::carries_auth_material(bytes);
     }
 }
 

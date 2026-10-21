@@ -115,6 +115,8 @@ pub fn platform_triple() -> String {
 /// The environment a check ran with, as `Command::env` applies it (a later value of a name
 /// replaces an earlier one), with every runtime path replaced by its placeholder, longest path
 /// first so a nested one is never half-replaced; its digest. The plaintext never leaves here.
+/// Only the path itself and paths under it are replaced ([`replace_path`]): a sibling that merely
+/// begins with the same characters (`/tmp/a-extra` beside `/tmp/a`) is kept as it is.
 pub fn environment_digest(
     environment: &[(String, String)],
     sandbox_root: &Path,
@@ -127,7 +129,8 @@ pub fn environment_digest(
             sandbox_root.display().to_string(),
             SANDBOX_PLACEHOLDER.to_string(),
         )])
-        .filter(|(path, _)| !path.is_empty() && path != "/")
+        .map(|(path, placeholder)| (path.trim_end_matches('/').to_string(), placeholder))
+        .filter(|(path, _)| !path.is_empty())
         .collect();
     replacements.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
     let effective: BTreeMap<&str, String> = environment
@@ -136,7 +139,7 @@ pub fn environment_digest(
             let value = replacements
                 .iter()
                 .fold(value.clone(), |value, (path, placeholder)| {
-                    value.replace(path.as_str(), placeholder)
+                    replace_path(&value, path, placeholder)
                 });
             (name.as_str(), value)
         })
@@ -145,6 +148,29 @@ pub fn environment_digest(
     Ok(sha256(
         &review_store::canonical::canonicalize(&value).map_err(|error| error.to_string())?,
     ))
+}
+
+/// `value` with each occurrence of `path` that names the path itself or one under it replaced by
+/// `placeholder`: the occurrence ends the value or is followed by the path separator `/` or by a
+/// separator between values (`:` of a search path, `;`, `,`, `=`, a quote or white space). An
+/// occurrence the next character continues (`/tmp/a-extra`, `/tmp/ab` for `/tmp/a`) is another
+/// path and is kept.
+fn replace_path(value: &str, path: &str, placeholder: &str) -> String {
+    let mut replaced = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(at) = rest.find(path) {
+        let after = &rest[at + path.len()..];
+        let ends = after.chars().next().is_none_or(|next| {
+            next == '/'
+                || next.is_whitespace()
+                || matches!(next, ':' | ';' | ',' | '=' | '"' | '\'')
+        });
+        replaced.push_str(&rest[..at]);
+        replaced.push_str(if ends { placeholder } else { path });
+        rest = after;
+    }
+    replaced.push_str(rest);
+    replaced
 }
 
 /// The program a check names, resolved as the process start resolves it: a name with a `/`
@@ -373,6 +399,21 @@ mod tests {
             environment_digest(&changed, Path::new("/tmp/a/sandbox/tree"), &paths("/tmp/a"))
                 .unwrap()
         );
+        // A path under a runtime path in a search path is that runtime path's.
+        let mut listed = environment("/tmp/a");
+        listed[0].1 = "/tmp/a/runtime/bin:/usr/bin".into();
+        let mut listed_b = environment("/var/b");
+        listed_b[0].1 = "/var/b/runtime/bin:/usr/bin".into();
+        assert_eq!(
+            environment_digest(&listed, Path::new("/tmp/a/sandbox/tree"), &paths("/tmp/a"))
+                .unwrap(),
+            environment_digest(
+                &listed_b,
+                Path::new("/var/b/sandbox/tree"),
+                &paths("/var/b")
+            )
+            .unwrap()
+        );
         // A later value of one name replaces the earlier one, as the process sees it.
         let mut repeated = environment("/tmp/a");
         repeated.push(("PATH".into(), "/usr/bin:/bin".into()));
@@ -385,5 +426,37 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    /// A sibling of a runtime path that merely begins with its characters is another path: it
+    /// is kept, never collapsed into the placeholder, while the path itself, a path under it and
+    /// a search-path entry naming it are replaced.
+    #[test]
+    fn a_sibling_of_a_runtime_path_is_kept() {
+        let paths = |root: &str| vec![("runtime".to_string(), PathBuf::from(root))];
+        let digest = |root: &str, value: &str| {
+            environment_digest(
+                &[("OTHER".to_string(), value.to_string())],
+                Path::new("/sandbox/tree"),
+                &paths(root),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            replace_path("/tmp/a-extra/bin:/tmp/a/bin:/tmp/a", "/tmp/a", "<runtime>"),
+            "/tmp/a-extra/bin:<runtime>/bin:<runtime>"
+        );
+        assert_eq!(replace_path("/tmp/ab", "/tmp/a", "<runtime>"), "/tmp/ab");
+        assert_eq!(
+            replace_path("--dir=/tmp/a /tmp/a", "/tmp/a", "<runtime>"),
+            "--dir=<runtime> <runtime>"
+        );
+        // The siblings of two different runtime paths stay apart; the paths themselves do not.
+        assert_ne!(
+            digest("/tmp/a", "/tmp/a-extra"),
+            digest("/var/b", "/var/b-extra")
+        );
+        assert_eq!(digest("/tmp/a", "/tmp/a/x"), digest("/var/b", "/var/b/x"));
+        assert_eq!(digest("/tmp/a/", "/tmp/a"), digest("/var/b", "/var/b"));
     }
 }

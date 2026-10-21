@@ -247,7 +247,9 @@ fn telemetry_overhead_copy_is_writable_from_a_read_only_source() {
     });
     assert!(std::fs::write(source.join("repo/bench.json"), b"{}").is_err());
     let work = machine.root.join("work/prepared");
+    // Loaded as a module, the script writes no bytecode cache beside itself.
     let program = "import importlib.util, pathlib, sys\n\
+         sys.dont_write_bytecode = True\n\
          spec = importlib.util.spec_from_file_location('overhead', sys.argv[1])\n\
          overhead = importlib.util.module_from_spec(spec)\n\
          spec.loader.exec_module(overhead)\n\
@@ -321,7 +323,9 @@ fn telemetry_overhead_prepare_runs_no_background_git() {
     }
     let machine = Machine::new();
     let work = machine.root.join("work/prepared");
+    // Loaded as a module, the script writes no bytecode cache beside itself.
     let program = "import importlib.util, pathlib, sys\n\
+         sys.dont_write_bytecode = True\n\
          spec = importlib.util.spec_from_file_location('overhead', sys.argv[1])\n\
          overhead = importlib.util.module_from_spec(spec)\n\
          spec.loader.exec_module(overhead)\n\

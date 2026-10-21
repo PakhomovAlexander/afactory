@@ -44,9 +44,10 @@ pub enum Media {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Document {
     /// The Worker request (`af.worker-request/1`) the kernel composed for an Attempt: the
-    /// artifact and Snapshot ids of its input and feedback values and the identity positions of
-    /// their admitted payloads ([`redact::worker_request_identity_position`]); everything else
-    /// in it is judged whole.
+    /// artifact and Snapshot ids of its input and feedback values and, in the payload of an
+    /// artifact type af owns, the identity positions its schema declares
+    /// ([`redact::WorkerRequestPositions`]); everything else in it, every other
+    /// payload whole, is judged as untrusted JSON.
     WorkerRequest,
     /// A typed record of the kernel's own (a Store event payload, a context manifest): a member
     /// named `id`, `*_id`, `digest` or `*_digest`, an element of an array member named `*_ids`
@@ -67,7 +68,8 @@ impl Media {
     fn redact_json(self, redactor: &Redactor, document: &mut serde_json::Value) -> u32 {
         match self {
             Self::Kernel(Document::WorkerRequest) => {
-                redactor.kernel_json_where(document, &redact::worker_request_identity_position)
+                let positions = redact::WorkerRequestPositions::of(document);
+                redactor.kernel_json_where(document, &|pointer| positions.contains(pointer))
             }
             Self::Kernel(Document::Record) => {
                 redactor.kernel_json_where(document, &redact::record_identity_position)

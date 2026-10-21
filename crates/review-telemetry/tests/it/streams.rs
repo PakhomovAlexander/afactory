@@ -564,7 +564,9 @@ fn telemetry_stream_withheld_until_decision() {
     let ids = &events(&records, "af.harness.ids")[0].attributes;
     assert_eq!(ids["af.stream.withheld"], true);
     assert_eq!(ids["af.native.withheld"], true);
+    assert_eq!(ids["af.harness.ids.count"], 2);
     assert!(ids.get("af.harness.ids").is_none());
+    assert!(events(&records, "af.harness.ids.part").is_empty());
 }
 
 #[test]
@@ -621,7 +623,72 @@ fn telemetry_harness_ids_never_published_live() {
         );
         assert_eq!(released.withheld_ids, 2, "{kind:?}");
         assert_eq!(ids["af.harness.ids.withheld"], 2, "{kind:?}");
+        // Every identifier admitted, counted before the release drained them: the token, the
+        // challenge and the plain one.
+        assert_eq!(ids["af.harness.ids.count"], 3, "{kind:?}");
+        assert_eq!(ids["af.harness.ids.parts"], 0, "{kind:?}");
         assert_eq!(after.matches(plain.as_str()).count(), 1, "{kind:?}");
+    }
+}
+
+/// A process with more distinct harness identifiers than one record's array holds (more than
+/// 32, and more bytes than one array takes) keeps every admitted mapping: the `af.harness.ids`
+/// event lists the first part and says how many `af.harness.ids.part` events follow it, each
+/// within the record bounds and cut nowhere, and `af.harness.ids.count` counts them all.
+#[test]
+fn telemetry_harness_ids_beyond_one_record_are_all_kept() {
+    // Short identifiers fill a part's 32 elements; long ones its bytes first.
+    for (count, filler, parts_expected) in [(40, 0, 1), (100, 120, 3)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (writer, options) = harness(dir.path(), Level::Spans, Harness::Codex);
+        let mut tap = Tap::new(&writer, options);
+        let originals: Vec<String> = (0..count)
+            .map(|index| format!("item_{index:03}_{}", "x".repeat(filler)))
+            .collect();
+        let mut lines = vec![json!({"type":"turn.started"}).to_string()];
+        lines.extend(originals.iter().map(|id| {
+            json!({"type":"item.completed","item":{"id":id,"type":"agent_message","text":"ok"}})
+                .to_string()
+        }));
+        lines.push(
+            json!({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}})
+                .to_string(),
+        );
+        let bytes = feed(&mut tap, &writer, Stream::Stdout, &lines, 1);
+        let released = tap.finish(&writer, &release(bytes, 0, false));
+        assert_eq!(released.ids.len(), originals.len());
+        let (records, _) = live(&writer);
+        let segment = writer.segment_id().unwrap();
+        let ids = &events(&records, "af.harness.ids")[0].attributes;
+        assert_eq!(ids["af.harness.ids.count"], originals.len());
+        assert_eq!(ids["af.harness.ids.withheld"], 0);
+        let parts = events(&records, "af.harness.ids.part");
+        assert_eq!(parts.len(), parts_expected, "{count}");
+        assert_eq!(ids["af.harness.ids.parts"], parts.len());
+        if filler == 0 {
+            assert_eq!(ids["af.harness.ids"].as_array().unwrap().len(), 32);
+        }
+        let mut listed = Vec::new();
+        for (ordinal, attributes) in std::iter::once(ids)
+            .chain(parts.iter().map(|part| &part.attributes))
+            .enumerate()
+        {
+            if ordinal > 0 {
+                assert_eq!(attributes["af.harness.ids.part"], ordinal);
+            }
+            assert!(
+                attributes.get("af.truncated_fields").is_none(),
+                "{attributes:?}"
+            );
+            let part = attributes["af.harness.ids"].as_array().unwrap();
+            assert!(!part.is_empty() && part.len() <= 32, "{}", part.len());
+            listed.extend(part.iter().map(|text| text.as_str().unwrap().to_string()));
+        }
+        let expected: Vec<String> = originals
+            .iter()
+            .map(|original| format!("{} {original}", corr(&segment, original)))
+            .collect();
+        assert_eq!(listed, expected, "{count}");
     }
 }
 

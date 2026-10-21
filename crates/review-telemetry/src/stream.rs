@@ -37,14 +37,17 @@
 //! tool analysis.
 //!
 //! **The release decision** ([`Release`]) is Telemetry's own, taken once the process has ended
-//! over its complete streams, before any pending byte goes anywhere: when either stream carries
+//! over its complete streams and any output the harness left outside them (Codex's `-o` final
+//! message), before any pending byte goes anywhere: when any of them carries
 //! login-challenge material (`carries_auth_material`), when the adapter replaced the streams, or
 //! when the native failure classification is an authentication one, every pending byte and
 //! every pending identifier of the process is withheld (`af.stream.withheld`). Otherwise the
 //! pending content passes the grant replacement and the credential rules on its assembled,
 //! complete lines — so a grant split across two chunks is still replaced — and is handed on
 //! ([`Released`]), and one `af.harness.ids` event lists each correlation id with its original,
-//! each original having passed the credential rules.
+//! each original having passed the credential rules; a list longer than one record holds
+//! continues in the `af.harness.ids.part` events that follow it, as many as its
+//! `af.harness.ids.parts` says.
 //!
 //! **Content** (package P7, [`crate::content`]). At `content`, after a release that withheld
 //! nothing, the pending content becomes blobs, each named by one event on the turn or tool span
@@ -65,7 +68,7 @@ use sha2::{Digest, Sha256};
 use crate::blob::Media;
 use crate::content::{self, Scope};
 use crate::level::Level;
-use crate::record::{Attrs, SpanKind, SpanStatus};
+use crate::record::{Attrs, MAX_ARRAY_BYTES, MAX_ARRAY_ELEMENTS, SpanKind, SpanStatus};
 use crate::redact::{self, Redactor};
 use crate::segment::writer::Writer;
 use crate::subscriber::SpanIdentity;
@@ -139,9 +142,13 @@ pub mod event {
     pub const GAP: &str = "af.stream.gap";
     /// A frame too long to judge, discarded whole, on `af.harness`.
     pub const FRAME_WITHHELD: &str = "af.stream.frame_withheld";
-    /// After the release decision: the correlation ids with their originals and the stream's
-    /// counts, on `af.harness`. One per process.
+    /// After the release decision: the correlation ids with their originals (the first part of
+    /// them) and the stream's counts, on `af.harness`. One per process.
     pub const IDS: &str = "af.harness.ids";
+    /// After [`IDS`], on `af.harness`: each further part of the released originals, as many as
+    /// its `af.harness.ids.parts` says, so every admitted mapping is kept whole within the record
+    /// bounds.
+    pub const IDS_PART: &str = "af.harness.ids.part";
 }
 
 /// What the tap is told about the process it observes.
@@ -278,6 +285,26 @@ pub struct Released {
 const MAX_ID_BYTES: usize = 256;
 /// The most identifiers pended per process.
 const MAX_IDS: usize = 4096;
+
+/// The released `(af.corr, original)` mappings as `corr original` texts, in order, cut into the
+/// parts one record holds whole: at most [`MAX_ARRAY_ELEMENTS`] texts and [`MAX_ARRAY_BYTES`]
+/// bytes each, so the record writer never cuts one.
+fn id_parts(ids: &[(String, String)]) -> Vec<Vec<String>> {
+    let mut parts: Vec<Vec<String>> = Vec::new();
+    let mut bytes = 0;
+    for (corr, original) in ids {
+        let text = format!("{corr} {original}");
+        if parts.last().is_none_or(|part| {
+            part.len() == MAX_ARRAY_ELEMENTS || bytes + text.len() > MAX_ARRAY_BYTES
+        }) {
+            parts.push(Vec::new());
+            bytes = 0;
+        }
+        bytes += text.len();
+        parts.last_mut().expect("a part").push(text);
+    }
+    parts
+}
 
 /// The correlation id of a harness identifier in `segment_id`: the first 16 hex digits of
 /// `SHA-256(segment_id ":" original)`.
@@ -1463,6 +1490,8 @@ impl Tap {
             }
         }
         self.finished = true;
+        // Every identifier admitted to the pending buffer, counted before the release drains it.
+        let admitted = self.ids.len();
         let released = self.release(writer, release);
         if released.dropped_contents > 0 {
             // The pending buffer is the Attempt's content allowance too: past it, the one
@@ -1475,7 +1504,7 @@ impl Tap {
         let mut attrs = Attrs::new()
             .boolean("af.stream.withheld", release.withheld)
             .boolean("af.native.withheld", release.native_withheld)
-            .int("af.harness.ids.count", self.ids.len() as i64)
+            .int("af.harness.ids.count", admitted as i64)
             .int("af.harness.ids.withheld", released.withheld_ids as i64)
             .int("af.stream.lines", self.lines as i64)
             .int("af.stream.unparsed_lines", self.unparsed_lines as i64)
@@ -1510,17 +1539,25 @@ impl Tap {
                 .boolean("af.content.reasoning", self.options.content_reasoning)
                 .boolean("af.content.tool_io", self.options.content_tool_io);
         }
+        let mut parts = Vec::new();
         if !released.withheld {
-            attrs = attrs.texts(
-                "af.harness.ids",
-                released
-                    .ids
-                    .iter()
-                    .map(|(corr, original)| format!("{corr} {original}"))
-                    .collect(),
-            );
+            parts = id_parts(&released.ids);
+            let first = if parts.is_empty() {
+                Vec::new()
+            } else {
+                parts.remove(0)
+            };
+            attrs = attrs
+                .texts("af.harness.ids", first)
+                .int("af.harness.ids.parts", parts.len() as i64);
         }
         self.on_harness(writer, event::IDS, attrs, end);
+        for (ordinal, part) in parts.into_iter().enumerate() {
+            let attrs = Attrs::new()
+                .int("af.harness.ids.part", ordinal as i64 + 1)
+                .texts("af.harness.ids", part);
+            self.on_harness(writer, event::IDS_PART, attrs, end);
+        }
         released
     }
 
