@@ -422,12 +422,14 @@ mod tests {
         assert!(render_status(&over).contains("— over"));
     }
 
-    /// At `metrics` the segment header records exactly the subcommand chain clap parsed, passed
-    /// to `Telemetry::start` by its caller: `af provider setup alice --kind claude` records
-    /// `provider setup`, never the positional `alice` a guess from leading lower-case words
-    /// would take; without a chain it records `argv[0]` alone (audit E1).
+    /// At `metrics` the segment header records exactly the subcommand chain its caller passes
+    /// to `Telemetry::start`: this test parses `af provider setup alice --kind claude` with clap
+    /// itself and passes `provider setup`, never the positional `alice` a guess from leading
+    /// lower-case words would take; without a chain it records `argv[0]` alone (audit E1). It
+    /// calls `Telemetry::start` directly: no production path of this release starts telemetry,
+    /// so it exercises no CLI start path.
     #[test]
-    fn the_metrics_header_records_the_parsed_subcommand_chain() {
+    fn the_metrics_header_records_the_subcommand_chain_its_caller_passes() {
         use clap::CommandFactory as _;
         use review_telemetry::level::Level;
         use review_telemetry::record::{Attrs, Record, SealExit, SpanKind, SpanStatus};

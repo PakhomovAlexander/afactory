@@ -502,6 +502,31 @@ fn review_plan_text_output_shows_control_characters_in_changed_paths_escaped() {
     assert!(json.contains(r#""esc\u001b]0;PWNED\u0007name""#), "{json}");
 }
 
+/// The `--repo` of `af review plan` comes from the command line: one holding ESC, BEL or a
+/// newline that cannot be opened is named in the error with every control character escaped
+/// visibly, so it neither drives the terminal nor forges a line (audit C3).
+#[test]
+fn review_plan_names_a_repo_it_cannot_open_with_control_characters_escaped() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("esc\u{1b}]0;PWNED\u{7}repo\nforged");
+    let planned = af(
+        &root.path().join("state"),
+        &["review", "plan", "--repo", repo.to_str().unwrap()],
+    );
+    assert_eq!(planned.status.code(), Some(1), "{}", stderr(&planned));
+    let text = stderr(&planned);
+    assert!(
+        !text.chars().any(|c| c.is_control() && c != '\n'),
+        "raw control characters:\n{text}"
+    );
+    assert_eq!(text.lines().count(), 1, "a forged line:\n{text}");
+    assert!(
+        text.starts_with("af review: opening repository ")
+            && text.contains("esc\\u{1b}]0;PWNED\\u{7}repo\\u{a}forged: "),
+        "{text}"
+    );
+}
+
 /// Pipeline node IDs are repository-authored too: a reviewer and a gather node whose IDs hold
 /// ESC and BEL (written as TOML unicode escapes) reach no terminal raw through any line of
 /// `af review plan`'s text output — topology, edges, reservations, input sizes or providers.

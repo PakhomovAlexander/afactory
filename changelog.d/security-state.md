@@ -4,7 +4,10 @@
   marker `.af-store`. The sweep, `af storage prune --apply`, `af review gc --state-root` and
   `af self uninstall --purge` remove a Store outside af's roots whole only while it is marked and
   holds nothing but af's entries, each known by its exact name (`notes.lock`, `backup.lock` or
-  `events.sqlite.notes` is never af's); otherwise they remove af's entries alone and name what they
+  `events.sqlite.notes` is never af's), and a removal claim only when its name
+  (`.af-removing-<pid>-<device>-<inode>`, as removals now name it) binds the very directory it
+  holds, so a user's `.af-removing-1-2-3` is kept, reported and not measured, and the sweep
+  finishes only such proven claims; otherwise they remove af's entries alone and name what they
   left (`left` in `af/storage-prune@1`), and such a Store counts only af's entries against the
   budget. af's state and telemetry directories are created `0700` and its files there `0600`
   (the SQLite `-wal` and `-shm` included) whatever the umask, and an open af-owned root is

@@ -689,8 +689,7 @@ fn a_store_still_being_created_is_no_collection_failure() {
 #[test]
 fn a_removal_a_dead_process_left_claimed_is_finished_and_reported_by_the_sweep() {
     let layout = layout();
-    let claim = layout.roots.campaigns.join(".af-removing-999999999-7-0");
-    std::fs::create_dir_all(claim.join("cas")).unwrap();
+    let claim = dead_claim(&layout.roots.campaigns.join("campaign"));
     std::fs::write(claim.join("cas/object"), vec![1_u8; 64 * 1024]).unwrap();
     let report = sweep(&layout.roots, &policy(20 << 30), false, true);
     assert!(!claim.exists(), "the claim is finished");
@@ -708,6 +707,16 @@ fn a_removal_a_dead_process_left_claimed_is_finished_and_reported_by_the_sweep()
     let recorded = observation(&report)
         .unwrap_or_else(|| panic!("a sweep that removed something is recorded: {report:?}"));
     assert_eq!(recorded.removals.len(), 1);
+}
+
+/// `directory` with a `cas` in it, claimed as a removal by a process that has since died left
+/// it: renamed to the claim name that binds its device and inode.
+fn dead_claim(directory: &Path) -> PathBuf {
+    std::fs::create_dir_all(directory.join("cas")).unwrap();
+    let identity = review_sandbox::Identity::of(directory).unwrap();
+    let claim = directory.with_file_name(review_sandbox::claim_name(999_999_999, identity));
+    std::fs::rename(directory, &claim).unwrap();
+    claim
 }
 
 /// A review Store registered outside af's roots (`--state`), as a run makes one; `marked` when
@@ -830,12 +839,18 @@ fn purge_removes_a_marked_af_only_store_whole_and_only_afs_entries_of_any_other(
 }
 
 /// V1 of the security close-out: a Store entry is af's only by its exact name. A file named
-/// like one of af's but not one (`notes.lock`, `backup.lock`, `events.sqlite.notes`) beside a
-/// marked Store is not measured, keeps the Store from going whole, and survives the budget sweep,
-/// `af storage prune --apply` and `af self uninstall --purge`, each named as left.
+/// like one of af's but not one (`notes.lock`, `backup.lock`, `events.sqlite.notes`, and a
+/// claim-shaped `.af-removing-1-2-3` that binds no claim af made, audit C2) in a marked Store is
+/// not measured, keeps the Store from going whole, and survives the budget sweep, `af storage
+/// prune --apply` and `af self uninstall --purge`, each named as left.
 #[test]
 fn a_name_only_like_afs_survives_every_removal_and_is_not_measured() {
-    for name in ["notes.lock", "backup.lock", "events.sqlite.notes"] {
+    for name in [
+        "notes.lock",
+        "backup.lock",
+        "events.sqlite.notes",
+        ".af-removing-1-2-3",
+    ] {
         let user = |layout: &Layout, store: &str| {
             let path = outside_store(layout, store, true, false);
             std::fs::write(path.join(name), vec![7_u8; 4 * CHUNK]).unwrap();
@@ -930,4 +945,96 @@ fn a_name_only_like_afs_survives_every_removal_and_is_not_measured() {
             .collect();
         assert_eq!(left, [name], "only {name} is left by the purge");
     }
+}
+
+/// C2 of the security close-out: a claim af made in a Store, left by a removal a dead process
+/// interrupted, is af's and goes with the Store; a user's claim-shaped file beside it is not af's,
+/// is not measured, and keeps the Store's directory through the budget sweep, `af storage prune
+/// --apply` and `af self uninstall --purge`.
+#[test]
+fn an_interrupted_claim_in_a_store_is_afs_and_a_claim_shaped_user_file_is_not() {
+    let user = ".af-removing-1-2-3";
+    let with_claim = |layout: &Layout, store: &str, foreign: bool| {
+        let path = outside_store(layout, store, true, false);
+        let claim = dead_claim(&path.join("git-home"));
+        std::fs::write(claim.join("cas/object"), vec![1_u8; 4 * CHUNK]).unwrap();
+        if foreign {
+            std::fs::write(path.join(user), vec![7_u8; 4 * CHUNK]).unwrap();
+        }
+        age(&path, 3 * DAY);
+        (path, claim)
+    };
+    let check = |path: &Path, claim: &Path, left: &[PathBuf], how: &str| {
+        assert!(!claim.exists(), "af's claim is cleaned by {how}");
+        assert_eq!(
+            std::fs::read(path.join(user)).unwrap(),
+            vec![7_u8; 4 * CHUNK],
+            "{user} survives {how}"
+        );
+        assert_eq!(
+            left,
+            [path.to_path_buf(), path.join(user)],
+            "{user} is left by {how}"
+        );
+    };
+
+    let first = layout();
+    let (swept, claim) = with_claim(&first, "swept", true);
+    let (whole, whole_claim) = with_claim(&first, "whole", false);
+    register_reviews(&first, &[&swept, &whole]);
+    let without_user = owned::af_bytes(&whole).unwrap();
+    assert!(without_user >= 4 * CHUNK as u64, "af's claim is measured");
+    assert!(
+        owned::af_bytes(&swept).unwrap() < without_user + CHUNK as u64,
+        "{user} is not measured"
+    );
+    let report = sweep(&first.roots, &policy(1024), false, true);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    let removal = |path: &Path| {
+        report
+            .removals
+            .iter()
+            .find(|removal| removal.path == path)
+            .unwrap_or_else(|| panic!("{} in {report:?}", path.display()))
+            .left
+            .clone()
+    };
+    check(&swept, &claim, &removal(&swept), "the sweep");
+    assert!(removal(&whole).is_empty(), "{:?}", removal(&whole));
+    assert!(
+        !whole.exists() && !whole_claim.exists(),
+        "a marked Store holding af's own claim goes whole"
+    );
+
+    let second = layout();
+    let (pruned, claim) = with_claim(&second, "pruned", true);
+    register_reviews(&second, &[&pruned]);
+    let report = sweep(&second.roots, &policy(1024), true, true);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    let left = report
+        .removals
+        .iter()
+        .find(|removal| removal.path == pruned)
+        .unwrap_or_else(|| panic!("{} in {report:?}", pruned.display()))
+        .left
+        .clone();
+    check(&pruned, &claim, &left, "prune --apply");
+
+    let third = layout();
+    let (purged, claim) = with_claim(&third, "purged", true);
+    register_reviews(&third, &[&purged]);
+    let lines = purge_registered(&registry::read(&third.roots.registry).unwrap());
+    assert!(!claim.exists(), "af's claim is cleaned by the purge");
+    assert!(purged.is_dir(), "{user} keeps the purged Store's directory");
+    assert!(
+        lines.iter().any(
+            |line| line.contains("left the directory with what is not af's") && line.contains(user)
+        ),
+        "{lines:?}"
+    );
+    let left: Vec<String> = std::fs::read_dir(&purged)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, [user], "only {user} is left by the purge");
 }

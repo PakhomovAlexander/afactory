@@ -88,9 +88,13 @@ review.
 sandbox is a materialised copy of a snapshot in a temporary directory. It keeps the input
 immutable and captures every mutation; it does not stop a process running as your user from
 reading what you can read, writing to absolute paths, or opening sockets. The README says
-the same. On Linux a shell Attempt or a local check ends, besides its process group, every
-descendant that left the group with `setsid` before its tree is sealed; on macOS such a
-descendant can outlive it and write into its tree.
+the same. On Linux, while af is a child subreaper, a shell Attempt or a local check ends,
+besides its process group and before its tree is sealed, every descendant that keeps the
+`AF_PROCESS_TREE` value it inherited from the run's leader, whatever its session or group
+(`setsid`, a `set -m` job); a run never ends a process another live run started. A descendant
+that clears or replaces that variable and leaves its run's process group can outlive the run and
+write into its tree, on Linux as on macOS, where the cleanup is the process-group kill alone.
+This cleanup is no security boundary: run code you do not trust under `container` isolation.
 
 **`container` is the isolation boundary.** The `container` sandbox runs
 `--rm --network=none --env-file /dev/null --pids-limit 4096 --cap-drop=ALL

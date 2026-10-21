@@ -273,8 +273,9 @@ covered. The environment a check runs with is not the sandbox's doing: the check
 (`review_check::CheckRunner`) clears it and rebuilds it from an allowlist, with a `PATH` of
 existing absolute directories only, and a container run starts from `--env-file /dev/null` plus
 the declared variables. A host-local check ends with its process group, and on Linux with every
-descendant that left the group (`setsid`), before its tree is sealed; on macOS such a descendant
-can outlive it. Each output stream of a check or a Worker is kept to 64 MiB: the rest is read
+descendant that left the group (`setsid`) but kept the `AF_PROCESS_TREE` value it inherited,
+before its tree is sealed; one that clears or replaces that variable, and on macOS any such
+descendant, can outlive it. Each output stream of a check or a Worker is kept to 64 MiB: the rest is read
 and discarded so the process never blocks, and a check or an Attempt that wrote more fails,
 naming the cap.
 

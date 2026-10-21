@@ -112,17 +112,21 @@ that calls `setsid` (or moves to a group of its own) leaves it. `ModelRunner` no
 the leader is reaped af kills and reaps every member of the group, every child of its own that
 started with this run's `AF_PROCESS_TREE` value (which the leader is given and every descendant
 inherits, so a `setsid` child or a `set -m` job in another group of the same session is told from
-any other run's, however many Attempts and checks one af runs at once), while no other such run
-is live also every child of its own that started after the leader in another session, and every
-descendant of any of these, until none is left. A process af did not start is never its child and
-never touched. The guarantee holds on Linux only while the subreaper is set: when
+any other run's, however many Attempts and checks one af runs at once), and every descendant of
+any of these, until none is left. Whether an orphan is this run's is decided only from the value
+it inherited, fixed when it was created, never from how many runs are live while af looks: a run
+never ends a process another live run started. So a descendant that keeps its inherited
+`AF_PROCESS_TREE` value is ended whatever its session or group, and one that clears or replaces
+that variable and leaves the run's process group can outlive the Attempt and write into its
+tree, on Linux as on macOS. A process af did not start is never its child and never touched.
+The guarantee holds on Linux only while the subreaper is set: when
 `PR_SET_CHILD_SUBREAPER` cannot be set, af says so once per process on stderr, and every check
 records in its `reason`, and every Attempt in its stored stderr, that descendant cleanup fell back
 to the process-group kill. On macOS the policy is the group kill alone: under `trusted_local` a
 `setsid` child can outlive the Attempt and write into its tree, before or while the kernel seals
 it.
-`trusted_local` is no security boundary; a project that needs one demands container isolation,
-where the container is removed whole. The check runner selects the same policy for every
+`trusted_local` is no security boundary; a project that runs code it does not trust demands
+container isolation, where the container is removed whole. The check runner selects the same policy for every
 host-local check.
 
 ## Consequences

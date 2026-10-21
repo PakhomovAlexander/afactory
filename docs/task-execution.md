@@ -129,7 +129,9 @@ What it never grants:
   ([ADR-0120](adr/0120-give-a-source-writing-worker-a-shell.md)).
 - More time or tokens. The Attempt's wall clock and token reservation apply unchanged. With this
   access the adapter ends the whole process group when the model process exits, through the
-  supervised process-group path in `review-process`, so a shell child cannot outlive the Attempt.
+  supervised process-group path in `review-process`, so a shell child in that group cannot
+  outlive the Attempt; on Linux neither can one that left it but kept its inherited
+  `AF_PROCESS_TREE` value ([ADR-0118](adr/0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md)).
 - Isolation beyond what the installed sandbox provider gives. The `trusted_local` provider is still
   not security isolation; the Task's captured isolation requirement still decides admission.
 

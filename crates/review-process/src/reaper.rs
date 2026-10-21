@@ -14,12 +14,16 @@
 //! - every child of the supervisor that started with this run's variable: an orphan of this
 //!   run's tree, in whatever session or group, and never one of another run's, however many
 //!   runs one supervisor has at once;
-//! - while no other such run is live in this process, also every child of the supervisor in
-//!   another session than the supervisor's and without a controlling terminal, started after
-//!   the leader, that is no supervised leader: an orphan that called `setsid` with a cleared
-//!   environment. A child the supervisor starts on a pseudo-terminal of its own (a Provider
-//!   probe) has one, and is never taken for an orphan;
 //! - every descendant of the leader or of any of these, found through its parent.
+//!
+//! Whether an orphan is this run's is decided only from what was fixed when it was created, the
+//! variable's value it inherited, never from how many runs are live when the scan looks: a run
+//! never ends a process another live run started. So a descendant that keeps its inherited
+//! value is ended whatever its session or group; one that clears or replaces the variable
+//! *and* leaves the run's process group is no longer told from any other process, and can
+//! outlive the run, on Linux as elsewhere (until its parent dies, it is found through it).
+//! This cleanup keeps a well-behaved run's tree from being written after it is sealed; it is no
+//! security boundary, and code that is not trusted runs in a container.
 //!
 //! Only the supervisor's own children are signalled and reaped by pid, which is exact: a child's
 //! pid cannot be reused before its parent reaps it. A descendant of a live parent is reached
@@ -32,16 +36,13 @@
 //! Elsewhere this module ends the group alone.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The variable every process of a [`Tree`] starts with: the run that started it.
 pub const TREE_VARIABLE: &str = "AF_PROCESS_TREE";
 
 /// Why descendant cleanup in this process fell back to the process-group kill, once known.
 static FALLBACK: OnceLock<String> = OnceLock::new();
-
-/// The [`Tree`]s live in this process.
-static LIVE_TREES: AtomicUsize = AtomicUsize::new(0);
 
 /// Why descendant cleanup in this process falls back to the process-group kill: on Linux, the
 /// reason af could not become a child subreaper, recorded by the first run that needed it.
@@ -81,8 +82,7 @@ fn record_adoption(fallback: &OnceLock<String>, adopted: Result<(), String>) {
     }
 }
 
-/// One run whose descendants must not outlive it: its leader is marked with [`TREE_VARIABLE`],
-/// and the run counts as live in this process until dropped.
+/// One run whose descendants must not outlive it: its leader is marked with [`TREE_VARIABLE`].
 pub(crate) struct Tree {
     token: String,
 }
@@ -98,7 +98,6 @@ impl Tree {
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
         command.env(TREE_VARIABLE, &token);
-        LIVE_TREES.fetch_add(1, Ordering::AcqRel);
         Self { token }
     }
 
@@ -106,19 +105,9 @@ impl Tree {
     /// leader itself is left for its own reap. Bounded by [`crate::OUTPUT_DRAIN_GRACE`].
     pub(crate) fn end_escaped(&self, leader: u32) {
         #[cfg(target_os = "linux")]
-        linux::end_escaped(
-            leader,
-            &format!("{TREE_VARIABLE}={}", self.token),
-            LIVE_TREES.load(Ordering::Acquire) == 1,
-        );
+        linux::end_escaped(leader, &format!("{TREE_VARIABLE}={}", self.token));
         #[cfg(not(target_os = "linux"))]
         let _ = (leader, &self.token);
-    }
-}
-
-impl Drop for Tree {
-    fn drop(&mut self) {
-        LIVE_TREES.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -137,9 +126,6 @@ mod linux {
         zombie: bool,
         parent: i32,
         group: i32,
-        session: i32,
-        /// The controlling terminal's device number; 0 for none.
-        terminal: i32,
         /// Clock ticks after boot: with the pid, the process's identity.
         start: u64,
     }
@@ -153,8 +139,6 @@ mod linux {
             zombie: *fields.first()? == "Z",
             parent: fields.get(1)?.parse().ok()?,
             group: fields.get(2)?.parse().ok()?,
-            session: fields.get(3)?.parse().ok()?,
-            terminal: fields.get(4)?.parse().ok()?,
             start: fields.get(19)?.parse().ok()?,
         })
     }
@@ -178,18 +162,24 @@ mod linux {
         })
     }
 
-    /// `marker` is this run's `NAME=value`; `alone` whether no other run is live in this
-    /// process, so that an unmarked `setsid` orphan can only be this run's.
-    pub(super) fn end_escaped(leader: u32, marker: &str, alone: bool) {
+    /// `marker` is this run's `NAME=value`.
+    pub(super) fn end_escaped(leader: u32, marker: &str) {
+        end_escaped_with(leader, marker, || {});
+    }
+
+    /// [`end_escaped`], calling `before_pass` before each read of the process table: how a
+    /// test starts another run while this one is scanning.
+    fn end_escaped_with(leader: u32, marker: &str, mut before_pass: impl FnMut()) {
         let me = std::process::id() as i32;
         let leader = leader as i32;
-        let (Some(own), Some(led)) = (stat(me), stat(leader)) else {
+        if stat(leader).is_none() {
             return;
-        };
+        }
         let deadline = Instant::now() + crate::OUTPUT_DRAIN_GRACE;
         // Every process found to belong to the run, by pid and start time.
         let mut tracked: BTreeMap<i32, u64> = BTreeMap::new();
         loop {
+            before_pass();
             let table = processes();
             tracked.retain(|pid, start| table.get(pid).is_some_and(|s| s.start == *start));
             let supervised: BTreeSet<i32> = crate::live_process_groups()
@@ -204,15 +194,11 @@ mod linux {
                 {
                     continue;
                 }
+                // Only facts fixed when the process was created: its group, and the run its
+                // inherited variable names. Never how many runs are live now.
                 let member = s.group == leader;
-                let child = s.parent == me;
-                let marked = child && !s.zombie && started_with(*pid, marker);
-                let escaped = alone
-                    && child
-                    && s.session != own.session
-                    && s.terminal == 0
-                    && s.start >= led.start;
-                if member || marked || escaped {
+                let marked = s.parent == me && !s.zombie && started_with(*pid, marker);
+                if member || marked {
                     tracked.insert(*pid, s.start);
                 }
             }
@@ -272,6 +258,93 @@ mod linux {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::{ExitPolicy, run_supervised_captured_with_policy};
+        use std::process::Command;
+
+        fn scratch() -> std::path::PathBuf {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "af-reaper-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            path
+        }
+
+        /// C1 of the security close-out: run A is already scanning when run B starts, and B's
+        /// two `setsid` orphans become this process's children, one with B's variable and one
+        /// that cleared it. A ends its own `set -m` job and leaves both of B's alone: whether an
+        /// orphan is A's is decided from the variable it inherited, never from how many runs
+        /// are live when A looks.
+        #[test]
+        fn a_scanning_run_leaves_alone_the_orphans_of_a_run_started_since() {
+            let directory = scratch();
+            let mut first = Command::new("bash");
+            first.current_dir(&directory).args([
+                "-c",
+                "set -m; (sleep 2; touch ours) </dev/null >/dev/null 2>&1 & disown; exit 0",
+            ]);
+            let tree = crate::reaper::Tree::new(&mut first);
+            std::os::unix::process::CommandExt::process_group(&mut first, 0);
+            let mut leader = first.spawn().unwrap();
+            let pid = leader.id();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            // Exited and still unreaped, as `end_escaped` finds a run's leader.
+            while !stat(pid as i32).is_some_and(|s| s.zombie) {
+                assert!(Instant::now() < deadline, "the first leader never exited");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let orphaned = directory.join("orphaned");
+            let mut second = None;
+            let marker = format!("{}={}", crate::TREE_VARIABLE, tree.token);
+            end_escaped_with(pid, &marker, || {
+                if second.is_some() {
+                    return;
+                }
+                let directory = directory.clone();
+                second = Some(std::thread::spawn(move || {
+                    let mut command = Command::new("bash");
+                    command.current_dir(&directory).args([
+                        "-c",
+                        r#"(setsid sh -c 'sleep 2; touch marked' &
+                            env -u AF_PROCESS_TREE setsid sh -c 'sleep 2; touch cleared' &
+                           ) </dev/null >/dev/null 2>&1
+                           touch orphaned; sleep 4"#,
+                    ]);
+                    run_supervised_captured_with_policy(
+                        &mut command,
+                        None,
+                        Duration::from_secs(120),
+                        ExitPolicy::KillDescendants,
+                    )
+                }));
+                // Both orphans are this process's children before A reads the table again.
+                while !orphaned.exists() {
+                    assert!(Instant::now() < deadline, "the second run never started");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            });
+            leader.wait().unwrap();
+            let second = second.expect("the first run scanned").join().unwrap();
+            assert!(second.status.unwrap().success());
+            for theirs in ["marked", "cleared"] {
+                assert!(
+                    directory.join(theirs).exists(),
+                    "the first run ended the second run's {theirs} orphan"
+                );
+            }
+            assert!(
+                !directory.join("ours").exists(),
+                "a set -m job outlived its run"
+            );
+            std::fs::remove_dir_all(&directory).unwrap();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -296,7 +369,7 @@ mod tests {
         assert_eq!(fallback.get(), Some(reason), "once per process");
     }
 
-    /// Every run marks its leader with a token of its own, and counts as live until dropped.
+    /// Every run marks its leader with a token of its own.
     #[test]
     fn every_tree_marks_its_leader_with_its_own_token() {
         let mut first = std::process::Command::new("true");
@@ -312,6 +385,5 @@ mod tests {
         };
         assert_eq!(value(&first).as_deref(), Some(a.token.as_str()));
         assert_eq!(value(&second).as_deref(), Some(b.token.as_str()));
-        assert!(LIVE_TREES.load(Ordering::Acquire) >= 2);
     }
 }

@@ -12,6 +12,7 @@
 //! effective user owns them.
 
 use std::ffi::{OsStr, OsString};
+use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
 use review_store::local_fs;
@@ -50,27 +51,19 @@ const AF_ENTRIES: [&str; 12] = [
     "task-delivery-lock.sqlite-journal",
 ];
 
-/// Whether `name` is an entry af itself writes directly in a Store directory: exactly one of
-/// [`AF_ENTRIES`], or a claim a removal of one of them left, exactly as
-/// `review_sandbox::remove_tree_at` names it (`.af-removing-<pid>-<nanos>-<n>`). No prefix,
-/// suffix or extension makes a name af's: `notes.lock`, `backup.lock` and
-/// `events.sqlite.notes` are the user's.
-pub(crate) fn is_af_entry(name: &OsStr) -> bool {
-    let Some(name) = name.to_str() else {
-        return false;
-    };
-    AF_ENTRIES.contains(&name) || is_removal_claim(name)
+/// Whether `name` is an entry af itself writes directly in the opened Store directory `store`:
+/// exactly one of [`AF_ENTRIES`], or a claim a removal of one of them left, as
+/// `review_sandbox::claim_owner_at` proves it against what is on disk (its name binds the very
+/// directory it holds). No prefix, suffix or extension makes a name af's: `notes.lock`,
+/// `backup.lock`, `events.sqlite.notes` and a claim-shaped `.af-removing-1-2-3` that binds no
+/// directory there are the user's.
+pub(crate) fn is_af_entry(store: impl AsFd, name: &OsStr) -> bool {
+    is_af_name(name) || review_sandbox::claim_owner_at(store, name).is_some()
 }
 
-/// A removal claim's exact name: `.af-removing-` and three decimal fields.
-fn is_removal_claim(name: &str) -> bool {
-    name.strip_prefix(".af-removing-").is_some_and(|rest| {
-        let fields: Vec<&str> = rest.split('-').collect();
-        fields.len() == 3
-            && fields
-                .iter()
-                .all(|field| !field.is_empty() && field.bytes().all(|byte| byte.is_ascii_digit()))
-    })
+/// Whether `name` is exactly one of [`AF_ENTRIES`].
+fn is_af_name(name: &OsStr) -> bool {
+    name.to_str().is_some_and(|name| AF_ENTRIES.contains(&name))
 }
 
 /// Whether `name` is one of the event log's files, which a partial removal takes last.
@@ -80,12 +73,15 @@ fn is_event_log(name: &OsStr) -> bool {
 
 /// What a directory holds, as the ownership rule sees it.
 struct Holdings {
+    directory: OwnedFd,
     names: Vec<OsString>,
 }
 
 impl Holdings {
     fn foreign(&self) -> impl Iterator<Item = &OsString> {
-        self.names.iter().filter(|name| !is_af_entry(name))
+        self.names
+            .iter()
+            .filter(|name| !is_af_entry(&self.directory, name))
     }
 }
 
@@ -105,7 +101,9 @@ fn holdings(path: &Path) -> Result<Option<Holdings>, String> {
         })
         .map_err(|error| format!("listing {}: {error}", path.display()))?;
     names.sort();
-    Ok(Some(Holdings { names }))
+    let directory = review_sandbox::open_anchor(path)
+        .map_err(|error| format!("opening {}: {error}", path.display()))?;
+    Ok(Some(Holdings { directory, names }))
 }
 
 /// Refuse an explicit state directory af must not adopt: one that holds anything but af's own
@@ -193,10 +191,11 @@ pub(crate) fn private_dir(path: &Path) -> Result<(), String> {
 /// The allocated bytes of af's entries in the Store `state`: what a Store outside af's roots
 /// counts against the budget. Anything else in the directory is not af's to count.
 pub(crate) fn af_bytes(state: &Path) -> std::io::Result<u64> {
+    let directory = review_sandbox::open_anchor(state)?;
     let mut bytes = 0_u64;
     for entry in std::fs::read_dir(state)? {
         let entry = entry?;
-        if is_af_entry(&entry.file_name()) {
+        if is_af_entry(&directory, &entry.file_name()) {
             bytes = bytes.saturating_add(review_sandbox::storage::allocated_bytes(&entry.path())?);
         }
     }
@@ -237,7 +236,7 @@ pub(crate) fn remove(
     }
     let names = local_fs::entry_names(&opened).map_err(|error| format!("listing it: {error}"))?;
     let marked = names.iter().any(|name| name == MARKER);
-    if marked && names.iter().all(|name| is_af_entry(name)) {
+    if marked && names.iter().all(|name| is_af_entry(&opened, name)) {
         let bytes = review_sandbox::storage::allocated_bytes(path).unwrap_or(0);
         review_sandbox::remove_beneath(anchor, path, Some(identity))
             .map_err(|error| format!("{error}; it is left, and the next sweep tries again"))?;
@@ -253,7 +252,7 @@ pub(crate) fn remove(
     let (log, rest): (Vec<&OsString>, Vec<&OsString>) =
         names.iter().partition(|name| is_event_log(name));
     for name in rest.into_iter().chain(log) {
-        if !is_af_entry(name) {
+        if !is_af_entry(&opened, name) {
             removed.left.push(path.join(name));
             continue;
         }
@@ -329,6 +328,17 @@ mod tests {
 
     #[test]
     fn af_entries_are_the_ones_af_writes_and_nothing_else() {
+        let root = tempfile::tempdir().unwrap();
+        let store = review_sandbox::open_anchor(root.path()).unwrap();
+        // A claim af made: its name binds the directory it holds.
+        std::fs::create_dir(root.path().join("cas")).unwrap();
+        let identity = review_sandbox::Identity::of(&root.path().join("cas")).unwrap();
+        let claim = review_sandbox::claim_name(12, identity);
+        std::fs::rename(root.path().join("cas"), root.path().join(&claim)).unwrap();
+        assert!(is_af_entry(&store, OsStr::new(&claim)), "{claim}");
+        // Claim-shaped names that bind no directory there are the user's (audit C2).
+        std::fs::write(root.path().join(".af-removing-1-2-3"), b"mine").unwrap();
+        std::fs::create_dir(root.path().join(".af-removing-12-345-0")).unwrap();
         for name in [
             "events.sqlite",
             "events.sqlite-wal",
@@ -341,9 +351,8 @@ mod tests {
             "task-delivery-lock.sqlite-wal",
             "task-delivery-lock.sqlite-shm",
             ".af-store",
-            ".af-removing-12-345-0",
         ] {
-            assert!(is_af_entry(OsStr::new(name)), "{name}");
+            assert!(is_af_entry(&store, OsStr::new(name)), "{name}");
         }
         for name in [
             "important.txt",
@@ -363,8 +372,10 @@ mod tests {
             ".af-removing-12-ab",
             ".af-removing-1-2-3-4",
             ".af-removing-",
+            ".af-removing-1-2-3",
+            ".af-removing-12-345-0",
         ] {
-            assert!(!is_af_entry(OsStr::new(name)), "{name}");
+            assert!(!is_af_entry(&store, OsStr::new(name)), "{name}");
         }
     }
 

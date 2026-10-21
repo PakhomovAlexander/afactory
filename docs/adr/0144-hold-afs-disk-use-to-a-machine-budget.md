@@ -198,9 +198,13 @@ remote check left two branches and a draft pull request open.
 created only in a directory that is absent, empty, or already an af Store (nothing in it but af's
 entries, each by its exact name: `events.sqlite` with its `-wal`, `-shm` and `-journal`, `cas/`,
 `git-home/`, `af-running.lock`, `task-delivery-lock.sqlite` with its `-wal`, `-shm` and
-`-journal`, the owner marker, and a removal claim `.af-removing-<pid>-<nanos>-<n>`; no prefix,
-suffix or extension makes a name af's, so `notes.lock` or `events.sqlite.notes` is the user's);
-an explicit `--state` that holds anything else is refused
+`-journal`, the owner marker, and a removal claim af made; no prefix, suffix or extension makes a
+name af's, so `notes.lock` or `events.sqlite.notes` is the user's). A claim is named
+`.af-removing-<pid>-<device>-<inode>` after the directory it claims, and a claim-shaped entry is
+af's only while it is exactly such a name and a directory with that very device and inode; any
+other, such as a user's file `.af-removing-1-2-3`, is the user's: kept, reported as left, not
+measured, and it keeps the Store from going whole; the sweep finishes only proven claims too.
+An explicit `--state` that holds anything else is refused
 before anything is written or registered, and the `--state` help says the directory becomes
 af-owned. A Store made in an absent or empty directory carries the owner marker `.af-store`. `/`
 is no longer a trusted anchor for removing a registered Store whole: the sweep, `af storage prune

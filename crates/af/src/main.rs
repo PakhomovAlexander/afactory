@@ -94,8 +94,12 @@ impl Options {
         {
             validate_campaign_name(campaign)?;
         }
-        let repository = std::fs::canonicalize(&self.repo)
-            .map_err(|error| format!("opening repository {}: {error}", self.repo.display()))?;
+        let repository = std::fs::canonicalize(&self.repo).map_err(|error| {
+            format!(
+                "opening repository {}: {error}",
+                terminal_text(&self.repo.display().to_string())
+            )
+        })?;
         if state.starts_with(&repository) {
             return Err(format!(
                 "state {} is inside the repository; af state must live under XDG state or an explicit external --state directory",
@@ -161,8 +165,12 @@ fn campaign_state_beneath(root: &Path, campaign: &str) -> Result<PathBuf, String
 }
 
 fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
-    let repository = std::fs::canonicalize(repository)
-        .map_err(|error| format!("opening repository {}: {error}", repository.display()))?;
+    let repository = std::fs::canonicalize(repository).map_err(|error| {
+        format!(
+            "opening repository {}: {error}",
+            terminal_text(&repository.display().to_string())
+        )
+    })?;
     let identity = Sha256::digest(repository.as_os_str().as_encoded_bytes());
     Ok(xdg_state_root()?
         .join("af/review/local")
@@ -270,8 +278,12 @@ fn resolve_filesystem_path(path: &Path) -> Result<PathBuf, String> {
             .then_some(())
             .ok_or_else(|| format!("path {} has no existing ancestor", absolute.display()))?;
     }
-    let mut resolved = std::fs::canonicalize(&existing)
-        .map_err(|error| format!("opening {}: {error}", existing.display()))?;
+    let mut resolved = std::fs::canonicalize(&existing).map_err(|error| {
+        format!(
+            "opening {}: {error}",
+            terminal_text(&existing.display().to_string())
+        )
+    })?;
     for component in suffix.into_iter().rev() {
         resolved.push(component);
     }
@@ -491,7 +503,11 @@ fn parse_changed_region(value: &str) -> Result<review_core::ChangedRegionV1, Str
 
 /// A usage error clap could not express: print only the failing command's usage and exit 2.
 fn usage_error(command: &str, message: &str) -> ! {
-    eprintln!("error: {message}\n  try: af {command} --help");
+    eprintln!(
+        "error: {}\n  try: af {} --help",
+        terminal_lines(message),
+        terminal_text(command)
+    );
     std::process::exit(2);
 }
 
@@ -734,8 +750,8 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
         println!(
             "  {:<12} {} ({}): {}; {}{}",
             candidate.action,
-            candidate.label.escape_debug(),
-            candidate.state_dir,
+            terminal_text(&candidate.label),
+            terminal_text(&candidate.state_dir),
             human_bytes(candidate.state_bytes),
             candidate
                 .last_activity_unix_ms
@@ -744,15 +760,15 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
             candidate
                 .in_use
                 .as_deref()
-                .map(|why| format!("; {why}"))
+                .map(|why| format!("; {}", terminal_text(why)))
                 .unwrap_or_default()
         );
     }
     for problem in &enumeration.problems {
         println!(
             "  skipped      {}: {}",
-            problem.directory.escape_debug(),
-            problem.reason.escape_debug()
+            terminal_text(&problem.directory),
+            terminal_text(&problem.reason)
         );
     }
     Ok(())
@@ -1115,7 +1131,7 @@ fn help_command(words: &[String]) -> Result<i32, String> {
                 let topics: Vec<&str> = topics::TOPICS.iter().map(|(name, _, _)| *name).collect();
                 eprintln!(
                     "error: `{}` is neither a topic nor a command\n  topics: {}\n  try: af --help",
-                    words.join(" "),
+                    terminal_text(&words.join(" ")),
                     topics.join(", ")
                 );
                 return Ok(2);
@@ -1143,7 +1159,7 @@ fn main() {
         Err(argument) => {
             eprintln!(
                 "af: command-line argument {} is not valid UTF-8",
-                argument.to_string_lossy()
+                terminal_text(&argument.to_string_lossy())
             );
             std::process::exit(2);
         }
@@ -1156,7 +1172,7 @@ fn main() {
     let parsed = cli::Af::parse_from(&argv);
     if parsed.version {
         if let Err(error) = selfmgmt::print_version(parsed.json) {
-            eprintln!("af: {error}");
+            eprintln!("af: {}", terminal_lines(&error.to_string()));
             std::process::exit(1);
         }
         return;
@@ -1173,7 +1189,7 @@ fn main() {
             }
         }
         let code = tui::launch(parsed.repo.as_deref()).unwrap_or_else(|error| {
-            eprintln!("af: {error}");
+            eprintln!("af: {}", terminal_lines(&error.to_string()));
             1
         });
         selfmgmt::after_command(&argv);
@@ -1183,7 +1199,7 @@ fn main() {
     if needs_interrupt_handling(&command)
         && let Err(error) = interrupt::install()
     {
-        eprintln!("af: {error}");
+        eprintln!("af: {}", terminal_lines(&error.to_string()));
         std::process::exit(1);
     }
     let sandbox_sweep = runs_task_work(&command)
@@ -1195,8 +1211,9 @@ fn main() {
         // The free-disk floor and the budget step before a new warm key (ADR-0144). Without
         // them no check or Worker may start, so work is refused rather than run unguarded.
         eprintln!(
-            "af: the storage budget cannot be set up, so no Task or review work starts: {error}; \
-             see `af config show --origin` for [storage] and the XDG directories"
+            "af: the storage budget cannot be set up, so no Task or review work starts: {}; \
+             see `af config show --origin` for [storage] and the XDG directories",
+            terminal_lines(&error.to_string())
         );
         std::process::exit(1);
     }
@@ -1589,7 +1606,7 @@ fn main() {
                 });
                 println!("{document}");
             }
-            eprintln!("{prefix}: {error}");
+            eprintln!("{prefix}: {}", terminal_lines(&error));
             1
         }
     };
@@ -1675,7 +1692,7 @@ fn exit_interrupted(
     };
     if let Some(error) = error {
         if error != interrupt::INTERRUPTED {
-            eprintln!("{prefix}: {error}");
+            eprintln!("{prefix}: {}", terminal_lines(&error));
         }
         if argv.iter().skip(1).any(|word| word == "--json") {
             let document = serde_json::json!({
@@ -1687,7 +1704,7 @@ fn exit_interrupted(
             println!("{document}");
         }
     }
-    eprintln!("{prefix}: {message}");
+    eprintln!("{prefix}: {}", terminal_lines(&message));
     let _ = std::io::stdout().flush();
     interrupt::exit(signal);
 }
@@ -1774,8 +1791,12 @@ fn provider_kind(kind: cli::ProviderKindArg) -> &'static str {
 fn print_render(options: &Options) -> Result<(), String> {
     let scratch = tempfile::tempdir().map_err(|error| error.to_string())?;
     let cas = Cas::open(scratch.path().join("cas")).map_err(|error| error.to_string())?;
-    let repository = std::fs::canonicalize(&options.repo)
-        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    let repository = std::fs::canonicalize(&options.repo).map_err(|error| {
+        format!(
+            "opening repository {}: {error}",
+            terminal_text(&options.repo.display().to_string())
+        )
+    })?;
     let git_home = scratch.path().join("git-home");
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(repository, git_home)
@@ -1838,8 +1859,12 @@ fn print_render(options: &Options) -> Result<(), String> {
 fn print_plan(options: &Options) -> Result<(), String> {
     let scratch = tempfile::tempdir().map_err(|error| error.to_string())?;
     let cas = Cas::open(scratch.path().join("cas")).map_err(|error| error.to_string())?;
-    let repository = std::fs::canonicalize(&options.repo)
-        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    let repository = std::fs::canonicalize(&options.repo).map_err(|error| {
+        format!(
+            "opening repository {}: {error}",
+            terminal_text(&options.repo.display().to_string())
+        )
+    })?;
     let git_home = scratch.path().join("git-home");
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(repository, git_home)
@@ -2097,7 +2122,7 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     for finding in &findings {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}:{}\t{}",
-            finding.key,
+            terminal_text(&finding.key),
             format!("{:?}", finding.severity).to_lowercase(),
             finding.status.as_str(),
             finding.convergence_scope_label(),
@@ -2152,7 +2177,7 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let wall = task_accounting.wall_ms();
     let task_summary = report_tasks::summary(&task_accounting.tasks);
     if !task_summary.is_empty() {
-        eprintln!("{task_summary}");
+        eprintln!("{}", terminal_lines(&task_summary));
     }
     eprintln!(
         "round {}; {} findings: {}; {} required demands open/stale{}",
@@ -2341,7 +2366,11 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     let proposals = campaign_proposals(&store, &cas, &run_id)?;
     let (finding_ids, report_ids) = finding_claim_ids(&finding, &cas)?;
 
-    println!("{} [{}]", terminal_text(&finding.title), finding.key);
+    println!(
+        "{} [{}]",
+        terminal_text(&finding.title),
+        terminal_text(&finding.key)
+    );
     if !finding.aliases.is_empty() {
         println!("aliases={}", terminal_text(&finding.aliases.join(",")));
     }
@@ -2371,7 +2400,7 @@ fn show(options: &ShowOptions) -> Result<(), String> {
             attached
                 .line
                 .map_or("-".to_string(), |line| line.to_string()),
-            attached.report_id
+            terminal_text(&attached.report_id)
         );
         let report = cas
             .get_json(&attached.report_id)
@@ -2421,8 +2450,8 @@ fn show(options: &ShowOptions) -> Result<(), String> {
 fn proposal_line(proposal: &CampaignProposal, head: &str) -> String {
     format!(
         "  {} base={} applicability={} paths={}",
-        proposal.id,
-        proposal.proposal.base_snapshot_id,
+        terminal_text(&proposal.id),
+        terminal_text(&proposal.proposal.base_snapshot_id),
         if proposal.proposal.base_snapshot_id == head {
             "current"
         } else {
@@ -2830,10 +2859,15 @@ fn read_campaign_view(
 fn print_campaigns_text(view: &CampaignListView) {
     println!("Campaigns: {}", view.campaigns.len());
     for campaign in &view.campaigns {
-        println!("{} ({})", campaign.label.escape_debug(), campaign.id);
+        println!(
+            "{} ({})",
+            terminal_text(&campaign.label),
+            terminal_text(&campaign.id)
+        );
         println!(
             "  authority: snapshot {}; manifest {}",
-            campaign.authority_snapshot_id, campaign.campaign_manifest_id
+            terminal_text(&campaign.authority_snapshot_id),
+            terminal_text(&campaign.campaign_manifest_id)
         );
         println!(
             "  subject: {}{}",
@@ -2841,24 +2875,24 @@ fn print_campaigns_text(view: &CampaignListView) {
             campaign
                 .base_snapshot_id
                 .as_deref()
-                .map(|base| format!("; base {base}"))
+                .map(|base| format!("; base {}", terminal_text(base)))
                 .unwrap_or_default()
         );
         println!(
             "  last subject: {}",
-            campaign.last_subject_id.as_deref().unwrap_or("not started")
+            terminal_text(campaign.last_subject_id.as_deref().unwrap_or("not started"))
         );
         match last_closed_summary(
             campaign.last_closed_round,
             campaign.last_closed_epoch,
             campaign.verdict.as_deref(),
         ) {
-            Some(summary) => println!("  last closed: {summary}"),
+            Some(summary) => println!("  last closed: {}", terminal_text(&summary)),
             None => println!("  last closed: none"),
         }
         println!(
             "  state: {}{}{}",
-            campaign.state_dir,
+            terminal_text(&campaign.state_dir),
             campaign
                 .state_bytes
                 .map(|bytes| format!(", {}", human_bytes(bytes)))
@@ -2872,7 +2906,7 @@ fn print_campaigns_text(view: &CampaignListView) {
             println!("  wall: {}", human_duration(wall));
         }
         for summary in report_tasks::summary(&campaign.task_accounting).lines() {
-            println!("  {summary}");
+            println!("  {}", terminal_text(summary));
         }
         if let Some(findings) = &campaign.findings {
             println!("  findings: {}", findings_summary_line(findings));
@@ -2887,7 +2921,7 @@ fn print_campaigns_text(view: &CampaignListView) {
                 round.run,
                 optional_number(round.round),
                 optional_number(round.epoch),
-                round.verdict,
+                terminal_text(&round.verdict),
                 round.tokens_label()
             );
         }
@@ -2896,8 +2930,8 @@ fn print_campaigns_text(view: &CampaignListView) {
     for problem in &view.problems {
         println!(
             "  {}: {}",
-            problem.directory.escape_debug(),
-            problem.reason.escape_debug()
+            terminal_text(&problem.directory),
+            terminal_text(&problem.reason)
         );
     }
 }
@@ -3207,7 +3241,7 @@ fn print_report_text(report: &ReviewReportView) {
     println!("Ledger round: {}", report.ledger_round);
     println!(
         "Final verdict: {}",
-        report.final_verdict.as_deref().unwrap_or("not recorded")
+        terminal_text(report.final_verdict.as_deref().unwrap_or("not recorded"))
     );
     for reason in &report.final_reasons {
         println!("  reason: {}", terminal_text(reason));
@@ -3229,7 +3263,7 @@ fn print_report_text(report: &ReviewReportView) {
             round.run,
             optional_number(round.round),
             optional_number(round.epoch),
-            round.verdict,
+            terminal_text(&round.verdict),
             round.tokens_label()
         );
     }
@@ -3247,7 +3281,7 @@ fn print_report_text(report: &ReviewReportView) {
             demand_requirement_label(demand.requirement),
             demand_status_label(demand.status),
             one_line(&demand.claim),
-            demand.demand_id
+            terminal_text(&demand.demand_id)
         );
         println!("    why: {}", one_line(&demand.why));
         println!(
@@ -3271,7 +3305,7 @@ fn print_report_text(report: &ReviewReportView) {
                 .map(severity_label)
                 .unwrap_or("-"),
             one_line(&finding.title),
-            finding.key,
+            terminal_text(&finding.key),
             terminal_text(&finding.file),
             finding
                 .line
@@ -3297,7 +3331,7 @@ fn print_report_markdown(report: &ReviewReportView) {
     println!("- Ledger round: {}", report.ledger_round);
     println!(
         "- Final verdict: {}",
-        report.final_verdict.as_deref().unwrap_or("not recorded")
+        terminal_text(report.final_verdict.as_deref().unwrap_or("not recorded"))
     );
     for reason in &report.final_reasons {
         println!("  - reason: {}", markdown_line(reason));
@@ -3320,7 +3354,7 @@ fn print_report_markdown(report: &ReviewReportView) {
             round.run,
             optional_number(round.round),
             optional_number(round.epoch),
-            round.verdict,
+            terminal_text(&round.verdict),
             round.tokens_cell()
         );
     }
@@ -3341,7 +3375,7 @@ fn print_report_markdown(report: &ReviewReportView) {
             demand_requirement_label(demand.requirement),
             demand_status_label(demand.status),
             markdown_line(&demand.claim),
-            demand.demand_id
+            terminal_text(&demand.demand_id)
         );
         println!("  - Why: {}", markdown_line(&demand.why));
         println!(
@@ -3390,7 +3424,7 @@ fn print_report_markdown(report: &ReviewReportView) {
                     .map(severity_label)
                     .unwrap_or("-"),
                 one_line(&finding.title),
-                finding.key,
+                terminal_text(&finding.key),
                 terminal_text(&finding.file),
                 finding
                     .line
@@ -3411,7 +3445,7 @@ fn print_report_markdown(report: &ReviewReportView) {
                         attached
                             .line
                             .map_or("-".to_string(), |line| line.to_string()),
-                        attached.report_id
+                        terminal_text(&attached.report_id)
                     )
                 })
                 .collect::<Vec<_>>()
@@ -3514,6 +3548,18 @@ fn terminal_text(value: &str) -> String {
     shown
 }
 
+/// [`terminal_text`] for a message af composed that may span lines, an error above all: every
+/// line goes through it, so no value interpolated into the message can drive the terminal, and
+/// the message's own line breaks stay line breaks. A value that must not forge a line either is
+/// passed through [`terminal_text`] where it is interpolated.
+fn terminal_lines(message: &str) -> String {
+    message
+        .split('\n')
+        .map(terminal_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn run_report(event: &review_core::RunEvent) -> Result<RunReportPayloadV6, String> {
     if !event.event_type.is_run_report() {
         return Err(format!("{} is not a run report", event.event_type));
@@ -3549,14 +3595,14 @@ fn print_scope_authority_warnings(ledger: &Ledger) {
             review_store::ScopeAuthorityKind::RoundBinding => eprintln!(
                 "warning: round {} Report Scope is unknown: round binding disagrees for Subject {}: {}",
                 failure.round,
-                failure.authority_id,
+                terminal_text(&failure.authority_id),
                 terminal_text(&failure.reason)
             ),
             authority => eprintln!(
                 "warning: round {} Report Scope is unknown: {:?} authority {} is unavailable: {}",
                 failure.round,
                 authority,
-                failure.authority_id,
+                terminal_text(&failure.authority_id),
                 terminal_text(&failure.reason)
             ),
         }
@@ -3600,7 +3646,11 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
         .finding_view(&options.key)
         .map(|f| f.status.as_str())
         .unwrap_or("?");
-    println!("resolved {} -> {} ({resolution_id})", options.key, now);
+    println!(
+        "resolved {} -> {} ({resolution_id})",
+        terminal_text(&options.key),
+        now
+    );
     Ok(())
 }
 
@@ -3621,7 +3671,7 @@ fn attest_change(options: &AttestChangeOptions) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     println!(
         "attested {} -> pending-verification ({id})",
-        options.finding_id
+        terminal_text(&options.finding_id)
     );
     Ok(())
 }
@@ -3646,11 +3696,11 @@ fn verify_fix(options: &VerifyFixOptions) -> Result<(), String> {
     match resolution {
         Some(resolution) => println!(
             "verified {} -> fixed (verification {verification}, resolution {resolution})",
-            options.finding_id
+            terminal_text(&options.finding_id)
         ),
         None => println!(
             "verification for {} was negative ({verification}); Finding remains pending-verification",
-            options.finding_id
+            terminal_text(&options.finding_id)
         ),
     }
     Ok(())
@@ -3671,7 +3721,10 @@ fn challenge_resolution(options: &ChallengeResolutionOptions) -> Result<(), Stri
             options.evidence_ids.clone(),
         )
         .map_err(|e| e.to_string())?;
-    println!("challenged {} -> contested ({id})", options.finding_id);
+    println!(
+        "challenged {} -> contested ({id})",
+        terminal_text(&options.finding_id)
+    );
     Ok(())
 }
 
@@ -3706,12 +3759,20 @@ fn group(options: &GroupOptions, undo: bool) -> Result<(), String> {
         ingest
             .ungroup(&options.from, &options.into)
             .map_err(|e| e.to_string())?;
-        println!("ungrouped {} from {}", options.from, options.into);
+        println!(
+            "ungrouped {} from {}",
+            terminal_text(&options.from),
+            terminal_text(&options.into)
+        );
     } else {
         ingest
             .group(&options.from, &options.into)
             .map_err(|e| e.to_string())?;
-        println!("grouped {} into {}", options.from, options.into);
+        println!(
+            "grouped {} into {}",
+            terminal_text(&options.from),
+            terminal_text(&options.into)
+        );
     }
     Ok(())
 }
@@ -3743,7 +3804,10 @@ fn add_evidence(options: &EvidenceAddOptions) -> Result<(), String> {
             &operator_actor(options.actor.as_deref())?,
         )
         .map_err(|error| error.to_string())?;
-    println!("evidence {evidence_id} recorded for {}", options.demand_id);
+    println!(
+        "evidence {evidence_id} recorded for {}",
+        terminal_text(&options.demand_id)
+    );
     Ok(())
 }
 
@@ -3780,7 +3844,9 @@ fn satisfy_evidence(options: &EvidenceSatisfyOptions) -> Result<(), String> {
         .transpose()?;
     println!(
         "demand {} satisfied by {} under {} ({satisfaction_id})",
-        options.demand_id, options.evidence_id, options.policy_revision
+        terminal_text(&options.demand_id),
+        terminal_text(&options.evidence_id),
+        terminal_text(&options.policy_revision)
     );
     if let Some(reuse_id) = reuse_id {
         println!("future-Subject Evidence reuse admitted ({reuse_id})");
@@ -3802,7 +3868,10 @@ fn waive_demand(options: &DemandWaiveOptions) -> Result<(), String> {
             &options.reason,
         )
         .map_err(|error| error.to_string())?;
-    println!("demand {} waived ({waiver_id})", options.demand_id);
+    println!(
+        "demand {} waived ({waiver_id})",
+        terminal_text(&options.demand_id)
+    );
     Ok(())
 }
 
@@ -4048,7 +4117,7 @@ fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<()>> 
                     "af: removed {} stale sandbox director{} left by exited processes under {}",
                     report.removed,
                     if report.removed == 1 { "y" } else { "ies" },
-                    std::env::temp_dir().display()
+                    terminal_text(&std::env::temp_dir().display().to_string())
                 );
             }
         })
@@ -4075,7 +4144,21 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
 
 #[cfg(test)]
 mod terminal_text_tests {
-    use super::{CampaignProposal, markdown_line, one_line, proposal_line, terminal_text};
+    use super::{
+        CampaignProposal, markdown_line, one_line, proposal_line, terminal_lines, terminal_text,
+    };
+
+    /// A message af composed keeps its own line breaks; every line of it is shown through
+    /// `terminal_text`, so a value interpolated into it sends no control character (audit C3).
+    #[test]
+    fn a_message_keeps_its_lines_and_sends_no_control_character() {
+        assert_eq!(
+            terminal_lines("opening esc\x1b]0;PWNED\x07repo: gone\n  try: af --help\r"),
+            "opening esc\\u{1b}]0;PWNED\\u{7}repo: gone\n  try: af --help\\u{d}"
+        );
+        assert_eq!(terminal_lines("plain"), "plain");
+        assert_eq!(terminal_lines(""), "");
+    }
 
     #[test]
     fn every_control_character_is_shown_not_sent() {
