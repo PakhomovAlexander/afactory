@@ -120,6 +120,31 @@ class BuildOnce(test_runner.ShardHarness):
         summary = read(self.path("summary.md")).decode()
         self.assertIn("Shards without an artifact, kept as incomplete evidence: 1", summary)
 
+    def test_a_single_download_is_flat_and_still_bound_to_its_plan(self):
+        plan, plan_path, build = self.prepare([SMALL], run_id="flat", shards=1)
+        _, staged = self.shard(plan_path, build, 0)
+        flat = self.path("flat-download")
+        through_actions(staged, flat)
+        doc, completeness = ci.aggregate(read(plan_path), read(os.path.join(build, "builds.json")),
+                                         flat, self.path("flat-run"), self.path("flat-report"))
+        self.assertEqual(completeness, {"planned": 1, "received": [0], "missing": []})
+        self.assert_valid_evidence(doc["verdict"])
+        # A second named artifact alongside the flat one is not a second valid layout.
+        through_actions(staged, os.path.join(flat, ci.shard_artifact("flat", 0)))
+        with self.assertRaises(ContractError):
+            ci.aggregate(read(plan_path), read(os.path.join(build, "builds.json")), flat,
+                         self.path("mixed-run"), self.path("mixed-report"))
+
+    def test_the_only_downloaded_shard_need_not_be_zero(self):
+        plan, plan_path, build = self.prepare([DISCOVERY, SMALL], run_id="survivor", shards=2)
+        _, staged = self.shard(plan_path, build, 1)
+        flat = self.path("only-download")
+        through_actions(staged, flat)
+        doc, completeness = ci.aggregate(read(plan_path), read(os.path.join(build, "builds.json")),
+                                         flat, self.path("only-run"), self.path("only-report"))
+        self.assertEqual(completeness, {"planned": 2, "received": [1], "missing": [0]})
+        self.assertEqual(doc["verdict"]["aggregate"]["result"], "incomplete")
+
     def test_foreign_duplicate_and_unplanned_shard_artifacts_are_refused(self):
         plan, plan_path, build = self.prepare([DISCOVERY, SMALL], run_id="guarded", shards=2)
         _, staged = self.shard(plan_path, build, 0)

@@ -53,8 +53,16 @@ def evaluate(schedule_dir, reports_dir, jobs, repository, run_id, attempt, sha):
     require(sha256_bytes(raw) == item["plan_sha256"]
             and plan["plan_digest"] == item["plan_digest"]
             and plan["run_id"] == item["run_id"], "primary plan differs from the schedule")
-    verdict, _ = read(os.path.join(reports_dir, "perf-report-" + item["run_id"],
-                                   "verdict.json"), "verdict")
+    flat = os.path.join(reports_dir, "verdict.json")
+    if os.path.lexists(flat):
+        # The pinned download action writes a single report directly at the destination.
+        # A mixed layout is ambiguous; either layout still binds the verdict to this plan.
+        require(not any(name.startswith("perf-report-") for name in os.listdir(reports_dir)),
+                "mixed flat and named performance reports")
+        verdict_path = flat
+    else:
+        verdict_path = os.path.join(reports_dir, "perf-report-" + item["run_id"], "verdict.json")
+    verdict, _ = read(verdict_path, "verdict")
     require((verdict["run_id"], verdict["plan_digest"])
             == (plan["run_id"], plan["plan_digest"]), "verdict belongs to another plan")
     eligible = (item["required_check_eligible"] and plan["required_check_eligible"]

@@ -356,3 +356,5 @@ future readers need.
   collection](0190-integrate-performance-checks-images-and-evidence-collection.md)
 - [0191 — Keep guarded measure source paths stable by
   content](0191-keep-guarded-measure-source-paths-stable-by-content.md)
+- [0192 — Admit single downloads and run CLI measurements
+  offline](0192-admit-single-downloads-and-run-cli-measurements-offline.md)
