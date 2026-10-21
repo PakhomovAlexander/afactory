@@ -182,7 +182,7 @@ jobs:
         run: echo "sha=$(git -C "$RUNNER_TEMP/control" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Fetch the confirmed release claim
         if: ${{ inputs.release_claim }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.release_claim }}
           path: ${{ runner.temp }}/release-claim
@@ -220,7 +220,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT" --job-summary "$GITHUB_STEP_SUMMARY"
       - name: Retain the schedule and frozen plans
         if: ${{ steps.schedule.outputs.installed == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/schedule/
@@ -246,7 +246,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Fetch the frozen plans
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/schedule
@@ -273,7 +273,7 @@ jobs:
             --build "target/performance/$RUN_ID/build" --output "$RUNNER_TEMP/pack"
           python3 "$cli" ci-credentials --scan "$RUNNER_TEMP/pack"
       - name: Publish the hashed build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-build-${{ matrix.run_id }}
           path: ${{ runner.temp }}/pack/
@@ -281,7 +281,7 @@ jobs:
           if-no-files-found: error
       - name: Retain a failed build's bounded evidence
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-build-failure-${{ matrix.run_id }}
           path: |
@@ -303,13 +303,13 @@ jobs:
           persist-credentials: false
       - name: Fetch the schedule
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/schedule
       - name: Fetch the trusted aggregators' reports
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: perf-report-gh${{ github.run_id }}_a${{ github.run_attempt }}_*
           path: ${{ runner.temp }}/reports
@@ -358,12 +358,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Fetch the frozen plans
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/schedule
       - name: Fetch the hashed build
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-build-${{ matrix.run_id }}
           path: ${{ runner.temp }}/pack
@@ -403,7 +403,7 @@ jobs:
           fi
       - name: Upload the shard bundle
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: af-perf-${{ matrix.run_id }}-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/transport/
@@ -431,19 +431,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Fetch the frozen plans
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/schedule
       - name: Fetch the hashed build
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-build-${{ matrix.run_id }}
           path: ${{ runner.temp }}/pack
       - name: Fetch every shard bundle, one directory each
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: af-perf-${{ matrix.run_id }}-shard-*
           path: ${{ runner.temp }}/shards
@@ -470,7 +470,7 @@ jobs:
             --enforcement advisory
       - name: Upload the run bundle
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: af-perf-${{ matrix.run_id }}-run
           path: ${{ runner.temp }}/transport/
@@ -478,7 +478,7 @@ jobs:
           if-no-files-found: ignore
       - name: Upload the report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-report-${{ matrix.run_id }}
           path: ${{ runner.temp }}/report/
