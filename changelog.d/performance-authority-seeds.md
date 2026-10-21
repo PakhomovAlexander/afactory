@@ -12,3 +12,7 @@ Seed readers construct the cold production validator with a non-executing host; 
 execution host is captured by the seed writer. This removes unused per-sample setup while
 keeping the timed Store checks and runtime construction unchanged. Reader contracts advance
 to version 3, and earlier contracts are refused.
+
+Make diagnostic seed-reuse and flamegraph tests request exactly three fresh executions, so
+FIFO scheduling delays cannot change the exercised repetition count. Production capture
+bounds and the separate recording-cap tests are unchanged.
