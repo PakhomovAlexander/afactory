@@ -6,6 +6,7 @@ use crate::common;
 use common::{
     FAKE_CURL, FAKE_GH, Sandbox, Signer, TARGET, VERSION, err, executable, out, tool_dir, write,
 };
+use std::path::Path;
 
 // Update fixtures must remain newer than the binary under test as releases advance.
 fn next_release_version() -> String {
