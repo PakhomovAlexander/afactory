@@ -64,8 +64,9 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   After warm preparation holds the key, before each native check or measurement command runs,
   the kernel refreshes every regular source
   file's mtime in its private materialized tree. Cargo therefore rebuilds workspace units even
-  when another Snapshot left newer artifacts in the shared target; registry dependencies stay
-  warm. `af task show` reports the target bytes available before the check, not compiler hits or
+  when another Snapshot left newer artifacts in the shared target. The stamp beats the observed
+  target maximum without a future lead; a future-dated target runs cold with `future_mtime`,
+  while Cargo home stays warm. `af task show` reports the target bytes available before the check, not compiler hits or
   the Snapshot that last built them
   ([ADR-0161](adr/0161-refresh-native-check-source-mtimes-before-reusing-cargo-target.md)).
 - The kernel measures; a model never writes a number the kernel did not record. A code policy's
