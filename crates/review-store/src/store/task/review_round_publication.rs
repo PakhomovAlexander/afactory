@@ -450,6 +450,7 @@ impl EventStore {
             )?);
         }
         tx.commit()?;
+        self.committed(cas, &appended, None);
         Ok(appended)
     }
 

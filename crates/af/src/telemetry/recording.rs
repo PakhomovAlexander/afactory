@@ -151,6 +151,10 @@ pub(crate) fn begin(kind: RunKind) -> Recording {
     };
     let mut telemetry = Telemetry::start(start);
     telemetry.install_subscriber();
+    // Every Store this process opens tells the mirror of its commits (design §7.5).
+    if telemetry.writer().is_some() {
+        review_pipeline::telemetry::install_store_mirror();
+    }
     let command = tracing::info_span!(
         "af.command",
         process.command = "af",

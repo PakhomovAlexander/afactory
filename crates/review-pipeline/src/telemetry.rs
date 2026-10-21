@@ -14,6 +14,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
+mod mirror;
+
+pub use mirror::{
+    DEMAND_EVIDENCE_SATISFIED, DEMAND_OPENED, DEMAND_STALE, DEMAND_WAIVED, FAIL_SETTING,
+    FINDING_DISPOSITION, STORE_EVENT, StoreMirror, USAGE_STATE, USAGE_WALL, install_store_mirror,
+};
+
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_graph::task::{CompiledNode, CompiledTask};
 use review_store::store::task::{TaskLease, TaskProjection, task_run_id};
@@ -74,6 +81,60 @@ struct OpenRun {
 
 /// Every run this process opened, by `store_id:run_id`.
 static RUNS: Mutex<BTreeMap<String, OpenRun>> = Mutex::new(BTreeMap::new());
+
+/// The Stores (by `af.store_id`, `*` for one that could not be named) a mirror failure left
+/// incomplete: every run of theirs records `af.ledger.coverage = incomplete`.
+static INCOMPLETE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// The `af.attempt` span of every Attempt this process opened, by Attempt id: its accounting
+/// snapshots and sidecar writes are events on it.
+static ATTEMPTS: Mutex<BTreeMap<String, subscriber::RecordedSpan>> = Mutex::new(BTreeMap::new());
+
+/// A mirror failure: every open run of the Store records `af.ledger.coverage = incomplete`,
+/// and so does every run of it this process opens later.
+pub(crate) fn mark_ledger_incomplete(store_id: Option<&str>) {
+    let store = store_id.unwrap_or("*");
+    lock(&INCOMPLETE).insert(store.to_string());
+    for (key, open) in lock(&RUNS).iter() {
+        if store == "*" || key.starts_with(&format!("{store}:")) {
+            open.span.record("af.ledger.coverage", "incomplete");
+        }
+    }
+}
+
+fn ledger_incomplete(store_id: &str) -> bool {
+    let incomplete = lock(&INCOMPLETE);
+    incomplete.contains("*") || incomplete.contains(store_id)
+}
+
+/// The open `af.run` spans of this process's runs of the Store `store_id`, by run id.
+pub(crate) fn store_runs(store_id: &str) -> Vec<subscriber::RecordedSpan> {
+    lock(&RUNS)
+        .iter()
+        .filter(|(key, _)| key.starts_with(&format!("{store_id}:")))
+        .filter_map(|(_, open)| subscriber::recorded(&open.span))
+        .collect()
+}
+
+/// The open `af.run` span of a run of the Store `store_id`: the one whose trace `current` is
+/// in, else the only one, else the first by run id.
+pub(crate) fn run_span(
+    store_id: &str,
+    current: Option<&subscriber::RecordedSpan>,
+) -> Option<subscriber::RecordedSpan> {
+    let recorded = store_runs(store_id);
+    let trace = current.and_then(|current| current.trace_id.as_ref());
+    recorded
+        .iter()
+        .find(|run| trace.is_some() && run.trace_id.as_ref() == trace)
+        .or_else(|| recorded.first())
+        .cloned()
+}
+
+/// The `af.attempt` span this process opened for `attempt_id`.
+pub(crate) fn attempt_span(attempt_id: &str) -> Option<subscriber::RecordedSpan> {
+    lock(&ATTEMPTS).get(attempt_id).cloned()
+}
 
 /// End every `af.run` span this process opened, each with its outcome already recorded. `af`
 /// calls it before its `af.command` span ends; a run span still held elsewhere ends when the
@@ -203,8 +264,21 @@ impl RunTelemetry {
             af.failure.class = Empty,
             af.failure.reason = Empty,
             error.type = Empty,
+            af.ledger.coverage = Empty,
             af.status = Empty,
         );
+        // Whether every committed event and summary of this execution reached Telemetry: the
+        // mirror records from `spans` on, and a failure since makes it incomplete.
+        if writer.level() >= review_telemetry::level::Level::Spans {
+            span.record(
+                "af.ledger.coverage",
+                if ledger_incomplete(&store_id) {
+                    "incomplete"
+                } else {
+                    "complete"
+                },
+            );
+        }
         // The command names the first run it works on, once known.
         if let Some(command) = subscriber::command_span() {
             command.record("af.store_id", field(&ids.store));
@@ -370,7 +444,7 @@ impl RunTelemetry {
             return tracing::Span::none();
         };
         let attempt = identity(attempt_id);
-        tracing::info_span!(
+        let span = tracing::info_span!(
             parent: node_span,
             "af.attempt",
             af.store_id = field(&ids.store),
@@ -397,7 +471,11 @@ impl RunTelemetry {
             af.usage.observation = Empty,
             af.usage.unknown_cause = Empty,
             af.status = Empty,
-        )
+        );
+        if let Some(recorded) = subscriber::recorded(&span) {
+            lock(&ATTEMPTS).insert(attempt_id.to_string(), recorded);
+        }
+        span
     }
 
     /// Record how the run stands as this runtime finishes: the Task's phase and its charge as

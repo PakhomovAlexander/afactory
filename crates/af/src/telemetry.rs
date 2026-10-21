@@ -1,6 +1,6 @@
-//! `af telemetry` (ADR-0153): `status`, `reindex`, `runs`, `show`, `tail` and `gc` — the reader
-//! side of Telemetry, which only `af telemetry`, `af storage` and the TUI link — and the
-//! recording a command that runs a kernel run does ([`begin`], [`Recording::finish`]).
+//! `af telemetry` (ADR-0153): `status`, `reindex`, `runs`, `show`, `tail`, `ledger` and `gc` —
+//! the reader side of Telemetry, which only `af telemetry`, `af storage` and the TUI link — and
+//! the recording a command that runs a kernel run does ([`begin`], [`Recording::finish`]).
 //!
 //! The `[telemetry]` table is read from machine layers only. A refused key exits 2, an
 //! unreadable telemetry directory, a busy index or an unknown run exits 1; no `af telemetry`
@@ -22,7 +22,7 @@ mod recording;
 mod views;
 
 pub(crate) use recording::begin;
-pub(crate) use views::{gc, runs, show, tail};
+pub(crate) use views::{gc, ledger, runs, show, tail};
 
 /// The machine's `[telemetry]` table, or the refusal naming its key.
 pub(crate) fn settings() -> Result<Settings, String> {

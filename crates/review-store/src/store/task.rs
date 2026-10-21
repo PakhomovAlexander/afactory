@@ -1731,6 +1731,8 @@ impl EventStore {
         let run_id = task_run_id(task_id)?;
         let event = NewEvent::new(event_type, value.clone()).referencing(refs);
         let review_round = review_round::fence_for_transition(cas, &transition, state.as_ref())?;
+        // The projection this transition leaves: what the commit observer is told beside it.
+        let mut applied = None;
         if let Some(mut state) = state {
             state.apply(
                 cas,
@@ -1749,6 +1751,7 @@ impl EventStore {
                 },
                 &transition,
             )?;
+            applied = Some(state);
         } else {
             let TaskChangeV1::Opened { revision_id, .. } = &transition.change else {
                 return Err(conflict("Task has not been opened"));
@@ -1778,9 +1781,16 @@ impl EventStore {
             review_prefix: owned_prefix.and_then(|(_, prefix)| prefix),
             bound_tasks,
         };
-        self.append_batch_inner(&run_id, cas, &[event], Some(&permit), None)?
-            .pop()
-            .ok_or_else(|| conflict("Task transition appended no event"))
+        self.append_batch_observed(
+            &run_id,
+            cas,
+            &[event],
+            Some(&permit),
+            None,
+            applied.as_ref(),
+        )?
+        .pop()
+        .ok_or_else(|| conflict("Task transition appended no event"))
     }
 
     pub fn open_task(
@@ -1886,7 +1896,7 @@ impl EventStore {
             review_prefix: None,
             bound_tasks: Vec::new(),
         };
-        self.append_batch_inner(&run_id, cas, &[event], Some(&permit), None)?
+        self.append_batch_observed(&run_id, cas, &[event], Some(&permit), None, Some(&state))?
             .pop()
             .ok_or_else(|| conflict("Task execution marker appended no event"))
             .map(Some)

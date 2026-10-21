@@ -45,3 +45,19 @@
   `changed`, when one is no longer what the inventory found, with temporaries, unreferenced blobs
   and free index pages reclaimed by every applied sweep and an overlapping directory reported
   `overlapping`, never evicted as telemetry.
+- Telemetry, fourth package: every recording command installs one post-commit observer on its
+  Stores, told of each committed transaction once, after its commit, in committed order — a
+  generic append, a Task transition, a Round publication, an atomic integration — and never of a
+  rollback; from `spans` on each committed event is `af.store.event` (type, sequence, id,
+  causation, artifact references, the payload's digest and size), a Campaign's admitted Findings
+  and their disposition changes are `af/TelemetryFinding@1` records with
+  `af.finding.disposition` events, and its Demands `af/TelemetryDemand@1` records keyed by the
+  Demand id with `af.demand.opened`, `af.demand.evidence_satisfied`, `af.demand.stale` and
+  `af.demand.waived`. From `metrics` on every committed accounting transition records the
+  Attempt's charge as the Task projection holds it (`af.usage.state`, by the committed event's
+  sequence) and every sidecar write its merged row (`af.usage.wall`, ordered within one
+  execution only); `af telemetry runs` now sums the Attempts' latest charges. A mirror failure is
+  one problem, never a Store error, and makes the run `af.ledger.coverage = incomplete`. The new
+  `af telemetry ledger RUN` (`--json`: `af/telemetry-ledger@1`) prints a run's committed events,
+  Finding and Demand summaries and each Attempt's charge beside its sidecar observations, from
+  the telemetry directory alone, with the coverage and history markers.

@@ -19,6 +19,7 @@ use serde_json::Value;
 use crate::cas::{Cas, CasError};
 
 mod attempt_wall;
+pub mod observer;
 pub mod task;
 
 /// Read a non-negative SQLite integer column as `u64`.
@@ -186,6 +187,9 @@ pub struct EventStore {
     /// current on-disk object is streamed and verified again; this removes repeated JSON/base64
     /// allocations without turning process history into integrity authority.
     validated_change_sets: std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
+    /// Told of every commit through this connection ([`observer`]); `None` defers to the
+    /// process's observer, if any.
+    commit_observer: Option<Arc<dyn observer::CommitObserver>>,
 }
 
 #[derive(Default)]
@@ -239,6 +243,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             validated_change_sets: std::collections::BTreeMap::new(),
+            commit_observer: None,
         })
     }
 
@@ -284,6 +289,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             validated_change_sets: std::collections::BTreeMap::new(),
+            commit_observer: self.commit_observer.clone(),
         })
     }
 
@@ -330,6 +336,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             validated_change_sets: std::collections::BTreeMap::new(),
+            commit_observer: None,
         })
     }
 
@@ -372,6 +379,20 @@ impl EventStore {
         events: &[NewEvent],
         task_permit: Option<&task::WritePermit>,
         review_permit: Option<&task::execution::review::WritePermit>,
+    ) -> Result<Vec<RunEvent>, StoreError> {
+        self.append_batch_observed(run_id, cas, events, task_permit, review_permit, None)
+    }
+
+    /// [`Self::append_batch_inner`], telling the commit observer of `applied`, the Task
+    /// projection the one Task transition of `events` leaves, beside the committed events.
+    fn append_batch_observed(
+        &mut self,
+        run_id: &str,
+        cas: &Cas,
+        events: &[NewEvent],
+        task_permit: Option<&task::WritePermit>,
+        review_permit: Option<&task::execution::review::WritePermit>,
+        applied: Option<&task::TaskProjection>,
     ) -> Result<Vec<RunEvent>, StoreError> {
         if events.is_empty() {
             return Ok(Vec::new());
@@ -450,6 +471,7 @@ impl EventStore {
         }
         let appended = insert_events(&tx, cas, run_id, events, first)?;
         tx.commit()?;
+        self.committed(cas, &appended, applied);
         Ok(appended)
     }
 

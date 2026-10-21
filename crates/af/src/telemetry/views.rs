@@ -394,6 +394,305 @@ pub(crate) fn render_show(document: &Show) -> String {
     out
 }
 
+/// `af telemetry ledger`.
+pub(crate) fn ledger(
+    json: bool,
+    dir: Option<PathBuf>,
+    run: String,
+    store: Option<String>,
+) -> Result<i32, String> {
+    const COMMAND: &str = "af telemetry ledger";
+    let root = match root_of(COMMAND, json, dir)? {
+        Ok(root) => root,
+        Err(code) => return Ok(code),
+    };
+    if !root.is_dir() {
+        return Err(format!(
+            "unknown run {run}: nothing has been recorded in {}",
+            root.display()
+        ));
+    }
+    let (index, read, unreadable) = view::open(&root)?;
+    if let Some(note) = &read.reason {
+        eprintln!("{COMMAND}: {note}");
+    }
+    let (store_id, trace_id, kind) = match resolve(COMMAND, &index, &run, store.as_deref())? {
+        Ok(found) => found,
+        Err(code) => return Ok(code),
+    };
+    let document = review_telemetry::ledger::ledger(
+        &index,
+        &root,
+        read,
+        unreadable,
+        (&store_id, &run, &trace_id, kind),
+    )?;
+    if json {
+        print_json(&document)?;
+    } else {
+        print!("{}", render_ledger(&document));
+    }
+    Ok(0)
+}
+
+fn counters_text(counters: &review_telemetry::accounting::Counters) -> String {
+    let mut parts = Vec::new();
+    for (name, value) in [
+        ("input", &counters.input_tokens),
+        ("output", &counters.output_tokens),
+        ("cache read", &counters.cache_read_tokens),
+        ("cache write", &counters.cache_write_tokens),
+        ("reasoning", &counters.reasoning_tokens),
+    ] {
+        if let Some(value) = value {
+            parts.push(format!("{name} {value}"));
+        }
+    }
+    parts.join(", ")
+}
+
+pub(crate) fn render_ledger(document: &review_telemetry::ledger::Ledger) -> String {
+    let mut out = String::new();
+    let run = &document.run;
+    let _ = writeln!(
+        out,
+        "{} run {}  store {}  history {} — {}",
+        run.kind.as_deref().unwrap_or("-"),
+        run.run_id,
+        short(&run.store_id),
+        run.history,
+        run.retained
+    );
+    let _ = writeln!(out, "coverage {}", document.coverage);
+    for reason in &document.coverage_reasons {
+        let _ = writeln!(out, "  incomplete: {reason}");
+    }
+    for log in &document.logs {
+        let _ = writeln!(
+            out,
+            "log {}: {} event{} mirrored, sequences 0–{}{}",
+            log.run_id,
+            log.mirrored,
+            if log.mirrored == 1 { "" } else { "s" },
+            log.last_sequence,
+            if log.missing.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ", missing {}",
+                    log.missing
+                        .iter()
+                        .map(|missing| format!("{}–{}", missing.from, missing.to))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        );
+    }
+    for entry in &document.entries {
+        let line = match entry.entry.as_str() {
+            "event" => format!(
+                "event      {} #{} {}{}",
+                entry.log.as_deref().unwrap_or("-"),
+                entry
+                    .sequence
+                    .map_or("-".into(), |sequence| sequence.to_string()),
+                entry.name.as_deref().unwrap_or("-"),
+                entry
+                    .event_id
+                    .as_deref()
+                    .map(|id| format!("  id {id}"))
+                    .unwrap_or_default()
+            ),
+            "finding" => format!(
+                "finding    {} {}",
+                entry.finding_key.as_deref().unwrap_or("-"),
+                entry.status.as_deref().unwrap_or("-")
+            ),
+            "demand" => format!(
+                "demand     {} {}",
+                entry.demand_id.as_deref().unwrap_or("-"),
+                entry.status.as_deref().unwrap_or("-")
+            ),
+            _ => format!(
+                "lifecycle  {} {}{}{}{}",
+                entry.name.as_deref().unwrap_or("-"),
+                entry
+                    .finding_key
+                    .as_deref()
+                    .or(entry.demand_id.as_deref())
+                    .unwrap_or("-"),
+                match (&entry.previous_status, &entry.status) {
+                    (Some(previous), Some(status)) => format!(" {previous} → {status}"),
+                    (None, Some(status)) => format!(" {status}"),
+                    _ => String::new(),
+                },
+                entry
+                    .evidence_id
+                    .as_deref()
+                    .map(|id| format!(" evidence {id}"))
+                    .unwrap_or_default(),
+                match (&entry.log, entry.sequence) {
+                    (Some(log), Some(sequence)) => format!("  ({log} #{sequence})"),
+                    _ => String::new(),
+                }
+            ),
+        };
+        let _ = writeln!(out, "  {line}");
+    }
+    for finding in &document.findings {
+        let _ = writeln!(
+            out,
+            "Finding {} {} ({}, effective {}, scope {}) {}{}: {}",
+            finding.key,
+            finding.status,
+            finding.severity,
+            finding.effective_severity,
+            finding.scope,
+            finding.file.as_deref().unwrap_or("-"),
+            finding
+                .line
+                .map(|line| format!(":{line}"))
+                .unwrap_or_default(),
+            finding.title
+        );
+        let _ = writeln!(
+            out,
+            "  report {} · node {} · Worker {} · Round {} · epoch {}",
+            finding.report_artifact_id,
+            finding.node_id,
+            finding.worker,
+            finding.round.map_or("-".into(), |round| round.to_string()),
+            finding.epoch.map_or("-".into(), |epoch| epoch.to_string())
+        );
+        for disposition in &finding.dispositions {
+            let _ = writeln!(
+                out,
+                "  disposition {} → {}{}",
+                disposition.previous_status,
+                disposition.status,
+                disposition
+                    .sequence
+                    .map(|sequence| format!(" at #{sequence}"))
+                    .unwrap_or_default()
+            );
+        }
+    }
+    for demand in &document.demands {
+        let _ = writeln!(
+            out,
+            "Demand {} {} ({}) Subject {}",
+            demand.demand_id, demand.status, demand.kind, demand.subject_id
+        );
+        for step in &demand.lifecycle {
+            let _ = writeln!(
+                out,
+                "  {}{}{}",
+                step.event,
+                step.evidence_id
+                    .as_deref()
+                    .map(|id| format!(" by Evidence {id}"))
+                    .unwrap_or_default(),
+                step.sequence
+                    .map(|sequence| format!(" at #{sequence}"))
+                    .unwrap_or_default()
+            );
+        }
+    }
+    for attempt in &document.accounting.attempts {
+        match &attempt.charge {
+            Some(charge) => {
+                let counters = counters_text(&charge.counters);
+                let _ = writeln!(
+                    out,
+                    "Attempt {} {}: charge {} ({} at sequence {}{}{}{})",
+                    attempt.attempt_id,
+                    attempt.node_id.as_deref().unwrap_or("-"),
+                    charge.counters.chargeable_tokens.as_deref().unwrap_or("-"),
+                    charge.source,
+                    charge.sequence,
+                    charge
+                        .observation
+                        .as_deref()
+                        .map(|observation| format!(", {observation}"))
+                        .unwrap_or_default(),
+                    charge
+                        .unknown_cause
+                        .as_deref()
+                        .map(|cause| format!(": {cause}"))
+                        .unwrap_or_default(),
+                    if counters.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; {counters}")
+                    }
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "Attempt {} {}: no charge snapshot retained",
+                    attempt.attempt_id,
+                    attempt.node_id.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        for wall in &attempt.walls {
+            let _ = writeln!(
+                out,
+                "  sidecar, execution {} write {}: {}{}",
+                wall.execution_id,
+                wall.wall_sequence,
+                wall.counters
+                    .chargeable_tokens
+                    .as_deref()
+                    .map(|charge| format!("usage charge {charge}"))
+                    .unwrap_or_else(|| "no usage".into()),
+                {
+                    let counters = counters_text(&wall.counters);
+                    if counters.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; {counters}")
+                    }
+                }
+            );
+        }
+        if attempt.walls.len() > 1 {
+            let _ = writeln!(out, "  order across executions: {}", attempt.wall_order);
+        }
+    }
+    let totals = &document.accounting.totals;
+    let counters = counters_text(&totals.counters);
+    let _ = writeln!(
+        out,
+        "charge {} over {} Attempt{}{}{} — {}",
+        totals.counters.chargeable_tokens.as_deref().unwrap_or("-"),
+        totals.attempts,
+        if totals.attempts == 1 { "" } else { "s" },
+        if totals.unknown_usage_attempts > 0 {
+            format!(" (+{} unknown)", totals.unknown_usage_attempts)
+        } else {
+            String::new()
+        },
+        if counters.is_empty() {
+            String::new()
+        } else {
+            format!(" ({counters})")
+        },
+        run.retained
+    );
+    for unreadable in &document.unreadable {
+        let _ = writeln!(
+            out,
+            "unreadable {}: {}",
+            super::home_relative(&unreadable.path),
+            unreadable.reason
+        );
+    }
+    out
+}
+
 /// `af telemetry tail`.
 pub(crate) fn tail(
     json: bool,

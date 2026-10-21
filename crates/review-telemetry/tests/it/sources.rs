@@ -1,5 +1,6 @@
 //! ADR-0153 clause 1 and ADR-0026 in the source: no crate but `af` links the reader module
-//! (`segment::reader`, `index`, `status`, `view`, `budget`, `blob::reader`, `blob::collect`),
+//! (`segment::reader`, `index`, `status`, `view`, `ledger`, `accounting`, `budget`,
+//! `blob::reader`, `blob::collect`),
 //! `review-process` links nothing of Telemetry, and Telemetry links nothing in the workspace.
 
 use std::path::{Path, PathBuf};
@@ -24,11 +25,13 @@ fn rust_files(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-const READER: [&str; 7] = [
+const READER: [&str; 9] = [
     "segment::reader",
     "index",
     "status",
     "view",
+    "ledger",
+    "accounting",
     "budget",
     "blob::reader",
     "blob::collect",

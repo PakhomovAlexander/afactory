@@ -299,6 +299,15 @@ impl TelemetrySubscriber {
             .and_then(|stack| stack.last().copied())
     }
 
+    fn recorded(&self, id: u64) -> Option<RecordedSpan> {
+        lock(&self.spans).get(&id).and_then(|state| {
+            state.span_id.clone().map(|span_id| RecordedSpan {
+                span_id,
+                trace_id: state.trace_id.clone(),
+            })
+        })
+    }
+
     fn parent_of(&self, explicit: Option<&Id>, contextual: bool) -> Option<u64> {
         match explicit {
             Some(id) => Some(id.into_u64()),
@@ -306,6 +315,35 @@ impl TelemetrySubscriber {
             None => None,
         }
     }
+}
+
+/// A span the subscriber recorded: its `span_id` in the segment and the run's trace, when the
+/// span or an ancestor named one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedSpan {
+    pub span_id: String,
+    pub trace_id: Option<String>,
+}
+
+/// The record of `span`, when the subscriber it was created under is this crate's and kept its
+/// start; `None` for a disabled span. Records written beside the span (an event on it, a
+/// `finding` naming it) use this id.
+pub fn recorded(span: &tracing::Span) -> Option<RecordedSpan> {
+    span.with_subscriber(|(id, dispatch)| {
+        dispatch
+            .downcast_ref::<TelemetrySubscriber>()
+            .and_then(|subscriber| subscriber.recorded(id.into_u64()))
+    })
+    .flatten()
+}
+
+/// The record of the current thread's innermost entered span under the current dispatcher.
+pub fn current_recorded() -> Option<RecordedSpan> {
+    tracing_core::dispatcher::get_default(|dispatch| {
+        dispatch
+            .downcast_ref::<TelemetrySubscriber>()
+            .and_then(|subscriber| subscriber.current().and_then(|id| subscriber.recorded(id)))
+    })
 }
 
 /// The writer of the subscriber installed as the process's global default.

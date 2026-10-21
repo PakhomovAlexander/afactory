@@ -1,0 +1,268 @@
+{
+  "schema": "af/telemetry-ledger@1",
+  "directory": "<root>",
+  "index": {
+    "state": "fresh"
+  },
+  "run": {
+    "store_id": "<store>",
+    "run_id": "campaign-telemetry",
+    "trace_id": "<trace>",
+    "kind": "review",
+    "history": "prefix:1",
+    "missing_ordinals": [],
+    "retained": "retained executions 1–1",
+    "executions": {
+      "retained": 1,
+      "sealed": [
+        1
+      ],
+      "open": [],
+      "list": [
+        {
+          "execution_id": "1700000200000-4244-0c1d2e3f",
+          "span_id": "070736a0b9e2591b",
+          "ordinal": 1,
+          "start_unix_ns": "1700000200003000000",
+          "end_unix_ns": "1700000200015000000",
+          "open": false,
+          "wall_us": 12000,
+          "segment": "sealed"
+        }
+      ]
+    }
+  },
+  "coverage": "complete",
+  "coverage_reasons": [],
+  "logs": [
+    {
+      "run_id": "campaign-telemetry",
+      "mirrored": 5,
+      "last_sequence": 4,
+      "missing": []
+    }
+  ],
+  "entries": [
+    {
+      "entry": "event",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 4,
+      "time_unix_ns": "1700000200004000000",
+      "log": "campaign-telemetry",
+      "sequence": 0,
+      "name": "CampaignOpened@1",
+      "event_id": "e7d5e11be30811048b401e1a23",
+      "artifact_refs": [
+        "sha256:62798762b1113794ddf5086b749ccb461830e338dde3c5598828814f5cf74dd6",
+        "sha256:29ce78f97ef1b7af9426817e855929d02dfc41580dc7683466009a7b71240751"
+      ],
+      "payload_digest": "sha256:fa3a70193026a3144d2eeb38d272081982eccaac208bd5a73cfe7b013d804ce3",
+      "payload_bytes": 196
+    },
+    {
+      "entry": "event",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 5,
+      "time_unix_ns": "1700000200005000000",
+      "log": "campaign-telemetry",
+      "sequence": 1,
+      "name": "RoundStarted@1",
+      "event_id": "c42ef90ecc606d014673d394b2",
+      "causation_id": "e7d5e11be30811048b401e1a23",
+      "artifact_refs": [
+        "sha256:62798762b1113794ddf5086b749ccb461830e338dde3c5598828814f5cf74dd6",
+        "sha256:29ce78f97ef1b7af9426817e855929d02dfc41580dc7683466009a7b71240751",
+        "sha256:077080848ec1147e5b13de979ef8596be3b9c42ce1f206ba3d186433ea549fdb",
+        "sha256:98497136cc46771696eb7bce6f83af636e35fb150ff6b98f3d9c218459271fe2",
+        "sha256:c714a7754f823d6ed8d185c25ef3be8481a305590dafe801d9b70331993807d4",
+        "sha256:3d61d06985486f0bac32be566f17b9bf9b1ea2d7f3827cfd098e47edbaa37612"
+      ],
+      "payload_digest": "sha256:7703d9021778b4ccda40097dff5775ce349d3888c265ab6973e12975aff305f9",
+      "payload_bytes": 398
+    },
+    {
+      "entry": "event",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 6,
+      "time_unix_ns": "1700000200006000000",
+      "log": "campaign-telemetry",
+      "sequence": 2,
+      "name": "DemandRecorded@1",
+      "event_id": "f4f340d8f4301c3caff9fd20db",
+      "causation_id": "c42ef90ecc606d014673d394b2",
+      "artifact_refs": [
+        "sha256:6e9d25388e8df7952f7ffeec106f37a376d0c0aa8c0418b7de23f9667141fb3c"
+      ],
+      "payload_digest": "sha256:ec3262e77fba2a42c52b8fedb31ab170c573001a843221523448752ca5631aff",
+      "payload_bytes": 89
+    },
+    {
+      "entry": "event",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 7,
+      "time_unix_ns": "1700000200007000000",
+      "log": "campaign-telemetry",
+      "sequence": 3,
+      "name": "FindingReported@1",
+      "event_id": "3883111c8208217b01f6d188f8",
+      "causation_id": "c42ef90ecc606d014673d394b2",
+      "artifact_refs": [
+        "sha256:2f19aef55268ba48a384afeeb4bd107f703958a66641d08aa9f586106aec043e"
+      ],
+      "payload_digest": "sha256:3883e57192bd26069095c7966dfc84c8c788381255fab5f498f0d4a944515a6e",
+      "payload_bytes": 194
+    },
+    {
+      "entry": "demand",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 8,
+      "demand_id": "sha256:50b27998ddc3fa9d498b4c839b63f5f7ff5fbbb40b93b52525638f6921014c25",
+      "status": "open"
+    },
+    {
+      "entry": "lifecycle",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 9,
+      "time_unix_ns": "1700000200008000000",
+      "log": "campaign-telemetry",
+      "sequence": 2,
+      "name": "af.demand.opened",
+      "demand_id": "sha256:50b27998ddc3fa9d498b4c839b63f5f7ff5fbbb40b93b52525638f6921014c25",
+      "status": "open"
+    },
+    {
+      "entry": "finding",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 10,
+      "finding_key": "sha256:0b754e7e4920b3b0a152813097b08f90cd9be7f1d90b472f4010b0f600082092",
+      "status": "open"
+    },
+    {
+      "entry": "event",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 11,
+      "time_unix_ns": "1700000200009000000",
+      "log": "campaign-telemetry",
+      "sequence": 4,
+      "name": "FindingResolved@1",
+      "event_id": "2f475661be9c88293b56bff824",
+      "causation_id": "c42ef90ecc606d014673d394b2",
+      "payload_digest": "sha256:cbab46613b43970377f4fa27d070da3820f8a93c778de6ea39a58b1af7056d12",
+      "payload_bytes": 139
+    },
+    {
+      "entry": "finding",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 12,
+      "finding_key": "sha256:0b754e7e4920b3b0a152813097b08f90cd9be7f1d90b472f4010b0f600082092",
+      "status": "wontfix"
+    },
+    {
+      "entry": "lifecycle",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 13,
+      "time_unix_ns": "1700000200010000000",
+      "log": "campaign-telemetry",
+      "sequence": 4,
+      "name": "af.finding.disposition",
+      "finding_key": "sha256:0b754e7e4920b3b0a152813097b08f90cd9be7f1d90b472f4010b0f600082092",
+      "status": "wontfix",
+      "previous_status": "open"
+    }
+  ],
+  "findings": [
+    {
+      "key": "sha256:0b754e7e4920b3b0a152813097b08f90cd9be7f1d90b472f4010b0f600082092",
+      "severity": "blocker",
+      "effective_severity": "blocker",
+      "status": "wontfix",
+      "scope": "in",
+      "file": "src/queue.rs",
+      "line": 3,
+      "title": "Queue grows without bound",
+      "report_artifact_id": "sha256:2f19aef55268ba48a384afeeb4bd107f703958a66641d08aa9f586106aec043e",
+      "node_id": "cross",
+      "worker": "cross",
+      "round": 1,
+      "epoch": 1,
+      "dispositions": [
+        {
+          "status": "wontfix",
+          "previous_status": "open",
+          "sequence": 4
+        }
+      ]
+    }
+  ],
+  "demands": [
+    {
+      "demand_id": "sha256:50b27998ddc3fa9d498b4c839b63f5f7ff5fbbb40b93b52525638f6921014c25",
+      "kind": "required",
+      "required": true,
+      "subject_id": "sha256:077080848ec1147e5b13de979ef8596be3b9c42ce1f206ba3d186433ea549fdb",
+      "snapshot_id": "sha256:98497136cc46771696eb7bce6f83af636e35fb150ff6b98f3d9c218459271fe2",
+      "status": "open",
+      "lifecycle": [
+        {
+          "event": "opened",
+          "sequence": 2
+        }
+      ]
+    }
+  ],
+  "accounting": {
+    "attempts": [
+      {
+        "attempt_id": "attempt-1",
+        "node_id": "root.nodes.cross",
+        "charge": {
+          "sequence": 5,
+          "source": "settled",
+          "execution_id": "1700000200000-4244-0c1d2e3f",
+          "counters": {
+            "chargeable_tokens": "9",
+            "input_tokens": "9"
+          },
+          "observation": "complete"
+        },
+        "walls": [
+          {
+            "execution_id": "1700000200000-4244-0c1d2e3f",
+            "wall_sequence": 15,
+            "started_unix_ms": 1000,
+            "elapsed_ms": 15,
+            "counters": {
+              "chargeable_tokens": "8",
+              "input_tokens": "8"
+            }
+          }
+        ],
+        "wall_order": "one execution"
+      },
+      {
+        "attempt_id": "attempt-2",
+        "node_id": "root.nodes.cross",
+        "charge": {
+          "sequence": 7,
+          "source": "settled",
+          "execution_id": "1700000200000-4244-0c1d2e3f",
+          "counters": {
+            "chargeable_tokens": "0"
+          },
+          "observation": "unknown",
+          "unknown_cause": "lease_expired"
+        },
+        "walls": [],
+        "wall_order": "none"
+      }
+    ],
+    "totals": {
+      "attempts": 2,
+      "unknown_usage_attempts": 1,
+      "counters": {
+        "chargeable_tokens": "9"
+      }
+    }
+  },
+  "unreadable": []
+}

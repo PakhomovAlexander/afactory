@@ -1688,7 +1688,20 @@ impl Writer {
 
     /// An event on a span; returns its `seq`.
     pub fn event(&self, span_id: &str, name: &str, attrs: Attrs) -> Option<u64> {
-        self.event_with(span_id, name, attrs, None)
+        self.event_with(span_id, name, attrs, None, None)
+    }
+
+    /// An event that also carries its own `seq` as the integer attribute `sequence`, first in
+    /// its attributes so the record bound never drops it (the wall series' ordering key,
+    /// design §7.5). Returns the event's `seq`.
+    pub fn event_with_sequence(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        sequence: &'static str,
+    ) -> Option<u64> {
+        self.event_with(span_id, name, attrs, None, Some(sequence))
     }
 
     /// An event naming content: at `content` the content becomes a blob occurrence the event
@@ -1701,7 +1714,7 @@ impl Writer {
         content: &[u8],
         media: Media,
     ) -> Option<u64> {
-        self.event_with(span_id, name, attrs, Some((content, media)))
+        self.event_with(span_id, name, attrs, Some((content, media)), None)
     }
 
     fn event_with(
@@ -1710,6 +1723,7 @@ impl Writer {
         name: &str,
         attrs: Attrs,
         content: Option<(&[u8], Media)>,
+        sequence: Option<&'static str>,
     ) -> Option<u64> {
         let options = &self.shared.options;
         let Bounded {
@@ -1739,6 +1753,10 @@ impl Writer {
             // The attributes' contents follow the event's own.
             let attribute_occurrences = if own { &occurrences[1..] } else { occurrences };
             fill(&mut attributes, &named, attribute_occurrences);
+            let mut attributes = attributes.clone();
+            if let Some(key) = sequence {
+                attributes.shift_insert(0, key.to_string(), serde_json::Value::from(batch.seq()));
+            }
             batch.push(
                 Record::Event(Event {
                     seq: 0,
@@ -1746,7 +1764,7 @@ impl Writer {
                     span_id: span_id.to_string(),
                     time_unix_ns: time.clone(),
                     name: name.clone(),
-                    attributes: attributes.clone(),
+                    attributes,
                     blob: if own {
                         occurrences.first().cloned()
                     } else {
@@ -1913,7 +1931,7 @@ impl Writer {
         finding.schema = schema::FINDING.into();
         for (position, field) in [
             ("span_id", &mut finding.span_id),
-            ("key", &mut finding.key),
+            ("finding_key", &mut finding.key),
             ("severity", &mut finding.severity),
             ("effective_severity", &mut finding.effective_severity),
             ("status", &mut finding.status),
