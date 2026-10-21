@@ -61,6 +61,13 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   Snapshot or a delivered tree, and `require_container = true` refuses it. Warm or cold is
   runtime evidence only
   ([ADR-0131](adr/0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)).
+  After warm preparation holds the key, before each native check or measurement command runs,
+  the kernel refreshes every regular source
+  file's mtime in its private materialized tree. Cargo therefore rebuilds workspace units even
+  when another Snapshot left newer artifacts in the shared target; registry dependencies stay
+  warm. `af task show` reports the target bytes available before the check, not compiler hits or
+  the Snapshot that last built them
+  ([ADR-0161](adr/0161-refresh-native-check-source-mtimes-before-reusing-cargo-target.md)).
 - The kernel measures; a model never writes a number the kernel did not record. A code policy's
   `[measures]` are run by the installed `measure` operator against a read-only Snapshot, and
   `compare` folds two `af/Measurement@1` under a declared `[objectives]` entry in exact decimal

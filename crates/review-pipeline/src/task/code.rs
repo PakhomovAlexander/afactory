@@ -1301,6 +1301,28 @@ impl CodeTaskDomain {
                 }),
                 None => None,
             };
+            // Refresh only after warm preparation holds the key: a previous holder may have
+            // built another Snapshot while this check waited for the lock. Never retime the CAS
+            // or cache inputs, only this private materialization, before dispatching a command.
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_millis() as u64;
+            let refresh_budget =
+                remaining.min(attempt.reservation().deadline_unix_ms.saturating_sub(now));
+            let refresh = if refresh_budget == 0
+                || prepared.as_ref().is_some_and(|p| p.refusal.is_some())
+            {
+                Ok(0)
+            } else {
+                sandbox.refresh_source_mtimes(cancellation, Duration::from_millis(refresh_budget))
+            };
+            super::control::check(cancellation)?;
+            let refresh_timed_out = match refresh {
+                Ok(_) => false,
+                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => true,
+                Err(error) => return Err(format!("refresh check source mtimes: {error}")),
+            };
             // Preparation — the toolchain probe, the lock wait, a Cache Snapshot copy — spent
             // Attempt time. The check runs against what is left now, not what was left before.
             let prepared_at = SystemTime::now()
@@ -1308,11 +1330,15 @@ impl CodeTaskDomain {
                 .map_err(|e| e.to_string())?
                 .as_millis() as u64;
             let exhausted_before = remaining == 0;
-            let remaining = attempt
-                .reservation()
-                .deadline_unix_ms
-                .saturating_sub(prepared_at)
-                .min(remaining);
+            let remaining = if refresh_timed_out {
+                0
+            } else {
+                attempt
+                    .reservation()
+                    .deadline_unix_ms
+                    .saturating_sub(prepared_at)
+                    .min(remaining)
+            };
             let runner = runner.with_timeout(Duration::from_millis(remaining));
             let exhausted_preparing = prepared.is_some() && !exhausted_before && remaining == 0;
             let runner = match &prepared {
@@ -1397,7 +1423,9 @@ impl CodeTaskDomain {
                         status: CheckStatus::NotRun,
                         exit_code: None,
                         reason: Some(refusal.unwrap_or_else(|| {
-                            if exhausted_preparing {
+                            if refresh_timed_out {
+                                "Task check deadline expired during source refresh".into()
+                            } else if exhausted_preparing {
                                 "Task check deadline expired during warm preparation".into()
                             } else {
                                 "Task check deadline expired".into()

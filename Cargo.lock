@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "af"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1383,7 +1383,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "review-attempt"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "review-core",
  "serde",
@@ -1392,7 +1392,7 @@ dependencies = [
 
 [[package]]
 name = "review-check"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "jsonschema",
  "review-core",
@@ -1408,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "review-config"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "jsonschema",
  "nix 0.31.3",
@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "review-core"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "base64",
  "jsonschema",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "review-graph"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "review-attempt",
  "review-core",
@@ -1451,14 +1451,14 @@ dependencies = [
 
 [[package]]
 name = "review-parallel"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "rayon",
 ]
 
 [[package]]
 name = "review-pipeline"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "comrak",
  "jsonschema",
@@ -1486,14 +1486,14 @@ dependencies = [
 
 [[package]]
 name = "review-process"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "nix 0.31.3",
 ]
 
 [[package]]
 name = "review-runner"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "jsonschema",
  "review-core",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "review-runner-claude"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "jsonschema",
  "nix 0.31.3",
@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "review-runner-codex"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "review-config",
  "review-core",
@@ -1541,7 +1541,7 @@ dependencies = [
 
 [[package]]
 name = "review-sandbox"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "exacl",
  "nix 0.31.3",
@@ -1562,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "review-source-git"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "jsonschema",
  "nix 0.31.3",
@@ -1582,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "review-source-task"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "review-core",
  "review-process",
@@ -1595,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "review-store"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "nix 0.31.3",
  "reflink-copy",
@@ -1614,7 +1614,7 @@ dependencies = [
 
 [[package]]
 name = "review-telemetry"
-version = "0.12.0-rc.4"
+version = "0.12.0-rc.5"
 dependencies = [
  "flate2",
  "jsonschema",
