@@ -523,8 +523,8 @@ fn telemetry_secret_named_attribute_keys_withhold_values() {
             Attrs::new()
                 .text("api_key", "violet")
                 .id("session_token", "violet-id")
-                .int("db_password", 4242)
-                .decimal("client_secret", "9876543210")
+                .int("db_password", 424_242_424_242)
+                .decimal("client_secret", "987654321098765")
                 .boolean("auth", true)
                 .enumerated("x-auth-mode", "violet")
                 .texts("credentials", vec!["violet".into(), "indigo".into()])
@@ -568,8 +568,10 @@ fn telemetry_secret_named_attribute_keys_withhold_values() {
             checked += 1;
         }
         assert_eq!(checked, 3, "{level:?}");
+        // The planted numbers have twelve digits or more and are no plausible nanosecond prefix,
+        // so no timestamp or digest of the segment contains them by chance.
         let text = String::from_utf8(crate::sealed_bytes(&sealed.path)).unwrap();
-        for planted in ["violet", "indigo", "4242", "9876543210"] {
+        for planted in ["violet", "indigo", "424242424242", "987654321098765"] {
             assert!(!text.contains(planted), "{level:?}: {planted} in {text}");
         }
         // Nothing became a blob: a withheld value is never content.

@@ -120,12 +120,16 @@ fn store_logs(state: &str) -> Logs {
 /// records the running Attempt writes while it waits, whose count depends on load.
 const TIME_DRIVEN: [&str; 2] = ["lease_renewed", "execution_recorded"];
 
-/// One Store log reduced to what a run decides, not its clock: a Campaign log whole, as
-/// `(sequence, type)`; a Task log's events as `(type, transition kind)` in log order without the
-/// time-driven transitions, beside the set of every `(type, kind)` the log holds, those included.
+/// One Store log reduced to what a run decides, not its clock or its scheduler: a Campaign log
+/// as its Rounds in order — what precedes the first `RoundStarted@1`, then each Round from its
+/// `RoundStarted@1` — each Round every event type it committed, as many times as it did, sorted,
+/// because the events of a Round's concurrent nodes (`NodeInvocation@1`, `CheckCompleted@1`)
+/// commit in whichever order they finish; a Task log's events as `(type, transition kind)` in
+/// log order without the time-driven transitions, beside the set of every `(type, kind)` the log
+/// holds, those included.
 #[derive(Debug, PartialEq, Eq)]
 enum Stable {
-    Campaign(Vec<(u64, String)>),
+    Campaign(Vec<Vec<String>>),
     Task {
         ordered: Vec<(String, String)>,
         kinds: std::collections::BTreeSet<(String, String)>,
@@ -146,12 +150,18 @@ fn stable_logs(state: &str) -> Vec<Stable> {
                 .iter()
                 .any(|event| event.event_type.as_str() == "TaskTransition@5");
             if !task {
-                return Stable::Campaign(
-                    events
-                        .iter()
-                        .map(|event| (event.sequence, event.event_type.as_str().to_string()))
-                        .collect(),
-                );
+                let mut rounds: Vec<Vec<String>> = vec![Vec::new()];
+                for event in &events {
+                    let kind = event.event_type.as_str().to_string();
+                    if kind == "RoundStarted@1" {
+                        rounds.push(Vec::new());
+                    }
+                    rounds.last_mut().expect("a Round").push(kind);
+                }
+                for round in &mut rounds {
+                    round.sort();
+                }
+                return Stable::Campaign(rounds);
             }
             let typed: Vec<(String, String)> = events
                 .iter()
@@ -303,7 +313,8 @@ fn telemetry_ledger_covers_the_campaign_and_fails_open() {
     assert!(reasons.contains("Store mirror problem"), "{reasons}");
     assert_eq!(
         failing_stable, stable,
-        "the Store is unaffected: every deterministic event in order, every kind present"
+        "the Store is unaffected: every Round's events, every deterministic Task transition in \
+         order, every kind present"
     );
 }
 
