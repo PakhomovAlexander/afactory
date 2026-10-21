@@ -614,6 +614,29 @@ fn a_warm_check_runs_on_sources_stamped_after_the_build_it_reuses() {
     for outcome in [&first, &second] {
         assert_eq!(check_receipt(&cas, outcome)["outcome"], "passed");
     }
+    let target = warm_directories(&fixture).pop().unwrap();
+    let product = std::fs::File::open(target.join("built")).unwrap();
+    product
+        .set_times(
+            std::fs::FileTimes::new().set_modified(
+                std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
+            ),
+        )
+        .unwrap();
+    let third = start(&fixture, "stamped-future", 0);
+    assert_eq!(check_receipt(&cas, &third)["outcome"], "passed");
+    let observed = observations(&third);
+    assert_eq!(observed[0]["kind"], "cargo_target:future_mtime");
+    assert_eq!(observed[0]["eligible"], false);
+    assert_eq!(observed[0]["bytes_available"], 0);
+    assert_eq!(
+        observed[0]["source_digest"],
+        observations(&second)[0]["source_digest"]
+    );
+    assert!(
+        product.metadata().unwrap().modified().unwrap() > std::time::SystemTime::now(),
+        "the cold fallback did not rewrite the held target"
+    );
 }
 
 #[test]

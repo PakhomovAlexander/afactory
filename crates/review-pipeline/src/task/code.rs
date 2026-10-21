@@ -1231,13 +1231,21 @@ impl CodeTaskDomain {
                 .as_millis() as u64;
             let refresh_budget =
                 remaining.min(attempt.reservation().deadline_unix_ms.saturating_sub(now));
-            let refresh = if refresh_budget == 0
-                || prepared.as_ref().is_some_and(|p| p.refusal.is_some())
-            {
-                Ok(0)
-            } else {
-                sandbox.refresh_source_mtimes(cancellation, Duration::from_millis(refresh_budget))
-            };
+            let refresh =
+                if refresh_budget == 0 || prepared.as_ref().is_some_and(|p| p.refusal.is_some()) {
+                    Ok(0)
+                } else {
+                    let budget = Duration::from_millis(refresh_budget);
+                    match prepared.as_mut() {
+                        Some(prepared) => prepared.refresh_source_mtimes(
+                            &sandbox,
+                            runtime.path(),
+                            cancellation,
+                            budget,
+                        ),
+                        None => sandbox.refresh_source_mtimes(None, cancellation, budget),
+                    }
+                };
             super::control::check(cancellation)?;
             let refresh_timed_out = match refresh {
                 Ok(_) => false,

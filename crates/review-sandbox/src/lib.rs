@@ -475,15 +475,17 @@ impl Sandbox {
     }
 
     /// Make this check's regular source files newer than a build left in a shared Cargo target.
-    /// Call after materialization and acquiring any warm target lock, before dispatch. A small
-    /// lead covers coarse mtimes; the stored value must be newer than lock acquisition. Changes
-    /// only in the private sandbox, never the CAS or its manifest.
+    /// Call after materialization and acquiring any warm target lock, before dispatch.
+    /// `after` is the newest mtime observed in the held target, or absent for a cold target.
+    /// Stored times must beat it without being in the future. Changes only the private tree,
+    /// never the CAS or its manifest; coarse-clock retries share the caller's budget.
     pub fn refresh_source_mtimes(
         &self,
+        after: Option<std::time::SystemTime>,
         cancellation: Option<&AtomicBool>,
         budget: Duration,
     ) -> std::io::Result<usize> {
-        refresh_source_mtimes(&self.root, &self.baseline, cancellation, budget)
+        refresh_source_mtimes(&self.root, &self.baseline, after, cancellation, budget)
     }
 
     fn apply_read_only(&self) -> std::io::Result<()> {
@@ -549,15 +551,17 @@ impl Sandbox {
 fn refresh_source_mtimes(
     root: &Path,
     manifest: &Manifest,
+    after: Option<std::time::SystemTime>,
     cancellation: Option<&AtomicBool>,
     budget: Duration,
 ) -> std::io::Result<usize> {
-    refresh_source_mtimes_observed(root, manifest, cancellation, budget, &mut |_| {})
+    refresh_source_mtimes_observed(root, manifest, after, cancellation, budget, &mut |_| {})
 }
 
 fn refresh_source_mtimes_observed(
     root: &Path,
     manifest: &Manifest,
+    after: Option<std::time::SystemTime>,
     cancellation: Option<&AtomicBool>,
     budget: Duration,
     stamped: &mut dyn FnMut(&Path),
@@ -568,51 +572,68 @@ fn refresh_source_mtimes_observed(
     use std::time::SystemTime;
 
     let started = Instant::now();
-    let after = SystemTime::now();
-    let modified = after
-        .checked_add(Duration::from_secs(2))
-        .ok_or_else(|| std::io::Error::other("source freshness time overflow"))?;
-    let times = FileTimes::new().set_modified(modified);
     check_refresh_budget(cancellation, started, budget)?;
     let root = open(
         root,
         OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW,
         FileMode::empty(),
     )?;
-    let mut touched = 0;
-    for entry in &manifest.entries {
+    'refresh: loop {
+        let modified = SystemTime::now();
+        let times = FileTimes::new().set_modified(modified);
+        let mut latest = modified;
+        let mut touched = 0;
+        for entry in &manifest.entries {
+            check_refresh_budget(cancellation, started, budget)?;
+            if !matches!(entry.kind, EntryKind::File | EntryKind::Executable) {
+                continue;
+            }
+            // Anchor traversal in the private root and refuse replacements of any component,
+            // not just a final symlink. Keep the opened file bound while changing its metadata.
+            let path = fs_path(&entry.path);
+            let parent = open_beneath(&root, path.parent().unwrap_or_else(|| Path::new("")))?;
+            let file = File::from(openat(
+                &parent,
+                path.file_name()
+                    .ok_or_else(|| std::io::Error::other("source has no filename"))?,
+                OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK,
+                FileMode::empty(),
+            )?);
+            if !file.metadata()?.is_file() {
+                return Err(std::io::Error::other(
+                    "materialized source is not a regular file",
+                ));
+            }
+            check_refresh_budget(cancellation, started, budget)?;
+            file.set_times(times)?;
+            let stored = file.metadata()?.modified()?;
+            if after.is_some_and(|after| stored <= after) {
+                // A coarse filesystem may round the current time back to the target's tick.
+                // Retry the whole tree with one later current stamp, never a future lead.
+                pause_refresh(cancellation, started, budget)?;
+                continue 'refresh;
+            }
+            latest = latest.max(stored);
+            stamped(&path);
+            touched += 1;
+        }
+        // Also covers a filesystem rounding up, or a wall-clock rollback during traversal.
+        while SystemTime::now() < latest {
+            pause_refresh(cancellation, started, budget)?;
+        }
         check_refresh_budget(cancellation, started, budget)?;
-        if !matches!(entry.kind, EntryKind::File | EntryKind::Executable) {
-            continue;
-        }
-        // Anchor traversal in the private root and refuse replacements of any component,
-        // not just a final symlink. Keep the opened file bound while changing its metadata.
-        let path = fs_path(&entry.path);
-        let parent = open_beneath(&root, path.parent().unwrap_or_else(|| Path::new("")))?;
-        let file = File::from(openat(
-            &parent,
-            path.file_name()
-                .ok_or_else(|| std::io::Error::other("source has no filename"))?,
-            OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK,
-            FileMode::empty(),
-        )?);
-        if !file.metadata()?.is_file() {
-            return Err(std::io::Error::other(
-                "materialized source is not a regular file",
-            ));
-        }
-        check_refresh_budget(cancellation, started, budget)?;
-        file.set_times(times)?;
-        if file.metadata()?.modified()? <= after {
-            return Err(std::io::Error::other(
-                "filesystem did not store a source mtime newer than warm preparation",
-            ));
-        }
-        stamped(&path);
-        touched += 1;
+        return Ok(touched);
     }
+}
+
+fn pause_refresh(
+    cancellation: Option<&AtomicBool>,
+    started: Instant,
+    budget: Duration,
+) -> std::io::Result<()> {
     check_refresh_budget(cancellation, started, budget)?;
-    Ok(touched)
+    std::thread::sleep(Duration::from_millis(10).min(budget.saturating_sub(started.elapsed())));
+    check_refresh_budget(cancellation, started, budget)
 }
 
 fn check_refresh_budget(
@@ -641,6 +662,51 @@ mod source_mtime_tests {
     use review_source_git::Entry;
 
     #[test]
+    fn a_freshness_floor_ahead_of_the_clock_cannot_escape_the_budget_or_cancellation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("source.rs");
+        std::fs::write(&path, b"source").unwrap();
+        let manifest = Manifest::new(vec![Entry {
+            path: "source.rs".into(),
+            kind: EntryKind::File,
+            content: review_source_git::digest_bytes(b"source"),
+            size: 6,
+        }])
+        .unwrap();
+        let after = std::time::SystemTime::now() + Duration::from_secs(86_400);
+        let started = Instant::now();
+        let error = refresh_source_mtimes(
+            root.path(),
+            &manifest,
+            Some(after),
+            None,
+            Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let cancelled = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(20));
+                cancelled.store(true, Ordering::Release);
+            });
+            let error = refresh_source_mtimes(
+                root.path(),
+                &manifest,
+                Some(after),
+                Some(&cancelled),
+                Duration::from_secs(1),
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        });
+        assert!(
+            std::fs::metadata(path).unwrap().modified().unwrap() <= std::time::SystemTime::now()
+        );
+    }
+
+    #[test]
     fn refreshing_replaced_source_components_refuses_symlinks_without_touching_their_targets() {
         for path in ["source.rs", "nested/source.rs"] {
             let temporary = tempfile::tempdir().unwrap();
@@ -664,7 +730,10 @@ mod source_mtime_tests {
             }])
             .unwrap();
 
-            assert!(refresh_source_mtimes(&root, &manifest, None, Duration::from_secs(1)).is_err());
+            assert!(
+                refresh_source_mtimes(&root, &manifest, None, None, Duration::from_secs(1))
+                    .is_err()
+            );
             assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
             assert_eq!(
                 std::fs::metadata(target).unwrap().modified().unwrap(),
@@ -698,6 +767,7 @@ mod source_mtime_tests {
             let error = refresh_source_mtimes_observed(
                 temporary.path(),
                 &manifest,
+                None,
                 Some(&cancelled),
                 Duration::from_secs(60),
                 &mut |_| {
@@ -737,13 +807,14 @@ mod source_mtime_tests {
         let error = refresh_source_mtimes(
             temporary.path(),
             &manifest,
+            None,
             Some(&cancelled),
             Duration::from_secs(1),
         )
         .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
-        let error =
-            refresh_source_mtimes(temporary.path(), &manifest, None, Duration::ZERO).unwrap_err();
+        let error = refresh_source_mtimes(temporary.path(), &manifest, None, None, Duration::ZERO)
+            .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert_eq!(std::fs::metadata(file).unwrap().modified().unwrap(), before);
     }
