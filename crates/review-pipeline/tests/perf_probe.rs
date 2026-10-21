@@ -1406,10 +1406,12 @@ fn transition(event: &review_core::RunEvent) -> (u64, &Value) {
     (payload["now_unix_ms"].as_u64().unwrap(), &payload["change"])
 }
 
-/// The `kind` of every transition in the probe Task's log.
+/// The `kind` of every transition in the probe Task's log; an execution marker
+/// (`TaskExecutionStarted@1`) is no transition.
 fn kinds(events: &[review_core::RunEvent]) -> Vec<String> {
     events
         .iter()
+        .filter(|event| matches!(event.event_type, review_core::EventType::TaskTransitionV5))
         .map(|event| transition(event).1["kind"].as_str().unwrap().to_string())
         .collect()
 }
@@ -1461,7 +1463,14 @@ fn each_authority_setup_write_owns_a_whole_lease_and_the_region_captures_outside
         );
         let store = review_store::EventStore::open(scratch.join("events.sqlite")).unwrap();
         let run = review_store::store::task::task_run_id(authority::TASK_ID).unwrap();
-        let events = store.replay(&run).unwrap();
+        // The log also holds the execution marker (`TaskExecutionStarted@1`) of the lease that
+        // began kernel execution; this test judges the transitions and their timing.
+        let events: Vec<_> = store
+            .replay(&run)
+            .unwrap()
+            .into_iter()
+            .filter(|event| matches!(event.event_type, review_core::EventType::TaskTransitionV5))
+            .collect();
         assert_eq!(
             &kinds(&events)[..7],
             [
