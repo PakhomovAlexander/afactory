@@ -153,3 +153,9 @@
   listing a missing or corrupt one as unreadable; below `content` the first two say the content
   was not captured and `search` is refused. No
   prompt, Warm Set, Worker Notes or optimization source reads any of it.
+- Telemetry measures its bytes the way the Storage Budget measures every other kind (ADR-0159
+  clause 13): the allocated bytes of regular files, a hard-linked file once, directories and
+  symbolic links nothing. `af telemetry status`, `af telemetry gc`, `af storage` and
+  `af storage prune` now report the same telemetry numbers on ext4 as on APFS; on Linux they
+  are smaller than before by 4096 bytes for every directory under the telemetry root, which
+  they no longer count.

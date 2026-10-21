@@ -12,31 +12,7 @@ use review_telemetry::level::Level;
 use review_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
 use review_telemetry::segment::writer::Writer;
 
-use crate::{options, writer};
-
-/// The allocated bytes of `root` and everything beneath it.
-fn allocated(root: &Path) -> u64 {
-    use std::os::unix::fs::MetadataExt as _;
-    let own = std::fs::symlink_metadata(root).unwrap();
-    let mut total = own.blocks() * 512;
-    if !own.is_dir() {
-        return total;
-    }
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory)
-            .unwrap()
-            .filter_map(Result::ok)
-        {
-            let metadata = std::fs::symlink_metadata(entry.path()).unwrap();
-            total += metadata.blocks() * 512;
-            if metadata.is_dir() {
-                pending.push(entry.path());
-            }
-        }
-    }
-    total
-}
+use crate::{allocated, options, writer};
 
 /// Every file beneath `root`, last modified `age` ago.
 fn age(root: &Path, age: Duration) {

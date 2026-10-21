@@ -13,7 +13,9 @@
 //! design §6), and recovery, which keeps only valid lines and ends the spans its prefix left
 //! open, validates that prefix in full.
 //!
-//! **Physical union.** A directory's bytes are every allocated byte beneath it, counted once.
+//! **Physical union.** A directory's bytes are the allocated bytes of the regular files beneath
+//! it, a file several hard links reach counted once, directories and links nothing
+//! ([`layout::Measurement`], ADR-0159 clause 13).
 //! Each sealed or corrupt segment is an entry whose bytes are its **marginal** bytes — what its
 //! eviction frees: the segment, its manifest, and the blobs no other retained segment references
 //! — recomputed after every removal ([`Directory::remove`]), so a blob two segments share is
@@ -49,7 +51,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::blob::collect;
 use crate::index::{self, Index};
-use crate::layout::{self, Confined, EntryKind, FileIdentity, Layout, SegmentFile};
+use crate::layout::{self, Confined, EntryKind, FileIdentity, Layout, Measurement, SegmentFile};
 use crate::segment::reader;
 
 /// Nothing used within this long is evicted, and temporaries and orphaned blobs younger than
@@ -123,7 +125,7 @@ pub struct Directory {
     pub root: PathBuf,
     /// The root's device and inode as the inventory opened it.
     pub root_identity: Option<(u64, u64)>,
-    /// Every allocated byte beneath the root.
+    /// The allocated bytes of the regular files beneath the root ([`Measurement`]).
     pub total: u64,
     pub segments: BTreeMap<String, Segment>,
     /// Allocated bytes of every blob object, by digest.
@@ -205,13 +207,15 @@ impl Directory {
         let mut directory = Self {
             root: root.to_path_buf(),
             root_identity: root_dir.own_identity().ok(),
-            total: root_dir.own_allocated(),
+            total: 0,
             segments: BTreeMap::new(),
             blobs: BTreeMap::new(),
             problems: Vec::new(),
         };
+        // One measurement for the whole tree: a file several hard links reach counts once.
+        let mut measurement = Measurement::default();
         for name in root_dir.names().map_err(failed)? {
-            directory.total += root_dir.allocated_tree(&name);
+            directory.total += root_dir.measure_tree(&name, &mut measurement);
             if reader::is_other_version(&name) && root_dir.kind(&name) == Some(EntryKind::Directory)
             {
                 directory.segments.insert(
@@ -306,7 +310,11 @@ impl Directory {
                         id: id.clone(),
                         state: State::Sealed,
                         path: segments.join(&name),
-                        own_bytes: segments.allocated(&name) + segments.allocated(&refs_name),
+                        own_bytes: {
+                            let mut own = Measurement::default();
+                            segments.measure(&name, &mut own)
+                                + segments.measure(&refs_name, &mut own)
+                        },
                         last_use_unix_ms,
                         refs,
                         identity,
@@ -674,9 +682,10 @@ pub fn evict_with(
         }
         return restore(&staged_segment, &name, why);
     }
-    let mut bytes = segments.allocated(&staged_segment);
+    let mut removed = Measurement::default();
+    let mut bytes = segments.measure(&staged_segment, &mut removed);
     if let Some((staged, _)) = &staged_manifest {
-        bytes += segments.allocated(staged);
+        bytes += segments.measure(staged, &mut removed);
     }
     unlink(&staged_segment)?;
     if let Some((staged, _)) = &staged_manifest {
@@ -762,8 +771,13 @@ pub fn reclaim(root: &Path, evicted: &[String], now: SystemTime) -> Result<Recla
     if versioned.kind(&names[0]) != Some(EntryKind::File) {
         return Ok(reclaimed);
     }
-    let allocated =
-        |versioned: &Confined| -> u64 { names.iter().map(|name| versioned.allocated(name)).sum() };
+    let allocated = |versioned: &Confined| -> u64 {
+        let mut measurement = Measurement::default();
+        names
+            .iter()
+            .map(|name| versioned.measure(name, &mut measurement))
+            .sum()
+    };
     let before = allocated(&versioned);
     let index = Index::open_in(
         &layout,
