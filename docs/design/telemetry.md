@@ -411,7 +411,8 @@ deletion path. The index is derived state and is never evidence of anything.
 
 **Budget.** Telemetry's retained bytes are the physical union under `telemetry/`, counted exactly
 once: live, sealed and corrupt segments with their manifests, blobs, temporary files, and the
-index with its WAL and shared-memory files. `af storage` reports that total as the kind
+index with its WAL and shared-memory files, each by the allocated bytes of its regular files, a
+hard-linked file once, directories and links nothing (ADR-0159 clause 13). `af storage` reports that total as the kind
 `telemetry`, and one entry per sealed or corrupt segment whose `bytes` are the marginal bytes
 its eviction frees — the segment, its manifest and the blobs no other segment references —
 recomputed after every removal, with `last_use` the seal time (a corrupt segment's: its
@@ -427,7 +428,7 @@ the index it reads `freelist_count` and `page_size`: when the free pages exceed 
 quarter of the file, it runs `VACUUM`, and if that fails for lack of space it replaces the index
 under the exclusive `index.lock` as above, leaving none, which the next reader rebuilds; without
 the lock it defers. Reclaimed bytes are measured
-as allocated bytes, never as deleted rows. Fixtures cover a blob shared by two segments, an index
+as the allocated bytes of the files removed, never as deleted rows. Fixtures cover a blob shared by two segments, an index
 larger than its segments, and an inventory holding only old corrupt segments, orphan temporaries
 and free index pages, each brought under the cap.
 

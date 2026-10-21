@@ -358,14 +358,16 @@ There is no telemetry `keep_days`: collection by age is `[storage] keep_days` un
 af telemetry status [--json] [--dir PATH]
 ```
 
-Prints the configured level; the telemetry directory and its allocated bytes, in total against
+Prints the configured level; the telemetry directory and its bytes — the allocated bytes of its
+regular files, a file several hard links reach once, directories and symbolic links nothing, so
+ext4 and APFS give the same numbers (ADR-0159 clause 13) — in total against
 `[telemetry] max_bytes` and per entry (each segment with its manifest; the blobs, which are only
 the two-hex prefix directories under `v1/blobs/` and the digest-named objects and publishers'
 temporary files in them; the index with its WAL and shared-memory files; temporary files; locks;
 and `unrecognized`: every other file or directory beneath the telemetry directory, `v1/blobs/`
 included — a stray name, and a symbolic link wherever it lies, which is never followed —
 counted once with its count, its allocated bytes and up to 16 of its names, never read
-and never removed, so the total is every allocated byte beneath the directory), each sealed
+and never removed, so the total is every file's allocated bytes beneath the directory), each sealed
 segment with its seal's `exit` and whether its capture is `complete` or why not (`recovered, drops unknown` for a
 segment recovered without its writer's seal, `recovered`, `12 dropped`); the segments by state —
 `live` (a writer holds its lock), `unsealed` (nobody holds it: a crashed writer's, recoverable),
@@ -638,9 +640,11 @@ document
 
 ## Telemetry in the Storage Budget
 
-Every byte beneath every registered telemetry directory is counted once in `af storage` as the
-kind `telemetry` (`af/storage@4`, [`schemas/storage-v4.json`](../schemas/storage-v4.json)),
-whatever the current level or `dir`, Telemetry `off` included:
+Every byte of every regular file beneath every registered telemetry directory is counted once in
+`af storage` as the kind `telemetry` (`af/storage@4`,
+[`schemas/storage-v4.json`](../schemas/storage-v4.json)), whatever the current level or `dir`,
+Telemetry `off` included, by the rule every kind is measured by — the allocated bytes of regular
+files, a hard-linked file once, directories and links nothing (ADR-0159 clause 13):
 
 - one entry per sealed or corrupt segment, whose bytes are its **marginal** bytes — what its
   eviction frees: the segment, its manifest and the blobs no other retained segment references —
@@ -679,7 +683,8 @@ temporary files under `segments/` and `blobs/` older than an hour, and the stale
 references; then it drops the evicted segments' rows from the index and, when its free pages
 exceed 16 MiB and a quarter of the file, runs `VACUUM` — deleting the index under `index.lock`
 when there is no room to vacuum (the next reader rebuilds it), deferring without the lock. What
-it reclaims is measured as allocated bytes (`telemetry.reclaimed` in `af/storage-prune@4`). It
+it reclaims is measured as the allocated bytes of the files removed (`telemetry.reclaimed` in
+`af/storage-prune@4`). It
 reads only structural metadata: file sizes and times, lock state, manifests, a sealed segment's
 header and seal records and the `blob_ref` records of a live or unsealed segment's valid prefix,
 read by a structural scanner that checks each line's framing, record type and sequence and

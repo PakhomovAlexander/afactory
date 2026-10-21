@@ -42,6 +42,34 @@ pub fn config_owner(execution_id: &str) -> review_telemetry::segment::writer::Co
     }
 }
 
+/// What the Storage Budget counts of `path` and everything beneath it (ADR-0159 clause 13),
+/// measured here apart from the crate: the allocated bytes of the regular files, a file several
+/// hard links reach once, directories and links nothing; a missing path nothing.
+pub fn allocated(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt as _;
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    let mut linked = std::collections::BTreeSet::new();
+    let mut total = 0;
+    let mut pending = vec![(path.to_path_buf(), metadata)];
+    while let Some((path, metadata)) = pending.pop() {
+        if metadata.is_dir() {
+            for entry in std::fs::read_dir(&path).unwrap().filter_map(Result::ok) {
+                pending.push((
+                    entry.path(),
+                    std::fs::symlink_metadata(entry.path()).unwrap(),
+                ));
+            }
+        } else if metadata.is_file()
+            && (metadata.nlink() == 1 || linked.insert((metadata.dev(), metadata.ino())))
+        {
+            total += metadata.blocks() * 512;
+        }
+    }
+    total
+}
+
 pub fn writer(root: &Path, level: Level) -> Writer {
     Writer::new(options(root, level)).expect("a level that records")
 }

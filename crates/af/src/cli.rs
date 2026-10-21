@@ -1781,11 +1781,13 @@ pub(crate) enum TelemetryCommand {
     /// The level, the directory, its bytes, segments, runs, the index and every problem
     #[command(
         long_about = "The level, the directory, its bytes, segments, runs, the index and every problem.\n\n\
-Prints the configured `[telemetry] level`; the telemetry directory and its allocated bytes, in \
+Prints the configured `[telemetry] level`; the telemetry directory and its bytes (the \
+allocated bytes of its regular files, a hard-linked file once, directories and links nothing), in \
 total against `[telemetry] max_bytes` and per entry (each segment with its manifest, the blobs, \
 the index with its WAL and shared memory, temporary files, locks, and `unrecognized`: every \
 other path beneath the directory, a symbolic link included, counted once, named up to 16, never \
-read, followed or removed, so the total is every allocated byte beneath it), each sealed segment \
+read, followed or removed, so the total is every file's allocated bytes beneath it), each sealed \
+segment \
 with its \
 seal's `exit` and its capture (`complete`, or why not: `recovered, drops unknown`); the segments \
 by state — `live` (a writer holds its lock), `unsealed` (nobody does: a crashed writer's, \
@@ -2062,8 +2064,8 @@ keep_days` too, never an entry in use or used within the last hour. With `--appl
 each entry checked again just before it is unlinked, and one that changed since the inventory \
 (replaced, locked, used within the hour) left in place and listed under `changed` — then removes temporary files older than an hour, blobs no remaining segment references (under \
 `gc.lock`, skipped when a reader holds it past 2 s) and the index's free pages (`VACUUM`, or the \
-index deleted for the next reader to rebuild when there is no room), measured as allocated \
-bytes; registered directories that no longer exist are dropped from the registry. Without \
+index deleted for the next reader to rebuild when there is no room), measured as the allocated \
+bytes of the files removed; registered directories that no longer exist are dropped from the registry. Without \
 `--apply` nothing is removed.\n\n\
 Never: removes anything of another kind, reads a span, records telemetry, or contacts a \
 network.\n\n\

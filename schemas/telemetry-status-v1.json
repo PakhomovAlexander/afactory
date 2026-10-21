@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:telemetry-status:1",
   "title": "af/telemetry-status@1",
-  "description": "`af telemetry status --json` (ADR-0153): the configured level, the telemetry directory read, its allocated bytes in total and per entry against `[telemetry] max_bytes`, its segments by state (`live`: a writer holds the lock; `unsealed`: nobody does, recoverable; `sealed`; `corrupt`: interior corruption, never read), the runs and withheld Attempts the index knows, stored occurrences whose blob file is missing, the index's state after this command ingested every new segment byte, the distinct problems recorded, what could not be read (another version's directory such as `v0/`, a segment of another shape), and every telemetry directory registered on this machine. Telemetry ids carry no authority; nothing here is evidence.",
+  "description": "`af telemetry status --json` (ADR-0153): the configured level, the telemetry directory read, its bytes in total and per entry against `[telemetry] max_bytes` (the allocated bytes of the regular files, a file several hard links reach once, directories and links counting nothing, on every file system: ADR-0159 clause 13), its segments by state (`live`: a writer holds the lock; `unsealed`: nobody does, recoverable; `sealed`; `corrupt`: interior corruption, never read), the runs and withheld Attempts the index knows, stored occurrences whose blob file is missing, the index's state after this command ingested every new segment byte, the distinct problems recorded, what could not be read (another version's directory such as `v0/`, a segment of another shape), and every telemetry directory registered on this machine. Telemetry ids carry no authority; nothing here is evidence.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -80,7 +80,7 @@
                   "locks",
                   "unrecognized"
                 ],
-                "description": "`locks` carries the lock files and the `v1/` and `segments/` directories themselves; `blobs` the `v1/blobs/` directory, its two-hex prefix directories and only the digest-named objects and publishers' temporary files in them; `unrecognized` every path beneath the root that matches no known kind, each counted once with everything beneath it, never read and never removed, so the entries (with another version's directories) add up to `total`, the allocated bytes of everything beneath the root."
+                "description": "`locks` carries the lock files; `blobs` only the digest-named objects and publishers' temporary files in the two-hex prefix directories of `v1/blobs/`; `unrecognized` every path beneath the root that matches no known kind, each counted once with everything beneath it, never read and never removed, so the entries (with another version's directories) add up to `total`, the allocated bytes of the regular files beneath the root; a directory or a link counts nothing."
               },
               "name": {
                 "type": "string",

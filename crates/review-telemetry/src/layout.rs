@@ -15,6 +15,7 @@
 //! The lock, never a PID, says whether a writer is alive: a PID is reused, an `flock` ends with
 //! the process that held it.
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
@@ -281,11 +282,35 @@ fn no_anchored_path(path: &Path) -> std::io::Error {
     )
 }
 
-/// The allocated bytes a `stat` reports (what eviction would free), never the apparent length.
-fn stat_allocated(stat: &nix::sys::stat::FileStat) -> u64 {
-    u64::try_from(stat.st_blocks)
-        .unwrap_or(0)
-        .saturating_mul(512)
+/// One measurement under a telemetry root, and the crate's one measuring rule: what the Storage
+/// Budget counts of every entry (ADR-0159 clause 13, the rule `af storage` measures every other
+/// kind by). A regular file counts its allocated bytes (`st_blocks * 512`, what its removal
+/// frees, never the apparent length), once however many hard links reach it within the
+/// measurement; a directory, a symbolic link or anything else counts nothing. So a file system
+/// that charges a directory its blocks (ext4, 4096 bytes each) and one that does not (APFS) give
+/// every total the same number. Every size, removal, reclaimed amount and total this crate
+/// reports is a sum of [`Measurement::count`], through [`Confined::measure`] and
+/// [`Confined::measure_tree`].
+#[derive(Debug, Default)]
+pub struct Measurement {
+    /// The device and inode of every hard-linked file already counted.
+    linked: BTreeSet<(u64, u64)>,
+}
+
+impl Measurement {
+    #[allow(clippy::useless_conversion)]
+    fn count(&mut self, stat: &nix::sys::stat::FileStat) -> u64 {
+        if EntryKind::of(stat) != EntryKind::File {
+            return 0;
+        }
+        let identity = FileIdentity::of(stat);
+        if u64::from(stat.st_nlink) > 1 && !self.linked.insert((identity.dev, identity.ino)) {
+            return 0;
+        }
+        u64::try_from(stat.st_blocks)
+            .unwrap_or(0)
+            .saturating_mul(512)
+    }
 }
 
 /// What identifies one file's contents under its name: device, inode, size and modification
@@ -541,33 +566,42 @@ impl Confined {
         self.stat(name).map(|stat| EntryKind::of(&stat))
     }
 
-    /// The allocated bytes of the entry `name` itself (a link's own, never its target's); 0
-    /// when it is gone.
-    pub fn allocated(&self, name: &str) -> u64 {
-        self.stat(name).map_or(0, |stat| stat_allocated(&stat))
+    /// What the entry `name` itself counts in `measurement` ([`Measurement`]): a regular file
+    /// its allocated bytes, a directory or a link nothing (never its target's); 0 when it is
+    /// gone.
+    pub fn measure(&self, name: &str, measurement: &mut Measurement) -> u64 {
+        self.stat(name).map_or(0, |stat| measurement.count(&stat))
     }
 
-    /// The allocated bytes of this directory itself.
-    pub fn own_allocated(&self) -> u64 {
-        nix::sys::stat::fstat(&self.fd).map_or(0, |stat| stat_allocated(&stat))
-    }
-
-    /// The allocated bytes of the entry `name` with everything beneath it, walked relative to
-    /// this directory without following a link.
-    pub fn allocated_tree(&self, name: &str) -> u64 {
-        let own = self.allocated(name);
-        if self.kind(name) != Some(EntryKind::Directory) {
+    /// What the entry `name` with everything beneath it counts in `measurement`: the regular
+    /// files below it, walked relative to this directory without following a link.
+    pub fn measure_tree(&self, name: &str, measurement: &mut Measurement) -> u64 {
+        let Some(stat) = self.stat(name) else {
+            return 0;
+        };
+        let own = measurement.count(&stat);
+        if EntryKind::of(&stat) != EntryKind::Directory {
             return own;
         }
         let Ok(Some(child)) = self.child_dir(name) else {
             return own;
         };
-        own + child
+        child
             .names()
             .unwrap_or_default()
             .iter()
-            .map(|inner| child.allocated_tree(inner))
+            .map(|inner| child.measure_tree(inner, measurement))
             .sum::<u64>()
+    }
+
+    /// [`Self::measure`] of `name` as a measurement of its own.
+    pub fn allocated(&self, name: &str) -> u64 {
+        self.measure(name, &mut Measurement::default())
+    }
+
+    /// [`Self::measure_tree`] of `name` as a measurement of its own.
+    pub fn allocated_tree(&self, name: &str) -> u64 {
+        self.measure_tree(name, &mut Measurement::default())
     }
 
     /// The identity of the regular file `name`, judged without following a link.
@@ -923,5 +957,72 @@ mod tests {
             layout.blob(&format!("sha256:{}", "ab".repeat(32))),
             PathBuf::from(format!("/t/v1/blobs/ab/{}.gz", "ab".repeat(32)))
         );
+    }
+
+    /// ADR-0159 clause 13 on any file system: directories and links count nothing, a regular
+    /// file its allocated bytes, once however many hard links reach it. Trivial where a
+    /// directory has no blocks of its own (APFS), decisive where it has (ext4: 4096 each).
+    #[test]
+    fn a_measurement_counts_regular_files_once_and_directories_nothing() {
+        use std::os::unix::fs::MetadataExt as _;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("telemetry");
+        for empty in ["v1/segments", "v1/blobs/ab", "v0/deeper/still"] {
+            std::fs::create_dir_all(root.join(empty)).unwrap();
+        }
+        let measured = |root: &Path| {
+            let dir = Confined::open_root(root).unwrap().unwrap();
+            let mut measurement = Measurement::default();
+            dir.names()
+                .unwrap()
+                .iter()
+                .map(|name| dir.measure_tree(name, &mut measurement))
+                .sum::<u64>()
+        };
+        assert_eq!(
+            measured(&root),
+            0,
+            "a tree of empty directories holds nothing"
+        );
+        assert_eq!(
+            crate::budget::Directory::measure(&root, false)
+                .unwrap()
+                .unwrap()
+                .total,
+            0
+        );
+
+        let file = root.join("v1/segments/file");
+        let written = File::create(&file).unwrap();
+        std::io::Write::write_all(&mut &written, &[7_u8; 4096]).unwrap();
+        written.sync_all().unwrap();
+        drop(written);
+        let allocation = std::fs::symlink_metadata(&file).unwrap().blocks() * 512;
+        assert_eq!(measured(&root), allocation, "the one file's allocation");
+        let segments = Confined::open_root(&root.join("v1/segments"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(segments.allocated("file"), allocation);
+        let versioned = Confined::open_root(&root.join("v1")).unwrap().unwrap();
+        assert_eq!(versioned.allocated("segments"), 0, "a directory itself");
+        assert_eq!(versioned.allocated_tree("segments"), allocation);
+
+        std::fs::hard_link(&file, root.join("v1/blobs/ab/linked")).unwrap();
+        std::os::unix::fs::symlink(&file, root.join("v0/link")).unwrap();
+        assert_eq!(
+            measured(&root),
+            allocation,
+            "a hard link once, a link nothing"
+        );
+        assert_eq!(
+            crate::budget::Directory::measure(&root, false)
+                .unwrap()
+                .unwrap()
+                .total,
+            allocation
+        );
+        let root_dir = Confined::open_root(&root).unwrap().unwrap();
+        let v0 = root_dir.child_dir("v0").unwrap().unwrap();
+        assert_eq!(v0.allocated("link"), 0, "never its target's");
     }
 }

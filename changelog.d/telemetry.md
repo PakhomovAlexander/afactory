@@ -103,3 +103,9 @@
   cold (`--json`: `af/telemetry-read-latency@1`); an unchanged `status` now opens each blob
   prefix directory once instead of once per object. `docs/telemetry.md` gains a `Performance`
   section with the protocol and this machine's first numbers.
+- Telemetry measures its bytes the way the Storage Budget measures every other kind (ADR-0159
+  clause 13): the allocated bytes of regular files, a hard-linked file once, directories and
+  symbolic links nothing. `af telemetry status`, `af telemetry gc`, `af storage` and
+  `af storage prune` now report the same telemetry numbers on ext4 as on APFS; on Linux they
+  are smaller than before by 4096 bytes for every directory under the telemetry root, which
+  they no longer count.

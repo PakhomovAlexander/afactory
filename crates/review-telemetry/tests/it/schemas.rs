@@ -12,7 +12,7 @@ use review_telemetry::record::{
 use review_telemetry::status::{self, StatusInput};
 use serde_json::Value;
 
-use crate::{sealed_lines, writer};
+use crate::{allocated, sealed_lines, writer};
 
 fn workspace_root() -> PathBuf {
     std::env::var_os("AF_WORKSPACE_ROOT")
@@ -235,26 +235,6 @@ fn the_registry_document_matches_its_schema() {
     assert!(dirs::read(&location).is_err());
 }
 
-/// The allocated bytes of every path beneath `root`, the root itself excluded.
-fn allocated_beneath(root: &std::path::Path) -> u64 {
-    use std::os::unix::fs::MetadataExt as _;
-    let mut total = 0;
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory)
-            .unwrap()
-            .filter_map(Result::ok)
-        {
-            let metadata = std::fs::symlink_metadata(entry.path()).unwrap();
-            total += metadata.blocks() * 512;
-            if metadata.is_dir() {
-                pending.push(entry.path());
-            }
-        }
-    }
-    total
-}
-
 #[test]
 fn telemetry_status_accounts_every_byte_under_the_root() {
     let temp = tempfile::tempdir().unwrap();
@@ -284,7 +264,7 @@ fn telemetry_status_accounts_every_byte_under_the_root() {
     }
     let (document, _) = status::status(&input(root.clone())).unwrap();
     assert_valid(&schema, &serde_json::to_value(&document).unwrap());
-    assert_eq!(document.bytes.total, allocated_beneath(&root));
+    assert_eq!(document.bytes.total, allocated(&root));
     // One shape, one version: the document with its `unrecognized` entry validates against
     // `af/telemetry-status@1`, and a field the schema does not name is rejected wherever it is
     // added, in the schema and in the reader.
@@ -359,10 +339,7 @@ fn telemetry_status_accounts_every_byte_under_the_root() {
     assert!(entry.bytes > 0);
     // A file beneath `blobs/` that is neither a prefix directory, an object nor a temporary is
     // charged to `unrecognized` once, never to `blobs`.
-    let allocated = |path: &str| {
-        use std::os::unix::fs::MetadataExt as _;
-        std::fs::symlink_metadata(root.join(path)).unwrap().blocks() * 512
-    };
+    let beneath = |path: &str| allocated(&root.join(path));
     let blobs = document
         .bytes
         .entries
@@ -371,14 +348,9 @@ fn telemetry_status_accounts_every_byte_under_the_root() {
         .unwrap();
     assert_eq!(
         blobs.bytes,
-        allocated("v1/blobs") + allocated_beneath(&root.join("v1/blobs"))
-            - allocated("v1/blobs/unknown.bin")
-            - allocated("v1/blobs/ab/stray.txt")
+        beneath("v1/blobs") - beneath("v1/blobs/unknown.bin") - beneath("v1/blobs/ab/stray.txt")
     );
-    assert!(
-        blobs.bytes > allocated("v1/blobs"),
-        "the objects are counted"
-    );
+    assert!(blobs.bytes > 0, "the objects are counted");
     // Never read as a segment, never removed.
     assert_eq!(document.segments.sealed, 1);
     for (path, bytes) in &planted {
@@ -391,7 +363,7 @@ fn telemetry_status_accounts_every_byte_under_the_root() {
     std::fs::write(bare.join("stray/file"), vec![2_u8; 9_000]).unwrap();
     let (document, _) = status::status(&input(bare.clone())).unwrap();
     assert_valid(&schema, &serde_json::to_value(&document).unwrap());
-    assert_eq!(document.bytes.total, allocated_beneath(&bare));
+    assert_eq!(document.bytes.total, allocated(&bare));
     assert_eq!(document.bytes.entries.len(), 1);
     assert_eq!(document.bytes.entries[0].count, Some(1));
 }

@@ -14,7 +14,8 @@
 //! that descriptor ([`collect_in`]), never through a pathname again.
 //!
 //! The storage sweep runs this after its own decisions ([`crate::budget`]); fixtures run it
-//! directly. What it removes is measured as allocated bytes.
+//! directly. What it removes is measured as the allocated bytes of the files it removes
+//! ([`layout::Measurement`]).
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
