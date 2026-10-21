@@ -45,3 +45,16 @@
   `changed`, when one is no longer what the inventory found, with temporaries, unreferenced blobs
   and free index pages reclaimed by every applied sweep and an overlapping directory reported
   `overlapping`, never evicted as telemetry.
+- Telemetry, fifth package: the performance contract of design §12 is measurable.
+  `make telemetry-gate` builds a release `af` and runs `scripts/telemetry-overhead.py`: `off`
+  against `spans` on three pinned, credential-free bench fixtures under
+  `fixtures/telemetry-bench/` (four concurrent Attempts, one Attempt streaming 50 MiB, a Review
+  appending Store events), 20 randomized pairs each with private homes, the paired overhead's
+  median and 95% bootstrap interval per fixture and the dense fixture's drain latency, failing
+  (exit 3) past a 2% median, a 3% upper bound or a 10 ms drain difference (`--json`:
+  `af/telemetry-overhead@1`); `make check` runs only its one-pair smoke.
+  `scripts/telemetry-corpus.py` generates the deterministic read-latency corpus
+  `telemetry-corpus-10k` into a directory the operator names and measures `af telemetry status`
+  (fresh and unchanged index) and `show` on it, warm and, where the page cache can be dropped,
+  cold (`--json`: `af/telemetry-read-latency@1`). `docs/telemetry.md` gains a `Performance`
+  section with the protocol and this machine's first numbers.

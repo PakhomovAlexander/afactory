@@ -44,6 +44,18 @@ review-kernel-container-probes:
 	cargo test --locked -p review-sandbox container::tests::a_timed_out_container_is_removed_before_execution_returns -- --ignored --exact
 	cargo test --locked -p review-pipeline --test it task_campaign_review::host::domain::a_container_gate_executes_on_the_task_host -- --ignored --exact
 
+# Telemetry's overhead gate (design §12, docs/telemetry.md "Performance"): `off` against `spans`
+# on the three pinned bench fixtures with a release build, 20 randomized pairs each; the script
+# exits 3, failing the target, when a median overhead passes 2%, an interval's upper bound 3% or
+# the drain latency's median difference 10 ms. `make check` runs only its one-pair smoke, the nextest test
+# `telemetry_overhead_smoke`, so the full gate stays outside the check's wall.
+.PHONY: telemetry-gate
+telemetry-gate:
+	cargo build --release --locked --bin af
+	mkdir -p target/telemetry-gate
+	python3 scripts/telemetry-overhead.py --af target/release/af \
+		--report target/telemetry-gate/overhead.json
+
 # Exercise release selection and tag races against disposable local Git remotes, and keep
 # this repository's own .af/af.lock on the newest release (ADR-0138).
 release-check:

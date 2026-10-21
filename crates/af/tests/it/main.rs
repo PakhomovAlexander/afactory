@@ -63,6 +63,7 @@ mod task_selection;
 mod task_starters;
 mod task_warm_checks;
 mod telemetry;
+mod telemetry_bench;
 mod telemetry_runs;
 mod tui;
 mod undeclared_af_paths;
