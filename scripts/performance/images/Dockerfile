@@ -2,6 +2,7 @@
 FROM rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0 AS gnu
 RUN apt-get update && apt-get install -y --no-install-recommends python3 strace linux-perf \
     && rm -rf /var/lib/apt/lists/* \
+    && rustup component add rustfmt clippy \
     && rustc --version | grep '^rustc 1.88.0 '
 # Samples have private homes and the builder mounts its Cargo cache at /cargo.
 # Tools remain installed outside both; the image never contains repository credentials.

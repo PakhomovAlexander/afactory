@@ -18,7 +18,11 @@ comparator or hidden retry.
    regular file whatever its directory is called: when it differs, the workspace's own
    fingerprints are removed first, because a materialized Snapshot's files may carry
    modification times Cargo would take for unchanged sources, and a warm target would otherwise
-   measure another revision's product. Dependencies stay warm. Setup is outside the inner
+   measure another revision's product. Cargo builds from one bounded copy inside that target,
+   checked against the whole Snapshot on every repetition. Identical bytes keep stable paths
+   and modification times even when the kernel refreshes its materialization's timestamps.
+   Replacing a missing or changed copy also invalidates workspace fingerprints. Dependencies
+   stay warm. Setup is outside the inner
    region; the kernel's elapsed time still includes it.
    The build log keeps at most `BUILD_LOG_BYTES` and memory only the tail a failure prints.
 2. One sample. One nonspawning native library case of the registry, by instance ID (or case ID
@@ -69,7 +73,8 @@ DRAIN_SECONDS = supervise.KILL_DRAIN_SECONDS
 SETUP_PREFIX = "kernel-measure setup: "
 # Where the bound target records the workspace sources it last built (`build_probe`).
 SOURCES_RECORD = "af-kernel-measure-sources.json"
-SOURCES_SCHEMA = "af.perf-kernel-sources/2"
+SOURCES_COPY = "af-kernel-measure-source"
+SOURCES_SCHEMA = "af.perf-kernel-sources/3"
 SOURCES_ENTRIES_MAX = 200000
 SOURCES_BYTES_MAX = 2 * limits.GIB
 
@@ -332,6 +337,7 @@ def sources_digest(root):
         descriptor = os.open(os.path.join(root, path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         content, size = hashlib.sha256(), 0
         with os.fdopen(descriptor, "rb") as stream:
+            executable = bool(os.fstat(stream.fileno()).st_mode & 0o111)
             while True:
                 chunk = stream.read(1024 * 1024)
                 if not chunk:
@@ -341,7 +347,7 @@ def sources_digest(root):
                 require(total <= SOURCES_BYTES_MAX, "the measured Snapshot holds more than %d "
                         "bytes" % SOURCES_BYTES_MAX)
                 content.update(chunk)
-        digest.update(("%s\0%d\0%s\n" % (path, size, content.hexdigest())).encode(
+        digest.update(("%s\0%d\0%d\0%s\n" % (path, size, executable, content.hexdigest())).encode(
             "utf-8", "surrogateescape"))
     return "sha256:" + digest.hexdigest()
 
@@ -375,6 +381,40 @@ def _recorded_sources(path):
         return None
 
 
+def stable_sources(root, target, sources):
+    """One content-checked source copy under the kernel's exclusively leased, bounded target.
+
+    A native repetition receives a new materialization with refreshed mtimes (ADR-0161).
+    Building there cannot stay warm. Preserve this copy only when its actual bytes still
+    match the entire measured Snapshot; a marker alone never authorizes reuse. Always run
+    Cargo, and invalidate workspace fingerprints whenever this copy must be replaced.
+    No per-Snapshot directories accumulate. A failed copy/build cannot attest freshness.
+    """
+    os.makedirs(target, exist_ok=True)
+    path = os.path.join(target, SOURCES_COPY)
+    if os.path.lexists(path):
+        require(not os.path.islink(path) and os.path.isdir(path),
+                "the kernel measure source copy is not a regular directory")
+        # This also refuses links and special files before removal or use.
+        if sources_digest(path) == sources:
+            return path, False
+        # Recover a partial copy interrupted before its directory modes were normalized.
+        for directory, _, _ in os.walk(path):
+            os.chmod(directory, os.stat(directory).st_mode | 0o700)
+        shutil.rmtree(path)
+    # root has already passed the entry/byte bounds and is the kernel's immutable Snapshot.
+    # copy, unlike copy2, gives changed sources fresh mtimes. Preserve links if one appears
+    # unexpectedly so the verification below refuses it instead of following it.
+    shutil.copytree(root, path, symlinks=True, copy_function=shutil.copy)
+    require(sources_digest(path) == sources,
+            "the kernel measure source copy differs from the measured Snapshot")
+    # Snapshot directories may be read-only. This owned cache copy must be removable on the
+    # next revision; source bytes and file modes stay unchanged.
+    for directory, _, _ in os.walk(path):
+        os.chmod(directory, os.stat(directory).st_mode | 0o700)
+    return path, True
+
+
 def build_probe(root, environ, scratch, clock=time.monotonic):
     """Build the probe offline into the kernel-provided target; (binary path, setup record).
     The target remembers the digest of the workspace sources it last built; other sources
@@ -388,7 +428,8 @@ def build_probe(root, environ, scratch, clock=time.monotonic):
     sources = sources_digest(root)
     record_path = os.path.join(target, SOURCES_RECORD)
     previous = _recorded_sources(record_path)
-    invalidated = invalidate_workspace(target, members) if previous != sources else 0
+    build_root, replaced = stable_sources(root, target, sources)
+    invalidated = invalidate_workspace(target, members) if previous != sources or replaced else 0
     env = dict(environ, CARGO_NET_OFFLINE="true", CARGO_TERM_COLOR="never")
     for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS",
                  "RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER"):
@@ -399,7 +440,7 @@ def build_probe(root, environ, scratch, clock=time.monotonic):
     # The log keeps at most BUILD_LOG_BYTES and memory only the tail a failure prints; the
     # build's whole output is counted, never held.
     with open(os.path.join(scratch, "build.log"), "wb") as log:
-        built = capture(argv, root, env, BUILD_TIMEOUT_SECONDS, None, merged=True,
+        built = capture(argv, build_root, env, BUILD_TIMEOUT_SECONDS, None, merged=True,
                         tail=BUILD_LOG_TAIL, log=log, log_bytes=BUILD_LOG_BYTES, clock=clock)
     build_ms = int((clock() - started) * 1000)
     stopped = built.stopped()

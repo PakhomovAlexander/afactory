@@ -495,6 +495,22 @@ class Adapter(support.TempDir):
                            if line.startswith(kernelmeasure.SETUP_PREFIX)][0][
             len(kernelmeasure.SETUP_PREFIX):])
 
+    def test_a_corrupted_source_copy_invalidates_even_with_an_unchanged_source_record(self):
+        self.tools(self.golden_probe())
+        code, _, err = self.measure()
+        self.assertEqual(code, 0, err)
+        first = self.setup_record(err)
+        cached = os.path.join(self.target, kernelmeasure.SOURCES_COPY)
+        write(cached, "crates/review-store/src/canonical.rs", b"// poisoned cache\n")
+        fingerprints = os.path.join(self.target, "release", ".fingerprint")
+        os.makedirs(os.path.join(fingerprints, "review-store-0123456789abcdef"))
+        code, _, err = self.measure()
+        self.assertEqual(code, 0, err)
+        observed = self.setup_record(err)
+        self.assertEqual(observed["sources_before"], first["sources"])
+        self.assertEqual(observed["workspace_fingerprints_invalidated"], 1)
+        self.assertEqual(kernelmeasure.sources_digest(cached), first["sources"])
+
     def test_a_probe_over_its_output_bound_is_killed_while_it_writes(self):
         # 1114112 bytes of stderr is over the hard 1-MiB sample log maximum; a probe that never
         # stops writing must be killed, not buffered.
@@ -613,6 +629,53 @@ class Adapter(support.TempDir):
         self.assertEqual(sorted(set(case for _, instance, _ in kernelguard.STAGED_MEASURES
                                     for case in [instance.split("__")[0]])
                                 - set(kernelmeasure.KERNEL_CASES)), [])
+
+
+class StableSources(support.TempDir):
+    def test_new_materializations_keep_one_stable_copy_and_changed_content_replaces_it(self):
+        first, second, target = self.path("first"), self.path("second"), self.path("target")
+        relative = "crates/example/src/target/lib.rs"
+        for tree in (first, second):
+            write(tree, relative, b"// same Snapshot\n")
+        # Even coarse/future timestamps in a fresh materialization must not dirty this copy.
+        os.utime(os.path.join(second, relative), (2000000000, 2000000000))
+        os.chmod(os.path.join(first, "crates/example/src/target"), 0o555)
+        self.addCleanup(os.chmod, os.path.join(first, "crates/example/src/target"), 0o755)
+        found = kernelmeasure.sources_digest(first)
+        path, replaced = kernelmeasure.stable_sources(first, target, found)
+        self.assertTrue(replaced)
+        before = os.stat(os.path.join(path, relative))
+        self.assertEqual(kernelmeasure.stable_sources(second, target, found), (path, False))
+        after = os.stat(os.path.join(path, relative))
+        self.assertEqual((after.st_ino, after.st_mtime_ns), (before.st_ino, before.st_mtime_ns))
+        write(second, relative, b"// changed Snapshot\n")
+        changed = kernelmeasure.sources_digest(second)
+        self.assertEqual(kernelmeasure.stable_sources(second, target, changed), (path, True))
+        self.assertEqual(kernelmeasure.sources_digest(path), changed)
+        self.assertEqual(os.listdir(target), [kernelmeasure.SOURCES_COPY])
+        # Returning to old bytes also replaces the one copy, rather than trusting an old build.
+        self.assertEqual(kernelmeasure.stable_sources(first, target, found), (path, True))
+
+        # Executable mode is part of a Snapshot too: a build script may invoke a helper.
+        os.chmod(os.path.join(second, relative), 0o755)
+        executable = kernelmeasure.sources_digest(second)
+        self.assertNotEqual(executable, changed)
+        self.assertEqual(kernelmeasure.stable_sources(second, target, executable), (path, True))
+        self.assertTrue(os.stat(os.path.join(path, relative)).st_mode & 0o111)
+
+    def test_links_in_or_in_place_of_the_cache_are_refused_without_following_them(self):
+        root, target = self.path("root"), self.path("target")
+        write(root, "source", b"immutable\n")
+        found = kernelmeasure.sources_digest(root)
+        path, _ = kernelmeasure.stable_sources(root, target, found)
+        os.symlink(os.path.join(root, "source"), os.path.join(path, "link"))
+        with self.assertRaisesRegex(ContractError, "not a regular file"):
+            kernelmeasure.stable_sources(root, target, found)
+        shutil.rmtree(path)
+        os.symlink(root, path)
+        with self.assertRaisesRegex(ContractError, "not a regular directory"):
+            kernelmeasure.stable_sources(root, target, found)
+        self.assertEqual(kernelmeasure.sources_digest(root), found)
 
 
 class Receipts(support.TempDir):

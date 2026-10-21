@@ -172,7 +172,7 @@
   },
   {
    "path": "fixtures/performance/cli/campaign-roots/repo/.af/af.lock",
-   "sha256": "sha256:aa15ad77d6e24eb57e202b32494483aa800b11af78203757626d31d3718ab948",
+   "sha256": "sha256:29859cc74b9a14e43130a435f430d41c1a996fe87b62f7fb6745ab0c7ce7fd49",
    "size": 360
   },
   {
@@ -207,7 +207,7 @@
   },
   {
    "path": "fixtures/performance/cli/task-roots/repo/.af/task-catalog.toml",
-   "sha256": "sha256:4bf42246b971567faaedc44e647e2d6a131ac95c692b9ea3d9a7928d503684da",
+   "sha256": "sha256:476f8adccbd16e707feed0aa8544084f6dac548d4d234d11d26417164231a6f3",
    "size": 1004
   },
   {
@@ -1882,8 +1882,8 @@
   },
   {
    "path": "scripts/performance/images/Dockerfile",
-   "sha256": "sha256:9d7c9f3ddc03de653a0886d3064f0447910b1a3ca147f519a1e137c98226b3d3",
-   "size": 1206
+   "sha256": "sha256:af18b02309b24b39a172cd59b0dd1751152b869aba855b89ede3b2b22604aae7",
+   "size": 1251
   },
   {
    "path": "scripts/performance/perflab/__init__.py",
@@ -2077,8 +2077,8 @@
   },
   {
    "path": "scripts/performance/perflab/kernelmeasure.py",
-   "sha256": "sha256:b213778e0963ff46f7cfa62b1289546f0e345fb8bc11c17044f4ed496c3403e0",
-   "size": 23411
+   "sha256": "sha256:8df8329239f3dccae2818bfc9d5bcc90df624c000dab2911ee56443f9ee6a9f5",
+   "size": 25927
   },
   {
    "path": "scripts/performance/perflab/limits.py",
@@ -2322,8 +2322,8 @@
   },
   {
    "path": "scripts/performance/tests/test_kernelguard.py",
-   "sha256": "sha256:d8daf1637866ac45508f336487e328e15c8e98ac5ff6b3e021ec3c50f278a8e4",
-   "size": 55114
+   "sha256": "sha256:54f63016cfaf7e86e33142f446538643c935f12b7b32070f9d8f408a2d607752",
+   "size": 58960
   },
   {
    "path": "scripts/performance/tests/test_oracle.py",
@@ -2416,7 +2416,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:fee1bee619c236ea9fe75d6ddb4a40d62135c4dd6ba15acc4eda0c7f65978d3e",
+ "harness_digest": "sha256:42955ef58d00262daab0cd8c20ff953d6c5d793ac172ce102433388e28ed2f2d",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

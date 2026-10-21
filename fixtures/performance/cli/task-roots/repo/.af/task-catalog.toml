@@ -6,12 +6,12 @@ code_policy = ".af/code-policy.toml"
 
 [packages."perf/accept"]
 version = "1.0.0"
-digest = "sha256:a72b9e5186f080ea36b5467b87abde90abf010b654351da146cc6a01aecff557"
+digest = "sha256:23560f526336c3bf99611629134ef8a077fdd2c2f83f81aeac6f61b90200b0ce"
 path = ".af/task-packages/perf/accept"
 
 [packages."perf/check-true"]
 version = "1.0.0"
-digest = "sha256:2d8c45c6dcac743f72d3d4a8789bc46515a2fc6536bfff3af8a9cb3307493e7c"
+digest = "sha256:e678df8699533d2acb55faf119f0434b828ee6ad7b4593a7ab6fb6ee48754258"
 path = ".af/task-packages/perf/check-true"
 
 [packages."perf/verification-kind"]

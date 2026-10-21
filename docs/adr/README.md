@@ -352,3 +352,5 @@ future readers need.
   the first](0189-read-a-task-result-s-sets-in-the-kernel-s-order-and-reconcile-a-second-repair-through-the-first.md)
 - [0190 — Integrate performance checks, images and evidence
   collection](0190-integrate-performance-checks-images-and-evidence-collection.md)
+- [0191 — Keep guarded measure source paths stable by
+  content](0191-keep-guarded-measure-source-paths-stable-by-content.md)
