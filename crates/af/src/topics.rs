@@ -223,6 +223,8 @@ unwritable directory, a full segment) is one problem and the run continues.
                                 with origins (an environment value is <env>), plan, bindings,
                                 Providers, harness versions, host, AF_*/OTEL_* names
   af telemetry tail [RUN]       follow the live segments: every span end and event as written
+  af telemetry ledger RUN       committed Store events, Finding and Demand summaries and each
+                                Attempt's charge, in order, with the coverage and history
   af telemetry gc [--apply]     what the Storage Budget's sweep evicts from the telemetry kind
 
 Recorded: the commands that run a kernel run (af task run, af task start --execute, af review
@@ -251,6 +253,18 @@ platform did not deliver it. An af.check carries af.check.status and af.check.fi
 comparability key af/check-fingerprint@1 (or `unknown`). A kernel measurement is a run of its
 own (af.run.kind = measure, af.measurement.id), its repetitions child spans. At spans and above
 each execution's run starts with its configuration record.
+
+At spans and above every event the kernel commits to a Store is mirrored after its commit, on
+any path (an append, a Task transition, a Round publication, an integration), as af.store.event
+with its type, sequence, id, causation, artifact references and the payload's digest and size;
+a Finding summary is recorded when a Report is admitted into the Ledger and whenever its
+disposition changes, and a Demand summary keyed by its Demand id with its lifecycle. A mirror
+failure is one problem, never a Store error, and makes the run's coverage incomplete. At
+metrics and above every committed accounting transition records the Attempt's charge as the
+Task projection holds it (af.usage.state, ordered by the committed event's sequence) and every
+sidecar write its merged row (af.usage.wall, ordered within one execution only); an Attempt's
+figures are its latest charge, run totals are sums of those, and the sidecar series never
+enters them.
 
 The [telemetry] table, machine layers only (built-in, system, user, AF_TELEMETRY__<KEY>); a
 repository's .af/af.toml cannot set it, and a value outside its bound refuses the load naming

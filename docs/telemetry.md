@@ -71,8 +71,10 @@ empty `.jsonl` or renames a corrupt one, and removed by the sweep after an hour.
 be.
 
 Every phase below the run, the supervised processes and the configuration record are recorded
-too ([below](#phases-processes-and-the-configuration-record)); the harness streams, the Store
-mirror and the content blobs arrive with later packages of the design.
+too ([below](#phases-processes-and-the-configuration-record)), and the Store mirror, the Finding
+and Demand summaries and the accounting snapshots under [The Store mirror and the
+ledger](#the-store-mirror-and-the-ledger); the harness streams and the content blobs arrive with
+later packages of the design.
 
 ## Phases, processes and the configuration record
 
@@ -408,8 +410,10 @@ One entry per run, newest activity first: its Store (`af.store_id`), run id, kin
 Campaign, its retained executions and first start, its active, execution and elapsed time, the
 latest execution's own outcome — the execution with the greatest committed ordinal, never the
 latest start; none while that execution's `af.run` has not ended, never an earlier execution's,
-and none when no execution carries an ordinal — the Attempts' exact usage counters and charge as their spans ended (summed
-exactly; a counter some Attempt did not deliver is absent, never zero), failures, coverage
+and none when no execution carries an ordinal — the Attempts' exact usage counters and charge, each
+Attempt's charge snapshot with the highest `af.usage.sequence` or, when none is retained, its
+span end (summed exactly; a counter some Attempt did not deliver is absent, never zero; the
+sidecar series never enters them), failures, coverage
 (`complete` when every retained segment was sealed by its writer with nothing dropped) and its
 history. Its `executions` list every retained execution, the sealed ones' ordinals and, beside
 them, every open one (`executions.open`, and one `open:` line each in the text); its label and
@@ -478,6 +482,99 @@ record the run id without `--store`, at the start or once a second Store starts 
 followed (also in a segment created and sealed during tail's startup or between two of its
 looks), tail prints every pending record of the followed Store, then lists both and asks for
 `--store ID` (exit 2); it prints nothing of the second. It never removes a segment.
+
+## The Store mirror and the ledger
+
+**The mirror.** A recording command installs one post-commit observer on every Store it opens.
+The Store tells it of every transaction it commits — a generic append, a Task transition, a
+Round publication, an atomic integration, a collection's tombstones — once, after the commit
+returned, with that transaction's events in committed order, and never of a transaction that
+rolled back. The Store links nothing of Telemetry and the observer reads only what it is handed
+and the Store's read API: no transaction is longer for it, nothing it does is a Store error,
+and the Store's event log is byte-identical at `off` and `content`. From `spans` on each
+committed event becomes the event `af.store.event` on the current span (the run's, or, for a
+commit before the execution's `af.run` opened, the command's) with `af.store_id`, `af.run_id`
+(the Store log: a Task's `task:…` or a Campaign's run id), `af.store.event.type`,
+`af.store.event.sequence`, `af.store.event.id`, `af.store.event.causation_id`, `artifact_refs`,
+and the payload's digest and size (`af.store.event.payload_digest`,
+`af.store.event.payload_bytes`); the payload itself is not recorded. A mirror failure is one
+`observer` problem, never a Store error, and makes every run of that Store record
+`af.ledger.coverage = incomplete` on its `af.run`; an execution that mirrored everything records
+`complete`. `AF_TEST_TELEMETRY_MIRROR_FAIL` (a debug build's fixture setting, never read by a
+release binary) makes every mirror write fail.
+
+**Finding and Demand summaries.** From `spans` on, a Campaign log's committed events are folded
+into its Ledger projection — the Reports they reference read from the CAS, as the Ledger reads
+them — so that `af telemetry ledger` needs no Store. When a Report is admitted into the Ledger,
+and whenever a Finding's status changes, a `finding` record (`af/TelemetryFinding@1`) carries
+its key, severity, effective severity (`out` when its active claims are wholly out of Scope),
+status, scope, file, line, title, the Report's artifact id, the node, the Worker, the Round and
+the epoch; the Ledger records no model, so `model` is absent. Each change is also the event
+`af.finding.disposition` on the run span with `af.finding.id` (the Finding key),
+`af.finding.status`, `af.finding.previous_status` and the causing event's
+`af.store.event.sequence`. A Demand is its own obligation (ADR-0007): a `demand` record
+(`af/TelemetryDemand@1`) keyed by the Demand id carries its kind (`required` or `advisory`),
+whether it is required, its Subject and the active head Snapshot, and its status (`open`,
+`satisfied`, `stale`, `waived`), and its lifecycle is the events `af.demand.opened`,
+`af.demand.evidence_satisfied` (with `af.evidence.id`), `af.demand.stale` and `af.demand.waived`,
+each with `af.demand.id`, never a Finding key. A change committed by a command that records no
+Telemetry (an operator's `af review evidence satisfy`, a resolution) is summarized by the next
+recording execution that commits to that Campaign's log, at the committed event's own sequence;
+the event itself was not mirrored, and the ledger says so (below).
+
+**Accounting: two series, never merged.** From `metrics` on, after every committed Task event
+that changes an Attempt's accounting — `UsageObserved`, `Settled` (a recovery's included: usage
+that was reported settles at the greater of the observed usage and the reservation, usage that
+was never reported at zero with `af.usage.unknown_cause = lease_expired`, ADR-0143) and
+`Released` — the event `af.usage.state` on the Attempt's span (the run's when this process did
+not open the Attempt) records the Attempt as the Task projection holds it after that commit:
+`af.usage.chargeable_tokens` (the retained charge, as `af task show` reports it), the counters of
+the usage the transition named, `af.usage.observation` (`complete`, `incomplete`, `unknown`) and
+`af.usage.unknown_cause`, the native usage observation when the transition carried one
+(`af.usage.native.observation` and `af.usage.native.*_tokens`), `af.usage.source`
+(`usage_observed`, `settled`, `released`) and `af.usage.sequence`, the committed event's own
+sequence in the Task's log. Every committed write of the `attempt_wall` sidecar records the
+event `af.usage.wall` with the merged row (`af.usage.wall.started_unix_ms`,
+`af.usage.wall.elapsed_ms`, the row's counters), `af.usage.source = sidecar` and
+`af.usage.wall.sequence`, the record's own `seq`. That sequence orders one execution's writes
+and nothing else: executions overlap and the sidecar is written without a lease, so a
+predecessor's write can land after its successor's. Counters are exact decimal strings in both.
+
+## `af telemetry ledger`
+
+```text
+af telemetry ledger RUN [--store ID] [--json] [--dir PATH]
+```
+
+One run's ledger from the telemetry directory alone, never a Store: every mirrored Store event
+(its log, sequence, type, id, causation, artifact references and the payload's digest and size),
+every Finding and Demand summary and every lifecycle event, in the order they were recorded
+(executions by their segment's start, then each record's `seq`); then each Finding's latest
+summary with its dispositions, each Demand's with its lifecycle, and each Attempt's accounting.
+What belongs to a run is what is on the spans of its trace, and what is on the `af.command` span
+of a segment holding one of its executions and names its Store. A lifecycle event two
+executions recorded (the second folded the log from its start) is listed once.
+
+An Attempt's figures are its `af.usage.state` with the highest `af.usage.sequence` — the
+kernel's own accounting after its last committed accounting transition, never a value the reader
+merges — and beside them the latest `af.usage.wall` of each execution that wrote one, labelled
+by its execution, with `wall_order = unknown` when more than one did; the reader never takes a
+maximum, a sum or a replacement of those. The run's totals are exact sums of the Attempts'
+charge snapshots, with the Attempts whose usage is unknown counted; `af telemetry runs` sums the
+same snapshots. The history marker (`prefix:k` or `partial`) says which executions everything
+covers.
+
+**Coverage** is `complete` only when every retained execution's segment was sealed by its
+writer with nothing dropped and its `af.run` recorded `af.ledger.coverage = complete`, the
+history is a prefix with no execution missing or open, no Store mirror problem was recorded,
+and every Store log the run's executions mirrored has every sequence from 0 to the last one
+mirrored; otherwise `incomplete`, every reason listed (`coverage_reasons`), each log's missing
+sequences named. A run recorded at `metrics` mirrors nothing and is `incomplete`. When two
+Stores record the run id the command lists both and asks for `--store ID` (exit 2). `--json`
+prints one `af/telemetry-ledger@1` document
+([`schemas/telemetry-ledger-v1.json`](../schemas/telemetry-ledger-v1.json)). Exit codes: 0; 1
+when the directory cannot be read or the run is unknown; 2 for a wrong command line, a run two
+Stores share without `--store`, or a refused `[telemetry]` key.
 
 ## `af telemetry gc`
 
@@ -651,7 +748,7 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
 
 ## Not yet captured
 
-The harness streams (turns, tool calls, reasoning), the Store mirror and Finding summaries,
-content blobs, the harnesses' own OpenTelemetry export, the OTLP sink, and the commands `turns`,
-`tools`, `context`, `reasoning`, `ledger`, the analytics, `search`, `sql` and `export` all
-belong to later packages of the design note.
+The harness streams (turns, tool calls, reasoning), content blobs (Store event payloads and
+Finding bodies among them), the harnesses' own OpenTelemetry export, the OTLP sink, and the
+commands `turns`, `tools`, `context`, `reasoning`, the analytics, `search`, `sql` and `export`
+all belong to later packages of the design note.

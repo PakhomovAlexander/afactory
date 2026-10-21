@@ -263,14 +263,14 @@ fn provider_models_help_and_man_page_describe_the_command() {
     assert!(page.contains("list_models"), "{page}");
 }
 
-/// `af telemetry`, its two commands and `af help telemetry` say what they print, what they never
+/// `af telemetry`, its commands and `af help telemetry` say what they print, what they never
 /// do, their options and their exit codes, in `--help`, in `af help` and in the man pages
 /// (ADR-0153, ADR-0146).
 #[test]
 fn telemetry_help_and_man_pages_describe_the_commands() {
     let namespace = out(&af(&["telemetry", "--help"]));
     for command in [
-        "status ", "reindex ", "runs ", "show ", "config ", "tail ", "gc ",
+        "status ", "reindex ", "runs ", "show ", "config ", "tail ", "ledger ", "gc ",
     ] {
         assert!(
             namespace
@@ -345,6 +345,13 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
             "af/telemetry-gc@1",
             ["--apply"].as_slice(),
         ),
+        // P4 (design §7.5, §10): the ledger view.
+        (
+            "ledger",
+            "Usage: af telemetry ledger [OPTIONS] <RUN>",
+            "af/telemetry-ledger@1",
+            ["--store <ID>", "--dir <PATH>"].as_slice(),
+        ),
     ] {
         for help in [
             af(&["telemetry", command, "--help"]),
@@ -383,6 +390,7 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "af telemetry show",
         "af telemetry config",
         "af telemetry tail",
+        "af telemetry ledger",
         "af telemetry gc",
         "machine layers only",
     ] {
@@ -399,6 +407,7 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "af-telemetry-show.1",
         "af-telemetry-config.1",
         "af-telemetry-tail.1",
+        "af-telemetry-ledger.1",
         "af-telemetry-gc.1",
         "af-telemetry.7",
     ] {

@@ -5,21 +5,23 @@
 //! A leaf crate: it links nothing in the workspace, and `review-process` never links it
 //! (ADR-0026). The write side — [`record`], [`segment::writer`], [`blob`], [`redact`],
 //! [`level`], [`subscriber`], [`trace`], [`dirs`], [`process`] — is for every crate that
-//! records. The read
-//! side — [`segment::reader`], [`index`], [`status`], [`view`], [`budget`], [`blob::reader`] and
-//! [`blob::collect`] — is linked only by `af telemetry`, `af storage` and the TUI (clause 1); a
-//! source test holds every other crate to that.
+//! records. The read side — [`segment::reader`], [`index`], [`status`], [`view`], [`ledger`],
+//! [`accounting`], [`budget`], [`blob::reader`] and [`blob::collect`] — is linked only by
+//! `af telemetry`, `af storage` and the TUI (clause 1); a source test holds every other crate
+//! to that.
 //!
 //! [`Telemetry::start`] is the one entry point of a recording process. At `off` it returns a
 //! handle that touches nothing — no directory, no subscriber; at any other level the segment
 //! opens lazily at the first record, after the directory is registered, and a telemetry-only
 //! failure is one problem while the run continues (clause 7).
 
+pub mod accounting;
 pub mod blob;
 pub mod budget;
 pub mod dirs;
 pub mod index;
 pub mod layout;
+pub mod ledger;
 pub mod level;
 pub mod process;
 pub mod record;

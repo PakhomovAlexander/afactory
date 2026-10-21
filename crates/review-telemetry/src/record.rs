@@ -690,6 +690,11 @@ pub enum Attr {
     Bool(bool),
     /// Untrusted texts, each judged whole.
     Texts(Vec<String>),
+    /// Kernel identities (a mirrored Store event's artifact references): each element is kept
+    /// as given only in an identity position and when it is exactly a kernel identity, and
+    /// judged as untrusted text otherwise; the array is bounded like [`Attr::Texts`] and never
+    /// offered for a blob.
+    Ids(Vec<String>),
 }
 
 /// Attributes in the writer's order: the bound drops from the end.
@@ -736,6 +741,10 @@ impl Attrs {
 
     pub fn texts(self, key: &str, values: Vec<String>) -> Self {
         self.push(key, Attr::Texts(values))
+    }
+
+    pub fn ids(self, key: &str, values: Vec<String>) -> Self {
+        self.push(key, Attr::Ids(values))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -834,6 +843,13 @@ fn bound_texts(
     {
         return Value::String(format!("{OCCURRENCE_PREFIX}{occurrence}"));
     }
+    cut_array(redacted, counters)
+}
+
+/// Cut an array of already judged strings at the array bounds: each element at
+/// [`MAX_STRING_BYTES`], the array at [`MAX_ARRAY_ELEMENTS`] and [`MAX_ARRAY_BYTES`], a trailing
+/// marker element where it was cut, counted once in `af.truncated_fields`.
+fn cut_array(redacted: Vec<String>, counters: &mut Counters) -> Value {
     let mut kept = Vec::new();
     let mut bytes = 0;
     let mut cut_any = false;
@@ -862,6 +878,26 @@ fn bound_texts(
         counters.truncated += 1;
     }
     Value::Array(kept.into_iter().map(Value::String).collect())
+}
+
+/// Bound one identity array: each element a kernel identity in its identity position or judged
+/// whole, then cut at the array bounds.
+fn bound_ids(key: &str, ids: Vec<String>, redactor: &Redactor, counters: &mut Counters) -> Value {
+    let position = is_identity_position(key);
+    let judged = ids
+        .into_iter()
+        .map(|id| {
+            if position && redact::is_kernel_identity(&id) {
+                return id;
+            }
+            let (value, withheld) = redactor.value(&id);
+            if withheld {
+                counters.redacted += 1;
+            }
+            value
+        })
+        .collect();
+    cut_array(judged, counters)
 }
 
 /// A value over its bound, offered for a blob at `content`.
@@ -893,6 +929,11 @@ pub const IDENTITY_POSITIONS: [&str; 36] = [
     "af.measurement.id",
     "af.store.event.id",
     "af.store.event.causation_id",
+    "af.store.event.payload_digest",
+    "artifact_refs",
+    "af.finding.id",
+    "af.demand.id",
+    "af.evidence.id",
     "af.context.manifest",
     "af.pipeline.digest",
     "af.policy_rev",
@@ -916,6 +957,7 @@ pub const IDENTITY_POSITIONS: [&str; 36] = [
     "subject_id",
     "snapshot_id",
     "report_artifact_id",
+    "finding_key",
     "digest",
     "source_digest",
     "occurrence_id",
@@ -1085,6 +1127,7 @@ pub fn bound_attributes(
             },
             Attr::Bool(value) => Value::Bool(value),
             Attr::Texts(values) => bound_texts(&key, &values, redactor, &mut counters, oversized),
+            Attr::Ids(ids) => bound_ids(&key, ids, redactor, &mut counters),
         };
         out.insert(key, value);
     }
@@ -1182,6 +1225,41 @@ mod tests {
         assert!(!attributes.contains_key("af.usage.output_tokens"));
         assert_eq!(counters.redacted, 1);
         assert_eq!(counters.dropped, 1);
+    }
+
+    #[test]
+    fn identity_arrays_keep_kernel_identities_only_in_their_position() {
+        let digest = format!("sha256:{}", "ab".repeat(32));
+        let ids = vec![
+            digest.clone(),
+            "sk-proj-violet".into(),
+            "fixture/raw-1".into(),
+        ];
+        let (attributes, counters) = bound_attributes(
+            Attrs::new()
+                .ids("artifact_refs", ids.clone())
+                .ids("af.note", vec![digest.clone()]),
+            &Redactor::new(),
+            &mut |_, _| None,
+        );
+        assert_eq!(
+            attributes["artifact_refs"],
+            serde_json::json!([digest, redact::WITHHELD, "fixture/raw-1"])
+        );
+        // Outside an identity position a digest is a long hex run, withheld like any text.
+        assert_eq!(attributes["af.note"], serde_json::json!([redact::WITHHELD]));
+        assert_eq!(counters.redacted, 2);
+        // Bounded like any array: at most 32 elements, the marker last.
+        let many = (0..40).map(|_| digest.clone()).collect();
+        let (attributes, counters) = bound_attributes(
+            Attrs::new().ids("artifact_refs", many),
+            &Redactor::new(),
+            &mut |_, _| None,
+        );
+        let kept = attributes["artifact_refs"].as_array().unwrap();
+        assert!(kept.len() <= MAX_ARRAY_ELEMENTS);
+        assert_eq!(kept.last().unwrap(), ELLIPSIS);
+        assert_eq!(counters.truncated, 1);
     }
 
     #[test]

@@ -63,6 +63,7 @@ mod task_selection;
 mod task_starters;
 mod task_warm_checks;
 mod telemetry;
+mod telemetry_ledger;
 mod telemetry_phases;
 mod telemetry_runs;
 mod tui;

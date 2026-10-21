@@ -1219,6 +1219,7 @@ impl EventStore {
             first as i64,
         )?);
         tx.commit()?;
+        self.committed(cas, &appended, None);
         Ok(appended)
     }
 }

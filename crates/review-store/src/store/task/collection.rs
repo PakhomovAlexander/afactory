@@ -693,6 +693,7 @@ impl EventStore {
         let plan = self.plan_at(cas, older_than_ms, keep, now_unix_ms, only)?;
         refuse_live_writers(&plan.live_writers)?;
         let mut tombstoned = Vec::new();
+        let mut committed = Vec::new();
         for task in plan.tasks.iter().filter(|task| {
             task.disposition.collects() && only.is_none_or(|only| only.contains(&task.task_id))
         }) {
@@ -734,18 +735,19 @@ impl EventStore {
             review_core::event::validate_event_payload(event_type, &value)
                 .map_err(|error| conflict(format!("invalid Task tombstone: {error}")))?;
             let run_id = task_run_id(&task.task_id)?;
-            super::super::insert_events(
+            committed.extend(super::super::insert_events(
                 &lock,
                 cas,
                 &run_id,
                 &[NewEvent::new(event_type, value)],
                 i64::try_from(state.next_sequence)
                     .map_err(|_| conflict("Task sequence exceeds SQLite range"))?,
-            )?;
+            )?);
             tombstoned.push(task.task_id.clone());
         }
         lock.commit()?;
         *self.task_cache.borrow_mut() = None;
+        self.committed(cas, &committed, None);
         if stop_after_tombstones {
             return Ok(CollectionOutcome {
                 plan,

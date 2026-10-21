@@ -239,7 +239,7 @@ pub struct Executions {
 }
 
 impl Executions {
-    fn of(list: Vec<Execution>) -> Self {
+    pub(crate) fn of(list: Vec<Execution>) -> Self {
         let mut sealed: Vec<u64> = list
             .iter()
             .filter(|execution| !execution.is_open())
@@ -264,7 +264,7 @@ impl Executions {
     }
 
     /// The history of these executions.
-    fn history(&self) -> History {
+    pub(crate) fn history(&self) -> History {
         history(
             &self
                 .list
@@ -757,7 +757,7 @@ fn run(
         )
         .map_err(sql)?;
     let failures = u64::try_from(failures).unwrap_or(0);
-    let (tokens, charge, attempts) = usage(index, trace_id)?;
+    let (tokens, charge, attempts) = usage(index, trace_id, &store_id, &run_id)?;
     let coverage = coverage(index, &executions.list)?;
     let totals_cover = executions
         .list
@@ -796,7 +796,7 @@ fn run(
 }
 
 /// Whether every retained execution's segment was sealed by its writer with nothing dropped.
-fn coverage(index: &Index, executions: &[Execution]) -> Result<String, String> {
+pub(crate) fn coverage(index: &Index, executions: &[Execution]) -> Result<String, String> {
     for execution in executions {
         if execution.segment != "sealed" {
             return Ok("incomplete".into());
@@ -818,9 +818,17 @@ fn coverage(index: &Index, executions: &[Execution]) -> Result<String, String> {
     Ok("complete".into())
 }
 
-/// The run's Attempts' exact counters and charges as their spans ended, each Attempt once (its
-/// latest span end).
-fn usage(index: &Index, trace_id: &str) -> Result<(Tokens, Option<String>, u64), String> {
+/// The run's Attempts' exact counters and charges, each Attempt once: its charge snapshot with
+/// the highest `af.usage.sequence` (design §9: the kernel's own accounting after its last
+/// committed accounting transition), or, for an Attempt no snapshot was retained for, its
+/// latest `af.attempt` span end, the state known when it ended. Run totals are sums of these;
+/// the wall series never enters them.
+fn usage(
+    index: &Index,
+    trace_id: &str,
+    store_id: &str,
+    run_id: &str,
+) -> Result<(Tokens, Option<String>, u64), String> {
     let rows: Vec<(Option<String>, String)> = {
         let mut statement = index
             .connection()
@@ -846,6 +854,11 @@ fn usage(index: &Index, trace_id: &str) -> Result<(Tokens, Option<String>, u64),
             attempt.unwrap_or_else(|| format!("#{index_key}")),
             attributes,
         );
+    }
+    for (attempt, snapshot) in
+        crate::accounting::charge_attributes(index, trace_id, store_id, run_id)?
+    {
+        latest.insert(attempt, snapshot);
     }
     let charged: Vec<&Map<String, Value>> = latest
         .values()

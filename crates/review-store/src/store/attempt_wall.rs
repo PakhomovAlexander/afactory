@@ -118,7 +118,7 @@ impl EventStore {
                 "Task effective charge is below its native observation".into(),
             ));
         }
-        let observation = observation
+        let observation_text = observation
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
@@ -143,10 +143,15 @@ impl EventStore {
                 started,
                 elapsed,
                 exact,
-                observation
+                observation_text
             ],
         )?;
         transaction.commit()?;
+        let merged = TaskAttemptWall {
+            usage,
+            ..wall.clone()
+        };
+        self.wall_committed(&merged, observation.as_ref());
         Ok(())
     }
 

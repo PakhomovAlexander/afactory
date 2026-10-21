@@ -228,23 +228,23 @@ repository's `.af/af.toml` cannot change it. See `af help storage`.",
         #[command(subcommand)]
         command: Option<StorageCommand>,
     },
-    /// Show what Telemetry recorded on this machine: its runs, span trees and live tail
+    /// Show what Telemetry recorded on this machine: its runs, span trees, live tail and ledger
     #[command(
         subcommand_required = true,
         arg_required_else_help = true,
-        long_about = "Show what Telemetry recorded on this machine: its runs, span trees and live tail.\n\n\
+        long_about = "Show what Telemetry recorded on this machine: its runs, span trees, live tail and ledger.\n\n\
 Telemetry records what af does while it works — spans, events and, at `content`, redacted \
 content blobs — in its own store under the state root's `telemetry/`, never in a Task or \
 Campaign Store. The kernel never reads it: identity, replay, the Ledger, budgets, admission and \
 every Worker input are the same whether it is on, off or deleted (ADR-0153). `[telemetry] \
 level` is `off`, `metrics`, `spans` (the default) or `content`, set from machine layers only; \
 see `af help telemetry`.\n\n\
-`status`, `runs`, `show`, `config` and `tail` read; `reindex` recovers crashed writers' segments and \
+`status`, `runs`, `show`, `config`, `tail` and `ledger` read; `reindex` recovers crashed writers' segments and \
 rebuilds the index; `gc --apply` evicts telemetry under the Storage Budget's rules. None records \
 telemetry, contacts a network or reads a Store. Exit codes: 0 success, 1 the telemetry \
 directory cannot be read, the index is in use or a run is unknown, 2 a wrong command line or a \
 refused `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry status\n  af telemetry runs --since 7d\n  af telemetry show RUN_ID\n  af telemetry config RUN_ID\n  af telemetry tail\n  af telemetry gc\n  af telemetry status --json | jq .segments\n  af telemetry reindex\n  af telemetry status --dir ./copied-telemetry\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID"
+        after_long_help = "Examples:\n  af telemetry status\n  af telemetry runs --since 7d\n  af telemetry show RUN_ID\n  af telemetry config RUN_ID\n  af telemetry tail\n  af telemetry ledger RUN_ID\n  af telemetry gc\n  af telemetry status --json | jq .segments\n  af telemetry reindex\n  af telemetry status --dir ./copied-telemetry\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID"
     )]
     Telemetry {
         #[command(subcommand)]
@@ -1657,6 +1657,43 @@ two Stores share without `--store`, or a refused `[telemetry]` key.",
         #[arg(long, help_heading = "Output")]
         json: bool,
         /// Follow this telemetry directory instead of the configured one
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// One run's committed Store events, Finding and Demand summaries and accounting, in order
+    #[command(
+        long_about = "One run's committed Store events, Finding and Demand summaries and accounting, in order.\n\n\
+RUN is the kernel run id `af telemetry runs` lists. Telemetry mirrors every event the kernel \
+commits to a Store after its commit (`af.store.event`: type, sequence, id, causation, artifact \
+references, and the payload's digest and size), records a Finding summary when a Report is \
+admitted into the Ledger and whenever its disposition changes, and a Demand summary keyed by \
+the Demand id with its lifecycle (opened, evidence satisfied with the Evidence id, stale, \
+waived). This prints them in the order they were recorded, from the telemetry directory alone. \
+Beside them, each Attempt's charge: the kernel's accounting after its last committed \
+accounting transition (`af.usage.state` with the highest `af.usage.sequence`), and, never \
+merged with it, the latest sidecar observation of each execution that wrote one, the order \
+across executions `unknown`; the run's totals are sums of the Attempts' charges. Coverage is \
+`complete` only when every committed event of every Store log mirrored, from its first \
+sequence to the last mirrored, and every summary reached Telemetry with nothing dropped, every \
+retained execution sealed and none missing or open; otherwise `incomplete` with every reason. \
+The history marker says which executions everything covers. When two Stores record the same \
+run id it lists both and asks for `--store ID`.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or the run is unknown, 2 a \
+wrong command line, a run two Stores share without `--store`, or a refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry ledger RUN_ID\n  af telemetry ledger RUN_ID --json | jq '.findings[] | {key, status}'\n  af telemetry ledger RUN_ID --json | jq .accounting.totals\n  af telemetry ledger RUN_ID --dir ./copied-telemetry"
+    )]
+    Ledger {
+        /// The kernel run id
+        #[arg(value_name = "RUN")]
+        run: String,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// Machine-readable af/telemetry-ledger@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
         #[arg(long, value_name = "PATH", help_heading = "Selector")]
         dir: Option<PathBuf>,
     },

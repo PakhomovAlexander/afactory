@@ -1560,6 +1560,15 @@ fn main() {
                 json,
                 dir,
             } => ("af telemetry tail", telemetry::tail(json, dir, run, store)),
+            cli::TelemetryCommand::Ledger {
+                run,
+                store,
+                json,
+                dir,
+            } => (
+                "af telemetry ledger",
+                telemetry::ledger(json, dir, run, store),
+            ),
             cli::TelemetryCommand::Gc { apply, json } => {
                 ("af telemetry gc", telemetry::gc(json, apply))
             }
