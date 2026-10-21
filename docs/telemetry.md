@@ -659,15 +659,22 @@ it), for the content package to write as blobs.
   (`gen_ai.conversation.id`, the tools in the tool set, the MCP server count, a version in a
   version's grammar); each `assistant` message is an `af.turn` (`gen_ai.operation.name = chat`)
   from the arrival of the line that began it — the init, or the tool results that went back to
-  the model — to its own last line, with the harness's per-turn usage (`af.usage.*` as exact
-  decimal strings, `gen_ai.usage.input_tokens` including cache reads and writes as the
-  conventions count it, `af.series = turn`), `gen_ai.response.finish_reasons`, and the number and
-  bytes of its text and thinking blocks; each `tool_use` block is an `af.tool`
+  the model — to the message's line, which ends the turn as soon as it is read, so `tail` and
+  `turns` show it ended before any later line arrives; the turn carries the harness's per-turn
+  usage (`af.usage.*` as exact decimal strings, `gen_ai.usage.input_tokens` including cache reads
+  and writes as the conventions count it, `af.series = turn`), `gen_ai.response.finish_reasons`,
+  and the number and bytes of its text and thinking blocks. Claude prints a message as one line
+  per content block: a further line of the message that ended the last turn, before the tool
+  results go back, opens no turn but is the event `af.turn.continued` on that ended turn, with
+  the blocks, tool calls and report the line adds, and `af telemetry turns` folds it into the
+  turn's row. Each `tool_use` block is an `af.tool` below the turn its message ended
   (`gen_ai.operation.name = execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`,
   `af.tool.input_bytes`) until the `tool_result` that answers it (`af.tool.output_bytes`, its
-  outcome); `system/api_retry` is `af.turn.api_retry` on the open turn; `rate_limit_event`,
-  `permission_denied` and the `result` line are `af.harness.rate_limit`,
-  `af.harness.permission_denied` and `af.harness.result`.
+  outcome), and the next turn opens when the tool results go back; `system/api_retry` is
+  `af.turn.api_retry` on the open turn; `rate_limit_event`, `permission_denied` and the `result`
+  line are `af.harness.rate_limit`, `af.harness.permission_denied` and `af.harness.result` — the
+  result's text, which repeats the reply the assistant's text blocks carry, only as its size
+  (`af.result.bytes`), never pended as content.
 - **Codex** (`--json`): `thread.started` is `af.harness.init`; a turn is an `af.turn` from
   `turn.started` to `turn.completed` (its usage) or `turn.failed`; a `command_execution` or
   `mcp_tool_call` item is an `af.tool` from `item.started` to `item.completed` (its exit code and
@@ -690,14 +697,15 @@ tool analysis.
 
 **The release decision** is Telemetry's own, taken when the process has ended, over its
 complete stdout and stderr and the output the harness left outside them — a Codex Attempt's
-`-o` final-message file, read in full before the tap ends — before any pending byte goes
-anywhere: when any of them carries login-challenge material (a device code beside a challenge
-URL, in one record or several, in one stream or across both, or a code in a stream identifier
-with its URL only in the final message, a successful reply's included), when the adapter
-replaced both
-streams with its closed diagnostic, or when a failed process's stderr classifies as an
-authentication failure, everything pending for the process — content and identifiers — is
-withheld, and `af.harness` records `af.stream.withheld = true` and `af.native.withheld = true`
+`-o` final-message file, read in full before the tap ends for every observed process, whatever
+its ending and whether or not it is a reply — before any pending byte goes anywhere: when any
+of them carries login-challenge material (a device code beside a challenge URL, in one record
+or several, in one stream or across both, or a code in a stream identifier with its URL only in
+the final message, a successful reply's or a failed process's included), when that file exists
+but cannot be read whole (larger than the reply bound, not a regular file, unreadable), when the
+adapter replaced both streams with its closed diagnostic, or when a failed process's stderr
+classifies as an authentication failure, everything pending for the process — content and
+identifiers — is withheld, and `af.harness` records `af.stream.withheld = true` and `af.native.withheld = true`
 (`af telemetry status` counts these Attempts). It changes no accounting, no classification and
 no adapter behaviour. Otherwise the pending content passes the grant replacement and the
 credential rules on its assembled, complete lines — a grant value split across two chunks is
@@ -708,7 +716,11 @@ in the `af.harness.ids.part` events that follow it, as many as its `af.harness.i
 says, each numbered by `af.harness.ids.part`, so no admitted mapping is cut. The event also
 carries `af.harness.ids.count`, every identifier admitted to the pending buffer, and
 `af.harness.ids.withheld`, those the rules or the decision withheld, the stream's counts and its
-`af.stream.analysis` (`complete` or `incomplete`). Because the `af.harness` span records that
+`af.stream.analysis` (`complete` or `incomplete`). A process pends at most 4096 distinct
+identifiers of at most 256 bytes each: one past either bound keeps its `af.corr` in the live
+records but has no mapping, `af.harness.ids.omitted` counts these (each once; past 65,536 of
+them the count is a floor) and `af.harness.ids.analysis` is then `incomplete`, else
+`complete`. Because the `af.harness` span records that
 decision, it ends once the adapter's in-memory filter has read the complete streams, not at the
 process's exit.
 
@@ -719,8 +731,11 @@ Attempt runs `claude -p --output-format stream-json --verbose`; at `off` and `me
 `--verbose` either way. Under both shapes the adapter's envelope parsing, accounting, refusal
 classification and model-identity check read the `result` line, which is the envelope `json`
 prints; without one, failure classification reads the native text around the messages, from the
-complete capture in memory. The Store CAS keeps the `result` line (or a `json` envelope that
-frames no message) and stderr, never another message or native text, however large. A Codex
+complete capture in memory. Only the `json` invocation's stdout is an envelope without a
+`result` line (one JSON object with no `type`); under `stream-json` such an object is native
+text, never parsed as an envelope, never a reply and never kept. The Store CAS keeps the
+`result` line (or, under `json`, an envelope that frames no message) and stderr, never another
+message or native text, however large. A Codex
 Attempt's Store keeps its `turn.completed`, `turn.failed` and `error` lines, the `-o`
 last-message file and stderr; the native text outside the event framing is classified in memory
 and not kept. When the adapter replaced a failed capture with its closed diagnostic, that

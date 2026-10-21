@@ -4,7 +4,10 @@
 //!
 //! A turn's or a tool call's time is the observer's arrival times of the lines that opened and
 //! closed it; its usage is the harness's own per-turn report, the `turn` series, never summed
-//! into an Attempt's or a run's totals, which are the kernel's (design §9). Every row says
+//! into an Attempt's or a run's totals, which are the kernel's (design §9). A Claude message
+//! printed as several lines ends its turn with the first; each further line's
+//! `af.turn.continued` event is folded into the turn's row: its block and tool-call counts
+//! added, its report (usage, stop reason, model) the latest, as one line of it all would be. Every row says
 //! whether the stream it came from can be analysed whole: `complete` when the observer dropped
 //! nothing, the tap saw no gap and judged every frame, and the tap ended after its release
 //! decision; `incomplete` when one of those failed; `open` while the tap has not ended (its
@@ -283,6 +286,79 @@ fn ids_event(index: &Index, span_id: &str) -> Result<Option<Map<String, Value>>,
     Ok(found.into_iter().next().map(|text| object(Some(text))))
 }
 
+/// The `af.turn.continued` events of the spans of `trace_id`, by span, in record order.
+fn continuations(
+    index: &Index,
+    trace_id: &str,
+) -> Result<BTreeMap<String, Vec<Map<String, Value>>>, String> {
+    let mut statement = index
+        .connection()
+        .prepare(
+            "SELECT events.span_id, events.attributes FROM events
+             JOIN spans ON spans.span_id = events.span_id
+             WHERE spans.trace_id = ?1 AND events.name = ?2
+             ORDER BY events.segment_id, events.seq",
+        )
+        .map_err(sql)?;
+    let rows = statement
+        .query_map(params![trace_id, event::CONTINUED], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    let mut found: BTreeMap<String, Vec<Map<String, Value>>> = BTreeMap::new();
+    for (span_id, attributes) in rows {
+        found
+            .entry(span_id)
+            .or_default()
+            .push(object(Some(attributes)));
+    }
+    Ok(found)
+}
+
+/// Fold one `af.turn.continued` event into its turn's attributes: the counts added, the
+/// report the event carries replacing the turn's.
+fn fold_continued(attributes: &mut Map<String, Value>, continued: &Map<String, Value>) {
+    for key in [
+        "af.turn.text_blocks",
+        "af.turn.text_bytes",
+        "af.turn.thinking_blocks",
+        "af.turn.thinking_bytes",
+        "af.turn.tool_calls",
+    ] {
+        let sum = [attributes.get(key), continued.get(key)]
+            .into_iter()
+            .map(|value| value.and_then(Value::as_u64).unwrap_or(0))
+            .fold(0u64, u64::saturating_add);
+        attributes.insert(key.to_string(), sum.into());
+    }
+    let replaced = |prefixes: &[&str], attributes: &mut Map<String, Value>| {
+        attributes.retain(|key, _| !prefixes.iter().any(|prefix| key.starts_with(prefix)));
+        for (key, value) in continued {
+            if prefixes.iter().any(|prefix| key.starts_with(prefix)) {
+                attributes.insert(key.clone(), value.clone());
+            }
+        }
+    };
+    if continued.contains_key("af.usage.observation") {
+        replaced(&["af.usage.", "gen_ai.usage."], attributes);
+    }
+    if continued.contains_key("gen_ai.response.model")
+        || continued.contains_key("af.turn.model_other")
+    {
+        replaced(
+            &["gen_ai.response.model", "af.turn.model_other"],
+            attributes,
+        );
+    }
+    for key in ["gen_ai.response.finish_reasons", "af.turn.timestamp"] {
+        if let Some(value) = continued.get(key) {
+            attributes.insert(key.to_string(), value.clone());
+        }
+    }
+}
+
 /// What both documents read: the run, its harnesses with their Attempts, and the turn and tool
 /// spans below them.
 struct Read {
@@ -378,11 +454,17 @@ fn read(
             attempt.is_none_or(|attempt| harnesses[&harness].attempt_id.as_deref() == Some(attempt))
         })
     };
+    let mut continued = continuations(index, trace_id)?;
     let mut turns = Vec::new();
     let mut tools = Vec::new();
-    for span in all {
+    for mut span in all {
         match span.name.as_str() {
-            TURN_SPAN if selected(&span) => turns.push(span),
+            TURN_SPAN if selected(&span) => {
+                for event in continued.remove(&span.span_id).unwrap_or_default() {
+                    fold_continued(&mut span.attributes, &event);
+                }
+                turns.push(span);
+            }
             TOOL_SPAN if selected(&span) => tools.push(span),
             _ => {}
         }

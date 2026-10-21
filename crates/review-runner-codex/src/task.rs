@@ -148,8 +148,8 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         let mut events = TaskEvents::default();
         let mut failure = None;
         let mut said = WorkerStderr::default();
-        // The `-o` final message, read only for a process that exited 0 with no `error` or
-        // `turn.failed` event; `None` for every other ending.
+        // The `-o` final message as a reply, only for a process that exited 0 with no `error`
+        // or `turn.failed` event; `None` for every other ending.
         let mut reply: Option<Result<Option<Vec<u8>>, String>> = None;
         let mut capture = runner.capture_observed_with_output(
             cas,
@@ -164,13 +164,20 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                     // The Worker's own last words, bounded and filtered, before the privacy filter
                     // below may replace the stream.
                     said = WorkerStderr::read(stderr, stdout);
-                    if !failed && events.error.is_none() {
-                        reply = Some(read_final_message(&output_directory));
-                    }
                     // The final message is harness output too: Telemetry's release decision
-                    // reads all of it before the tap ends (design §7.3).
-                    if let Some(Ok(Some(bytes))) = &reply {
-                        further.include(bytes);
+                    // judges the whole file of every observed process before the tap ends,
+                    // whatever the process's ending, and one it cannot read whole withholds the
+                    // process's pending content (design §7.3).
+                    let qualifies = !failed && events.error.is_none();
+                    let read = (qualifies || further.observed())
+                        .then(|| read_final_message(&output_directory));
+                    match &read {
+                        Some(Ok(Some(bytes))) => further.include(bytes),
+                        Some(Err(_)) => further.unjudgeable(),
+                        Some(Ok(None)) | None => {}
+                    }
+                    if qualifies {
+                        reply = read;
                     }
                     if matches!(reply, Some(Ok(Some(_)))) {
                         break 'classify;

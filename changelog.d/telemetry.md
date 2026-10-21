@@ -98,19 +98,23 @@
   process, its bytes, status, deadline, held output and accounting are unchanged, and from
   `spans` on the consumer records validated structure only, timed by arrival: each Claude
   `assistant` message and each Codex turn is `af.turn` with the harness's own per-turn usage and
-  stop reason, each `tool_use` block or Codex command and MCP item is `af.tool` with its input and
+  stop reason, a Claude message's turn ending as soon as its line is read (a further line of the
+  same message is `af.turn.continued` on that turn, which `turns` folds into its row), each `tool_use` block or Codex command and MCP item is `af.tool` with its input and
   output bytes, the other lines are events, every harness identifier is a correlation id
   (`af.corr`) and every untrusted string only a size. A frame too long to judge is withheld
   whole, a dropped chunk is `af.stream.gap` and makes the stream incomplete, and once the
   process has ended Telemetry takes its own release decision over the complete streams and a
-  Codex Attempt's `-o` final message — login-challenge material or a replaced capture withholds
-  everything pending (`af.stream.withheld`), a successful reply's included — before
+  Codex Attempt's `-o` final message, judged for every observed process whatever its ending —
+  login-challenge material, a final message that cannot be read whole or a replaced capture
+  withholds everything pending (`af.stream.withheld`), a successful reply's included — before
   `af.harness.ids` lists the originals that pass the credential rules, continued in
-  `af.harness.ids.part` events past what one record holds. A Claude Attempt asks for `--output-format
+  `af.harness.ids.part` events past what one record holds; an identifier past the 4096 a
+  process pends or longer than 256 bytes has no mapping and is counted in
+  `af.harness.ids.omitted`, with `af.harness.ids.analysis = incomplete`. A Claude Attempt asks for `--output-format
   stream-json --verbose` at `spans` and `content` and keeps `json` at `off` and `metrics`, the
   invocation-cost gate (`scripts/telemetry-invocation-cost.py`, `af/telemetry-invocation-cost@1`)
   having failed; `claude --help` must declare `--verbose`. The Store now keeps of a Claude
-  Attempt's stdout only its `result` line, and of a Codex Attempt's its turn and error lines
+  Attempt's stdout only its `result` line (under `stream-json` the only envelope there is), and of a Codex Attempt's its turn and error lines
   beside the `-o` final message — never the native text around them, which classification
   reads in memory — so accounting, classification and raw evidence are the same at every
   level. `af telemetry turns` and `tools` (`--json`: `af/telemetry-turns@1`,

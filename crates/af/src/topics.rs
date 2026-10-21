@@ -292,18 +292,24 @@ At spans and above every harness's streams are tapped as they arrive: the superv
 offers each chunk to a bounded queue (observer_queue_bytes) without ever waiting, a full queue
 drops the chunk and counts it, and the consumer frames lines and records validated structure
 only, timed by arrival: a Claude assistant message (stream-json) or a Codex turn is af.turn
-with the harness's own per-turn usage, a Claude tool_use block or a Codex command or MCP item
-is af.tool with its input and output bytes, and the other lines are events. Every identifier
-the harness supplies is af.corr in a live record; every untrusted string (text, thinking, tool
-arguments and results, errors, unparsed lines) is only a size. A frame too long to judge is
-withheld whole; a dropped chunk is af.stream.gap and the stream incomplete. Once the process
-has ended Telemetry takes its own release decision: login-challenge material in either stream
-or in a Codex Attempt's -o final message, or an adapter that replaced the streams, withholds
-everything pending (af.stream.withheld); otherwise af.harness.ids lists each correlation id
-with its original once it passes the credential rules (af.harness.ids.count admitted, the list
-going on in af.harness.ids.part events past one record). Claude is asked for --output-format
-stream-json --verbose at spans and content and for json at off and metrics; the adapter reads
-the result line either way, and the Store keeps that line and stderr (Codex: its turn and
+with the harness's own per-turn usage, a Claude message's turn ending as soon as its line is
+read (a further line of the same message is af.turn.continued on that turn, folded into its
+row by turns), a Claude tool_use block or a Codex command or MCP item is af.tool with its
+input and output bytes, and the other lines are events, the Claude result line by its size
+only. Every identifier the harness supplies is af.corr in a live record; every untrusted
+string (text, thinking, tool arguments and results, errors, unparsed lines) is only a size. A
+frame too long to judge is withheld whole; a dropped chunk is af.stream.gap and the stream
+incomplete. Once the process has ended Telemetry takes its own release decision:
+login-challenge material in either stream or in a Codex Attempt's -o final message (read for
+every observed process, whatever its ending), a final message that cannot be read whole, or an
+adapter that replaced the streams, withholds everything pending (af.stream.withheld);
+otherwise af.harness.ids lists each correlation id with its original once it passes the
+credential rules (af.harness.ids.count admitted, the list going on in af.harness.ids.part
+events past one record; an identifier past 4096 per process or 256 bytes has no mapping,
+counted in af.harness.ids.omitted with af.harness.ids.analysis incomplete). Claude is asked
+for --output-format stream-json --verbose at spans and content and for json at off and
+metrics; the adapter reads the result line either way (a JSON object without a type is an
+envelope only under json), and the Store keeps that line and stderr (Codex: its turn and
 error lines and the -o final message), never native text around them, so accounting,
 classification and the Store's bytes are the same at every level. With Claude Code 2.1.305
 and claude-opus-5-5 the stream's thinking blocks carry no text, so Claude reasoning is sizes

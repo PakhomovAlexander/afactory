@@ -1317,8 +1317,9 @@ impl ModelRunner {
     /// read by the filter once the process has ended (Codex's `-o` final-message file): every
     /// byte the filter hands to [`FurtherOutput::include`] is part of Telemetry's release
     /// decision, so login-challenge material there withholds the process's pending content as
-    /// it would in a stream. The decision is taken before the harness tap ends; nothing about
-    /// the process, the filter, classification or accounting changes.
+    /// it would in a stream, and so does a further output the filter could not read whole
+    /// ([`FurtherOutput::unjudgeable`]). The decision is taken before the harness tap ends;
+    /// nothing about the process, the filter, classification or accounting changes.
     pub fn capture_observed_with_output(
         &self,
         cas: &Cas,
@@ -1342,6 +1343,7 @@ impl ModelRunner {
         let mut further = FurtherOutput {
             observed,
             auth: false,
+            unjudged: false,
         };
         filter(
             failed,
@@ -1352,7 +1354,7 @@ impl ModelRunner {
         if let Some(harness) = harness {
             let replaced = NativeFailureKind::replaced_capture(&capture.stdout, &capture.stderr);
             harness.finish(Some(Released {
-                withheld: withheld_before || further.auth || replaced,
+                withheld: withheld_before || further.auth || further.unjudged || replaced,
             }));
         }
         self.store_raw(cas, &mut capture);
@@ -1525,13 +1527,27 @@ pub struct FurtherOutput {
     observed: bool,
     /// Whether any included output carries login-challenge material.
     auth: bool,
+    /// Whether a further output could not be read whole, so the decision cannot judge it.
+    unjudged: bool,
 }
 
 impl FurtherOutput {
+    /// Whether Telemetry observed the process, so its release decision reads further output.
+    pub fn observed(&self) -> bool {
+        self.observed
+    }
+
     /// Include the complete `bytes` of one further output in the release decision.
     pub fn include(&mut self, bytes: &[u8]) {
         self.auth =
             self.auth || self.observed && review_telemetry::redact::carries_auth_material(bytes);
+    }
+
+    /// A further output that exists but could not be read whole (too large, unreadable, not a
+    /// regular file): what it holds cannot be judged, so the process's pending content is
+    /// withheld as it is for login-challenge material (design §7.3).
+    pub fn unjudgeable(&mut self) {
+        self.unjudged = self.unjudged || self.observed;
     }
 }
 

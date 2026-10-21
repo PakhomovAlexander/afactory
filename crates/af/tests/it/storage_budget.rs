@@ -540,7 +540,10 @@ if request==PROBE_INPUT:
  result='OK'
 else:
  result=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'reports':[],'benchmark_demands':[],'dispositions':[]}]}})
-envelope={'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}}
+# Under `stream-json` (Telemetry at `spans` and above) Claude prints its envelope as the
+# `result` line; under `json` this fixture prints it without a `type`.
+envelope={'type':'result'} if 'stream-json' in sys.argv else {}
+envelope.update({'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}})
 if request!=PROBE_INPUT:
  envelope['structured_output']=json.loads(result)
 print(json.dumps(envelope))

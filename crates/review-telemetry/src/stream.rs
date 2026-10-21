@@ -7,8 +7,9 @@
 //!
 //! - the record kind from the closed vocabulary below, counts, byte sizes and arrival times (the
 //!   drain's clock at the read, never the consumer's);
-//! - for a Claude stream, `af.turn` per `assistant` message and `af.tool` per `tool_use` block,
-//!   closed by its `tool_result`; for a Codex stream, `af.turn` per turn and `af.tool` per
+//! - for a Claude stream, `af.turn` per `assistant` message, ended as its line is read (a
+//!   further line of the same message is `af.turn.continued` on it), and `af.tool` per
+//!   `tool_use` block below it, closed by its `tool_result`; for a Codex stream, `af.turn` per turn and `af.tool` per
 //!   `command_execution` or `mcp_tool_call` item, from `item.started` to `item.completed`; and
 //!   the events of the other lines;
 //! - correlation ids `af.corr`, the first 16 hex digits of `SHA-256(segment_id ":" original)`,
@@ -47,7 +48,9 @@
 //! ([`Released`]), and one `af.harness.ids` event lists each correlation id with its original,
 //! each original having passed the credential rules; a list longer than one record holds
 //! continues in the `af.harness.ids.part` events that follow it, as many as its
-//! `af.harness.ids.parts` says.
+//! `af.harness.ids.parts` says. An identifier longer than 256 bytes, or past the 4096 distinct
+//! ones a process pends, keeps its `af.corr` in live records but has no mapping:
+//! `af.harness.ids.omitted` counts these and `af.harness.ids.analysis` is then `incomplete`.
 //!
 //! **Content** (package P7, [`crate::content`]). At `content`, after a release that withheld
 //! nothing, the pending content becomes blobs, each named by one event on the turn or tool span
@@ -126,6 +129,10 @@ pub mod event {
     pub const ERROR: &str = "af.harness.error";
     /// `system/api_retry`, on the open turn.
     pub const API_RETRY: &str = "af.turn.api_retry";
+    /// A further Claude `assistant` line of the message that ended a turn (the harness prints
+    /// one line per content block), on that ended turn: the blocks, tool calls and report the
+    /// line adds, which `af telemetry turns` folds into the turn.
+    pub const CONTINUED: &str = "af.turn.continued";
     /// A Codex `reasoning` item, on the open turn.
     pub const REASONING: &str = "af.item.reasoning";
     /// A Codex `agent_message` item, on the open turn.
@@ -285,6 +292,9 @@ pub struct Released {
 const MAX_ID_BYTES: usize = 256;
 /// The most identifiers pended per process.
 const MAX_IDS: usize = 4096;
+/// The most distinct identifiers past [`MAX_IDS`] or [`MAX_ID_BYTES`] counted one by one in
+/// `af.harness.ids.omitted`; past it the count is a floor.
+const MAX_OMITTED_IDS: usize = 65_536;
 
 /// The released `(af.corr, original)` mappings as `corr original` texts, in order, cut into the
 /// parts one record holds whole: at most [`MAX_ARRAY_ELEMENTS`] texts and [`MAX_ARRAY_BYTES`]
@@ -450,6 +460,28 @@ struct Tool {
     span_id: Option<String>,
 }
 
+/// A Claude turn its assistant message ended.
+struct Answered {
+    span_id: Option<String>,
+    /// The correlation id of its message.
+    message: Option<String>,
+}
+
+/// What one Claude `assistant` line reports: its message's report and its content blocks.
+#[derive(Default)]
+struct Blocks {
+    usage: Option<Usage>,
+    stop_reason: Option<&'static str>,
+    model_bound: Option<bool>,
+    timestamp: Option<String>,
+    text_blocks: i64,
+    text_bytes: i64,
+    thinking_blocks: i64,
+    thinking_bytes: i64,
+    /// `(call key, name, input bytes)` of each `tool_use` block, with its input.
+    calls: Vec<(String, Option<String>, i64, Option<Value>)>,
+}
+
 /// The tap over one harness process's two streams.
 pub struct Tap {
     options: TapOptions,
@@ -457,12 +489,18 @@ pub struct Tap {
     content: bool,
     framers: [Framer; 2],
     turn: Option<Turn>,
+    /// The turn the last Claude `assistant` line ended, until the tool results go back to the
+    /// model: its tool calls hang below it, and a further line of its message continues it.
+    answered: Option<Answered>,
     turns: u64,
     tools: BTreeMap<String, Tool>,
     tool_calls: u64,
     /// `(af.corr, original)`, in the order they first appeared.
     ids: Vec<(String, String)>,
     known_ids: BTreeSet<String>,
+    /// The correlation ids placed in live records whose original no bound let the tap pend, so
+    /// `af.harness.ids` can never resolve them: counted, never kept.
+    omitted_ids: BTreeSet<String>,
     pending: VecDeque<Content>,
     pending_bytes: u64,
     dropped_contents: u64,
@@ -537,11 +575,13 @@ impl Tap {
             options,
             framers: [Framer::default(), Framer::default()],
             turn: None,
+            answered: None,
             turns: 0,
             tools: BTreeMap::new(),
             tool_calls: 0,
             ids: Vec::new(),
             known_ids: BTreeSet::new(),
+            omitted_ids: BTreeSet::new(),
             pending: VecDeque::new(),
             pending_bytes: 0,
             dropped_contents: 0,
@@ -596,13 +636,18 @@ impl Tap {
     }
 
     /// The correlation id of a harness identifier; the original is pended for `af.harness.ids`.
+    /// One too long to be an id, or past the most a process pends, has no mapping: it is
+    /// counted in `af.harness.ids.omitted`, and the process's identifier analysis is incomplete.
     fn corr(&mut self, original: &str) -> String {
         let corr = corr(&self.segment_id, original);
-        if original.len() <= MAX_ID_BYTES
-            && self.ids.len() < MAX_IDS
-            && self.known_ids.insert(corr.clone())
-        {
+        if self.known_ids.contains(&corr) {
+            return corr;
+        }
+        if original.len() <= MAX_ID_BYTES && self.ids.len() < MAX_IDS {
+            self.known_ids.insert(corr.clone());
             self.ids.push((corr.clone(), original.to_string()));
+        } else if self.omitted_ids.len() < MAX_OMITTED_IDS {
+            self.omitted_ids.insert(corr.clone());
         }
         corr
     }
@@ -906,6 +951,7 @@ impl Tap {
         writer.stream_span_end(span_id, status, attrs, end);
     }
 
+    /// Open the tool call `corr` below `parent`, its turn or the harness.
     fn open_tool(
         &mut self,
         writer: &Writer,
@@ -913,16 +959,9 @@ impl Tap {
         name: Option<&str>,
         input: i64,
         at: u128,
+        parent: String,
     ) {
         self.tool_calls += 1;
-        let parent = self
-            .turn
-            .as_ref()
-            .and_then(|turn| turn.span_id.clone())
-            .unwrap_or_else(|| self.harness_span().to_string());
-        if let Some(turn) = &mut self.turn {
-            turn.tool_calls += 1;
-        }
         let mut attrs = self
             .identity()
             .enumerated("gen_ai.operation.name", "execute_tool")
@@ -1057,6 +1096,7 @@ impl Tap {
             ("assistant", _) => self.assistant(writer, value, arrival),
             ("user", _) => self.user(writer, value, arrival),
             ("result", _) => {
+                self.answered = None;
                 let error = value.get("is_error").and_then(Value::as_bool);
                 if self
                     .turn
@@ -1110,8 +1150,9 @@ impl Tap {
                     let corr = self.corr(session);
                     attrs = attrs.id("af.corr", corr);
                 }
+                // The result repeats the reply the assistant's text blocks already carry: its
+                // size and structure only, never pended as another output (design §7.3, P7).
                 attrs = attrs.int("af.result.bytes", size_of(value.get("result")));
-                self.pend_value("text", value.get("result"));
                 self.on_harness(writer, event::RESULT, attrs, arrival);
             }
             ("rate_limit_event", _) => {
@@ -1171,46 +1212,90 @@ impl Tap {
         self.on_harness(writer, event::PERMISSION_DENIED, attrs, arrival);
     }
 
+    /// One Claude `assistant` line: its message ends the open turn (design §7.3) when the line
+    /// is processed, with its usage, stop reason and blocks, and opens one `af.tool` per
+    /// `tool_use` block below that ended turn. The harness prints a message as one line per
+    /// content block, so a further line of the message that ended the last turn, before the
+    /// tool results go back, continues that turn: its blocks and tool calls are recorded on
+    /// it as one `af.turn.continued` event.
     fn assistant(&mut self, writer: &Writer, value: &Value, arrival: u128) {
         let message = value.get("message").unwrap_or(&Value::Null);
         let id = message
             .get("id")
             .and_then(Value::as_str)
             .map(|id| self.corr(id));
-        // Another message than the open turn's: that turn ended with its last line, and this
-        // one began there.
-        let begun = match &self.turn {
-            Some(turn) if turn.message.is_some() && turn.message != id => {
-                let last = turn.last;
-                self.close_turn(writer, last, "succeeded", 0);
-                Some(last)
-            }
-            Some(_) => None,
-            None => Some(arrival),
+        let continued = self.turn.is_none()
+            && self
+                .answered
+                .as_ref()
+                .is_some_and(|answered| answered.message == id);
+        if !continued && self.turn.is_none() {
+            self.open_turn(writer, arrival);
+        }
+        // The span this line's content belongs to: the turn it ends or continues.
+        let span = if continued {
+            self.answered
+                .as_ref()
+                .and_then(|answered| answered.span_id.clone())
+                .unwrap_or_else(|| self.harness_span().to_string())
+        } else {
+            self.content_span()
         };
-        if let Some(start) = begun {
-            self.open_turn(writer, start);
-        }
-        let model = message.get("model").and_then(Value::as_str);
-        let bound = self.options.bound_model.clone();
-        let mut opened = Vec::new();
-        {
+        let blocks = self.blocks(value, message, span.clone());
+        if continued {
+            self.continue_turn(writer, id, &blocks, &span, arrival);
+        } else {
             let turn = self.turn.as_mut().expect("a turn is open");
-            turn.message = id.or(turn.message.take());
+            turn.message = id.clone();
             turn.last = arrival;
-            if let Some(usage) = message.get("usage") {
-                turn.usage = Usage::claude(usage);
+            if let Some(usage) = blocks.usage {
+                turn.usage = usage;
             }
-            if let Some(reason) = message.get("stop_reason").and_then(Value::as_str) {
-                turn.stop_reason = Some(member(Some(reason), &STOP_REASONS));
-            }
-            if let Some(model) = model {
-                turn.model_bound = Some(bound.as_deref() == Some(model));
-            }
-            if let Some(stamp) = timestamp(value.get("timestamp")) {
-                turn.timestamp = Some(stamp);
-            }
+            turn.stop_reason = blocks.stop_reason.or(turn.stop_reason);
+            turn.model_bound = blocks.model_bound.or(turn.model_bound);
+            turn.timestamp = blocks.timestamp.or(turn.timestamp.take());
+            turn.text_blocks += blocks.text_blocks;
+            turn.text_bytes += blocks.text_bytes;
+            turn.thinking_blocks += blocks.thinking_blocks;
+            turn.thinking_bytes += blocks.thinking_bytes;
+            turn.tool_calls += blocks.calls.len() as i64;
+            let span_id = turn.span_id.clone();
+            self.close_turn(writer, arrival, "succeeded", 0);
+            self.answered = Some(Answered {
+                span_id,
+                message: id,
+            });
         }
+        for (corr, name, size, input) in blocks.calls {
+            self.open_tool(
+                writer,
+                corr.clone(),
+                name.as_deref(),
+                size,
+                arrival,
+                span.clone(),
+            );
+            // The arguments are the tool call's content, pended once its span is open.
+            let tool = self.tool_span(&corr);
+            self.pend_value_on("tool_input", input.as_ref(), tool);
+        }
+    }
+
+    /// Read one `assistant` line's report and blocks, pending its text and thinking on `span`.
+    fn blocks(&mut self, value: &Value, message: &Value, span: String) -> Blocks {
+        let mut blocks = Blocks {
+            usage: message.get("usage").map(Usage::claude),
+            stop_reason: message
+                .get("stop_reason")
+                .and_then(Value::as_str)
+                .map(|reason| member(Some(reason), &STOP_REASONS)),
+            model_bound: message
+                .get("model")
+                .and_then(Value::as_str)
+                .map(|model| self.options.bound_model.as_deref() == Some(model)),
+            timestamp: timestamp(value.get("timestamp")),
+            ..Blocks::default()
+        };
         for block in message
             .get("content")
             .and_then(Value::as_array)
@@ -1219,41 +1304,69 @@ impl Tap {
         {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
-                    let size = size_of(block.get("text"));
-                    if let Some(turn) = &mut self.turn {
-                        turn.text_blocks += 1;
-                        turn.text_bytes += size;
-                    }
-                    self.pend_value("text", block.get("text"));
+                    blocks.text_blocks += 1;
+                    blocks.text_bytes += size_of(block.get("text"));
+                    self.pend_value_on("text", block.get("text"), span.clone());
                 }
                 Some("thinking") | Some("redacted_thinking") => {
-                    let size = size_of(block.get("thinking"));
-                    if let Some(turn) = &mut self.turn {
-                        turn.thinking_blocks += 1;
-                        turn.thinking_bytes += size;
-                    }
-                    self.pend_value("thinking", block.get("thinking"));
+                    blocks.thinking_blocks += 1;
+                    blocks.thinking_bytes += size_of(block.get("thinking"));
+                    self.pend_value_on("thinking", block.get("thinking"), span.clone());
                 }
                 Some("tool_use") => {
                     let id = block.get("id").and_then(Value::as_str).unwrap_or("");
                     let corr = self.call_key(id);
                     let name = block.get("name").and_then(Value::as_str);
-                    opened.push((
+                    blocks.calls.push((
                         corr,
                         name.map(str::to_string),
                         size_of(block.get("input")),
-                        block.get("input"),
+                        block.get("input").cloned(),
                     ));
                 }
                 _ => {}
             }
         }
-        for (corr, name, size, input) in opened {
-            self.open_tool(writer, corr.clone(), name.as_deref(), size, arrival);
-            // The arguments are the tool call's content, pended once its span is open.
-            let span = self.tool_span(&corr);
-            self.pend_value_on("tool_input", input, span);
+        blocks
+    }
+
+    /// The `af.turn.continued` event of a further line of the message that ended the turn
+    /// `span`: what the line adds, in the turn's own attribute names.
+    fn continue_turn(
+        &self,
+        writer: &Writer,
+        message: Option<String>,
+        blocks: &Blocks,
+        span: &str,
+        arrival: u128,
+    ) {
+        let mut attrs = Attrs::new();
+        if let Some(message) = message {
+            attrs = attrs.id("af.corr", message);
         }
+        if let Some(usage) = &blocks.usage {
+            attrs = usage.attrs(self.options.harness, attrs);
+        }
+        if let Some(reason) = blocks.stop_reason {
+            attrs = attrs.texts("gen_ai.response.finish_reasons", vec![reason.to_string()]);
+        }
+        match (blocks.model_bound, &self.options.bound_model) {
+            (Some(true), Some(model)) => {
+                attrs = attrs.text("gen_ai.response.model", model.clone());
+            }
+            (Some(false), _) => attrs = attrs.boolean("af.turn.model_other", true),
+            _ => {}
+        }
+        if let Some(timestamp) = &blocks.timestamp {
+            attrs = attrs.text("af.turn.timestamp", timestamp.clone());
+        }
+        attrs = attrs
+            .int("af.turn.text_blocks", blocks.text_blocks)
+            .int("af.turn.text_bytes", blocks.text_bytes)
+            .int("af.turn.thinking_blocks", blocks.thinking_blocks)
+            .int("af.turn.thinking_bytes", blocks.thinking_bytes)
+            .int("af.turn.tool_calls", blocks.calls.len() as i64);
+        writer.stream_event(span, event::CONTINUED, attrs, arrival);
     }
 
     fn user(&mut self, writer: &Writer, value: &Value, arrival: u128) {
@@ -1283,15 +1396,9 @@ impl Tap {
                 if failed { "failed" } else { "succeeded" },
             );
         }
-        // The tool results go back to the model: the open turn ended with its message, and the
-        // next request begins now.
-        if let Some(turn) = &self.turn {
-            if turn.message.is_some() {
-                let last = turn.last;
-                self.close_turn(writer, last, "succeeded", 0);
-                self.open_turn(writer, arrival);
-            }
-        } else {
+        // The tool results go back to the model: the next request, and its turn, begin now.
+        self.answered = None;
+        if self.turn.is_none() {
             self.open_turn(writer, arrival);
         }
     }
@@ -1368,7 +1475,11 @@ impl Tap {
         if let Some((input, output)) = tool {
             if !self.tools.contains_key(&corr) && kind != "item.updated" {
                 let size = size_of(item.get(input));
-                self.open_tool(writer, corr.clone(), Some(item_type), size, arrival);
+                if let Some(turn) = &mut self.turn {
+                    turn.tool_calls += 1;
+                }
+                let parent = self.content_span();
+                self.open_tool(writer, corr.clone(), Some(item_type), size, arrival, parent);
                 let span = self.tool_span(&corr);
                 self.pend_value_on("tool_input", item.get(input), span);
             }
@@ -1506,6 +1617,15 @@ impl Tap {
             .boolean("af.native.withheld", release.native_withheld)
             .int("af.harness.ids.count", admitted as i64)
             .int("af.harness.ids.withheld", released.withheld_ids as i64)
+            .int("af.harness.ids.omitted", self.omitted_ids.len() as i64)
+            .enumerated(
+                "af.harness.ids.analysis",
+                if self.omitted_ids.is_empty() {
+                    "complete"
+                } else {
+                    "incomplete"
+                },
+            )
             .int("af.stream.lines", self.lines as i64)
             .int("af.stream.unparsed_lines", self.unparsed_lines as i64)
             .int("af.stream.unparsed_bytes", self.unparsed_bytes as i64)

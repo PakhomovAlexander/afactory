@@ -272,6 +272,130 @@ fn telemetry_claude_messages_become_spans() {
     );
 }
 
+/// Design §7.3: an `assistant` message ends its turn as soon as the line is processed — the
+/// live records show the turn ended at that line's arrival before any later `user` or `result`
+/// line — its tool calls hang below that ended turn, the next turn opens when the tool results
+/// go back, and a further line of the same message (Claude prints one per content block)
+/// continues the ended turn as one `af.turn.continued` event instead of opening another.
+#[test]
+fn telemetry_claude_turn_ends_with_its_assistant_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let (writer, options) = harness(dir.path(), Level::Spans, Harness::Claude);
+    let mut tap = Tap::new(&writer, options);
+    let segment = writer.segment_id().unwrap();
+    let start: u128 = 1_700_000_000_000_000_000;
+    let ms = |n: u128| start + n * 1_000_000;
+    let mut offset = 0;
+    let mut send = |tap: &mut Tap, line: Value, at: u128| {
+        let bytes = format!("{line}\n");
+        tap.chunk(&writer, Stream::Stdout, offset, bytes.as_bytes(), at);
+        offset += bytes.len() as u64;
+    };
+    send(
+        &mut tap,
+        json!({"type":"system","subtype":"init","session_id":"session-live"}),
+        ms(0),
+    );
+    send(
+        &mut tap,
+        json!({"type":"assistant","message":{"id":"msg_live_one","model":"claude-fixture-1",
+               "usage":{"input_tokens":3,"output_tokens":1},
+               "content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"looking"}]}}),
+        ms(1),
+    );
+    // After the assistant line, before any later line: the turn has ended, at its arrival.
+    let (records, _) = live(&writer);
+    let turns = spans(&records, "af.turn");
+    assert_eq!(turns.len(), 1);
+    let first = end_of(&records, &turns[0].span_id);
+    assert_eq!(
+        first.end_unix_ns.as_deref(),
+        Some(ms(1).to_string().as_str())
+    );
+    assert_eq!(first.attributes["af.outcome"], "succeeded");
+    assert_eq!(first.attributes["af.turn.text_blocks"], 1);
+    assert_eq!(first.attributes["af.corr"], corr(&segment, "msg_live_one"));
+    // A further line of the same message: its tool call below the ended turn, its counts on
+    // the turn's `af.turn.continued` event, and no other turn.
+    send(
+        &mut tap,
+        json!({"type":"assistant","message":{"id":"msg_live_one","model":"claude-fixture-1",
+               "stop_reason":"tool_use","usage":{"input_tokens":3,"output_tokens":9},
+               "content":[{"type":"tool_use","id":"toolu_live","name":"Read",
+                           "input":{"file_path":"a"}}]}}),
+        ms(2),
+    );
+    let (records, _) = live(&writer);
+    assert_eq!(
+        spans(&records, "af.turn").len(),
+        1,
+        "the message continues its turn"
+    );
+    let continued = events(&records, "af.turn.continued");
+    assert_eq!(continued.len(), 1);
+    assert_eq!(continued[0].span_id, turns[0].span_id);
+    assert_eq!(continued[0].attributes["af.turn.tool_calls"], 1);
+    assert_eq!(continued[0].attributes["af.usage.output_tokens"], "9");
+    assert_eq!(
+        continued[0].attributes["gen_ai.response.finish_reasons"],
+        json!(["tool_use"])
+    );
+    let tools = spans(&records, "af.tool");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(
+        tools[0].parent_span_id.as_deref(),
+        Some(turns[0].span_id.as_str())
+    );
+    assert_eq!(tools[0].start_unix_ns, ms(2).to_string());
+    // The tool results go back: the tool ends and the next turn opens at that line.
+    send(
+        &mut tap,
+        json!({"type":"user","message":{"content":[
+               {"type":"tool_result","tool_use_id":"toolu_live","content":"x"}]}}),
+        ms(3),
+    );
+    let (records, _) = live(&writer);
+    let turns = spans(&records, "af.turn");
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[1].start_unix_ns, ms(3).to_string());
+    assert_eq!(
+        end_of(&records, &tools[0].span_id).end_unix_ns.as_deref(),
+        Some(ms(3).to_string().as_str())
+    );
+    send(
+        &mut tap,
+        json!({"type":"assistant","message":{"id":"msg_live_two","stop_reason":"end_turn",
+               "content":[{"type":"text","text":"done"}]}}),
+        ms(4),
+    );
+    // The final message ends the second turn before the result line arrives.
+    let (records, _) = live(&writer);
+    assert_eq!(
+        end_of(&records, &turns[1].span_id).end_unix_ns.as_deref(),
+        Some(ms(4).to_string().as_str())
+    );
+    send(
+        &mut tap,
+        json!({"type":"result","subtype":"success","is_error":false,"result":"done"}),
+        ms(5),
+    );
+    tap.finish(&writer, &release(offset, 0, false));
+    let (records, _) = live(&writer);
+    assert_eq!(
+        spans(&records, "af.turn").len(),
+        2,
+        "the result opens no turn"
+    );
+    let ends = records
+        .iter()
+        .filter(|record| matches!(record, Record::SpanEnd(end) if end.span_id == turns[1].span_id))
+        .count();
+    assert_eq!(ends, 1, "each turn ends once");
+    let ids = &events(&records, "af.harness.ids")[0].attributes;
+    assert_eq!(ids["af.stream.turns"], 2);
+    assert_eq!(ids["af.stream.tool_calls"], 1);
+}
+
 #[test]
 fn telemetry_codex_items_become_spans() {
     let dir = tempfile::tempdir().unwrap();
@@ -662,6 +786,8 @@ fn telemetry_harness_ids_beyond_one_record_are_all_kept() {
         let ids = &events(&records, "af.harness.ids")[0].attributes;
         assert_eq!(ids["af.harness.ids.count"], originals.len());
         assert_eq!(ids["af.harness.ids.withheld"], 0);
+        assert_eq!(ids["af.harness.ids.omitted"], 0);
+        assert_eq!(ids["af.harness.ids.analysis"], "complete");
         let parts = events(&records, "af.harness.ids.part");
         assert_eq!(parts.len(), parts_expected, "{count}");
         assert_eq!(ids["af.harness.ids.parts"], parts.len());
@@ -689,6 +815,64 @@ fn telemetry_harness_ids_beyond_one_record_are_all_kept() {
             .map(|original| format!("{} {original}", corr(&segment, original)))
             .collect();
         assert_eq!(listed, expected, "{count}");
+    }
+}
+
+/// An identifier past the bounds of the pending mappings — the 4097th distinct one of a
+/// process, or one longer than 256 bytes — keeps its correlation id in the live records but can
+/// have no mapping: `af.harness.ids.omitted` counts each such identifier once and
+/// `af.harness.ids.analysis` says the identifier analysis is incomplete, while every mapping
+/// within the bounds is listed.
+#[test]
+fn telemetry_harness_ids_past_their_bounds_are_counted() {
+    let at_bound = format!("item_{}", "x".repeat(251));
+    let past_bound = format!("item_{}", "x".repeat(252));
+    assert_eq!((at_bound.len(), past_bound.len()), (256, 257));
+    let many: Vec<String> = (0..4097).map(|index| format!("item_{index:04}")).collect();
+    for (name, originals, admitted) in [
+        ("count", many.clone(), 4096),
+        ("length", vec![at_bound.clone(), past_bound.clone()], 1),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (writer, options) = harness(dir.path(), Level::Spans, Harness::Codex);
+        let mut tap = Tap::new(&writer, options);
+        let item = |id: &String| {
+            json!({"type":"item.completed","item":{"id":id,"type":"agent_message","text":"ok"}})
+                .to_string()
+        };
+        let mut lines = vec![json!({"type":"turn.started"}).to_string()];
+        lines.extend(originals.iter().map(item));
+        // The omitted identifier again: counted once.
+        lines.push(item(originals.last().unwrap()));
+        lines.push(
+            json!({"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}})
+                .to_string(),
+        );
+        let bytes = feed(&mut tap, &writer, Stream::Stdout, &lines, 1);
+        let released = tap.finish(&writer, &release(bytes, 0, false));
+        assert_eq!(released.ids.len(), admitted, "{name}");
+        let (records, text) = live(&writer);
+        let segment = writer.segment_id().unwrap();
+        let omitted = corr(&segment, originals.last().unwrap());
+        // The omitted identifier's correlation id is live; its original is nowhere.
+        assert!(text.contains(&omitted), "{name}");
+        assert!(!text.contains(originals.last().unwrap().as_str()), "{name}");
+        let ids = &events(&records, "af.harness.ids")[0].attributes;
+        assert_eq!(ids["af.harness.ids.count"], admitted, "{name}");
+        assert_eq!(ids["af.harness.ids.omitted"], 1, "{name}");
+        assert_eq!(ids["af.harness.ids.analysis"], "incomplete", "{name}");
+        let parts = events(&records, "af.harness.ids.part");
+        assert_eq!(ids["af.harness.ids.parts"], parts.len(), "{name}");
+        let listed: Vec<String> = std::iter::once(ids)
+            .chain(parts.iter().map(|part| &part.attributes))
+            .flat_map(|attributes| attributes["af.harness.ids"].as_array().unwrap().clone())
+            .map(|text| text.as_str().unwrap().to_string())
+            .collect();
+        let expected: Vec<String> = originals[..admitted]
+            .iter()
+            .map(|original| format!("{} {original}", corr(&segment, original)))
+            .collect();
+        assert_eq!(listed, expected, "{name}");
     }
 }
 
@@ -720,6 +904,61 @@ fn pending_content_is_bounded_by_the_attempt_allowance_oldest_first() {
             .iter()
             .all(|content| content.media == Media::Text)
     );
+}
+
+/// Package P7: output blobs are the assistant's text blocks, so the Claude `result` line that
+/// repeats the final text is recorded by size and structure only and pends nothing. With an
+/// allowance that fits the thinking block and the text exactly, the repeated result evicts
+/// neither: both are released and published, nothing is dropped.
+#[test]
+fn telemetry_claude_result_never_displaces_stream_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let (writer, mut options) = harness(dir.path(), Level::Content, Harness::Claude);
+    let thinking = "weighing the two readings of the spec";
+    let answer = "the final answer, repeated by the result";
+    options.content_allowance_bytes = (thinking.len() + answer.len()) as u64;
+    let mut tap = Tap::new(&writer, options);
+    let lines: Vec<String> = [
+        json!({"type":"system","subtype":"init","session_id":"session-result"}),
+        json!({"type":"assistant","message":{"id":"msg_result","model":"claude-fixture-1",
+               "stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2},
+               "content":[{"type":"thinking","thinking":thinking},
+                          {"type":"text","text":answer}]}}),
+        json!({"type":"result","subtype":"success","is_error":false,"result":answer,
+               "session_id":"session-result"}),
+    ]
+    .iter()
+    .map(Value::to_string)
+    .collect();
+    let bytes = feed(&mut tap, &writer, Stream::Stdout, &lines, 1);
+    let released = tap.finish(&writer, &release(bytes, 0, false));
+    let kept: Vec<(&str, String)> = released
+        .contents
+        .iter()
+        .map(|content| {
+            (
+                content.kind,
+                String::from_utf8(content.bytes.clone()).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            ("thinking", thinking.to_string()),
+            ("text", answer.to_string())
+        ]
+    );
+    assert_eq!(released.dropped_contents, 0);
+    assert_eq!(released.published, 2);
+    let (records, _) = live(&writer);
+    assert_eq!(events(&records, "gen_ai.content.output").len(), 1);
+    assert_eq!(events(&records, "af.content.reasoning").len(), 1);
+    let result = &events(&records, "af.harness.result")[0].attributes;
+    assert_eq!(result["af.result.bytes"], answer.len());
+    let ids = &events(&records, "af.harness.ids")[0].attributes;
+    assert_eq!(ids["af.content.dropped"], 0);
+    assert_eq!(ids["af.content.published"], 2);
 }
 
 /// Design §7.3: at the seal every stream queue is drained, and what a queue still holds then —

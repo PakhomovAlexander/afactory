@@ -7,6 +7,7 @@ use crate::load_safe_wall::LOAD_SAFE_WALL;
 use crate::telemetry_levels::{LEVELS, at_level};
 use review_core::{Arg, Command};
 use review_runner::task::{ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
+use review_runner_claude::OutputShape::{Json, StreamJson};
 use review_runner_claude::task::{ClaudeTaskAdapter, native_output, result_output};
 use review_store::Cas;
 use review_telemetry::level::Level;
@@ -139,16 +140,18 @@ fn claude_stream_result_envelope_is_the_json_envelope() {
     for (name, json, stream) in pairs() {
         // The rule itself: the stream's result line is the json envelope, byte for byte.
         assert_eq!(
-            result_output(stream.as_bytes()),
-            result_output(json.as_bytes()),
+            result_output(stream.as_bytes(), StreamJson),
+            result_output(json.as_bytes(), Json),
             "{name}"
         );
-        assert_eq!(result_output(json.as_bytes()), json.as_bytes(), "{name}");
         assert_eq!(
-            native_output(stream.as_bytes()).as_ref(),
+            result_output(json.as_bytes(), Json),
             json.as_bytes(),
             "{name}"
         );
+        let native = native_output(stream.as_bytes(), StreamJson);
+        assert_eq!(native.bytes.as_ref(), json.as_bytes(), "{name}");
+        assert!(native.envelope, "{name}");
         // The adapter reads that line and nothing else under either shape.
         let mut seen = Vec::new();
         for printed in [&json, &stream] {
@@ -166,15 +169,64 @@ fn claude_stream_result_envelope_is_the_json_envelope() {
         "{}\nError: something native went wrong\n",
         json!({"type":"system","subtype":"init","session_id":"s"})
     );
-    assert_eq!(
-        native_output(lines.as_bytes()).as_ref(),
-        b"Error: something native went wrong\n"
-    );
-    assert_eq!(result_output(lines.as_bytes()), b"");
-    assert_eq!(native_output(b"plain text").as_ref(), b"plain text");
-    assert_eq!(result_output(b"plain text"), b"");
+    for shape in [Json, StreamJson] {
+        assert_eq!(
+            native_output(lines.as_bytes(), shape).bytes.as_ref(),
+            b"Error: something native went wrong\n"
+        );
+        assert_eq!(result_output(lines.as_bytes(), shape), b"");
+        assert_eq!(
+            native_output(b"plain text", shape).bytes.as_ref(),
+            b"plain text"
+        );
+        assert_eq!(result_output(b"plain text", shape), b"");
+    }
+    // A typeless envelope is the `json` invocation's alone: under `stream-json` it is native
+    // text, never an envelope and never kept.
     let typeless = b"{\"is_error\":false,\"result\":\"OK\"}\n";
-    assert_eq!(result_output(typeless), typeless);
+    assert_eq!(result_output(typeless, Json), typeless);
+    assert!(native_output(typeless, Json).envelope);
+    assert_eq!(result_output(typeless, StreamJson), b"");
+    assert!(!native_output(typeless, StreamJson).envelope);
+}
+
+/// Design §7.3: under `stream-json` (`spans`, `content`) only a framed `result` line reaches the
+/// Store or the adapter's envelope parsing. A stdout that is one typeless JSON object with no
+/// `result` line is the `json` invocation's envelope (`off`, `metrics`) and a reply there; under
+/// `stream-json` it is native text: no reply, no usage read from it, and the Store keeps
+/// stderr alone.
+#[test]
+fn claude_stream_requires_a_result_line() {
+    let typeless = json!({"is_error":false,"result":"OK",
+        "usage":{"input_tokens":8,"output_tokens":10,"cache_creation_input_tokens":0},
+        "modelUsage":{MODEL:{"inputTokens":8,"outputTokens":10}}})
+    .to_string()
+        + "\n";
+    for level in LEVELS {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = Cas::open(dir.path().join("cas")).unwrap();
+        let program = fake(dir.path(), &typeless, None, "diagnostic\n");
+        let (returned, _) = at_level(level, &dir.path().join("telemetry"), || {
+            invoke(&program, &cas, dir.path())
+        });
+        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+        let raw: Vec<Vec<u8>> = returned
+            .raw_artifact_ids
+            .iter()
+            .map(|id| cas.get(id).unwrap())
+            .collect();
+        if matches!(level, Level::Spans | Level::Content) {
+            assert!(args.contains("stream-json"), "{level:?}: {args}");
+            let message = returned.message.as_ref().unwrap_err();
+            assert!(message.starts_with("Claude Worker"), "{level:?}: {message}");
+            assert_eq!(returned.usage, None, "{level:?}");
+            assert_eq!(raw, [b"diagnostic\n"], "{level:?}");
+        } else {
+            assert!(args.contains("--output-format json"), "{level:?}: {args}");
+            assert_eq!(returned.message.as_deref(), Ok(&b"OK"[..]), "{level:?}");
+            assert_eq!(raw, [typeless.as_bytes(), b"diagnostic\n"], "{level:?}");
+        }
+    }
 }
 
 /// The raw-output rule (design §7.3) at every level: native text outside the message framing —

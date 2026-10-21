@@ -91,6 +91,12 @@ fn golden(name: &str, actual: &str) {
 /// arriving 5 ms after the last: the command, run, node and Attempt spans as the kernel records
 /// them, the `af.harness` span with what the observer counted, and the tap's records between.
 fn record_golden(root: &Path, lines: &[String]) {
+    record_stream(root, lines, true);
+}
+
+/// [`record_golden`]; with `end` false the harness is still streaming: nothing ends, the
+/// segment stays live with every record flushed, and the writer and the tap are returned open.
+fn record_stream(root: &Path, lines: &[String], end: bool) -> Option<(Writer, Tap)> {
     let clock = Arc::new(AtomicU64::new(1_700_000_300_000 * 1_000_000));
     let mut options = WriterOptions::new(root, Level::Spans);
     options.argv = vec!["af".into(), "task".into(), "run".into(), "golden".into()];
@@ -186,6 +192,10 @@ fn record_golden(root: &Path, lines: &[String]) {
         );
         offset += bytes.len() as u64;
     }
+    if !end {
+        writer.flush();
+        return Some((writer, tap));
+    }
     tap.finish(
         &writer,
         &Release {
@@ -210,6 +220,7 @@ fn record_golden(root: &Path, lines: &[String]) {
     writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
     writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
     writer.finish(SealExit::Ok).unwrap();
+    None
 }
 
 fn af(root: &Path, args: &[&str]) -> std::process::Output {
@@ -324,6 +335,60 @@ fn telemetry_turns_and_tools_match_their_goldens() {
     let unknown = af(&root, &["telemetry", "turns", RUN, "--attempt", "nope"]);
     assert_eq!(unknown.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&unknown.stderr).contains("no Attempt nope"));
+}
+
+/// Design §7.3: `af telemetry turns` on a live segment shows a turn ended as soon as its
+/// assistant message was processed, before any later `user` or `result` line; a message the
+/// harness printed as two lines (one per content block) is one turn, its row adding the second
+/// line's blocks and tool calls and taking its report, and its tool call hangs below it.
+#[test]
+fn telemetry_turns_show_a_turn_ended_by_its_message() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("telemetry");
+    let lines: Vec<String> = [
+        json!({"type":"system","subtype":"init","session_id":"session-turn-ends"}),
+        json!({"type":"assistant","message":{"id":"msg_01TurnEnds","model":"claude-fixture-1",
+               "usage":{"input_tokens":12,"output_tokens":1},
+               "content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"reading"}]}}),
+        json!({"type":"assistant","message":{"id":"msg_01TurnEnds","model":"claude-fixture-1",
+               "stop_reason":"tool_use","usage":{"input_tokens":12,"output_tokens":34},
+               "content":[{"type":"tool_use","id":"toolu_01TurnEnds","name":"Read",
+                           "input":{"file_path":"src/lib.rs"}}]}}),
+    ]
+    .iter()
+    .map(Value::to_string)
+    .collect();
+    let (writer, _tap) = record_stream(&root, &lines, false).unwrap();
+    let turns = json_of(&af(&root, &["telemetry", "turns", RUN, "--json"]));
+    crate::schemas::valid(
+        &crate::schemas::validator("telemetry-turns-v1.json"),
+        &turns,
+    );
+    let rows = turns["turns"].as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one turn for the message's two lines: {turns}"
+    );
+    let row = &rows[0];
+    assert_eq!(row["status"], "ok", "ended before any later line: {row}");
+    assert_eq!(row["outcome"], "succeeded");
+    assert_eq!(
+        row["duration_us"], 5_000,
+        "init to the message's first line"
+    );
+    assert_eq!(row["harness"]["analysis"], "open", "the process still runs");
+    assert_eq!(row["thinking_blocks"], 1);
+    assert_eq!(row["text_blocks"], 1);
+    assert_eq!(row["tool_calls"], 1);
+    assert_eq!(row["usage"]["output_tokens"], "34");
+    assert_eq!(row["finish_reasons"], json!(["tool_use"]));
+    let tools = json_of(&af(&root, &["telemetry", "tools", RUN, "--json"]));
+    let calls = tools["tools"].as_array().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["turn_span_id"], row["span_id"]);
+    assert_eq!(calls[0]["status"], "open");
+    drop(writer);
 }
 
 // ------------------------------------------------------------------------------------------

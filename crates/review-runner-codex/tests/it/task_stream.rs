@@ -43,14 +43,27 @@ fn session(message: &str, command_output: &str) -> String {
 /// A fake `codex` printing `stdout` and `stderr` and writing `reply` to its `-o` file, recording
 /// its arguments.
 fn fake(dir: &Path, stdout: &str, stderr: &str, reply: &str) -> std::path::PathBuf {
+    std::fs::write(dir.join("reply"), reply).unwrap();
+    let step = format!("cat '{}/reply' >\"$out\"", dir.display());
+    fake_ending(dir, stdout, stderr, &step, 0)
+}
+
+/// [`fake`] whose `-o` file is written by the shell `step` (`$out` names it) and which exits
+/// with `exit` after printing its streams.
+fn fake_ending(
+    dir: &Path,
+    stdout: &str,
+    stderr: &str,
+    step: &str,
+    exit: i32,
+) -> std::path::PathBuf {
     std::fs::write(dir.join("out"), stdout).unwrap();
     std::fs::write(dir.join("err"), stderr).unwrap();
-    std::fs::write(dir.join("reply"), reply).unwrap();
     let program = dir.join("codex");
     std::fs::write(
         &program,
         format!(
-            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$*\" >>'{dir}/args'\nout=; prev=; for arg in \"$@\"; do [ \"$prev\" = -o ] && out=$arg; prev=$arg; done\ncat '{dir}/reply' >\"$out\"\ncat '{dir}/out'\ncat '{dir}/err' >&2\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$*\" >>'{dir}/args'\nout=; prev=; for arg in \"$@\"; do [ \"$prev\" = -o ] && out=$arg; prev=$arg; done\n{step}\ncat '{dir}/out'\ncat '{dir}/err' >&2\nexit {exit}\n",
             dir = dir.display()
         ),
     )
@@ -282,6 +295,66 @@ fn telemetry_release_decision_reads_the_final_message() {
     }
     for outcome in &seen[1..] {
         assert_eq!(outcome, &seen[0]);
+    }
+}
+
+/// Design §7.3: the release decision judges the `-o` final-message file of every observed
+/// process, whether or not it is a reply. A failed process whose device code is a stream
+/// identifier (the thread id) and whose challenge URL is only in that file, and a clean exit
+/// whose file is too large, not a regular file or a link the read refuses, so it cannot be
+/// judged whole, withhold the process's pending
+/// content: `af.harness.ids` never publishes the code, nothing of it is in the segment, no blob
+/// is kept, and the outcome, its classification and its charge are as at `off`.
+#[test]
+fn telemetry_release_decision_judges_every_final_message() {
+    let stdout = session("done", "pub fn example() {}\n")
+        .replace("0199a213-81c0-7800-8aa1-bbab2a035a53", "WXYZ-9876");
+    let oversized = format!(
+        "head -c {} /dev/zero | tr '\\0' x >\"$out\"",
+        review_runner::task::MAX_WORKER_BYTES + 1
+    );
+    for (name, step, exit) in [
+        (
+            "failed",
+            "printf 'Open https://auth.openai.com/codex/device' >\"$out\"",
+            1,
+        ),
+        ("oversized", oversized.as_str(), 0),
+        // Unreadable whoever runs the test: a FIFO, and a symbolic link the read never follows.
+        ("fifo", "rm -f \"$out\"; mkfifo \"$out\"", 0),
+        ("symlink", "rm -f \"$out\"; ln -s \"$0\" \"$out\"", 0),
+    ] {
+        let mut seen = Vec::new();
+        for level in [Level::Off, Level::Spans, Level::Content] {
+            let dir = tempfile::tempdir().unwrap();
+            let cas = Cas::open(dir.path().join("cas")).unwrap();
+            let program = fake_ending(dir.path(), &stdout, "", step, exit);
+            let root = dir.path().join("telemetry");
+            let (returned, recorded) =
+                at_level(level, &root, || invoke(&program, &cas, dir.path()));
+            assert!(returned.message.is_err(), "{name} {level:?}");
+            seen.push(outcome(&returned, &cas));
+            let Some(recorded) = recorded else {
+                continue;
+            };
+            let harness = &recorded.ends("af.harness")[0];
+            assert_eq!(harness["af.stream.withheld"], true, "{name} {level:?}");
+            let ids = &recorded.events("af.harness.ids")[0];
+            assert_eq!(ids["af.stream.withheld"], true, "{name} {level:?}");
+            assert!(ids.get("af.harness.ids").is_none(), "{name} {level:?}");
+            for words in ["WXYZ", "auth.openai.com", "codex/device"] {
+                assert!(!recorded.text.contains(words), "{name} {level:?} {words}");
+            }
+            let blobs = review_telemetry::layout::Layout::new(&root).blobs();
+            assert!(
+                std::fs::read_dir(&blobs).map_or(true, |mut entries| entries.next().is_none()),
+                "{name} {level:?}: a blob in {}",
+                blobs.display()
+            );
+        }
+        for outcome in &seen[1..] {
+            assert_eq!(outcome, &seen[0], "{name}");
+        }
     }
 }
 

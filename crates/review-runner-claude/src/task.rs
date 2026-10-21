@@ -256,12 +256,13 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 });
             }
         };
+        let shape = OutputShape::now();
         let command = task_command(
             &self.program,
             &self.model_flags,
             access,
             output_schema.as_deref(),
-            OutputShape::now(),
+            shape,
         );
         // Native 2.1.272 uses the first two guards to latch automatic title generation before
         // its auxiliary inference. They preserve OAuth/auth grants, unlike --bare. The third
@@ -306,17 +307,24 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 // The raw-output rule: of stdout the Store keeps the result line alone (or the
                 // `json` document); Telemetry has the rest. Taken from the complete capture,
                 // before the adapter reads it.
-                let kept = result_output(stdout);
+                let kept = result_output(stdout, shape);
                 // What the adapter reads of the complete in-memory capture: the result line,
-                // else the native text around the messages, whichever shape printed it.
-                let mut read = match native_output(stdout) {
+                // else the native text around the messages, and whether the invocation's shape
+                // lets it be the envelope.
+                let native = native_output(stdout, shape);
+                let framed_result = native.envelope;
+                let mut read = match native.bytes {
                     std::borrow::Cow::Owned(read) => read,
                     std::borrow::Cow::Borrowed(_) => std::mem::take(stdout),
                 };
                 'classify: {
                     // Keep the original in-memory usage envelope, but never capture an auth
-                    // challenge or token-bearing error as ordinary Task evidence.
-                    parsed = serde_json::from_slice::<serde_json::Value>(&read).ok();
+                    // challenge or token-bearing error as ordinary Task evidence. Under
+                    // `stream-json` only a `result` line is an envelope: native text, a typeless
+                    // JSON object among it, never is.
+                    parsed = framed_result
+                        .then(|| serde_json::from_slice::<serde_json::Value>(&read).ok())
+                        .flatten();
                     enveloped = parsed
                         .as_ref()
                         .is_some_and(|value| is_envelope(value, output_schema.is_some()));
@@ -445,20 +453,21 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
     }
 }
 
-/// The raw-output rule for Claude (design §7.3): of an Attempt's complete stdout, what the Store
-/// keeps. Under `--output-format stream-json` every line is one message: the last `result` line,
-/// the envelope `--output-format json` prints, is kept alone, ending in its newline. A stdout
-/// that frames no message is kept only when it is one JSON object (a `json` envelope without a
-/// `type`), the document accounting reads. Nothing else is kept: no other message, and no
-/// native text around or instead of the messages, which the adapter classifies from the
-/// in-memory capture ([`native_output`]). So the same final result gives the same bytes under
-/// both shapes and at every level.
-pub fn result_output(stdout: &[u8]) -> Vec<u8> {
+/// The raw-output rule for Claude (design §7.3): of an Attempt's complete stdout under `shape`,
+/// what the Store keeps. Under `--output-format stream-json` every line is one message: the last
+/// `result` line, the envelope `--output-format json` prints, is kept alone, ending in its
+/// newline, and without one nothing is. Under `json` a stdout that frames no message is kept
+/// too when it is one JSON object (an envelope without a `type`), the document accounting
+/// reads. Nothing else is kept: no other message, and no native text around or instead of the
+/// messages, which the adapter classifies from the in-memory capture ([`native_output`]). So the
+/// same final result gives the same bytes under both shapes and at every level.
+pub fn result_output(stdout: &[u8], shape: OutputShape) -> Vec<u8> {
     let (framed, result) = result_line(stdout);
     if let Some(kept) = result {
         return kept;
     }
-    if !framed
+    if shape == OutputShape::Json
+        && !framed
         && serde_json::from_slice::<serde_json::Value>(stdout)
             .is_ok_and(|document| document.is_object())
     {
@@ -490,28 +499,43 @@ fn result_line(stdout: &[u8]) -> (bool, Option<Vec<u8>>) {
     (framed, result)
 }
 
+/// What the adapter reads of an Attempt's complete in-memory stdout ([`native_output`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeOutput<'a> {
+    /// The bytes its envelope parsing, accounting, refusal classification and model-identity
+    /// check read.
+    pub bytes: std::borrow::Cow<'a, [u8]>,
+    /// Whether `bytes` may be parsed as the result envelope: the last `result` line under either
+    /// shape, and under `json` whatever stdout holds. Under `stream-json` with no `result` line
+    /// it is native text only, whatever it parses as.
+    pub envelope: bool,
+}
+
 /// What the adapter's envelope parsing, accounting, refusal classification and model-identity
-/// check read of an Attempt's complete in-memory stdout: the last `result` line when the stdout
-/// frames messages and has one; with no `result` line, the lines that are no message (native
-/// text a failing CLI wrote), as they were; a stdout that frames no message at all — a `json`
-/// envelope without a `type`, plain text, a document over several lines — whole. The Store
+/// check read of an Attempt's complete in-memory stdout under `shape`: the last `result` line
+/// when the stdout frames messages and has one; with no `result` line, the lines that are no
+/// message (native text a failing CLI wrote), as they were; a stdout that frames no message at
+/// all — a `json` envelope without a `type`, plain text, a document over several lines —
+/// whole. Only the `json` invocation's stdout is an envelope without a `result` line. The Store
 /// keeps less ([`result_output`]).
-pub fn native_output(stdout: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+pub fn native_output(stdout: &[u8], shape: OutputShape) -> NativeOutput<'_> {
     use review_runner::stream::{lines, message_type};
     let (framed, result) = result_line(stdout);
-    if !framed {
-        return std::borrow::Cow::Borrowed(stdout);
-    }
-    if let Some(line) = result {
-        return std::borrow::Cow::Owned(line);
-    }
-    std::borrow::Cow::Owned(
-        lines(stdout)
-            .filter(|line| message_type(line).is_none())
-            .flatten()
-            .copied()
-            .collect(),
-    )
+    let envelope = shape == OutputShape::Json || result.is_some();
+    let bytes = if !framed {
+        std::borrow::Cow::Borrowed(stdout)
+    } else if let Some(line) = result {
+        std::borrow::Cow::Owned(line)
+    } else {
+        std::borrow::Cow::Owned(
+            lines(stdout)
+                .filter(|line| message_type(line).is_none())
+                .flatten()
+                .copied()
+                .collect(),
+        )
+    };
+    NativeOutput { bytes, envelope }
 }
 
 /// Whether a result reports that the bound model's safety classifier flagged the request: a
