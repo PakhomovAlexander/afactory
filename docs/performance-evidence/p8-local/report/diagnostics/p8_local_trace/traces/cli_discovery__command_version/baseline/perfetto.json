@@ -1,0 +1,4 @@
+{"displayTimeUnit":"ns","metadata":{"schema":"af.perf-trace/1","dropped":0,"open":0,"capacity":65536,"epoch_unix_ns":"1792563421982585000"},"traceEvents":[
+{"name":"process_name","ph":"M","pid":84785,"tid":0,"args":{"name":"cli_discovery__command_version baseline"}},
+{"name":"cli_startup","cat":"af","ph":"X","ts":60.041,"dur":1269.167,"pid":84785,"tid":1,"args":{"id":1,"parent":null}}
+]}

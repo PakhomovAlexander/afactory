@@ -139,7 +139,7 @@ sys.exit(p.returncode)
         let mut command = Command::new("/usr/bin/python3");
         command
             .arg(self.root.path().join("host.py"))
-            .arg(env!("CARGO_BIN_EXE_af"))
+            .arg(crate::common::af_binary())
             .args([
                 "provider",
                 "auth",
@@ -709,7 +709,7 @@ sys.exit(p.returncode)
         let output = Command::new("/usr/bin/python3")
             .args(["-c", &script])
             .arg(fixture.root.path())
-            .arg(env!("CARGO_BIN_EXE_af"))
+            .arg(crate::common::af_binary())
             .env_clear()
             .env("HOME", fixture.root.path())
             .env("XDG_CONFIG_HOME", fixture.root.path().join("config"))

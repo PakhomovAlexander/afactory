@@ -1,0 +1,1294 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-suite:3",
+  "title": "af.perf-suite/3",
+  "description": "The reviewed performance registry fixtures/performance/suite.toml, as parsed TOML (ADR-0162). Workload, policy, recipe and environment stay separate; every reference, parameter domain and resource bound is also checked by the reader.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-suite/3"
+    },
+    "suite_id": {
+      "$ref": "#/$defs/id"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "product_constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "task_lease_ms": {
+          "const": 15000
+        },
+        "artifact_envelope_cap_bytes": {
+          "const": 8388608
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "task_lease_ms",
+        "artifact_envelope_cap_bytes",
+        "description"
+      ]
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "request": {
+          "const": "af.perf-probe-request/2"
+        },
+        "message": {
+          "const": "af.perf-probe/1"
+        },
+        "golden": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "sentinel_contract": {
+          "$ref": "#/$defs/id"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "supported",
+            "not_yet_executable"
+          ]
+        },
+        "pending": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "source",
+        "request",
+        "message",
+        "golden",
+        "sentinel_contract",
+        "state",
+        "pending",
+        "description"
+      ]
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {
+          "const": "paired_median_tolerance_v2"
+        },
+        "family_alpha": {
+          "$ref": "#/$defs/decimal"
+        },
+        "advisory_alpha": {
+          "$ref": "#/$defs/decimal"
+        }
+      },
+      "required": [
+        "algorithm",
+        "family_alpha",
+        "advisory_alpha"
+      ]
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rule": {
+          "const": "sentinel_start_end_v1"
+        },
+        "workload": {
+          "$ref": "#/$defs/id"
+        },
+        "metric": {
+          "$ref": "#/$defs/id"
+        },
+        "batch_repetitions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "start_pairs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "end_pairs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "max_median_shift": {
+          "$ref": "#/$defs/decimal"
+        },
+        "max_mad_ratio": {
+          "$ref": "#/$defs/decimal"
+        },
+        "denominator_floor": {
+          "$ref": "#/$defs/decimal"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "provisional",
+            "calibrated"
+          ]
+        },
+        "oracle": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "golden_canonical_digest",
+                "golden_cas_digest",
+                "golden_source_manifest",
+                "golden_semantic_projection",
+                "golden_authority_outcome",
+                "cli_version_and_usage_tokens",
+                "cli_task_outcome",
+                "cli_state_fields",
+                "persistence_round_trip"
+              ]
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "pending_native_oracle",
+                "pending_cli_fixture",
+                "available"
+              ]
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "kind",
+            "state",
+            "description"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "rule",
+        "workload",
+        "metric",
+        "batch_repetitions",
+        "start_pairs",
+        "end_pairs",
+        "max_median_shift",
+        "max_mad_ratio",
+        "denominator_floor",
+        "state",
+        "oracle",
+        "description"
+      ]
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sample_log_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "shard_bundle_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "build_artifact_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967296
+        },
+        "worktree_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 85899345920
+        },
+        "free_disk_floor_bytes": {
+          "type": "integer",
+          "minimum": 10737418240,
+          "maximum": 4611686018427387904
+        },
+        "build_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 45
+        }
+      },
+      "required": [
+        "sample_log_bytes",
+        "shard_bundle_bytes",
+        "build_artifact_bytes",
+        "worktree_bytes",
+        "free_disk_floor_bytes",
+        "build_minutes"
+      ]
+    },
+    "metrics": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "unit": {
+              "$ref": "#/$defs/unit"
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "lower_is_better",
+                "higher_is_better"
+              ]
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "unit",
+            "direction",
+            "description"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "policies": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "metric": {
+              "$ref": "#/$defs/id"
+            },
+            "relative_tolerance": {
+              "$ref": "#/$defs/decimal"
+            },
+            "absolute_tolerance": {
+              "$ref": "#/$defs/decimal"
+            },
+            "calibration": {
+              "type": "string",
+              "enum": [
+                "initial",
+                "calibrated"
+              ]
+            },
+            "calibration_cohort": {
+              "$ref": "#/$defs/id"
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "metric",
+            "relative_tolerance",
+            "absolute_tolerance",
+            "calibration",
+            "description"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "budgets": {
+      "type": "object",
+      "minProperties": 0,
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "metric": {
+              "$ref": "#/$defs/id"
+            },
+            "limit": {
+              "$ref": "#/$defs/decimal"
+            },
+            "unit": {
+              "$ref": "#/$defs/unit"
+            },
+            "comparison": {
+              "const": "every_sample_strictly_below"
+            },
+            "minimum_samples": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "pending_calibration",
+                "enabled"
+              ]
+            },
+            "tiers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "quick",
+                  "nightly",
+                  "release"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true
+            },
+            "environments": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "minItems": 1,
+              "maxItems": 16,
+              "uniqueItems": true
+            },
+            "recipes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "minItems": 1,
+              "maxItems": 16,
+              "uniqueItems": true
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "metric",
+            "limit",
+            "unit",
+            "comparison",
+            "minimum_samples",
+            "state",
+            "tiers",
+            "environments",
+            "recipes",
+            "description"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "fixtures": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "typed_envelope",
+                "canonical_small",
+                "event_log",
+                "file_tree",
+                "cli_state",
+                "cli_task"
+              ]
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "serialized_envelope_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8388608
+            },
+            "size_rule": {
+              "type": "string",
+              "enum": [
+                "exact",
+                "approximate"
+              ]
+            },
+            "events": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000000
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000000
+            },
+            "file_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1048576
+            },
+            "golden": {
+              "type": "string",
+              "enum": [
+                "pending_native_oracle",
+                "available"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "description",
+            "golden"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "recipes": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "os": {
+              "type": "string",
+              "enum": [
+                "linux",
+                "macos"
+              ]
+            },
+            "target": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9_]+(?:-[a-z0-9_]+){2,3}$"
+            },
+            "toolchain": {
+              "type": "string",
+              "maxLength": 32,
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            },
+            "profile": {
+              "const": "release"
+            },
+            "builder": {
+              "type": "string",
+              "enum": [
+                "cargo",
+                "cargo_zigbuild"
+              ]
+            },
+            "cargo_zigbuild": {
+              "type": "string",
+              "maxLength": 32,
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            },
+            "zig": {
+              "type": "string",
+              "maxLength": 32,
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            },
+            "linker": {
+              "type": "string",
+              "enum": [
+                "system_cc",
+                "zig_cc",
+                "apple_ld"
+              ]
+            },
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^[a-z0-9_-]{1,64}$"
+              },
+              "minItems": 0,
+              "maxItems": 32,
+              "uniqueItems": true
+            },
+            "rustflags": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^[A-Za-z0-9=_,.:+-]{1,128}$"
+              },
+              "minItems": 0,
+              "maxItems": 32
+            },
+            "instrumented": {
+              "type": "boolean"
+            },
+            "debug_symbols": {
+              "type": "boolean"
+            },
+            "frame_pointers": {
+              "type": "boolean"
+            },
+            "container_image": {
+              "type": "string",
+              "maxLength": 330,
+              "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "supported",
+                "not_yet_executable"
+              ]
+            },
+            "pending": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "required": [
+            "description",
+            "os",
+            "target",
+            "toolchain",
+            "profile",
+            "builder",
+            "linker",
+            "features",
+            "rustflags",
+            "instrumented",
+            "debug_symbols",
+            "frame_pointers",
+            "state",
+            "pending"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "environments": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "os": {
+              "type": "string",
+              "enum": [
+                "linux",
+                "macos"
+              ]
+            },
+            "arch": {
+              "type": "string",
+              "enum": [
+                "x86_64",
+                "aarch64"
+              ]
+            },
+            "libc": {
+              "type": "string",
+              "enum": [
+                "gnu",
+                "musl",
+                "darwin"
+              ]
+            },
+            "runner": {
+              "type": "string",
+              "enum": [
+                "github_hosted",
+                "trusted_local",
+                "dedicated"
+              ]
+            },
+            "runner_label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "containment": {
+              "type": "string",
+              "enum": [
+                "linux_container",
+                "trusted_local_process_group"
+              ]
+            },
+            "logical_cpus": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 256
+            },
+            "prefer_separate_physical_cores": {
+              "type": "boolean"
+            },
+            "memory_limit_bytes": {
+              "type": "integer",
+              "minimum": 67108864,
+              "maximum": 1099511627776
+            },
+            "pid_limit": {
+              "type": "integer",
+              "minimum": 16,
+              "maximum": 65536
+            },
+            "swap": {
+              "type": "string",
+              "enum": [
+                "disabled",
+                "host_default"
+              ]
+            },
+            "network": {
+              "type": "string",
+              "enum": [
+                "disabled",
+                "host_default"
+              ]
+            },
+            "cpu_quota": {
+              "type": "string",
+              "enum": [
+                "none",
+                "declared"
+              ]
+            },
+            "scratch_limit_bytes": {
+              "type": "integer",
+              "minimum": 67108864,
+              "maximum": 68719476736
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "supported",
+                "not_yet_executable"
+              ]
+            },
+            "pending": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "required": [
+            "description",
+            "os",
+            "arch",
+            "libc",
+            "runner",
+            "runner_label",
+            "containment",
+            "swap",
+            "network",
+            "cpu_quota",
+            "scratch_limit_bytes",
+            "state",
+            "pending"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "tiers": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 3,
+      "patternProperties": {
+        "^(?:quick|nightly|release)$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "profiles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "environment": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "recipe": {
+                    "$ref": "#/$defs/id"
+                  }
+                },
+                "required": [
+                  "environment",
+                  "recipe"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "shards": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16
+            },
+            "concurrent_jobs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "shard_sampling_minutes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 90
+            },
+            "run_total_minutes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 180
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "profiles",
+            "shards",
+            "concurrent_jobs",
+            "shard_sampling_minutes",
+            "run_total_minutes",
+            "description"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "cases": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "family": {
+              "$ref": "#/$defs/id"
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "process",
+                "library"
+              ]
+            },
+            "requires_linux_containment": {
+              "type": "boolean"
+            },
+            "timing": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "boundary": {
+                      "const": "child_process_lifetime"
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 4096
+                    }
+                  },
+                  "required": [
+                    "boundary",
+                    "description"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "boundary": {
+                      "const": "library_region"
+                    },
+                    "region": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "setup_excluded": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "minItems": 0,
+                      "maxItems": 16
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 4096
+                    }
+                  },
+                  "required": [
+                    "boundary",
+                    "region",
+                    "setup_excluded",
+                    "description"
+                  ]
+                }
+              ]
+            },
+            "cache": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "process": {
+                  "type": "string",
+                  "enum": [
+                    "fresh"
+                  ]
+                },
+                "store": {
+                  "type": "string",
+                  "enum": [
+                    "fresh",
+                    "not_applicable"
+                  ]
+                },
+                "projection": {
+                  "type": "string",
+                  "enum": [
+                    "application_cold",
+                    "prewarmed",
+                    "by_parameter",
+                    "not_applicable"
+                  ]
+                },
+                "os_page_cache": {
+                  "type": "string",
+                  "enum": [
+                    "warm"
+                  ]
+                }
+              },
+              "required": [
+                "process",
+                "store",
+                "projection",
+                "os_page_cache"
+              ]
+            },
+            "oracle": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "golden_canonical_digest",
+                    "golden_cas_digest",
+                    "golden_source_manifest",
+                    "golden_semantic_projection",
+                    "golden_authority_outcome",
+                    "cli_version_and_usage_tokens",
+                    "cli_task_outcome",
+                    "cli_state_fields",
+                    "persistence_round_trip"
+                  ]
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "pending_native_oracle",
+                    "pending_cli_fixture",
+                    "available"
+                  ]
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "required": [
+                "kind",
+                "state",
+                "description"
+              ]
+            },
+            "execution": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "supported",
+                    "not_yet_executable"
+                  ]
+                },
+                "pending": {
+                  "type": "string",
+                  "maxLength": 512
+                }
+              },
+              "required": [
+                "state",
+                "pending"
+              ]
+            },
+            "parameters": {
+              "type": "object",
+              "minProperties": 0,
+              "maxProperties": 4,
+              "patternProperties": {
+                "^[a-z][a-z0-9_]{0,63}$": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "enum"
+                        },
+                        "values": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/id"
+                          },
+                          "minItems": 1,
+                          "maxItems": 32,
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "values"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "fixture"
+                        },
+                        "values": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/id"
+                          },
+                          "minItems": 1,
+                          "maxItems": 32,
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "values"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "integer"
+                        },
+                        "values": {
+                          "type": "array",
+                          "items": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1000000000000
+                          },
+                          "minItems": 1,
+                          "maxItems": 32,
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "values"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "tier_parameters": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 3,
+              "patternProperties": {
+                "^(?:quick|nightly|release)$": {
+                  "type": "object",
+                  "minProperties": 1,
+                  "maxProperties": 4,
+                  "patternProperties": {
+                    "^[a-z][a-z0-9_]{0,63}$": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/id"
+                          },
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1000000000000
+                          }
+                        ]
+                      },
+                      "minItems": 1,
+                      "maxItems": 32,
+                      "uniqueItems": true
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "tiers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "quick",
+                  "nightly",
+                  "release"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true
+            },
+            "criticality": {
+              "type": "string",
+              "enum": [
+                "critical",
+                "advisory"
+              ]
+            },
+            "primary_metric": {
+              "$ref": "#/$defs/id"
+            },
+            "optional_metrics": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "minItems": 0,
+              "maxItems": 16,
+              "uniqueItems": true
+            },
+            "policy": {
+              "$ref": "#/$defs/id"
+            },
+            "pairs": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 3,
+              "patternProperties": {
+                "^(?:quick|nightly|release)$": {
+                  "type": "integer",
+                  "minimum": 12,
+                  "maximum": 200
+                }
+              },
+              "additionalProperties": false
+            },
+            "warmup_pairs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10
+            },
+            "sample_timeout_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 120
+            },
+            "budgets": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "minItems": 0,
+              "maxItems": 8,
+              "uniqueItems": true
+            },
+            "af_environment": {
+              "type": "object",
+              "minProperties": 0,
+              "maxProperties": 16,
+              "patternProperties": {
+                "^AF_[A-Z0-9_]{1,62}$": {
+                  "type": "string",
+                  "maxLength": 256
+                }
+              },
+              "additionalProperties": false
+            },
+            "probe": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "contract_id": {
+                  "$ref": "#/$defs/id"
+                },
+                "repetitions": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1
+                },
+                "seed": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "case_id": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "contract_id": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "parameters": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/id"
+                      },
+                      "minItems": 1,
+                      "maxItems": 4,
+                      "uniqueItems": true
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 4096
+                    }
+                  },
+                  "required": [
+                    "case_id",
+                    "contract_id",
+                    "parameters",
+                    "description"
+                  ]
+                }
+              },
+              "required": [
+                "contract_id",
+                "repetitions"
+              ]
+            }
+          },
+          "required": [
+            "family",
+            "description",
+            "kind",
+            "requires_linux_containment",
+            "timing",
+            "cache",
+            "oracle",
+            "execution",
+            "tiers",
+            "criticality",
+            "primary_metric",
+            "optional_metrics",
+            "policy",
+            "pairs",
+            "warmup_pairs",
+            "sample_timeout_seconds",
+            "budgets"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema",
+    "suite_id",
+    "description",
+    "product_constraints",
+    "probe",
+    "verdict",
+    "health",
+    "limits",
+    "metrics",
+    "policies",
+    "budgets",
+    "fixtures",
+    "recipes",
+    "environments",
+    "tiers",
+    "cases"
+  ],
+  "$defs": {
+    "decimal": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]*[1-9])?$",
+      "description": "Canonical nonnegative decimal, at most 38 significant digits."
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    },
+    "unit": {
+      "type": "string",
+      "enum": [
+        "ms",
+        "bytes",
+        "count",
+        "ratio"
+      ]
+    }
+  }
+}

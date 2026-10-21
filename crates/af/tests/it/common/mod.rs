@@ -7,7 +7,18 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const AF: &str = env!("CARGO_BIN_EXE_af");
+#[path = "../../../../review-process/tests/support/executables.rs"]
+mod executables;
+
+/// The binary under test as this test process starts it: its own link to the `af` cargo built
+/// for these tests, taken under the boundary every test builder and launcher of a workspace
+/// output shares (ADR-0174). `review-pipeline`'s tests build `af` again, and every cargo build
+/// replaces `CARGO_BIN_EXE_af` (on macOS it removes and copies the file), so starting that path
+/// itself could meet a missing file; the link is the same inode, whatever replaces the path.
+pub fn af_binary() -> &'static Path {
+    static HELD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    HELD.get_or_init(|| executables::held(Path::new(env!("CARGO_BIN_EXE_af"))))
+}
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const TARGET: &str = env!("AF_TARGET");
 
@@ -24,7 +35,7 @@ pub const TARGET: &str = env!("AF_TARGET");
 /// has a terminal, and that check would ask the real release source over the network. Tests of
 /// the check use [`Sandbox::command`], whose release source is a directory.
 pub fn af() -> Command {
-    let mut command = Command::new(AF);
+    let mut command = Command::new(af_binary());
     for (name, value) in private_home_env() {
         command.env(name, value);
     }
@@ -279,7 +290,7 @@ impl Sandbox {
 
     /// Adopt the real binary under test as an installed, receipted version.
     pub fn adopt_real_binary(&self) -> PathBuf {
-        self.adopt_real_binary_with(&sha256_hex(&std::fs::read(AF).unwrap()))
+        self.adopt_real_binary_with(&sha256_hex(&std::fs::read(af_binary()).unwrap()))
     }
 
     /// Adopt the real binary with a receipt claiming `digest` for its archive — what a real
@@ -287,7 +298,7 @@ impl Sandbox {
     pub fn adopt_real_binary_with(&self, digest: &str) -> PathBuf {
         let dir = self.versions().join(VERSION);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::copy(AF, dir.join("af")).unwrap();
+        std::fs::copy(af_binary(), dir.join("af")).unwrap();
         write(
             &dir.join("receipt.toml"),
             &format!(

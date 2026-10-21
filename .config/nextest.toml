@@ -41,6 +41,24 @@ path = "junit.xml"
 # - af_help_and_af_project_help_answer_in_under_50_ms: the fastest of ten launches of `af --help`
 #   and of `af project --help` must answer in under 50 ms (ADR-0158); about 5 ms run directly on
 #   a 14-core macOS host.
+# - authority_instances_at_both_package_sizes_pass_the_oracle: each setup write of the 8-MiB
+#   author package (propose, then admit) must finish inside its own production 15 s Task lease,
+#   and each replays and revalidates that envelope two or three times. On the loaded gate one
+#   admission took 14.5 s; with ten probe tests beside it on a 14-core macOS host (load about
+#   90) one write ran past its lease and was reported lease_expired, as the Store must. Run
+#   alone at load 60-80 from other processes it passed in 116 s (ADR-0182).
+# - heavy_review_cannot_erase_stale_claims and heavy_review_cannot_erase_rediscovered_claims:
+#   eleven Attempts, each a Python Worker given its 5 s Attempt wall from reservation, under one
+#   15 s heartbeat lease. On the loaded gate a reviewer was left 377 ms of its wall after its
+#   preparation and was killed, and a heartbeat renewal through its own connection, made while a
+#   Store operation held the shared one into the lease's last 4 s, cost the next write its
+#   sequence comparison; both are the kernel's correct answers to a real-time budget the
+#   fixture spent on scheduling. Alone the two pass together in 25 s (ADR-0182).
+# - guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness: the
+#   kernel compares the measured command's real elapsed_ms, building included, and requires a
+#   10% improvement of the candidate over a baseline slowed by 1.5 s inside the timed operation;
+#   each repetition's release build and sample share the host with whatever else runs. It passed
+#   in the predecessor's full gate in 452 s beside other tests (ADR-0185, ADR-0186).
 [[profile.ci.overrides]]
 filter = '''
 test(/::identity_rechecks_cancel_an_inflight_status_process$/)
@@ -49,6 +67,10 @@ test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/typed_reply_never_falls_back_and_failed_outputs_keep_accounting$/)
 | test(/light_cache_candidate_measures_real_latency_and_grounds_later_adoption_evidence$/)
 | test(/::af_help_and_af_project_help_answer_in_under_50_ms$/)
+| test(/authority_instances_at_both_package_sizes_pass_the_oracle$/)
+| test(/::heavy_review_cannot_erase_stale_claims$/)
+| test(/::heavy_review_cannot_erase_rediscovered_claims$/)
+| test(/::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness$/)
 '''
 threads-required = "num-test-threads"
 priority = 100

@@ -23,8 +23,22 @@ jobs:
   # macOS leg keeps the whole gate because clippy sees macOS-only code there and nowhere else.
   lint:
     name: lint
+    # The required `lint` check carries the performance laboratory's Python 3.9 and 3.11+ legs,
+    # which are not required checks themselves. It runs whatever their outcome and fails first
+    # unless every leg succeeded, so a failed, cancelled or skipped leg never leaves this check
+    # green or skipped (ADR-0162).
+    needs: performance-python
+    if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Require the performance lab on every supported Python
+        env:
+          PERFORMANCE_PYTHON: ${{ needs.performance-python.result }}
+        run: |
+          if [ "$PERFORMANCE_PYTHON" != "success" ]; then
+            echo "performance lab (python 3.9, 3.11, 3.13) finished '$PERFORMANCE_PYTHON', not 'success'" >&2
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
@@ -109,6 +123,36 @@ jobs:
             ${{ runner.temp }}/check-metrics.jsonl
             target/nextest/ci/junit.xml
           if-no-files-found: warn
+
+  # The performance laboratory supports Python 3.9 and 3.11+ (ADR-0162). On 3.11+ its tests
+  # also prove that the vendored Tomli and the standard library's tomllib read every registry
+  # identically; AF_PERF_REQUIRE_TOMLLIB turns that check from a skip into a failure there.
+  # The required `lint` job depends on this matrix and fails unless it succeeded.
+  performance-python:
+    name: performance lab (python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.9"
+            tomllib: ""
+          - python: "3.11"
+            tomllib: "1"
+          - python: "3.13"
+            tomllib: "1"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Laboratory tests and schema parity
+        env:
+          AF_CI_METRICS: ${{ runner.temp }}/performance-metrics.jsonl
+          AF_PERF_REQUIRE_TOMLLIB: ${{ matrix.tomllib }}
+        run: |
+          python scripts/ci-step.py performance-lab python scripts/test-performance.py
+          python scripts/ci-step.py performance-schemas python scripts/performance/schemas.py
 
   container-probes:
     runs-on: ubuntu-latest

@@ -228,3 +228,59 @@ fn macos_reflink_strips_unmanifested_extended_metadata() {
     );
     assert_eq!(std::fs::read(target).unwrap(), b"manifested data fork");
 }
+
+/// One process of [`many_processes_materialize_caches_without_spurious_metadata_failures`].
+#[cfg(target_os = "macos")]
+const MATERIALIZING_PROCESS: &str = "one_of_many_materializing_processes";
+
+#[test]
+#[cfg(target_os = "macos")]
+#[ignore = "one process of many_processes_materialize_caches_without_spurious_metadata_failures"]
+fn one_of_many_materializing_processes() {
+    let directory = tempfile::tempdir().unwrap();
+    let cache = directory.path().join("cargo-cache");
+    let crate_file = cache.join("registry/cache/index/example.crate");
+    std::fs::create_dir_all(crate_file.parent().unwrap()).unwrap();
+    std::fs::write(&crate_file, b"cached crate").unwrap();
+    let cas = review_store::Cas::open(directory.path().join("cas")).unwrap();
+    for round in 0..25 {
+        let runtime = directory.path().join(format!("runtime-{round}"));
+        std::fs::create_dir(&runtime).unwrap();
+        if let Err(error) =
+            review_sandbox::materialize_cache_into_runtime(&source(&cache), &runtime, &cas)
+        {
+            panic!("round {round}: {error}: {}", error.operator_detail());
+        }
+    }
+}
+
+/// The macOS metadata normalization once named its held descriptor `/dev/fd/<n>` for the ACL
+/// calls. With many processes materializing at once that devfs lookup intermittently failed
+/// with EBADF or ENOENT while the descriptor was open: a Task check test failed that way, and
+/// 10 of 1,200 concurrent runs reproduced it (ADR-0167). Every one of these processes must
+/// materialize every round.
+#[test]
+#[cfg(target_os = "macos")]
+fn many_processes_materialize_caches_without_spurious_metadata_failures() {
+    let test = std::env::current_exe().unwrap();
+    let processes: Vec<_> = (0..24)
+        .map(|_| {
+            std::process::Command::new(&test)
+                .args(["--exact", MATERIALIZING_PROCESS, "--ignored"])
+                .args(["--test-threads", "1"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for process in processes {
+        let output = process.wait_with_output().unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && text.contains("1 passed"),
+            "{text}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

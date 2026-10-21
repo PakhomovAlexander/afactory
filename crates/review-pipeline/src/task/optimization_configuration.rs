@@ -1167,8 +1167,15 @@ impl super::host::TaskEnvironment for OptimizationEnvironment {
                 .ok_or("Cargo cache selection has no administrator-approved cache mapping")?;
             let source =
                 resolver(review_sandbox::CacheKind::Cargo).map_err(|error| error.to_string())?;
-            let snapshot = review_sandbox::materialize_cache(&source, &sandbox, cas)
-                .map_err(|error| error.to_string())?;
+            let snapshot =
+                review_sandbox::materialize_cache(&source, &sandbox, cas).map_err(|error| {
+                    eprintln!(
+                        "cache diagnostic for Task node `{}`: {}",
+                        input.node,
+                        error.operator_detail()
+                    );
+                    error.to_string()
+                })?;
             let invalidation_id = review_store::content_id(&serde_json::json!([
                 "af/cargo-cache-invalidation/1",
                 source_snapshot_id,

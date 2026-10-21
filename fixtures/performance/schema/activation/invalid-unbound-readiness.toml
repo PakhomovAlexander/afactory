@@ -1,0 +1,16 @@
+schema = "af.perf-activation/3"
+authority_sha = "e803ddc28c003fa8e47738218060d5e403dfc2d3"
+policy_digest = "sha256:34722c0056f2b7da418ac6cfc7ded11bf957d835bcbf2ce7d2d0072fbb3d80a8"
+cohort_id = "synthetic_cohort"
+cohort_path = "fixtures/performance/cohort-synthetic.json"
+cohort_sha256 = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+calibration_path = "fixtures/performance/calibration-synthetic.json"
+calibration_sha256 = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+readiness_path = "fixtures/performance/readiness-synthetic.json"
+cohort_actions_run_ids = [101, 102, 103]
+environment_id = "linux_x86_64_gnu_hosted"
+recipe_id = "linux_gnu_native_release"
+calibrated_groups = ["hosted_x86"]
+
+[admission]
+kind = "calibrated"

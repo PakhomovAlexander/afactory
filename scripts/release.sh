@@ -92,6 +92,9 @@ echo
 echo "$section"
 # The change notes the merged pull requests left in changelog.d/; the release section ends with them.
 scripts/changelog-notes.py
+# The guarded kernel experiments' staged policy pins the protected harness digest of main
+# (ADR-0185); main must already be re-pinned before its release is prepared.
+python3 scripts/performance/cli.py harness-digest --check >/dev/null
 if [[ "$dry_run" -eq 1 ]]; then
   echo "(dry run: nothing written)"
   exit 0
@@ -120,7 +123,13 @@ fi
 # next release starts from none. Only this pull request ever writes CHANGELOG.md.
 scripts/changelog-notes.py --write "$section"
 
-git add Cargo.toml Cargo.lock CHANGELOG.md changelog.d
+# The version bump changes Cargo manifests and the lock, which are protected harness inputs: the
+# staged policy is re-pinned deterministically in the release commit, and a guarded measure a
+# human installed into .af/ stops the release until it is re-installed by hand (ADR-0185).
+python3 scripts/performance/cli.py harness-digest --write >/dev/null
+python3 scripts/performance/cli.py harness-digest --check >/dev/null
+
+git add Cargo.toml Cargo.lock CHANGELOG.md changelog.d fixtures/performance/kernel-measure
 git commit -q -m "release: $tag" -m "$compat"
 git --no-pager show --stat HEAD | head -20
 

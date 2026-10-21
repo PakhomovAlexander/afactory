@@ -264,31 +264,37 @@ impl Host for Session {
     }
 
     fn pause(&mut self, line: &str) -> Result<(), String> {
-        // A fresh line whatever the command left: a line's width of spaces wraps only when the
-        // cursor was mid-line, and the carriage return then starts the line after its output;
-        // at the start of a line the spaces stay on it and nothing is added.
-        let (columns, _) = self.size();
-        self.send(format!("{}\r", " ".repeat(columns)).as_bytes())?;
-        self.send(line.as_bytes())?;
-        // Keys typed before the line was shown were meant for the command, not for this wait.
-        let _ = termios::tcflush(&self.tty, QueueSelector::IFlush);
+        // Raw, and the keys typed so far flushed, before the line is shown: those were meant
+        // for the command, and every key from the moment the line is visible is this wait's.
+        // Shown first and flushed after, an Enter typed as soon as the line appeared could be
+        // discarded, and the wait would never end.
         let mut raw = self.saved.clone();
         raw.make_raw();
         raw.special_codes[SpecialCodeIndex::VMIN] = 1;
         raw.special_codes[SpecialCodeIndex::VTIME] = 0;
         *lock() = Some((self.saved.clone(), std::thread::current().id()));
-        termios::tcsetattr(&self.tty, OptionalActions::Now, &raw)
-            .map_err(|error| format!("entering raw mode: {error}"))?;
-        let mut byte = [0_u8; 1];
-        let outcome = loop {
-            match self.tty.read(&mut byte) {
-                Ok(0) => break Err("the terminal closed".to_owned()),
-                Ok(_) if matches!(byte[0], b'\r' | b'\n') => break Ok(()),
-                Ok(_) => {}
-                Err(error) if transient(&error) => {}
-                Err(error) => break Err(format!("reading the terminal: {error}")),
-            }
-        };
+        let outcome = termios::tcsetattr(&self.tty, OptionalActions::Now, &raw)
+            .map_err(|error| format!("entering raw mode: {error}"))
+            .and_then(|()| {
+                let _ = termios::tcflush(&self.tty, QueueSelector::IFlush);
+                // A fresh line whatever the command left: a line's width of spaces wraps only
+                // when the cursor was mid-line, and the carriage return then starts the line
+                // after its output; at the start of a line the spaces stay on it and nothing is
+                // added.
+                let (columns, _) = self.size();
+                self.send(format!("{}\r", " ".repeat(columns)).as_bytes())?;
+                self.send(line.as_bytes())?;
+                let mut byte = [0_u8; 1];
+                loop {
+                    match self.tty.read(&mut byte) {
+                        Ok(0) => break Err("the terminal closed".to_owned()),
+                        Ok(_) if matches!(byte[0], b'\r' | b'\n') => break Ok(()),
+                        Ok(_) => {}
+                        Err(error) if transient(&error) => {}
+                        Err(error) => break Err(format!("reading the terminal: {error}")),
+                    }
+                }
+            });
         // Back to the released mode, signals still off: `reenter` goes raw next.
         let _ = termios::tcsetattr(&self.tty, OptionalActions::Now, &self.cooked(false));
         *lock() = None;
@@ -435,5 +441,94 @@ mod tests {
             "a failed release leaves the session to re-enter"
         );
         session.active = false;
+    }
+
+    /// The exit line's wait reads every key from the moment the line can be seen. The pty's
+    /// output is held full, so `pause` blocks writing its line: by then the terminal must
+    /// already be raw and the Enter typed while the command ran already flushed. An Enter typed
+    /// after that ends the wait; an order that shows the line before it flushes could discard
+    /// that Enter and wait for ever.
+    #[test]
+    fn the_exit_lines_wait_flushes_before_it_shows_the_line() {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize::default())
+            .unwrap();
+        let name = pair.master.tty_name().unwrap();
+        let open = |flags: i32| {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(flags)
+                .open(&name)
+                .unwrap()
+        };
+        let tty = open(0);
+        let probe = open(0);
+        let mut filler = open(libc_nonblock());
+        let mut keys = pair.master.take_writer().unwrap();
+        // Typed while the command ran: a whole line queued in cooked mode.
+        keys.write_all(b"\r").unwrap();
+        keys.flush().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while rustix::io::ioctl_fionread(&probe).unwrap() == 0 {
+            assert!(Instant::now() < deadline, "the typed line never queued");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Nobody reads the master yet, so the output fills and `pause`'s line cannot be shown.
+        loop {
+            match filler.write(&[b'.'; 512]) {
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                Err(error) => panic!("filling the terminal's output: {error}"),
+            }
+        }
+        let saved = termios::tcgetattr(&tty).unwrap();
+        let mut session = Session {
+            tty,
+            saved,
+            active: false,
+            dirty: false,
+            lost: false,
+        };
+        let (done, ended) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(session.pause("exit 0 -- Enter returns to the browser"));
+        });
+        // Blocked on its line, the wait is already raw with the earlier Enter flushed.
+        loop {
+            let modes = termios::tcgetattr(&probe).unwrap();
+            let raw = !modes.local_modes.contains(termios::LocalModes::ICANON);
+            if raw && rustix::io::ioctl_fionread(&probe).unwrap() == 0 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the line is being shown on a terminal that is not yet raw and flushed"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            ended.try_recv().is_err(),
+            "the Enter typed while the command ran ended the wait"
+        );
+        keys.write_all(b"\r").unwrap();
+        keys.flush().unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        std::thread::spawn(move || {
+            let mut chunk = [0_u8; 4096];
+            while matches!(reader.read(&mut chunk), Ok(count) if count > 0) {}
+        });
+        let outcome = ended
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the Enter typed once the line could be seen ends the wait");
+        assert_eq!(outcome, Ok(()));
+    }
+
+    fn libc_nonblock() -> i32 {
+        rustix::fs::OFlags::NONBLOCK.bits() as i32
     }
 }

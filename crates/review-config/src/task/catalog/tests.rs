@@ -1205,10 +1205,15 @@ fn captured_plan_validation_rechecks_bytes_and_never_reuses_changed_authority() 
             .compile(&f.cas, &f.revision_id, "builtin/document")
             .unwrap();
         let validator = CapturedTaskPlanValidator::new(&f.compiler);
+        assert!(
+            !validator.holds_validated_plan(),
+            "a fresh validator is cold"
+        );
         assert_eq!(
             validator.validate_plan(&f.cas, &f.task, &plan).unwrap(),
             plan.generated_origins
         );
+        assert!(validator.holds_validated_plan());
         assert_eq!(
             validator.validate_plan(&f.cas, &f.task, &plan).unwrap(),
             plan.generated_origins

@@ -1463,6 +1463,7 @@ version = "0.12.0-rc.5"
 dependencies = [
  "comrak",
  "jsonschema",
+ "nix 0.31.3",
  "review-attempt",
  "review-check",
  "review-config",
@@ -1490,6 +1491,8 @@ name = "review-process"
 version = "0.12.0-rc.5"
 dependencies = [
  "nix 0.31.3",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

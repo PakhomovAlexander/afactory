@@ -12,16 +12,23 @@ use std::time::Duration;
 const BUSY_RETRIES: u32 = 100;
 const BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
+/// The critical section in which a supervised child's pipes are created and the child spawned.
+/// The pinned Rust standard library uses pipe + fcntl on Apple platforms, and so does
+/// `sample`'s own spawn. Hold this only while creating the child, never during execution or
+/// draining; every spawn of this crate enters this same critical section.
+pub(crate) fn creation() -> Option<std::sync::MutexGuard<'static, ()>> {
+    #[cfg(target_vendor = "apple")]
+    {
+        static CREATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        Some(CREATION.lock().unwrap_or_else(|error| error.into_inner()))
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    None
+}
+
 /// Spawn `command` through the one boundary every supervised process shares.
 pub fn spawn(command: &mut Command) -> std::io::Result<Child> {
-    // The pinned Rust standard library uses pipe + fcntl on Apple platforms.
-    // Hold this only while creating the child, never during execution or draining.
-    // Both buffered and duplex supervision must enter this same critical section.
-    #[cfg(target_vendor = "apple")]
-    let _creation = {
-        static CREATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        CREATION.lock().unwrap_or_else(|error| error.into_inner())
-    };
+    let _creation = creation();
     let mut busy_retries = 0;
     loop {
         match command.spawn() {

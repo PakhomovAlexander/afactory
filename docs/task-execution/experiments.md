@@ -160,3 +160,21 @@ binary's size. The `release_build` measure, the `release_build_time` objective a
 `kernel/experiment` packages are staged in `fixtures/kernel-experiment/` with installation
 steps; a test installs them into a copy of `.af/`, passes `af catalog test` and plans the
 Pipeline with zero Attempts.
+
+## Guarded performance measures
+
+The performance laboratory stages measures whose command cannot be changed by the candidate it
+measures, in `fixtures/performance/kernel-measure/`
+([ADR-0185](../adr/0185-measure-guarded-kernel-experiments-through-a-literal-bootstrap-over-a-protected-harness.md)).
+Each runs a literal isolated Python bootstrap, captured with the policy, that verifies the
+measured Snapshot's protected harness against the digest the policy holds before it imports the
+laboratory's driver or builds anything. Only then does `cli.py measure` build the native probe
+offline into the bound `CARGO_TARGET_DIR` and report one golden-judged library sample per
+repetition. The kernel's repetitions, `elapsed_ms` and comparison are unchanged; the staged
+objectives compare `elapsed_ms` until the guarded inner metric is accepted. A real Task in
+`crates/af/tests/it/perf_kernel_measure.rs` measures a consumer repository with the policy
+installed, and shows that every tampered candidate fails its first repetition with no report.
+Protected names match whatever their case, a warm target is rebuilt from the measured sources
+whenever any byte of the measured Snapshot differs, and the probe's output is bounded while it
+is read
+([ADR-0186](../adr/0186-fold-protected-paths-key-warm-targets-by-the-whole-snapshot-bound-measure-output-and-replan-bridge-runs.md)).

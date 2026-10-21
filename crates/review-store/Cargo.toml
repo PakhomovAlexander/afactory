@@ -33,5 +33,9 @@ nix = { version = "0.31.3", default-features = false, features = ["dir", "fs", "
 review-telemetry = { path = "../review-telemetry" }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
+[features]
+# Phase spans of canonicalization, CAS and projection for diagnostic builds only (ADR-0174).
+perf-trace = ["review-core/perf-trace"]
+
 [lints]
 workspace = true
