@@ -2461,7 +2461,7 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     print_scope_authority_warnings(&ledger);
     let finding = ledger
         .finding_view(&options.key)
-        .ok_or_else(|| format!("no finding with key {}", options.key))?;
+        .ok_or_else(|| format!("no finding with key {}", terminal_text(&options.key)))?;
     let run_id = campaign_run_id(&options.campaign);
     let head = current_campaign_head(&store, &cas, &run_id)?;
     let proposals = campaign_proposals(&store, &cas, &run_id)?;
