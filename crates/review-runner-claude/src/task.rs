@@ -274,6 +274,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         // (ADR-0102, ADR-0147). The working directory is the sandbox root the kernel
         // materialized.
         let mut runner = ModelRunner::new(workdir, timeout)
+            .with_harness("anthropic", self.model_settings().map(|(model, _)| model))
             .with_env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
             .with_env("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1")
             .with_env("CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK", "1");

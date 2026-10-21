@@ -336,7 +336,14 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             return Err("Unsupported compiled Task version".into());
         }
         if let Some(plan_id) = &projection.plan_id {
-            telemetry.plan(&load, plan_id, &plan, &graph);
+            telemetry.plan(
+                &load,
+                cas,
+                plan_id,
+                &plan,
+                &graph,
+                &projection.revision.kind,
+            );
         }
         drop(load);
         Ok(Self {
@@ -393,7 +400,9 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     }
 
     pub fn execute(&self) -> Result<RunReport, String> {
-        let executed = self.execute_graph();
+        // The run's phases outside any node (invocations, outputs, the run report) are its
+        // own spans' children.
+        let executed = self.telemetry.span().in_scope(|| self.execute_graph());
         if let Ok(projection) = self.projection() {
             self.telemetry
                 .finish(&projection, executed.as_ref().err().map(String::as_str));
@@ -761,42 +770,6 @@ impl TaskRuntime<'_, '_> {
             } else {
                 None
             };
-            if let Some(attempt) = &attempt {
-                // Below the machine's free-disk floor a Worker Attempt never starts: it is
-                // released before any Provider is contacted, charged nothing, and the Task stays
-                // resumable once space is freed (ADR-0144).
-                if starts_a_worker(&compiled.operator)
-                    && let Err(refusal) = crate::storage::ensure_free_disk()
-                {
-                    let _ = self.store.lock().expect("Task Store").release_task_attempt(
-                        self.cas,
-                        &self.lease,
-                        attempt,
-                        &refusal,
-                    );
-                    // Every other node stops as on an interrupt; the caller sees why.
-                    *self.disk_refusal.lock().expect("Task disk refusal") = Some(refusal.clone());
-                    if let Some(flag) = self.cancellation {
-                        flag.store(true, std::sync::atomic::Ordering::Release);
-                    }
-                    return Err(refusal);
-                }
-                let start = self.store.lock().expect("Task Store").start_task_attempt(
-                    self.cas,
-                    &self.lease,
-                    attempt,
-                    self.authority,
-                );
-                if let Err(error) = start {
-                    let _ = self.store.lock().expect("Task Store").release_task_attempt(
-                        self.cas,
-                        &self.lease,
-                        attempt,
-                        &error.to_string(),
-                    );
-                    return Err(error.to_string());
-                }
-            }
             let attempt_span = match &attempt {
                 Some(attempt) => {
                     self.telemetry
@@ -805,6 +778,60 @@ impl TaskRuntime<'_, '_> {
                 None => tracing::Span::none(),
             };
             let _attempting = attempt_span.enter();
+            if let Some(attempt) = &attempt {
+                let admission = crate::telemetry::admission(
+                    attempt.reservation().tokens,
+                    self.telemetry.provider(slot.as_deref()).as_deref(),
+                );
+                let admitting = Instant::now();
+                let admitted = admission.in_scope(|| -> Result<(), String> {
+                    // Below the machine's free-disk floor a Worker Attempt never starts: it is
+                    // released before any Provider is contacted, charged nothing, and the Task
+                    // stays resumable once space is freed (ADR-0144).
+                    if starts_a_worker(&compiled.operator)
+                        && let Err(refusal) = crate::storage::ensure_free_disk()
+                    {
+                        let _ = self.store.lock().expect("Task Store").release_task_attempt(
+                            self.cas,
+                            &self.lease,
+                            attempt,
+                            &refusal,
+                        );
+                        // Every other node stops as on an interrupt; the caller sees why.
+                        *self.disk_refusal.lock().expect("Task disk refusal") =
+                            Some(refusal.clone());
+                        if let Some(flag) = self.cancellation {
+                            flag.store(true, std::sync::atomic::Ordering::Release);
+                        }
+                        return Err(refusal);
+                    }
+                    let start = self.store.lock().expect("Task Store").start_task_attempt(
+                        self.cas,
+                        &self.lease,
+                        attempt,
+                        self.authority,
+                    );
+                    if let Err(error) = start {
+                        let _ = self.store.lock().expect("Task Store").release_task_attempt(
+                            self.cas,
+                            &self.lease,
+                            attempt,
+                            &error.to_string(),
+                        );
+                        return Err(error.to_string());
+                    }
+                    Ok(())
+                });
+                crate::telemetry::admission_end(
+                    &admission,
+                    admitting.elapsed(),
+                    admitted.as_ref().err().map(String::as_str),
+                );
+                if let Err(refusal) = admitted {
+                    crate::telemetry::outcome(&attempt_span, Some(("refused", &refusal)));
+                    return Err(refusal);
+                }
+            }
             let started = SystemTime::now();
             let timer = Instant::now();
             let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -822,6 +849,14 @@ impl TaskRuntime<'_, '_> {
                 refused_input: false,
             });
             let refused_input = result.refused_input;
+            // The kernel's accounting of the Attempt's usage, one `af.usage.account` span.
+            let usage_span = if attempt.is_some() {
+                crate::telemetry::usage_account()
+            } else {
+                tracing::Span::none()
+            };
+            let accounting = usage_span.enter();
+            let mut charge_incomplete = false;
             if let Some(attempt) = &attempt {
                 // Capture known charge before output CAS admission: a crash during output or
                 // diagnostic publication must not hide an already reported Provider overrun.
@@ -845,6 +880,7 @@ impl TaskRuntime<'_, '_> {
                         );
                     }
                     if !observation.charge_complete {
+                        charge_incomplete = true;
                         refuse_billing(&mut result.outputs, INCOMPLETE_BILLING);
                     }
                 }
@@ -914,6 +950,7 @@ impl TaskRuntime<'_, '_> {
                 result.charged_tokens = charge;
                 if let Some(observation) = &observation {
                     if !observation.charge_complete {
+                        charge_incomplete = true;
                         refuse_billing(&mut result.outputs, INCOMPLETE_BILLING);
                     }
                     let id = review_store::store::task::execution::usage_observation::capture_task_usage_observation(
@@ -986,6 +1023,17 @@ impl TaskRuntime<'_, '_> {
                 }
             });
             let charged = known.unwrap_or(0);
+            drop(accounting);
+            crate::telemetry::usage_account_end(
+                &usage_span,
+                match (&unknown_usage, charge_incomplete) {
+                    (Some(_), _) => "unknown",
+                    (None, true) => "incomplete",
+                    (None, false) => "complete",
+                },
+                unknown_usage.as_ref(),
+                charged,
+            );
             let reported = result.usage.clone();
             if attempt.is_none() && (charged != 0 || result.usage_observation.is_some()) {
                 return Err("Pure Task operator reported a paid operation".into());
@@ -993,9 +1041,25 @@ impl TaskRuntime<'_, '_> {
             if let Err(error) = control::check(self.cancellation) {
                 result.outputs = Err(error);
             }
-            let mut produced = result.outputs.and_then(|values| {
-                self.record_output(input_id, input, values.clone(), attempt.as_ref())
-                    .map(|id| (id, values))
+            // The admission of the Attempt's outputs against its node contract.
+            let parse_span = if attempt.is_some() {
+                crate::telemetry::output_parse(
+                    compiled
+                        .contract
+                        .outputs
+                        .values()
+                        .map(|port| port.artifact_type.clone())
+                        .collect(),
+                )
+            } else {
+                tracing::Span::none()
+            };
+            let worker_failure = result.outputs.as_ref().err().cloned();
+            let mut produced = parse_span.in_scope(|| {
+                result.outputs.and_then(|values| {
+                    self.record_output(input_id, input, values.clone(), attempt.as_ref())
+                        .map(|id| (id, values))
+                })
             });
             if let Some(attempt) = &attempt {
                 let conclusion = match &produced {
@@ -1038,6 +1102,15 @@ impl TaskRuntime<'_, '_> {
                 } = settlement
                 {
                     produced = Err(reason);
+                }
+                match (&worker_failure, produced.as_ref().err()) {
+                    // The Worker produced nothing to admit: the parse saw its failure.
+                    (Some(failure), _) => {
+                        crate::telemetry::outcome(&parse_span, Some(("failed", failure.as_str())))
+                    }
+                    (None, refusal) => {
+                        crate::telemetry::output_parse_end(&parse_span, refusal.map(String::as_str))
+                    }
                 }
                 let class = if refused_input {
                     "model_refused"

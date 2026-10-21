@@ -18,7 +18,7 @@ use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_graph::task::{CompiledNode, CompiledTask};
 use review_store::store::task::{TaskLease, TaskProjection, task_run_id};
 use review_store::{Cas, EventStore};
-use review_telemetry::record::Node;
+use review_telemetry::record::{ConfigRow, Node};
 use review_telemetry::subscriber::{self, Typed};
 use serde_json::Value;
 use tracing::field::Empty;
@@ -65,12 +65,61 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// The sections of an execution's configuration record (design §7.4) that the command knows
+/// and the runtime does not: written in the record's fixed order around the runtime's own
+/// policy, pipeline and binding rows.
+#[derive(Debug, Clone, Default)]
+pub struct MachineConfig {
+    /// `af --version --json`, one row per member.
+    pub version: Vec<ConfigRow>,
+    /// The effective configuration, one row per key with its layer, file and line; a value
+    /// whose origin is the environment is `<env>`.
+    pub configuration: Vec<ConfigRow>,
+    /// The digests of `.af/af.toml` and `.af/af.lock`.
+    pub policy_files: Vec<ConfigRow>,
+    /// The Provider registry entries by name and kind, grant paths as placeholders.
+    pub providers: Vec<ConfigRow>,
+    /// The harness versions the preflight probed, and the Claude Code managed-settings digests.
+    pub harnesses: Vec<ConfigRow>,
+    /// The host facts.
+    pub host: Vec<ConfigRow>,
+    /// The names, never the values, of the `AF_*` and `OTEL_*` variables present.
+    pub variables: Vec<ConfigRow>,
+    /// The texts a `content` level names by the event `af.config.text`: kind, digest, bytes.
+    pub texts: Vec<(&'static str, String, u64)>,
+}
+
+/// What the command hands every run it opens: computed when the record is written, so the
+/// preflight's probes before it are in it.
+type MachineConfigSource = Box<dyn Fn() -> MachineConfig + Send + Sync>;
+
+static MACHINE: Mutex<Option<MachineConfigSource>> = Mutex::new(None);
+
+/// The command's sections of every configuration record this process writes. `af` sets it when
+/// it starts recording at a level that keeps the record; nothing reads it otherwise.
+pub fn set_machine_config(source: MachineConfigSource) {
+    *lock(&MACHINE) = Some(source);
+}
+
+/// One row of a configuration record.
+pub fn row(layer: &str, key: &str, value: &str, origin: Option<String>) -> ConfigRow {
+    ConfigRow {
+        key: key.to_string(),
+        value: value.to_string(),
+        layer: layer.to_string(),
+        origin,
+    }
+}
+
 /// One open run of this process.
 struct OpenRun {
     span: tracing::Span,
     /// The plans whose identity and nodes this execution recorded.
     plans: BTreeSet<String>,
 }
+
+/// The executions whose configuration record this process wrote.
+static CONFIGURED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// Every run this process opened, by `store_id:run_id`.
 static RUNS: Mutex<BTreeMap<String, OpenRun>> = Mutex::new(BTreeMap::new());
@@ -225,6 +274,17 @@ impl RunTelemetry {
         }
     }
 
+    /// The run's `af.run` span (a disabled one when nothing records).
+    pub(crate) fn span(&self) -> &tracing::Span {
+        &self.run
+    }
+
+    /// The registry Provider a Worker slot is bound to, for `af.admission`.
+    pub(crate) fn provider(&self, slot: Option<&str>) -> Option<String> {
+        slot.and_then(|slot| self.bindings.get(slot))
+            .and_then(|binding| binding.provider.clone())
+    }
+
     /// The `af.authority.load` span, entered by the caller around the authority check.
     pub(crate) fn authority_load(&self) -> tracing::Span {
         let Some(ids) = &self.ids else {
@@ -249,9 +309,11 @@ impl RunTelemetry {
     pub(crate) fn plan(
         &mut self,
         load: &tracing::Span,
+        cas: &Cas,
         plan_id: &str,
         plan: &ExecutionPlanV1,
         graph: &CompiledTask,
+        task_kind: &str,
     ) {
         for (slot, definition) in &graph.slots {
             let binding = plan.bindings.get(slot);
@@ -300,6 +362,7 @@ impl RunTelemetry {
         let Some(ids) = &self.ids else {
             return;
         };
+        self.record_config(cas, plan, graph, pipeline.as_deref(), task_kind);
         let span = tracing::info_span!(
             parent: &self.run,
             "af.plan",
@@ -322,6 +385,135 @@ impl RunTelemetry {
         }
         let _entered = span.enter();
         record_nodes(&writer, plan_id, graph);
+    }
+
+    /// The execution's configuration record (`af/TelemetryConfig@1`, design §7.4), once per
+    /// execution, at `spans` and above: its rows in the fixed order — version, configuration,
+    /// policy and pipeline, bindings, Providers, harness versions, host, variable names — as
+    /// many `config` parts as the record bound needs. At `content` the texts it names are the
+    /// events `af.config.text` with their digest and size (their bytes are blobs only once the
+    /// content level stores configuration texts).
+    fn record_config(
+        &self,
+        cas: &Cas,
+        plan: &ExecutionPlanV1,
+        graph: &CompiledTask,
+        pipeline: Option<&str>,
+        task_kind: &str,
+    ) {
+        let Some(writer) = subscriber::current_writer() else {
+            return;
+        };
+        if writer.level() == review_telemetry::level::Level::Metrics {
+            return;
+        }
+        let Some(execution) = writer.segment_id() else {
+            return;
+        };
+        let Some(ids) = &self.ids else {
+            return;
+        };
+        if !lock(&CONFIGURED).insert(execution.clone()) {
+            return;
+        }
+        let machine = lock(&MACHINE)
+            .as_ref()
+            .map(|source| source())
+            .unwrap_or_default();
+        let mut rows = machine.version;
+        rows.extend(machine.configuration);
+        rows.push(row(
+            "policy",
+            "af.policy_rev",
+            &plan.authority.policy_id,
+            None,
+        ));
+        rows.push(row(
+            "policy",
+            "af.pipeline",
+            pipeline.unwrap_or("unknown"),
+            None,
+        ));
+        rows.push(row("policy", "af.pipeline.digest", &plan.pipeline_id, None));
+        for (node_id, node) in &graph.nodes {
+            let (kind, _) = operator_kind(node);
+            rows.push(row(
+                "policy",
+                "af.pipeline.node",
+                &format!("{node_id} {kind}"),
+                None,
+            ));
+        }
+        rows.extend(machine.policy_files);
+        rows.push(row("policy", "af.task_id", &ids.task, None));
+        rows.push(row("policy", "af.task.kind", task_kind, None));
+        rows.push(row(
+            "policy",
+            "af.task.pipeline",
+            pipeline.unwrap_or("unknown"),
+            None,
+        ));
+        for (node_id, node) in &graph.nodes {
+            let (_, slot) = operator_kind(node);
+            let Some(slot) = slot else {
+                continue;
+            };
+            let worker = graph.slots.get(&slot).map(|slot| slot.worker.as_str());
+            let execution = plan.bindings.get(&slot).map(|binding| &binding.execution);
+            let value = match execution {
+                Some(WorkerExecutionV1::Model {
+                    provider,
+                    model,
+                    effort,
+                    ..
+                }) => format!(
+                    "worker={} provider={provider} model={model} effort={effort}",
+                    worker.unwrap_or("unknown")
+                ),
+                Some(WorkerExecutionV1::Command {}) => {
+                    format!("worker={} command", worker.unwrap_or("unknown"))
+                }
+                None => format!("worker={} unbound", worker.unwrap_or("unknown")),
+            };
+            rows.push(row("binding", node_id, &value, None));
+        }
+        rows.extend(machine.providers);
+        rows.extend(machine.harnesses);
+        rows.extend(machine.host);
+        rows.extend(machine.variables);
+        writer.config(&execution, rows);
+        if writer.level().keeps_content() {
+            let size = |id: &str| cas.get(id).map(|bytes| bytes.len() as u64).ok();
+            let texts = [
+                (
+                    "pipeline",
+                    plan.pipeline_id.clone(),
+                    size(&plan.pipeline_id),
+                ),
+                (
+                    "task_file",
+                    plan.task_revision_id.clone(),
+                    size(&plan.task_revision_id),
+                ),
+            ]
+            .into_iter()
+            .chain(
+                machine
+                    .texts
+                    .into_iter()
+                    .map(|(kind, digest, bytes)| (kind, digest, Some(bytes))),
+            );
+            for (kind, digest, bytes) in texts {
+                let digest = identity(&digest);
+                tracing::info!(
+                    parent: &self.run,
+                    af.event = "af.config.text",
+                    af.config.text.kind = Typed::enumerated(kind).field(),
+                    af.config.text.digest = field(&digest),
+                    af.config.text.bytes = bytes,
+                );
+            }
+        }
     }
 
     /// The `af.node` span of `node_id`, on any thread: its parent is the run, named explicitly.
@@ -451,6 +643,439 @@ pub fn finished(store: &EventStore, lease: &TaskLease) {
     if let Some(open) = lock(&RUNS).get(&format!("{store_id}:{run_id}")) {
         open.span.record("af.outcome", "finished");
     }
+}
+
+// ------------------------------------------------------------------------------------------
+// The phases below a node (design §7.1). Each opens only inside a span of a run, so the same
+// phase outside one records nothing; each takes the run's identity from its parent span.
+
+/// `af.gate` over a check node's checks.
+pub(crate) fn gate() -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    tracing::info_span!(
+        "af.gate",
+        af.gate.checks = tracing::field::Empty,
+        af.gate.decision = tracing::field::Empty,
+        af.check.warm = tracing::field::Empty,
+        af.outcome = Empty,
+        af.failure.class = Empty,
+        af.failure.reason = Empty,
+        error.type = Empty,
+        af.status = Empty,
+    )
+}
+
+/// End `af.gate`: how many checks it ran, its decision (`passed`, `failed`, `inconclusive`)
+/// and whether any check ran warm. A gate that did not decide is an error with its reason.
+pub(crate) fn gate_end(
+    span: &tracing::Span,
+    checks: usize,
+    decision: Result<&'static str, &str>,
+    warm: &'static str,
+) {
+    if span.is_disabled() {
+        return;
+    }
+    span.record("af.gate.checks", checks as u64);
+    span.record("af.check.warm", Typed::enumerated(warm).field());
+    match decision {
+        Ok(decision) => {
+            span.record("af.gate.decision", Typed::enumerated(decision).field());
+            review_telemetry::process::outcome(span, None);
+        }
+        Err(reason) => review_telemetry::process::outcome(span, Some(("failed", reason))),
+    }
+}
+
+/// `af.warm.restore` or `af.warm.save` of one check's Warm Check Cache layer.
+pub(crate) fn warm(name: &'static str) -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    match name {
+        "af.warm.restore" => tracing::info_span!(
+            "af.warm.restore",
+            af.warm.key = Empty,
+            af.warm.result = Empty,
+            af.warm.kinds = Empty,
+            af.warm.bytes = Empty,
+            af.outcome = Empty,
+            af.failure.class = Empty,
+            af.failure.reason = Empty,
+            error.type = Empty,
+            af.status = Empty,
+        ),
+        _ => tracing::info_span!(
+            "af.warm.save",
+            af.warm.key = Empty,
+            af.warm.result = Empty,
+            af.warm.kinds = Empty,
+            af.warm.bytes = Empty,
+            af.outcome = Empty,
+            af.failure.class = Empty,
+            af.failure.reason = Empty,
+            error.type = Empty,
+            af.status = Empty,
+        ),
+    }
+}
+
+/// End a warm span: the toolchain key, `hit` or `miss`, the kinds and the bytes (available
+/// before the check for a restore, evicted after it for a save).
+pub(crate) fn warm_end(
+    span: &tracing::Span,
+    key: Option<&str>,
+    hit: bool,
+    kinds: usize,
+    bytes: u64,
+    failure: Option<&str>,
+) {
+    if span.is_disabled() {
+        return;
+    }
+    if let Some(key) = key.and_then(Typed::identity) {
+        span.record("af.warm.key", key.field());
+    }
+    span.record(
+        "af.warm.result",
+        Typed::enumerated(if hit { "hit" } else { "miss" }).field(),
+    );
+    span.record("af.warm.kinds", kinds as u64);
+    span.record("af.warm.bytes", bytes);
+    review_telemetry::process::outcome(span, failure.map(|reason| ("failed", reason)));
+}
+
+/// `af.context.compose`: the composed Worker input an Attempt is bound to — its manifest
+/// digest, rendered bytes, estimated tokens and layer list — never its bytes.
+pub(crate) fn context_compose(
+    manifest_id: &str,
+    layers: Vec<String>,
+    bytes: u64,
+    estimated_tokens: u64,
+) {
+    if !review_telemetry::subscriber::in_run() {
+        return;
+    }
+    let manifest = identity(manifest_id);
+    let span = tracing::info_span!(
+        "af.context.compose",
+        af.context.manifest = field(&manifest),
+        af.context.bytes = bytes,
+        af.context.estimated_tokens = estimated_tokens,
+        // The layer names, in manifest order, comma-separated: a `tracing` field carries no
+        // array.
+        af.context.layers = layers.join(",").as_str(),
+        af.status = "ok",
+    );
+    drop(span);
+}
+
+/// `af.admission`: the Attempt's admission before dispatch — the free-disk floor and the
+/// durable start of its reservation.
+pub(crate) fn admission(reserved_tokens: u64, provider: Option<&str>) -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    tracing::info_span!(
+        "af.admission",
+        af.admission.reserved_tokens = reserved_tokens,
+        af.provider = provider,
+        af.admission.wait_ms = Empty,
+        af.outcome = Empty,
+        af.failure.class = Empty,
+        af.failure.reason = Empty,
+        error.type = Empty,
+        af.status = Empty,
+    )
+}
+
+/// End `af.admission` with its wait and its outcome.
+pub(crate) fn admission_end(
+    span: &tracing::Span,
+    wait: std::time::Duration,
+    refusal: Option<&str>,
+) {
+    if span.is_disabled() {
+        return;
+    }
+    span.record(
+        "af.admission.wait_ms",
+        u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+    );
+    review_telemetry::process::outcome(span, refusal.map(|reason| ("refused", reason)));
+}
+
+/// `af.output.parse`: the admission of an Attempt's outputs against its node contract.
+pub(crate) fn output_parse(contract: Vec<String>) -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    tracing::info_span!(
+        "af.output.parse",
+        af.output.contract = contract.join(",").as_str(),
+        af.output.valid = Empty,
+        af.outcome = Empty,
+        af.failure.class = Empty,
+        af.failure.reason = Empty,
+        error.type = Empty,
+        af.status = Empty,
+    )
+}
+
+/// End `af.output.parse`: valid, or the refusal reason (`invalid_output_contract`).
+pub(crate) fn output_parse_end(span: &tracing::Span, refusal: Option<&str>) {
+    if span.is_disabled() {
+        return;
+    }
+    span.record("af.output.valid", refusal.is_none());
+    review_telemetry::process::outcome(
+        span,
+        refusal.map(|reason| ("invalid_output_contract", reason)),
+    );
+}
+
+/// `af.usage.account`: the kernel's accounting of one Attempt's usage.
+pub(crate) fn usage_account() -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    tracing::info_span!(
+        "af.usage.account",
+        af.usage.observation = Empty,
+        af.usage.unknown_cause = Empty,
+        af.usage.chargeable_tokens = Empty,
+        af.outcome = Empty,
+        af.failure.class = Empty,
+        af.failure.reason = Empty,
+        error.type = Empty,
+        af.status = Empty,
+    )
+}
+
+/// End `af.usage.account` with the observation state (`complete`, `incomplete`, `unknown`),
+/// the unknown cause, and the charge as the kernel accounted it.
+pub(crate) fn usage_account_end(
+    span: &tracing::Span,
+    observation: &'static str,
+    unknown: Option<&review_core::task::usage::TaskUnknownUsageV1>,
+    charged: u128,
+) {
+    if span.is_disabled() {
+        return;
+    }
+    span.record(
+        "af.usage.observation",
+        Typed::enumerated(observation).field(),
+    );
+    if let Some(unknown) = unknown {
+        let cause = serde_json::to_value(unknown.cause)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| "unreported".into());
+        span.record("af.usage.unknown_cause", cause.as_str());
+    }
+    span.record("af.usage.chargeable_tokens", charged);
+    review_telemetry::process::outcome(span, None);
+}
+
+/// `af.remote_check`: the gate pull request phase of the remote checks (ADR-0140).
+pub(crate) fn remote_check(branch: &str, checks: usize) -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    tracing::info_span!(
+        "af.remote_check",
+        af.remote_check.branch = branch,
+        af.remote_check.checks = checks as u64,
+        af.remote_check.pull_request = Empty,
+        af.remote_check.polls = Empty,
+        af.outcome = Empty,
+        af.failure.class = Empty,
+        af.failure.reason = Empty,
+        error.type = Empty,
+        af.status = Empty,
+    )
+}
+
+/// `af.process` of a supervised process no other span names (a toolchain probe, `gh`).
+pub(crate) fn process(program: &str, kind: &str) -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    let program = std::path::Path::new(program)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    review_telemetry::process_span!(
+        "af.process",
+        process.command = program.as_deref(),
+        af.process.kind = kind,
+    )
+}
+
+/// The `af.run` of one kernel measurement (ADR-0132, design §7.7): `af.run.kind = measure`,
+/// its own run id — derived from the Task's run, the measure Attempt and the measure's name, so
+/// a measurement is a run of its own — and at its end `af.measurement.id`, the
+/// `af/Measurement@1` it recorded. Its repetitions are its child spans.
+pub(crate) fn measurement(task_id: &str, attempt_id: &str, measure: &str) -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    let Ok(task_run) = task_run_id(task_id) else {
+        return tracing::Span::none();
+    };
+    let run = review_telemetry::trace::sha256_digest(
+        format!("af/measurement-run@1:{task_run}:{attempt_id}:{measure}").as_bytes(),
+    );
+    tracing::info_span!(
+        "af.run",
+        af.run_id = field(&identity(&run)),
+        af.run.kind = Typed::enumerated(RunKind::Measure.as_str()).field(),
+        af.task_id = task_id,
+        af.attempt_id = field(&identity(attempt_id)),
+        af.measure = measure,
+        af.measurement.id = Empty,
+        af.outcome = Empty,
+        af.failure.class = Empty,
+        af.failure.reason = Empty,
+        error.type = Empty,
+        af.status = Empty,
+    )
+}
+
+/// End a measurement's `af.run`: the Measurement it recorded, passed or failed.
+pub(crate) fn measurement_end(span: &tracing::Span, measurement_id: &str, failed: bool) {
+    if span.is_disabled() {
+        return;
+    }
+    if let Some(id) = identity(measurement_id) {
+        span.record("af.measurement.id", id.field());
+    }
+    review_telemetry::process::outcome(
+        span,
+        failed.then_some(("failed", "a repetition failed the measurement")),
+    );
+}
+
+/// One repetition of a measurement, under its `af.run`.
+pub(crate) fn repetition(repetition: u32) -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    tracing::info_span!(
+        "af.measurement.repetition",
+        af.measurement.repetition = u64::from(repetition),
+        af.outcome = Empty,
+        af.failure.class = Empty,
+        af.failure.reason = Empty,
+        error.type = Empty,
+        af.status = Empty,
+    )
+}
+
+/// End a repetition: completed, or failed with its detail.
+pub(crate) fn repetition_end(span: &tracing::Span, failure: Option<&str>) {
+    review_telemetry::process::outcome(span, failure.map(|detail| ("failed", detail)));
+}
+
+/// `af.git` of a git process this crate supervises itself (the remote check's private
+/// repository), named by its subcommand.
+pub(crate) fn git(op: Option<&str>) -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    review_telemetry::process_span!("af.git", process.command = "git", af.git.op = op)
+}
+
+fn resource_use(rusage: review_process::Rusage) -> review_telemetry::process::ResourceUse {
+    review_telemetry::process::ResourceUse {
+        user_ms: rusage.user_ms,
+        system_ms: rusage.system_ms,
+        max_rss_bytes: rusage.max_rss_bytes,
+    }
+}
+
+/// End a process span from a supervised capture: `ok` for a clean exit, else the class.
+pub(crate) fn process_capture(span: &tracing::Span, captured: &review_process::SupervisedCapture) {
+    if span.is_disabled() {
+        return;
+    }
+    let mut facts = review_telemetry::process::ProcessFacts {
+        pid: captured.pid,
+        rusage: captured.rusage.map(resource_use),
+        stdout_bytes: Some(captured.stdout.len() as u64),
+        stderr_bytes: Some(captured.stderr.len() as u64),
+        stderr_held: captured.stderr_held,
+        ..Default::default()
+    };
+    if let Ok(status) = &captured.status {
+        facts = facts.with_status(status);
+    }
+    process_end(span, &facts, captured.status.as_ref().map(|status| *status));
+}
+
+/// End a process span from a supervised run's result.
+pub(crate) fn process_output(
+    span: &tracing::Span,
+    output: &Result<review_process::SupervisedOutput, review_process::SupervisedError>,
+) {
+    if span.is_disabled() {
+        return;
+    }
+    let facts = match output {
+        Ok(output) => review_telemetry::process::ProcessFacts {
+            pid: output.pid,
+            rusage: output.rusage.map(resource_use),
+            stdout_bytes: Some(output.stdout.len() as u64),
+            stderr_bytes: Some(output.stderr.len() as u64),
+            stderr_held: output.stderr_held,
+            ..Default::default()
+        }
+        .with_status(&output.status),
+        Err(review_process::SupervisedError::TimedOut {
+            stdout,
+            stderr,
+            pid,
+            rusage,
+        }) => review_telemetry::process::ProcessFacts {
+            pid: *pid,
+            rusage: rusage.map(resource_use),
+            stdout_bytes: Some(stdout.len() as u64),
+            stderr_bytes: Some(stderr.len() as u64),
+            ..Default::default()
+        },
+        Err(_) => review_telemetry::process::ProcessFacts::default(),
+    };
+    process_end(span, &facts, output.as_ref().map(|output| output.status));
+}
+
+fn process_end(
+    span: &tracing::Span,
+    facts: &review_telemetry::process::ProcessFacts,
+    status: Result<std::process::ExitStatus, &review_process::SupervisedError>,
+) {
+    use review_process::SupervisedError;
+    let failure = match status {
+        Ok(status) if status.success() => None,
+        Ok(_) => Some(("failed", "the process exited unsuccessfully".to_string())),
+        Err(SupervisedError::TimedOut { .. }) => {
+            Some(("timed_out", "the process exceeded its deadline".to_string()))
+        }
+        Err(SupervisedError::Cancelled) => Some(("refused", "cancelled".to_string())),
+        Err(SupervisedError::Spawn(_)) => Some((
+            "unavailable",
+            "the process could not be started".to_string(),
+        )),
+        Err(error) => Some(("failed", error.to_string())),
+    };
+    review_telemetry::process::finish(
+        span,
+        facts,
+        failure
+            .as_ref()
+            .map(|(class, reason)| (*class, reason.as_str())),
+    );
 }
 
 /// One `af/TelemetryNode@1` record per node of the plan's compiled graph: its kind, its Worker

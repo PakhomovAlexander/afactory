@@ -102,3 +102,97 @@ fn only_af_links_the_reader_module_and_review_process_links_nothing() {
     assert!(names_reader("use review_telemetry::{redact, index::Index};").is_some());
     assert!(names_reader("review_telemetry::segment::reader::list").is_some());
 }
+
+/// Every span name the catalogue in `docs/architecture.md` lists.
+fn catalogue() -> std::collections::BTreeSet<String> {
+    let text = std::fs::read_to_string(workspace_root().join("docs/architecture.md")).unwrap();
+    let section = text
+        .split("### Telemetry span catalogue")
+        .nth(1)
+        .expect("docs/architecture.md has the telemetry span catalogue");
+    section
+        .lines()
+        .skip_while(|line| !line.starts_with('|'))
+        .take_while(|line| line.starts_with('|'))
+        .filter_map(|line| line.split('|').nth(1))
+        .flat_map(|cell| {
+            cell.split(',')
+                .filter_map(|name| {
+                    name.trim()
+                        .strip_prefix('`')
+                        .and_then(|name| name.strip_suffix('`'))
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The `af.*` span names a source emits: the name literal of every `span!(` macro (`info_span!`,
+/// `process_span!`), the explicit parent skipped; unit tests included.
+fn emitted(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for (at, _) in text.match_indices("span!(") {
+        let rest = &text[at + "span!(".len()..];
+        let Some(open) = rest.find('"') else {
+            continue;
+        };
+        if rest[..open].contains(')') {
+            continue;
+        }
+        let rest = &rest[open + 1..];
+        if let Some(close) = rest.find('"') {
+            let name = &rest[..close];
+            if name.starts_with("af.") {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
+}
+
+/// Design §7.1 (P3): every span name any crate's source emits is a row of the catalogue table
+/// in `docs/architecture.md`, so a new span site without its row fails here.
+#[test]
+fn telemetry_span_catalogue() {
+    let catalogue = catalogue();
+    let crates = workspace_root().join("crates");
+    let mut found = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir(&crates).unwrap().filter_map(Result::ok) {
+        let mut files = Vec::new();
+        rust_files(&entry.path().join("src"), &mut files);
+        for file in files {
+            for name in emitted(&std::fs::read_to_string(&file).unwrap()) {
+                found.entry(name).or_insert_with(|| file.clone());
+            }
+        }
+    }
+    for phase in [
+        "af.run",
+        "af.check",
+        "af.harness",
+        "af.git",
+        "af.store.append",
+        "af.snapshot.capture",
+        "af.measurement.repetition",
+    ] {
+        assert!(found.contains_key(phase), "{phase} is emitted: {found:?}");
+    }
+    for (name, file) in &found {
+        assert!(
+            catalogue.contains(name),
+            "{name}, emitted in {}, is not a row of the catalogue in docs/architecture.md",
+            file.display()
+        );
+    }
+    // The scanner reads the forms the sources use.
+    assert_eq!(
+        emitted("tracing::info_span!(\n    parent: &self.run,\n    \"af.plan\",\n)"),
+        ["af.plan"]
+    );
+    assert_eq!(
+        emitted("review_telemetry::process_span!(\"af.git\", process.command = \"git\")"),
+        ["af.git"]
+    );
+    assert!(emitted("tracing::info_span!(\"other\")").is_empty());
+}

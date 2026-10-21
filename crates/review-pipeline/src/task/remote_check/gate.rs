@@ -129,6 +129,17 @@ impl Tools<'_> {
         for (name, value) in environment {
             command.env(name, value);
         }
+        // A git process is an `af.git` span like every other; `gh` is an `af.process`.
+        let span = if program == "git" {
+            crate::telemetry::git(
+                args.first()
+                    .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+                    .as_deref(),
+            )
+        } else {
+            crate::telemetry::process(program, "remote_check")
+        };
+        let _running = span.enter();
         let captured = match self.cancellation {
             Some(flag) => review_process::run_supervised_captured_cancellable_with_policy(
                 &mut command,
@@ -144,6 +155,7 @@ impl Tools<'_> {
                 ExitPolicy::KillProcessGroup,
             ),
         };
+        crate::telemetry::process_capture(&span, &captured);
         match captured.status {
             Ok(status) if status.success() => Ok(captured.stdout),
             Ok(_) => {

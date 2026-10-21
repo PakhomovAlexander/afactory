@@ -151,6 +151,13 @@ pub(crate) fn begin(kind: RunKind) -> Recording {
     };
     let mut telemetry = Telemetry::start(start);
     telemetry.install_subscriber();
+    // From `spans` on every execution's run starts with its configuration record, whose
+    // machine sections the command knows (design §7.4).
+    if settings.level != review_telemetry::level::Level::Metrics {
+        review_pipeline::telemetry::set_machine_config(Box::new(
+            super::config_record::machine_config,
+        ));
+    }
     let command = tracing::info_span!(
         "af.command",
         process.command = "af",

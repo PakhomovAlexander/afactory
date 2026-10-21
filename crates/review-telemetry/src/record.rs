@@ -882,7 +882,7 @@ pub enum Oversized<'a> {
 /// identity. This set is closed: a value earns the identity exemption only here, and only when
 /// it is exactly a kernel identity ([`redact::is_kernel_identity`]); every other string is
 /// judged as untrusted text.
-pub const IDENTITY_POSITIONS: [&str; 30] = [
+pub const IDENTITY_POSITIONS: [&str; 36] = [
     "af.store_id",
     "af.run_id",
     "af.task_id",
@@ -899,6 +899,12 @@ pub const IDENTITY_POSITIONS: [&str; 30] = [
     "af.plan_digest",
     "af.snapshot_id",
     "af.artifact_id",
+    "af.snapshot",
+    "af.check.fingerprint",
+    "af.warm.key",
+    "af.af_toml.digest",
+    "af.af_lock.digest",
+    "af.config.text.digest",
     "trace_id",
     "span_id",
     "parent_span_id",

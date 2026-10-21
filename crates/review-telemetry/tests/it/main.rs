@@ -2,6 +2,7 @@
 
 mod blobs;
 mod budget;
+mod config;
 mod consumer;
 mod dirs;
 mod history;

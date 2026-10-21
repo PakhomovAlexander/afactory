@@ -2124,6 +2124,149 @@ fn telemetry_commands_match_their_goldens() {
     assert!(text(&unknown).1.contains("unknown run task:none"));
 }
 
+/// Design §7.4 and §10 (P3): `af telemetry config` over one recorded execution whose
+/// configuration record spans several parts, in text and as its `af/TelemetryConfig@1`
+/// document, against goldens: the rows in the record's fixed order, an environment-origin value
+/// as `<env>` with the variable's name as its origin, the variable names without values, a
+/// secret-named key withheld, and the texts named at `content`.
+#[test]
+fn telemetry_config_matches_its_golden() {
+    use review_telemetry::record::{Attrs, ConfigRow, SealExit, SpanKind, SpanStatus};
+    let machine = Machine::new();
+    let root = machine.telemetry();
+    let segment = "1700000200000-4244-0c1d2e3f";
+    let writer = golden_writer(&root, segment, 1_700_000_200_000);
+    let execution = review_telemetry::trace::Execution {
+        store_id: GOLDEN_STORE.into(),
+        run_id: GOLDEN_RUN.into(),
+        execution_id: segment.into(),
+        ordinal: 1,
+        store_sequence_at_start: 2,
+    };
+    let trace = execution.trace_id();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let run = writer
+        .span_start(
+            Some(&trace),
+            Some(&command),
+            "af.run",
+            SpanKind::Internal,
+            execution
+                .attributes()
+                .enumerated("af.run.kind", "task")
+                .text("af.task_id", "golden"),
+        )
+        .unwrap();
+    let row = |layer: &str, key: &str, value: &str, origin: Option<&str>| ConfigRow {
+        key: key.into(),
+        value: value.into(),
+        layer: layer.into(),
+        origin: origin.map(str::to_string),
+    };
+    let mut rows = vec![
+        row("version", "version.version", "0.0.0-golden", None),
+        row("version", "version.target", "aarch64-apple-darwin", None),
+        row("built-in", "storage.max_bytes", "\"32GiB\"", None),
+        row(
+            "environment",
+            "telemetry.level",
+            "<env>",
+            Some("AF_TELEMETRY__LEVEL"),
+        ),
+        row(
+            "user",
+            "telemetry.flush_bytes",
+            "\"128KiB\"",
+            Some("/home/golden/.config/af/config.toml:3"),
+        ),
+        row("user", "provider.api_token", "violet", None),
+        row("policy", "af.policy_rev", &digest('1'), None),
+        row("policy", "af.pipeline", "fixture/plain", None),
+        row("policy", "af.pipeline.digest", &digest('2'), None),
+        row("policy", "af.af_toml.digest", &digest('4'), None),
+        row("policy", "af.task_id", "golden", None),
+        row("policy", "af.task.kind", "implement", None),
+    ];
+    // The rest of a long effective configuration.
+    let configuration: Vec<ConfigRow> = (0..48)
+        .map(|index| {
+            row(
+                "built-in",
+                &format!("routing.rule_{index:02}"),
+                "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+                None,
+            )
+        })
+        .collect();
+    rows.splice(5..5, configuration);
+    for node in 0..64 {
+        rows.push(row(
+            "binding",
+            &format!("root.nodes.n{node:02}"),
+            "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+            None,
+        ));
+    }
+    rows.extend([
+        row(
+            "provider",
+            "claude-main",
+            "kind=claude grant=<grant:CLAUDE_CONFIG_DIR> declared=registry",
+            None,
+        ),
+        row("harness", "claude", "2.1.303 (Claude Code)", None),
+        row("harness", "claude_code.managed_settings", "", None),
+        row("host", "host.os", "macos", None),
+        row("variable", "AF_TELEMETRY__LEVEL", "", None),
+    ]);
+    let parts = writer.config(segment, rows).unwrap();
+    assert!(parts >= 2, "a record over 16 KiB is written as parts");
+    writer.event(
+        &run,
+        "af.config.text",
+        Attrs::new()
+            .enumerated("af.config.text.kind", "pipeline")
+            .id("af.config.text.digest", digest('2'))
+            .int("af.config.text.bytes", 812),
+    );
+    writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
+    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+    writer.finish(SealExit::Ok).unwrap();
+
+    let at = &machine.root;
+    let config = json(&machine.af(at, &[], &["telemetry", "config", GOLDEN_RUN, "--json"]));
+    crate::schemas::valid(
+        &crate::schemas::validator("telemetry-config-v1.json"),
+        &config,
+    );
+    assert_eq!(config["state"], "complete");
+    assert!(!serde_json::to_string(&config).unwrap().contains("violet"));
+    golden("config.json", &normalized(&config, &machine.root, false));
+    let (printed, _) = text(&machine.af(at, &[], &["telemetry", "config", GOLDEN_RUN]));
+    golden("config.txt", &printed);
+    let mut extended = config.clone();
+    extended
+        .as_object_mut()
+        .unwrap()
+        .insert("unnamed".into(), Value::from(1));
+    assert!(!crate::schemas::validator("telemetry-config-v1.json").is_valid(&extended));
+    let selected = json(&machine.af(
+        at,
+        &[],
+        &[
+            "telemetry",
+            "config",
+            GOLDEN_RUN,
+            "--execution",
+            segment,
+            "--json",
+        ],
+    ));
+    assert_eq!(selected, config);
+}
+
 /// Design §5: totals never claim a scope they do not have. Execution 1 sealed, execution 2
 /// live: `runs` and `show` list the live one beside the sealed prefix (`executions.open`), the
 /// label names it (`retained executions 1–1, open: 2`), and `runs` says its totals cover both
@@ -2337,8 +2480,18 @@ fn telemetry_task_run_records_its_span_tree() {
         .collect();
     assert_eq!(tree[0], (0, "af.command"), "{tree:?}");
     assert_eq!(tree[1], (1, "af.run"), "{tree:?}");
-    assert_eq!(tree[2], (2, "af.authority.load"), "{tree:?}");
-    assert_eq!(tree[3], (2, "af.plan"), "{tree:?}");
+    // The run's own phases begin with the authority load and the plan; the Store operations
+    // and every phase below a node are P3's spans between them (`telemetry_phases`).
+    let run_children: Vec<&str> = tree
+        .iter()
+        .filter(|(depth, name)| *depth == 2 && !name.starts_with("af.store."))
+        .map(|(_, name)| *name)
+        .collect();
+    assert_eq!(
+        run_children[..2],
+        ["af.authority.load", "af.plan"],
+        "{tree:?}"
+    );
     assert_eq!(*tree.last().unwrap(), (1, "af.sweep"), "{tree:?}");
     let nodes = tree
         .iter()

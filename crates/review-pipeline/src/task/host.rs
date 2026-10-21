@@ -857,6 +857,17 @@ impl<'a> CapturedTaskHost<'a> {
             if context.invocation != *input {
                 return Err("Worker context belongs to another invocation".into());
             }
+            crate::telemetry::context_compose(
+                attempt.context_id(),
+                context
+                    .manifest
+                    .entries
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect(),
+                context.manifest.rendered_bytes,
+                context.manifest.estimated_tokens,
+            );
             if matches!(worker.transport, WorkerTransport::Model(_))
                 && context.manifest.estimated_tokens > attempt.reservation().tokens
             {

@@ -299,6 +299,107 @@ pub(crate) fn show(
     Ok(0)
 }
 
+/// `af telemetry config`.
+pub(crate) fn config(
+    json: bool,
+    dir: Option<PathBuf>,
+    run: String,
+    store: Option<String>,
+    execution: Option<String>,
+) -> Result<i32, String> {
+    const COMMAND: &str = "af telemetry config";
+    let root = match root_of(COMMAND, json, dir)? {
+        Ok(root) => root,
+        Err(code) => return Ok(code),
+    };
+    if !root.is_dir() {
+        return Err(format!(
+            "unknown run {run}: nothing has been recorded in {}",
+            root.display()
+        ));
+    }
+    let (index, read, _) = view::open(&root)?;
+    if let Some(note) = &read.reason {
+        eprintln!("{COMMAND}: {note}");
+    }
+    let (store_id, trace_id, _) = match resolve(COMMAND, &index, &run, store.as_deref())? {
+        Ok(found) => found,
+        Err(code) => return Ok(code),
+    };
+    let document = view::config(
+        &index,
+        &root,
+        read,
+        (&store_id, &run, &trace_id),
+        execution.as_deref(),
+    )??;
+    if json {
+        print_json(&document)?;
+    } else {
+        print!("{}", render_config(&document));
+    }
+    Ok(0)
+}
+
+/// The configuration record as text: its execution and state, then one line per row in the
+/// record's order — `layer  key = value  # origin` — and the texts it names.
+pub(crate) fn render_config(document: &view::ConfigRecord) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "configuration of run {}  store {}  execution {}{} — {}",
+        document.run_id,
+        short(&document.store_id),
+        document.execution_id,
+        document
+            .ordinal
+            .map(|ordinal| format!(" (#{ordinal})"))
+            .unwrap_or_default(),
+        match (document.state.as_str(), document.parts) {
+            ("complete", Some(parts)) => format!("complete, {parts} part(s)"),
+            ("incomplete", Some(parts)) => format!(
+                "incomplete: part(s) {} of {parts} missing",
+                document
+                    .missing_parts
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            ("incomplete", None) => "incomplete".into(),
+            _ => "absent: this execution recorded no configuration (a level below spans)".into(),
+        }
+    );
+    let width = document
+        .rows
+        .iter()
+        .map(|row| row.layer.len())
+        .max()
+        .unwrap_or(0);
+    for row in &document.rows {
+        let origin = row
+            .origin
+            .as_deref()
+            .map(|origin| format!("   # {}", super::home_relative(origin)))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "  {:<width$}  {} = {}{origin}",
+            row.layer, row.key, row.value
+        );
+    }
+    for text in &document.texts {
+        let _ = writeln!(
+            out,
+            "  text {}  {}  {}",
+            text.kind,
+            text.digest.as_deref().unwrap_or("-"),
+            text.bytes.map_or("size unknown".to_string(), human_bytes)
+        );
+    }
+    out
+}
+
 fn value_text(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),

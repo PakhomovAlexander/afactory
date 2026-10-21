@@ -9,11 +9,13 @@
 //!   reason, and it fails a required gate exactly as a failure does. So does a gate with no
 //!   required checks at all — a vacuous run is the most dangerous green there is.
 
+pub mod fingerprint;
 pub mod gate;
 pub mod runner;
 
 // The exec vocabulary is kernel-wide, so it lives in review-core; re-exported here
 // because a check command is still the canonical use.
+pub use fingerprint::FingerprintInputs;
 pub use gate::{GateDecision, GateOutcome};
 pub use review_core::exec::{Arg, Command};
 pub use runner::{

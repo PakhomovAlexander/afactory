@@ -132,7 +132,8 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             task_sandbox_mode(access),
             &last_message,
         );
-        let mut runner = ModelRunner::new(workdir, timeout);
+        let mut runner = ModelRunner::new(workdir, timeout)
+            .with_harness("openai", self.model_settings().map(|(model, _)| model));
         if access.has_shell() {
             // A shell child must not outlive the Attempt that started it.
             runner = runner.killing_process_group_on_exit();

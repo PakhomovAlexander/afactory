@@ -1,0 +1,131 @@
+configuration of run task:sha256:7777777777777777777777777777777777777777777777777777777777777777  store 555555555555  execution 1700000200000-4244-0c1d2e3f (#1) — complete, 2 part(s)
+  version      version.version = 0.0.0-golden
+  version      version.target = aarch64-apple-darwin
+  built-in     storage.max_bytes = "32GiB"
+  environment  telemetry.level = <env>   # AF_TELEMETRY__LEVEL
+  user         telemetry.flush_bytes = "128KiB"   # /home/golden/.config/af/config.toml:3
+  built-in     routing.rule_00 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_01 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_02 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_03 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_04 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_05 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_06 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_07 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_08 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_09 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_10 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_11 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_12 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_13 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_14 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_15 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_16 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_17 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_18 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_19 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_20 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_21 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_22 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_23 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_24 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_25 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_26 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_27 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_28 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_29 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_30 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_31 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_32 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_33 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_34 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_35 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_36 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_37 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_38 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_39 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_40 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_41 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_42 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_43 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_44 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_45 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_46 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  built-in     routing.rule_47 = "crates/review-pipeline/src/** → fixture/correctness-reviewer"
+  user         provider.api_token = [withheld]
+  policy       af.policy_rev = sha256:1111111111111111111111111111111111111111111111111111111111111111
+  policy       af.pipeline = fixture/plain
+  policy       af.pipeline.digest = sha256:2222222222222222222222222222222222222222222222222222222222222222
+  policy       af.af_toml.digest = sha256:4444444444444444444444444444444444444444444444444444444444444444
+  policy       af.task_id = golden
+  policy       af.task.kind = implement
+  binding      root.nodes.n00 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n01 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n02 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n03 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n04 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n05 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n06 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n07 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n08 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n09 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n10 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n11 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n12 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n13 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n14 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n15 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n16 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n17 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n18 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n19 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n20 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n21 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n22 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n23 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n24 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n25 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n26 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n27 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n28 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n29 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n30 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n31 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n32 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n33 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n34 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n35 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n36 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n37 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n38 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n39 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n40 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n41 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n42 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n43 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n44 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n45 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n46 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n47 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n48 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n49 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n50 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n51 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n52 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n53 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n54 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n55 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n56 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n57 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n58 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n59 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n60 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n61 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n62 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  binding      root.nodes.n63 = worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high
+  provider     claude-main = kind=claude grant=<grant:CLAUDE_CONFIG_DIR> declared=registry
+  harness      claude = 2.1.303 (Claude Code)
+  harness      claude_code.managed_settings = 
+  host         host.os = macos
+  variable     AF_TELEMETRY__LEVEL = 
+  text pipeline  sha256:2222222222222222222222222222222222222222222222222222222222222222  812 B

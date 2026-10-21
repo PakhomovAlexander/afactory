@@ -44,9 +44,11 @@ pub const RUNS_SCHEMA: &str = "af/telemetry-runs@1";
 pub const SHOW_SCHEMA: &str = "af/telemetry-show@1";
 /// `af/telemetry-tail@1`, one line per span end or event.
 pub const TAIL_SCHEMA: &str = "af/telemetry-tail@1";
+/// The assembled configuration record `af telemetry config` prints (design §7.4, §10).
+pub const CONFIG_SCHEMA: &str = crate::record::schema::CONFIG;
 
 /// The attributes `show` prints beside each span; `--span` prints every one.
-pub const KEY_ATTRIBUTES: [&str; 27] = [
+pub const KEY_ATTRIBUTES: [&str; 46] = [
     "af.run.kind",
     "af.task_id",
     "af.campaign",
@@ -74,6 +76,25 @@ pub const KEY_ATTRIBUTES: [&str; 27] = [
     "af.sweep.bytes_before",
     "af.sweep.bytes_after",
     "af.sweep.evicted",
+    "af.snapshot",
+    "af.snapshot.files",
+    "af.cas.op",
+    "af.warm.result",
+    "af.gate.decision",
+    "af.check.name",
+    "af.check.status",
+    "af.check.fingerprint",
+    "af.check.warm",
+    "af.context.estimated_tokens",
+    "af.admission.wait_ms",
+    "af.output.valid",
+    "af.store.op",
+    "af.git.op",
+    "af.process.kind",
+    "af.measurement.id",
+    "af.rusage.user_ms",
+    "af.rusage.system_ms",
+    "af.rusage.max_rss_bytes",
 ];
 
 /// How the index was read for a document.
@@ -1920,6 +1941,156 @@ pub fn absolute(path: PathBuf) -> PathBuf {
     } else {
         std::env::current_dir().map_or(path.clone(), |cwd| cwd.join(path))
     }
+}
+
+// ------------------------------------------------------------------------------------------
+// config
+
+/// One text an execution's configuration names (`af.config.text`): its kind, digest and size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigText {
+    /// `pipeline`, `task_file` or `af_toml`.
+    pub kind: String,
+    pub digest: Option<String>,
+    pub bytes: Option<u64>,
+}
+
+/// `af/TelemetryConfig@1` as `af telemetry config` prints it: an execution's configuration
+/// record assembled from its `config` parts, `incomplete` when one is missing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigRecord {
+    pub schema: String,
+    pub directory: String,
+    pub index: IndexRead,
+    pub store_id: String,
+    pub run_id: String,
+    pub execution_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordinal: Option<u64>,
+    /// `complete` (every part from 1 to the expected count, the last one marked complete),
+    /// `incomplete` (a part is missing) or `absent` (the execution recorded none: a level
+    /// below `spans`).
+    pub state: String,
+    /// The parts the record was written as, when any part is retained.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<u32>,
+    /// The parts that are not retained.
+    pub missing_parts: Vec<u32>,
+    /// Every retained row, in the record's order.
+    pub rows: Vec<crate::record::ConfigRow>,
+    /// The texts the execution named at `content`.
+    pub texts: Vec<ConfigText>,
+}
+
+/// The configuration record of one execution of the run `trace_id`: `execution`, or the latest
+/// (the greatest committed ordinal, else the latest start). `Err` names an unknown execution.
+pub fn config(
+    index: &Index,
+    directory: &Path,
+    read: IndexRead,
+    run: (&str, &str, &str),
+    execution: Option<&str>,
+) -> Result<Result<ConfigRecord, String>, String> {
+    let (store_id, run_id, trace_id) = run;
+    let executions = executions(index, trace_id)?;
+    let chosen = match execution {
+        Some(id) => executions
+            .iter()
+            .find(|execution| execution.execution_id == id),
+        None => latest(&executions).or(executions.last()),
+    };
+    let Some(chosen) = chosen else {
+        return Ok(Err(match execution {
+            Some(id) => format!("run {run_id} has no execution {id}"),
+            None => format!("run {run_id} has no retained execution"),
+        }));
+    };
+    let parts: Vec<(u32, u32, bool, String)> = {
+        let mut statement = index
+            .connection()
+            .prepare(
+                "SELECT part, parts, complete, rows FROM configs WHERE execution_id = ?1
+                 ORDER BY part, segment_id, seq",
+            )
+            .map_err(sql)?;
+        statement
+            .query_map(params![chosen.execution_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get::<_, i64>(2)? != 0,
+                    row.get(3)?,
+                ))
+            })
+            .map_err(sql)?
+            .collect::<Result<_, _>>()
+            .map_err(sql)?
+    };
+    let expected = parts.iter().map(|(_, parts, _, _)| *parts).max();
+    let mut rows = Vec::new();
+    let mut found = BTreeSet::new();
+    for (part, _, _, text) in &parts {
+        if !found.insert(*part) {
+            continue;
+        }
+        let part_rows: Vec<crate::record::ConfigRow> =
+            serde_json::from_str(text).map_err(|error| error.to_string())?;
+        rows.extend(part_rows);
+    }
+    let missing: Vec<u32> = (1..=expected.unwrap_or(0))
+        .filter(|part| !found.contains(part))
+        .collect();
+    let closed = parts
+        .iter()
+        .any(|(part, count, complete, _)| *complete && Some(*part) == expected && part == count);
+    let state = match expected {
+        None => "absent",
+        Some(_) if missing.is_empty() && closed => "complete",
+        Some(_) => "incomplete",
+    };
+    let texts = {
+        let mut statement = index
+            .connection()
+            .prepare(
+                "SELECT json_extract(attributes, '$.\"af.config.text.kind\"'),
+                        json_extract(attributes, '$.\"af.config.text.digest\"'),
+                        json_extract(attributes, '$.\"af.config.text.bytes\"')
+                 FROM events WHERE span_id = ?1 AND name = 'af.config.text'
+                 ORDER BY segment_id, seq",
+            )
+            .map_err(sql)?;
+        statement
+            .query_map(params![chosen.span_id], |row| {
+                Ok(ConfigText {
+                    kind: row
+                        .get::<_, Option<String>>(0)?
+                        .unwrap_or_else(|| "unknown".into()),
+                    digest: row.get(1)?,
+                    bytes: row
+                        .get::<_, Option<i64>>(2)?
+                        .and_then(|bytes| u64::try_from(bytes).ok()),
+                })
+            })
+            .map_err(sql)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql)?
+    };
+    Ok(Ok(ConfigRecord {
+        schema: CONFIG_SCHEMA.into(),
+        directory: directory.display().to_string(),
+        index: read,
+        store_id: store_id.to_string(),
+        run_id: run_id.to_string(),
+        execution_id: chosen.execution_id.clone(),
+        ordinal: chosen.ordinal,
+        state: state.into(),
+        parts: expected,
+        missing_parts: missing,
+        rows,
+        texts,
+    }))
 }
 
 #[cfg(test)]

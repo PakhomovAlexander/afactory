@@ -1,0 +1,797 @@
+{
+  "schema": "af/TelemetryConfig@1",
+  "directory": "<root>/xstate/af/telemetry",
+  "index": {
+    "state": "fresh"
+  },
+  "store_id": "5555555555555555555555555555555555555555555555555555555555555555",
+  "run_id": "task:sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "execution_id": "1700000200000-4244-0c1d2e3f",
+  "ordinal": 1,
+  "state": "complete",
+  "parts": 2,
+  "missing_parts": [],
+  "rows": [
+    {
+      "key": "version.version",
+      "value": "0.0.0-golden",
+      "layer": "version",
+      "origin": null
+    },
+    {
+      "key": "version.target",
+      "value": "aarch64-apple-darwin",
+      "layer": "version",
+      "origin": null
+    },
+    {
+      "key": "storage.max_bytes",
+      "value": "\"32GiB\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "telemetry.level",
+      "value": "<env>",
+      "layer": "environment",
+      "origin": "AF_TELEMETRY__LEVEL"
+    },
+    {
+      "key": "telemetry.flush_bytes",
+      "value": "\"128KiB\"",
+      "layer": "user",
+      "origin": "/home/golden/.config/af/config.toml:3"
+    },
+    {
+      "key": "routing.rule_00",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_01",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_02",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_03",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_04",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_05",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_06",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_07",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_08",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_09",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_10",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_11",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_12",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_13",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_14",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_15",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_16",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_17",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_18",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_19",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_20",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_21",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_22",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_23",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_24",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_25",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_26",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_27",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_28",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_29",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_30",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_31",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_32",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_33",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_34",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_35",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_36",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_37",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_38",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_39",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_40",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_41",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_42",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_43",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_44",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_45",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_46",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "routing.rule_47",
+      "value": "\"crates/review-pipeline/src/** → fixture/correctness-reviewer\"",
+      "layer": "built-in",
+      "origin": null
+    },
+    {
+      "key": "provider.api_token",
+      "value": "[withheld]",
+      "layer": "user",
+      "origin": null
+    },
+    {
+      "key": "af.policy_rev",
+      "value": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.pipeline",
+      "value": "fixture/plain",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.pipeline.digest",
+      "value": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.af_toml.digest",
+      "value": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.task_id",
+      "value": "golden",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "af.task.kind",
+      "value": "implement",
+      "layer": "policy",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n00",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n01",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n02",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n03",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n04",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n05",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n06",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n07",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n08",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n09",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n10",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n11",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n12",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n13",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n14",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n15",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n16",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n17",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n18",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n19",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n20",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n21",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n22",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n23",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n24",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n25",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n26",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n27",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n28",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n29",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n30",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n31",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n32",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n33",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n34",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n35",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n36",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n37",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n38",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n39",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n40",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n41",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n42",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n43",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n44",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n45",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n46",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n47",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n48",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n49",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n50",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n51",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n52",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n53",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n54",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n55",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n56",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n57",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n58",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n59",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n60",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n61",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n62",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "root.nodes.n63",
+      "value": "worker=fixture/implementer provider=claude-main model=claude-opus-5-5 effort=high",
+      "layer": "binding",
+      "origin": null
+    },
+    {
+      "key": "claude-main",
+      "value": "kind=claude grant=<grant:CLAUDE_CONFIG_DIR> declared=registry",
+      "layer": "provider",
+      "origin": null
+    },
+    {
+      "key": "claude",
+      "value": "2.1.303 (Claude Code)",
+      "layer": "harness",
+      "origin": null
+    },
+    {
+      "key": "claude_code.managed_settings",
+      "value": "",
+      "layer": "harness",
+      "origin": null
+    },
+    {
+      "key": "host.os",
+      "value": "macos",
+      "layer": "host",
+      "origin": null
+    },
+    {
+      "key": "AF_TELEMETRY__LEVEL",
+      "value": "",
+      "layer": "variable",
+      "origin": null
+    }
+  ],
+  "texts": [
+    {
+      "kind": "pipeline",
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "bytes": 812
+    }
+  ]
+}

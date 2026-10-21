@@ -239,12 +239,12 @@ Campaign Store. The kernel never reads it: identity, replay, the Ledger, budgets
 every Worker input are the same whether it is on, off or deleted (ADR-0153). `[telemetry] \
 level` is `off`, `metrics`, `spans` (the default) or `content`, set from machine layers only; \
 see `af help telemetry`.\n\n\
-`status`, `runs`, `show` and `tail` read; `reindex` recovers crashed writers' segments and \
+`status`, `runs`, `show`, `config` and `tail` read; `reindex` recovers crashed writers' segments and \
 rebuilds the index; `gc --apply` evicts telemetry under the Storage Budget's rules. None records \
 telemetry, contacts a network or reads a Store. Exit codes: 0 success, 1 the telemetry \
 directory cannot be read, the index is in use or a run is unknown, 2 a wrong command line or a \
 refused `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry status\n  af telemetry runs --since 7d\n  af telemetry show RUN_ID\n  af telemetry tail\n  af telemetry gc\n  af telemetry status --json | jq .segments\n  af telemetry reindex\n  af telemetry status --dir ./copied-telemetry\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID"
+        after_long_help = "Examples:\n  af telemetry status\n  af telemetry runs --since 7d\n  af telemetry show RUN_ID\n  af telemetry config RUN_ID\n  af telemetry tail\n  af telemetry gc\n  af telemetry status --json | jq .segments\n  af telemetry reindex\n  af telemetry status --dir ./copied-telemetry\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID"
     )]
     Telemetry {
         #[command(subcommand)]
@@ -1573,6 +1573,46 @@ unknown, 2 a wrong command line, a run two Stores share without `--store`, or a 
         #[arg(long, value_name = "N", help_heading = "Selector")]
         depth: Option<u64>,
         /// Machine-readable af/telemetry-show@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// One execution's configuration record: version, configuration with origins, plan, bindings, Providers, host
+    #[command(
+        long_about = "One execution's configuration record: version, configuration with origins, plan, bindings, Providers, host.\n\n\
+RUN is the kernel run id `af telemetry runs` lists. The record (`af/TelemetryConfig@1`) is \
+written at `spans` and above when an execution's run starts, as one or more `config` parts in \
+one fixed order: `af --version --json`; the effective configuration, one row per key with its \
+layer, its file (home-relative) and line, and its value — a value whose origin is the \
+environment is `<env>`, never the value; the policy revision, the pipeline's name, digest and \
+nodes, the digests of `.af/af.toml` and `.af/af.lock` and the Task's id, kind and pipeline; the \
+execution bindings (node, Worker, Provider, model, effort); the Provider registry entries by \
+name and kind, grant paths as placeholders; the harness versions the preflight probed and the \
+Claude Code managed-settings digests; the host; and the names, never the values, of the `AF_*` \
+and `OTEL_*` variables present. It assembles the parts and says `incomplete` when one is \
+missing. The latest execution by default (the greatest committed ordinal), `--execution ID` for \
+another. At `content` the texts the record names (the pipeline, the Task file, `.af/af.toml`) \
+are listed with their digest and size. When two Stores record the same run id it lists both and \
+asks for `--store ID`.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or execution is \
+unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
+`[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry config RUN_ID\n  af telemetry config RUN_ID --execution EXECUTION_ID\n  af telemetry config RUN_ID --json | jq '.rows[] | select(.layer == \"environment\")'"
+    )]
+    Config {
+        /// The kernel run id
+        #[arg(value_name = "RUN")]
+        run: String,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// This execution (`af.execution_id`) instead of the latest
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        execution: Option<String>,
+        /// Machine-readable af/TelemetryConfig@1
         #[arg(long, help_heading = "Output")]
         json: bool,
         /// Read this telemetry directory instead of the configured one (one copied from another machine)

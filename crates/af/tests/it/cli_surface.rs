@@ -269,7 +269,9 @@ fn provider_models_help_and_man_page_describe_the_command() {
 #[test]
 fn telemetry_help_and_man_pages_describe_the_commands() {
     let namespace = out(&af(&["telemetry", "--help"]));
-    for command in ["status ", "reindex ", "runs ", "show ", "tail ", "gc "] {
+    for command in [
+        "status ", "reindex ", "runs ", "show ", "config ", "tail ", "gc ",
+    ] {
         assert!(
             namespace
                 .lines()
@@ -303,7 +305,8 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
             }
         }
     }
-    // The readers of P2 (design §10): what they print, what they never do, their documents.
+    // The readers of P2 and P3 (design §10): what they print, what they never do, their
+    // documents.
     for (command, usage, schema, options) in [
         (
             "runs",
@@ -323,6 +326,12 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
                 "--dir <PATH>",
             ]
             .as_slice(),
+        ),
+        (
+            "config",
+            "Usage: af telemetry config [OPTIONS] <RUN>",
+            "af/TelemetryConfig@1",
+            ["--store <ID>", "--execution <ID>", "--dir <PATH>", "<env>"].as_slice(),
         ),
         (
             "tail",
@@ -372,6 +381,7 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "af telemetry reindex",
         "af telemetry runs",
         "af telemetry show",
+        "af telemetry config",
         "af telemetry tail",
         "af telemetry gc",
         "machine layers only",
@@ -387,6 +397,7 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "af-telemetry-reindex.1",
         "af-telemetry-runs.1",
         "af-telemetry-show.1",
+        "af-telemetry-config.1",
         "af-telemetry-tail.1",
         "af-telemetry-gc.1",
         "af-telemetry.7",

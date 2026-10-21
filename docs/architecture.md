@@ -552,3 +552,50 @@ identity, replay, the Ledger, or convergence reads it — the stream stays byte-
 deterministic — while `af review report`, `campaigns`, and `ledger` do: all three show the
 Campaign's wall-clock, and `af review report` also shows each Task Attempt's wall-clock and
 Provider usage. An absent row means not recorded, never zero.
+
+## Telemetry
+
+Telemetry records what `af` does in a store of its own and is never read by the kernel
+([ADR-0153](adr/0153-record-telemetry-in-its-own-store-and-never-let-it-steer.md);
+[`telemetry.md`](telemetry.md)). Each phase is a `tracing` span emitted by the crate that owns
+it; a span that does not name the run's identity (`af.store_id`, `af.run_id`, `af.run.kind`,
+`af.execution_id`) takes it from its parent, and a phase that belongs to a run (a Store
+operation, a git process, a capture, a check) is recorded only inside a span of one.
+`review-process` links no telemetry (ADR-0026): the crates that receive its results record the
+process spans from them.
+
+### Telemetry span catalogue
+
+Every span name af emits is a row here; `telemetry_span_catalogue` fails when a source names
+one that is not. `af.turn`, `af.tool` and `af.sink` join with the harness-stream and sink
+packages of the design note.
+
+| Span | Kind | Parent | Attributes |
+| --- | --- | --- | --- |
+| `af.command` | internal | root | `process.command`; at its end `process.exit_code` and the first run's `af.store_id`, `af.run_id` |
+| `af.run` | internal | `af.command`; a measurement's: the measure Attempt | the run identity, `af.execution.ordinal`, `af.store.sequence_at_start`, `af.task_id`, `af.campaign`, `af.round`, `af.epoch`, `af.policy_rev`, `af.pipeline`, `af.pipeline.digest`; at its end `af.outcome` and the charge. A kernel measurement (ADR-0132) is its own run: `af.run.kind = measure`, its run id derived from the Task run, the Attempt and the measure, `af.measure`, and at its end `af.measurement.id` |
+| `af.authority.load` | internal | `af.run` | `af.policy_rev`, `af.pipeline`, `af.pipeline.digest` |
+| `af.plan` | internal | `af.run` | `af.plan_digest`, `af.pipeline`, `af.node_count`, `af.bindings`; one `node` record per plan node |
+| `af.node` | internal | `af.run` | `af.node_id`, `af.node.kind`, `af.outcome` |
+| `af.attempt` | internal | `af.node` | `af.attempt_id`, `af.epoch`, `af.worker`, `af.provider`, `af.provider.kind`, the kernel's usage and charge, outcome |
+| `af.admission` | internal | `af.attempt` | `af.admission.reserved_tokens`, `af.provider`, `af.admission.wait_ms`, outcome (`refused` below the free-disk floor) |
+| `af.context.compose` | internal | `af.attempt` | `af.context.manifest`, `af.context.bytes`, `af.context.estimated_tokens`, `af.context.layers` |
+| `af.harness` | process | `af.attempt` | `gen_ai.operation.name = invoke_agent`, `gen_ai.provider.name`, `gen_ai.request.model`, `af.native`, the process attributes |
+| `af.output.parse` | internal | `af.attempt` | `af.output.contract`, `af.output.valid`, the refusal (`invalid_output_contract`) |
+| `af.usage.account` | internal | `af.attempt` | `af.usage.observation`, `af.usage.unknown_cause`, `af.usage.chargeable_tokens` |
+| `af.gate` | internal | a check node's `af.attempt`, or the review Gate's | `af.gate.checks`, `af.gate.decision`, `af.check.warm` |
+| `af.check` | process | `af.gate`, or `af.measurement.repetition` | `af.check.name`, `af.check.fingerprint` (`af/check-fingerprint@1` or `unknown`), `af.check.status` (`passed`, `failed`, `not_run`), `af.check.warm`, the process attributes |
+| `af.measurement.repetition` | internal | a measurement's `af.run` | `af.measurement.repetition`, outcome |
+| `af.warm.restore`, `af.warm.save` | internal | a check node's `af.attempt` | `af.warm.key`, `af.warm.result` (`hit`, `miss`), `af.warm.kinds`, `af.warm.bytes` (available before, evicted after) |
+| `af.snapshot.capture` | internal | any span of a run | `af.snapshot.kind` (`committed`, `worktree`, `sealed`), `af.snapshot`, `af.snapshot.files`, `af.snapshot.bytes` |
+| `af.cas.materialize` | internal | any span of a run | `af.cas.op`, `af.cas.files`, `af.cas.bytes` |
+| `af.store.append`, `af.store.read` | internal | any span of a run | `af.store.op` (`append`, `replay`), `af.store.events`, `af.store.bytes` |
+| `af.git` | process | any span of a run | `af.git.op` (the subcommand), the process attributes; `ok` whenever git exited, its code in `process.exit_code` |
+| `af.remote_check` | internal | `af.gate` | `af.remote_check.branch`, `af.remote_check.checks`, `af.remote_check.pull_request`, outcome |
+| `af.process` | process | any span of a run | `af.process.kind` (`container command`, `container cleanup`, `runtime info probe`, `toolchain_probe`, `remote_check`), the process attributes |
+| `af.sweep` | internal | `af.command` | `af.sweep.bytes_before`, `af.sweep.bytes_after`, `af.sweep.evicted` |
+
+The process attributes of every `process` span: `process.pid`, `process.command` (the program
+only), `process.exit_code`, `process.signal`, `af.rusage.user_ms`, `af.rusage.system_ms`,
+`af.rusage.max_rss_bytes`, `af.stdout_bytes`, `af.stderr_bytes`, `af.stderr_held`. A figure the
+platform did not deliver is absent, never zero.

@@ -1,4 +1,4 @@
-//! `af telemetry` (ADR-0153): `status`, `reindex`, `runs`, `show`, `tail` and `gc` — the reader
+//! `af telemetry` (ADR-0153): `status`, `reindex`, `runs`, `show`, `config`, `tail` and `gc` — the reader
 //! side of Telemetry, which only `af telemetry`, `af storage` and the TUI link — and the
 //! recording a command that runs a kernel run does ([`begin`], [`Recording::finish`]).
 //!
@@ -18,11 +18,12 @@ use review_telemetry::status::{
 use crate::config;
 use crate::storage::{self, human_bytes};
 
+mod config_record;
 mod recording;
 mod views;
 
 pub(crate) use recording::begin;
-pub(crate) use views::{gc, runs, show, tail};
+pub(crate) use views::{config, gc, runs, show, tail};
 
 /// The machine's `[telemetry]` table, or the refusal naming its key.
 pub(crate) fn settings() -> Result<Settings, String> {
