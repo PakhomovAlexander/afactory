@@ -399,7 +399,7 @@ impl EventStore {
         }
         let span = store_span("af.store.append", "append");
         let appended = span.in_scope(|| {
-            self.append_batch_committed(run_id, cas, events, task_permit, review_permit)
+            self.append_batch_committed(run_id, cas, events, task_permit, review_permit, applied)
         });
         if !span.is_disabled() {
             let bytes = events
@@ -418,6 +418,7 @@ impl EventStore {
         events: &[NewEvent],
         task_permit: Option<&task::WritePermit>,
         review_permit: Option<&task::execution::review::WritePermit>,
+        applied: Option<&task::TaskProjection>,
     ) -> Result<Vec<RunEvent>, StoreError> {
         if events.iter().any(|e| {
             matches!(
