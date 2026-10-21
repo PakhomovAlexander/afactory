@@ -656,30 +656,54 @@ fn cas_objects(state: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
     objects
 }
 
-/// The one-Attempt invocation fixture's Task run once at `level`, its Claude Worker the scripted
-/// harness of `fixtures/telemetry-bench/invocation-claude.py` printing the shape af asks for, with
-/// three chunks of intermediate tool output: the machine, the run's Store and its inspection.
-fn claude_task(level: &str) -> (crate::telemetry_runs::Machine, PathBuf, Value) {
+/// Every entry beneath `path`, `path` included, children before their directory, symlinks
+/// reported as neither file nor directory and never followed.
+fn walk_entries(path: &Path, visit: &mut dyn FnMut(&Path, std::fs::FileType)) {
+    let kind = std::fs::symlink_metadata(path).unwrap().file_type();
+    if kind.is_dir() {
+        for entry in std::fs::read_dir(path).unwrap() {
+            walk_entries(&entry.unwrap().path(), visit);
+        }
+    }
+    visit(path, kind);
+}
+
+/// The fixture repository `source` copied to `repo` and committed there. The gate materializes
+/// the source tree read-only and `cp -R` keeps those modes, so before anything writes into the
+/// copy or runs git in it every directory gets `0o700` and every file `0o600` on top of its
+/// mode, symlinks untouched (`copy_writable` of `scripts/telemetry-overhead.py`).
+fn fixture_repo(source: &Path, repo: &Path) {
     use std::os::unix::fs::PermissionsExt;
-    let machine = crate::telemetry_runs::Machine::new();
-    let fixture = workspace().join("fixtures/telemetry-bench/telemetry-bench-invocation-one");
-    let repo = machine.root.join("repo");
     assert!(
         std::process::Command::new("cp")
             .arg("-R")
-            .arg(fixture.join("repo"))
-            .arg(&repo)
+            .arg(source)
+            .arg(repo)
             .status()
             .unwrap()
             .success()
     );
+    walk_entries(repo, &mut |path, kind| {
+        let wanted = if kind.is_dir() {
+            0o700
+        } else if kind.is_file() {
+            0o600
+        } else {
+            return;
+        };
+        let mode = std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | wanted)).unwrap();
+    });
     for args in [
         vec!["init", "-q", "-b", "main"],
         vec!["add", "-A"],
         vec!["commit", "-qm", "fixture"],
     ] {
         let done = std::process::Command::new("git")
-            .current_dir(&repo)
+            .current_dir(repo)
             .args(&args)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -691,8 +715,19 @@ fn claude_task(level: &str) -> (crate::telemetry_runs::Machine, PathBuf, Value) 
             .env("GIT_COMMITTER_DATE", "2026-10-21T00:00:00Z")
             .status()
             .unwrap();
-        assert!(done.success());
+        assert!(done.success(), "git {args:?} in {}", repo.display());
     }
+}
+
+/// The one-Attempt invocation fixture's Task run once at `level`, its Claude Worker the scripted
+/// harness of `fixtures/telemetry-bench/invocation-claude.py` printing the shape af asks for, with
+/// three chunks of intermediate tool output: the machine, the run's Store and its inspection.
+fn claude_task(level: &str) -> (crate::telemetry_runs::Machine, PathBuf, Value) {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = crate::telemetry_runs::Machine::new();
+    let fixture = workspace().join("fixtures/telemetry-bench/telemetry-bench-invocation-one");
+    let repo = machine.root.join("repo");
+    fixture_repo(&fixture.join("repo"), &repo);
     let bin = machine.root.join("bin");
     let auth = machine.root.join("auth");
     std::fs::create_dir_all(&bin).unwrap();
@@ -757,6 +792,74 @@ fn claude_task(level: &str) -> (crate::telemetry_runs::Machine, PathBuf, Value) 
     let inspection: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(inspection["phase"]["kind"], "finished", "{level}");
     (machine, state, inspection)
+}
+
+/// The gate materializes the source tree read-only: `claude_task`'s copy of a read-only fixture
+/// repository accepts `git init`, `add` and `commit` (`fixture_repo` runs them) and a written
+/// file, and every directory and file of the copy outside git's own objects carries user write.
+#[test]
+fn telemetry_streams_fixture_copies_are_writable() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = crate::telemetry_runs::Machine::new();
+    let source = machine.root.join("read-only/repo");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    assert!(
+        std::process::Command::new("cp")
+            .arg("-R")
+            .arg(workspace().join("fixtures/telemetry-bench/telemetry-bench-invocation-one/repo"))
+            .arg(&source)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut files = 0;
+    walk_entries(&source, &mut |path, kind| {
+        let mode = if kind.is_dir() {
+            0o555
+        } else if kind.is_file() {
+            files += 1;
+            0o444
+        } else {
+            return;
+        };
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    });
+    assert!(files > 0, "the fixture repository has files");
+    assert!(std::fs::write(source.join("written.txt"), b"x").is_err());
+    let repo = machine.root.join("repo");
+    fixture_repo(&source, &repo);
+    std::fs::write(repo.join("written.txt"), b"written\n").unwrap();
+    let head = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(head.status.success(), "{head:?}");
+    walk_entries(&repo, &mut |path, kind| {
+        if path.strip_prefix(&repo).unwrap().starts_with(".git") {
+            return;
+        }
+        let wanted = if kind.is_dir() {
+            0o700
+        } else if kind.is_file() {
+            0o600
+        } else {
+            return;
+        };
+        let mode = std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & wanted, wanted, "{}: {mode:o}", path.display());
+    });
+    walk_entries(&source, &mut |path, kind| {
+        let mode = if kind.is_dir() { 0o755 } else { 0o644 };
+        if kind.is_dir() || kind.is_file() {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+    });
 }
 
 /// The raw evidence the Store records for the Claude harness's Attempts (the Worker's and the
