@@ -202,7 +202,7 @@ class Registry(unittest.TestCase):
         self.refuses("sample_timeout_seconds = 30", "sample_timeout_seconds = 121", "1..120")
         self.refuses("free_disk_floor_bytes = 10737418240", "free_disk_floor_bytes = 1073741824",
                      "free_disk_floor_bytes")
-        self.refuses("shard_sampling_minutes = 15", "shard_sampling_minutes = 31",
+        self.refuses("shard_sampling_minutes = 25", "shard_sampling_minutes = 31",
                      "hard maximum")
         self.refuses("serialized_envelope_bytes = 5605230", "serialized_envelope_bytes = 8388609",
                      "serialized_envelope_bytes")

@@ -59,14 +59,27 @@ exercised by direct fixture-writer tests. Changed setup contracts are
 `authority_plan_check_v3` and `authority_runtime_new_v3`; the seed writer is
 `authority_seed_v1`. Earlier reader contracts are refused.
 
-The quick tier distributes its complete instance set over sixteen shards, with the original
-maximum of two concurrent jobs. Each shard still has 15 sampling minutes and the whole run
-60 minutes. Pair counts, warmups, sentinels, tolerances, coverage and containment remain
-unchanged. Shards still contain whole instances with their paired same-host samples; a pair
-never crosses hosts. In the current registry each authority workload shares only with a short
-CLI discovery case; state-projection and stateful CLI setup are on other shards. The existing
-explicit shard override remains available for experiments. All setup, containment and cleanup
-reserves remain enforced, including the refusal to start a sample whose worst case cannot fit.
+The v3 trial `39672809416` still exhausted the two large authority schedules with zero
+sample failures. The plan-check shard on AMD EPYC 7763 completed 35 of 44 authority records
+at a median supervised time of 16.091 seconds. The runtime shard on AMD EPYC 9V74 completed
+39 of 44 at 14.620 seconds. Both stopped at the unchanged 255-second worst-case reservation
+for the next sample, leaving their later CLI and closing sentinel work unstarted. These
+original attempts remain retained; their incomplete coverage cannot establish readiness.
+
+The quick tier distributes its complete instance set over sixteen shards, with four concurrent
+jobs and up to 25 sampling minutes per shard inside the unchanged 60-minute total limit. These
+are resource defaults within the existing admitted ranges: the hard maxima remain eight jobs,
+30 sampling minutes per quick shard, and 120 total minutes. No hard maximum is raised. Four
+jobs allow the long workloads to overlap while later shards still fit the run's 60 minutes;
+the longer per-shard allocation accommodates their actual work and the existing reserves.
+
+Pair counts, warmups, sentinels, tolerances, per-sample timeouts, coverage and containment are
+unchanged. Shards contain whole instances with their paired same-host samples; a pair never
+crosses hosts. In the current registry each authority workload shares only with a CLI discovery
+case; state-projection and stateful CLI setup are on other shards. The explicit shard override
+remains available for experiments. All setup, containment and cleanup reserves remain enforced,
+including the refusal to start a sample whose worst case cannot fit. Resource allocation does
+not change a performance tolerance or turn a failed sample into a successful one.
 
 ## Consequences
 

@@ -1,7 +1,8 @@
 Reduce repeated performance-fixture setup by writing admitted authority Tasks once per side
 and shard, then restoring a private copy with a cold validator and a fresh production lease
-for every sample. Distribute the complete quick suite over sixteen schedules with the existing
-two-job concurrency, pair counts, coverage and wall-time bounds. Require complete full-suite
+for every sample. Distribute the complete quick suite over sixteen schedules, four at a time,
+with up to 25 sampling minutes per shard inside the unchanged 60-minute total limit.
+Keep the pair counts, coverage, performance thresholds and per-sample limits unchanged. Require complete full-suite
 bootstrap evidence before calibration; enforcement remains advisory.
 
 Authority compatibility: committed `.af/` policy is unchanged. The performance authority,

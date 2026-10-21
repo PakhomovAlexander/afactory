@@ -326,11 +326,12 @@ pending = ""
 [tiers.quick]
 description = "Pull requests and main pushes."
 profiles = [{ environment = "linux_x86_64_gnu_hosted", recipe = "linux_gnu_native_release" }]
-# Spread the full suite over sixteen bounded schedules. At most two execute together,
-# preserving the original concurrency and wall-time bounds (ADR-0193).
+# Spread the full suite over sixteen schedules, four at a time. Long authority workloads
+# may use 25 sampling minutes within the same 60-minute total limit (ADR-0193).
+# These defaults stay below the unchanged hard maxima of eight jobs and 30 minutes per shard.
 shards = 16
-concurrent_jobs = 2
-shard_sampling_minutes = 15
+concurrent_jobs = 4
+shard_sampling_minutes = 25
 run_total_minutes = 60
 
 [tiers.nightly]
