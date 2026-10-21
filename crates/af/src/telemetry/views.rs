@@ -341,8 +341,9 @@ pub(crate) fn config(
     Ok(0)
 }
 
-/// The configuration record as text: its execution and state, then one line per row in the
-/// record's order — `layer  key = value  # origin` — and the texts it names.
+/// The configuration record as text: its run, execution and state, one line per section with
+/// its state, then one line per row in the record's order — `layer  key = value  # origin` —
+/// and the texts it names.
 pub(crate) fn render_config(document: &view::ConfigRecord) -> String {
     let mut out = String::new();
     let _ = writeln!(
@@ -355,21 +356,30 @@ pub(crate) fn render_config(document: &view::ConfigRecord) -> String {
             .ordinal
             .map(|ordinal| format!(" (#{ordinal})"))
             .unwrap_or_default(),
-        match (document.state.as_str(), document.parts) {
-            ("complete", Some(parts)) => format!("complete, {parts} part(s)"),
-            ("incomplete", Some(parts)) => format!(
-                "incomplete: part(s) {} of {parts} missing",
-                document
-                    .missing_parts
-                    .iter()
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            ("incomplete", None) => "incomplete".into(),
-            _ => "absent: this execution recorded no configuration (a level below spans)".into(),
+        match document.state.as_str() {
+            "complete" | "incomplete" => document.state.clone(),
+            _ => "absent: this run recorded no configuration here (a level below spans)".into(),
         }
     );
+    if document.state != "absent" {
+        for section in &document.sections {
+            let state = match (section.state.as_str(), section.parts) {
+                ("complete", Some(parts)) => format!("complete, {parts} part(s)"),
+                ("incomplete", Some(parts)) => format!(
+                    "incomplete: part(s) {} of {parts} missing",
+                    section
+                        .missing_parts
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                _ => "unknown: not recorded (the run ended before it resolved) or not retained"
+                    .into(),
+            };
+            let _ = writeln!(out, "  section {}: {state}", section.section);
+        }
+    }
     let width = document
         .rows
         .iter()

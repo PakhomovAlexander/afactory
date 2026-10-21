@@ -97,6 +97,26 @@
       "payload_bytes": 89
     },
     {
+      "entry": "demand",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 15,
+      "log": "campaign-telemetry",
+      "sequence": 2,
+      "demand_id": "sha256:50b27998ddc3fa9d498b4c839b63f5f7ff5fbbb40b93b52525638f6921014c25",
+      "status": "open"
+    },
+    {
+      "entry": "lifecycle",
+      "execution_id": "1700000200000-4244-0c1d2e3f",
+      "seq": 16,
+      "time_unix_ns": "1700000200015000000",
+      "log": "campaign-telemetry",
+      "sequence": 2,
+      "name": "af.demand.opened",
+      "demand_id": "sha256:50b27998ddc3fa9d498b4c839b63f5f7ff5fbbb40b93b52525638f6921014c25",
+      "status": "open"
+    },
+    {
       "entry": "event",
       "execution_id": "1700000200000-4244-0c1d2e3f",
       "seq": 14,
@@ -113,27 +133,11 @@
       "payload_bytes": 194
     },
     {
-      "entry": "demand",
-      "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 15,
-      "demand_id": "sha256:50b27998ddc3fa9d498b4c839b63f5f7ff5fbbb40b93b52525638f6921014c25",
-      "status": "open"
-    },
-    {
-      "entry": "lifecycle",
-      "execution_id": "1700000200000-4244-0c1d2e3f",
-      "seq": 16,
-      "time_unix_ns": "1700000200015000000",
-      "log": "campaign-telemetry",
-      "sequence": 2,
-      "name": "af.demand.opened",
-      "demand_id": "sha256:50b27998ddc3fa9d498b4c839b63f5f7ff5fbbb40b93b52525638f6921014c25",
-      "status": "open"
-    },
-    {
       "entry": "finding",
       "execution_id": "1700000200000-4244-0c1d2e3f",
       "seq": 17,
+      "log": "campaign-telemetry",
+      "sequence": 3,
       "finding_key": "sha256:0b754e7e4920b3b0a152813097b08f90cd9be7f1d90b472f4010b0f600082092",
       "status": "open"
     },
@@ -154,6 +158,8 @@
       "entry": "finding",
       "execution_id": "1700000200000-4244-0c1d2e3f",
       "seq": 25,
+      "log": "campaign-telemetry",
+      "sequence": 4,
       "finding_key": "sha256:0b754e7e4920b3b0a152813097b08f90cd9be7f1d90b472f4010b0f600082092",
       "status": "wontfix"
     },

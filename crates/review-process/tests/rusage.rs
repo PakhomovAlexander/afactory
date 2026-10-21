@@ -136,3 +136,101 @@ fn nothing_started_reports_nothing() {
     assert_eq!(capture.pid, None);
     assert_eq!(capture.rusage, None);
 }
+
+/// The workspace's own source, every crate's `src/` but this one's (a build script runs in
+/// cargo, never in a process that supervises), test code excluded: the files under a `tests`
+/// directory or named `tests.rs` or `*_tests.rs`, and an inline test module from its
+/// `#[cfg(test)] mod … {` to the end of its file.
+fn workspace_sources() -> Vec<(std::path::PathBuf, String)> {
+    fn walk(directory: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if name != "tests" {
+                    walk(&path, out);
+                }
+            } else if name.ends_with(".rs") && name != "tests.rs" && !name.ends_with("_tests.rs") {
+                out.push(path);
+            }
+        }
+    }
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(root.join("crates")).unwrap().flatten() {
+        if entry.file_name() != "review-process" {
+            walk(&entry.path().join("src"), &mut files);
+        }
+    }
+    files.sort();
+    files
+        .into_iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            let end = lines
+                .windows(2)
+                .position(|pair| {
+                    pair[0].trim() == "#[cfg(test)]"
+                        && pair[1].trim_start().starts_with("mod ")
+                        && pair[1].trim_end().ends_with('{')
+                })
+                .unwrap_or(lines.len());
+            (path, lines[..end].join("\n"))
+        })
+        .collect()
+}
+
+/// The reaps a line performs directly: a child's `wait`, `try_wait` or `wait_with_output`, a
+/// command's `output()` or `status()`, or a `waitpid`/`waitid`. A non-blocking reap handed to
+/// `review_process::reap::locked` is the locked reap itself.
+fn direct_reaps(line: &str) -> Vec<&'static str> {
+    if line.contains("reap::locked(") || line.trim_start().starts_with("//") {
+        return Vec::new();
+    }
+    [
+        ".wait()",
+        ".try_wait()",
+        ".wait_with_output()",
+        ".output()",
+        ".status()",
+        "waitpid(",
+        "waitid(",
+    ]
+    .into_iter()
+    .filter(|pattern| line.contains(pattern))
+    .collect()
+}
+
+/// Design §7.2 and ADR-0026 (P3): a supervised process's `af.rusage.*` is the change of the
+/// process's children totals across its reap, which is the one child's only when no other
+/// child is reaped between the two readings. So every child reap of the workspace's non-test
+/// code goes through this crate's locked reap (`review_process::reap`): a direct `wait`,
+/// `try_wait`, `wait_with_output`, `output()`, `status()` or `waitpid` anywhere else fails
+/// this test, naming the file and line.
+#[test]
+fn every_child_reap_outside_review_process_is_locked() {
+    let mut found = Vec::new();
+    for (path, text) in workspace_sources() {
+        for (number, line) in text.lines().enumerate() {
+            for reap in direct_reaps(line) {
+                found.push(format!("{}:{}: {reap}", path.display(), number + 1));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "direct child reaps; reap through review_process::reap instead:\n{}",
+        found.join("\n")
+    );
+    // The scan sees what it must.
+    assert_eq!(direct_reaps("    let _ = child.wait();"), [".wait()"]);
+    assert_eq!(direct_reaps("        .output()"), [".output()"]);
+    assert_eq!(direct_reaps("match waitpid(pid, None) {"), ["waitpid("]);
+    assert!(direct_reaps("review_process::reap::locked(|| child.try_wait())").is_empty());
+}

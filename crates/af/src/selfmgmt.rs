@@ -531,19 +531,17 @@ impl ReleaseSource for GhSource {
 
     fn tags(&self, include_rc: bool) -> Result<Vec<String>, String> {
         require_gh()?;
-        let output = Command::new("gh")
-            .args([
-                "release",
-                "list",
-                "--repo",
-                &self.repo,
-                "--limit",
-                "100",
-                "--json",
-                "tagName,isPrerelease,isDraft",
-            ])
-            .output()
-            .map_err(|error| format!("running gh: {error}"))?;
+        let output = review_process::reap::output(Command::new("gh").args([
+            "release",
+            "list",
+            "--repo",
+            &self.repo,
+            "--limit",
+            "100",
+            "--json",
+            "tagName,isPrerelease,isDraft",
+        ]))
+        .map_err(|error| format!("running gh: {error}"))?;
         if !output.status.success() {
             return Err(format!(
                 "gh release list failed: {}",
@@ -570,21 +568,22 @@ impl ReleaseSource for GhSource {
 
     fn fetch(&self, tag: &str, asset: &str, dir: &Path) -> Result<PathBuf, String> {
         require_gh()?;
-        let output = Command::new("gh")
-            .args([
-                "release",
-                "download",
-                tag,
-                "--repo",
-                &self.repo,
-                "--pattern",
-                asset,
-                "--clobber",
-                "--dir",
-            ])
-            .arg(dir)
-            .output()
-            .map_err(|error| format!("running gh: {error}"))?;
+        let output = review_process::reap::output(
+            Command::new("gh")
+                .args([
+                    "release",
+                    "download",
+                    tag,
+                    "--repo",
+                    &self.repo,
+                    "--pattern",
+                    asset,
+                    "--clobber",
+                    "--dir",
+                ])
+                .arg(dir),
+        )
+        .map_err(|error| format!("running gh: {error}"))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stderr = stderr.trim();
@@ -605,15 +604,16 @@ impl ReleaseSource for GhSource {
 }
 
 fn require_gh() -> Result<(), String> {
-    let status = Command::new("gh")
-        .args(["auth", "status"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|_| {
-            "GitHub CLI is required to reach the release — fix: install gh and run `gh auth login`"
-                .to_string()
-        })?;
+    let status = review_process::reap::status(
+        Command::new("gh")
+            .args(["auth", "status"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .map_err(|_| {
+        "GitHub CLI is required to reach the release — fix: install gh and run `gh auth login`"
+            .to_string()
+    })?;
     if !status.success() {
         return Err("gh is not authenticated — fix: gh auth login (an account with access to the release repository)".into());
     }
@@ -917,13 +917,14 @@ fn install(
     }
     let unpack = tmp.path().join("unpack");
     std::fs::create_dir_all(&unpack).map_err(|error| error.to_string())?;
-    let status = Command::new("tar")
-        .arg("-xzf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&unpack)
-        .status()
-        .map_err(|error| format!("running tar: {error}"))?;
+    let status = review_process::reap::status(
+        Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&unpack),
+    )
+    .map_err(|error| format!("running tar: {error}"))?;
     if !status.success() {
         return Err(InstallError::Other(format!(
             "tar could not extract {asset}"
@@ -940,11 +941,12 @@ fn install(
         std::fs::set_permissions(&extracted, std::fs::Permissions::from_mode(0o755))
             .map_err(|error| error.to_string())?;
     }
-    let reported = Command::new(&extracted)
-        .arg("--version")
-        .env(OFFLINE_ENV, "1")
-        .output()
-        .map_err(|error| format!("running the downloaded af: {error}"))?;
+    let reported = review_process::reap::output(
+        Command::new(&extracted)
+            .arg("--version")
+            .env(OFFLINE_ENV, "1"),
+    )
+    .map_err(|error| format!("running the downloaded af: {error}"))?;
     let reported = String::from_utf8_lossy(&reported.stdout).trim().to_string();
     if reported != format!("af {version}") {
         return Err(InstallError::Other(format!(

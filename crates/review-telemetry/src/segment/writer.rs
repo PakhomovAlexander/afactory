@@ -135,6 +135,15 @@ pub struct Registration {
     pub accounted_unknown: Option<String>,
 }
 
+/// Who a configuration record's part belongs to: the execution (segment) that writes it, the
+/// kernel run it describes, and that run's `af.run` span in the execution.
+#[derive(Debug, Clone, Copy)]
+pub struct ConfigOwner<'a> {
+    pub execution_id: &'a str,
+    pub run_id: &'a str,
+    pub run_span_id: &'a str,
+}
+
 /// What a writer is configured with.
 #[derive(Clone)]
 pub struct WriterOptions {
@@ -1806,8 +1815,9 @@ impl Writer {
         }
     }
 
-    /// An execution's configuration snapshot, split into as many `config` parts as the record
-    /// bound needs, in the rows' order. A row whose key is an identity position
+    /// One section ([`record::CONFIG_SECTIONS`]) of a run's configuration record, owned by
+    /// `owner` — the execution that writes it, the run, and that run's `af.run` span — split
+    /// into as many `config` parts as the record bound needs, in the rows' order. A row whose key is an identity position
     /// ([`record::is_identity_position`]) keeps a value that is exactly a kernel identity. Each
     /// row is judged by its original key first: a key the
     /// credential rule judges a credential (a token prefix, a JSON Web Token, a long secret
@@ -1817,7 +1827,12 @@ impl Writer {
     /// pair counts once in `af.redacted`. Other keys, values, layers and origins are untrusted
     /// text, each judged whole and only then bounded; each part counts its withheld values in
     /// `af.redacted`.
-    pub fn config(&self, execution_id: &str, rows: Vec<ConfigRow>) -> Option<u32> {
+    pub fn config(
+        &self,
+        owner: &ConfigOwner<'_>,
+        section: &str,
+        rows: Vec<ConfigRow>,
+    ) -> Option<u32> {
         let redactor = &self.shared.options.redactor;
         let rows: Vec<(ConfigRow, u32)> = rows
             .into_iter()
@@ -1881,7 +1896,10 @@ impl Writer {
             size += bytes;
         }
         let count = u32::try_from(parts.len()).unwrap_or(u32::MAX);
-        let execution_id = self.typed("execution_id", execution_id, MAX_KEY_BYTES);
+        let execution_id = self.typed("execution_id", owner.execution_id, MAX_KEY_BYTES);
+        let run_id = self.typed("run_id", owner.run_id, MAX_KEY_BYTES);
+        let run_span_id = self.typed("run_span_id", owner.run_span_id, MAX_KEY_BYTES);
+        let section = self.typed("section", section, MAX_KEY_BYTES);
         self.commit(false, |batch| {
             for (index, (rows, redacted)) in parts.into_iter().enumerate() {
                 let part = u32::try_from(index).unwrap_or(u32::MAX) + 1;
@@ -1890,6 +1908,9 @@ impl Writer {
                         seq: 0,
                         schema: schema::CONFIG.into(),
                         execution_id: execution_id.clone(),
+                        run_id: run_id.clone(),
+                        run_span_id: run_span_id.clone(),
+                        section: section.clone(),
                         part,
                         parts: count,
                         complete: part == count,
@@ -1942,6 +1963,7 @@ impl Writer {
         finding.schema = schema::FINDING.into();
         for (position, field) in [
             ("span_id", &mut finding.span_id),
+            ("log", &mut finding.log),
             ("finding_key", &mut finding.key),
             ("severity", &mut finding.severity),
             ("effective_severity", &mut finding.effective_severity),
@@ -1970,6 +1992,7 @@ impl Writer {
     pub fn demand(&self, mut demand: Demand) -> Option<u64> {
         for (position, field) in [
             ("span_id", &mut demand.span_id),
+            ("log", &mut demand.log),
             ("demand_id", &mut demand.demand_id),
             ("kind", &mut demand.kind),
             ("subject_id", &mut demand.subject_id),

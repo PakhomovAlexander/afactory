@@ -32,6 +32,16 @@ pub fn options(root: &Path, level: Level) -> WriterOptions {
     options
 }
 
+/// The owner of a fixture's configuration parts: the execution `execution_id`, of a run the
+/// fixture does not otherwise name.
+pub fn config_owner(execution_id: &str) -> review_telemetry::segment::writer::ConfigOwner<'_> {
+    review_telemetry::segment::writer::ConfigOwner {
+        execution_id,
+        run_id: "run-1",
+        run_span_id: "0000000000000001",
+    }
+}
+
 pub fn writer(root: &Path, level: Level) -> Writer {
     Writer::new(options(root, level)).expect("a level that records")
 }

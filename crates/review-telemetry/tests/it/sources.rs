@@ -155,7 +155,8 @@ fn emitted(text: &str) -> Vec<String> {
 }
 
 /// Design §7.1 (P3): every span name any crate's source emits is a row of the catalogue table
-/// in `docs/architecture.md`, so a new span site without its row fails here.
+/// in `docs/architecture.md`, so a new span site without its row fails here; and every record
+/// kind the crate writes is in the record schema and the store's record list, at its version.
 #[test]
 fn telemetry_span_catalogue() {
     let catalogue = catalogue();
@@ -187,6 +188,50 @@ fn telemetry_span_catalogue() {
             "{name}, emitted in {}, is not a row of the catalogue in docs/architecture.md",
             file.display()
         );
+    }
+    // Every record kind the crate writes, at the version it writes, is in the record schema
+    // and in the store's record list in `docs/telemetry.md`, and no other version of it is.
+    let record = std::fs::read_to_string(crates.join("review-telemetry/src/record.rs")).unwrap();
+    let module = record
+        .split("pub mod schema {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .unwrap();
+    let kinds: Vec<&str> = module
+        .lines()
+        .filter_map(|line| line.split('"').nth(1))
+        .filter(|kind| kind.starts_with("af/Telemetry"))
+        .collect();
+    assert_eq!(kinds.len(), 11, "{kinds:?}");
+    let schema =
+        std::fs::read_to_string(workspace_root().join("schemas/telemetry-record-v1.json")).unwrap();
+    let docs = std::fs::read_to_string(workspace_root().join("docs/telemetry.md")).unwrap();
+    let store = docs
+        .split("- **Segments.**")
+        .nth(1)
+        .and_then(|rest| rest.split("- **Blobs.**").next())
+        .unwrap();
+    for kind in &kinds {
+        assert!(
+            schema.contains(&format!("\"{kind}\"")),
+            "{kind} not in the record schema"
+        );
+        assert!(
+            store.contains(&format!("`{kind}`")),
+            "{kind} not in docs/telemetry.md"
+        );
+        let (name, version) = kind.split_once('@').unwrap();
+        for other in 1..version.parse::<u32>().unwrap() {
+            let stale = format!("{name}@{other}");
+            assert!(
+                !schema.contains(&format!("\"{stale}\"")),
+                "{stale} in the schema"
+            );
+            assert!(
+                !store.contains(&format!("`{stale}`")),
+                "{stale} in the docs"
+            );
+        }
     }
     // The scanner reads the forms the sources use.
     assert_eq!(

@@ -219,9 +219,10 @@ unwritable directory, a full segment) is one problem and the run continues.
   af telemetry runs             every run: executions, active, execution and elapsed time,
                                 outcome, charge, failures, coverage, retained history
   af telemetry show RUN         the span tree: start offset, total and self time, status
-  af telemetry config RUN       an execution's configuration record: version, configuration
-                                with origins (an environment value is <env>), plan, bindings,
-                                Providers, harness versions, host, AF_*/OTEL_* names
+  af telemetry config RUN       a run's configuration record in one execution: version,
+                                configuration with origins (an environment value is <env>),
+                                plan, bindings, Providers, harness versions, host, AF_*/OTEL_*
+                                names; each section complete, incomplete or unknown
   af telemetry tail [RUN]       follow the live segments: every span end and event as written
   af telemetry ledger RUN       committed Store events, Finding and Demand summaries and each
                                 Attempt's charge, in order, with the coverage and history
@@ -252,13 +253,20 @@ af.rusage.user_ms, af.rusage.system_ms and af.rusage.max_rss_bytes, each absent 
 platform did not deliver it. An af.check carries af.check.status and af.check.fingerprint, the
 comparability key af/check-fingerprint@1 (or `unknown`). A kernel measurement is a run of its
 own (af.run.kind = measure, af.measurement.id), its repetitions child spans. At spans and above
-each execution's run starts with its configuration record.
+every run an execution works on has its own configuration record, its parts naming the run:
+the configuration and machine sections when the run opens, the plan section when its plan
+resolves (a run refused before that has the first two), and af.config.text naming the
+pipeline, the Task file and .af/af.toml by digest and size. Every child reap of af goes
+through review-process's one reap lock, so a process's af.rusage.* is never another child's.
 
 At spans and above every event the kernel commits to a Store is mirrored after its commit, on
 any path (an append, a Task transition, a Round publication, an integration), as af.store.event
 with its type, sequence, id, causation, artifact references and the payload's digest and size;
-a Finding summary is recorded when a Report is admitted into the Ledger and whenever its
-disposition changes, and a Demand summary keyed by its Demand id with its lifecycle. A mirror
+a Finding summary is recorded for every Report admitted into the Ledger and whenever a
+summarized field changes, with the admitting Worker's bound model when the kernel recorded it,
+and a Demand summary keyed by its Demand id, with its own Subject and that Subject's Snapshot,
+and its lifecycle (an admitted Evidence reuse that satisfies a stale Demand again is a
+satisfaction); `af telemetry ledger` orders every Store log by its committed sequence. A mirror
 failure is one problem, never a Store error, and makes the run's coverage incomplete. At
 metrics and above every committed accounting transition records the Attempt's charge as the
 Task projection holds it (af.usage.state, ordered by the committed event's sequence) and every

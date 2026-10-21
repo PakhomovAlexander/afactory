@@ -8,6 +8,7 @@ mod capture;
 mod control;
 mod drain;
 mod live;
+pub mod reap;
 mod rusage;
 mod spawn;
 

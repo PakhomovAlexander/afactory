@@ -9,12 +9,14 @@
 //!   with `af.store.event.type`, `.sequence`, `.id`, `.causation_id`, `artifact_refs`, and the
 //!   payload's digest and size (`af.store.event.payload_digest`, `.payload_bytes`); the payload
 //!   itself is never recorded here;
-//! - at `spans` and above, for a Campaign's log, a `finding` record (`af/TelemetryFinding@1`)
-//!   when a Report is admitted into the Ledger and whenever a Finding's disposition changes,
-//!   with the event `af.finding.disposition` keyed by the Finding key, and a `demand` record
-//!   (`af/TelemetryDemand@1`) with the events `af.demand.opened`, `af.demand.evidence_satisfied`
-//!   (with the Evidence id), `af.demand.stale` and `af.demand.waived`, keyed by the Demand id
-//!   and never by a Finding key (ADR-0007). They come from the Ledger projection the committed
+//! - at `spans` and above, for a Campaign's log, a `finding` record (`af/TelemetryFinding@2`)
+//!   for every Report admitted into the Ledger and whenever a summarized field of a Finding
+//!   changes, with the event `af.finding.disposition` keyed by the Finding key when its status
+//!   does, and a `demand` record (`af/TelemetryDemand@2`) — the Demand's own Subject and the
+//!   Snapshot bound to it — with the events `af.demand.opened`, `af.demand.evidence_satisfied`
+//!   (with the Evidence id; an admitted reuse that satisfies a stale Demand again included),
+//!   `af.demand.stale` and `af.demand.waived`, keyed by the Demand id and never by a Finding
+//!   key (ADR-0007). Every summary carries the log and committed sequence of its cause. They come from the Ledger projection the committed
 //!   events fold into — the Reports the events reference, read from the CAS — so a reader
 //!   needs no Store;
 //! - at `metrics` and above, after every committed Task event that changes an Attempt's
@@ -100,12 +102,17 @@ struct LedgerWatch {
     /// The projection after the last event folded in; `None` once it failed: the log's
     /// summaries stop, and the failure was reported once.
     projection: Option<LedgerProjection>,
-    /// Each Finding's last recorded status.
-    findings: BTreeMap<String, String>,
+    /// Each Finding's last recorded summary, its record position fields cleared: a summary is
+    /// written again whenever any summarized field differs.
+    findings: BTreeMap<String, Finding>,
     /// Each Finding's node, as its admitting event named it.
     nodes: BTreeMap<String, String>,
-    /// Each Demand's last recorded status.
-    demands: BTreeMap<String, String>,
+    /// Each Finding's admitting Worker's bound model, when the kernel recorded the binding.
+    models: BTreeMap<String, String>,
+    /// Each Demand's last recorded summary, its record position fields cleared.
+    demands: BTreeMap<String, Demand>,
+    /// The Snapshot bound to each Subject the log made active, by Subject id.
+    subjects: BTreeMap<String, String>,
     /// The current Round's epoch.
     epoch: Option<u64>,
 }
@@ -440,7 +447,9 @@ impl StoreMirror {
                 ),
                 findings: BTreeMap::new(),
                 nodes: BTreeMap::new(),
+                models: BTreeMap::new(),
                 demands: BTreeMap::new(),
+                subjects: BTreeMap::new(),
                 epoch: None,
             });
         }
@@ -481,14 +490,25 @@ impl StoreMirror {
                 && let Some(node) = &event.node_id
             {
                 watch.nodes.insert(key.to_string(), node.clone());
+                match super::bound_model(event.attempt_id.as_deref(), node) {
+                    Some(model) => watch.models.insert(key.to_string(), model),
+                    None => watch.models.remove(key),
+                };
             }
             if changes_ledger(event.event_type) {
-                self.record_changes(writer, store_id, span.as_ref(), log, event, watch);
+                self.record_changes(writer, store_id, span.as_ref(), log, event, cas, watch);
             }
         }
         Ok(())
     }
 
+    /// Record what `event`, just folded into the log's projection, changed: a `finding`
+    /// summary for the Finding an admitted Report names and for every Finding whose summarized
+    /// fields changed, with a disposition event when its status did; the Demand lifecycle
+    /// events it caused; and a `demand` summary for every Demand whose summarized fields
+    /// changed. Every summary and lifecycle record carries the event's log and committed
+    /// sequence, by which a reader orders them.
+    #[allow(clippy::too_many_arguments)]
     fn record_changes(
         &self,
         writer: &Writer,
@@ -496,6 +516,7 @@ impl StoreMirror {
         span: Option<&RecordedSpan>,
         log: &str,
         event: &RunEvent,
+        cas: &Cas,
         watch: &mut LedgerWatch,
     ) {
         let Some(projection) = &watch.projection else {
@@ -509,22 +530,28 @@ impl StoreMirror {
                 .id("af.run_id", log)
                 .int("af.store.event.sequence", sequence)
         };
+        // The Snapshot bound to the Subject this log made active, kept for every Demand of it.
+        if let (Some(subject), Some(snapshot)) =
+            (ledger.active_subject_id(), ledger.active_head_snapshot_id())
+        {
+            watch
+                .subjects
+                .insert(subject.to_string(), snapshot.to_string());
+        }
+        // The Finding an admitted Report names gets a summary whether or not it changed.
+        let admitted = (event.event_type == EventType::FindingReportedV1)
+            .then(|| event.payload.get("key").and_then(|key| key.as_str()))
+            .flatten();
+        let span_id = span.map(|span| span.span_id.clone()).unwrap_or_default();
         let mut findings = Vec::new();
         for finding in ledger.findings() {
-            let status = finding.status.as_str().to_string();
-            let previous = watch.findings.get(&finding.key).cloned();
-            if previous.as_deref() == Some(status.as_str()) {
-                continue;
-            }
-            findings.push((finding.clone(), previous));
-            watch.findings.insert(finding.key.clone(), status);
-        }
-        for (finding, previous) in findings {
             let report = finding.reports.last();
-            let record = Finding {
+            let summary = Finding {
                 seq: 0,
                 schema: String::new(),
-                span_id: span.map(|span| span.span_id.clone()).unwrap_or_default(),
+                span_id: String::new(),
+                log: String::new(),
+                sequence: 0,
                 key: finding.key.clone(),
                 severity: enum_text(&finding.severity),
                 effective_severity: finding
@@ -547,79 +574,129 @@ impl StoreMirror {
                 worker: report
                     .map(|report| report.source.clone())
                     .unwrap_or_default(),
-                model: None,
+                model: watch.models.get(&finding.key).cloned(),
                 round: report.map(|report| u64::from(report.round)),
                 epoch: watch.epoch,
+            };
+            let previous = watch.findings.get(&finding.key);
+            if previous == Some(&summary) && admitted != Some(finding.key.as_str()) {
+                continue;
+            }
+            let previous_status = previous.map(|previous| previous.status.clone());
+            watch.findings.insert(finding.key.clone(), summary.clone());
+            findings.push((summary, previous_status));
+        }
+        for (summary, previous) in findings {
+            let (key, status) = (summary.key.clone(), summary.status.clone());
+            let record = Finding {
+                span_id: span_id.clone(),
+                log: log.to_string(),
+                sequence: event.sequence,
+                ..summary
             };
             if !self.summary(writer, store_id, span, |writer| writer.finding(record)) {
                 return;
             }
-            if let Some(previous) = previous {
+            if let Some(previous) = previous.filter(|previous| *previous != status) {
                 let attrs = base()
-                    .id("af.finding.id", finding.key.clone())
-                    .text("af.finding.status", finding.status.as_str())
+                    .id("af.finding.id", key)
+                    .text("af.finding.status", status)
                     .text("af.finding.previous_status", previous);
                 if !self.event(writer, store_id, span, FINDING_DISPOSITION, attrs) {
                     return;
                 }
             }
         }
-        if event.event_type == EventType::EvidenceSatisfiedV1 {
-            let satisfied = event.artifact_refs.first().and_then(|record| {
-                ledger.demand_views().into_iter().find_map(|view| {
-                    ledger.demand(&view.demand_id).and_then(|demand| {
-                        demand
-                            .satisfactions
-                            .iter()
-                            .find(|satisfaction| &satisfaction.record_id == record)
-                            .map(|satisfaction| {
-                                (
-                                    view.demand_id.clone(),
-                                    satisfaction.satisfaction.evidence_id.clone(),
-                                )
-                            })
-                    })
-                })
-            });
-            if let Some((demand_id, evidence_id)) = satisfied {
-                let attrs = base()
-                    .id("af.demand.id", demand_id)
-                    .id("af.evidence.id", evidence_id);
-                if !self.event(writer, store_id, span, DEMAND_EVIDENCE_SATISFIED, attrs) {
-                    return;
-                }
+        // A satisfaction: a new one, or an admitted reuse of an earlier one.
+        let satisfied = event.artifact_refs.first().and_then(|record| {
+            ledger.demand_views().into_iter().find_map(|view| {
+                let demand = ledger.demand(&view.demand_id)?;
+                let evidence = match event.event_type {
+                    EventType::EvidenceSatisfiedV1 => demand
+                        .satisfactions
+                        .iter()
+                        .find(|satisfaction| &satisfaction.record_id == record)
+                        .map(|satisfaction| satisfaction.satisfaction.evidence_id.clone()),
+                    // A reuse is a satisfaction transition only when it makes the Demand
+                    // satisfied again (a stale Demand back to `satisfied`).
+                    EventType::EvidenceReuseAdmittedV1 => demand
+                        .reuse_admissions
+                        .iter()
+                        .find(|admission| &admission.record_id == record)
+                        .filter(|_| {
+                            enum_text(&view.status) == "satisfied"
+                                && watch
+                                    .demands
+                                    .get(&view.demand_id)
+                                    .is_none_or(|previous| previous.status != "satisfied")
+                        })
+                        .and_then(|admission| {
+                            demand
+                                .satisfactions
+                                .iter()
+                                .find(|satisfaction| {
+                                    satisfaction.artifact_id == admission.admission.satisfaction_id
+                                })
+                                .map(|satisfaction| satisfaction.satisfaction.evidence_id.clone())
+                        }),
+                    _ => None,
+                }?;
+                Some((view.demand_id.clone(), evidence))
+            })
+        });
+        if let Some((demand_id, evidence_id)) = satisfied {
+            let attrs = base()
+                .id("af.demand.id", demand_id)
+                .id("af.evidence.id", evidence_id);
+            if !self.event(writer, store_id, span, DEMAND_EVIDENCE_SATISFIED, attrs) {
+                return;
             }
         }
-        let snapshot = ledger
-            .active_head_snapshot_id()
-            .unwrap_or_default()
-            .to_string();
         for view in ledger.demand_views() {
             let status = enum_text(&view.status);
-            let previous = watch.demands.get(&view.demand_id).cloned();
-            if previous.as_deref() == Some(status.as_str()) {
-                continue;
-            }
-            watch.demands.insert(view.demand_id.clone(), status.clone());
-            let required = view.requirement == review_core::DemandRequirement::Required;
-            let record = Demand {
+            // The Demand's own Subject, never the active one of a later head, with the Snapshot
+            // bound to it.
+            let subject_id = ledger.demand(&view.demand_id).map_or_else(
+                || view.subject_id.clone(),
+                |demand| demand.demand.subject_id.clone(),
+            );
+            let snapshot_id = subject_snapshot(cas, &mut watch.subjects, &subject_id);
+            let summary = Demand {
                 seq: 0,
                 schema: String::new(),
-                span_id: span.map(|span| span.span_id.clone()).unwrap_or_default(),
+                span_id: String::new(),
+                log: String::new(),
+                sequence: 0,
                 demand_id: view.demand_id.clone(),
                 kind: enum_text(&view.requirement),
-                required,
-                subject_id: view.subject_id.clone(),
-                snapshot_id: snapshot.clone(),
+                required: view.requirement == review_core::DemandRequirement::Required,
+                subject_id,
+                snapshot_id,
                 status: status.clone(),
+            };
+            let previous = watch
+                .demands
+                .get(&view.demand_id)
+                .map(|previous| previous.status.clone());
+            if watch.demands.get(&view.demand_id) == Some(&summary) {
+                continue;
+            }
+            watch
+                .demands
+                .insert(view.demand_id.clone(), summary.clone());
+            let record = Demand {
+                span_id: span_id.clone(),
+                log: log.to_string(),
+                sequence: event.sequence,
+                ..summary
             };
             if !self.summary(writer, store_id, span, |writer| writer.demand(record)) {
                 return;
             }
-            let lifecycle = match (previous.is_none(), status.as_str()) {
-                (true, _) => Some(DEMAND_OPENED),
-                (false, "stale") => Some(DEMAND_STALE),
-                (false, "waived") => Some(DEMAND_WAIVED),
+            let lifecycle = match (previous.as_deref(), status.as_str()) {
+                (None, _) => Some(DEMAND_OPENED),
+                (Some(previous), "stale") if previous != "stale" => Some(DEMAND_STALE),
+                (Some(previous), "waived") if previous != "waived" => Some(DEMAND_WAIVED),
                 _ => None,
             };
             if let Some(name) = lifecycle {
@@ -751,6 +828,31 @@ impl CommitObserver for StoreMirror {
         {
             super::mark_ledger_incomplete(Some(&store_id));
         }
+    }
+}
+
+/// The Snapshot bound to `subject_id`: the one the log made active with it, else its Subject
+/// artifact's head, read once from the CAS and kept; `unknown` when neither says.
+fn subject_snapshot(
+    cas: &Cas,
+    subjects: &mut BTreeMap<String, String>,
+    subject_id: &str,
+) -> String {
+    if let Some(snapshot) = subjects.get(subject_id) {
+        return snapshot.clone();
+    }
+    let read = cas
+        .get_json(subject_id)
+        .ok()
+        .and_then(|value| serde_json::from_value::<review_core::SubjectV1>(value).ok())
+        .map(|subject| subject.head_snapshot_id)
+        .filter(|snapshot| !snapshot.is_empty());
+    match read {
+        Some(snapshot) => {
+            subjects.insert(subject_id.to_string(), snapshot.clone());
+            snapshot
+        }
+        None => "unknown".into(),
     }
 }
 

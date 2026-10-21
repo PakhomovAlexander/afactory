@@ -47,7 +47,8 @@ pub(crate) fn catalogue() -> BTreeSet<String> {
 /// and reads — each with total and self time; every process span carries the user and system
 /// CPU time the supervisor delivered; every emitted name is in the catalogue; and `config`
 /// prints the record with `telemetry.level = <env>` from `AF_TELEMETRY__LEVEL`, never its value,
-/// its `--json` valid against `schemas/telemetry-config-v1.json`.
+/// its `--json` valid against `schemas/telemetry-config-v2.json`, every section complete and the
+/// texts it names identified by digest and size at `spans`.
 #[test]
 fn telemetry_task_run_records_every_phase() {
     let machine = Machine::new();
@@ -159,10 +160,24 @@ fn telemetry_task_run_records_every_phase() {
     // The configuration record: the level is an environment-origin value, `<env>`.
     let config = json(&machine.af(&repo, &[], &["telemetry", "config", &run_id, "--json"]));
     crate::schemas::valid(
-        &crate::schemas::validator("telemetry-config-v1.json"),
+        &crate::schemas::validator("telemetry-config-v2.json"),
         &config,
     );
     assert_eq!(config["state"], "complete", "{config}");
+    let kinds: Vec<&str> = config["texts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|text| {
+            text["digest"]
+                .as_str()
+                .is_some_and(|d| d.starts_with("sha256:"))
+        })
+        .map(|text| text["kind"].as_str().unwrap())
+        .collect();
+    for kind in ["pipeline", "task_file"] {
+        assert!(kinds.contains(&kind), "{kind}: {config}");
+    }
     let rows = config["rows"].as_array().unwrap();
     let level = rows
         .iter()

@@ -344,10 +344,7 @@ mod tests {
     use super::*;
 
     fn status() -> ExitStatus {
-        std::process::Command::new("/bin/sh")
-            .args(["-c", "exit 0"])
-            .status()
-            .unwrap()
+        crate::reap::status(std::process::Command::new("/bin/sh").args(["-c", "exit 0"])).unwrap()
     }
 
     #[test]

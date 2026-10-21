@@ -8,6 +8,16 @@
 //! `af.command` span of a segment that holds one of its executions (a commit before the
 //! execution's `af.run` opened is recorded there) that name the run's Store.
 //!
+//! **Order.** Entries are ordered by the Store, never by Telemetry: by their Store log, then
+//! by the committed sequence of the event that caused them (an event's own; a summary's and a
+//! lifecycle record's cause), never by a segment's start or a record's `seq`, so two Store
+//! connections whose post-commit observers ran in the opposite order, or two overlapping
+//! executions of which the later one committed first, read in commit order, identically after
+//! a reindex. Ties at one sequence are broken by kind — the event, the Finding summaries,
+//! the dispositions, the satisfactions, the Demand summaries, the other Demand lifecycle
+//! events — then by Finding key or Demand id, then by execution and `seq`. The latest summary
+//! of a Finding or Demand is the one of the greatest sequence, folded in that order.
+//!
 //! **Coverage.** `complete` only when every committed event of every Store log the run's
 //! executions mirrored reached Telemetry, from the log's first sequence to the last one
 //! mirrored, with every Finding and Demand summary: every retained execution's segment was
@@ -238,11 +248,42 @@ pub struct Ledger {
     pub unreadable: Vec<Unreadable>,
 }
 
-/// A summary record of the run, in record order.
+/// A summary record of the run.
 struct SummaryRow {
     segment_id: String,
     seq: u64,
     record: Map<String, Value>,
+}
+
+/// The order of one entry (see the module's **Order**): its Store log, the committed sequence
+/// of its cause, its kind's rank, its Finding key or Demand id, then where it was recorded.
+type OrderKey = (String, u64, u8, String, String, u64);
+
+/// The rank of an entry kind among the entries of one committed sequence.
+fn rank(entry: &str, name: Option<&str>) -> u8 {
+    match (entry, name) {
+        ("event", _) => 0,
+        ("finding", _) => 1,
+        ("lifecycle", Some("af.finding.disposition")) => 2,
+        ("lifecycle", Some("af.demand.evidence_satisfied")) => 3,
+        ("demand", _) => 4,
+        _ => 5,
+    }
+}
+
+fn order_of(entry: &Entry) -> OrderKey {
+    (
+        entry.log.clone().unwrap_or_default(),
+        entry.sequence.unwrap_or(u64::MAX),
+        rank(&entry.entry, entry.name.as_deref()),
+        entry
+            .finding_key
+            .clone()
+            .or_else(|| entry.demand_id.clone())
+            .unwrap_or_default(),
+        entry.execution_id.clone(),
+        entry.seq,
+    )
 }
 
 fn summaries(index: &Index, trace_id: &str, table: &str) -> Result<Vec<SummaryRow>, String> {
@@ -252,7 +293,7 @@ fn summaries(index: &Index, trace_id: &str, table: &str) -> Result<Vec<SummaryRo
             "SELECT r.segment_id, r.seq, r.record
              FROM {table} r JOIN segments g ON g.segment_id = r.segment_id
              WHERE r.span_id IN ({RUN_SPANS})
-             ORDER BY g.started_unix_ns, r.segment_id, r.seq"
+             ORDER BY r.segment_id, r.seq"
         ))
         .map_err(sql)?;
     let rows = statement
@@ -279,18 +320,32 @@ fn summaries(index: &Index, trace_id: &str, table: &str) -> Result<Vec<SummaryRo
         .collect())
 }
 
-/// The order key of a record: its segment's start, its segment, its `seq`.
-fn segment_starts(index: &Index) -> Result<BTreeMap<String, i64>, String> {
-    let mut statement = index
-        .connection()
-        .prepare("SELECT segment_id, started_unix_ns FROM segments")
-        .map_err(sql)?;
-    let rows = statement
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(sql)?
-        .collect::<Result<BTreeMap<String, i64>, _>>()
-        .map_err(sql)?;
-    Ok(rows)
+/// The summary rows as entries, in the module's **Order**: the order they are folded in, so
+/// the latest summary is the one of the greatest sequence.
+fn ordered(rows: Vec<SummaryRow>, kind: &str) -> Vec<(Entry, Map<String, Value>)> {
+    let mut entries: Vec<(Entry, Map<String, Value>)> = rows
+        .into_iter()
+        .map(
+            |SummaryRow {
+                 segment_id,
+                 seq,
+                 record,
+             }| {
+                let mut entry = Entry::new(kind, &segment_id, seq);
+                entry.log = text(&record, "log");
+                entry.sequence = integer(&record, "sequence");
+                entry.status = text(&record, "status");
+                if kind == "finding" {
+                    entry.finding_key = Some(field(&record, "key"));
+                } else {
+                    entry.demand_id = Some(field(&record, "demand_id"));
+                }
+                (entry, record)
+            },
+        )
+        .collect();
+    entries.sort_by_key(|(entry, _)| order_of(entry));
+    entries
 }
 
 fn strings(value: Option<&Value>) -> Vec<String> {
@@ -376,15 +431,7 @@ pub fn ledger(
         ));
     }
 
-    let starts = segment_starts(index)?;
-    let order = |segment: &str, seq: u64| {
-        (
-            starts.get(segment).copied().unwrap_or(0),
-            segment.to_string(),
-            seq,
-        )
-    };
-    let mut entries: Vec<((i64, String, u64), Entry)> = Vec::new();
+    let mut entries: Vec<Entry> = Vec::new();
     let mut logs: BTreeMap<String, BTreeMap<u64, String>> = BTreeMap::new();
     let mut dispositions: BTreeMap<String, Vec<Disposition>> = BTreeMap::new();
     let mut lifecycles: BTreeMap<String, Vec<Lifecycle>> = BTreeMap::new();
@@ -480,22 +527,14 @@ pub fn ledger(
                     });
             }
         }
-        entries.push((order(&segment_id, seq), entry));
+        entries.push(entry);
     }
 
     let mut findings: BTreeMap<String, FindingSummary> = BTreeMap::new();
     let mut finding_order: Vec<String> = Vec::new();
-    for SummaryRow {
-        segment_id,
-        seq,
-        record,
-    } in summaries(index, trace_id, "findings")?
-    {
-        let key = field(&record, "key");
-        let mut entry = Entry::new("finding", &segment_id, seq);
-        entry.finding_key = Some(key.clone());
-        entry.status = text(&record, "status");
-        entries.push((order(&segment_id, seq), entry));
+    for (entry, record) in ordered(summaries(index, trace_id, "findings")?, "finding") {
+        let key = entry.finding_key.clone().unwrap_or_default();
+        entries.push(entry);
         if !finding_order.contains(&key) {
             finding_order.push(key.clone());
         }
@@ -526,23 +565,18 @@ pub fn ledger(
             findings.remove(&key).map(|mut finding| {
                 finding.dispositions = dispositions.remove(&key).unwrap_or_default();
                 finding
+                    .dispositions
+                    .sort_by_key(|disposition| disposition.sequence.unwrap_or(u64::MAX));
+                finding
             })
         })
         .collect();
 
     let mut demands: BTreeMap<String, DemandSummary> = BTreeMap::new();
     let mut demand_order: Vec<String> = Vec::new();
-    for SummaryRow {
-        segment_id,
-        seq,
-        record,
-    } in summaries(index, trace_id, "demands")?
-    {
-        let demand_id = field(&record, "demand_id");
-        let mut entry = Entry::new("demand", &segment_id, seq);
-        entry.demand_id = Some(demand_id.clone());
-        entry.status = text(&record, "status");
-        entries.push((order(&segment_id, seq), entry));
+    for (entry, record) in ordered(summaries(index, trace_id, "demands")?, "demand") {
+        let demand_id = entry.demand_id.clone().unwrap_or_default();
+        entries.push(entry);
         if !demand_order.contains(&demand_id) {
             demand_order.push(demand_id.clone());
         }
@@ -568,12 +602,14 @@ pub fn ledger(
             demands.remove(&id).map(|mut demand| {
                 demand.lifecycle = lifecycles.remove(&id).unwrap_or_default();
                 demand
+                    .lifecycle
+                    .sort_by_key(|step| step.sequence.unwrap_or(u64::MAX));
+                demand
             })
         })
         .collect();
 
-    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
-    let entries: Vec<Entry> = entries.into_iter().map(|(_, entry)| entry).collect();
+    entries.sort_by_key(order_of);
     let logs: Vec<Log> = logs
         .into_iter()
         .map(|(run_id, sequences)| {

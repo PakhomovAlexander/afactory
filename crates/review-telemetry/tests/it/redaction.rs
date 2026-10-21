@@ -323,7 +323,8 @@ fn telemetry_redaction_covers_event_names_and_header_fields() {
             .unwrap();
         writer.event(&span, PLANTED, Attrs::new());
         writer.config(
-            "exec",
+            &crate::config_owner("exec"),
+            "configuration",
             vec![ConfigRow {
                 key: "telemetry.level".into(),
                 value: "spans".into(),
@@ -384,7 +385,8 @@ fn telemetry_config_rows_withhold_secret_named_keys() {
         // Secret-named keys: the value is withheld whatever its length or shape — a short
         // word, a number, an empty string, a table, a value longer than the string bound.
         let parts = writer.config(
-            "exec",
+            &crate::config_owner("exec"),
+            "configuration",
             vec![
                 row("provider.password", "violet"),
                 row("provider.api_key", "9081726354"),
@@ -607,6 +609,8 @@ fn telemetry_record_kinds_judge_every_field() {
         seq: 0,
         schema: schema::FINDING.into(),
         span_id: span.clone(),
+        log: "campaign-1".into(),
+        sequence: 3,
         key: "correctness:src/lib.rs:12".into(),
         severity: "high".into(),
         effective_severity: planted.into(),
@@ -626,6 +630,8 @@ fn telemetry_record_kinds_judge_every_field() {
         seq: 0,
         schema: schema::DEMAND.into(),
         span_id: span.clone(),
+        log: "campaign-1".into(),
+        sequence: 3,
         demand_id: "d-1".into(),
         kind: planted.into(),
         required: true,
@@ -634,7 +640,8 @@ fn telemetry_record_kinds_judge_every_field() {
         status: planted.into(),
     });
     writer.config(
-        planted,
+        &crate::config_owner(planted),
+        "configuration",
         vec![ConfigRow {
             key: "telemetry.level".into(),
             value: "\"spans\"".into(),
@@ -751,7 +758,7 @@ fn telemetry_config_rows_withhold_pairs_under_credential_shaped_keys() {
             .map(|(key, value)| row(key, value))
             .collect();
         rows.push(row("telemetry.level", "\"spans\""));
-        writer.config("exec", rows);
+        writer.config(&crate::config_owner("exec"), "configuration", rows);
         writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
         let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
         let lines = sealed_lines(&sealed.path);

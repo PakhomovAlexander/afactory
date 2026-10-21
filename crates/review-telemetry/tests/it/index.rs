@@ -38,7 +38,8 @@ fn populated(root: &std::path::Path) -> review_telemetry::segment::writer::Write
             )
             .unwrap();
         writer.config(
-            "x",
+            &crate::config_owner("x"),
+            "configuration",
             vec![ConfigRow {
                 key: "telemetry.level".into(),
                 value: "\"content\"".into(),

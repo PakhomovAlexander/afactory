@@ -224,7 +224,8 @@ fn telemetry_segment_limit_bounds_every_record_kind() {
             writer.span_end(span, SpanStatus::Ok, Attrs::new(), 1);
         }
         writer.config(
-            "exec",
+            &crate::config_owner("exec"),
+            "configuration",
             vec![ConfigRow {
                 key: format!("telemetry.key{round}"),
                 value: "v".into(),
@@ -247,6 +248,8 @@ fn telemetry_segment_limit_bounds_every_record_kind() {
             seq: 0,
             schema: String::new(),
             span_id: command.clone(),
+            log: "campaign-1".into(),
+            sequence: 3,
             key: format!("finding-{round}"),
             severity: "major".into(),
             effective_severity: "major".into(),
@@ -266,6 +269,8 @@ fn telemetry_segment_limit_bounds_every_record_kind() {
             seq: 0,
             schema: String::new(),
             span_id: command.clone(),
+            log: "campaign-1".into(),
+            sequence: 3,
             demand_id: format!("demand-{round}"),
             kind: "evidence".into(),
             required: true,

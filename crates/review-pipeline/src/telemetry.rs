@@ -26,6 +26,7 @@ use review_graph::task::{CompiledNode, CompiledTask};
 use review_store::store::task::{TaskLease, TaskProjection, task_run_id};
 use review_store::{Cas, EventStore};
 use review_telemetry::record::{ConfigRow, Node};
+use review_telemetry::segment::writer::ConfigOwner;
 use review_telemetry::subscriber::{self, Typed};
 use serde_json::Value;
 use tracing::field::Empty;
@@ -125,8 +126,9 @@ struct OpenRun {
     plans: BTreeSet<String>,
 }
 
-/// The executions whose configuration record this process wrote.
-static CONFIGURED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+/// The configuration record sections this process wrote, by execution (segment), run and
+/// section: each section of a run's record is written once per execution.
+static CONFIGURED: Mutex<BTreeSet<(String, String, &'static str)>> = Mutex::new(BTreeSet::new());
 
 /// Every run this process opened, by `store_id:run_id`.
 static RUNS: Mutex<BTreeMap<String, OpenRun>> = Mutex::new(BTreeMap::new());
@@ -138,6 +140,38 @@ static INCOMPLETE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 /// The `af.attempt` span of every Attempt this process opened, by Attempt id: its accounting
 /// snapshots and sidecar writes are events on it.
 static ATTEMPTS: Mutex<BTreeMap<String, subscriber::RecordedSpan>> = Mutex::new(BTreeMap::new());
+
+/// The models the kernel bound this process's Workers to, from the plans' bindings: by Attempt
+/// id, and by plan node id (each node with every model a plan of this process bound it to).
+static BOUND_MODELS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+static NODE_MODELS: Mutex<BTreeMap<String, BTreeSet<String>>> = Mutex::new(BTreeMap::new());
+
+/// Remember the model the kernel's plan binds the Worker of `node_id` to, and of its Attempt
+/// `attempt_id` once one starts, for the Finding summaries of the Reports that Worker admits
+/// (design §7.5). The Task runtime records every model binding of the plans it runs here.
+pub fn record_binding(node_id: &str, attempt_id: Option<&str>, model: &str) {
+    lock(&NODE_MODELS)
+        .entry(node_id.to_string())
+        .or_default()
+        .insert(model.to_string());
+    if let Some(attempt_id) = attempt_id {
+        lock(&BOUND_MODELS).insert(attempt_id.to_string(), model.to_string());
+    }
+}
+
+/// The model the admitting Worker was bound to: its Attempt's binding, else the one model this
+/// process's plans bound its node to; `None` when the kernel recorded no binding (a command
+/// Worker, an operator's commit) or the node was bound to several.
+pub(crate) fn bound_model(attempt_id: Option<&str>, node_id: &str) -> Option<String> {
+    if let Some(model) = attempt_id.and_then(|attempt| lock(&BOUND_MODELS).get(attempt).cloned()) {
+        return Some(model);
+    }
+    let nodes = lock(&NODE_MODELS);
+    let models = nodes.get(node_id)?;
+    (models.len() == 1)
+        .then(|| models.iter().next().cloned())
+        .flatten()
+}
 
 /// A mirror failure: every open run of the Store records `af.ledger.coverage = incomplete`,
 /// and so does every run of it this process opens later.
@@ -201,12 +235,81 @@ fn field(typed: &Option<Typed>) -> Option<&(dyn std::error::Error + 'static)> {
     typed.as_ref().map(Typed::field)
 }
 
+/// The writer, execution (segment) and `af.run` span id a section of `run_id`'s configuration
+/// record is written with, when `span` is recorded at `spans` or above and the execution has
+/// not written `section` of that run's record yet: the one-time guard is keyed by the segment
+/// and the run, never by the execution alone.
+fn config_owner(
+    span: &tracing::Span,
+    run_id: &str,
+    section: &'static str,
+) -> Option<(review_telemetry::segment::writer::Writer, String, String)> {
+    let writer = subscriber::current_writer()?;
+    if !writer.level().records() || writer.level() == review_telemetry::level::Level::Metrics {
+        return None;
+    }
+    let execution = writer.segment_id()?;
+    let run_span = subscriber::recorded(span)?.span_id;
+    lock(&CONFIGURED)
+        .insert((execution.clone(), run_id.to_string(), section))
+        .then_some((writer, execution, run_span))
+}
+
+/// The event `af.config.text` on `span`: one text the run's configuration names, by kind,
+/// digest and size, at every level that records the configuration; its bytes are a blob only
+/// at `content`.
+fn config_text(span: &tracing::Span, kind: &'static str, digest: &str, bytes: Option<u64>) {
+    let digest = identity(digest);
+    tracing::info!(
+        parent: span,
+        af.event = "af.config.text",
+        af.config.text.kind = Typed::enumerated(kind).field(),
+        af.config.text.digest = field(&digest),
+        af.config.text.bytes = bytes,
+    );
+}
+
+/// The sections of the configuration record of the run `run_id`, whose `af.run` span is
+/// `span`, that the command knows when the run opens (design §7.4): `configuration` (`af
+/// --version --json`, the effective configuration, the policy files' digests) and `machine`
+/// (the Provider registry, the harness versions, the host, the variable names), with
+/// `af.config.text` naming `.af/af.toml`. Once per execution and run, at `spans` and above;
+/// a source the command did not set leaves both sections `unknown` in the assembled record.
+fn record_opening_config(span: &tracing::Span, run_id: &str) {
+    let Some((writer, execution, run_span)) = config_owner(span, run_id, "configuration") else {
+        return;
+    };
+    let Some(machine) = lock(&MACHINE).as_ref().map(|source| source()) else {
+        return;
+    };
+    let owner = ConfigOwner {
+        execution_id: &execution,
+        run_id,
+        run_span_id: &run_span,
+    };
+    let mut configuration = machine.version;
+    configuration.extend(machine.configuration);
+    configuration.extend(machine.policy_files);
+    writer.config(&owner, "configuration", configuration);
+    if lock(&CONFIGURED).insert((execution.clone(), run_id.to_string(), "machine")) {
+        let mut rows = machine.providers;
+        rows.extend(machine.harnesses);
+        rows.extend(machine.host);
+        rows.extend(machine.variables);
+        writer.config(&owner, "machine", rows);
+    }
+    for (kind, digest, bytes) in machine.texts {
+        config_text(span, kind, &digest, Some(bytes));
+    }
+}
+
 /// A Worker slot's package and binding, for `af.attempt`.
 #[derive(Debug, Clone, Default)]
 struct Binding {
     worker: Option<String>,
     provider: Option<String>,
     provider_kind: Option<String>,
+    model: Option<String>,
 }
 
 /// What every span of a run names (design §5): its Store, its run, its kind and the execution,
@@ -348,6 +451,16 @@ impl RunTelemetry {
         }
     }
 
+    /// The sections of the run's configuration record the command knows, written as the run
+    /// opens, once per execution and run, before anything can refuse it: a run refused while
+    /// its plan is checked still has its configuration (design §7.4). The caller calls it once
+    /// it no longer holds the Store, since it reads the machine's configuration.
+    pub(crate) fn record_opening_config(&self) {
+        if let Some(run_id) = self.ids.as_ref().and_then(|ids| ids.run.as_ref()) {
+            record_opening_config(&self.run, &run_id.to_string());
+        }
+    }
+
     /// The run's `af.run` span (a disabled one when nothing records).
     pub(crate) fn span(&self) -> &tracing::Span {
         &self.run
@@ -391,13 +504,18 @@ impl RunTelemetry {
     ) {
         for (slot, definition) in &graph.slots {
             let binding = plan.bindings.get(slot);
-            let (provider, provider_kind) = match binding.map(|binding| &binding.execution) {
+            let (provider, provider_kind, model) = match binding.map(|binding| &binding.execution) {
                 Some(WorkerExecutionV1::Model {
                     provider,
                     provider_kind,
+                    model,
                     ..
-                }) => (Some(provider.clone()), Some(provider_kind.clone())),
-                _ => (None, None),
+                }) => (
+                    Some(provider.clone()),
+                    Some(provider_kind.clone()),
+                    Some(model.clone()),
+                ),
+                _ => (None, None, None),
             };
             self.bindings.insert(
                 slot.clone(),
@@ -405,8 +523,21 @@ impl RunTelemetry {
                     worker: Some(definition.worker.clone()),
                     provider,
                     provider_kind,
+                    model,
                 },
             );
+        }
+        if !self.run.is_disabled() {
+            for (node_id, node) in &graph.nodes {
+                if let (_, Some(slot)) = operator_kind(node)
+                    && let Some(model) = self
+                        .bindings
+                        .get(&slot)
+                        .and_then(|binding| binding.model.as_deref())
+                {
+                    record_binding(node_id, None, model);
+                }
+            }
         }
         if self.run.is_disabled() {
             return;
@@ -461,12 +592,12 @@ impl RunTelemetry {
         record_nodes(&writer, plan_id, graph);
     }
 
-    /// The execution's configuration record (`af/TelemetryConfig@1`, design §7.4), once per
-    /// execution, at `spans` and above: its rows in the fixed order — version, configuration,
-    /// policy and pipeline, bindings, Providers, harness versions, host, variable names — as
-    /// many `config` parts as the record bound needs. At `content` the texts it names are the
-    /// events `af.config.text` with their digest and size (their bytes are blobs only once the
-    /// content level stores configuration texts).
+    /// The plan section of the run's configuration record (`af/TelemetryConfig@2`, design
+    /// §7.4), once per execution and run, at `spans` and above, when the plan resolves: the
+    /// policy revision, the pipeline's name, digest and nodes, the Task's id, kind and
+    /// pipeline, and the bindings, as many `config` parts as the record bound needs; beside it
+    /// the events `af.config.text` naming the pipeline and the Task file by digest and size
+    /// (their bytes are blobs only at `content`).
     fn record_config(
         &self,
         cas: &Cas,
@@ -475,40 +606,20 @@ impl RunTelemetry {
         pipeline: Option<&str>,
         task_kind: &str,
     ) {
-        let Some(writer) = subscriber::current_writer() else {
-            return;
-        };
-        if writer.level() == review_telemetry::level::Level::Metrics {
-            return;
-        }
-        let Some(execution) = writer.segment_id() else {
-            return;
-        };
         let Some(ids) = &self.ids else {
             return;
         };
-        if !lock(&CONFIGURED).insert(execution.clone()) {
+        let Some(run_id) = ids.run.as_ref().map(Typed::to_string) else {
             return;
-        }
-        let machine = lock(&MACHINE)
-            .as_ref()
-            .map(|source| source())
-            .unwrap_or_default();
-        let mut rows = machine.version;
-        rows.extend(machine.configuration);
-        rows.push(row(
-            "policy",
-            "af.policy_rev",
-            &plan.authority.policy_id,
-            None,
-        ));
-        rows.push(row(
-            "policy",
-            "af.pipeline",
-            pipeline.unwrap_or("unknown"),
-            None,
-        ));
-        rows.push(row("policy", "af.pipeline.digest", &plan.pipeline_id, None));
+        };
+        let Some((writer, execution, run_span)) = config_owner(&self.run, &run_id, "plan") else {
+            return;
+        };
+        let mut rows = vec![
+            row("policy", "af.policy_rev", &plan.authority.policy_id, None),
+            row("policy", "af.pipeline", pipeline.unwrap_or("unknown"), None),
+            row("policy", "af.pipeline.digest", &plan.pipeline_id, None),
+        ];
         for (node_id, node) in &graph.nodes {
             let (kind, _) = operator_kind(node);
             rows.push(row(
@@ -518,7 +629,6 @@ impl RunTelemetry {
                 None,
             ));
         }
-        rows.extend(machine.policy_files);
         rows.push(row("policy", "af.task_id", &ids.task, None));
         rows.push(row("policy", "af.task.kind", task_kind, None));
         rows.push(row(
@@ -551,42 +661,26 @@ impl RunTelemetry {
             };
             rows.push(row("binding", node_id, &value, None));
         }
-        rows.extend(machine.providers);
-        rows.extend(machine.harnesses);
-        rows.extend(machine.host);
-        rows.extend(machine.variables);
-        writer.config(&execution, rows);
-        if writer.level().keeps_content() {
-            let size = |id: &str| cas.get(id).map(|bytes| bytes.len() as u64).ok();
-            let texts = [
-                (
-                    "pipeline",
-                    plan.pipeline_id.clone(),
-                    size(&plan.pipeline_id),
-                ),
-                (
-                    "task_file",
-                    plan.task_revision_id.clone(),
-                    size(&plan.task_revision_id),
-                ),
-            ]
-            .into_iter()
-            .chain(
-                machine
-                    .texts
-                    .into_iter()
-                    .map(|(kind, digest, bytes)| (kind, digest, Some(bytes))),
-            );
-            for (kind, digest, bytes) in texts {
-                let digest = identity(&digest);
-                tracing::info!(
-                    parent: &self.run,
-                    af.event = "af.config.text",
-                    af.config.text.kind = Typed::enumerated(kind).field(),
-                    af.config.text.digest = field(&digest),
-                    af.config.text.bytes = bytes,
-                );
-            }
+        let owner = ConfigOwner {
+            execution_id: &execution,
+            run_id: &run_id,
+            run_span_id: &run_span,
+        };
+        writer.config(&owner, "plan", rows);
+        let size = |id: &str| cas.get(id).map(|bytes| bytes.len() as u64).ok();
+        for (kind, digest, bytes) in [
+            (
+                "pipeline",
+                plan.pipeline_id.clone(),
+                size(&plan.pipeline_id),
+            ),
+            (
+                "task_file",
+                plan.task_revision_id.clone(),
+                size(&plan.task_revision_id),
+            ),
+        ] {
+            config_text(&self.run, kind, &digest, bytes);
         }
     }
 
@@ -666,6 +760,9 @@ impl RunTelemetry {
         );
         if let Some(recorded) = subscriber::recorded(&span) {
             lock(&ATTEMPTS).insert(attempt_id.to_string(), recorded);
+        }
+        if let Some(model) = &binding.model {
+            record_binding(node_id, Some(attempt_id), model);
         }
         span
     }
@@ -996,7 +1093,7 @@ pub(crate) fn process(program: &str, kind: &str) -> tracing::Span {
 /// its own run id — derived from the Task's run, the measure Attempt and the measure's name, so
 /// a measurement is a run of its own — and at its end `af.measurement.id`, the
 /// `af/Measurement@1` it recorded. Its repetitions are its child spans.
-pub(crate) fn measurement(task_id: &str, attempt_id: &str, measure: &str) -> tracing::Span {
+pub fn measurement(task_id: &str, attempt_id: &str, measure: &str) -> tracing::Span {
     if !review_telemetry::subscriber::in_run() {
         return tracing::Span::none();
     }
@@ -1006,7 +1103,7 @@ pub(crate) fn measurement(task_id: &str, attempt_id: &str, measure: &str) -> tra
     let run = review_telemetry::trace::sha256_digest(
         format!("af/measurement-run@1:{task_run}:{attempt_id}:{measure}").as_bytes(),
     );
-    tracing::info_span!(
+    let span = tracing::info_span!(
         "af.run",
         af.run_id = field(&identity(&run)),
         af.run.kind = Typed::enumerated(RunKind::Measure.as_str()).field(),
@@ -1019,7 +1116,33 @@ pub(crate) fn measurement(task_id: &str, attempt_id: &str, measure: &str) -> tra
         af.failure.reason = Empty,
         error.type = Empty,
         af.status = Empty,
-    )
+    );
+    // The measurement is a run of its own, with a configuration record of its own (design
+    // §7.4, §7.7): the command's sections now, and as its plan section what it measures.
+    record_opening_config(&span, &run);
+    if let Some((writer, execution, run_span)) = config_owner(&span, &run, "plan") {
+        let owner = ConfigOwner {
+            execution_id: &execution,
+            run_id: &run,
+            run_span_id: &run_span,
+        };
+        writer.config(
+            &owner,
+            "plan",
+            vec![
+                row(
+                    "measurement",
+                    "af.run.kind",
+                    RunKind::Measure.as_str(),
+                    None,
+                ),
+                row("measurement", "af.task_id", task_id, None),
+                row("measurement", "af.attempt_id", attempt_id, None),
+                row("measurement", "af.measure", measure, None),
+            ],
+        );
+    }
+    span
 }
 
 /// End a measurement's `af.run`: the Measurement it recorded, passed or failed.

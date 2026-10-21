@@ -54,7 +54,8 @@ fn every_kind(root: &std::path::Path) -> std::path::PathBuf {
         Media::Json,
     );
     writer.config(
-        "exec",
+        &crate::config_owner("exec"),
+        "configuration",
         vec![ConfigRow {
             key: "k".into(),
             value: "v".into(),
@@ -77,6 +78,8 @@ fn every_kind(root: &std::path::Path) -> std::path::PathBuf {
         seq: 0,
         schema: String::new(),
         span_id: command.clone(),
+        log: "campaign-1".into(),
+        sequence: 3,
         key: "f1".into(),
         severity: "major".into(),
         effective_severity: "minor".into(),
@@ -96,6 +99,8 @@ fn every_kind(root: &std::path::Path) -> std::path::PathBuf {
         seq: 0,
         schema: String::new(),
         span_id: command.clone(),
+        log: "campaign-1".into(),
+        sequence: 3,
         demand_id: "d1".into(),
         kind: "evidence".into(),
         required: true,
@@ -122,11 +127,25 @@ fn every_record_kind_matches_the_record_schema() {
     for line in &lines {
         assert_valid(&schema, line);
     }
-    // Another version of a shape fails closed, in the schema and in the reader.
+    // Another version of a shape fails closed, in the schema and in the reader: a later one, and
+    // the earlier shapes of the records whose shape changed (ADR-0145).
     let mut foreign = lines[1].clone();
     foreign["schema"] = Value::from("af/TelemetrySpan@2");
     assert!(!schema.is_valid(&foreign));
     assert!(review_telemetry::record::Record::parse_line(foreign.to_string().as_bytes()).is_err());
+    for (kind, earlier) in [
+        ("config", "af/TelemetryConfig@1"),
+        ("finding", "af/TelemetryFinding@1"),
+        ("demand", "af/TelemetryDemand@1"),
+    ] {
+        let mut old = lines.iter().find(|line| line["t"] == kind).unwrap().clone();
+        old["schema"] = Value::from(earlier);
+        assert!(!schema.is_valid(&old), "{earlier}");
+        assert!(
+            review_telemetry::record::Record::parse_line(old.to_string().as_bytes()).is_err(),
+            "{earlier} is read"
+        );
+    }
 }
 
 #[test]

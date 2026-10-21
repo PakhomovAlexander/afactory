@@ -1579,23 +1579,27 @@ unknown, 2 a wrong command line, a run two Stores share without `--store`, or a 
         #[arg(long, value_name = "PATH", help_heading = "Selector")]
         dir: Option<PathBuf>,
     },
-    /// One execution's configuration record: version, configuration with origins, plan, bindings, Providers, host
+    /// One run's configuration record in one execution: version, configuration with origins, plan, bindings, Providers, host
     #[command(
-        long_about = "One execution's configuration record: version, configuration with origins, plan, bindings, Providers, host.\n\n\
-RUN is the kernel run id `af telemetry runs` lists. The record (`af/TelemetryConfig@1`) is \
-written at `spans` and above when an execution's run starts, as one or more `config` parts in \
-one fixed order: `af --version --json`; the effective configuration, one row per key with its \
-layer, its file (home-relative) and line, and its value — a value whose origin is the \
-environment is `<env>`, never the value; the policy revision, the pipeline's name, digest and \
-nodes, the digests of `.af/af.toml` and `.af/af.lock` and the Task's id, kind and pipeline; the \
-execution bindings (node, Worker, Provider, model, effort); the Provider registry entries by \
-name and kind, grant paths as placeholders; the harness versions the preflight probed and the \
-Claude Code managed-settings digests; the host; and the names, never the values, of the `AF_*` \
-and `OTEL_*` variables present. It assembles the parts and says `incomplete` when one is \
-missing. The latest execution by default (the greatest committed ordinal), `--execution ID` for \
-another. At `content` the texts the record names (the pipeline, the Task file, `.af/af.toml`) \
-are listed with their digest and size. When two Stores record the same run id it lists both and \
-asks for `--store ID`.\n\n\
+        long_about = "One run's configuration record in one execution: version, configuration with origins, plan, bindings, Providers, host.\n\n\
+RUN is the kernel run id `af telemetry runs` lists. The record (`af/TelemetryConfig@2`) is \
+written at `spans` and above for each run an execution works on — a measurement run inside a \
+Task Attempt has its own — as `config` parts that each name the run (its run id and its \
+`af.run` span), in three sections of one fixed order. When the run opens: `configuration` \
+(`af --version --json`; the effective configuration, one row per key with its layer, its file \
+(home-relative) and line, and its value — a value whose origin is the environment is `<env>`, \
+never the value; the digests of `.af/af.toml` and `.af/af.lock`) and `machine` (the Provider \
+registry entries by name and kind, grant paths as placeholders; the harness versions the \
+preflight probed and the Claude Code managed-settings digests; the host; the names, never the \
+values, of the `AF_*` and `OTEL_*` variables present). When the plan resolves: `plan` (the \
+policy revision, the pipeline's name, digest and nodes, the Task's id, kind and pipeline, the \
+execution bindings — node, Worker, Provider, model, effort). It assembles the run's parts and \
+says, per section, `complete`, `incomplete` (a part is missing) or `unknown` (none was \
+recorded: a run refused before its plan resolved has no plan section), the record `incomplete` \
+unless every section is complete. The latest execution by default (the greatest committed \
+ordinal), `--execution ID` for another. The texts the record names (the pipeline, the Task \
+file, `.af/af.toml`) are listed with their digest and size. When two Stores record the same run \
+id it lists both and asks for `--store ID`.\n\n\
 Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or execution is \
 unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
@@ -1612,7 +1616,7 @@ unknown, 2 a wrong command line, a run two Stores share without `--store`, or a 
         /// This execution (`af.execution_id`) instead of the latest
         #[arg(long, value_name = "ID", help_heading = "Selector")]
         execution: Option<String>,
-        /// Machine-readable af/TelemetryConfig@1
+        /// Machine-readable af/TelemetryConfig@2
         #[arg(long, help_heading = "Output")]
         json: bool,
         /// Read this telemetry directory instead of the configured one (one copied from another machine)
@@ -1665,10 +1669,17 @@ two Stores share without `--store`, or a refused `[telemetry]` key.",
         long_about = "One run's committed Store events, Finding and Demand summaries and accounting, in order.\n\n\
 RUN is the kernel run id `af telemetry runs` lists. Telemetry mirrors every event the kernel \
 commits to a Store after its commit (`af.store.event`: type, sequence, id, causation, artifact \
-references, and the payload's digest and size), records a Finding summary when a Report is \
-admitted into the Ledger and whenever its disposition changes, and a Demand summary keyed by \
-the Demand id with its lifecycle (opened, evidence satisfied with the Evidence id, stale, \
-waived). This prints them in the order they were recorded, from the telemetry directory alone. \
+references, and the payload's digest and size), records a Finding summary for every Report \
+admitted into the Ledger and whenever a summarized field changes (its status, severity, \
+Report artifact, ...), with the admitting Worker's bound model when the kernel recorded it, and \
+a Demand summary keyed by the Demand id, naming the Demand's own Subject and that Subject's \
+Snapshot, with its lifecycle (opened, evidence satisfied with the Evidence id — an admitted \
+reuse that satisfies a stale Demand again included —, stale, waived); every summary and \
+lifecycle step carries the committed sequence of the event that caused it. This prints them \
+from the telemetry directory alone, each Store log in its committed sequence (never in the \
+order they were recorded; at one sequence: the event, then Finding summaries, dispositions, \
+satisfactions, Demand summaries and other Demand steps), the latest summary being the one of \
+the greatest sequence. \
 Beside them, each Attempt's charge: the kernel's accounting after its last committed \
 accounting transition (`af.usage.state` with the highest `af.usage.sequence`), and, never \
 merged with it, the latest sidecar observation of each execution that wrote one, the order \

@@ -296,7 +296,8 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
 
     /// The lease begins kernel execution: its one execution marker (`TaskExecutionStarted@1`,
     /// its own event of the Task log) is committed before anything else, at every telemetry level alike (ADR-0153), then the run's
-    /// `af.run` span opens, numbered by the markers before it.
+    /// `af.run` span opens, numbered by the markers before it, with the configuration record's
+    /// sections the command knows.
     fn begin_execution(
         store: &SharedEventStore<'store>,
         cas: &'store Cas,
@@ -308,6 +309,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             .map_err(|e| e.to_string())?;
         let telemetry = crate::telemetry::RunTelemetry::open(&locked, cas, lease);
         drop(locked);
+        telemetry.record_opening_config();
         pause_after_the_run_opens();
         Ok(telemetry)
     }

@@ -55,30 +55,39 @@
   process id and its CPU time and peak memory through every `review-process` result, a
   timed-out, killed or cancelled one included, and its span records them (`af.rusage.*`, absent
   when the platform did not deliver a figure, never zero), read safely from the children totals
-  around each reap because the workspace forbids the `unsafe` a direct `wait4` needs. A check
+  around each reap because the workspace forbids the `unsafe` a direct `wait4` needs — every
+  child reap of `af` now goes through `review-process`'s one reap lock, so a figure is never
+  another child's. A check
   records `af.check.status` and its comparability key `af.check.fingerprint`
-  (`af/check-fingerprint@1`, the environment only as a digest, `unknown` when a part is
-  unavailable); a kernel measurement is a run of its own (`af.run.kind = measure`,
-  `af.measurement.id`). At `spans` each execution's run starts with its configuration record
-  (`af/TelemetryConfig@1`, as many 16 KiB parts as it needs, an environment-origin value as
-  `<env>`), which `af telemetry config RUN [--execution ID]` assembles, saying `incomplete` when
-  a part is missing (`--json`: `af/TelemetryConfig@1`).
+  (`af/check-fingerprint@1`, the environment only as a digest, a relative `PATH` entry resolved
+  against the check's directory, `unknown` when a part is unavailable); a kernel measurement is a run of its own (`af.run.kind = measure`,
+  `af.measurement.id`). At `spans` every run an execution works on has its own configuration
+  record (`af/TelemetryConfig@2`, as many 16 KiB parts as it needs, each naming its run, an
+  environment-origin value as `<env>`, a file under the home as `~/…`), its `configuration` and
+  `machine` sections written when the run opens and its `plan` section when the plan resolves,
+  with `af.config.text` naming the pipeline, the Task file and `.af/af.toml` by digest and size;
+  `af telemetry config RUN [--execution ID]` assembles it, saying per section `complete`,
+  `incomplete` or `unknown` (`--json`: `af/TelemetryConfig@2`).
 - Telemetry, fourth package: every recording command installs one post-commit observer on its
   Stores, told of each committed transaction once, after its commit, in committed order — a
   generic append, a Task transition, a Round publication, an atomic integration — and never of a
   rollback; from `spans` on each committed event is `af.store.event` (type, sequence, id,
-  causation, artifact references, the payload's digest and size), a Campaign's admitted Findings
-  and their disposition changes are `af/TelemetryFinding@1` records with
-  `af.finding.disposition` events, and its Demands `af/TelemetryDemand@1` records keyed by the
-  Demand id with `af.demand.opened`, `af.demand.evidence_satisfied`, `af.demand.stale` and
-  `af.demand.waived`. From `metrics` on every committed accounting transition records the
+  causation, artifact references, the payload's digest and size), every Report a Campaign admits
+  and every change of a summarized Finding field is an `af/TelemetryFinding@2` record (with the
+  admitting Worker's bound model when the kernel recorded it) and a status change an
+  `af.finding.disposition` event, and its Demands are `af/TelemetryDemand@2` records keyed by the
+  Demand id, naming the Demand's own Subject and its Snapshot, with `af.demand.opened`,
+  `af.demand.evidence_satisfied` (an admitted reuse that satisfies a stale Demand again
+  included), `af.demand.stale` and `af.demand.waived`; every summary carries the committed
+  sequence of the event that caused it. From `metrics` on every committed accounting transition records the
   Attempt's charge as the Task projection holds it (`af.usage.state`, by the committed event's
   sequence) and every sidecar write its merged row (`af.usage.wall`, ordered within one
   execution only); `af telemetry runs` now sums the Attempts' latest charges. A mirror failure is
   one problem, never a Store error, and makes the run `af.ledger.coverage = incomplete`. The new
   `af telemetry ledger RUN` (`--json`: `af/telemetry-ledger@1`) prints a run's committed events,
   Finding and Demand summaries and each Attempt's charge beside its sidecar observations, from
-  the telemetry directory alone, with the coverage and history markers.
+  the telemetry directory alone, each Store log in its committed sequence, with the coverage and
+  history markers.
 - Telemetry, fifth package: the performance contract of design §12 is measurable.
   `make telemetry-gate` builds a release `af` and runs `scripts/telemetry-overhead.py`: `off`
   against `spans` on three pinned, credential-free bench fixtures under
@@ -90,5 +99,6 @@
   `scripts/telemetry-corpus.py` generates the deterministic read-latency corpus
   `telemetry-corpus-10k` into a directory the operator names and measures `af telemetry status`
   (fresh and unchanged index) and `show` on it, warm and, where the page cache can be dropped,
-  cold (`--json`: `af/telemetry-read-latency@1`). `docs/telemetry.md` gains a `Performance`
+  cold (`--json`: `af/telemetry-read-latency@1`); an unchanged `status` now opens each blob
+  prefix directory once instead of once per object. `docs/telemetry.md` gains a `Performance`
   section with the protocol and this machine's first numbers.

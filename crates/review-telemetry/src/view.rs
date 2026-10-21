@@ -1304,6 +1304,11 @@ pub struct TailSelection {
     /// [`tail`] reads these sealed files on its first look, prints their records as the follow
     /// would have, and finishes then, unless a live segment carries the run by that look.
     pub sealed_run: Option<BTreeSet<String>>,
+    /// The segments [`tail_start`]'s index resolved as holding the run's executions, live or
+    /// sealed. One of them renamed `.corrupt` later is refused with its path whatever its
+    /// damaged bytes still say: its `af.run` start may itself be the line the damage hit, and
+    /// the tail would otherwise finish over the run's other executions or wait for this one.
+    pub run_segments: BTreeSet<String>,
 }
 
 /// How `tail` starts: the selection to follow, or why there is nothing to follow.
@@ -1329,6 +1334,19 @@ pub fn tail_start(
     run_id: Option<&str>,
     store: Option<&str>,
 ) -> Result<TailStart, String> {
+    tail_start_interleaved(root, run_id, store, &mut || {})
+}
+
+/// [`tail_start`] with `between` called after the startup listing of the `.corrupt` segments
+/// and before the index resolves the run: a fixture's barrier for another reader's recovery
+/// that lands in between. An unknown run re-lists the held directory before it is called
+/// unknown, so a `.corrupt` segment that appeared in between is named, never missed.
+pub fn tail_start_interleaved(
+    root: &Path,
+    run_id: Option<&str>,
+    store: Option<&str>,
+    between: &mut dyn FnMut(),
+) -> Result<TailStart, String> {
     let Some(run_id) = run_id else {
         return Ok(TailStart::Follow(TailSelection {
             run_id: None,
@@ -1336,6 +1354,7 @@ pub fn tail_start(
             store_named: store.is_some(),
             sealed_baseline: None,
             sealed_run: None,
+            run_segments: BTreeSet::new(),
         }));
     };
     if !root.is_dir() {
@@ -1355,15 +1374,23 @@ pub fn tail_start(
         Some(segments) => reader::list_in(segments)?.corrupt,
         None => Vec::new(),
     };
+    between();
     Ok(match resolve(&index, run_id, store)? {
         Resolved::Run {
             store_id, trace_id, ..
         } => {
-            // A `.corrupt` segment that could hold an execution of the run fails the tail: it
-            // would finish over the readable executions while omitting that one.
+            let executed = execution_segments(&index, &trace_id)?;
+            // A `.corrupt` segment that held, or could hold, an execution of the run fails the
+            // tail: it would finish over the readable executions while omitting that one. One
+            // the index resolved as the run's is refused whatever its bytes still say.
             if let Some(segments) = &segments {
                 for id in &corrupt {
-                    if let Some(why) = corrupt_could_hold(segments, id, run_id, store)? {
+                    let why = if executed.contains(id) {
+                        Some(format!("it held an execution of run {run_id}"))
+                    } else {
+                        corrupt_could_hold(segments, id, run_id, store)?
+                    };
+                    if let Some(why) = why {
                         return Err(format!(
                             "{}: an unreadable segment (interior corruption; {why}); never \
                              read, so run {run_id} cannot be followed whole",
@@ -1373,15 +1400,15 @@ pub fn tail_start(
                 }
             }
             // Every execution in a segment sealed before the lookup: nobody writes the run.
-            let executed = execution_segments(&index, &trace_id)?;
             let sealed_run =
-                (!executed.is_empty() && executed.is_subset(&baseline)).then_some(executed);
+                (!executed.is_empty() && executed.is_subset(&baseline)).then(|| executed.clone());
             TailStart::Follow(TailSelection {
                 run_id: Some(run_id.to_string()),
                 store_id: Some(store_id),
                 store_named: store.is_some(),
                 sealed_baseline: Some(baseline),
                 sealed_run,
+                run_segments: executed,
             })
         }
         Resolved::Unknown => {
@@ -1401,13 +1428,25 @@ pub fn tail_start(
                 ));
             }
             // A `.corrupt` segment may hold the run's only execution: never called unknown.
-            if let (Some(segments), Some(id)) = (&segments, corrupt.first()) {
-                return Err(format!(
-                    "{}: an unreadable segment (interior corruption; renamed {id}{}); never \
-                     read, so run {run_id} cannot be resolved",
-                    segments.join(&format!("{id}{}", layout::CORRUPT)).display(),
-                    layout::CORRUPT
-                ));
+            // The held directory is listed again first (opened now when the first writer created
+            // it since), so a recovery that renamed one after the startup listing, before or
+            // while the index resolved the run, is named too.
+            let segments = match segments {
+                Some(segments) => Some(segments),
+                None => Confined::versioned(&layout, "segments")
+                    .map_err(|error| format!("{}: {error}", layout.segments().display()))?,
+            };
+            if let Some(segments) = &segments {
+                let mut candidates = corrupt.clone();
+                candidates.extend(reader::list_in(segments)?.corrupt);
+                if let Some(id) = candidates.first() {
+                    return Err(format!(
+                        "{}: an unreadable segment (interior corruption; renamed {id}{}); never \
+                         read, so run {run_id} cannot be resolved",
+                        segments.join(&format!("{id}{}", layout::CORRUPT)).display(),
+                        layout::CORRUPT
+                    ));
+                }
             }
             TailStart::Unknown
         }
@@ -1459,7 +1498,8 @@ fn corrupt_could_hold(
 }
 
 /// With a run selected, refuse every `.corrupt` segment of `corrupt` not yet in `judged` that
-/// could hold an execution of it ([`corrupt_could_hold`], within the Store `--store` named):
+/// held an execution of it when it was resolved ([`TailSelection::run_segments`], whatever its
+/// bytes still say) or could hold one ([`corrupt_could_hold`], within the Store `--store` named):
 /// one another reader's recovery renamed after [`tail_start`] listed the directory, before
 /// `tail` ever saw it, which `tail` would otherwise finish over or wait past. Every segment
 /// judged unable to hold the run joins `judged` and is never read again.
@@ -1480,7 +1520,12 @@ fn refuse_new_corrupt(
         if judged.contains(id) {
             continue;
         }
-        if let Some(why) = corrupt_could_hold(segments, id, run_id, store)? {
+        let why = if selection.run_segments.contains(id) {
+            Some(format!("it held an execution of run {run_id}"))
+        } else {
+            corrupt_could_hold(segments, id, run_id, store)?
+        };
+        if let Some(why) = why {
             return Err(format!(
                 "{}: an unreadable segment (interior corruption; {why}); renamed by another \
                  reader's recovery while tail ran, never read, so run {run_id} cannot be followed \
@@ -1959,7 +2004,7 @@ pub fn absolute(path: PathBuf) -> PathBuf {
 // ------------------------------------------------------------------------------------------
 // config
 
-/// One text an execution's configuration names (`af.config.text`): its kind, digest and size.
+/// One text a run's configuration names (`af.config.text`): its kind, digest and size.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigText {
@@ -1969,8 +2014,25 @@ pub struct ConfigText {
     pub bytes: Option<u64>,
 }
 
-/// `af/TelemetryConfig@1` as `af telemetry config` prints it: an execution's configuration
-/// record assembled from its `config` parts, `incomplete` when one is missing.
+/// One section of an assembled configuration record ([`crate::record::CONFIG_SECTIONS`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigSection {
+    pub section: String,
+    /// `complete` (every part from 1 to the expected count, the last one marked complete),
+    /// `incomplete` (a part is missing) or `unknown` (no part of it is retained: never
+    /// written — the run was refused before its plan resolved — or not retained).
+    pub state: String,
+    /// The parts the section was written as, when any part is retained.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<u32>,
+    /// The parts that are not retained.
+    pub missing_parts: Vec<u32>,
+}
+
+/// `af/TelemetryConfig@2` as `af telemetry config` prints it: the configuration record of one
+/// run in one execution, assembled from the `config` parts that name that run (its run id and
+/// its `af.run` span), section by section, each `complete`, `incomplete` or `unknown`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigRecord {
@@ -1980,25 +2042,24 @@ pub struct ConfigRecord {
     pub store_id: String,
     pub run_id: String,
     pub execution_id: String,
+    /// The run's `af.run` span in the execution, which every part of the record names.
+    pub run_span_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ordinal: Option<u64>,
-    /// `complete` (every part from 1 to the expected count, the last one marked complete),
-    /// `incomplete` (a part is missing) or `absent` (the execution recorded none: a level
-    /// below `spans`).
+    /// `complete` (every section complete), `incomplete` (a section is incomplete or
+    /// unknown) or `absent` (the run recorded no part: a level below `spans`).
     pub state: String,
-    /// The parts the record was written as, when any part is retained.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parts: Option<u32>,
-    /// The parts that are not retained.
-    pub missing_parts: Vec<u32>,
+    /// Every section, in the record's fixed order.
+    pub sections: Vec<ConfigSection>,
     /// Every retained row, in the record's order.
     pub rows: Vec<crate::record::ConfigRow>,
-    /// The texts the execution named at `content`.
+    /// The texts the run named (`af.config.text`): their digests and sizes.
     pub texts: Vec<ConfigText>,
 }
 
 /// The configuration record of one execution of the run `trace_id`: `execution`, or the latest
-/// (the greatest committed ordinal, else the latest start). `Err` names an unknown execution.
+/// (the greatest committed ordinal, else the latest start), assembled from the parts naming the
+/// run's own `af.run` span there. `Err` names an unknown execution.
 pub fn config(
     index: &Index,
     directory: &Path,
@@ -2020,48 +2081,73 @@ pub fn config(
             None => format!("run {run_id} has no retained execution"),
         }));
     };
-    let parts: Vec<(u32, u32, bool, String)> = {
+    let parts: Vec<(String, u32, u32, bool, String)> = {
         let mut statement = index
             .connection()
             .prepare(
-                "SELECT part, parts, complete, rows FROM configs WHERE execution_id = ?1
+                "SELECT section, part, parts, complete, rows FROM configs
+                 WHERE execution_id = ?1 AND run_id = ?2 AND run_span_id = ?3
                  ORDER BY part, segment_id, seq",
             )
             .map_err(sql)?;
         statement
-            .query_map(params![chosen.execution_id], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get::<_, i64>(2)? != 0,
-                    row.get(3)?,
-                ))
-            })
+            .query_map(
+                params![chosen.execution_id, run_id, chosen.span_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get::<_, i64>(3)? != 0,
+                        row.get(4)?,
+                    ))
+                },
+            )
             .map_err(sql)?
             .collect::<Result<_, _>>()
             .map_err(sql)?
     };
-    let expected = parts.iter().map(|(_, parts, _, _)| *parts).max();
     let mut rows = Vec::new();
-    let mut found = BTreeSet::new();
-    for (part, _, _, text) in &parts {
-        if !found.insert(*part) {
-            continue;
+    let mut sections = Vec::new();
+    for name in crate::record::CONFIG_SECTIONS {
+        let of: Vec<&(String, u32, u32, bool, String)> = parts
+            .iter()
+            .filter(|(section, ..)| section == name)
+            .collect();
+        let expected = of.iter().map(|(_, _, parts, _, _)| *parts).max();
+        let mut found = BTreeSet::new();
+        for (_, part, _, _, text) in &of {
+            if !found.insert(*part) {
+                continue;
+            }
+            let part_rows: Vec<crate::record::ConfigRow> =
+                serde_json::from_str(text).map_err(|error| error.to_string())?;
+            rows.extend(part_rows);
         }
-        let part_rows: Vec<crate::record::ConfigRow> =
-            serde_json::from_str(text).map_err(|error| error.to_string())?;
-        rows.extend(part_rows);
+        let missing: Vec<u32> = (1..=expected.unwrap_or(0))
+            .filter(|part| !found.contains(part))
+            .collect();
+        let closed = of.iter().any(|(_, part, count, complete, _)| {
+            *complete && Some(*part) == expected && part == count
+        });
+        let state = match expected {
+            None => "unknown",
+            Some(_) if missing.is_empty() && closed => "complete",
+            Some(_) => "incomplete",
+        };
+        sections.push(ConfigSection {
+            section: name.to_string(),
+            state: state.into(),
+            parts: expected,
+            missing_parts: missing,
+        });
     }
-    let missing: Vec<u32> = (1..=expected.unwrap_or(0))
-        .filter(|part| !found.contains(part))
-        .collect();
-    let closed = parts
-        .iter()
-        .any(|(part, count, complete, _)| *complete && Some(*part) == expected && part == count);
-    let state = match expected {
-        None => "absent",
-        Some(_) if missing.is_empty() && closed => "complete",
-        Some(_) => "incomplete",
+    let state = if parts.is_empty() {
+        "absent"
+    } else if sections.iter().all(|section| section.state == "complete") {
+        "complete"
+    } else {
+        "incomplete"
     };
     let texts = {
         let mut statement = index
@@ -2097,10 +2183,10 @@ pub fn config(
         store_id: store_id.to_string(),
         run_id: run_id.to_string(),
         execution_id: chosen.execution_id.clone(),
+        run_span_id: chosen.span_id.clone(),
         ordinal: chosen.ordinal,
         state: state.into(),
-        parts: expected,
-        missing_parts: missing,
+        sections,
         rows,
         texts,
     }))

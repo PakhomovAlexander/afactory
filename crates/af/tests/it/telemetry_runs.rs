@@ -2125,10 +2125,11 @@ fn telemetry_commands_match_their_goldens() {
 }
 
 /// Design §7.4 and §10 (P3): `af telemetry config` over one recorded execution whose
-/// configuration record spans several parts, in text and as its `af/TelemetryConfig@1`
-/// document, against goldens: the rows in the record's fixed order, an environment-origin value
-/// as `<env>` with the variable's name as its origin, the variable names without values, a
-/// secret-named key withheld, and the texts named at `content`.
+/// configuration record spans several parts, in text and as its `af/TelemetryConfig@2`
+/// document, against goldens: its three sections in the record's fixed order, an
+/// environment-origin value as `<env>` with the variable's name as its origin, a file origin
+/// home-relative with its line, the variable names without values, a secret-named key
+/// withheld, and the texts the record names.
 #[test]
 fn telemetry_config_matches_its_golden() {
     use review_telemetry::record::{Attrs, ConfigRow, SealExit, SpanKind, SpanStatus};
@@ -2179,7 +2180,7 @@ fn telemetry_config_matches_its_golden() {
             "user",
             "telemetry.flush_bytes",
             "\"128KiB\"",
-            Some("/home/golden/.config/af/config.toml:3"),
+            Some("~/.config/af/config.toml:3"),
         ),
         row("user", "provider.api_token", "violet", None),
         row("policy", "af.policy_rev", &digest('1'), None),
@@ -2189,8 +2190,8 @@ fn telemetry_config_matches_its_golden() {
         row("policy", "af.task_id", "golden", None),
         row("policy", "af.task.kind", "implement", None),
     ];
-    // The rest of a long effective configuration.
-    let configuration: Vec<ConfigRow> = (0..48)
+    // The rest of a long effective configuration, over the record bound on its own.
+    let configuration: Vec<ConfigRow> = (0..136)
         .map(|index| {
             row(
                 "built-in",
@@ -2221,8 +2222,34 @@ fn telemetry_config_matches_its_golden() {
         row("host", "host.os", "macos", None),
         row("variable", "AF_TELEMETRY__LEVEL", "", None),
     ]);
-    let parts = writer.config(segment, rows).unwrap();
-    assert!(parts >= 2, "a record over 16 KiB is written as parts");
+    // The sections as the runtime writes them: what the command read when the run opened,
+    // what the plan resolved to, and the machine.
+    let run_span = run.clone();
+    let owner = review_telemetry::segment::writer::ConfigOwner {
+        execution_id: segment,
+        run_id: GOLDEN_RUN,
+        run_span_id: &run_span,
+    };
+    let plan_at = rows
+        .iter()
+        .position(|row| row.key == "af.policy_rev")
+        .unwrap();
+    let machine_at = rows.iter().position(|row| row.layer == "provider").unwrap();
+    let machine_rows = rows.split_off(machine_at);
+    let plan_rows = rows.split_off(plan_at);
+    let mut configuration_rows = rows;
+    let af_toml = plan_rows
+        .iter()
+        .position(|row| row.key == "af.af_toml.digest")
+        .unwrap();
+    let mut plan_rows = plan_rows;
+    configuration_rows.push(plan_rows.remove(af_toml));
+    let parts = writer
+        .config(&owner, "configuration", configuration_rows)
+        .unwrap();
+    assert!(parts >= 2, "a section over 16 KiB is written as parts");
+    writer.config(&owner, "machine", machine_rows).unwrap();
+    writer.config(&owner, "plan", plan_rows).unwrap();
     writer.event(
         &run,
         "af.config.text",
@@ -2238,7 +2265,7 @@ fn telemetry_config_matches_its_golden() {
     let at = &machine.root;
     let config = json(&machine.af(at, &[], &["telemetry", "config", GOLDEN_RUN, "--json"]));
     crate::schemas::valid(
-        &crate::schemas::validator("telemetry-config-v1.json"),
+        &crate::schemas::validator("telemetry-config-v2.json"),
         &config,
     );
     assert_eq!(config["state"], "complete");
@@ -2251,7 +2278,7 @@ fn telemetry_config_matches_its_golden() {
         .as_object_mut()
         .unwrap()
         .insert("unnamed".into(), Value::from(1));
-    assert!(!crate::schemas::validator("telemetry-config-v1.json").is_valid(&extended));
+    assert!(!crate::schemas::validator("telemetry-config-v2.json").is_valid(&extended));
     let selected = json(&machine.af(
         at,
         &[],

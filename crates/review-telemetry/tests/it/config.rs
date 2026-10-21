@@ -1,5 +1,7 @@
-//! The configuration record (`af/TelemetryConfig@1`, design §7.4): written as bounded parts in
-//! the rows' order and assembled by the reader, `incomplete` when a part is missing; its
+//! The configuration record (`af/TelemetryConfig@2`, design §7.4): written section by section
+//! as bounded parts in the rows' order, each part naming the run that owns it, and assembled by
+//! the reader for that run, a section `incomplete` when a part is missing and `unknown` when
+//! none was written; its
 //! identity rows keep their digests; the assembled document matches its schema; and every span
 //! of a run names the run, taking what it does not name from its parent.
 
@@ -58,8 +60,18 @@ fn rows() -> Vec<ConfigRow> {
     rows
 }
 
-/// Write one execution of the run with the configuration record `rows`, sealed.
+/// Write one execution of the run with the configuration record whose `configuration` section
+/// is `rows` (and a one-row `plan` and `machine` section unless `plan_resolved` is false),
+/// sealed; the execution and the parts of the `configuration` section.
 fn execution(root: &std::path::Path, rows: Vec<ConfigRow>) -> (String, u32) {
+    execution_with(root, rows, true)
+}
+
+fn execution_with(
+    root: &std::path::Path,
+    rows: Vec<ConfigRow>,
+    plan_resolved: bool,
+) -> (String, u32) {
     let writer = writer(root, Level::Spans);
     let command = writer
         .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
@@ -81,7 +93,16 @@ fn execution(root: &std::path::Path, rows: Vec<ConfigRow>) -> (String, u32) {
             .attributes(),
         )
         .unwrap();
-    let parts = writer.config(&execution_id, rows).unwrap();
+    let owner = review_telemetry::segment::writer::ConfigOwner {
+        execution_id: &execution_id,
+        run_id: RUN,
+        run_span_id: &run,
+    };
+    let parts = writer.config(&owner, "configuration", rows).unwrap();
+    writer.config(&owner, "machine", vec![row("host", "host.os", "macos")]);
+    if plan_resolved {
+        writer.config(&owner, "plan", vec![row("policy", "af.task_id", "t")]);
+    }
     writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
     writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
     writer.finish(SealExit::Ok).unwrap();
@@ -120,13 +141,22 @@ fn telemetry_config_parts_assemble() {
             .find(|path| path.to_string_lossy().ends_with(".jsonl.gz"))
             .unwrap(),
     );
-    let written: Vec<&serde_json::Value> =
-        lines.iter().filter(|line| line["t"] == "config").collect();
+    let written: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|line| line["t"] == "config" && line["section"] == "configuration")
+        .collect();
     assert_eq!(written.len() as u32, parts);
+    let run_span = lines
+        .iter()
+        .find(|line| line["t"] == "span_start" && line["name"] == "af.run")
+        .unwrap()["span_id"]
+        .clone();
     for (index, part) in written.iter().enumerate() {
         assert!(serde_json::to_vec(part).unwrap().len() <= RECORD_MAX_BYTES);
-        assert_eq!(part["schema"], "af/TelemetryConfig@1");
+        assert_eq!(part["schema"], "af/TelemetryConfig@2");
         assert_eq!(part["execution_id"], execution_id.as_str());
+        assert_eq!(part["run_id"], RUN);
+        assert_eq!(part["run_span_id"], run_span);
         assert_eq!(part["part"], index as u64 + 1);
         assert_eq!(part["parts"], u64::from(parts));
         assert_eq!(part["complete"], index as u32 + 1 == parts);
@@ -134,10 +164,15 @@ fn telemetry_config_parts_assemble() {
 
     let record = assembled(temp.path(), None);
     assert_eq!(record.state, "complete");
-    assert_eq!(record.parts, Some(parts));
+    assert_eq!(record.sections[0].section, "configuration");
+    assert_eq!(record.sections[0].parts, Some(parts));
     assert_eq!(record.execution_id, execution_id);
+    assert_eq!(record.run_span_id, run_span.as_str().unwrap());
     assert_eq!(record.ordinal, Some(1));
-    assert_eq!(record.rows, rows, "every row, in the record's order");
+    let mut expected = rows.clone();
+    expected.push(row("policy", "af.task_id", "t"));
+    expected.push(row("host", "host.os", "macos"));
+    assert_eq!(record.rows, expected, "every row, in the sections' order");
     // An identity row keeps its digest; nothing else of a row is exempt.
     let digest = |key: &str| {
         record
@@ -157,7 +192,7 @@ fn telemetry_config_parts_assemble() {
         format!("sha256:{}", "b".repeat(64))
     );
     assert_valid(
-        &validator("telemetry-config-v1.json"),
+        &validator("telemetry-config-v2.json"),
         &serde_json::to_value(&record).unwrap(),
     );
 
@@ -165,15 +200,19 @@ fn telemetry_config_parts_assemble() {
     let (index, _, _) = view::open(temp.path()).unwrap();
     index
         .connection()
-        .execute("DELETE FROM configs WHERE part = 2", [])
+        .execute(
+            "DELETE FROM configs WHERE part = 2 AND section = 'configuration'",
+            [],
+        )
         .unwrap();
     drop(index);
     let partial = assembled(temp.path(), Some(&execution_id));
     assert_eq!(partial.state, "incomplete");
-    assert_eq!(partial.missing_parts, vec![2]);
-    assert!(partial.rows.len() < rows.len());
+    assert_eq!(partial.sections[0].state, "incomplete");
+    assert_eq!(partial.sections[0].missing_parts, vec![2]);
+    assert!(partial.rows.len() < expected.len());
     assert_valid(
-        &validator("telemetry-config-v1.json"),
+        &validator("telemetry-config-v2.json"),
         &serde_json::to_value(&partial).unwrap(),
     );
     // An execution the run does not have is named, never answered with another's record.
@@ -191,6 +230,38 @@ fn telemetry_config_parts_assemble() {
     assert!(unknown.contains("no execution nope"), "{unknown}");
 }
 
+/// Design §7.4: a run refused before its plan resolved still has the sections its `af.run`
+/// opened with; the plan section is `unknown` and the record `incomplete`, never presented as
+/// whole.
+#[test]
+fn an_unwritten_section_is_unknown() {
+    let temp = tempfile::tempdir().unwrap();
+    execution_with(
+        temp.path(),
+        vec![row("version", "version.version", "1")],
+        false,
+    );
+    let record = assembled(temp.path(), None);
+    assert_eq!(record.state, "incomplete");
+    let states: Vec<(&str, &str)> = record
+        .sections
+        .iter()
+        .map(|section| (section.section.as_str(), section.state.as_str()))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            ("configuration", "complete"),
+            ("plan", "unknown"),
+            ("machine", "complete")
+        ]
+    );
+    assert_valid(
+        &validator("telemetry-config-v2.json"),
+        &serde_json::to_value(&record).unwrap(),
+    );
+}
+
 /// ADR-0145: the assembled document refuses a member its schema does not name, and an
 /// execution without a record is `absent`.
 #[test]
@@ -198,7 +269,7 @@ fn the_config_document_matches_its_schema() {
     let temp = tempfile::tempdir().unwrap();
     execution(temp.path(), vec![row("version", "version.version", "1")]);
     let record = assembled(temp.path(), None);
-    let validator = validator("telemetry-config-v1.json");
+    let validator = validator("telemetry-config-v2.json");
     let mut value = serde_json::to_value(&record).unwrap();
     assert_valid(&validator, &value);
     value["environment"] = serde_json::json!({"PATH": "/usr/bin"});

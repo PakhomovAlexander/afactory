@@ -1,6 +1,6 @@
-//! The command's sections of an execution's configuration record (`af/TelemetryConfig@1`,
-//! design §7.4): metadata only, computed when the Task runtime writes the record at the start of
-//! an execution's run, at `spans` and above.
+//! The command's sections of a run's configuration record (`af/TelemetryConfig@2`, design
+//! §7.4): metadata only, computed when the Task runtime writes them as the run's `af.run` opens,
+//! at `spans` and above.
 //!
 //! An environment value is never recorded: a configuration key whose origin is the environment
 //! layer has the value `<env>`, its origin the variable's name, and of the `AF_*` and `OTEL_*`
@@ -65,8 +65,22 @@ fn version() -> Vec<ConfigRow> {
 }
 
 /// The effective configuration, one row per key in key order: the layer it came from, its file
-/// and line, and its value; `<env>` for a value whose origin is the environment.
+/// (home-relative) and line, and its value; `<env>` for a value whose origin is the environment.
 pub(crate) fn configuration(config: &config::Config) -> Vec<ConfigRow> {
+    configuration_under(config, config::home().ok().as_deref())
+}
+
+/// A file origin as the record keeps it: below `home` as `~/…`, never the operator's absolute
+/// home path; elsewhere as it is.
+fn origin_path(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+/// [`configuration`] with the operator's home `home`.
+fn configuration_under(config: &config::Config, home: Option<&Path>) -> Vec<ConfigRow> {
     let mut leaves = Vec::new();
     config::flatten(&config.effective, "", &mut leaves);
     leaves
@@ -83,8 +97,8 @@ pub(crate) fn configuration(config: &config::Config) -> Vec<ConfigRow> {
                 &key,
                 &value,
                 origin.path.as_ref().map(|path| match origin.line {
-                    Some(line) => format!("{}:{line}", path.display()),
-                    None => path.display().to_string(),
+                    Some(line) => format!("{}:{line}", origin_path(path, home)),
+                    None => origin_path(path, home),
                 }),
             ),
             None => row("unknown", &key, &value, None),
@@ -201,7 +215,7 @@ mod tests {
             },
         )
         .unwrap();
-        let rows = configuration(&loaded);
+        let rows = configuration_under(&loaded, None);
         let find = |key: &str| {
             rows.iter()
                 .find(|row| row.key == key)
@@ -243,6 +257,61 @@ mod tests {
                 ("AF_TELEMETRY__LEVEL", ""),
                 ("OTEL_EXPORTER_OTLP_ENDPOINT", "")
             ]
+        );
+    }
+
+    /// Design §7.4 and §8 (P3): a configuration origin under the operator's home is written
+    /// home-relative with its line, never as an absolute path naming the home; an origin
+    /// elsewhere keeps its path.
+    #[test]
+    fn telemetry_config_origin_under_home_is_home_relative() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        let user = home.join(".config/af");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::write(
+            user.join("config.toml"),
+            "[telemetry]\nflush_bytes = \"128KiB\"\n",
+        )
+        .unwrap();
+        let system = directory.path().join("system");
+        std::fs::create_dir_all(&system).unwrap();
+        std::fs::write(
+            system.join("config.toml"),
+            "[storage]\nmax_bytes = \"7GiB\"\n",
+        )
+        .unwrap();
+        let loaded = config::load_rooted(
+            Some(directory.path()),
+            true,
+            &config::MachineRoots {
+                system: system.clone(),
+                user,
+                environment: Vec::new(),
+            },
+        )
+        .unwrap();
+        let rows = configuration_under(&loaded, Some(&home));
+        let origin = |key: &str| {
+            rows.iter()
+                .find(|row| row.key == key)
+                .unwrap_or_else(|| panic!("no row {key}: {rows:?}"))
+                .origin
+                .clone()
+        };
+        assert_eq!(
+            origin("telemetry.flush_bytes").as_deref(),
+            Some("~/.config/af/config.toml:2")
+        );
+        assert!(
+            rows.iter()
+                .filter_map(|row| row.origin.as_deref())
+                .all(|origin| !origin.contains(&home.display().to_string())),
+            "{rows:?}"
+        );
+        assert_eq!(
+            origin("storage.max_bytes"),
+            Some(format!("{}:2", system.join("config.toml").display()))
         );
     }
 }

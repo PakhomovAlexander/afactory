@@ -4,9 +4,9 @@ log campaign-telemetry: 5 events mirrored, sequences 0–4
   event      campaign-telemetry #0 CampaignOpened@1  id e7d5e11be30811048b401e1a23
   event      campaign-telemetry #1 RoundStarted@1  id c42ef90ecc606d014673d394b2
   event      campaign-telemetry #2 DemandRecorded@1  id f4f340d8f4301c3caff9fd20db
-  event      campaign-telemetry #3 FindingReported@1  id 3883111c8208217b01f6d188f8
   demand     sha256:50b27998ddc3fa9d498b4c839b63f5f7ff5fbbb40b93b52525638f6921014c25 open
   lifecycle  af.demand.opened sha256:50b27998ddc3fa9d498b4c839b63f5f7ff5fbbb40b93b52525638f6921014c25 open  (campaign-telemetry #2)
+  event      campaign-telemetry #3 FindingReported@1  id 3883111c8208217b01f6d188f8
   finding    sha256:0b754e7e4920b3b0a152813097b08f90cd9be7f1d90b472f4010b0f600082092 open
   event      campaign-telemetry #4 FindingResolved@1  id 2f475661be9c88293b56bff824
   finding    sha256:0b754e7e4920b3b0a152813097b08f90cd9be7f1d90b472f4010b0f600082092 wontfix

@@ -5,8 +5,10 @@
 //! code, so the supervisor takes the same figures from `getrusage(RUSAGE_CHILDREN)`: the kernel
 //! adds a child's resource use (its own and that of the descendants it waited for, exactly what
 //! `wait4` returns) to its parent's children totals at the moment it is reaped. Every reap this
-//! crate performs runs under one process-wide lock between two readings of those totals, so the
-//! difference is the one reaped child's: its user and system time. The totals keep only the
+//! crate performs runs under one process-wide lock between two readings of those totals, and so
+//! does every reap of the rest of the workspace, which reaps only through [`crate::reap`] (a
+//! source test holds every crate to that), so no other child of the process is reaped between
+//! the readings and the difference is the one reaped child's: its user and system time. The totals keep only the
 //! largest peak resident size of any reaped child, so a child's own peak is known exactly when
 //! its reap raised that maximum, and is absent otherwise. A figure the platform did not deliver
 //! is absent, never zero.
@@ -127,6 +129,58 @@ mod tests {
         assert_eq!(
             Rusage::between(totals(5_000, 0, 0), totals(4_000, 0, 0)),
             None
+        );
+    }
+
+    /// Design §7.2 (P3): a supervised process's resource use is never another child's. A
+    /// CPU-bound child has exited, unreaped, when the supervisor takes its first reading for a
+    /// trivial one; another thread then reaps the CPU-bound child — through [`crate::reap`], as
+    /// every reap of the workspace does — while the supervisor's measurement is open. That reap
+    /// waits for the lock, so the CPU-bound child's time lands on its own reap and never on the
+    /// supervised child's.
+    #[test]
+    fn telemetry_rusage_is_never_another_childs() {
+        use std::process::Command;
+        fn exited(child: &std::process::Child) {
+            let mut watch = crate::ExitWatch::new(child.id());
+            while watch.exited() == Some(false) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let mut busy = Command::new("/bin/sh")
+            .args(["-c", "i=0; while [ $i -lt 300000 ]; do i=$((i+1)); done"])
+            .spawn()
+            .unwrap();
+        exited(&busy);
+        let mut supervised = Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        exited(&supervised);
+        let (started, entered) = std::sync::mpsc::channel();
+        let mut other = None;
+        let (result, own) = measured(
+            || {
+                other = Some(std::thread::spawn(move || {
+                    started.send(()).unwrap();
+                    crate::reap::wait_measured(&mut busy)
+                }));
+                entered.recv().unwrap();
+                // The other reap is attempted inside this measurement's window.
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                supervised.try_wait()
+            },
+            Option::is_some,
+        );
+        assert!(result.unwrap().unwrap().success());
+        let (status, theirs) = other.unwrap().join().unwrap();
+        assert!(status.unwrap().success());
+        let cpu = |usage: Rusage| usage.user_ms + usage.system_ms;
+        let (own, theirs) = (cpu(own.unwrap()), cpu(theirs.unwrap()));
+        assert!(theirs >= 50, "the CPU-bound child used {theirs} ms");
+        assert!(
+            own * 4 < theirs,
+            "the supervised child carries {own} ms against the other's {theirs} ms"
         );
     }
 

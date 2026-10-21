@@ -21,7 +21,7 @@ use serde_json::Value;
 #[path = "telemetry_ledger/campaign_fixture.rs"]
 mod campaign_fixture;
 #[path = "telemetry_ledger/task_fixture.rs"]
-mod task_fixture;
+pub(crate) mod task_fixture;
 
 use campaign_fixture as campaign;
 use task_fixture::TaskFixture;
@@ -924,4 +924,289 @@ fn telemetry_ledger_matches_its_golden() {
             "{pointer} accepts an unnamed member"
         );
     }
+}
+
+// ------------------------------------------------------------------------------------------
+// the ledger's order and the summaries' fields
+
+/// A Campaign with its first Round open and two Findings admitted: the Store directory, its
+/// CAS, the Round and the two Finding keys.
+fn two_findings(store: &mut EventStore, cas: &Cas) -> (campaign::Round, String, String) {
+    let round = campaign::opened_round(store, cas);
+    let reports = campaign::stage(
+        r#"{"reports":[
+              {"severity":"major","file":"src/a.rs","line":7,
+               "title":"Retry loop can spin forever","body":"b","fix":"f","confidence":0.9},
+              {"severity":"minor","file":"src/lib.rs","line":1,
+               "title":"Misleading comment","body":"b","fix":"f","confidence":0.5}],
+            "benchmark_demands":[],"dispositions":[]}"#,
+    );
+    campaign::admit(
+        store,
+        cas,
+        &round,
+        &[("deep", "01jd8m4qz9k7v3n2p6r8t0w201", &reports)],
+    );
+    let ledger = campaign::ledger(store, cas);
+    let key = |title: &str| {
+        ledger
+            .findings()
+            .into_iter()
+            .find(|finding| finding.title == title)
+            .unwrap()
+            .key
+            .clone()
+    };
+    let (retry, comment) = (
+        key("Retry loop can spin forever"),
+        key("Misleading comment"),
+    );
+    (round, retry, comment)
+}
+
+/// The committed events of the ledger's entries, as `(log, sequence)` in entry order.
+fn event_order(ledger: &Ledger) -> Vec<(String, u64)> {
+    ledger
+        .entries
+        .iter()
+        .filter(|entry| entry.entry == "event")
+        .map(|entry| (entry.log.clone().unwrap(), entry.sequence.unwrap()))
+        .collect()
+}
+
+/// Every entry's `(log, sequence)` is in commit order: never decreasing within a log.
+fn assert_commit_order(ledger: &Ledger) {
+    let mut last: BTreeMap<String, u64> = BTreeMap::new();
+    for entry in &ledger.entries {
+        let (Some(log), Some(sequence)) = (&entry.log, entry.sequence) else {
+            panic!("an entry without its log and sequence: {entry:?}");
+        };
+        let previous = last.insert(log.clone(), sequence);
+        assert!(
+            previous.is_none_or(|previous| previous <= sequence),
+            "{entry:?} after sequence {previous:?}: {:?}",
+            ledger.entries
+        );
+    }
+}
+
+/// A commit observer whose callbacks wait at a gate before the mirror sees them, as a Store
+/// connection whose post-commit observer runs late.
+struct Late {
+    mirror: Arc<StoreMirror>,
+    committed: std::sync::mpsc::Sender<()>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl review_store::store::observer::CommitObserver for Late {
+    fn committed(&self, commit: &review_store::store::observer::Commit<'_>) {
+        let _ = self.committed.send(());
+        let _ = self.release.lock().unwrap().recv();
+        self.mirror.committed(commit);
+    }
+}
+
+/// Design §7.5 and §10 (P4): `af telemetry ledger` orders one Store log by its committed
+/// sequence, never by record order. Two connections of one execution share its mirror; the
+/// first commits sequence N and its post-commit observer runs only after the second has
+/// committed N+1 and been mirrored. The ledger displays N before N+1, folds the summaries in
+/// that order, and answers identically after a reindex.
+#[test]
+fn telemetry_ledger_orders_reordered_post_commit_callbacks() {
+    let (_temp, root, store_dir) = directories();
+    let recording = Recording::start(&root, Level::Spans, store_dir.path(), campaign::RUN, 1);
+    let cas = Cas::open(store_dir.path().join("cas")).unwrap();
+    let mirror = recording.mirror();
+    let mut prompt = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
+    prompt.observe_commits(mirror.clone());
+    let (round, retry, comment) = recording.within(|| two_findings(&mut prompt, &cas));
+    let (committed, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let mut late = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
+    late.observe_commits(Arc::new(Late {
+        mirror: mirror.clone(),
+        committed,
+        release: std::sync::Mutex::new(released),
+    }));
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            recording.within(|| campaign::resolve(&mut late, &cas, &round, &retry, "rejected"));
+        });
+        entered.recv().unwrap();
+        recording.within(|| campaign::resolve(&mut prompt, &cas, &round, &comment, "wontfix"));
+        release.send(()).unwrap();
+        first.join().unwrap();
+    });
+    let events = prompt.replay(campaign::RUN).unwrap();
+    let rejected = events
+        .iter()
+        .find(|event| {
+            event.correlation_id.as_deref() == Some(retry.as_str())
+                && event.event_type == review_core::EventType::FindingResolvedV1
+        })
+        .unwrap()
+        .sequence;
+    drop((prompt, late));
+    let segment = recording.writer.segment_id().unwrap();
+    recording.finish();
+    // The record order is the callbacks': the later commit was mirrored first.
+    let (index, _, _) = view::open(&root).unwrap();
+    let recorded: Vec<i64> = index
+        .connection()
+        .prepare(
+            "SELECT json_extract(attributes, '$.\"af.store.event.sequence\"') FROM events
+             WHERE segment_id = ?1 AND name = 'af.store.event' ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([&segment], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    drop(index);
+    let at = |sequence: u64| {
+        recorded
+            .iter()
+            .position(|recorded| *recorded == sequence as i64)
+            .unwrap()
+    };
+    assert!(at(rejected + 1) < at(rejected), "{recorded:?}");
+    let ledger = read_ledger(&root, campaign::RUN);
+    assert_eq!(ledger.coverage, "complete", "{:?}", ledger.coverage_reasons);
+    let order = event_order(&ledger);
+    let sequences: Vec<u64> = order.iter().map(|(_, sequence)| *sequence).collect();
+    let mut sorted = sequences.clone();
+    sorted.sort_unstable();
+    assert_eq!(sequences, sorted, "in commit order");
+    assert_eq!(sequences.len() as u64, rejected + 2);
+    assert_commit_order(&ledger);
+    let status = |key: &str| {
+        ledger
+            .findings
+            .iter()
+            .find(|finding| finding.key == key)
+            .unwrap()
+            .status
+            .clone()
+    };
+    assert_eq!(
+        (status(&retry), status(&comment)),
+        ("rejected".into(), "wontfix".into())
+    );
+    let before = ledger_json(&root, campaign::RUN);
+    assert!(af(&root, &["telemetry", "reindex"]).status.success());
+    assert_eq!(
+        ledger_json(&root, campaign::RUN),
+        before,
+        "identical after reindex"
+    );
+}
+
+/// Design §5 and §7.5 (P4): executions overlap (ADR-0089), and the later one may commit first.
+/// Execution 1 opens the Campaign and admits a Finding; execution 2, started later on its own
+/// connection, commits the Finding's `rejected` at sequence N; then execution 1 commits
+/// `wontfix` at N+1 (catching up N on its way). The ledger reads N before N+1 whatever the
+/// segments' starts, the Finding's latest summary is the one of N+1 (`wontfix`), its
+/// dispositions are in commit order, and a reindex answers the same.
+#[test]
+fn telemetry_ledger_orders_overlapping_executions_by_commit() {
+    let (_temp, root, store_dir) = directories();
+    let first = Recording::start(&root, Level::Spans, store_dir.path(), campaign::RUN, 1);
+    let cas = Cas::open(store_dir.path().join("cas")).unwrap();
+    let mut ours = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
+    ours.observe_commits(first.mirror());
+    let (round, retry, _) = first.within(|| two_findings(&mut ours, &cas));
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let second = Recording::start(&root, Level::Spans, store_dir.path(), campaign::RUN, 2);
+    let mut theirs = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
+    theirs.observe_commits(second.mirror());
+    second.within(|| campaign::resolve(&mut theirs, &cas, &round, &retry, "rejected"));
+    first.within(|| campaign::resolve(&mut ours, &cas, &round, &retry, "wontfix"));
+    drop((ours, theirs));
+    second.finish();
+    first.finish();
+    let ledger = read_ledger(&root, campaign::RUN);
+    let sequences: Vec<u64> = event_order(&ledger)
+        .into_iter()
+        .map(|(_, sequence)| sequence)
+        .collect();
+    let mut sorted = sequences.clone();
+    sorted.sort_unstable();
+    assert_eq!(sequences, sorted, "in commit order");
+    assert_commit_order(&ledger);
+    let finding = ledger
+        .findings
+        .iter()
+        .find(|finding| finding.key == retry)
+        .unwrap();
+    assert_eq!(finding.status, "wontfix", "the latest committed summary");
+    let dispositions: Vec<(&str, &str)> = finding
+        .dispositions
+        .iter()
+        .map(|d| (d.previous_status.as_str(), d.status.as_str()))
+        .collect();
+    assert_eq!(
+        dispositions,
+        [("open", "rejected"), ("rejected", "wontfix")]
+    );
+    let before = ledger_json(&root, campaign::RUN);
+    assert!(af(&root, &["telemetry", "reindex"]).status.success());
+    assert_eq!(read_ledger(&root, campaign::RUN).findings, ledger.findings);
+    assert_eq!(
+        ledger_json(&root, campaign::RUN),
+        before,
+        "identical after reindex"
+    );
+}
+
+/// Design §7.5 (P4): a Finding summary carries the admitting Worker's bound model when the
+/// kernel recorded that binding, and none when it did not: a model-backed reviewer's Report
+/// names the model its node is bound to, a command reviewer's names none.
+#[test]
+fn telemetry_finding_carries_the_bound_model() {
+    let (_temp, root, store_dir) = directories();
+    let recording = Recording::start(&root, Level::Spans, store_dir.path(), campaign::RUN, 1);
+    let cas = Cas::open(store_dir.path().join("cas")).unwrap();
+    let mut store = EventStore::open(store_dir.path().join("events.sqlite")).unwrap();
+    store.observe_commits(recording.mirror());
+    // The kernel's binding of the model-backed reviewer, as the Task runtime records it.
+    review_pipeline::telemetry::record_binding("cross", None, "claude-opus-5-5");
+    recording.within(|| {
+        let round = campaign::opened_round(&mut store, &cas);
+        let bound = campaign::stage(
+            r#"{"reports":[{"severity":"major","file":"src/a.rs","line":7,
+                 "title":"Retry loop can spin forever","body":"b","fix":"f","confidence":0.9}],
+                "benchmark_demands":[],"dispositions":[]}"#,
+        );
+        let command = campaign::stage(
+            r#"{"reports":[{"severity":"minor","file":"src/lib.rs","line":1,
+                 "title":"Misleading comment","body":"b","fix":"f","confidence":0.5}],
+                "benchmark_demands":[],"dispositions":[]}"#,
+        );
+        campaign::admit(
+            &mut store,
+            &cas,
+            &round,
+            &[
+                ("cross", "01jd8m4qz9k7v3n2p6r8t0w202", &bound),
+                ("deep", "01jd8m4qz9k7v3n2p6r8t0w201", &command),
+            ],
+        );
+    });
+    drop(store);
+    recording.finish();
+    let ledger = read_ledger(&root, campaign::RUN);
+    let model = |title: &str| {
+        ledger
+            .findings
+            .iter()
+            .find(|finding| finding.title == title)
+            .unwrap()
+            .model
+            .clone()
+    };
+    assert_eq!(
+        model("Retry loop can spin forever").as_deref(),
+        Some("claude-opus-5-5")
+    );
+    assert_eq!(model("Misleading comment"), None);
 }

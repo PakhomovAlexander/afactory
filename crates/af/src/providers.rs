@@ -1828,8 +1828,7 @@ fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
             command.env("CODEX_HOME", auth_dir);
         }
     }
-    let status = command
-        .status()
+    let status = review_process::reap::status(&mut command)
         .map_err(|error| format!("cannot start {} login: {error}", spec.kind.name()))?;
     if !status.success() {
         return Err(format!(
@@ -4128,7 +4127,13 @@ fn probe_claude_weekly_limits(
         terminate_probe_group(process_group);
     }
     let _ = child.kill();
-    let _ = child.wait();
+    // Reaped by polling under the workspace's reap lock (`review_process::reap`), never by a
+    // blocking wait of its own.
+    let mut attempt = 0;
+    while let Ok(None) = review_process::reap::locked(|| child.try_wait()) {
+        std::thread::sleep(review_process::reap::poll_delay(attempt));
+        attempt = attempt.saturating_add(1);
+    }
     drop(pair.master);
     drop(receiver);
     drop(recycle_sender);
@@ -5244,7 +5249,7 @@ fn drain_probe_streams(
 fn stop_probe(child: &mut Child) {
     terminate_probe_group(child.id());
     let _ = child.kill();
-    let _ = child.wait();
+    let _ = review_process::reap::wait(child);
 }
 
 fn terminate_probe_group(process_group: u32) {

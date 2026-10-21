@@ -402,7 +402,7 @@ fn telemetry_status_refuses_a_foreign_index_schema() {
         index
             .connection()
             .execute(
-                "UPDATE meta SET value = 'af/telemetry-index@2' WHERE key = 'schema'",
+                "UPDATE meta SET value = 'af/telemetry-index@3' WHERE key = 'schema'",
                 [],
             )
             .unwrap();
@@ -425,8 +425,8 @@ fn telemetry_status_refuses_a_foreign_index_schema() {
             stderr.contains(&layout.index().display().to_string()),
             "{stderr}"
         );
+        assert!(stderr.contains("af/telemetry-index@3"), "{stderr}");
         assert!(stderr.contains("af/telemetry-index@2"), "{stderr}");
-        assert!(stderr.contains("af/telemetry-index@1"), "{stderr}");
         assert!(stderr.contains("af telemetry reindex"), "{stderr}");
         assert!(!stderr.contains("directly"), "{stderr}");
     }

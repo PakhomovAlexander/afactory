@@ -214,6 +214,92 @@ fn telemetry_overhead_smoke() {
     );
 }
 
+/// The gate materializes the source tree read-only: the overhead script's copy step (`prepare`,
+/// then every run's copy of the pristine repository) leaves user write on every directory and
+/// file it creates, so the smoke writes `pristine/bench.json`, commits it, and removes each run,
+/// whatever the modes of the fixture it copies.
+#[test]
+fn telemetry_overhead_copy_is_writable_from_a_read_only_source() {
+    use std::os::unix::fs::PermissionsExt;
+    fn walk(path: &Path, visit: &mut dyn FnMut(&Path, bool)) {
+        let directory = path.is_dir();
+        if directory {
+            for entry in std::fs::read_dir(path).unwrap().flatten() {
+                walk(&entry.path(), visit);
+            }
+        }
+        visit(path, directory);
+    }
+    let machine = Machine::new();
+    let fixtures = machine.root.join("work/read-only");
+    let source = fixtures.join("telemetry-bench-dense");
+    std::fs::create_dir_all(&fixtures).unwrap();
+    let copied = Command::new("cp")
+        .arg("-R")
+        .arg(workspace().join("fixtures/telemetry-bench/telemetry-bench-dense"))
+        .arg(&source)
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    walk(&fixtures, &mut |path, directory| {
+        let mode = if directory { 0o555 } else { 0o444 };
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    });
+    assert!(std::fs::write(source.join("repo/bench.json"), b"{}").is_err());
+    let work = machine.root.join("work/prepared");
+    let program = "import importlib.util, pathlib, sys\n\
+         spec = importlib.util.spec_from_file_location('overhead', sys.argv[1])\n\
+         overhead = importlib.util.module_from_spec(spec)\n\
+         spec.loader.exec_module(overhead)\n\
+         overhead.FIXTURES_DIR = pathlib.Path(sys.argv[2])\n\
+         work = pathlib.Path(sys.argv[3])\n\
+         pristine = overhead.prepare('telemetry-bench-dense', 'smoke', work)\n\
+         overhead.copy_writable(pristine, work / 'run' / 'repo')\n\
+         (work / 'run' / 'repo' / 'bench.json').write_text('{}')\n\
+         print(pristine)\n";
+    let output = Command::new("python3")
+        .arg("-I")
+        .arg("-c")
+        .arg(program)
+        .arg(workspace().join("scripts/telemetry-overhead.py"))
+        .arg(&fixtures)
+        .arg(&work)
+        .current_dir(&machine.root)
+        .env("HOME", machine.root.join("home"))
+        .env("XDG_CONFIG_HOME", machine.root.join("config"))
+        .env("XDG_STATE_HOME", machine.root.join("state"))
+        .env("XDG_DATA_HOME", machine.root.join("data"))
+        .env("XDG_CACHE_HOME", machine.root.join("cache"))
+        .env("TMPDIR", machine.root.join("work"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", text(&output));
+    let bench: Value = serde_json::from_slice(
+        &std::fs::read(work.join("telemetry-bench-dense/pristine/bench.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(bench["harness"].is_object(), "{bench}");
+    // Every entry copied from the fixture, and every entry of a run's copy (git's own read-only
+    // objects included, which git writes 0444 in the pristine repository).
+    walk(&work, &mut |path, directory| {
+        let relative = path.strip_prefix(&work).unwrap();
+        if relative.starts_with("telemetry-bench-dense/pristine/.git") {
+            return;
+        }
+        let mode = std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode();
+        let wanted = if directory { 0o700 } else { 0o600 };
+        assert_eq!(mode & wanted, wanted, "{}: {mode:o}", path.display());
+    });
+    std::fs::remove_dir_all(&work).unwrap();
+    walk(&fixtures, &mut |path, directory| {
+        let mode = if directory { 0o755 } else { 0o644 };
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    });
+}
+
 /// Recorded wall times, `off` then `spans`, in milliseconds: 20 pairs per fixture.
 const CONCURRENT: [(f64, f64); 20] = [
     (2911.4, 2930.2),

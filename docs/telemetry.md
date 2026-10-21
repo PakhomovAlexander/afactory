@@ -112,10 +112,18 @@ nothing.
 and `af.rusage.user_ms`, `af.rusage.system_ms` and `af.rusage.max_rss_bytes`. The supervisor
 (`review-process`, which links no telemetry) carries them through every result it returns, a
 timed-out, killed or cancelled process included; the crates that receive the result record the
-span. The workspace forbids `unsafe` code and no dependency offers a safe `wait4(2)`, so the
-figures come from `getrusage(RUSAGE_CHILDREN)`: every reap the supervisor performs runs under one
-lock between two readings of the process's children totals, and the difference is the reaped
-child's own (its CPU time, with that of the descendants it waited for, as `wait4` reports it).
+span. The workspace forbids `unsafe` code and no crate it already depends on offers a safe
+per-child `wait4(2)` (`nix` 0.31 and `rustix` expose none), so the figures come from
+`getrusage(RUSAGE_CHILDREN)`: the change of the process's children totals across a reap is the
+reaped child's own (its CPU time, with that of the descendants it waited for, as `wait4` reports
+it) only when no other child of the process is reaped between the two readings. So every child
+reap of the workspace's non-test code goes through `review-process`'s one reap lock: the
+supervisor's own reaps, and every other — a login adapter's, the TUI's hand-off, `$EDITOR`,
+`gh`, `git` and `tar` — through `review_process::reap`, whose `wait`, `try_wait`,
+`wait_with_output`, `output`, `status` and non-blocking `wait_pid` do what the standard
+library's do under that lock, polling a non-blocking reap so the lock is never held while a
+child runs. A source test fails on a direct `wait`, `try_wait`, `wait_with_output`, `output()`,
+`status()` or `waitpid` anywhere else, so a process's `af.rusage.*` is never another child's.
 Those totals keep only the largest peak of any reaped child, so a process's peak is recorded
 when its reap raised that maximum and is absent otherwise. A figure the platform did not deliver
 is absent, never zero; a process that never started records no process id and no `af.rusage.*`.
@@ -128,7 +136,10 @@ the digest of the resolved program's bytes, the toolchain snapshot id when one i
 digest of the effective environment — every name and value the check ran with, after the runtime
 paths the check node introduced (the sandbox root, its runtime directory with `HOME`, `TMPDIR`
 and a cold `CARGO_TARGET_DIR`, `RUSTUP_HOME`, the warm cache directories) became placeholders,
-hashed and never retained — and the Snapshot digest. Two checks declared identically on the same
+hashed and never retained — and the Snapshot digest. The program resolves as the check's own
+lookup resolves it: a bare name through the effective `PATH`, whose relative entries (and an
+empty one) are the check's working directory's, so `PATH=bin:/usr/bin` digests the Snapshot's
+`bin/probe`, never a file below af's own directory. Two checks declared identically on the same
 Snapshot, executor and effective environment share one fingerprint; a changed argument or a
 changed `PATH` value gives another. It is `unknown` when a part is unavailable: a program that
 does not resolve, a toolchain declared without its id, a check through a container provider, or
@@ -140,31 +151,40 @@ Attempt and the measure, `af.measure`, and at its end `af.measurement.id`, the
 `af/Measurement@1` it recorded. Each repetition is an `af.measurement.repetition` span with the
 repetition's `af.check` below it. Nothing is added to the Measurement the Store records.
 
-**The configuration record.** At `spans` and above each execution's run starts with its
-configuration record, `af/TelemetryConfig@1`: metadata only, written as one or more `config`
-parts of at most 16 KiB each (`execution_id`, `part`, `parts`, `complete`), its rows in one fixed
-order, each row a key, a value, a `layer` and an `origin`:
+**The configuration record.** At `spans` and above every run an execution works on has its
+own configuration record, `af/TelemetryConfig@2`: metadata only, written as `config` parts of at
+most 16 KiB each. Every part names the run that owns it — `run_id` and `run_span_id`, the run's
+`af.run` span — besides the execution (`execution_id`), so a measurement run inside a Task
+Attempt has a record of its own, never the Task's; and each belongs to one of three sections,
+numbered within it (`section`, `part`, `parts`, `complete`), each section written once per
+execution and run. The rows, in the sections' fixed order, are each a key, a value, a `layer`
+and an `origin`:
 
-1. `af --version --json`, one row per member (`version`); the dispatcher's variable, when set,
-   is `<env>`.
-2. The effective configuration, one row per key with the layer it came from and its file
-   (home-relative) and line; a value whose origin is the environment is `<env>`, with the
-   variable's name as its origin — never the value.
-3. The policy revision, the pipeline's name, digest and nodes, the digests of `.af/af.toml` and
-   `.af/af.lock`, and the Task's id, kind and pipeline (`policy`).
-4. The execution bindings: node, Worker, Provider, model and effort (`binding`).
-5. The Provider registry entries by name and kind, the auth directory only as its grant
-   placeholder (`provider`); `unknown` with the reason when the registry cannot be read.
-6. The harness versions this process's preflight probed, and the Claude Code managed-settings
-   digests, empty until the harness-native package reads them (`harness`).
-7. The host (`host`).
-8. The names, never the values, of the `AF_*` and `OTEL_*` variables present (`variable`).
+1. `configuration`, written when the run's `af.run` opens: `af --version --json`, one row per
+   member (`version`; the dispatcher's variable, when set, is `<env>`); the effective
+   configuration, one row per key with the layer it came from and its file and line — a file
+   under the operator's home written home-relative (`~/.config/af/config.toml:3`), never as an
+   absolute path — and a value whose origin is the environment as `<env>`, with the variable's
+   name as its origin, never the value; the digests of `.af/af.toml` and `.af/af.lock`
+   (`policy`).
+2. `plan`, written when the plan resolves: the policy revision, the pipeline's name, digest and
+   nodes, and the Task's id, kind and pipeline (`policy`); the execution bindings — node,
+   Worker, Provider, model and effort (`binding`). A measurement's plan section is what it
+   measures: its kind, Task, Attempt and measure (`measurement`).
+3. `machine`, written when the run opens: the Provider registry entries by name and kind, the
+   auth directory only as its grant placeholder (`provider`; `unknown` with the reason when the
+   registry cannot be read); the harness versions this process's preflight probed before the
+   run opened, and the Claude Code managed-settings digests, empty until the harness-native
+   package reads them (`harness`); the host (`host`); the names, never the values, of the
+   `AF_*` and `OTEL_*` variables present (`variable`).
 
-Every row passes the credential rules (a secret-named key withholds its value); a row keyed by
-an identity position (`af.policy_rev`, `af.pipeline.digest`, `af.af_toml.digest`,
-`af.af_lock.digest`) keeps a value that is exactly a digest. At `content` the record names the
-texts of the pipeline, the Task file and `.af/af.toml` by the event `af.config.text` with their
-digest and size; their bytes are blobs once the content level stores them.
+So an execution refused while the runtime checks its current plan still has the record's
+`configuration` and `machine` sections, and its `plan` section is `unknown`. Every row passes
+the credential rules (a secret-named key withholds its value); a row keyed by an identity
+position (`af.policy_rev`, `af.pipeline.digest`, `af.af_toml.digest`, `af.af_lock.digest`) keeps
+a value that is exactly a digest. At every level that records the configuration, `spans`
+included, the record names the texts of the pipeline, the Task file and `.af/af.toml` by the
+event `af.config.text` with their digest and size; only their bytes wait for the content level.
 
 ## `af telemetry config`
 
@@ -172,13 +192,16 @@ digest and size; their bytes are blobs once the content level stores them.
 af telemetry config RUN [--store ID] [--execution ID] [--json] [--dir PATH]
 ```
 
-Assembles one execution's configuration record from its parts and prints its rows in order —
-`layer  key = value   # origin` — then the texts it names; the latest execution by default (the
-greatest committed ordinal), `--execution ID` for another. It says `complete` with the number of
-parts, `incomplete` naming the parts that are missing (what is left is never presented as the
-whole record), or `absent` for an execution recorded below `spans`. When two Stores record the
-run id it lists both and asks for `--store ID`. `--json` prints one `af/TelemetryConfig@1`
-document ([`schemas/telemetry-config-v1.json`](../schemas/telemetry-config-v1.json)). Exit
+Assembles the run's configuration record in one execution from the parts that name the run
+(its run id and its `af.run` span there) and prints, per section, `complete` with its number of
+parts, `incomplete` naming the parts that are missing, or `unknown` when none was recorded (what
+is left is never presented as the whole record), then its rows in order —
+`layer  key = value   # origin` — and the texts it names; the latest execution by default (the
+greatest committed ordinal), `--execution ID` for another. The record is `complete` when every
+section is, `incomplete` otherwise, `absent` for a run recorded below `spans`. When two Stores
+record the run id it lists both and asks for `--store ID`. `--json` prints one
+`af/TelemetryConfig@2` document
+([`schemas/telemetry-config-v2.json`](../schemas/telemetry-config-v2.json)). Exit
 codes: 0; 1 when the directory cannot be read or the run or execution is unknown; 2 for a wrong
 command line, a run two Stores share without `--store`, or a refused `[telemetry]` key.
 
@@ -368,7 +391,7 @@ directory cannot be read (or `--dir` names none) or its index is of another sche
 A `.jsonl` segment in which an invalid line precedes a valid one is unreadable at once: none of
 it is indexed, and it is listed as unreadable until `reindex` renames it `.corrupt`. A line over
 the 16 KiB record bound is an invalid line, so a sealed segment holding one is refused and
-listed, never indexed. An `index.sqlite` of another schema version (`af/telemetry-index@2`) is
+listed, never indexed. An `index.sqlite` of a schema version other than this release's (`af/telemetry-index@2`) is
 refused, never migrated or read around: `status` exits 1 naming the file and both schemas, and
 `af telemetry reindex` replaces it. Only when another command is replacing the index does
 `status` read the segments directly, saying so on stderr; its answer is the same. The index
@@ -470,12 +493,16 @@ looks the run up, within `--store ID` when given: a run no Store records there e
 it, and nothing is followed. A run that cannot be found while a segment is unreadable is never
 called unknown, since that segment may hold it: tail names the segment and why it is unreadable
 and exits 1 without following anything. A segment recovery renamed `.corrupt` is never indexed,
-so tail looks into it for the run: when it held one of the run's executions (an `af.run` of
-the run, or an invalid line naming the run id), or the run cannot be found at all while any
-`.corrupt` segment exists, tail names that `.corrupt` file and exits 1 instead of finishing
-over the readable executions. Tail looks again at every look while it follows and once more
-before it exits 0: a segment another reader's recovery renamed `.corrupt` after tail started,
-before tail ever saw it, fails tail the same way when it held one of the run's executions. It
+so tail looks into it for the run: when it held one of the run's executions (one the index had
+resolved as the run's when tail started, whatever its damaged bytes still say — the damage may
+be the `af.run` line itself — or an `af.run` of the run, or an invalid line naming the run id),
+or the run cannot be found at all while any `.corrupt` segment exists, tail names that
+`.corrupt` file and exits 1 instead of finishing over the readable executions or waiting for
+the corrupt one. Before it calls a run unknown it lists the segments directory again, so a
+recovery that renamed a segment `.corrupt` while the run was being looked up is named too.
+Tail looks again at every look while it follows and once more before it exits 0: a segment
+another reader's recovery renamed `.corrupt` after tail started, before tail ever saw it, fails
+tail the same way when it held one of the run's executions. It
 then follows that run in one Store for its whole lifetime: the
 one `--store ID` names, else the one Store that records it when tail starts. When two Stores
 record the run id without `--store`, at the start or once a second Store starts it while it is
@@ -505,19 +532,25 @@ release binary) makes every mirror write fail.
 
 **Finding and Demand summaries.** From `spans` on, a Campaign log's committed events are folded
 into its Ledger projection — the Reports they reference read from the CAS, as the Ledger reads
-them — so that `af telemetry ledger` needs no Store. When a Report is admitted into the Ledger,
-and whenever a Finding's status changes, a `finding` record (`af/TelemetryFinding@1`) carries
-its key, severity, effective severity (`out` when its active claims are wholly out of Scope),
-status, scope, file, line, title, the Report's artifact id, the node, the Worker, the Round and
-the epoch; the Ledger records no model, so `model` is absent. Each change is also the event
-`af.finding.disposition` on the run span with `af.finding.id` (the Finding key),
-`af.finding.status`, `af.finding.previous_status` and the causing event's
-`af.store.event.sequence`. A Demand is its own obligation (ADR-0007): a `demand` record
-(`af/TelemetryDemand@1`) keyed by the Demand id carries its kind (`required` or `advisory`),
-whether it is required, its Subject and the active head Snapshot, and its status (`open`,
-`satisfied`, `stale`, `waived`), and its lifecycle is the events `af.demand.opened`,
-`af.demand.evidence_satisfied` (with `af.evidence.id`), `af.demand.stale` and `af.demand.waived`,
-each with `af.demand.id`, never a Finding key. A change committed by a command that records no
+them — so that `af telemetry ledger` needs no Store. For every Report admitted into the Ledger
+— a duplicate, or one that raises the effective severity of a Finding that stays `open`,
+included — and whenever any summarized field of a Finding changes, a `finding` record
+(`af/TelemetryFinding@2`) carries the Store log (`log`) and the committed `sequence` of the
+event that caused it, the Finding's key, severity, effective severity (`out` when its active
+claims are wholly out of Scope), status, scope, file, line, title, the latest Report's artifact
+id, the node, the Worker, the model the kernel bound the admitting Worker to (from the plan's
+bindings, by its Attempt or its node; absent when there is none, as for a command Worker), the
+Round and the epoch. A change of status is also the event `af.finding.disposition` on the run
+span with `af.finding.id` (the Finding key), `af.finding.status`, `af.finding.previous_status`
+and the causing event's `af.store.event.sequence`. A Demand is its own obligation (ADR-0007): a
+`demand` record (`af/TelemetryDemand@2`) keyed by the Demand id carries the causing event's log
+and sequence, its kind (`required` or `advisory`), whether it is required, the Demand's own
+Subject and the Snapshot bound to that Subject — in every later status summary too, never the
+head of a Subject a later Round reviews — and its status (`open`, `satisfied`, `stale`,
+`waived`), and its lifecycle is the events `af.demand.opened`, `af.demand.evidence_satisfied`
+(with `af.evidence.id`: a satisfaction, or an admitted Evidence reuse that takes a stale Demand
+back to `satisfied`, with the reused satisfaction's Evidence id), `af.demand.stale` and
+`af.demand.waived`, each with `af.demand.id`, never a Finding key. A change committed by a command that records no
 Telemetry (an operator's `af review evidence satisfy`, a resolution) is summarized by the next
 recording execution that commits to that Campaign's log, at the committed event's own sequence;
 the event itself was not mirrored, and the ledger says so (below).
@@ -548,9 +581,16 @@ af telemetry ledger RUN [--store ID] [--json] [--dir PATH]
 
 One run's ledger from the telemetry directory alone, never a Store: every mirrored Store event
 (its log, sequence, type, id, causation, artifact references and the payload's digest and size),
-every Finding and Demand summary and every lifecycle event, in the order they were recorded
-(executions by their segment's start, then each record's `seq`); then each Finding's latest
-summary with its dispositions, each Demand's with its lifecycle, and each Attempt's accounting.
+every Finding and Demand summary and every lifecycle event, each Store log in its committed
+sequence — an event by its own, a summary or a lifecycle event by the sequence of the event
+that caused it — never in the order they were recorded: two Store connections whose post-commit
+observers ran in the opposite order, or two overlapping executions of which the later committed
+first, read in commit order, identically after a `reindex`. At one sequence the event comes
+first, then the Finding summaries, the dispositions, the satisfactions, the Demand summaries and
+the other Demand lifecycle events, each by Finding key or Demand id, then by execution and
+`seq`. Then each Finding's latest summary (the one of the greatest sequence) with its
+dispositions, each Demand's with its lifecycle, both in that order, and each Attempt's
+accounting.
 What belongs to a run is what is on the spans of its trace, and what is on the `af.command` span
 of a segment holding one of its executions and names its Store. A lifecycle event two
 executions recorded (the second folded the log from its start) is listed once.
@@ -672,7 +712,7 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
 
 - **Segments.** One per process, opened at its first record and never before. Each line is one
   record (`af/TelemetrySegment@1`, `af/TelemetrySpan@1`, `af/TelemetryEvent@1`,
-  `af/TelemetryConfig@1`, `af/TelemetryNode@1`, `af/TelemetryFinding@1`, `af/TelemetryDemand@1`,
+  `af/TelemetryConfig@2`, `af/TelemetryNode@1`, `af/TelemetryFinding@2`, `af/TelemetryDemand@2`,
   `af/TelemetryBlob@1`, `af/TelemetryBlobRef@1`, `af/TelemetryProblem@1`, `af/TelemetrySeal@1`;
   [`schemas/telemetry-record-v1.json`](../schemas/telemetry-record-v1.json)) of at most 16 KiB,
   carrying `seq`, `t` and `schema`. An attribute value over its bound (1 KiB for a string, 32
@@ -707,7 +747,8 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
     (`Writer::open_file`), `status::status`, `status::reindex`, `Index::open`,
     `Index::direct`, `index::replace`, `reader::list`, `reader::recover`,
     `reader::recover_all`, `collect::collect`, `collect::roots`, `blob::stage`,
-    `blob::reader::{exists, read, content}`, `view::open`, `view::tail_start`, `view::tail`,
+    `blob::reader::{exists, read, content}`, `view::open`, `view::tail_start` (and
+    `view::tail_start_interleaved`, its form with a fixture's barrier), `view::tail`,
     `budget::Directory::measure`, `budget::evict` and `budget::reclaim`; `reader::read_live` and
     `reader::read_sealed` read one file a caller names (fixtures) and are never called by the
     crate itself.
@@ -717,7 +758,8 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
     `Index::direct_in`, `index::replace_in`, `Index::ingest`, `Index::missing_blobs`;
     `reader::list_in`, `read_live_in`, `read_sealed_in`, `recover_in`, `recover_all_in`,
     `manifest_digests_in`; `collect::collect_in`, `collect::roots_in`; `blob::stage_in`,
-    `blob::place`, `blob::reader::exists_in`, `blob::reader::read_in`; `layout::lock_in`; and
+    `blob::place`, `blob::reader::exists_in`, `blob::reader::present_in`,
+    `blob::reader::read_in`; `layout::lock_in`; and
     `status`'s `verify_blobs`, `blob_bytes` and `unrecognized`. `status` and `reindex` open
     `v1/` once and hand it to the index, to recovery, to the blob checks and to direct reading
     when `index.lock` is not had in time.
@@ -770,7 +812,9 @@ about 1,180 Store events; the fixture's README says why not 10,000). Each measur
 one command at `off` and one at `spans` on the same machine and fixture, in an order drawn at
 random per pair, 20 pairs per fixture. A command's wall time runs from exec to exit, so the
 seal, the compression and the sweep's telemetry inventory are inside it. Every command runs in a
-fresh copy of its fixture with private `HOME`, XDG directories, `TMPDIR` and Store, and must exit
+fresh copy of its fixture — every directory and file it creates given user write, whatever the
+modes of the source tree, which the gate materializes read-only — with private `HOME`, XDG
+directories, `TMPDIR` and Store, and must exit
 as the fixture expects, leaving no telemetry directory at `off` and a segment at `spans`. Per
 fixture the script reports the paired differences `(spans - off) / off`, their median and a 95%
 percentile-bootstrap interval of the median (10,000 resamples, seeded). **Drain latency** is
@@ -845,7 +889,13 @@ processes; measured at a load average of 9 to 12, warm-only (`purge` needs root 
 | `status`, nothing new | 9,417 ms | 103 MiB | 1.65 GiB | 200 ms | over |
 | `show` of one run | 242 ms | 33 MiB | 1.65 GiB | 200 ms | over |
 
-All three reads are over their bounds on this tree. A profile of the unchanged `status` spends
-almost all of it in `Index::missing_blobs`, which opens the blob's prefix directory
-(`Confined::child_dir`, an `openat`) once for every stored occurrence, 250,000 here; the fresh
-figure includes ingesting all 8.6 million records into an absent index.
+All three reads were over their bounds on that tree. A profile of the unchanged `status` spent
+almost all of it in `Index::missing_blobs`, which opened a blob's prefix directory
+(`Confined::child_dir`, an `openat`) for every distinct digest of the 250,000 stored
+occurrences, one object at a time. It now
+groups the retained digests by their `blobs/<aa>/` prefix and opens each prefix directory once,
+judging every object in it with `fstatat` (`blob::reader::present_in`): at most 256 directory
+opens whatever the number of occurrences, which a unit test counts. The figures above are the
+first measurement's, before that change; the fresh figure includes ingesting all 8.6 million
+records into an absent index, and the fresh-ingest and `show` figures are reported as measured,
+not changed here.

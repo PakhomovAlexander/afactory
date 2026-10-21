@@ -211,6 +211,7 @@ fn telemetry_tail_binds_the_store_of_the_run_it_follows() {
             store_named: named,
             sealed_baseline: None,
             sealed_run: None,
+            run_segments: Default::default(),
         };
         let tail = std::thread::spawn(move || {
             view::tail(
@@ -477,9 +478,12 @@ fn recovered_as_corrupt(root: &std::path::Path, segment: &str) -> std::path::Pat
 /// RUN has one sealed execution and a second, unsealed one that another reader recovers and
 /// renames `.corrupt` after [`view::tail_start`]'s listing — at a barrier before tail's first
 /// look, and at a barrier mid-follow (while tail prints the sealed execution's lines) — and
-/// RUN's only execution, live when it is resolved, renamed the same way before the first look.
-/// Every time tail fails naming the `.corrupt` file: never finishing over the sealed execution
-/// while omitting the corrupt one, never waiting past it, never calling the run unknown.
+/// RUN's only execution, live when it is resolved, renamed the same way before the first look;
+/// and RUN's only execution started, killed and renamed at a barrier between the startup
+/// listing and the index's resolution, so the index never knew the run ([`view::tail_start`]
+/// lists the directory again before calling it unknown). Every time tail fails naming the
+/// `.corrupt` file: never finishing over the sealed execution while omitting the corrupt one,
+/// never waiting past it, never calling the run unknown.
 #[test]
 fn telemetry_tail_refuses_a_segment_renamed_corrupt_after_its_startup_check() {
     #[derive(Clone, Copy, Debug, PartialEq)]
@@ -487,13 +491,19 @@ fn telemetry_tail_refuses_a_segment_renamed_corrupt_after_its_startup_check() {
         BeforeFirstLook,
         MidFollow,
         OnlyExecution,
+        BeforeResolution,
     }
     let store = "a".repeat(64);
     for named in [false, true] {
-        for case in [Case::BeforeFirstLook, Case::MidFollow, Case::OnlyExecution] {
+        for case in [
+            Case::BeforeFirstLook,
+            Case::MidFollow,
+            Case::OnlyExecution,
+            Case::BeforeResolution,
+        ] {
             let temp = tempfile::tempdir().unwrap();
             let mut sealed = None;
-            if case != Case::OnlyExecution {
+            if !matches!(case, Case::OnlyExecution | Case::BeforeResolution) {
                 let (writer, command, run, segment) = live_run_in(temp.path(), &store);
                 writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
                 writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
@@ -512,20 +522,33 @@ fn telemetry_tail_refuses_a_segment_renamed_corrupt_after_its_startup_check() {
                     unsealed = Some(segment);
                 }
                 Case::OnlyExecution => live = Some(live_run_in(temp.path(), &store)),
-                Case::MidFollow => {}
+                Case::MidFollow | Case::BeforeResolution => {}
             }
             let barrier = Arc::new(std::sync::Barrier::new(2));
             let (sender, received) = mpsc::channel();
             let (root, gate) = (temp.path().to_path_buf(), barrier.clone());
             let named_store = named.then(|| store.clone());
             let tail = std::thread::spawn(move || {
-                let selection =
-                    match view::tail_start(&root, Some("run-1"), named_store.as_deref())? {
-                        view::TailStart::Follow(selection) => selection,
-                        other => return Err(format!("{other:?}")),
-                    };
+                // Before the resolution: the run's only execution starts, dies and is renamed
+                // `.corrupt` between the startup listing and the index's resolution, so the
+                // index never knew the run.
+                let mut between = || {
+                    if case == Case::BeforeResolution {
+                        gate.wait();
+                        gate.wait();
+                    }
+                };
+                let selection = match view::tail_start_interleaved(
+                    &root,
+                    Some("run-1"),
+                    named_store.as_deref(),
+                    &mut between,
+                )? {
+                    view::TailStart::Follow(selection) => selection,
+                    other => return Err(format!("{other:?}")),
+                };
                 // The startup check is done; the segment is renamed before the first look.
-                if case != Case::MidFollow {
+                if matches!(case, Case::BeforeFirstLook | Case::OnlyExecution) {
                     gate.wait();
                     gate.wait();
                 }
@@ -557,7 +580,7 @@ fn telemetry_tail_refuses_a_segment_renamed_corrupt_after_its_startup_check() {
                     corrupt_and_abandon(&writer, &run);
                     segment
                 }
-                Case::MidFollow => {
+                Case::MidFollow | Case::BeforeResolution => {
                     let (writer, _, run, segment) = live_run_in(temp.path(), &store);
                     corrupt_and_abandon(&writer, &run);
                     segment
@@ -591,6 +614,105 @@ fn telemetry_tail_refuses_a_segment_renamed_corrupt_after_its_startup_check() {
                     "mid-follow: the sealed execution was printing"
                 );
             }
+        }
+    }
+}
+
+/// Overwrite every occurrence of the run id in the `af.run` start line of the live segment
+/// `writer` writes with bytes of the same length that name nothing: the damage a recovery then
+/// finds, so the segment's bytes no longer say which run it held.
+fn damage_run_start(writer: &Writer) {
+    let path = writer.path().unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let mut damaged = Vec::with_capacity(bytes.len());
+    let mut found = false;
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        let text = String::from_utf8_lossy(line);
+        if text.contains("\"span_start\"") && text.contains("\"af.run\"") {
+            found = true;
+            damaged.extend_from_slice(
+                text.replace("run-1", "\u{1}\u{1}\u{1}\u{1}\u{1}")
+                    .as_bytes(),
+            );
+        } else {
+            damaged.extend_from_slice(line);
+        }
+    }
+    assert!(found, "the segment holds its af.run start");
+    assert!(!damaged.windows(5).any(|window| window == b"run-1"));
+    std::fs::write(&path, damaged).unwrap();
+}
+
+/// Design §6 and §10, P2: a reader refuses what it cannot read, also when the damage hit the
+/// line that named the run. RUN's execution is live and valid when [`view::tail_start`]'s index
+/// resolves it; at a barrier before tail's first look its writer dies, its `af.run` start line is
+/// damaged so no byte of the segment names RUN any more, and another reader's recovery renames
+/// it `.corrupt`. With and without the Store named, with and without another, sealed execution
+/// of RUN: tail fails naming the `.corrupt` file — never printing the other execution and
+/// exiting 0, never waiting for the corrupt one, never calling the run unknown — because the
+/// selection carries the segments the index resolved as RUN's.
+#[test]
+fn telemetry_tail_refuses_a_known_execution_renamed_corrupt_with_a_damaged_start() {
+    let store = "a".repeat(64);
+    for named in [false, true] {
+        for other_sealed in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut sealed = None;
+            if other_sealed {
+                let (writer, command, run, segment) = live_run_in(temp.path(), &store);
+                writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
+                writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+                writer.finish(SealExit::Ok).unwrap().unwrap();
+                sealed = Some(segment);
+            }
+            let (writer, _, run, segment) = live_run_in(temp.path(), &store);
+            writer.flush();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let (sender, received) = mpsc::channel();
+            let (root, gate) = (temp.path().to_path_buf(), barrier.clone());
+            let named_store = named.then(|| store.clone());
+            let tail = std::thread::spawn(move || {
+                let selection =
+                    match view::tail_start(&root, Some("run-1"), named_store.as_deref())? {
+                        view::TailStart::Follow(selection) => selection,
+                        other => return Err(format!("{other:?}")),
+                    };
+                gate.wait();
+                gate.wait();
+                let started = Instant::now();
+                view::tail(
+                    &root,
+                    &selection,
+                    Duration::from_millis(5),
+                    &|| started.elapsed() > Duration::from_secs(20),
+                    &mut |line| {
+                        let _ = sender.send(line.clone());
+                        Ok(())
+                    },
+                )
+            });
+            barrier.wait();
+            corrupt_and_abandon(&writer, &run);
+            damage_run_start(&writer);
+            let corrupt = recovered_as_corrupt(temp.path(), &segment);
+            barrier.wait();
+            let error = tail.join().unwrap().expect_err(&format!(
+                "named {named}, other sealed {other_sealed}: tail refuses"
+            ));
+            assert!(
+                error.contains(&corrupt.display().to_string())
+                    && error.contains("interior corruption")
+                    && error.contains("held an execution of run run-1"),
+                "named {named}, other sealed {other_sealed}: names the .corrupt file: {error}"
+            );
+            assert!(!error.to_lowercase().contains("unknown"), "{error}");
+            let lines: Vec<_> = received.try_iter().collect();
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| Some(&line.segment_id) == sealed.as_ref()),
+                "nothing of the corrupt segment: {lines:?}"
+            );
         }
     }
 }

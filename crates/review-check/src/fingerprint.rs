@@ -148,7 +148,9 @@ pub fn environment_digest(
 }
 
 /// The program a check names, resolved as the process start resolves it: a name with a `/`
-/// against the working directory, a bare name through the environment's `PATH`.
+/// against the working directory, a bare name through the environment's `PATH`, whose relative
+/// entries (an empty entry is the current directory) the child's lookup resolves against its
+/// own working directory, the check's, never against this process's.
 pub fn resolve_program(
     program: &str,
     workdir: &Path,
@@ -167,7 +169,7 @@ pub fn resolve_program(
         .find(|(name, _)| name == "PATH")
         .map(|(_, value)| value.clone())?;
     std::env::split_paths(&path)
-        .map(|directory| directory.join(program))
+        .map(|directory| workdir.join(directory).join(program))
         .find(|candidate| is_executable(candidate))
 }
 
@@ -273,6 +275,57 @@ fn compute(execution: &Execution<'_>, inputs: Option<&FingerprintInputs>) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A relative `PATH` entry is the check's working directory's, as the child's lookup after
+    /// its `chdir` resolves it: `PATH=bin:/usr/bin` with the program at the Snapshot's
+    /// `bin/probe` digests that executable, never one below this process's own directory, and
+    /// an empty entry is the working directory itself.
+    #[test]
+    fn telemetry_check_fingerprint_resolves_relative_path_entries() {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = |path: &Path, body: &str| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("snapshot");
+        let probe = snapshot.join("bin/probe");
+        executable(&probe, "#!/bin/sh\necho snapshot\n");
+        let environment = vec![("PATH".to_string(), "bin:/usr/bin".to_string())];
+        assert_eq!(
+            resolve_program("probe", &snapshot, &environment),
+            Some(snapshot.join("bin").join("probe"))
+        );
+        let empty = vec![("PATH".to_string(), ":/usr/bin".to_string())];
+        executable(&snapshot.join("here"), "#!/bin/sh\n");
+        assert_eq!(
+            resolve_program("here", &snapshot, &empty),
+            Some(snapshot.join("here"))
+        );
+        let inputs = FingerprintInputs {
+            snapshot_id: format!("sha256:{}", "ab".repeat(32)),
+            toolchain: None,
+            runtime_paths: Vec::new(),
+        };
+        let args = Vec::new();
+        let execution = Execution {
+            program: "probe",
+            args: &args,
+            timeout: std::time::Duration::from_secs(5),
+            workdir: &snapshot,
+            environment: &environment,
+        };
+        let first = fingerprint(&execution, Some(&inputs));
+        assert_ne!(first, UNKNOWN);
+        // The fingerprint is the Snapshot's executable's: other bytes there, another one.
+        std::fs::remove_file(&probe).unwrap();
+        executable(&probe, "#!/bin/sh\necho changed\n");
+        assert_ne!(fingerprint(&execution, Some(&inputs)), first);
+        // Without the Snapshot's `bin/`, nothing resolves: `unknown`, never another file.
+        std::fs::remove_dir_all(snapshot.join("bin")).unwrap();
+        assert_eq!(fingerprint(&execution, Some(&inputs)), UNKNOWN);
+    }
 
     #[test]
     fn a_runtime_path_becomes_its_placeholder_and_the_longest_path_wins() {

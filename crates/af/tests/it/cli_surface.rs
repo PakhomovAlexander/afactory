@@ -330,7 +330,7 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         (
             "config",
             "Usage: af telemetry config [OPTIONS] <RUN>",
-            "af/TelemetryConfig@1",
+            "af/TelemetryConfig@2",
             ["--store <ID>", "--execution <ID>", "--dir <PATH>", "<env>"].as_slice(),
         ),
         (

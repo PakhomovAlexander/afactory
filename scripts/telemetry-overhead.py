@@ -43,6 +43,7 @@ import random
 import shutil
 import signal
 import sqlite3
+import stat
 import statistics
 import subprocess
 import sys
@@ -234,11 +235,27 @@ def keep_checks(repo, count):
         pin, 'sha256:' + hashlib.sha256(CONTENT_ID_DOMAIN + new).hexdigest()), encoding='utf-8')
 
 
+def copy_writable(source, destination):
+    """Copy `source` to `destination` with user write on every directory and file it creates.
+
+    The gate materializes the source tree read-only and `copytree` keeps those modes, so a copy
+    that is written to (the smoke's `bench.json`, the run's commit) or removed afterwards must
+    get its write permission back. Symbolic links are copied as links and never followed.
+    """
+    shutil.copytree(source, destination, symlinks=True)
+    for directory, _, files in os.walk(destination):
+        os.chmod(directory, os.stat(directory).st_mode | stat.S_IRWXU)
+        for name in files:
+            path = os.path.join(directory, name)
+            if not os.path.islink(path):
+                os.chmod(path, os.stat(path).st_mode | stat.S_IRUSR | stat.S_IWUSR)
+
+
 def prepare(fixture, scale, work):
     """The fixture's repository, committed once; every run copies it."""
     source = FIXTURES_DIR / fixture
     pristine = work / fixture / 'pristine'
-    shutil.copytree(source / 'repo', pristine, symlinks=True)
+    copy_writable(source / 'repo', pristine)
     if scale == 'smoke':
         bench = pristine / 'bench.json'
         parameters = json.loads(bench.read_text(encoding='utf-8'))
@@ -305,7 +322,7 @@ def segments(run):
 def run_once(af, fixture, pristine, work, label, level):
     run = work / fixture / label
     repo = run / 'repo'
-    shutil.copytree(pristine, repo, symlinks=True)
+    copy_writable(pristine, repo)
     for name in ('home', 'config', 'xstate', 'data', 'cache', 'bin', 'tmp'):
         (run / name).mkdir(parents=True)
     state = run / 'store'

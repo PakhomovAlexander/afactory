@@ -467,6 +467,8 @@ impl Confined {
         if self.kind(name) != Some(EntryKind::Directory) {
             return Ok(None);
         }
+        #[cfg(test)]
+        CHILD_DIR_OPENS.with(|opens| opens.set(opens.get() + 1));
         match nix::fcntl::openat(
             &self.fd,
             name,
@@ -859,6 +861,25 @@ pub fn temp_name(label: &str) -> String {
         std::process::id(),
         crate::segment::nonce()
     )
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The directories this thread opened with [`Confined::child_dir`], for the tests that
+    /// bound a reader's opens.
+    static CHILD_DIR_OPENS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The directories this thread opened with [`Confined::child_dir`] since the last reset.
+#[cfg(test)]
+pub(crate) fn child_dir_opens() -> u64 {
+    CHILD_DIR_OPENS.with(std::cell::Cell::get)
+}
+
+/// Start counting this thread's [`Confined::child_dir`] opens from zero.
+#[cfg(test)]
+pub(crate) fn reset_child_dir_opens() {
+    CHILD_DIR_OPENS.with(|opens| opens.set(0));
 }
 
 #[cfg(test)]
