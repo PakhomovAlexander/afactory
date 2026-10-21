@@ -255,7 +255,7 @@ pub const CONTRACTS: &[Contract] = &[
     seeded(
         library(
             "authority_plan_check",
-            "authority_plan_check_v2",
+            "authority_plan_check_v3",
             "current_plan_check",
             &[("package", Domain::Fixture(ENVELOPES_LARGE))],
             cache("fresh", "application_cold"),
@@ -269,7 +269,7 @@ pub const CONTRACTS: &[Contract] = &[
     seeded(
         library(
             "authority_runtime_new",
-            "authority_runtime_new_v2",
+            "authority_runtime_new_v3",
             "task_runtime_new",
             &[("package", Domain::Fixture(ENVELOPES_LARGE))],
             cache("fresh", "application_cold"),

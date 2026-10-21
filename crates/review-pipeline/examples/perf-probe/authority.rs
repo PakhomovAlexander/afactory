@@ -434,6 +434,23 @@ pub struct Region<'a> {
 }
 
 impl Region<'_> {
+    /// Construct the real cold validator for operations that cannot execute a worker. The
+    /// seed writer already captured the execution host; neither current-plan checking nor
+    /// runtime construction uses it. This host refuses context and worker execution, so a
+    /// future operation that needs those capabilities fails instead of silently omitting work.
+    pub fn with_cold_validator<T>(
+        &self,
+        operation: impl FnOnce(&CapturedTaskAuthority<'_>, &dyn TaskOperatorHost) -> T,
+    ) -> Result<T, String> {
+        let host = ProbeDomain;
+        let authority = CapturedTaskAuthority::new(
+            self.compiler,
+            &host,
+            &review_pipeline::task::host::NoTaskDeveloper,
+        );
+        Ok(operation(&authority, &host))
+    }
+
     /// Capture a host and authority that no setup write used and hand them to `operation`. The
     /// authority's plan validator is new, so the region's first check recompiles the plan, as
     /// a first check after admission does in a fresh process. The capture validates the plan

@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 use review_core::task::plan::ExecutionPlanV1;
 use review_core::{ArtifactEnvelope, Producer};
 use review_graph::task::CompiledTask;
-use review_pipeline::task::TaskRuntime;
+use review_pipeline::task::host::CapturedTaskAuthority;
+use review_pipeline::task::{TaskOperatorHost, TaskRuntime};
 use review_source_git::{Capture, Entry, EntryKind, Manifest, Repo};
 use review_store::canonical::blob_content_id;
 use review_store::{Cas, EventStore, StoreError};
@@ -106,13 +107,13 @@ pub fn execute(request: &Request, work: &Path) -> Outcome {
         "state_projection_v2" => state_projection(request, work, started),
         "state_projection_seed_v1" => state_projection_seed(work, started),
         "authority_seed_v1" => authority_seed(request, work, started),
-        "authority_plan_check_v2" | "authority_runtime_new_v2" => authority_sample_from(
+        "authority_plan_check_v3" | "authority_runtime_new_v3" => authority_sample_from(
             request.text("package"),
             request
                 .seed
                 .as_deref()
                 .expect("an admitted seed reader has its seed"),
-            if request.contract.contract_id == "authority_plan_check_v2" {
+            if request.contract.contract_id == "authority_plan_check_v3" {
                 AuthorityRegion::CurrentPlanCheck
             } else {
                 AuthorityRegion::TaskRuntimeNew
@@ -1020,7 +1021,7 @@ pub fn authority_sample_from(
                 ));
             }
         }
-        let measured = inputs.capture(|authority, host| {
+        let operation = |authority: &CapturedTaskAuthority<'_>, host: &dyn TaskOperatorHost| {
             after_region_capture().map_err(|error| (Some(author.clone()), fixture_error(error)))?;
             // The setup writers' leases ended after their writes; the region's own
             // production lease is taken here, as the last Store write before it.
@@ -1095,7 +1096,12 @@ pub fn authority_sample_from(
             let result = result
                 .map_err(|error| classify(&fresh, task_lease, error, FailureKind::OperationFailed));
             Ok((author.clone(), setup_nanos, region_nanos, result))
-        });
+        };
+        let measured = if restore {
+            inputs.with_cold_validator(operation)
+        } else {
+            inputs.capture(operation)
+        };
         measured.map_err(|error| (Some(author.clone()), fixture_error(error)))?
     };
     let built = if restore {

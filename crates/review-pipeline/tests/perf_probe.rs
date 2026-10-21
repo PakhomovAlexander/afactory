@@ -469,6 +469,17 @@ fn requests_outside_the_declared_contracts_are_refused() {
         &with("contract_id", json!("source_capture_v1")),
         "is not case source_capture's contract",
     );
+    for case in ["authority_plan_check", "authority_runtime_new"] {
+        for old_version in [1, 2] {
+            let mut request = base.clone();
+            request["case_id"] = json!(case);
+            request["contract_id"] = json!(format!("{case}_v{old_version}"));
+            refused(
+                &serde_json::to_vec(&request).unwrap(),
+                &format!("is not case {case}'s contract"),
+            );
+        }
+    }
     refused(&with("extra", json!(1)), "unknown field `extra`");
     refused(&with("schema", json!("af.perf-probe-request/1")), "schema");
     // A seed reader needs its seed; a seed is never given to a contract that reads none, and
@@ -1712,7 +1723,7 @@ fn a_lapsed_setup_lease_fails_the_sample_and_no_later_lease_replaces_it() {
 #[test]
 fn the_region_checks_through_a_cold_authority_that_no_setup_write_used() {
     // The setup writes validate the plan through their own authority, whose validator then
-    // holds it; the region's authority is captured afresh after setup and holds nothing, so
+    // holds it; the region's non-executing host and real validator are fresh and hold nothing, so
     // its first check recompiles the plan. An authority that already checked is refused.
     let (_owner, scratch) = empty_scratch();
     let (_fixture, checked) = authority::build_then(
@@ -1725,7 +1736,7 @@ fn the_region_checks_through_a_cold_authority_that_no_setup_write_used() {
         },
         |store, cas, _, _, region| {
             region
-                .capture(|authority, _| {
+                .with_cold_validator(|authority, _| {
                     assert!(
                         !authority.holds_validated_plan(),
                         "a fresh region authority"

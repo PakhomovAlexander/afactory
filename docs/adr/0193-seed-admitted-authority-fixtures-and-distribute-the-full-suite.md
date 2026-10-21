@@ -37,12 +37,26 @@ damaged, unreleased or expired Task seed fails; an expired setup lease is never 
 heal a failed writer. The original revision and its one-hour deadline are preserved. A seed is
 scoped to a shard whose longest sampling budget is 45 minutes, never reused in another run.
 
-The sample captures its host and authority afresh, asserts the validator is cold, takes its
-own production 15-second lease after capture, and opens a fresh Store connection for timing.
+The sixteen-shard trial `39663723586` still exhausted shard 0 on an AMD EPYC 7763:
+32 of its 44 large plan-check records took 561.15 seconds of supervised execution, with a
+median of 17.52 seconds per sample. Median setup was 10.292 seconds and the region 4.700
+seconds. It completed 1,766 of 1,872 records across the run, with 106 unstarted and no
+recorded sample failure. Medium canonical validation was also statistically inconclusive.
+Increasing shard count cannot remove that per-case cost.
+
+Each seeded sample constructs a fresh real `CapturedTaskAuthority` and its cold production
+validator over the restored compiler. It uses the probe's non-executing domain host: neither
+current-plan checking nor runtime construction calls a worker or prepares its context. The
+host refuses those capabilities if the operation changes. Full execution-host capture remains
+in the public seed writer and direct writer tests; repeating its compilation, package parsing
+and worker transport capture in every reader would be untimed work with no consumer.
+
+The sample asserts the validator is cold, takes its own production 15-second lease after
+validator construction, and opens a fresh Store connection for timing.
 The measured operations, independent semantic digests, package sizes, envelope cap and
 failure classification stay unchanged. The shared measuring implementation also remains
 exercised by direct fixture-writer tests. Changed setup contracts are
-`authority_plan_check_v2` and `authority_runtime_new_v2`; the seed writer is
+`authority_plan_check_v3` and `authority_runtime_new_v3`; the seed writer is
 `authority_seed_v1`. Earlier reader contracts are refused.
 
 The quick tier distributes its complete instance set over sixteen shards, with the original
