@@ -5,7 +5,9 @@
 //! carries the owner marker [`MARKER`]. A Store outside af's own roots — an explicit `--state`
 //! or a campaign below an explicit `--state-root` — is removed whole only while it is marked and
 //! holds nothing but af's entries; otherwise only af's entries go, and everything else is left
-//! in place and named. Such a Store is also measured by its af entries alone.
+//! in place and named. Either way af's entries go one by one through the directory it opened,
+//! and the directory itself only by `rmdir`, so an entry that appears meanwhile keeps it. Such a
+//! Store is also measured by its af entries alone.
 //!
 //! Every directory af creates for its state is private (0700) and every file there 0600,
 //! whatever the umask; an existing Store and af's state root are narrowed to 0700 when the
@@ -216,8 +218,8 @@ pub(crate) fn af_bytes_and_depth(state: &Path) -> std::io::Result<(u64, u32)> {
 #[derive(Debug, Default)]
 pub(crate) struct Removed {
     pub(crate) bytes: u64,
-    /// What the Store held when its whole removal started ([`super::remove_directory`]); `None`
-    /// when only af's entries went, entry by entry.
+    /// What the Store held when its whole removal started ([`super::remove_directory`]); always
+    /// `None` here: a Store outside af's roots goes entry by entry.
     pub(crate) started: Option<u64>,
     /// What is still there: entries that are not af's, and the directory itself when it was not
     /// removed whole.
@@ -225,27 +227,23 @@ pub(crate) struct Removed {
 }
 
 /// Remove the Store `path`, strictly below `anchor`, reached from `anchor` without following a
-/// link and only while it is still `identity`. Whole when it is marked and holds nothing but
-/// af's entries; otherwise af's entries alone, through the opened directory, and the rest is
-/// left.
+/// link and only while it is still `identity`: af's entries, one by one through the opened
+/// directory, and the rest is left. The directory itself goes too when it is marked, held
+/// nothing but af's entries, and is empty once they went: it is removed by `rmdir`, which a
+/// file created in it meanwhile refuses, so such a file is never removed with it.
 pub(crate) fn remove(
     anchor: &Path,
     path: &Path,
     identity: review_sandbox::Identity,
 ) -> Result<Removed, String> {
-    remove_with(anchor, path, identity, || {
-        super::remove_directory(anchor, path, Some(identity), 0)
-    })
-    .map_err(|failure| failure.reason)
+    remove_with(anchor, path, identity).map_err(|failure| failure.reason)
 }
 
-/// [`remove`], the whole removal through `whole` (the sweep's measured removal of the
-/// directory, whose partial-removal accounting it keeps).
+/// [`remove`], failing with the sweep's [`super::plan::Failed`].
 pub(crate) fn remove_with(
     anchor: &Path,
     path: &Path,
     identity: review_sandbox::Identity,
-    whole: impl FnOnce() -> Result<(u64, Option<u64>), super::plan::Failed>,
 ) -> Result<Removed, super::plan::Failed> {
     let relative = path
         .strip_prefix(anchor)
@@ -266,15 +264,7 @@ pub(crate) fn remove_with(
     }
     let names = local_fs::entry_names(&opened).map_err(|error| format!("listing it: {error}"))?;
     let marked = names.iter().any(|name| name == MARKER);
-    if marked && names.iter().all(|name| is_af_entry(&opened, name)) {
-        drop(opened);
-        let (bytes, started) = whole()?;
-        return Ok(Removed {
-            bytes,
-            started,
-            left: Vec::new(),
-        });
-    }
+    let whole = marked && names.iter().all(|name| is_af_entry(&opened, name));
     let mut removed = Removed::default();
     let mut failures = Vec::new();
     // The event log goes last, and only once everything else of af's went: while it is there
@@ -295,7 +285,20 @@ pub(crate) fn remove_with(
             Err(error) => failures.push(format!("{}: {error}", name.to_string_lossy())),
         }
     }
-    // Not proven af's, or holding what is not: the directory itself stays.
+    if failures.is_empty() && whole {
+        // Proven af's and emptied of af's entries: the directory goes by `rmdir`, so an entry
+        // created in it since the listing keeps it, and is reported.
+        match remove_emptied(anchor, path, identity) {
+            Ok(()) => return Ok(removed),
+            Err(_) => {
+                let names = local_fs::entry_names(&opened).unwrap_or_default();
+                removed
+                    .left
+                    .extend(names.iter().map(|name| path.join(name)));
+            }
+        }
+    }
+    // Not proven af's, holding what is not, or given something since: the directory stays.
     removed.left.insert(0, path.to_path_buf());
     if failures.is_empty() {
         Ok(removed)
@@ -307,6 +310,28 @@ pub(crate) fn remove_with(
         )
         .into())
     }
+}
+
+/// Remove the emptied Store directory `path`, strictly below `anchor`, by `rmdir` from its
+/// parent reached without following a link, and only while it is still `identity`.
+fn remove_emptied(
+    anchor: &Path,
+    path: &Path,
+    identity: review_sandbox::Identity,
+) -> std::io::Result<()> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(std::io::Error::other("a Store has a parent"));
+    };
+    let relative = parent.strip_prefix(anchor).map_err(std::io::Error::other)?;
+    let parent = review_sandbox::open_beneath(review_sandbox::open_anchor(anchor)?, relative)?;
+    let stat = nix::sys::stat::fstatat(&parent, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW)
+        .map_err(std::io::Error::from)?;
+    let found = review_sandbox::Identity::of_stat(&stat);
+    if (found.device, found.inode) != (identity.device, identity.inode) {
+        return Err(std::io::Error::other("it changed since it was measured"));
+    }
+    nix::unistd::unlinkat(&parent, name, nix::unistd::UnlinkatFlags::RemoveDir)
+        .map_err(std::io::Error::from)
 }
 
 /// Remove the entry `name` of the opened directory: a directory through
@@ -467,6 +492,34 @@ mod tests {
         if marked {
             std::fs::write(path.join(MARKER), MARKER_TEXT).unwrap();
         }
+    }
+
+    /// The last step of removing a proven Store is `rmdir`: a file created in it after its
+    /// entries were listed keeps the directory, and the file, in place; a directory replaced
+    /// since it was measured is not removed either.
+    #[test]
+    fn an_emptied_store_goes_only_by_rmdir_and_only_while_it_is_the_measured_one() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let emptied = root.join("emptied");
+        std::fs::create_dir(&emptied).unwrap();
+        let identity = review_sandbox::Identity::of(&emptied).unwrap();
+        std::fs::write(emptied.join("notes.txt"), b"mine").unwrap();
+        assert!(remove_emptied(&root, &emptied, identity).is_err());
+        assert_eq!(std::fs::read(emptied.join("notes.txt")).unwrap(), b"mine");
+        std::fs::remove_file(emptied.join("notes.txt")).unwrap();
+
+        let replaced = root.join("replaced");
+        std::fs::create_dir(&replaced).unwrap();
+        let measured = review_sandbox::Identity::of(&replaced).unwrap();
+        std::fs::remove_dir(&replaced).unwrap();
+        std::fs::create_dir(root.join("other")).unwrap();
+        std::fs::rename(root.join("other"), &replaced).unwrap();
+        assert!(remove_emptied(&root, &replaced, measured).is_err());
+        assert!(replaced.exists());
+
+        remove_emptied(&root, &emptied, identity).unwrap();
+        assert!(!emptied.exists());
     }
 
     #[test]

@@ -441,6 +441,8 @@ impl ProjectStore {
             .write(true)
             .open(directory.join("project.lock"))
             .map_err(|error| error.to_string())?;
+        // Created 0600; one an older release left open to others is narrowed (ADR-0144).
+        let _ = review_store::local_fs::narrow_owned_file(&lock);
         let lock = take_lock(lock, wait)?;
         let cas = Cas::open(directory.join("cas")).map_err(|error| error.to_string())?;
         let events = EventStore::open(directory.join("events.sqlite"))

@@ -1795,9 +1795,7 @@ fn remove_entry(
         .ok_or("its identity was not measured, so it is not removed".to_string())?;
     let anchor = roots.anchor_of(&entry.path);
     if roots.outside_af_state(&entry.path) {
-        let removed = owned::remove_with(anchor, &entry.path, identity, || {
-            remove_directory(anchor, &entry.path, Some(identity), entry.bytes)
-        })?;
+        let removed = owned::remove_with(anchor, &entry.path, identity)?;
         return Ok((removed.bytes, removed.started, removed.left));
     }
     remove_directory(anchor, &entry.path, Some(identity), entry.bytes)
@@ -2383,7 +2381,7 @@ fn purge_registered(roots: &Roots, registered: &[registry::Registered]) -> Vec<S
                 continue;
             }
             // Whole only when it is proven af's; otherwise af's entries alone (ADR-0144).
-            match owned::remove_with(Path::new("/"), &store, identity, whole) {
+            match owned::remove_with(Path::new("/"), &store, identity) {
                 Ok(removed) => lines.push(
                     owned::left_line(&store, &removed.left)
                         .unwrap_or_else(|| format!("removed {}", store.display())),

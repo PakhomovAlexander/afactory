@@ -77,6 +77,21 @@ pub fn narrow_owned_dir(path: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
+/// Narrow the open file `file` to 0600 when this process's effective user owns it and its group
+/// or others have any access, as [`narrow_owned_dir`] does for a directory. Returns whether it
+/// changed the mode.
+pub fn narrow_owned_file(file: impl std::os::fd::AsFd) -> io::Result<bool> {
+    use nix::sys::stat::{Mode, fchmod, fstat};
+    let stat = fstat(file.as_fd())?;
+    #[allow(clippy::unnecessary_cast)]
+    let mode = stat.st_mode as u32;
+    if stat.st_uid != nix::unistd::geteuid().as_raw() || mode & 0o077 == 0 {
+        return Ok(false);
+    }
+    fchmod(file.as_fd(), Mode::S_IRUSR | Mode::S_IWUSR)?;
+    Ok(true)
+}
+
 /// The names in the directory `directory` holds open, `.` and `..` excepted, listed through the
 /// descriptor itself: whatever has become of its path since it was opened.
 pub fn entry_names(directory: impl std::os::fd::AsFd) -> io::Result<Vec<std::ffi::OsString>> {
@@ -186,6 +201,18 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(!narrow_owned_dir(&link).unwrap());
         assert_eq!(mode(&target), 0o755);
+    }
+
+    #[test]
+    fn an_owned_open_file_is_narrowed_through_its_descriptor() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("project.lock");
+        std::fs::write(&file, b"").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let open = std::fs::File::open(&file).unwrap();
+        assert!(narrow_owned_file(&open).unwrap());
+        assert_eq!(mode(&file), 0o600);
+        assert!(!narrow_owned_file(&open).unwrap());
     }
 
     #[test]
