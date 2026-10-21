@@ -19,6 +19,551 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.12.0-rc.5] - 2026-10-21
+
+### Authority compatibility
+
+Committed .af/ policy keeps working as is relative to 0.12.0-rc.4; no authority migration is required. Every existing pipeline stays `af.pipeline/1`; only a pipeline that declares a Project Brief root port is `af.pipeline/2`, pinned like any new pipeline by `af onboard --refresh-lock`. Machine state needs no hand edit: `$XDG_STATE_HOME/af/stores.toml` is now version 2, and a version-1 file is refused with its way out (delete it; Stores register again as commands use them); `af storage --json` is `af/storage@3` and a Survey record is `af/ProjectSurvey@2`, their superseded versions refused; telemetry records under `$XDG_STATE_HOME/af/telemetry/` at level `spans` unless the machine's `[telemetry]` table sets `level = "off"`, and nothing leaves the machine unless an OTLP sink is configured.
+
+### Changes
+
+- release: v0.12.0-rc.4 (#269)
+- fix: reject explicit zero unknown usage in collected tasks (#273)
+- fix: reject PR report content hidden by HTML, comments and code (#275)
+- fix: preserve copyable preview commands for maximum-length task IDs (#274)
+- fix(tui): preserve error reasons for paths with spaces (#276)
+- docs: align setup help with current CLI behavior (#277)
+- ci: push the release pin with a deploy key that bypasses main's ruleset (#281)
+- docs: record the 0.12.0-rc.2 Task startup profile from issue #255 (#282)
+- Telemetry P1: the review-telemetry crate, levels, index and status (#286)
+- fix: check for updates in headless and JSON commands (#285)
+- Project: identity, Workspaces, Surveys and their collection (#291)
+
+- A `task_collected` tombstone (`af/TaskCollected@1`) that spells `unknown_usage_attempts: 0`
+  is now refused on admission, event validation and replay, as its schema already refused it;
+  a tombstone without the field still reads as no unknown usage, and written bytes are
+  unchanged ([#194](https://github.com/PakhomovAlexander/afactory/issues/194)).
+
+- `af task start` and `af task explain` no longer wrap a suggested `af task run` action or
+  `Details` hint inside a Task ID. With a 128-character Task ID, the copied command keeps every
+  shell token, the exact `--confirm-plan` ID and a valid `\` continuation. Prose rows still wrap at
+  96 columns, and command rows are still sanitized
+  ([ADR-0149](docs/adr/0149-never-wrap-a-suggested-command-inside-a-shell-token.md)).
+
+- The `PR report` check no longer accepts an `af task report` block GitHub does not render as
+  the report: a block wrapped in a raw HTML block (`<pre>`, `<script>`, `<style>` or
+  `<textarea>`, indented or not, closed or left open), whose markers are its text, and a
+  pipeline line or round table, between visible markers, that sits in a code block, inside an
+  HTML block, which a fence inside it does not end before its blank line, inside an HTML
+  comment, or inside the quoted attribute value of a tag an HTML block leaves open, or a
+  pipeline line that starts inside a code span opened on a paragraph line above it. A comment
+  stays hidden from its `<!--`, in an HTML block or spanning the lines of a paragraph, across
+  blank lines to the first `-->` of raw HTML. A raw block ends at the closing tag of any of the
+  four names, a `<pre>` nested in another HTML block opens none, and a `<!--` in an attribute
+  value, a code span or escaped hides nothing, as GitHub renders them; so do steps or a Task cell
+  in a code span. The block-level tags that interrupt a paragraph are GitHub's: `<source>` is
+  one, `<search>` is not (issue #193,
+  [ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md)).
+
+- `af` browser: `:scope project` from a long start outside any repository and `:cd` into a
+  repository whose configuration file does not parse now keep their reason visible on the
+  status line at 80 columns. Before, a path with spaces could hide the reason. The error carries
+  the exact span of the path it names, so a path with spaces is shortened from the left as one
+  path. The error text is unchanged, and a message that fits is unchanged (#232,
+  [ADR-0150](docs/adr/0150-name-the-path-a-status-line-error-carries.md)).
+
+- Setup help and guides now describe what the CLI does. `af onboard --help` and the generated
+  `.af/README.md` say that `--refresh-lock` re-pins every route and oversized-policy pipeline as
+  well as the selected one, with their Workers, and drops stale pins. The Task prerequisites say
+  that `install.sh` checks the release signature only when `minisign` is on `PATH`, apart from a
+  checksum-only install. The preflight guide separates a successful empty-Diff `af review plan`
+  from the `af review run` refusal and the helper's `empty_intended_diff` conflict. The
+  shared-catalog guide lists all eight installed Task-kind profiles. `af catalog --help` and its
+  `--destination` flags say the destination must be an absent, safe project-relative path. No
+  behaviour changes.
+
+- `af project`: a repository now has one Project identity, derived from its root commits and never
+  from a path or a remote URL, with a Project Store under `$XDG_STATE_HOME/af/project/`. Its
+  checkouts are Workspaces, each with its own Task Store, Task files and bindings file. `af
+  project show` and `af project workspaces` print them (`--json`: `af/project@1`,
+  `af/project-workspaces@1`). `af project workspace new LABEL` makes a worktree, a branch and a
+  Workspace directory without a commit, filling the worktree the way `af task deliver` does, so no
+  checkout, filter or hook of the repository runs; it refuses a `--path` inside the checkout,
+  another Workspace or af's state (exit 2) and a `--from` commit of another history before it
+  makes anything, and undoes what it made when a later step fails, deleting only what it can
+  prove it made: the worktree directory its own `create_dir` made, only while it keeps that
+  identity, every entry in it, an empty directory as much as a file, is a path of the captured
+  commit equal in kind, mode and content or a directory above one holding nothing else, its
+  `.git` is absent or names this add's entry and the index the add wrote is unchanged, otherwise
+  keeping the worktree and naming the first differing path; only the parent directories it
+  created itself, each only while it is still that directory by device and inode, a replacement
+  at its path being left and reported; administrative entries whose `gitdir` names its
+  worktree; the branch only while
+  it still holds the commit it was created at and no kept worktree is on it. Every other new
+  entry is reported as left behind with one fixed recovery line, also when the undo's final check
+  fails, and `git worktree prune` never runs. `workspace add PATH` adopts an existing checkout,
+  and `workspace remove LABEL` unregisters one and never removes a Store; `--delete-worktree`
+  removes a worktree only when its index and its files both equal its commit, the index through
+  delivery's cached-index comparison and the files through the committed capture rather than
+  `git worktree remove`, so no clean filter runs and a staged or unmerged entry is refused. It
+  goes by identity, never by name: before it moves anything it writes a machine-local removal
+  record in the Project Store (`removals/<workspace id>.toml`) holding the checkout path, the
+  device and inode of the checkout and of its administrative entry, the container it makes for
+  each and the step each reached; it claims each directory into a container it creates
+  exclusively beside it (mode 0700, through that container's own descriptor, never over a taken
+  name), judges the checkout there through descriptors without following a link, deletes only
+  what it claimed and then the container with `rmdir`. A replacement at the checkout's path is
+  kept and reported, a container holding anything else keeps it and is reported with the first
+  such path, and a directory merely named like a container is reported and never touched. An
+  interrupted or failed removal says where what is left remains, keeps the Workspace registered
+  and is finished by the same command from its record, which unregisters the Workspace exactly
+  once. The rerun never takes a recorded step as proof: whatever the step, it first checks the
+  administrative entry now, opened without following a link and read only while its device and
+  inode are the ones the record holds, so another directory put at its path is a replacement,
+  reported and never read; while the entry is replaced or locked or its `gitdir` names another
+  checkout it touches nothing, a checkout already in its container staying there, reported by
+  its claim name, and a failed check never deletes the removal record, so the next run goes by
+  the recorded identities rather than inspecting afresh; then it checks that step's
+  precondition on the file system, so a checkout moved back out of its container is claimed and
+  judged again and a replacement at its path is kept, and an entry is claimed or deleted only
+  while its `gitdir` names the checkout and it holds no `locked`, whatever the step; an entry that
+  is locked, names another checkout or lacks its `gitdir` stays where it is, reported, and so does
+  the Workspace's registration, as while an entry's `gitdir` cannot be read; a plain `workspace
+  remove` is refused meanwhile. Automatic Workspace labels follow one stated rule within 128 bytes. `af
+  onboard --apply`, `af task plan|start`, `af review run` and `af project` register the Project
+  and the checkout lazily (`af task plan|start` before resolving `--workspace`), refuse a shallow
+  clone with `git fetch --unshallow`, and never change a command's result; every git process they
+  start runs supervised under a deadline. `af task deliver` registers the worktree it makes.
+  `--workspace LABEL` on every `af task` command that takes `--state` selects a Workspace's Store
+  and bindings. `af storage --json` is now `af/storage@2`, with the entry kind `project_store`,
+  and `$XDG_STATE_HOME/af/stores.toml` is version 2: a version-1 file is refused until it is
+  deleted, and Stores register again as commands use them
+  ([ADR-0158](docs/adr/0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)).
+- PJ1b close-out: this branch did not have it yet, so it is added here. Every `*-moved` step of
+  `af project workspace remove --delete-worktree` checks its original path: stopped after
+  `entry-moved` (or `checkout-moved`), a directory found at the entry's (or checkout's) original
+  path is a replacement that stops the removal, the recorded directory staying in its container,
+  nothing deleted and the Workspace registered, reported as `a new administrative entry appeared
+  at <path> since this removal moved the recorded one; clear it or move the recorded entry back,
+  then run the command again`; cleared or moved back, the same command finishes
+  (`a_directory_at_the_original_path_after_any_moved_step_stops_the_removal`,
+  [ADR-0158](docs/adr/0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+  clause 5).
+- Second close-out: a rerun of `af project workspace remove --delete-worktree` checks the
+  administrative entry as its recorded step needs. Identity, `gitdir` and lock are checked before
+  a live checkout or entry is claimed or deleted; an entry whose deletion is recorded resumes in
+  its container without the `gitdir` that deletion may have removed; and one gone from its
+  container and its path, or recorded deleted, advances to done once its recorded container is
+  verified. So a crash right after the entry's unlink, part way through its deletion or after its
+  container's removal finishes on the rerun and unregisters the Workspace once, also beside a new
+  entry another add made at its path, which is kept
+  (`a_rerun_after_the_entrys_unlink_or_part_of_its_deletion_finishes_beside_a_new_entry`, and the
+  stop points `entry-unlinked`, `entry-partial`, `entry-rmdir`, `checkout-unlinked` and
+  `checkout-rmdir` of
+  `an_interrupted_removal_is_recorded_by_identity_and_a_rerun_finishes_it_unregistering_once`).
+  Every identity the removal records carries the directory's birth time beside its device and
+  inode, since ext4 hands a freed inode number to the next directory at once: the removal record
+  is `version = 2` and a version-1 record is refused, an identity at the same inode born later is
+  refused, and a file system that reports no birth time refuses the removal with nothing changed
+  (`a_file_system_without_birth_time_refuses_a_removal_and_changes_nothing`); the undo of
+  `workspace new` compares the same identities. The Project ADR is renumbered ADR-0158, after
+  the numbers main took
+  ([ADR-0158](docs/adr/0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+  clause 5).
+- Third close-out, Workspace removal: a completed `--delete-worktree` removal record now outlives
+  the Workspace's unregistration and is deleted only after `WorkspaceRemoved@1` is appended and
+  its paths dropped. A crash before the unregistration, or after it and before the record's
+  deletion, is finished by the rerun from the record, never by inspecting the path again, so a
+  clean worktree created at the same path since is left untouched and exactly one
+  `WorkspaceRemoved@1` is recorded; registering that path again settles the finished record first
+  (`a_completed_removal_record_outlives_the_unregistration_and_a_replacement_survives_the_retry`)
+  ([ADR-0158](docs/adr/0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+  clause 5).
+
+- `af task output --format human-markdown` writes a readable presentation of a Document or
+  report for a person: its sections with lists and examples, sources and citations, ordinary
+  punctuation and non-ASCII text as written, the Task's result in plain words
+  (`accepted`, `changes requested`, `incomplete`) and the reviewer's summary when an exactly
+  matching receipt exists, recorded under the Task revision's own plan, verifier policy and
+  source Manifest, and whose verifier received any captured sources; stale evidence refuses the
+  export. Its closing note names only the checks and review that actually judged the canonical
+  report. It is derived from the draft that renders exactly to the recorded report and is never
+  recorded or reviewed itself. Authored Markdown, HTML and links stay text; an authored example
+  keeps a fence line indented four columns, or padded by a no-break or other non-ASCII space,
+  as content. Only ASCII spaces and tabs are layout: a no-break, em or ideographic space stays
+  as written in prose, lists, headings and after the indentation of an indented example. A
+  captured source's link opens exactly its captured URL: a query such as `?q=&copy;` is never
+  decoded to `©`.
+  `--format markdown` and `--format json` are unchanged
+  ([ADR-0151](docs/adr/0151-export-a-human-presentation-of-a-report-beside-its-canonical-markdown.md)).
+
+- Telemetry, first package: a new leaf crate, `review-telemetry`, records what `af` does in its
+  own store under `$XDG_STATE_HOME/af/telemetry/`, never in a Task or Campaign Store, and the
+  kernel never reads it. The machine-only `[telemetry]` table (`level` = `off`, `metrics`,
+  `spans` or `content`, and its bounds; `AF_TELEMETRY__<KEY>`) is ignored and reported in a
+  repository's `.af/af.toml`, and `af help telemetry` documents it. `af telemetry status` and
+  `af telemetry reindex` (`--json`: `af/telemetry-status@1`, `af/telemetry-reindex@1`) show and
+  rebuild the store; `status` accounts every byte beneath it, a path it does not recognize
+  under an `unrecognized` entry it never reads or removes, and rechecks each registered
+  directory's overlap, `unknown` when the Store registry cannot be read. The credential rules for Provider-authored text moved into the crate
+  unchanged, with key-aware JSON redaction added; only a kernel identity in an identity position
+  escapes them, and `status` re-reads a sealed segment changed under its name. No command records
+  spans yet
+  ([ADR-0153](docs/adr/0153-record-telemetry-in-its-own-store-and-never-let-it-steer.md)).
+
+- `af project survey|refresh|history`: the token-free Surveyor measures a Project's head into a
+  Survey, `af/ProjectSurvey@2` in the Project Store, with the sections identity, tree, history,
+  contributors, decisions, vocabulary and checks, every number decimal text, shares basis points
+  rounded down (`3333` for one third of three), and each section complete, partial or unavailable
+  with the bound it reached. A complete Survey is reused only while its survey key is unchanged (the
+  head commit, the digest of one bounded `for-each-ref` observation of `refs/heads` and `refs/tags`,
+  which also yields `history`'s tags and branches, the policy digest and Surveyor version 8), taken
+  from the record; replay binds every `SurveyRecorded@1` to its record, or a collected Survey's to
+  its tombstone, which copies every identity field of the record (head, refs, cutoff, completeness,
+  policy, Surveyor version and previous Survey) once the event was verified against it, and `af
+  project history`, `af project survey` with and without `--section` and `af project refresh` refuse
+  a mismatched event, an older one included, naming its sequence and field, before any of its fields
+  is used. The fold refuses before it reads: a record of an uncollected Survey that af cannot read
+  back, gone or corrupt, refuses replay naming the event's sequence, the Survey and the read error
+  and none of the event's other fields, and collection refuses and reports a Survey whose event
+  disagrees with its record. `unchanged:` names the key in one line; a new tag or branch, a policy
+  change or a partial newest Survey records a new one, and `af project refresh --force` records one
+  regardless. It reads the head only through supervised git plumbing, the history from objects alone
+  in a private bare repository attached to the object database (so untracked or `.git/info`
+  attributes, local configuration and diff drivers change no count), every stream as it arrives and
+  no record past 64 KiB, under one absolute `[survey] max_wall_ms` deadline that starts before
+  `rev-parse`, covers the survey key (a key not computed in time records `SurveyFailed@1`, and so
+  does every other way a refresh of a registered Project stops without a Survey: a newest Survey
+  that does not replay, a record the Project Store cannot take, a deadline before `rev-parse`
+  answered, whose head one more one-second `rev-parse` names), bounds every git process at the
+  lesser of its own limit and the time left (its process group ended at the deadline, a silent git
+  included), and is checked at every item of every stream, every declaration and every match of
+  every pattern list, `[survey.languages]` included, and after every section's finishing step, so a
+  slow section stops partial, never late and complete. The Tree Digest comes from a digest-only path
+  equal to the committed capture's digest: no blob written to any CAS, at most 16 MiB of manifest
+  buffering and 256 MiB of temporary manifest data, and absent with `deadline`, `max_record_bytes`,
+  `manifest_bytes` or `temp_bytes`, never the digest of a part; its spilled runs live in an
+  `af-tree-digest-<pid>-*` directory that the crash sweep of sandboxes and check runtimes reaps
+  under the same liveness and preservation rules, and every refresh sweeps a killed one's first,
+  before it decides to reuse a Survey, and again after its Tree Digest on every way out, within its
+  deadline and never touching a live process's directory. A Survey is published through a
+  pending-publication entry beside the Project Store's lock (`af/survey-pending@1`, at most 4 KiB:
+  the Survey ID and its length, written and synced before any byte enters the CAS, then the device
+  and inode of the file at the Survey's CAS name, recorded and synced once the bytes are durable
+  there and before the event), cleared only once `SurveyRecorded@1` committed, so a crash between
+  the record and its event leaves the entry, which collection counts and recovers, and the next
+  refresh of the same bytes finishes it; debug builds stop at both crash points
+  (`AF_TEST_SURVEY_STOP_BEFORE_IDENTITY`, `AF_TEST_SURVEY_STOP_BEFORE_EVENT`). A complete Survey is
+  byte-identical for the same head, refs, policy, Surveyor and git versions, cutoff and previous
+  Survey, and one that is not complete records where it stopped (`stopped`: the section, the item
+  index, the commit or path, the reason), which `af project survey` prints. The history walk
+  includes merges with `--diff-merges=off`, so a merge counts as a commit and a merge with no churn,
+  and reads `git log -z` in NUL-separated fields with the commit ID repeated, so an author name or
+  subject holding 0x1f is read whole and a record that does not parse, or a log that ends before its
+  last record's NUL, stops the walk with `malformed_record` naming its commit, never a guessed
+  identity, never complete history and never `SurveyFailed@1`; a malformed first record leaves
+  `history` and `contributors` partial with zero counts, naming the head, and both sections name the
+  record that stopped the walk by its ordinal (`stopped_record`, the one after the commits counted),
+  a record git is still writing being awaited until its own terminators and only the stream's end
+  cutting one. A gitlink is one file of zero bytes and lines, language `other`, never fetched or
+  opened, and left out of the Tree Digest as the committed Manifest leaves it. `max_paths`,
+  `max_entries` and `max_survey_bytes` are ceilings a layer may only lower, every pattern list holds
+  at most 64 patterns, the history walk tracks at most `max_paths` paths, and every list is ranked
+  before `max_entries` cuts it with `seen` and a reason, while display strings are cut to 256 bytes
+  and marked `truncated` and identity strings stay exact. Every `[survey]` pattern uses the one
+  grammar of `.af/af.toml` (brackets literal, `?` one byte), a decision's status and date come from
+  its `**Status:**` or `Status:` line alone (the first status named, `amended` a flag, the first
+  date that is a day of the calendar), terms are listed by name, `[survey.languages]` patterns give
+  each file one language, the bytewise-first ahead of the built-in map, checks come from
+  `.af/code-policy.toml` and every `.af/pipelines/*.toml` as `<source>:<name>` with the eight listed
+  toolchain files, and the measurement policy is stated. Contributors carry a `key` they are grouped
+  and ranked by beside their bounded display `name`, and are split into human and agent-assisted
+  commits, each counted once; an author email is never stored, and an author name carrying an email
+  address, blank or holding a control character anywhere in the whole name is `h:` and the hash of
+  the name under both identity policies. `af project survey --section NAME` picks sections of the
+  text; with `--json`, which prints the complete record, it is usage error 2. `af onboard --apply`
+  records the first Survey without changing its own exit code, and `af project show --json` stays
+  `af/project@1`
+  ([ADR-0159](docs/adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md)).
+- PJ2 round 9 re-verified round 8, which had no code review, item by item: (i) a log that ends
+  inside a record is `malformed_record`, partial with the counts before it and zero counts for the
+  first record, `unavailable` kept for a walk that never ran: fixed, adding the record's ordinal and
+  the stated, tested difference between a record still being written and a cut one
+  (`a_record_git_is_still_writing_is_awaited_and_only_the_streams_end_cuts_it`,
+  `a_log_stream_cut_before_its_final_nul_is_partial_history_naming_the_cut_commit`); (ii) the spill
+  sweep on every refresh, before and after the Tree Digest, sparing a live Surveyor's directory:
+  fixed, the sweep after the digest was missing
+  (`the_spill_sweep_runs_after_the_tree_digest_on_every_way_out`); (iii) a gitlink as one file of
+  zero bytes and lines in `files_without_lines`, language `other`, never fetched or opened:
+  complete, its fixture now also proving no `cat-file` asks for the target
+  (`a_gitlink_is_one_file_of_no_bytes_or_lines_never_fetched_and_digests_as_the_manifest`); (iv)
+  `previous_survey_id` and the partial stopping point as reproducibility inputs: complete
+  (`forced_refreshes_at_one_cutoff_differ_only_in_the_chain_and_a_partial_one_in_where_it_stopped`);
+  (v) the ceilings: `max_paths` complete
+  (`the_fixed_maxima_cut_with_their_reasons_and_identity_strings_stay_exact`,
+  `a_historical_commit_over_max_paths_leaves_history_partial_and_the_survey_recorded`), the 64 KiB
+  `max_record_bytes` fixed with its missing end-to-end fixture
+  (`every_streamed_record_over_64_kib_stops_at_max_record_bytes`), while the discovery ceilings and
+  the activity CAS-read budget belong to the `activity` section, which is PJ5's and not on this
+  branch, so neither was found complete nor fixed here and ADR-0159 clause 12 states them for PJ5;
+  (vi) every persisted shape at its version with its schema and parity fixture: complete, every
+  Survey shape still unreleased at `@1` (this round's `stopped_record` changes
+  `af/ProjectSurvey@1`'s schema and parity in the same change) and Surveyor version 8 so no earlier
+  build's record is reused. The writer's publication order was fixed too: the CAS made durable
+  before the identity, every entry write's directory synced, the identity only of a regular file of
+  the record's length, the 4 KiB bound and the second stop
+  (`the_writers_pending_entry_is_what_collection_reads_at_either_crash_point`), and every early stop
+  now records `SurveyFailed@1` (`every_refresh_that_stops_without_a_survey_records_its_failure`).
+- PJ2 close-out, the writer: the Survey record is `af/ProjectSurvey@2`, since round 9 added
+  `stopped_record` to `@1` without a new version; `ProjectSurveyV2`, its schema
+  (`schemas/project-survey-v2.json`) and parity fixtures replace `@1`, whose schema is gone, and
+  the label `af/ProjectSurvey@1` is refused by type with ADR-0145's message
+  (`the_superseded_survey_label_is_refused_by_type_and_schema`). A record of it already in a
+  Project Store is never deleted for its version: `af project history` lists it by ID and time as
+  `unreadable: superseded version` (`--json` is now `af/project-history@2` for that entry),
+  `af project show` says so, `af project survey` refuses it naming the version, and a refresh
+  never reuses it (`a_superseded_survey_record_is_listed_unreadable_kept_and_never_reused`). A
+  refresh tries `project.lock` only until its `max_wall_ms` deadline and stops with the bounded
+  failure `store_locked`, recorded while the holder still holds the lock
+  (`a_held_project_store_lock_stops_a_refresh_with_store_locked_within_its_deadline`). A retry of
+  a Survey whose pending entry already names an object keeps that identity and goes on only while
+  its CAS name holds that object, so a retry whose CAS write fails leaves the entry naming the
+  first object for collection to reclaim
+  (`a_retry_whose_put_fails_keeps_the_first_objects_identity_for_collection`), and the writer
+  refuses a `pending-surveys` that is a symbolic link or no directory of the Store, naming it and
+  writing nothing through it
+  (`a_pending_directory_replaced_by_a_link_refuses_the_refresh_and_nothing_is_written_outside`)
+  ([ADR-0159](docs/adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  15).
+- Second close-out, the writer: a Survey's bytes are staged in the writer's own
+  `pending-surveys/<64 hex>.object`, its identity recorded in the pending entry, and only then
+  renamed to its CAS name, never over a taken name, so nothing is ever at a CAS name no entry
+  describes and every state between has its recovery: a refresh stopped before the identity
+  (`AF_TEST_SURVEY_STOP_BEFORE_IDENTITY`) leaves staged bytes and an empty CAS name, one stopped
+  after it (the new `AF_TEST_SURVEY_STOP_BEFORE_LINK`) an entry naming the staged object, and the
+  next refresh of the same bytes finishes either
+  (`the_writers_pending_entry_is_what_collection_reads_at_either_crash_point`). The entry is now
+  `af/survey-pending@2` (`schemas/project-survey-pending-v2.json`), whose `object` carries the
+  birth time `born_unix_ns` beside device and inode, since ext4 hands a freed inode number to the
+  next file at once; `@1` is refused naming its recovery, and a file system that reports no birth
+  time refuses the publication. The Surveys ADR is renumbered ADR-0159, after the numbers main
+  took
+  ([ADR-0159](docs/adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  2).
+
+- Surveys join the Storage Budget: every Survey is an `af storage` entry of kind `survey` with its
+  allocated CAS bytes, last used at its cutoff (`af/storage@3`, `af/storage-prune@2`; the
+  superseded `af/storage@2` schema is gone and both earlier versions are refused, while the Task
+  sweep record keeps its kinds and counts a Survey's removal without listing it). An explicit `af
+  storage prune --apply`, or the sweep after a run when `[storage] auto_gc = true`, collects the
+  Surveys of each Project beyond the newest `[storage] keep_surveys` (50,
+  `AF_STORAGE__KEEP_SURVEYS`), oldest first and idle at least `keep_days`, and the budget may
+  take any Survey, oldest first, while af is over `max_bytes`; neither takes the newest complete
+  Survey, one the Project Store's lock holds or one used within the hour, and `af project
+  refresh` collects nothing. Collection appends a `SurveyCollected@1`
+  tombstone with the Survey's head, cutoff, completeness and tree and history totals before it
+  deletes the record. A sweep plans once over one inventory snapshot: `af storage prune` prints
+  that plan, every removal in order with the bytes it frees, its rule (`recovery`, `collection`,
+  `keep_surveys`, `budget`) and the total after it, and under `left` what it leaves (`held`,
+  `foreign`, `oversize`, `unreadable_name`, `too_deep`, `unmeasurable`); `--apply` runs the same plan entry by
+  entry, keeps an entry of any kind whose removal failed (the lock lost, what it names replaced
+  or gone since the inventory, an I/O error) in its place as `outcome` `failed: <reason>` with
+  nothing freed and the running total unchanged instead of choosing again, while a deletion that
+  stopped part way, a failed final `rmdir` included, reports the bytes that actually left the disk,
+  accounted from the removal's own start (what the directory held immediately before anything was
+  unlinked less what its claim still holds), and so stops where its preview stops, a pending recovery's bytes
+  counted once and its totals what af then holds. A directory nested deeper than the removal
+  walk's 128 levels is left `too_deep` by preview and apply alike and listed in use by `af
+  storage`. The claims dead processes left (`.af-removing-*`) and the containers of dead passes
+  are in that one inventory, `claim` entries under `recovery` that the preview and the applied
+  sweep list alike with the same bytes, a container that held a moved record planned after it,
+  and nothing is removed beside the plan; every one is an `af storage` entry of kind `claim`,
+  `state` `abandoned`, with its measured bytes, so the listing's claims are the preview's claim
+  recoveries, and its bytes are counted once: in its kinds and total as the preview counts it,
+  or, for a claim inside a Project Store, in the Store's bytes, the claim saying so with
+  `counted_in`, while one the inventory
+  cannot measure is left `too_deep` or `unmeasurable` with no bytes and never touched. A registration whose path holds no Store is dropped by the plan
+  (`registry_dropped`, the same in preview and apply), after the inventory reached its parent's
+  claims, so a registered Store a dead process renamed into its claim is recovered alike by
+  both. Each uncollected Survey's `SurveyRecorded@1` is verified against its record once, in the
+  Project Store's one read, and the plan and the inventory read only what that verified: an event
+  whose cutoff its record disproves is never the Survey's last use, and the Survey is refused and
+  kept. A Survey's record is measured once by device, inode and bytes, and one replaced between
+  inventory and the plan is `refused (replaced since inventory)` and never adopted. A record is reached and read only through directory descriptors that follow no link, and
+  deleted inside a container each job creates for itself, `cas/removing/<pass-id>/` (mode 0700, a
+  fresh random ID), where it is stated again relative to the container just before the unlink, so
+  only the inode found before the tombstone is deleted and a replacement is refused, put back,
+  and the Survey reported `refused (replaced during collection)`; the next sweep collects it. The
+  next sweep also settles a dead pass's container the same way: a file that took a collected
+  Survey's CAS name after its record was moved, or that holds bytes other than the record's, is
+  `foreign`, listed with its bytes, never counted as the Survey's and never deleted; once a
+  Survey's record has left the CAS the Project Store's `settled.json`
+  (`af/ProjectSurveysSettled@1`) says so, so a byte-identical file at its name stays `foreign`
+  sweep after sweep, and a settlement whose directory sync fails puts the earlier record back and
+  deletes nothing, for the next sweep to retry. A crash between a Survey's bytes and its
+  `SurveyRecorded@1` leaves the writer's pending-publication entry
+  (`pending-surveys/<64 hex>.json`, `af/survey-pending@1`) that `af storage` counts as a Survey
+  `pending` and recovery settles: cleared when the event committed, otherwise only the object it
+  describes (device, inode and length, checked again under the lock, `skipped: object changed`
+  otherwise) is reclaimed, the entry cleared only once that object is gone, so a reclamation
+  interrupted inside its pass's container is finished by the next sweep, never left `foreign`;
+  any object nothing names is `foreign`; and a
+  leftover whose name, or whose container's name, is not UTF-8 is walked with its raw name, listed
+  `unreadable_name` (its `--json` path percent-encoded) and left with its container. A CAS prefix directory replaced by a symbolic link
+  refuses its Survey, which is reported and keeps its record and its place in the log; the
+  Surveyor, the reader of a Survey and collection share one 1 MiB ceiling, and a record over it is
+  left as `oversize` with its size, while a corrupt record within it is collected with an
+  `unreadable` tombstone in place of its totals and its bytes freed, shown as `collected
+  (unreadable)` by the sweep and `af project history`; one the file system will not let af read
+  is refused and left as it was. The preview and the sweep decide `held` by one predicate,
+  `project.lock` taken as the sweep takes it: the Surveys of a Project Store a refresh or a plan
+  holds, or whose lock af cannot open (`lock unavailable: <error>`), are left `held` with the
+  same reason by both, and nothing is collected. `af project history` marks a collected Survey
+  `collected` from its tombstone, and `af project survey` says that a collected newest Survey was
+  collected and names `af project refresh`. `.af/af.toml` patterns, the routes' and the
+  Surveyor's alike, now match by dynamic programming with the same grammar, `?` one byte of the
+  canonical encoded spelling, so a match costs at most (pattern length + 1) × (path length + 1)
+  cells and `*a` thirty times then `b` no longer hangs; a `[survey]` pattern is at most 256 bytes
+  and a list at most 64 patterns, and the Surveyor checks its deadline before each pattern it
+  matches ([ADR-0159](docs/adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md)).
+- PJ2c close-out, collection: a pending entry whose event never committed is cleared only once no
+  file with its inode remains at its Survey's CAS name or in a pass's container, whatever its
+  length; an object truncated or grown in place, or moved so, keeps the entry (`failed: … kept:
+  object changed, still present`) and is listed `foreign` until it is gone
+  (`a_pending_entry_stays_while_its_changed_object_is_present_and_goes_once_it_is_deleted`).
+  When the directory sync after `settled.json` is installed fails, the put-back is synced too
+  before the pass goes on, and when that fails as well both failures are reported and the
+  Survey is left `unverified settlement`, its record not deleted until a later sweep reads a
+  consistent `settled.json` (`a_settlement_whose_rollback_sync_fails_too_is_left_unverified_and_deletes_nothing`).
+  Where the inventory walks Stores it holds to the Store discovery ceilings: the Surveys of at most
+  1,000 Project Stores, and each Store's log read through one cursor of at most 100,000 rows, 1 MiB
+  per row and 16 MiB over all rows; a Store past one is reported naming the ceiling and its
+  Surveys are kept, one fixture per ceiling
+  (`project_stores_beyond_the_store_discovery_ceiling_are_reported_and_their_surveys_kept`,
+  `a_project_store_log_beyond_the_row_ceiling_keeps_its_surveys`,
+  `a_project_store_row_beyond_the_row_bytes_ceiling_keeps_its_surveys`,
+  `a_project_store_log_beyond_the_buffered_bytes_ceiling_keeps_its_surveys`). The 64 MiB
+  per-Store activity CAS-read budget is out of scope here: it bounds the `activity` section, which
+  does not exist yet and belongs to PJ5
+  ([ADR-0159](docs/adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  15).
+- Second close-out, collection: before its tombstone a collection records the object it selects,
+  its device, inode, birth time and length, in `settled.json`, now `af/ProjectSurveysSettled@2`
+  (`selected`, `schemas/project-surveys-settled-v2.json`; `@1` is refused naming its recovery),
+  and recovery follows that identity, never a hash: a byte-identical copy put at the name after a
+  crash that followed the tombstone, another inode or the same one born later, is `foreign` sweep
+  after sweep (`a_byte_identical_replacement_after_a_tombstone_survives_two_sweeps_as_foreign`,
+  `a_record_replaced_before_its_rename_is_refused_and_its_copy_stays_foreign`). Objects the writer
+  staged are reclaimed under `recovery` before their entries
+  (`a_survey_stopped_before_its_cas_name_leaves_staged_bytes_a_later_prune_reclaims`), and a file
+  system that reports no birth time refuses collection and deletes nothing
+  (`a_file_system_without_birth_time_refuses_collection_and_deletes_nothing`). Every byte count
+  of `af storage` and `af storage prune` is the allocated bytes of regular files, directories and
+  links counting nothing, so the numbers agree on ext4 and APFS. The prune's running total
+  reconciles a claim that grew since inventory, what its removal measured at its start taking the
+  place of the inventoried bytes before what left is subtracted (inventoried at 10 MiB, grown to
+  20 MiB, 8 MiB freed: 12 MiB retained, `a_grown_claims_partial_deletion_reports_the_bytes_it_retains`),
+  and reports the total and `stop` `unknown` when what a partial deletion left cannot be measured
+  (`a_partial_deletion_whose_remainder_cannot_be_walked_reports_the_total_unknown`), so its
+  document is now `af/storage-prune@3` (`schemas/storage-prune-v3.json`) and `@2` is refused
+  ([ADR-0159](docs/adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  13).
+- Third close-out, collection: a corrupt record collected `unreadable` whose pass stopped after
+  its tombstone and before the record's move is reclaimed by the next sweep under `recovery` by
+  the object its collection selected (device, inode, birth time and length) alone, since its
+  bytes never hash to its Survey ID, while a file that took its name since, the same bytes and
+  length included, stays `foreign`
+  (`a_corrupt_record_interrupted_after_its_tombstone_is_reclaimed_by_its_selection`). The sweep
+  that ends a Task's run is now recorded on the Task whenever it removed or failed anything, its
+  total after it unknown included: `af/TaskStorageSweep@2` (`schemas/task-storage-sweep-v2.json`)
+  spells `total_after` as its bytes or `unknown`, adds the stop `unknown` and `freed_bytes`, the
+  bytes that left the disk, and `af task show` prints `→ unknown`; `af/TaskStorageSweep@1` is
+  refused as a superseded version, so a Task log holding one does not replay
+  (`a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its_task`)
+  ([ADR-0159](docs/adr/0159-measure-a-project-into-surveys-with-a-token-free-surveyor.md) clause
+  13).
+
+- `af` checks for a newer release after eligible headless and `--json` commands too, not only on a
+  terminal: a detached `af self refresh-check`, at most once per `[self] check_every`, a failed
+  query or a self state that cannot be written included, that never changes the command's output
+  or exit status, and that a command whose versions lock is held by a prune, an installation or
+  an uninstall skips rather than waits for. Inside a pinned project
+  the dispatching `af` schedules it once. The cached notice still reaches stderr only on a
+  terminal and never under `--json`, and clearing it never overwrites a concurrent check's cache;
+  a check that another one answered while it waited asks nothing, and an installation, `always`
+  included, no longer holds the versions lock while it downloads, so a pinned command never waits
+  for it, nor does `always` overwrite a default the operator changed meanwhile, an update then a
+  rollback to the same version included; a seen pin is never recorded without the versions lock;
+  `af self remove` and `af self prune` recheck the default and the pins under that lock and delete
+  under it, so a concurrent activation never leaves the default pointing at a deleted release; an
+  "updated the default" notice a later update or rollback made stale is cleared unshown; a pinned
+  command on a terminal shows the cached notice before it dispatches, and the notice is bound to
+  the activation that made it, so an update back to the same version after a rollback drops it too
+  (the cache is now `af/self-check@2`; an earlier release's cache is read as none);
+  `af self uninstall`, with or without `--purge`, refuses while a background check runs, and
+  neither a check nor an installation that was under way recreates what it removed; a dispatch
+  rechecks the pinned release's bytes and records its pin in one versions-lock critical section,
+  so `af self remove` or `prune` can no longer delete it in between, and runs the release only once
+  that pin is written, failing closed when the self state or the versions lock cannot be used; a
+  command still running when `af self uninstall --purge` ran recreates nothing it removed; an
+  "updated the default" notice is printed only once clearing it is written, so a failed write never
+  shows it twice; a killed installer's staging
+  counts
+  against the Storage Budget until the next installation recovers it; `CI`, `AF_SELF_OFFLINE`,
+  `update_check = false` and `auto_update = "never"` still turn the check off ([ADR-0154](docs/adr/0154-check-for-updates-after-headless-and-json-commands.md)).
+
+- The identity-recheck deadline test's fixture shell now publishes its PID marker by writing a
+  temporary file and renaming it, so a deadline kill leaves no marker or a complete one, never
+  the empty file that failed a kernel gate with `ParseIntError`; a new regression pins it
+  (issue #278, [ADR-0155](docs/adr/0155-publish-a-fixture-marker-whole-or-not-at-all.md)).
+
+- `make test`: two runs in one checkout, even overlapping ones, each print the test-time
+  summary of their own tests. Each run writes its JUnit into a private store under
+  `target/nextest-reports/`. It then copies that JUnit to `target/nextest/ci/junit.xml`, which
+  CI uploads, in one rename, or removes that file if it wrote none; runs take turns, so the
+  file is the last finished run's. Before, a run could print the totals of another run that
+  wrote the shared file first. Exit statuses are unchanged (#219,
+  [ADR-0156](docs/adr/0156-give-every-make-test-run-a-private-junit-store.md)).
+
+- Project Briefs: a pipeline's root port `root_default = "project_brief"`, `brief = "<variant>"`,
+  declared in an `af.pipeline/2` pipeline (the new version of the pipeline shape; an
+  `af.pipeline/1` pipeline carrying the port is refused, and every other pipeline keeps
+  `af.pipeline/1`), carries `af/ProjectBrief@1`, a bounded selection of the Survey the Task pinned
+  when it was planned, into the Workers that wire it and no other, each listing it in its context
+  manifest (`required_by` `port:<name>`). Variants are `[brief.<name>]` tables of `.af/af.toml`
+  (`sections`, `max_bytes` 1,024 to 262,144, `decisions`, `hot_paths`; built in: `orient` and
+  `none`), refused at policy load outside their closed schema. Whole sections are dropped,
+  last-declared first, until the exact canonical bytes fit; a Brief that cannot fit fails the plan.
+  The initial capture pins the Survey of the Project of the resolved source Snapshot (a `source`
+  bound from another repository gets that repository's Survey or an empty port, never the invoking
+  checkout's) and records `af/ProjectSurveyPin@1` and `af/ProjectBriefCapture@1`, so a refresh, a
+  removed Project Store or a deleted checkout changes nothing; each plan receipts its Brief ports
+  (`af/ProjectBriefReceipt@1`) with `behind_commits` observed at capture, which `af task plan` and
+  `af task explain` print. A plan whose Worker request, serialized as the runner renders it, would
+  exceed the 1 MiB cap with the Brief is refused before dispatch. No author email enters a Brief,
+  while repository text such as a decision title stays verbatim. A Task file may bind the port to a
+  recorded Brief output, which reads no Survey and pins none; a Brief the kernel did not
+  construct, a Worker output among them, is refused (`not_kernel_constructed`). An empty port's
+  `no_survey` receipt names the source commit. `af project brief [--variant NAME] [--survey ID]
+  [--json]` prints the exact bytes a plan would bind (`af/project-brief-preview@1`), recording and
+  registering nothing: it opens the Project Store strictly read-only, so it changes no byte there
+  and reads a Store nobody may write
+  ([ADR-0160](docs/adr/0160-carry-a-bounded-project-brief-on-a-declared-port.md)).
+
+- `af catalog digest PACKAGE_DIR` prints the digest a catalog pin records for one local Task
+  package: one `sha256:` line, from the same recipe and validation Task capture uses. Every
+  regular file under the directory contributes its relative path and bytes. An absent, incomplete
+  or malformed package prints nothing on stdout, says why on stderr and exits 1. The command
+  writes nothing, runs no Worker, contacts no Provider and is never dispatched to a pinned
+  release nor followed by an update check, so it installs and activates nothing. It refuses a
+  package past capture's 4,096 files or 16 MiB by each file's size before reading it. Package
+  reads now open every entry descriptor-relative without following symlinks, a registry's
+  package root included, so an entry swapped mid-read is refused rather than read from outside
+  the package, and a package root replaced after its check, even by another valid package, is
+  refused rather than digested; a symlinked package root is refused however it is spelled,
+  `LINK/` and `LINK/.` included (#150,
+  [ADR-0157](docs/adr/0157-print-a-task-package-digest-with-the-pin-recipe.md)).
+
 ## [0.12.0-rc.4] - 2026-10-16
 
 ### Authority compatibility
