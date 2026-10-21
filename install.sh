@@ -1,19 +1,20 @@
 #!/bin/sh
 # Install af — the newest stable release, or AF_INSTALL_VERSION — into the self-managed layout:
 #   $XDG_DATA_HOME/af/versions/<v>/{af,receipt.toml}   and   $XDG_BIN_HOME/af -> that binary
-# Needs curl and tar; never stores a token. Re-running is idempotent; `af self` takes over from
-# here: the installed binary records the activation, so `af self rollback` works from the first
-# update on.
+# Needs curl, tar and minisign; never stores a token. Re-running is idempotent and verifies the
+# installed binary again against the release; `af self` takes over from here: the installed
+# binary records the activation, so `af self rollback` works from the first update on.
 #
-#   curl -fsSL https://github.com/PakhomovAlexander/afactory/releases/latest/download/install.sh | sh
+#   curl --proto '=https' --tlsv1.2 -fsSL https://github.com/PakhomovAlexander/afactory/releases/latest/download/install.sh | sh
 #
 # A private fork, or a host without curl, falls back to the GitHub CLI: `gh auth login` with an
 # account that can read the release repository (AF_REPO), and the same script works unchanged.
 #
-# Verification: the archive digest against the release's SHA256SUMS, and — when `minisign` is on
-# PATH — that file's signature against the release public key embedded below (AF_RELEASE_KEY
-# names a different key file). The installed `af` carries the key itself and verifies every
-# later install.
+# Verification: the archive digest against the release's SHA256SUMS, and that file's minisign
+# signature against the release public key embedded below (AF_RELEASE_KEY names a different key
+# file). Without `minisign` on PATH the script refuses, unless AF_INSTALL_ALLOW_UNSIGNED=1 accepts
+# the checksum alone, which comes from the same place as the archive and so only catches a
+# corrupt download. The installed `af` carries the key itself and verifies every later install.
 set -eu
 
 REPO="${AF_REPO:-PakhomovAlexander/afactory}"
@@ -41,17 +42,19 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 # How releases are reached: anonymously over HTTPS with curl, or through an authenticated
 # GitHub CLI when curl is missing or the repository is not public (the API answers 404).
 via=curl
+# gh is judged by the calls it makes, never by `gh auth status`, whose exit code also counts
+# accounts and hosts those calls do not use.
 use_gh() {
   command -v gh >/dev/null 2>&1 || { echo "af: the GitHub CLI is required${1:+ ($1)} — fix: install gh, then gh auth login" >&2; exit 1; }
-  gh auth status >/dev/null 2>&1 || { echo "af: gh is not authenticated — fix: gh auth login (an account with access to $REPO)" >&2; exit 1; }
   via=gh
 }
 command -v curl >/dev/null 2>&1 || use_gh "curl is not installed"
 
 # http_get URL FILE: fetch URL into FILE and print the final HTTP status (000 when curl itself
 # failed). GitHub answers 404 for anything in a private repository, which is the fallback cue.
+# HTTPS only, redirects included, at TLS 1.2 or later.
 http_get() {
-  code=$(curl -sSL --retry 3 -o "$2" -w '%{http_code}' -H 'Accept: application/vnd.github+json' "$1") || code=000
+  code=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 -sSL --retry 3 -o "$2" -w '%{http_code}' -H 'Accept: application/vnd.github+json' "$1") || code=000
   [ "$code" = "200" ] || rm -f "$2"
   echo "$code"
 }
@@ -98,7 +101,9 @@ else
     esac
   fi
   if [ "$via" = gh ]; then
-    tag=$(gh release list --repo "$REPO" --exclude-pre-releases --exclude-drafts --limit 100 --json tagName -q '.[].tagName' | semver_max)
+    tags=$(gh release list --repo "$REPO" --exclude-pre-releases --exclude-drafts --limit 100 --json tagName -q '.[].tagName') \
+      || { echo "af: gh could not list the releases of $REPO — fix: gh auth login (an account with access to $REPO)" >&2; exit 1; }
+    tag=$(printf '%s\n' "$tags" | semver_max)
   fi
   [ -n "$tag" ] || { echo "af: no release found in $REPO" >&2; exit 1; }
 fi
@@ -125,41 +130,49 @@ fetch_asset() {
   gh release download "$tag" --repo "$REPO" --pattern "$1" --dir "$tmp" >/dev/null 2>&1 && [ -f "$tmp/$1" ]
 }
 
-if [ -x "$DATA/$version/af" ] && grep -q "^version = \"$version\"" "$DATA/$version/receipt.toml" 2>/dev/null \
-   && grep -q "^target = \"$host\"" "$DATA/$version/receipt.toml" 2>/dev/null; then
-  echo "af $version is already installed at $DATA/$version/af (receipt present)"
+# Verified on every run, a re-run included: an installed copy is kept only when its bytes are
+# the release's, never on the strength of its receipt.
+fetch_asset "$asset" || { echo "af: release $tag of $REPO has no asset $asset" >&2; exit 1; }
+fetch_asset SHA256SUMS || { echo "af: release $tag of $REPO has no SHA256SUMS" >&2; exit 1; }
+verified_by=sha256sums
+if command -v minisign >/dev/null 2>&1; then
+  if [ -n "${AF_RELEASE_KEY:-}" ]; then
+    key="$AF_RELEASE_KEY"
+  else
+    key="$tmp/release.pub"
+    printf '%s\n' "$RELEASE_PUB" > "$key"
+  fi
+  if fetch_asset SHA256SUMS.minisig; then
+    minisign -V -q -m "$tmp/SHA256SUMS" -x "$tmp/SHA256SUMS.minisig" -p "$key" \
+      || { echo "af: SHA256SUMS of $tag does not verify against $key" >&2; exit 1; }
+    verified_by=minisign
+  else
+    echo "af: release $tag has no SHA256SUMS.minisig to verify against $key" >&2; exit 1
+  fi
+elif [ "${AF_INSTALL_ALLOW_UNSIGNED:-}" = 1 ]; then
+  echo "af: minisign is not installed and AF_INSTALL_ALLOW_UNSIGNED=1, so only the checksum is verified; it comes from the same release as the archive and catches a corrupt download only" >&2
 else
-  # Absent, or a bare binary without a receipt: never adopt it — install fresh and replace it.
-  fetch_asset "$asset" || { echo "af: release $tag of $REPO has no asset $asset" >&2; exit 1; }
-  fetch_asset SHA256SUMS || { echo "af: release $tag of $REPO has no SHA256SUMS" >&2; exit 1; }
-  verified_by=sha256sums
-  if command -v minisign >/dev/null 2>&1; then
-    if [ -n "${AF_RELEASE_KEY:-}" ]; then
-      key="$AF_RELEASE_KEY"
-    else
-      key="$tmp/release.pub"
-      printf '%s\n' "$RELEASE_PUB" > "$key"
-    fi
-    if fetch_asset SHA256SUMS.minisig; then
-      minisign -V -q -m "$tmp/SHA256SUMS" -x "$tmp/SHA256SUMS.minisig" -p "$key" \
-        || { echo "af: SHA256SUMS of $tag does not verify against $key" >&2; exit 1; }
-      verified_by=minisign
-    else
-      echo "af: release $tag has no SHA256SUMS.minisig to verify against $key" >&2; exit 1
-    fi
-  else
-    echo "af: minisign is not installed, so only the checksum is verified — to verify the release signature too: brew install minisign (macOS) or apt install minisign (Debian/Ubuntu); the installed af verifies every later update with its embedded key"
-  fi
-  expected=$(grep " [*]*$asset\$" "$tmp/SHA256SUMS" | awk '{print $1}')
-  if command -v sha256sum >/dev/null 2>&1; then
-    actual=$(sha256sum "$tmp/$asset" | awk '{print $1}')
-  else
-    actual=$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')
-  fi
-  [ -n "$expected" ] && [ "$actual" = "$expected" ] || {
-    echo "af: checksum mismatch for $asset" >&2; echo "expected $expected" >&2; echo "actual   $actual" >&2; exit 1; }
-  mkdir -p "$tmp/unpack" && tar -xzf "$tmp/$asset" -C "$tmp/unpack"
-  chmod 0755 "$tmp/unpack/af"
+  echo "af: minisign is not installed, so the release signature cannot be verified — fix: brew install minisign (macOS) or apt install minisign (Debian/Ubuntu) and run this again; or set AF_INSTALL_ALLOW_UNSIGNED=1 to accept the checksum alone (only the checksum is verified then; the installed af verifies every later update with its embedded key)" >&2
+  exit 1
+fi
+expected=$(grep " [*]*$asset\$" "$tmp/SHA256SUMS" | awk '{print $1}')
+if command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum "$tmp/$asset" | awk '{print $1}')
+else
+  actual=$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')
+fi
+[ -n "$expected" ] && [ "$actual" = "$expected" ] || {
+  echo "af: checksum mismatch for $asset" >&2; echo "expected $expected" >&2; echo "actual   $actual" >&2; exit 1; }
+mkdir -p "$tmp/unpack" && tar -xzf "$tmp/$asset" -C "$tmp/unpack"
+chmod 0755 "$tmp/unpack/af"
+
+if [ -x "$DATA/$version/af" ] && cmp -s "$tmp/unpack/af" "$DATA/$version/af" \
+   && grep -q "^version = \"$version\"" "$DATA/$version/receipt.toml" 2>/dev/null \
+   && grep -q "^target = \"$host\"" "$DATA/$version/receipt.toml" 2>/dev/null; then
+  echo "af $version is already installed at $DATA/$version/af ($verified_by verified again)"
+else
+  # Absent, a bare binary without a receipt, or bytes that are not the release's: never adopt
+  # it — install fresh and replace it.
   reported=$(AF_SELF_OFFLINE=1 "$tmp/unpack/af" --version)
   [ "$reported" = "af $version" ] || { echo "af: release binary reported '$reported', expected 'af $version'" >&2; exit 1; }
   staging="$DATA/.$version.$$"

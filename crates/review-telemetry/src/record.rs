@@ -1154,10 +1154,12 @@ mod tests {
     #[test]
     fn typed_values_skip_the_heuristic_and_text_does_not() {
         let digest = format!("sha256:{}", "ab".repeat(32));
+        // A 32-hex id is a kernel identity only in an identity position; as text it is a secret
+        // run (a digest is no secret anywhere).
         let (attributes, counters) = bound_attributes(
             Attrs::new()
                 .id("af.context.manifest", digest.clone())
-                .text("af.failure.reason", digest.clone())
+                .text("af.failure.reason", "ab".repeat(16))
                 .decimal(
                     "af.usage.input_tokens",
                     "340282366920938463463374607431768211455",

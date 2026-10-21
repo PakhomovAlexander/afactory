@@ -169,6 +169,16 @@ disables an in-tree filter driver by name, because the name is attacker-chosen. 
 `worktree_state` was rebuilt from the index plus a direct filesystem walk. A control test runs
 plain `git status` over the same repository first, proving the marker *would* have fired.
 
+The same premise holds wherever af runs git against a checkout, not only in capture. The
+browser that bare `af` opens and the Task file advice run git through
+`review_source_git::git::isolated_command`, the cleared environment and full `-c` override set
+capture uses. The browser marks drift by comparing `ls-tree`/`cat-file` blobs with working-tree
+bytes itself, never through `git diff` or `git hash-object`. `crates/af/tests/it/tui.rs` pins
+it with an fsmonitor and a required clean filter configured in `.git/config`. A tree that names a
+path git itself refuses (`.git` in any ASCII case or NTFS/HFS+ spelling, a symlinked
+`.gitmodules`) is refused at capture, materialization and Task binding through one predicate,
+`git_refuses_path`. Otherwise its `.git/config` would configure every `git` run in the sandbox.
+
 ## Check nodes
 
 Two properties. `crates/review-check/tests/check_runner.rs` pins them against real processes;
@@ -260,15 +270,28 @@ capture already happened, so the snapshot under review cannot be altered by anyt
 does), and every mutation is captured. Note what that is not — an absolute-path write to the
 checkout on disk is not prevented, and the case records that as open rather than calling it
 covered. The environment a check runs with is not the sandbox's doing: the check runner
-(`review_check::CheckRunner`) clears it and rebuilds it from an allowlist, and a container run
-starts from `--env-file /dev/null` plus the declared variables.
+(`review_check::CheckRunner`) clears it and rebuilds it from an allowlist, with a `PATH` of
+existing absolute directories only, and a container run starts from `--env-file /dev/null` plus
+the declared variables. A host-local check ends with its process group, and on Linux with every
+descendant that left the group (`setsid`) but kept the `AF_PROCESS_TREE` value it inherited,
+before its tree is sealed; one that clears or replaces that variable, and on macOS any such
+descendant, can outlive it. Each output stream of a check or a Worker is kept to 64 MiB: the rest is read
+and discarded so the process never blocks, and a check or an Attempt that wrote more fails,
+naming the cap.
 
 A `ContainerProvider` also exists for hosts with a usable runtime. Finding `docker` on `PATH`
 proves nothing: detection runs the runtime's own `info` and requires it to succeed. An
 installed-but-unusable runtime reports `Isolation::None` and refuses to exec rather than falling
 back to the host. The invocation it builds is asserted exactly — one bind, `--network=none`, no
-inherited environment. The image retains its own pinned `PATH`; only host-independent check
-variables (`LC_ALL=C`, `TZ=UTC`, and declared additions) are reintroduced. The workload runs as
+inherited environment, `--pids-limit 4096`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`
+and `--init`. `--env-file /dev/null` keeps the host's environment out; it does not clear the
+`ENV` the image itself declares, which is part of the pinned image. The image retains its own
+pinned `PATH`; only host-independent check variables (`LC_ALL=C`, `TZ=UTC`, and declared
+additions) are reintroduced. Memory and CPU have no ceiling unless the `[gate]` binding names
+one: `memory = "8g"` becomes `--memory 8g --memory-swap 8g` (no swap beyond it) and
+`cpus = "4"` becomes `--cpus 4`. Set both for an untrusted candidate, a little below what the
+host can spare, so a memory bomb or a busy loop ends inside the container rather than on the
+host. The workload runs as
 the caller's numeric UID:GID so writable-bind output remains usable and removable by the host.
 Each execution also has a unique runtime name: if the supervised client fails or times out,
 Afactory runs a bounded `rm -f` before sealing. An unconfirmed cleanup aborts the Gate and reports
@@ -396,6 +419,8 @@ caches = ["cargo"]                # optional symbolic request; never a host path
 # provider = "container"
 # image = "registry.example/project-ci@sha256:<64 lowercase hex>"
 # required_isolation = "container"
+# memory = "8g"                  # optional: --memory and --memory-swap; no limit when absent
+# cpus = "4"                     # optional: --cpus; no limit when absent
 ```
 
 The binding is part of the captured pipeline artifact, so a later Round cannot silently change

@@ -1008,6 +1008,7 @@ fn cancellation_during_the_wait_ends_the_subprocesses() {
 /// What a cleanup is handed: the repository, commits and pull request one outcome recorded.
 fn recorded(outcome: &RemoteCheckOutcome) -> github_pr::GateEvidence {
     github_pr::GateEvidence {
+        repository_id: ROOT.into(),
         github: outcome.evidence.github.clone(),
         base_commit: outcome.evidence.base_commit.clone(),
         head_commit: outcome.evidence.head_commit.clone(),
@@ -1272,4 +1273,104 @@ fn a_failed_cleanup_keeps_its_redacted_reason_and_a_retry_finishes_it() {
     );
     assert_eq!(retried.outcome, GateCleanupOutcomeV1::Done, "{retried:?}");
     assert!(setup.remote.branch("head").is_none());
+}
+
+/// L3: the gate's `git` and `gh` start from an empty environment plus an allowlist. The test
+/// runs itself again with an operator environment that would redirect them: a command-line Git
+/// configuration that rewrites every local push URL to a missing path, programs Git would run,
+/// and another `gh` host and token. The phase still publishes to the mapped target and passes,
+/// and none of those names reaches `gh`.
+#[test]
+fn remote_tools_see_only_the_allowlisted_environment() {
+    const HOSTILE: [(&str, &str); 10] = [
+        ("GIT_CONFIG_COUNT", "1"),
+        ("GIT_CONFIG_KEY_0", "url./nonexistent/af-hostile.insteadOf"),
+        ("GIT_CONFIG_VALUE_0", "/"),
+        (
+            "GIT_CONFIG_PARAMETERS",
+            "'core.hooksPath'='/nonexistent/af-hooks'",
+        ),
+        ("GIT_EXTERNAL_DIFF", "/nonexistent/af-diff"),
+        ("GIT_SSH_COMMAND", "/nonexistent/af-ssh"),
+        ("GIT_ASKPASS", "/nonexistent/af-askpass"),
+        ("GIT_DIR", "/nonexistent/af-git-dir"),
+        ("GH_HOST", "evil.example"),
+        ("GH_TOKEN", "ghp_hostile_token"),
+    ];
+    if std::env::var_os("AF_FIXTURE_HOSTILE_ENVIRONMENT").is_none() {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "remote_checks::executor::remote_tools_see_only_the_allowlisted_environment",
+                "--test-threads=1",
+            ])
+            .env("AF_FIXTURE_HOSTILE_ENVIRONMENT", "1")
+            .envs(HOSTILE);
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let setup = setup();
+    setup.passing();
+    setup.remote.flag("record-env");
+    let candidate = setup.snapshots.candidate(&setup.cas, "version 2\n");
+    let outcome = setup.run(&candidate, OWNER);
+    expect(&outcome, RemoteCheckStateV1::Observed, None);
+    assert_eq!(outcome.evidence.verdict(), RemoteCheckVerdictV1::Passed);
+    assert!(
+        setup.remote.branch("head").is_some(),
+        "pushed to the mapped target"
+    );
+    let recorded = std::fs::read_to_string(setup.remote.state.join("env.log")).unwrap_or_default();
+    let names: Vec<&str> = recorded
+        .lines()
+        .filter_map(|line| line.split_once('=').map(|(name, _)| name))
+        .filter(|name| {
+            !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
+        .collect();
+    assert!(
+        names.contains(&"PATH"),
+        "the fake gh recorded its environment"
+    );
+    for name in names {
+        assert!(
+            !HOSTILE.iter().any(|(hostile, _)| *hostile == name),
+            "{name} reached gh"
+        );
+        assert!(
+            !name.starts_with("CARGO") && name != "AF_FIXTURE_HOSTILE_ENVIRONMENT",
+            "{name} reached gh: the environment was not cleared"
+        );
+    }
+    // Every REST call named its host.
+    assert!(
+        setup
+            .remote
+            .calls()
+            .lines()
+            .filter(|call| call.starts_with("api "))
+            .all(|call| call.starts_with("api --hostname github.com ")),
+        "{}",
+        setup.remote.calls()
+    );
+}
+
+/// The cleanup's target is keyed by the Task source's repository identity, which the recorded
+/// Snapshot names (I4).
+#[test]
+fn a_gate_records_repository_is_the_snapshots_origin() {
+    let setup = setup();
+    let candidate = setup.snapshots.candidate(&setup.cas, "version 2\n");
+    assert_eq!(
+        github_pr::repository_of(&setup.cas, &candidate.0).unwrap(),
+        ROOT
+    );
+    assert!(github_pr::repository_of(&setup.cas, "sha256:nope").is_err());
 }

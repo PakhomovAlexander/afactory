@@ -86,7 +86,13 @@ push_url = "git@github.com:owner/name.git"
   repositories without ambiguity.
 - `push_url` is any Git URL without user information. Authenticate through Git's credential
   helper or SSH, and log `gh` in once with `gh auth login`; `af` reads, stores and prints no
-  token.
+  token. The gate's `git` and `gh` start from an empty environment plus `PATH`, `HOME`,
+  `XDG_CONFIG_HOME`, `GH_CONFIG_DIR`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS` and
+  `XDG_RUNTIME_DIR` (the keyring `gh` keeps its login in on Linux), the proxy variables and the
+  CA paths (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `GIT_SSL_CAINFO`, `GIT_SSL_CAPATH`,
+  `CURL_CA_BUNDLE`). `GH_TOKEN`, `GITHUB_TOKEN`, `GH_HOST`, `GIT_CONFIG_COUNT` and the other
+  `GIT_CONFIG_*`, `GIT_SSH_COMMAND`, `GIT_ASKPASS` and `GIT_EXTERNAL_DIFF` never reach them, and
+  every `gh api` call names `--hostname github.com`.
 - The file selects no checks. One that still carries the `checks` key of the first release is
   refused, with a message that the pipeline's check node chooses now.
 
@@ -102,7 +108,10 @@ SEND  github:owner/name
 ```
 
 `af task plan` prints them, `af task plan --json` and `af task explain` carry them, and
-confirming the plan confirms them. The push URL stays on the machine and is read again when the
+confirming the plan confirms them. `af task start --file … --execute` opts into automation and
+skips that preview: nothing prints `publish-gate` or the `github:` destination for a person to
+confirm, and the consent to publish rests on the operator's mapping alone. Map a repository only
+on a machine where every Task started there may push its gate branches. The push URL stays on the machine and is read again when the
 check Attempt starts: a mapping that then names no target for the repository, or another
 `github` than the plan recorded, ends the Attempt with an error before any check runs, and
 nothing is pushed.
@@ -155,7 +164,7 @@ in another form is stored as printed.
 | Reason | What to do |
 | --- | --- |
 | `remote_skipped_local_failed` | fix the local failure |
-| `remote_candidate_changes_ci` | the candidate changes `.github/`; run this Task with a pipeline that lists the check in `checks` |
+| `remote_candidate_changes_ci` | the candidate changes `.github`, `.gitmodules`, `.cargo/` or a root `action.yml`/`action.yaml`; run this Task with a pipeline that lists the check in `checks` |
 | `remote_tool_unavailable` | install `git` or `gh`, or run `gh auth login` |
 | `remote_ref_invalid` | use a ref-safe Task ID |
 | `remote_ref_conflict` | another Task owns the branches; delete them or rename the Task |
@@ -168,13 +177,15 @@ in another form is stored as printed.
 
 A remote check still incomplete when the phase ends is `not_run` with the deadline reason a
 local check uses; resume the Task to attach again. A kept diagnostic names the push URL, the
-mapping and the private repository only as `<push-url>`, `<mapping>` and `<gate-repository>`.
+mapping and the private repository only as `<push-url>`, `<mapping>` and `<gate-repository>`,
+and the user information of any URL (`https://user:token@host/…`) as `<userinfo>`.
 
 ## 6. Clean up
 
 The branches and the pull request stay while the Task runs, so resume and repair rounds can use
 them. When the Task finishes, af closes the draft gate pull request and deletes both
-`af-gate/<task-id>/` branches from the mapping's push target, with the same `gh` and `git`
+`af-gate/<task-id>/` branches from the push target the mapping names for the Task's repository
+(its `repository_id`, as for the push), with the same `gh` and `git`
 ([ADR-0144](../adr/0144-hold-afs-disk-use-to-a-machine-budget.md)), and only what still equals
 the Task's recorded evidence. It closes a pull request only while it is open, its base repository
 is the recorded one, its head and base are exactly the Task's two branches and its head commit is
@@ -205,7 +216,12 @@ git push <push-url> --delete af-gate/<task-id>/base af-gate/<task-id>/head
 - Its jobs keep stable, unique names; the evidence matches names exactly.
 - Point a Remote Check only at workflows you would run for a collaborator's branch: CI executes
   the candidate with whatever permissions and secrets a same-repository pull request gets. The
-  kernel refuses any candidate that changes `.github/`, so a Worker cannot change what the
-  workflow does.
+  kernel refuses any candidate that changes `.github` or anything under it, `.gitmodules`,
+  `.cargo/` or a root `action.yml`/`action.yaml`, so a Worker cannot change the workflow *file*;
+  everything the workflow runs (`Makefile`, `build.rs`, scripts, tests) is candidate code.
+- So give the gate a dedicated workflow with `permissions: {}` and no organisation or repository
+  secrets, or put its jobs behind an `environment:` with required reviewers for `af-gate/**`
+  bases, so that a person approves any run that needs a secret
+  ([ADR-0140](../adr/0140-run-a-declared-check-through-a-gate-pull-request.md#amendment-2026-10-20-what-the-workflow-runs)).
 - A ruleset that forbids pushing `af-gate/**` branches makes every remote check
   `remote_push_refused`.

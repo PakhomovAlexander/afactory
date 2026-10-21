@@ -430,7 +430,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         target,
     };
     let git_home = state.join("git-home");
-    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    crate::storage::owned::private_dir(&git_home)?;
     let git = DeliveryGit::new(&repository, &git_home);
     validate_branch(&git, &prepared.target.branch)?;
 
@@ -592,7 +592,7 @@ pub(super) fn observe_adoption(
     receipt.validate()?;
 
     let git_home = state.join("git-home");
-    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    crate::storage::owned::private_dir(&git_home)?;
     let source = Capture::new(&Repo::open(&repository, &git_home), &cas)
         .committed(commit)
         .map_err(|error| error.to_string())?;

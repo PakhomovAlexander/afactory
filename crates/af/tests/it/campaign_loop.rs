@@ -777,6 +777,88 @@ fn trusted_reuse_keeps_evidence_satisfaction_current_after_head_change() {
     assert_eq!(code, 0, "{stdout}\n{stderr}");
 }
 
+/// The `--policy` of `af review evidence satisfy` comes from the command line: its echo shows
+/// ESC, BEL and a newline escaped visibly, so it neither drives the terminal nor forges a line
+/// (audit C3).
+#[test]
+fn evidence_satisfy_echoes_its_policy_with_control_characters_escaped() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    std::fs::write(repo.join("DEMAND"), b"required\n").unwrap();
+    git(&repo, &home, &["add", "-A"]);
+    git(&repo, &home, &["commit", "-qm", "request evidence"]);
+    let (code, stdout, stderr) = af(
+        &repo,
+        &home,
+        &[
+            "run",
+            "--campaign",
+            "hostile-policy",
+            "--state",
+            &state,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 3, "{stdout}\n{stderr}");
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let demand_id = outcome["totals"]["open_or_stale_demand_ids"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let evidence_path = dir.path().join("measurement.txt");
+    std::fs::write(&evidence_path, b"bounded integration test passed\n").unwrap();
+    let evidence_path = evidence_path.to_string_lossy().into_owned();
+    let (code, stdout, stderr) = af(
+        &repo,
+        &home,
+        &[
+            "evidence",
+            "add",
+            "--campaign",
+            "hostile-policy",
+            "--state",
+            &state,
+            &demand_id,
+            &evidence_path,
+            "--actor",
+            "operator",
+        ],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let evidence_id = stdout.split_whitespace().nth(1).unwrap().to_string();
+    let (code, stdout, stderr) = af(
+        &repo,
+        &home,
+        &[
+            "evidence",
+            "satisfy",
+            "--campaign",
+            "hostile-policy",
+            "--state",
+            &state,
+            &demand_id,
+            &evidence_id,
+            "--policy",
+            "pol\u{1b}]0;PWNED\u{7}icy\nforged",
+            "--reason",
+            "measured",
+        ],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(
+        !stdout.chars().any(|c| c.is_control() && c != '\n'),
+        "raw control characters:\n{stdout}"
+    );
+    assert_eq!(stdout.lines().count(), 1, "a forged line:\n{stdout}");
+    assert!(
+        stdout.contains(&format!(
+            "demand {demand_id} satisfied by {evidence_id} under \
+             pol\\u{{1b}}]0;PWNED\\u{{7}}icy\\u{{a}}forged ("
+        )),
+        "{stdout}"
+    );
+}
+
 #[test]
 fn canonical_campaign_refuses_a_pipeline_without_a_demand_set_output() {
     let dir = tempfile::tempdir().unwrap();

@@ -2,7 +2,11 @@
 
 `release.pub` is the minisign public key every release build embeds (`build.rs`); `af self`
 verifies a release's `SHA256SUMS.minisig` against it before trusting any checksum, and refuses
-a release without one. The matching secret key never enters this repository: it lives only in
+a release without one. That holds on the lock path too: an install a project's `.af/af.lock`
+asks for needs the archive to match both the lock's digest and the signed `SHA256SUMS`
+(`verified_by = "lock+signature"`), and happens on demand only as `[self] install_pins` allows
+(`"ask"` by default: a confirmation at the terminal, and none without one). `install.sh` checks
+the same signature with `minisign` and refuses without it unless `AF_INSTALL_ALLOW_UNSIGNED=1`. The matching secret key never enters this repository: it lives only in
 the `MINISIGN_SECRET_KEY` Actions secret, and the release workflow refuses to publish a build
 that embeds no key or a release it cannot sign.
 

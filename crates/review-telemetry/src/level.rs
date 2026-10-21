@@ -65,7 +65,9 @@ impl Level {
     }
 }
 
-/// Where a run's telemetry is pushed after the result is printed.
+/// Where a run's telemetry would be pushed after the result is printed. This release implements
+/// no sink: only `none` loads, and `otlp`, `sink_endpoint` and `sink_headers_file` are refused as
+/// not implemented, so telemetry never leaves the machine.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Sink {
@@ -136,6 +138,10 @@ impl Default for Settings {
     }
 }
 
+/// The refusal of a sink key this release does not implement.
+pub const SINK_NOT_IMPLEMENTED: &str =
+    "is not implemented in this release: no telemetry sink exists and nothing leaves the machine";
+
 /// What a key's value is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyKind {
@@ -154,10 +160,11 @@ pub enum KeyKind {
         max: u64,
     },
     Bool,
+    /// `none`; `otlp` is refused, not implemented in this release.
     Sink,
-    /// An `http://` or `https://` URL, or empty.
+    /// Empty; an endpoint URL is refused, not implemented in this release.
     Url,
-    /// A path, or empty.
+    /// Empty; a headers file is refused, not implemented in this release.
     Path,
 }
 
@@ -466,43 +473,23 @@ impl Settings {
                         other => unreachable!("{other} is not a boolean key"),
                     }
                 }
+                // The sink keys are reserved: a configured collector that silently received
+                // nothing would be worse than a refusal.
                 KeyKind::Sink => {
                     settings.sink = match &raw {
                         Raw::String(text) if text == "none" => Sink::None,
-                        Raw::String(text) if text == "otlp" => Sink::Otlp,
-                        _ => return Err(refuse("is not one of none, otlp")),
+                        Raw::String(text) if text == "otlp" => {
+                            return Err(refuse(SINK_NOT_IMPLEMENTED));
+                        }
+                        _ => return Err(refuse("is not none, the only sink this release has")),
                     };
                 }
-                KeyKind::Url => match &raw {
-                    Raw::String(text)
-                        if text.is_empty()
-                            || ((text.starts_with("http://") || text.starts_with("https://"))
-                                && !text.contains(char::is_whitespace)) =>
-                    {
-                        settings.sink_endpoint = text.clone();
-                    }
-                    _ => return Err(refuse("is not an http:// or https:// URL")),
-                },
-                KeyKind::Path => match &raw {
-                    Raw::String(text) => settings.sink_headers_file = text.clone(),
-                    _ => return Err(refuse("is not a path")),
+                KeyKind::Url | KeyKind::Path => match &raw {
+                    Raw::String(text) if text.is_empty() => {}
+                    Raw::String(_) => return Err(refuse(SINK_NOT_IMPLEMENTED)),
+                    _ => return Err(refuse("is not a string")),
                 },
             }
-        }
-        match (settings.sink, settings.sink_endpoint.is_empty()) {
-            (Sink::Otlp, true) => {
-                return Err(
-                    "[telemetry] sink = \"otlp\" needs sink_endpoint, an http:// or https:// URL"
-                        .into(),
-                );
-            }
-            (Sink::None, false) => {
-                return Err(format!(
-                    "[telemetry] sink_endpoint = {:?} is refused while sink = \"none\"",
-                    settings.sink_endpoint
-                ));
-            }
-            _ => {}
         }
         Ok(settings)
     }
@@ -552,6 +539,7 @@ mod tests {
             ("sink", Raw::String("prometheus".into())),
             ("sink_timeout_ms", Raw::Integer(60_001)),
             ("sink_endpoint", Raw::String("ftp://collector".into())),
+            ("sink_headers_file", Raw::Integer(1)),
         ] {
             let error = load(&[(name, raw.clone())]).unwrap_err();
             assert!(
@@ -559,25 +547,46 @@ mod tests {
                 "{name}: {error}"
             );
         }
-        let error = load(&[("sink", Raw::String("otlp".into()))]).unwrap_err();
-        assert!(error.contains("sink_endpoint"), "{error}");
-        let error =
-            load(&[("sink_endpoint", Raw::String("http://127.0.0.1:4318".into()))]).unwrap_err();
-        assert!(error.contains("sink_endpoint"), "{error}");
         let error = load(&[("verbosity", Raw::Integer(1))]).unwrap_err();
         assert!(error.contains("verbosity"), "{error}");
         let settings = load(&[
-            ("sink", Raw::String("otlp".into())),
-            (
-                "sink_endpoint",
-                Raw::String("https://collector:4318".into()),
-            ),
+            ("sink", Raw::String("none".into())),
+            ("sink_endpoint", Raw::String(String::new())),
+            ("sink_headers_file", Raw::String(String::new())),
             ("level", Raw::String("content".into())),
             ("segment_max_bytes", Raw::Integer(16 << 20)),
         ])
         .unwrap();
         assert_eq!(settings.level, Level::Content);
-        assert_eq!(settings.sink, Sink::Otlp);
+        assert_eq!(settings.sink, Sink::None);
         assert_eq!(settings.segment_max_bytes, 16 << 20);
+    }
+
+    /// No sink is implemented: `otlp`, an endpoint and a headers file are refused at load, each
+    /// naming its key, alone or together, rather than accepted and silently never pushed.
+    #[test]
+    fn every_sink_key_is_refused_as_not_implemented() {
+        for values in [
+            vec![("sink", Raw::String("otlp".into()))],
+            vec![(
+                "sink_endpoint",
+                Raw::String("https://collector:4318".into()),
+            )],
+            vec![(
+                "sink_headers_file",
+                Raw::String("/etc/af/otlp-headers".into()),
+            )],
+            vec![
+                ("sink", Raw::String("otlp".into())),
+                (
+                    "sink_endpoint",
+                    Raw::String("https://collector:4318".into()),
+                ),
+            ],
+        ] {
+            let error = load(&values).unwrap_err();
+            assert!(error.starts_with("[telemetry] sink"), "{error}");
+            assert!(error.contains("not implemented in this release"), "{error}");
+        }
     }
 }

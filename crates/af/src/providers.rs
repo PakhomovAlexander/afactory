@@ -815,13 +815,32 @@ fn probe_authentication(spec: &ProviderSpec, report: &SetupReport<'_>) -> Result
 /// An interactive terminal on stdin, stdout *and* stderr.
 ///
 /// Every one of the three is a channel the official CLI may print the OAuth URL and code on, so
-/// a single redirected stream is enough to make starting that login unsafe.
+/// a single redirected stream is enough to make starting that login unsafe. This prevents
+/// accidental capture by a pipe, a CI log or a tool call without a terminal; it does not tell a
+/// human from a program: a caller holding a pseudo-terminal (`script`, `expect`, `tmux`,
+/// `ssh -tt`, `portable-pty`) passes it, and is out of its scope (ADR-0112, amended
+/// 2026-10-20). A program that must start a login uses the private host protocol (ADR-0137).
 fn interactive_terminal() -> bool {
     use std::io::IsTerminal;
 
     std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && std::io::stderr().is_terminal()
+}
+
+/// Keep a login's memory out of core dumps (audit L15): no core file for this process or the
+/// Provider login it starts, which inherits the limit, and on Linux this process becomes
+/// non-dumpable, so no same-user process can read it through `/proc` or attach to it either. A
+/// failure refuses the login.
+pub(crate) fn protect_login_memory() -> Result<(), String> {
+    use nix::sys::resource::{Resource, setrlimit};
+
+    setrlimit(Resource::RLIMIT_CORE, 0, 0)
+        .map_err(|error| format!("cannot disable core dumps for the login: {error}"))?;
+    #[cfg(target_os = "linux")]
+    nix::sys::prctl::set_dumpable(false)
+        .map_err(|error| format!("cannot make the login process non-dumpable: {error}"))?;
+    Ok(())
 }
 
 fn login_next_action(spec: &ProviderSpec, login: bool) -> NextAction {
@@ -1740,6 +1759,7 @@ fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
         .as_deref()
         .ok_or("provider setup requires an explicit auth directory")?;
     validate_private_auth_directory(auth_dir)?;
+    protect_login_memory()?;
     eprintln!("{LOGIN_SECURITY_WARNING}");
     eprintln!(
         "starting interactive {} login for {}",
@@ -5449,6 +5469,19 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A login process writes no core file and, on Linux, is non-dumpable (audit L15); the
+    /// protection holds for a second login in the same process too.
+    #[test]
+    fn a_login_keeps_its_memory_out_of_core_dumps() {
+        use nix::sys::resource::{Resource, getrlimit};
+
+        protect_login_memory().unwrap();
+        assert_eq!(getrlimit(Resource::RLIMIT_CORE).unwrap(), (0, 0));
+        #[cfg(target_os = "linux")]
+        assert!(!nix::sys::prctl::get_dumpable().unwrap());
+        protect_login_memory().unwrap();
+    }
 
     #[cfg(debug_assertions)]
     #[test]

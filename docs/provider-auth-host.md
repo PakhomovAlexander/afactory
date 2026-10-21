@@ -129,12 +129,38 @@ private_to_af = os.fdopen(request_write, "wb", buffering=0)
 private_from_af = os.fdopen(event_read, "rb", buffering=0)
 ```
 
-Login children start from an empty environment and the explicit native auth directory. The host's
-existing proxy routing (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, also lowercase) and
-certificate paths (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`) are
-preserved through the lifetime guard, matching terminal login. API keys, Node/browser hooks,
-display/session state and TLS-verification-disable overrides are not inherited. af does not change
-these settings or print their values.
+Login children start from an empty environment, not from nothing: the exact variables each
+Provider child receives are listed below. The host's existing proxy routing and certificate paths
+are preserved through the lifetime guard, matching terminal login. API keys, Node/browser hooks
+and TLS-verification-disable overrides are not inherited, nor is display or session state except
+by the terminal login. af does not change these settings or print their values.
+
+### The exact child environment
+
+Every Provider child af starts outside a Task Attempt is spawned with `env_clear()` and then
+receives exactly:
+
+- **Every probe** (`af provider status`, model discovery, admission and usage probes, the Codex
+  app-server): `PATH`, the parent's with every entry that is not an existing absolute directory
+  removed and each kept entry canonical; `HOME`, when the parent's is an absolute path; `USER`,
+  when set; and `CLAUDE_CONFIG_DIR` (Claude) or `CODEX_HOME` (Codex) when the Provider names an
+  explicit auth directory. It runs in a private af-owned directory. The Claude usage probe also
+  gets `TERM=xterm-256color`, `LC_ALL=C`, `TZ=UTC` and `CLAUDE_CODE_SANDBOXED=1`.
+- **A private-host login** (`af provider auth begin`, its lifetime guard and the native login):
+  the probe variables above with the explicit auth directory, run from `/`, plus each of
+  `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (also lowercase), `SSL_CERT_FILE`,
+  `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` that is set; the native login also
+  gets `NO_COLOR=1` and `TERM=dumb`.
+- **A terminal login** (`af provider setup --login`): the sanitized `PATH`; each of `HOME`,
+  `USER`, `TERM`, `COLORTERM`, `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`,
+  `DBUS_SESSION_BUS_ADDRESS` and the proxy and certificate variables above that is set; and the
+  auth directory as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, run from `/`.
+
+`HOME` and `USER` are the real ones: Claude Code finds its Keychain login through them. **On
+macOS Claude Code keeps its OAuth tokens in the login Keychain, not in the auth directory.**
+Removing the Provider (`af provider remove`) and deleting its directory therefore does not remove
+that login: log out in Claude Code first (its `/logout` command, under the same
+`CLAUDE_CONFIG_DIR`), or delete its Claude Code items in Keychain Access.
 
 Do not redirect either private pipe raw to a logger or model transcript. The concrete bridge
 validates and presents only explicitly authorized fields. A broker must keep the

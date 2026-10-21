@@ -8,6 +8,8 @@ export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 export GIT_AUTHOR_NAME=github GIT_AUTHOR_EMAIL=github@example.invalid
 export GIT_COMMITTER_NAME=github GIT_COMMITTER_EMAIL=github@example.invalid
 printf '%s\n' "$*" >> "$STATE/calls.log"
+# The environment af handed it, when a test asks, for the allowlist's tests.
+if [ -e "$STATE/record-env" ]; then env >> "$STATE/env.log"; fi
 head_sha() { git --git-dir="$BARE" rev-parse --verify -q "refs/heads/af-gate/$TASK/head"; }
 base_sha() { git --git-dir="$BARE" rev-parse --verify -q "refs/heads/af-gate/$TASK/base"; }
 merge_ref() {
@@ -47,7 +49,12 @@ case "$1" in
       echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2; exit 1
     fi
     echo "github.com: Logged in to github.com account octo (keyring)"; exit 0;;
-  api) shift;;
+  api) shift
+    # af names the host of every REST call, the one `gh auth status` checked.
+    if [ "$1" != --hostname ] || [ "$2" != github.com ]; then
+      echo "fake gh: api without --hostname github.com" >&2; exit 2
+    fi
+    shift 2;;
   *) echo "fake gh: unsupported command $1" >&2; exit 2;;
 esac
 if [ "$1" = "--method" ] && [ "$2" = "PATCH" ]; then

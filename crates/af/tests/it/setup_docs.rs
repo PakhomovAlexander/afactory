@@ -86,20 +86,22 @@ fn shared_catalog_guide_lists_exactly_the_installed_kind_profiles() {
 
 #[test]
 fn task_prerequisites_keep_signature_and_checksum_only_installs_apart() {
-    // The installer the guide describes checks the signature only when minisign is present.
+    // The installer the guide describes checks the signature with minisign, and proceeds
+    // without it only under AF_INSTALL_ALLOW_UNSIGNED=1.
     let installer = workspace_file("install.sh");
     assert!(installer.contains("verified_by=sha256sums"));
     assert!(installer.contains("if command -v minisign >/dev/null 2>&1; then"));
     assert!(installer.contains("verified_by=minisign"));
+    assert!(installer.contains("elif [ \"${AF_INSTALL_ALLOW_UNSIGNED:-}\" = 1 ]; then"));
     assert!(installer.contains("only the checksum is verified"));
 
     let guide = collapsed(&workspace_file("docs/tasks.md"));
     for statement in [
-        "checks the signature only when `minisign` is on `PATH`: put it there before you run the \
-         installer ([install](../README.md#install))",
-        "the installer reports that only the checksum was verified, and the install receipt \
-         records `verified_by = \"sha256sums\"` rather than `\"minisign\"`; that checksum-only \
-         install does not meet this prerequisite",
+        "and the signature with `minisign`: put it on `PATH` before you run the installer \
+         ([install](../README.md#install)), which refuses without it",
+        "Under `AF_INSTALL_ALLOW_UNSIGNED=1` it proceeds anyway, reports that only the checksum \
+         is verified, and the install receipt records `verified_by = \"sha256sums\"` rather than \
+         `\"minisign\"`; that checksum-only install does not meet this prerequisite",
         "`receipt.verified_by` is shown by `af self status --json`",
     ] {
         assert!(guide.contains(statement), "{statement}\n{guide}");

@@ -463,6 +463,7 @@ pub(crate) fn default_task_state(xdg_state: &Path, repo: &Path) -> Result<PathBu
 
 pub(crate) fn state_path(repo: &Path, state: Option<&Path>) -> Result<(PathBuf, PathBuf), String> {
     let repo = std::fs::canonicalize(repo).map_err(|e| e.to_string())?;
+    let state_given = state.is_some();
     let state = match state {
         Some(path) => super::resolve_filesystem_path(path)?,
         None => default_task_state(&super::xdg_state_root()?, &repo)?,
@@ -471,7 +472,11 @@ pub(crate) fn state_path(repo: &Path, state: Option<&Path>) -> Result<(PathBuf, 
         return Err("Task state must be outside the repository".into());
     }
     // A Store outside the default root is known to the Storage Budget only through the
-    // registry (ADR-0144); recording is best effort.
+    // registry (ADR-0144); recording is best effort. An explicit directory becomes af-owned, so
+    // one holding anything else is refused first.
+    if state_given {
+        crate::storage::owned::admit(&state)?;
+    }
     crate::storage::registry::record(&state, crate::storage::registry::StoreKind::Task);
     Ok((repo, state))
 }
@@ -1074,7 +1079,7 @@ fn start_kind(
     let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
     started.checked_add(wall).ok_or("Task deadline overflow")?;
     let (repo, state) = state_path(&options.repo, options.state.as_deref())?;
-    std::fs::create_dir_all(&state).map_err(|e| e.to_string())?;
+    crate::storage::owned::prepare(&state, options.state.is_some())?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     if store

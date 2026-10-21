@@ -580,7 +580,24 @@ fn read_bounded_text(path: &Path) -> Result<String, String> {
             MAX_DISCOVERY_FILE_BYTES
         ));
     }
-    std::fs::read_to_string(path).map_err(|error| format!("reading {}: {error}", path.display()))
+    // Bounded again while reading: a file that grew since its size was read is not read whole.
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(
+            std::fs::File::open(path)
+                .map_err(|error| format!("reading {}: {error}", path.display()))?,
+            MAX_DISCOVERY_FILE_BYTES + 1,
+        ),
+        &mut bytes,
+    )
+    .map_err(|error| format!("reading {}: {error}", path.display()))?;
+    if bytes.len() as u64 > MAX_DISCOVERY_FILE_BYTES {
+        return Err(format!(
+            "{} grew beyond {MAX_DISCOVERY_FILE_BYTES} bytes while onboarding read it",
+            path.display()
+        ));
+    }
+    String::from_utf8(bytes).map_err(|error| format!("reading {}: {error}", path.display()))
 }
 
 fn build_bundle(
@@ -860,6 +877,8 @@ fn build_definition(gates: &[Gate]) -> Definition {
             build_caches: Vec::new(),
             build_cache_max_bytes: None,
             build_cache_max_entries: None,
+            memory: None,
+            cpus: None,
         }),
         nodes,
         edges,
@@ -1344,7 +1363,9 @@ fn read_authority_text(path: &Path) -> Result<String, String> {
             MAX_DISCOVERY_FILE_BYTES
         ));
     }
-    std::fs::read_to_string(path)
+    let bytes = review_store::local_fs::read_bounded(path, MAX_DISCOVERY_FILE_BYTES)
+        .map_err(|error| format!("reading authority {}: {error}", path.display()))?;
+    String::from_utf8(bytes)
         .map_err(|error| format!("reading authority {}: {error}", path.display()))
 }
 

@@ -53,10 +53,32 @@ documented per condition, with results on stdout and progress and diagnostics on
 ## Consequences
 
 - An agent, CI job, or any non-terminal caller gets a determinate result and a human-readable next
-  action, and can never cause an OAuth exchange to be started on its behalf.
+  action, and can never cause an OAuth exchange to be started on its behalf. A caller that holds a
+  pseudo-terminal is not such a caller: see the amendment below.
 - Operators who relied on `af provider setup` logging them in add `--login` once; the help, the
   logged-out status hint, and the printed next action all spell it.
 - `af provider status` is faster by default and no longer shows subscription or quota windows
   without `--usage`; the TUI's explicit refresh still probes them.
 - Exit codes 3–7 are part of the `af provider` contract and are pinned by CLI tests; the two JSON
   documents are pinned by schemas and schema-parity fixtures.
+
+## Amended 2026-10-20
+
+An independent audit (finding M8) showed what the terminal check is and is not. `isatty` on all
+three standard streams tells a terminal from a pipe, a file or a CI log; it cannot tell a human
+from a program. A caller that allocates a pseudo-terminal — `script`, `expect`, `tmux send-keys`,
+`ssh -tt`, Python's `pty`, the `portable-pty` crate af's own tests use — passes it, reads the
+OAuth URL the login prints and types the code back, and `af` continues to the post-login probe.
+The test `a_caller_holding_a_pseudo_terminal_reaches_the_login` in
+`crates/af/tests/it/provider_registry.rs` pins exactly that.
+
+The decision stands, and its claim is narrowed to what the check enforces: the terminal-only
+login prevents *accidental* capture of the OAuth URL and code — by a pipe, a CI log, a chat or
+agent transcript, or a tool call that runs `af` without a terminal. A caller holding a
+pseudo-terminal is indistinguishable from a human at a terminal and is out of this boundary's
+scope; the consequence above that a non-terminal caller "can never cause an OAuth exchange to be
+started on its behalf" holds for non-terminal callers only. A program that must start a login on
+a person's behalf uses the private host protocol of
+[ADR-0137](0137-permit-provider-logins-through-private-host-capabilities.md), whose permission and
+private delivery are explicit capabilities rather than a property of the caller's streams. No
+typed confirmation is added: a program holding the terminal could type it as well.

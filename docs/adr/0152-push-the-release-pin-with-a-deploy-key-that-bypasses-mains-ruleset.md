@@ -63,5 +63,12 @@ remain are repository roles and deploy keys.
   script says to pin by hand. Either way, pin by hand: run the script without `--push` and open a
   pull request, as ADR-0138 already allows. To rotate the key, replace the deploy key and the
   secret together.
+- **Amended 2026-10-20** (security audit, finding I10): the `pin` job's blast radius. It installs
+  the release it just published with `install.sh`, which verifies the signed `SHA256SUMS`, and
+  then runs that release binary (`af onboard --refresh-lock`) in a checkout whose SSH
+  configuration holds `PIN_DEPLOY_KEY`. A release whose signed bytes were hostile could
+  therefore push anything to `main` with the key, past the ruleset, force included; the
+  signature and the release train that produced it are what stand in the way. The script itself
+  only fast-forwards, and only the pin may move.
 - The ruleset lives in repository settings, not in the tree. A change to its target, rules or
   bypass list is recorded by a new ADR, as this one records the first.

@@ -6,53 +6,68 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 pub(crate) struct Drain {
-    bytes: Arc<Mutex<Vec<u8>>>,
+    kept: Arc<Mutex<Kept>>,
     completion: mpsc::Receiver<std::io::Result<()>>,
 }
 
+/// What a drain kept of its stream: at most its cap of bytes, and how many the stream carried.
+#[derive(Default)]
+pub(crate) struct Kept {
+    pub bytes: Vec<u8>,
+    pub total: u64,
+}
+
 impl Drain {
-    fn take_bytes(&self) -> Vec<u8> {
-        std::mem::take(&mut *self.bytes.lock().unwrap_or_else(|error| error.into_inner()))
+    fn take(&self) -> Kept {
+        std::mem::take(&mut *self.kept.lock().unwrap_or_else(|error| error.into_inner()))
     }
 }
 
 pub(crate) struct Drained {
     pub bytes: Vec<u8>,
+    pub total: u64,
     pub status: Result<bool, SupervisedError>,
 }
 
-pub(crate) fn drain_async(mut pipe: impl Read + Send + 'static) -> Drain {
-    let bytes = Arc::new(Mutex::new(Vec::new()));
-    let accumulated = Arc::clone(&bytes);
+/// Read `pipe` to its end on a thread of its own, keeping at most `cap` bytes. Past the cap it
+/// keeps reading and discards, so a child that writes without end never blocks on a full pipe,
+/// and counts every byte, so the caller can say the stream was truncated and by how much.
+pub(crate) fn drain_async(mut pipe: impl Read + Send + 'static, cap: usize) -> Drain {
+    let kept = Arc::new(Mutex::new(Kept::default()));
+    let accumulated = Arc::clone(&kept);
     let (send, completion) = mpsc::channel();
     std::thread::spawn(move || {
         let mut chunk = [0; 16 * 1024];
         let result = loop {
             match pipe.read(&mut chunk) {
                 Ok(0) => break Ok(()),
-                Ok(count) => accumulated
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .extend_from_slice(&chunk[..count]),
+                Ok(count) => {
+                    let mut kept = accumulated
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    let room = cap.saturating_sub(kept.bytes.len()).min(count);
+                    kept.bytes.extend_from_slice(&chunk[..room]);
+                    kept.total = kept.total.saturating_add(count as u64);
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => break Err(error),
             }
         };
         let _ = send.send(result);
     });
-    Drain { bytes, completion }
+    Drain { kept, completion }
 }
 
 /// Failure cleanup retains every prefix, even if EOF or a successful read never arrives.
 pub(crate) fn collect_after_kill(drain: Drain) -> Vec<u8> {
-    collect_after_kill_until(drain, Instant::now() + OUTPUT_DRAIN_GRACE)
+    collect_after_kill_until(drain, Instant::now() + OUTPUT_DRAIN_GRACE).bytes
 }
 
-pub(crate) fn collect_after_kill_until(drain: Drain, deadline: Instant) -> Vec<u8> {
+pub(crate) fn collect_after_kill_until(drain: Drain, deadline: Instant) -> Kept {
     let _ = drain
         .completion
         .recv_timeout(deadline.saturating_duration_since(Instant::now()));
-    drain.take_bytes()
+    drain.take()
 }
 
 pub(crate) fn collect(
@@ -104,7 +119,7 @@ fn collect_with(
             kill(pid);
             // The reader may have obtained a final chunk without appending it yet. Wait for
             // bounded completion before taking its bytes. Both pipes share this deadline.
-            let bytes = collect_after_kill_until(drain, deadline);
+            let kept = collect_after_kill_until(drain, deadline);
             let status = if matches!(error, ReceiveError::Cancelled) {
                 Err(SupervisedError::Cancelled)
             } else if stream == "stderr" {
@@ -112,15 +127,21 @@ fn collect_with(
             } else {
                 Err(SupervisedError::OutputHeld(stream))
             };
-            return Drained { bytes, status };
+            return Drained {
+                bytes: kept.bytes,
+                total: kept.total,
+                status,
+            };
         }
         Err(ReceiveError::Disconnected) => Err(SupervisedError::OutputRead {
             stream,
             source: std::io::Error::other("output reader stopped without a result"),
         }),
     };
+    let kept = drain.take();
     Drained {
-        bytes: drain.take_bytes(),
+        bytes: kept.bytes,
+        total: kept.total,
         status,
     }
 }
@@ -128,9 +149,11 @@ fn collect_with(
 pub(crate) fn collect_stderr(
     drain: Drain,
     leader: &Leader,
-) -> Result<(Vec<u8>, bool), SupervisedError> {
+) -> Result<(Vec<u8>, u64, bool), SupervisedError> {
     let drained = collect(drain, "stderr", leader, &mut None);
-    drained.status.map(|held| (drained.bytes, held))
+    drained
+        .status
+        .map(|held| (drained.bytes, drained.total, held))
 }
 
 #[cfg(test)]
@@ -152,7 +175,7 @@ mod tests {
     #[test]
     fn a_read_failure_retains_the_prefix() {
         let drained = collect_with(
-            drain_async(BrokenReader(false)),
+            drain_async(BrokenReader(false), usize::MAX),
             "stdout",
             0,
             &mut None,
@@ -171,9 +194,25 @@ mod tests {
     }
 
     #[test]
+    fn a_capped_drain_keeps_its_cap_and_counts_every_byte_it_read() {
+        let drained = collect_with(
+            drain_async(std::io::Cursor::new(vec![7u8; 100_000]), 40_000),
+            "stdout",
+            0,
+            &mut None,
+            crate::tests::LOAD_SAFE_WALL,
+            |_| {},
+            None,
+        );
+        assert!(matches!(drained.status, Ok(false)));
+        assert_eq!(drained.bytes, vec![7u8; 40_000]);
+        assert_eq!(drained.total, 100_000);
+    }
+
+    #[test]
     fn cleanup_retains_a_prefix_even_when_its_reader_failed() {
         assert_eq!(
-            collect_after_kill(drain_async(BrokenReader(false))),
+            collect_after_kill(drain_async(BrokenReader(false), usize::MAX)),
             b"prefix"
         );
     }
@@ -199,10 +238,13 @@ mod tests {
         for stream in ["stdout", "stderr"] {
             let (ready, begun) = mpsc::channel();
             let (release, killed) = mpsc::channel();
-            let drain = drain_async(FinalPrefix {
-                ready: Some(ready),
-                killed,
-            });
+            let drain = drain_async(
+                FinalPrefix {
+                    ready: Some(ready),
+                    killed,
+                },
+                usize::MAX,
+            );
             begun.recv_timeout(crate::tests::LOAD_SAFE_WALL).unwrap();
             let cancelled = AtomicBool::new(true);
             let mut cleanup = None;
@@ -245,10 +287,13 @@ mod tests {
         for stream in ["stdout", "stderr"] {
             let (begun, ready) = mpsc::channel();
             let (kill, killed) = mpsc::channel();
-            let drain = drain_async(DelayedReader {
-                begun: Some(begun),
-                killed,
-            });
+            let drain = drain_async(
+                DelayedReader {
+                    begun: Some(begun),
+                    killed,
+                },
+                usize::MAX,
+            );
             ready.recv_timeout(Duration::from_secs(1)).unwrap();
             let mut cleanup = None;
             let drained = collect_with(
@@ -272,7 +317,7 @@ mod tests {
             let deadline = cleanup.unwrap();
             // Subsequent cleanup cannot start another grace period after this deadline.
             let _ = collect_with(
-                drain_async(std::io::Cursor::new(b"second")),
+                drain_async(std::io::Cursor::new(b"second"), usize::MAX),
                 "stderr",
                 0,
                 &mut cleanup,

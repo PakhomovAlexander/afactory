@@ -91,6 +91,72 @@ fn in_terminal(
     (status.exit_code(), text)
 }
 
+/// Like [`in_terminal`], but the caller holding the pseudo-terminal answers: once the output
+/// shows `prompt`, it types `answer` and Enter, as a program driving the terminal would.
+fn in_terminal_answering(
+    program: &std::ffi::OsStr,
+    args: &[&std::ffi::OsStr],
+    env: &[(&str, &std::ffi::OsStr)],
+    prompt: &str,
+    answer: &str,
+) -> (u32, String) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::{Read as _, Write as _};
+    use std::sync::{Arc, Mutex};
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 40,
+            cols: 200,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(program);
+    for argument in args {
+        command.arg(argument);
+    }
+    command.env_clear();
+    command.cwd("/");
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drained = {
+        let seen = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            let mut chunk = [0; 4096];
+            while let Ok(count) = reader.read(&mut chunk) {
+                if count == 0 {
+                    break;
+                }
+                seen.lock().unwrap().extend_from_slice(&chunk[..count]);
+            }
+        })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !String::from_utf8_lossy(&seen.lock().unwrap()).contains(prompt) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no `{prompt}` on the terminal: {}",
+            String::from_utf8_lossy(&seen.lock().unwrap())
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut writer = pair.master.take_writer().unwrap();
+    writer.write_all(format!("{answer}\r").as_bytes()).unwrap();
+    writer.flush().unwrap();
+    let status = child.wait().unwrap();
+    drop(writer);
+    drop(pair.master);
+    drained.join().unwrap();
+    let text = String::from_utf8_lossy(&seen.lock().unwrap()).into_owned();
+    (status.exit_code(), text)
+}
+
 /// `af provider setup … --login` at an interactive terminal.
 fn setup_in_terminal(
     home: &Path,
@@ -357,6 +423,79 @@ exit 64
         std::fs::read_to_string(auth.join("login-log")).unwrap(),
         "auth login --claudeai\n"
     );
+}
+
+/// The terminal check's documented limit (audit M8, ADR-0112 amended 2026-10-20): it stops
+/// pipes, CI and tool calls without a terminal, not a program that holds a pseudo-terminal. Such
+/// a caller — here this test, through `portable-pty` — reads the OAuth URL the login prints,
+/// types the code back, and `af` goes on to the post-login probe and registers the Provider, as
+/// it would for a human. The private host protocol is the answer for such a caller, not this
+/// check.
+#[test]
+fn a_caller_holding_a_pseudo_terminal_reaches_the_login() {
+    use std::ffi::OsStr;
+
+    let root = tempfile::tempdir().unwrap();
+    let auth = root.path().join("claude-auth");
+    let bin = fake_provider(
+        root.path(),
+        "claude",
+        r#"#!/bin/sh
+if [ "$1" = auth ] && [ "$2" = status ] && [ "$3" = --json ]; then
+  if [ -f "$CLAUDE_CONFIG_DIR/logged-in" ]; then
+    printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}'
+    exit 0
+  fi
+  printf '%s\n' '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+  exit 1
+fi
+if [ "$1" = auth ] && [ "$2" = login ] && [ "$3" = --claudeai ]; then
+  printf '%s\n' 'Browser did not open? Visit https://claude.ai/oauth/authorize?code=true&state=FIXTURE-STATE'
+  printf '%s' 'Paste code here if prompted > '
+  IFS= read -r code
+  printf '%s\n' "$code" > "$CLAUDE_CONFIG_DIR/typed-code"
+  : > "$CLAUDE_CONFIG_DIR/logged-in"
+  exit 0
+fi
+exit 64
+"#,
+    );
+    let config = root.path().join("config");
+    let (code, output) = in_terminal_answering(
+        OsStr::new(env!("CARGO_BIN_EXE_af")),
+        &[
+            OsStr::new("provider"),
+            OsStr::new("setup"),
+            OsStr::new("claude-main"),
+            OsStr::new("--kind"),
+            OsStr::new("claude"),
+            OsStr::new("--auth-dir"),
+            auth.as_os_str(),
+            OsStr::new("--login"),
+        ],
+        &[
+            ("HOME", root.path().as_os_str()),
+            ("XDG_CONFIG_HOME", config.as_os_str()),
+            ("PATH", bin.as_os_str()),
+            ("AF_SELF_OFFLINE", OsStr::new("1")),
+            (
+                crate::common::PROBE_TIMEOUT_SETTING,
+                OsStr::new(crate::common::LOAD_SAFE_PROBE_TIMEOUT_MS),
+            ),
+        ],
+        "Paste code here if prompted",
+        "FIXTURE-CODE",
+    );
+    assert_eq!(code, 0, "{output}");
+    // The program holding the terminal saw the OAuth URL and its own typed code.
+    assert!(output.contains("FIXTURE-STATE"), "{output}");
+    assert!(output.contains("FIXTURE-CODE"), "{output}");
+    assert_eq!(
+        std::fs::read_to_string(auth.join("typed-code")).unwrap(),
+        "FIXTURE-CODE\n"
+    );
+    let registry = std::fs::read_to_string(config.join("af/providers.toml")).unwrap();
+    assert!(registry.contains("claude-main"), "{registry}");
 }
 
 /// The login child must land in the auth directory `af` was told to use, not an ambient one.

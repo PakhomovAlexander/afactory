@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use review_config::Definition;
-use review_config::lock::{Lockfile, Registry};
+use review_config::lock::{Lockfile, MAX_AUTHORITY_FILE_BYTES, Registry};
 use review_core::{
     AuthorityFileV1, CampaignBudgetV1, CampaignConvergenceV1, CampaignManifestV1,
     CampaignOpenedPayloadV1, CampaignReviewerV1, ChangeSetV1, EventType, ReviewerPackageV1,
@@ -1739,6 +1739,13 @@ fn authority_bytes(manifest: &Manifest, cas: &Cas, path: &str) -> Result<Vec<u8>
     if entry.kind == EntryKind::Symlink {
         return Err(format!("authority file `{path}` is a symlink"));
     }
+    if entry.size > MAX_AUTHORITY_FILE_BYTES {
+        return Err(format!(
+            "authority file `{path}` is {} bytes; an authority file is at most \
+             {MAX_AUTHORITY_FILE_BYTES} bytes",
+            entry.size
+        ));
+    }
     cas.get(&entry.content).map_err(|error| error.to_string())
 }
 
@@ -1749,6 +1756,7 @@ fn captured_registry(
 ) -> Result<BTreeMap<String, BTreeMap<String, Vec<u8>>>, String> {
     let prefix = format!("{registry}/");
     let mut packages: BTreeMap<String, BTreeMap<String, Vec<u8>>> = BTreeMap::new();
+    let mut package_bytes: BTreeMap<String, u64> = BTreeMap::new();
     for entry in &manifest.entries {
         let Some(relative) = entry.path.strip_prefix(&prefix) else {
             continue;
@@ -1765,7 +1773,23 @@ fn captured_registry(
                 entry.path
             ));
         }
-        packages.entry(name.to_string()).or_default().insert(
+        // The bounds a package on disk is read within (L10), before any byte is read.
+        let files = packages.entry(name.to_string()).or_default();
+        let total = package_bytes.entry(name.to_string()).or_default();
+        *total = total.saturating_add(entry.size);
+        if entry.size > MAX_AUTHORITY_FILE_BYTES
+            || *total > review_config::lock::MAX_PACKAGE_BYTES
+            || files.len() >= review_config::lock::MAX_PACKAGE_FILES
+        {
+            return Err(format!(
+                "reviewer package `{name}` exceeds the package bounds at `{}`: at most {} \
+                 files, {MAX_AUTHORITY_FILE_BYTES} bytes per file and {} bytes in all",
+                entry.path,
+                review_config::lock::MAX_PACKAGE_FILES,
+                review_config::lock::MAX_PACKAGE_BYTES
+            ));
+        }
+        files.insert(
             path.to_string(),
             cas.get(&entry.content).map_err(|error| error.to_string())?,
         );

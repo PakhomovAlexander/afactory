@@ -966,14 +966,11 @@ impl TaskProjection {
                 TaskChangeV1::Opened { .. } | TaskChangeV1::LeaseTaken { .. } => {
                     return Err(conflict("Task already exists"));
                 }
-                // Housekeeping after the result (ADR-0144): recorded, never part of it.
+                // Housekeeping (ADR-0144): recorded, never part of the result. A Task cancelled
+                // or abandoned after its gate published is cleaned up too, in whatever phase
+                // it stopped.
                 TaskChangeV1::GateCleanup { cleanup } => {
                     cleanup.validate(&self.task_id).map_err(conflict)?;
-                    if !matches!(self.phase, TaskPhaseV1::Finished { .. }) {
-                        return Err(conflict(
-                            "A gate cleanup is recorded only for a finished Task",
-                        ));
-                    }
                     self.gate_cleanups.push(cleanup.clone());
                 }
                 // An observation of the run that ended with the sweep, in whatever phase that

@@ -75,14 +75,105 @@ impl EntryKind {
         }
     }
 
+    /// The kind a tree entry's mode names. Besides the canonical `100644` and `100755`, every
+    /// regular-file mode git itself accepts from an old tree (`100664` and the like) is a file,
+    /// executable exactly when its owner may execute it, as git's own `canon_mode` reads it.
     pub fn from_mode(mode: &str) -> Option<EntryKind> {
-        Some(match mode {
-            "100644" => EntryKind::File,
-            "100755" => EntryKind::Executable,
-            "120000" => EntryKind::Symlink,
-            _ => return None,
+        if mode == "120000" {
+            return Some(EntryKind::Symlink);
+        }
+        let permissions = mode.strip_prefix("100")?;
+        if permissions.len() != 3 || !permissions.bytes().all(|byte| matches!(byte, b'0'..=b'7')) {
+            return None;
+        }
+        Some(if permissions.as_bytes()[0] & 1 == 1 {
+            EntryKind::Executable
+        } else {
+            EntryKind::File
         })
     }
+}
+
+/// Whether git itself refuses `decoded` as a path in a tree it checks out (`verify_path`): a
+/// component that is `.git` on some volume, or a symlinked `.gitmodules`. A tree holding one is
+/// not a source anything here captures, materializes or binds to a Task: written out, its
+/// `.git/config` would be the configuration of every `git` a gate or reviewer runs in the
+/// sandbox. The one predicate both materialization and Task trees refuse through.
+pub fn git_refuses_path(decoded: &[u8], kind: EntryKind) -> bool {
+    decoded.split(|byte| *byte == b'/').any(|component| {
+        is_dot_git(component) || (kind == EntryKind::Symlink && is_dot_gitmodules(component))
+    })
+}
+
+/// `.git` as any volume af or a reviewer may run on spells it: ignoring ASCII case, with the
+/// code points HFS+ ignores anywhere in it, with the trailing dots and spaces NTFS drops, as an
+/// NTFS alternate data stream (`.git:x`), or as the 8.3 short name `git~1`.
+fn is_dot_git(component: &[u8]) -> bool {
+    ntfs_alias(&without_hfs_ignorables(component), b".git", |short| {
+        short_name(short, b"git~", b'1'..=b'1')
+    })
+}
+
+/// `.gitmodules` in the same spellings, with the short names git refuses for it.
+fn is_dot_gitmodules(component: &[u8]) -> bool {
+    ntfs_alias(
+        &without_hfs_ignorables(component),
+        b".gitmodules",
+        |short| {
+            short_name(short, b"gitmod~", b'1'..=b'4')
+                .or_else(|| short_name(short, b"gi7eba~", b'1'..=b'9'))
+        },
+    )
+}
+
+/// The length of the short-name prefix `name` starts with: `stem` (ASCII case ignored) and one
+/// digit in `digits`.
+fn short_name(name: &[u8], stem: &[u8], digits: std::ops::RangeInclusive<u8>) -> Option<usize> {
+    let length = stem.len() + 1;
+    (name.len() >= length
+        && name[..stem.len()].eq_ignore_ascii_case(stem)
+        && digits.contains(&name[stem.len()]))
+    .then_some(length)
+}
+
+/// Whether `name` is `long` (ASCII case ignored) or a short name `short` recognises, followed
+/// only by what NTFS drops (dots and spaces) up to its end or to a stream or path separator.
+fn ntfs_alias(name: &[u8], long: &[u8], short: impl Fn(&[u8]) -> Option<usize>) -> bool {
+    let rest = if name.len() >= long.len() && name[..long.len()].eq_ignore_ascii_case(long) {
+        &name[long.len()..]
+    } else if let Some(length) = short(name) {
+        &name[length..]
+    } else {
+        return false;
+    };
+    for byte in rest {
+        match byte {
+            b'.' | b' ' => continue,
+            b':' | b'\\' => return true,
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// `component` without the code points HFS+ ignores when it compares names (git's
+/// `next_hfs_char`): U+200C-U+200F, U+202A-U+202E, U+206A-U+206F and U+FEFF.
+fn without_hfs_ignorables(component: &[u8]) -> Vec<u8> {
+    let mut kept = Vec::with_capacity(component.len());
+    let mut index = 0;
+    while index < component.len() {
+        match component[index..] {
+            [0xE2, 0x80, 0x8C..=0x8F, ..]
+            | [0xE2, 0x80, 0xAA..=0xAE, ..]
+            | [0xE2, 0x81, 0xAA..=0xAF, ..]
+            | [0xEF, 0xBB, 0xBF, ..] => index += 3,
+            _ => {
+                kept.push(component[index]);
+                index += 1;
+            }
+        }
+    }
+    kept
 }
 
 /// One path in a snapshot. `content` is our own digest of the bytes — never a git object ID,
@@ -353,6 +444,95 @@ mod tests {
         let link = Manifest::new(vec![entry("l", EntryKind::Symlink, b"target")]).unwrap();
         let file = Manifest::new(vec![entry("l", EntryKind::File, b"target")]).unwrap();
         assert_ne!(link.content_digest(), file.content_digest());
+    }
+
+    #[test]
+    fn legacy_regular_file_modes_are_files_with_the_owner_execute_bit() {
+        for (mode, kind) in [
+            ("100644", Some(EntryKind::File)),
+            ("100755", Some(EntryKind::Executable)),
+            ("120000", Some(EntryKind::Symlink)),
+            ("100664", Some(EntryKind::File)),
+            ("100600", Some(EntryKind::File)),
+            ("100775", Some(EntryKind::Executable)),
+            ("100744", Some(EntryKind::Executable)),
+            ("100655", Some(EntryKind::File)),
+            ("160000", None),
+            ("040000", None),
+            ("100", None),
+            ("1006440", None),
+            ("100x44", None),
+            ("120755", None),
+        ] {
+            assert_eq!(EntryKind::from_mode(mode), kind, "{mode}");
+        }
+    }
+
+    #[test]
+    fn every_spelling_of_git_administration_is_refused() {
+        let file = EntryKind::File;
+        for path in [
+            &b".git/config"[..],
+            b".GIT/HEAD",
+            b".Git/hooks/pre-commit",
+            b"sub/.git/config",
+            b".git./x",
+            b".git../x",
+            b".git /x",
+            b".git . /x",
+            b"git~1/x",
+            b"GIT~1/config",
+            b".git:stream/x",
+            b".g\xE2\x80\x8Cit/config",
+            b"\xEF\xBB\xBF.git/HEAD",
+            b".gi\xE2\x81\xAFt/HEAD",
+            b".git",
+        ] {
+            assert!(
+                git_refuses_path(path, file),
+                "{:?}",
+                String::from_utf8_lossy(path)
+            );
+        }
+        for path in [
+            &b".github/workflows/ci.yml"[..],
+            b".gitignore",
+            b".gitattributes",
+            b".gitmodules",
+            b"git~2/x",
+            b"x.git/y",
+            b"git/x",
+            b".git-crypt/key",
+            b"a.git",
+        ] {
+            assert!(
+                !git_refuses_path(path, file),
+                "{:?}",
+                String::from_utf8_lossy(path)
+            );
+        }
+        let link = EntryKind::Symlink;
+        for path in [
+            &b".gitmodules"[..],
+            b".GITMODULES",
+            b"sub/.gitmodules",
+            b".gitmodules.",
+            b"gitmod~1",
+            b"GI7EBA~3",
+            b".git\xE2\x80\x8Fmodules",
+        ] {
+            assert!(
+                git_refuses_path(path, link),
+                "{:?}",
+                String::from_utf8_lossy(path)
+            );
+            assert!(
+                !git_refuses_path(path, file),
+                "{:?}",
+                String::from_utf8_lossy(path)
+            );
+        }
+        assert!(!git_refuses_path(b".gitignore", link));
     }
 
     #[test]

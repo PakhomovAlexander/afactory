@@ -148,3 +148,14 @@ at 100x30 pins the bar and one Worker's pane, and the other panes' goldens are u
   remains the fix if that scan grows slow.
 - Attempts of an operator that serves several slots are credited to no Worker.
 - No wire contract, schema, fixture or `--json` document changes. `CONTEXT.md` gains no term.
+
+**Amended 2026-10-20.** The drift marker no longer comes from `git diff` against the working
+tree, nor from `git hash-object` for files the index flags `skip-worktree` or
+`assume-unchanged`: both hash working-tree files through the clean filter, and the diff
+refreshes the index through the fsmonitor, that a checkout's own `.git/config` selects, so
+bare `af` ran them at startup. The browser now reads the mode and blob id of each shown path
+with `ls-tree` and the blob with `cat-file --batch`, reads the working-tree file directly, and
+compares the two in-process, as a dirty capture would see them. The index flags never hide
+drift, a prompt `HEAD` does not commit still differs when the working tree has one, and every
+git the browser runs carries capture's cleared environment and full `-c` override set
+(`review_source_git::git::isolated_command`).

@@ -193,6 +193,8 @@ struct OnTerminal {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     master: Box<dyn portable_pty::MasterPty + Send>,
     chunks: std::sync::mpsc::Receiver<Vec<u8>>,
+    /// What the terminal showed so far, read by [`OnTerminal::wait_for`].
+    shown: Vec<u8>,
     what: String,
 }
 
@@ -254,8 +256,36 @@ impl OnTerminal {
             child,
             master,
             chunks,
+            shown: Vec::new(),
             what,
         }
+    }
+
+    /// Read until the terminal shows `needle`, within a bound. Returns all it showed so far.
+    fn wait_for(&mut self, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let text = String::from_utf8_lossy(&self.shown).into_owned();
+            if text.contains(needle) {
+                return text;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{} never showed {needle:?}: {text}",
+                self.what
+            );
+            if let Ok(chunk) = self.chunks.recv_timeout(Duration::from_millis(50)) {
+                self.shown.extend(chunk);
+            }
+        }
+    }
+
+    /// Type `line` and Return at the terminal, as a person answering a prompt.
+    fn type_line(&mut self, line: &str) {
+        use std::io::Write as _;
+        let mut writer = self.master.take_writer().unwrap();
+        writer.write_all(format!("{line}\r").as_bytes()).unwrap();
+        writer.flush().unwrap();
     }
 
     /// Read until the command exits and closes the terminal, within a bound. Returns the exit
@@ -264,7 +294,7 @@ impl OnTerminal {
         use std::sync::mpsc::RecvTimeoutError;
 
         let deadline = Instant::now() + Duration::from_secs(60);
-        let mut shown = Vec::new();
+        let mut shown = std::mem::take(&mut self.shown);
         loop {
             match self.chunks.recv_timeout(Duration::from_millis(50)) {
                 Ok(chunk) => shown.extend(chunk),
@@ -475,6 +505,8 @@ fn a_pinned_command_is_checked_once_by_the_af_that_dispatches_it() {
     let signer = Signer::new(keys.path());
     let sandbox = Sandbox::new().with_key(&signer);
     let digest = sandbox.publish("0.8.1", false);
+    sandbox.sign("0.8.1", &signer, None);
+    sandbox.install_pins("\"always\"");
     sandbox.publish(&newer, false);
     let lock = Sandbox::lock("0.8.1", Some(&digest));
     let repo = sandbox.pinned_repo("repo", &lock);
@@ -519,6 +551,8 @@ fn a_pinned_release_never_runs_while_the_pin_that_keeps_it_cannot_be_recorded() 
     let signer = Signer::new(keys.path());
     let sandbox = Sandbox::new().with_key(&signer);
     let digest = sandbox.publish("0.8.1", false);
+    sandbox.sign("0.8.1", &signer, None);
+    sandbox.install_pins("\"always\"");
     let lock = Sandbox::lock("0.8.1", Some(&digest));
     let repo = sandbox.pinned_repo("repo", &lock);
     fresh_cache(&sandbox, VERSION);
@@ -1030,6 +1064,9 @@ fn a_pinned_command_on_a_terminal_shows_the_cached_notice_before_it_dispatches()
     let signer = Signer::new(keys.path());
     let sandbox = Sandbox::new().with_key(&signer);
     let digest = sandbox.publish("0.8.1", false);
+    sandbox.sign("0.8.1", &signer, None);
+    // On a terminal the default would ask first; this test is about the notice.
+    sandbox.install_pins("\"always\"");
     let lock = Sandbox::lock("0.8.1", Some(&digest));
     let repo = sandbox.pinned_repo("repo", &lock);
     fresh_cache(&sandbox, &newer);
@@ -1476,4 +1513,63 @@ fn an_update_notice_whose_clearing_fails_stays_unshown_on_a_terminal_until_it_ca
     assert!(!shown.contains("updated the default"), "{shown}");
     assert!(!stdout.contains("updated the default"), "{stdout}");
     assert_eq!(scheduled(&sandbox), 0, "a fresh cache is not refreshed");
+}
+
+#[test]
+fn under_ask_a_terminal_is_asked_before_a_pin_is_installed_and_declining_runs_this_af() {
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
+    let digest = sandbox.publish("0.8.1", false);
+    sandbox.sign("0.8.1", &signer, None);
+    let repo = sandbox.pinned_repo("repo", &Sandbox::lock("0.8.1", Some(&digest)));
+    let lock = std::fs::canonicalize(&repo).unwrap().join(".af/af.lock");
+    fresh_cache(&sandbox, VERSION);
+    let streams = tempfile::tempdir().unwrap();
+    let stdout = streams.path().join("stdout");
+    let ask = |answer: &str| {
+        let mut terminal =
+            OnTerminal::start(&sandbox, &repo, &stdout, common::af_binary(), &["storage"]);
+        let prompt = terminal.wait_for("[y/N]");
+        terminal.type_line(answer);
+        let (code, shown) = terminal.finish();
+        let written = String::from_utf8_lossy(&std::fs::read(&stdout).unwrap()).into_owned();
+        (prompt, code, shown, written)
+    };
+
+    // The prompt names the version, the lock, and that the release is older than this af.
+    let (prompt, code, shown, written) = ask("n");
+    assert!(
+        prompt.contains(&format!(
+            "{} pins af 0.8.1, which is not installed",
+            lock.display()
+        )),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains(&format!("OLDER than the running af {VERSION}")),
+        "{prompt}"
+    );
+    // Declined: nothing installed, and this af runs the command after naming the step.
+    assert_eq!(code, 0, "{shown}");
+    assert!(
+        shown.contains("not confirmed at the prompt") && shown.contains("af self install 0.8.1"),
+        "{shown}"
+    );
+    assert!(written.contains("KIND"), "{written}");
+    assert!(!written.contains("fake af"), "{written}");
+    assert!(!sandbox.versions().join("0.8.1").exists());
+
+    // Confirmed: installed against the lock and the signature, then run.
+    let (_, code, shown, written) = ask("y");
+    assert_eq!(code, 0, "{shown}");
+    assert!(
+        written.contains("fake af 0.8.1 storage"),
+        "{written}\n{shown}"
+    );
+    let receipt = std::fs::read_to_string(sandbox.versions().join("0.8.1/receipt.toml")).unwrap();
+    assert!(
+        receipt.contains("verified_by = \"lock+signature\""),
+        "{receipt}"
+    );
 }

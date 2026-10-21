@@ -668,6 +668,14 @@ pub(crate) fn listed(
 
 /// The blobs of a `git ls-tree -z` listing, path to object id.
 fn entries(listing: &[u8]) -> BTreeMap<String, String> {
+    blob_entries(listing)
+        .into_iter()
+        .map(|(path, (_, object))| (path, object))
+        .collect()
+}
+
+/// The blobs of a `git ls-tree -z` listing, path to mode and object id.
+fn blob_entries(listing: &[u8]) -> BTreeMap<String, (String, String)> {
     let mut found = BTreeMap::new();
     for entry in listing.split(|byte| *byte == 0) {
         // `<mode> SP <type> SP <object> TAB <path>`
@@ -677,9 +685,11 @@ fn entries(listing: &[u8]) -> BTreeMap<String, String> {
         let (meta, path) = (&entry[..tab], &entry[tab + 1..]);
         let meta = String::from_utf8_lossy(meta);
         let mut fields = meta.split(' ');
-        let (_, kind, object) = (fields.next(), fields.next(), fields.next());
-        if let (Some("blob"), Some(object), Ok(path)) = (kind, object, std::str::from_utf8(path)) {
-            found.insert(path.to_owned(), object.to_owned());
+        let (mode, kind, object) = (fields.next(), fields.next(), fields.next());
+        if let (Some(mode), Some("blob"), Some(object), Ok(path)) =
+            (mode, kind, object, std::str::from_utf8(path))
+        {
+            found.insert(path.to_owned(), (mode.to_owned(), object.to_owned()));
         }
     }
     found
@@ -749,117 +759,231 @@ pub(crate) fn blobs(root: &Path, objects: &[&str]) -> Result<BTreeMap<String, Ve
     Ok(found)
 }
 
-/// Which of `paths` differ between the working tree and `commit` in bytes, mode or existence,
-/// as git judges it, by one `git diff`. A git that cannot answer marks every path, as
-/// `differs` would each.
+/// Which of `paths` differ between the working tree and `commit` in bytes, mode or existence.
+/// A git that cannot answer marks every path, as `differs` would each.
+///
+/// Never `git diff` against the working tree, and never `git hash-object`: both hash working-tree
+/// files through the clean filter a checkout's own `.gitattributes` and `.git/config` select, and
+/// a worktree diff refreshes the index through its fsmonitor. The committed side is the blob id
+/// `ls-tree` lists (no filter, no blob read), the working-tree side is hashed here as git hashes
+/// a blob, straight from the filesystem through one bounded buffer, and the two are compared by
+/// id, as a dirty capture would see them. Neither a whole blob nor a whole working-tree file is
+/// ever held. Index flags (`skip-worktree`, `assume-unchanged`) hide nothing from that comparison.
 pub(crate) fn differing(root: &Path, commit: &str, paths: &[&str]) -> BTreeSet<String> {
     if paths.is_empty() {
         return BTreeSet::new();
     }
-    // Paths, not patterns: a `*` or `[` in a file name matches only itself.
-    let mut args = vec![
-        "--literal-pathspecs",
-        "diff",
-        "--name-only",
-        "-z",
-        commit,
-        "--",
-    ];
-    args.extend_from_slice(paths);
     let everything = || paths.iter().map(|path| (*path).to_owned()).collect();
-    let Ok(listing) = git(root, &args) else {
+    let Ok(committed) = listed_paths(root, commit, paths) else {
         return everything();
     };
-    let mut differ: BTreeSet<String> = nul_separated(&listing);
-    // `git diff` trusts the index flags: a `skip-worktree` or `assume-unchanged` file is never
-    // compared. Such files, and only those, are hashed as the working tree holds them.
-    match flagged_differing(root, commit, paths) {
-        Ok(flagged) => differ.extend(flagged),
-        Err(()) => return everything(),
+    let mut differ = BTreeSet::new();
+    for path in paths {
+        let same = match committed.get(*path) {
+            Some((mode, id)) => holds(&root.join(path), mode, id),
+            // Not a file at `commit`: the same only while the working tree has nothing there.
+            None => std::fs::symlink_metadata(root.join(path)).is_err(),
+        };
+        if !same {
+            differ.insert((*path).to_owned());
+        }
     }
     differ
 }
 
-/// The NUL-separated names git printed.
-fn nul_separated(listing: &[u8]) -> BTreeSet<String> {
-    listing
-        .split(|byte| *byte == 0)
-        .filter(|name| !name.is_empty())
-        .map(|name| String::from_utf8_lossy(name).into_owned())
-        .collect()
+/// Whether the working-tree entry at `full` is the blob `id` with `mode`: the same kind (a link,
+/// a file, an executable as a dirty capture classifies it) and the same blob id, the file hashed
+/// through [`blob_id`] and never read whole.
+fn holds(full: &Path, mode: &str, id: &str) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let Ok(meta) = std::fs::symlink_metadata(full) else {
+        return false;
+    };
+    match review_source_git::EntryKind::from_mode(mode) {
+        Some(review_source_git::EntryKind::Symlink) if meta.file_type().is_symlink() => {
+            std::fs::read_link(full).is_ok_and(|target| {
+                let target = target.as_os_str().as_bytes();
+                blob_id(id, target.len() as u64, &mut &target[..]).as_deref() == Some(id)
+            })
+        }
+        Some(kind) if meta.is_file() => {
+            let executable = meta.permissions().mode() & 0o111 != 0;
+            executable == (kind == review_source_git::EntryKind::Executable)
+                && std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+                    .open(full)
+                    .is_ok_and(|mut file| blob_id(id, meta.len(), &mut file).as_deref() == Some(id))
+        }
+        _ => false,
+    }
 }
 
-/// Of `paths`, those the index marks `skip-worktree` (`S`) or `assume-unchanged` (a lowercase
-/// tag) whose working-tree copy is not the blob `commit` holds, or is gone. Nothing flagged
-/// costs one `git ls-files`.
-fn flagged_differing(root: &Path, commit: &str, paths: &[&str]) -> Result<Vec<String>, ()> {
-    let mut args = vec!["--literal-pathspecs", "ls-files", "-v", "-z", "--"];
-    args.extend_from_slice(paths);
-    let listing = git(root, &args).map_err(|_| ())?;
-    let mut flagged = Vec::new();
-    for entry in listing.split(|byte| *byte == 0) {
-        let (Some(tag), Some(path)) = (entry.first(), entry.get(2..)) else {
-            continue;
+/// The bytes of a working-tree file [`blob_id`] holds at once, whatever the file's size.
+const HASH_BUFFER_BYTES: usize = 64 * 1024;
+
+/// The git blob id of exactly `len` bytes from `reader`, hashed as git hashes a blob — the
+/// header `blob <len>\0`, then the bytes, streamed through one [`HASH_BUFFER_BYTES`] buffer —
+/// with the object format `like` (an id of the same repository) names by its length: 40 hex
+/// digits SHA-1, 64 SHA-256. `None` when the reader gives other than `len` bytes (the file
+/// changed while it was read), fails, or `like` is neither.
+fn blob_id(like: &str, len: u64, reader: &mut impl std::io::Read) -> Option<String> {
+    use sha2::Digest;
+    enum Hasher {
+        Sha1(Box<Sha1>),
+        Sha256(Box<sha2::Sha256>),
+    }
+    let mut hasher = match like.len() {
+        40 => Hasher::Sha1(Box::default()),
+        64 => Hasher::Sha256(Box::default()),
+        _ => return None,
+    };
+    let mut update = |bytes: &[u8]| match &mut hasher {
+        Hasher::Sha1(hasher) => hasher.update(bytes),
+        Hasher::Sha256(hasher) => hasher.update(bytes),
+    };
+    update(format!("blob {len}\0").as_bytes());
+    let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
+    let mut read = 0_u64;
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
         };
-        if *tag == b'S' || tag.is_ascii_lowercase() {
-            flagged.push(String::from_utf8_lossy(path).into_owned());
+        read = read.saturating_add(count as u64);
+        if read > len {
+            return None;
         }
+        update(&buffer[..count]);
     }
-    if flagged.is_empty() {
-        return Ok(Vec::new());
+    if read != len {
+        return None;
     }
-    let (mut differ, mut present) = (Vec::new(), Vec::new());
-    for path in flagged {
-        match std::fs::symlink_metadata(root.join(&path)) {
-            Ok(meta) if meta.is_file() => present.push(path),
-            // Gone, or no longer a plain file: not what the commit holds.
-            _ => differ.push(path),
-        }
-    }
-    if present.is_empty() {
-        return Ok(differ);
-    }
-    let names: Vec<&str> = present.iter().map(String::as_str).collect();
-    let committed = listed_paths(root, commit, &names)?;
-    let mut hash = vec!["hash-object", "--"];
-    hash.extend_from_slice(&names);
-    let hashes = git(root, &hash).map_err(|_| ())?;
-    let hashes = String::from_utf8_lossy(&hashes).into_owned();
-    let hashes: Vec<&str> = hashes.lines().collect();
-    if hashes.len() != names.len() {
-        return Err(());
-    }
-    for (path, hashed) in names.iter().zip(hashes) {
-        if committed.get(*path).map(String::as_str) != Some(hashed) {
-            differ.push((*path).to_owned());
-        }
-    }
-    Ok(differ)
+    Some(match hasher {
+        Hasher::Sha1(hasher) => review_core::hex::encode(&hasher.finish()),
+        Hasher::Sha256(hasher) => review_core::hex::encode(&hasher.finalize()),
+    })
 }
 
-/// The blob ids `commit` holds at exactly `paths`.
-fn listed_paths(root: &Path, commit: &str, paths: &[&str]) -> Result<BTreeMap<String, String>, ()> {
+/// SHA-1 (FIPS 180-4), for the blob ids of a SHA-1 repository only: [`blob_id`] compares a
+/// working-tree file with the id `ls-tree` lists, without running `git hash-object`.
+struct Sha1 {
+    state: [u32; 5],
+    block: [u8; 64],
+    filled: usize,
+    length: u64,
+}
+
+impl Default for Sha1 {
+    fn default() -> Self {
+        Self {
+            state: [
+                0x6745_2301,
+                0xEFCD_AB89,
+                0x98BA_DCFE,
+                0x1032_5476,
+                0xC3D2_E1F0,
+            ],
+            block: [0; 64],
+            filled: 0,
+            length: 0,
+        }
+    }
+}
+
+impl Sha1 {
+    fn update(&mut self, mut bytes: &[u8]) {
+        self.length = self.length.wrapping_add(bytes.len() as u64);
+        while !bytes.is_empty() {
+            let take = (64 - self.filled).min(bytes.len());
+            self.block[self.filled..self.filled + take].copy_from_slice(&bytes[..take]);
+            self.filled += take;
+            bytes = &bytes[take..];
+            if self.filled == 64 {
+                self.compress();
+                self.filled = 0;
+            }
+        }
+    }
+
+    fn finish(mut self) -> [u8; 20] {
+        let bits = self.length.wrapping_mul(8);
+        self.update(&[0x80]);
+        while self.filled != 56 {
+            self.update(&[0]);
+        }
+        self.update(&bits.to_be_bytes());
+        let mut digest = [0; 20];
+        for (out, word) in digest.chunks_exact_mut(4).zip(self.state) {
+            out.copy_from_slice(&word.to_be_bytes());
+        }
+        digest
+    }
+
+    fn compress(&mut self) {
+        let mut schedule = [0_u32; 80];
+        for (word, bytes) in schedule.iter_mut().zip(self.block.chunks_exact(4)) {
+            *word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
+        for at in 16..80 {
+            schedule[at] =
+                (schedule[at - 3] ^ schedule[at - 8] ^ schedule[at - 14] ^ schedule[at - 16])
+                    .rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = self.state;
+        for (round, word) in schedule.iter().enumerate() {
+            let (mixed, constant) = match round {
+                0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let next = a
+                .rotate_left(5)
+                .wrapping_add(mixed)
+                .wrapping_add(e)
+                .wrapping_add(constant)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = next;
+        }
+        for (state, value) in self.state.iter_mut().zip([a, b, c, d, e]) {
+            *state = state.wrapping_add(value);
+        }
+    }
+}
+
+/// The mode and blob id `commit` holds at exactly `paths`.
+fn listed_paths(
+    root: &Path,
+    commit: &str,
+    paths: &[&str],
+) -> Result<BTreeMap<String, (String, String)>, ()> {
     let mut args = vec!["--literal-pathspecs", "ls-tree", "-z", commit, "--"];
     args.extend_from_slice(paths);
     let listing = git(root, &args).map_err(|_| ())?;
-    Ok(entries(&listing))
+    Ok(blob_entries(&listing))
 }
 
-/// One git command against exactly this repository: the environment is cleared, so an inherited
-/// `GIT_DIR` or `GIT_WORK_TREE` cannot point it at another repository, and only what git needs
-/// to run is passed back in.
+/// The HOME every browser git runs with: no `.gitconfig` can ever exist below `/dev/null`.
+const GIT_HOME: &str = "/dev/null";
+
+/// One git command against exactly this repository, isolated as capture isolates it
+/// ([`review_source_git::git::isolated_command`]): the environment cleared, so an inherited
+/// `GIT_DIR` or `GIT_WORK_TREE` cannot point it at another repository, no global or system
+/// configuration, and every capture override ahead of the subcommand, so the checkout's own
+/// `.git/config` cannot run a hook, an fsmonitor or a filter.
 fn git_command(root: &Path, args: &[&str]) -> Command {
     #[cfg(test)]
     spawned::note(root);
-    let mut command = Command::new("git");
-    command
-        .current_dir(root)
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("LC_ALL", "C")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .args(args);
+    let mut command = review_source_git::git::isolated_command(root, Path::new(GIT_HOME));
+    command.args(args);
     command
 }
 
@@ -888,6 +1012,8 @@ fn relative(root: &Path, path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use super::*;
     use crate::config;
 
@@ -946,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn git_runs_with_a_cleared_environment_and_an_allowlist() {
+    fn git_runs_with_a_cleared_environment_and_every_capture_override() {
         let command = git_command(Path::new("/"), &["rev-parse", "HEAD"]);
         assert_eq!(command.get_program(), "git");
         let set: Vec<String> = command
@@ -956,14 +1082,52 @@ mod tests {
         assert_eq!(
             set,
             [
+                "GIT_ATTR_NOSYSTEM=true",
                 "GIT_CONFIG_GLOBAL=true",
                 "GIT_CONFIG_NOSYSTEM=true",
+                "GIT_OPTIONAL_LOCKS=true",
+                "GIT_TERMINAL_PROMPT=true",
+                "HOME=true",
                 "LC_ALL=true",
-                "PATH=true"
+                "PATH=true",
+                "TZ=true",
             ]
         );
         // `env_clear` leaves nothing inherited: an outer GIT_DIR cannot reach the child.
         assert!(command.get_envs().all(|(key, _)| key != "GIT_DIR"));
+        let home = command.get_envs().find(|(key, _)| *key == "HOME");
+        assert_eq!(
+            home.and_then(|(_, value)| value),
+            Some(OsStr::new(GIT_HOME))
+        );
+        // The checkout's own configuration cannot select a hook, an fsmonitor or a filter: every
+        // capture override precedes the subcommand.
+        let args: Vec<&OsStr> = command.get_args().collect();
+        let overrides = review_source_git::git::CAPTURE_OVERRIDES;
+        assert_eq!(
+            args[..overrides.len()],
+            *overrides.iter().map(OsStr::new).collect::<Vec<_>>()
+        );
+        assert!(overrides.contains(&"core.fsmonitor=false"));
+        assert!(overrides.contains(&"core.hooksPath=/dev/null"));
+        assert_eq!(
+            args[overrides.len()..],
+            [OsStr::new("rev-parse"), OsStr::new("HEAD")]
+        );
+    }
+
+    /// No browser read runs a command that hashes working-tree files through a filter.
+    #[test]
+    fn the_browser_never_runs_a_worktree_diff_or_hash_object() {
+        let source = include_str!("pipelines.rs");
+        let production = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        for refused in ["\"diff\"", "\"hash-object\"", "\"status\""] {
+            assert!(!production.contains(refused), "{refused} in pipelines.rs");
+        }
+        let workers = include_str!("workers.rs");
+        for refused in ["\"diff\"", "\"hash-object\"", "\"status\""] {
+            assert!(!workers.contains(refused), "{refused} in workers.rs");
+        }
     }
 
     #[test]
@@ -1037,6 +1201,50 @@ mod tests {
         assert!(pane.error.is_some());
     }
 
+    /// The checkout's `.git/config` is as untrusted as its tree: an fsmonitor and a clean filter
+    /// it configures, with a committed `* filter=pwn`, never run while the bar reads `HEAD` and
+    /// marks a changed working tree.
+    #[test]
+    fn a_hostile_checkout_runs_nothing_while_drift_is_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        package(&root, "p", "fixture/p");
+        std::fs::write(root.join(".gitattributes"), "* filter=pwn\n").unwrap();
+        commit_all(&root, "package");
+        let marker = temp.path().join("MARKER");
+        let script = temp.path().join("pwn.sh");
+        let body = format!("#!/bin/sh\necho ran >> '{}'\ncat\n", marker.display());
+        std::fs::write(&script, body).unwrap();
+        let permissions = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        let mut config = std::fs::OpenOptions::new()
+            .append(true)
+            .open(root.join(".git/config"))
+            .unwrap();
+        let script = script.display();
+        write!(
+            config,
+            "[core]\n\tfsmonitor = {script}\n\thooksPath = {}\n[filter \"pwn\"]\n\tclean = {script}\n\tsmudge = {script}\n\trequired = true\n",
+            temp.path().display()
+        )
+        .unwrap();
+        drop(config);
+        let file = root.join(".af/task-packages/p/pipeline.toml");
+        let text = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, format!("{text}# edited\n")).unwrap();
+
+        let found = discover(&root).unwrap();
+        assert!(found.entries[0].modified, "the edit is still marked");
+        let paths = [".af/task-packages/p/pipeline.toml", ".gitattributes"];
+        let differ = differing(&root, &found.commit, &paths);
+        assert_eq!(differ.len(), 1);
+        assert!(
+            !marker.exists(),
+            "checkout-configured code ran: {}",
+            std::fs::read_to_string(&marker).unwrap_or_default()
+        );
+    }
+
     #[test]
     fn a_mode_only_change_marks_the_working_tree_as_different() {
         let temp = tempfile::tempdir().unwrap();
@@ -1051,6 +1259,67 @@ mod tests {
         assert!(
             discover(root).unwrap().entries[0].modified,
             "the executable bit differs"
+        );
+    }
+
+    /// The drift check compares blob ids only: a working-tree file several times the hash
+    /// buffer is hashed through it as git hashes a blob, the same bytes are the same, and one
+    /// changed byte at its end, at an equal length, differs.
+    #[test]
+    fn a_file_larger_than_the_hash_buffer_is_compared_by_blob_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "p", "fixture/p");
+        let large = ".af/task-packages/p/large.bin";
+        let mut bytes: Vec<u8> = (0..3 * HASH_BUFFER_BYTES + 17)
+            .map(|at| (at % 251) as u8)
+            .collect();
+        std::fs::write(root.join(large), &bytes).unwrap();
+        commit_all(root, "package");
+        let found = discover(root).unwrap();
+        let paths = [large, ".af/task-packages/p/pipeline.toml"];
+        assert!(differing(root, &found.commit, &paths).is_empty());
+        let listed = listed_paths(root, &found.commit, &[large]).unwrap();
+        let mut file = std::fs::File::open(root.join(large)).unwrap();
+        assert_eq!(
+            blob_id(&listed[large].1, bytes.len() as u64, &mut file).as_deref(),
+            Some(listed[large].1.as_str()),
+            "git's own blob id"
+        );
+        *bytes.last_mut().unwrap() ^= 1;
+        std::fs::write(root.join(large), &bytes).unwrap();
+        assert_eq!(
+            differing(root, &found.commit, &paths),
+            BTreeSet::from([large.to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_blob_id_is_gits_for_either_object_format() {
+        let sha1 = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
+        assert_eq!(blob_id(sha1, 0, &mut &b""[..]).as_deref(), Some(sha1));
+        let hello = "ce013625030ba8dba906f756967f9e9ca394464a";
+        assert_eq!(
+            blob_id(sha1, 6, &mut &b"hello\n"[..]).as_deref(),
+            Some(hello)
+        );
+        let sha256 = "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813";
+        assert_eq!(blob_id(sha256, 0, &mut &b""[..]).as_deref(), Some(sha256));
+        // A reader that gives other than the stated length names no blob.
+        assert_eq!(blob_id(sha1, 5, &mut &b"hello\n"[..]), None);
+        assert_eq!(blob_id(sha1, 7, &mut &b"hello\n"[..]), None);
+        assert_eq!(blob_id("abc", 0, &mut &b""[..]), None);
+        let mut abc = Sha1::default();
+        abc.update(b"abc");
+        assert_eq!(
+            review_core::hex::encode(&abc.finish()),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        let mut long = Sha1::default();
+        long.update(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
+        assert_eq!(
+            review_core::hex::encode(&long.finish()),
+            "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
         );
     }
 
