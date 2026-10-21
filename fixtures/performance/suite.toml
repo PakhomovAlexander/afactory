@@ -326,7 +326,9 @@ pending = ""
 [tiers.quick]
 description = "Pull requests and main pushes."
 profiles = [{ environment = "linux_x86_64_gnu_hosted", recipe = "linux_gnu_native_release" }]
-shards = 2
+# Spread the full suite over eight bounded schedules. At most two execute together,
+# preserving the original concurrency and wall-time bounds (ADR-0193).
+shards = 8
 concurrent_jobs = 2
 shard_sampling_minutes = 15
 run_total_minutes = 60
@@ -593,7 +595,7 @@ family = "authority_library"
 description = "Current-plan check of a two-node graph at both issue #255 package sizes with a fresh valid lease."
 kind = "library"
 requires_linux_containment = false
-timing = { boundary = "library_region", region = "current_plan_check", setup_excluded = ["store and graph creation", "lease acquisition"], description = "Probe-named region around the check only." }
+timing = { boundary = "library_region", region = "current_plan_check", setup_excluded = ["admitted Task creation, once per side and shard as its seed", "the sample's private copy and restoration of the seed", "fresh host and authority capture", "lease acquisition"], description = "Probe-named region around the check only." }
 cache = { process = "fresh", store = "fresh", projection = "application_cold", os_page_cache = "warm" }
 oracle = { kind = "golden_authority_outcome", state = "available", description = "Committed check outcome; production lease and envelope cap unchanged." }
 execution = { state = "supported", pending = "" }
@@ -607,14 +609,14 @@ pairs = { quick = 20, nightly = 40 }
 warmup_pairs = 2
 sample_timeout_seconds = 30
 budgets = []
-probe = { contract_id = "authority_plan_check_v1", repetitions = 1 }
+probe = { contract_id = "authority_plan_check_v2", repetitions = 1, seed = { case_id = "authority_seed", contract_id = "authority_seed_v1", parameters = ["package"], description = "An admitted Task written once per side and shard, with both setup leases released. Each sample restores a private copy, captures a cold validator and takes a fresh production lease; its original Task deadline is unchanged." } }
 
 [cases.authority_runtime_new]
 family = "authority_library"
 description = "First TaskRuntime::new of a two-node graph at both issue #255 package sizes with a fresh valid lease."
 kind = "library"
 requires_linux_containment = false
-timing = { boundary = "library_region", region = "task_runtime_new", setup_excluded = ["store and graph creation", "lease acquisition"], description = "Probe-named region around runtime construction only." }
+timing = { boundary = "library_region", region = "task_runtime_new", setup_excluded = ["admitted Task creation, once per side and shard as its seed", "the sample's private copy and restoration of the seed", "fresh host and authority capture", "lease acquisition"], description = "Probe-named region around runtime construction only." }
 cache = { process = "fresh", store = "fresh", projection = "application_cold", os_page_cache = "warm" }
 oracle = { kind = "golden_authority_outcome", state = "available", description = "Committed runtime outcome; production lease and envelope cap unchanged." }
 execution = { state = "supported", pending = "" }
@@ -628,7 +630,7 @@ pairs = { quick = 20, nightly = 40 }
 warmup_pairs = 2
 sample_timeout_seconds = 30
 budgets = []
-probe = { contract_id = "authority_runtime_new_v1", repetitions = 1 }
+probe = { contract_id = "authority_runtime_new_v2", repetitions = 1, seed = { case_id = "authority_seed", contract_id = "authority_seed_v1", parameters = ["package"], description = "An admitted Task written once per side and shard, with both setup leases released. Each sample restores a private copy, captures a cold validator and takes a fresh production lease; its original Task deadline is unchanged." } }
 
 [cases.cli_task_start]
 family = "cli_task"

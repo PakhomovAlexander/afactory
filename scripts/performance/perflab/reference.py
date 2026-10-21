@@ -538,7 +538,7 @@ def golden_entry(doc, instance, contract_id, cache):
                     "phase": {"kind": "running"}, "plan_recorded": True, "task_id": TASK_ID}
         return _entry(instance, contract_id, None, _digest_of(semantic), events, semantic,
                       "explicit final-state facts of exactly %d relevant events" % events)
-    if contract_id in ("authority_plan_check_v1", "authority_runtime_new_v1"):
+    if contract_id in ("authority_plan_check_v2", "authority_runtime_new_v2", "authority_seed_v1"):
         env = envelope()
         semantic = _authority_semantic(env)
         return _entry(instance, contract_id, env.artifact_id, _digest_of(semantic),

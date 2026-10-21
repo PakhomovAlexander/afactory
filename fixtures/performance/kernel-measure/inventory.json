@@ -77,13 +77,13 @@
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/authority.rs",
-   "sha256": "sha256:c67e3587006d14437bd352cd88a859bd076e07f959197cb3ad6351c8e96dcd9f",
-   "size": 19624
+   "sha256": "sha256:1c998e12185a72e5a00e27cd8d335443b07d9984f7b96f962a630ab9ea75afa2",
+   "size": 23631
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/cases.rs",
-   "sha256": "sha256:322c5d6cda1844951ced2561517aa5d0fa464ba6399547b055522b1b8f58dbc8",
-   "size": 52829
+   "sha256": "sha256:f60b863519b45faad8b2aecb65b2e82e9b01009f72dac9e542ec06815005cb85",
+   "size": 56167
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/control.rs",
@@ -97,8 +97,8 @@
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/protocol.rs",
-   "sha256": "sha256:6e73379d63ab0fadd8d2f11d42a0f86c22b5dd9fe214d739b20420d7212292c6",
-   "size": 25386
+   "sha256": "sha256:d0c32898c7d9464236bbc22324f39bb3ad673892f6c3626bb153b0ceeccae61a",
+   "size": 26064
   },
   {
    "path": "crates/review-process/Cargo.toml",
@@ -162,8 +162,8 @@
   },
   {
    "path": "fixtures/performance/adapters.toml",
-   "sha256": "sha256:14fc25133c75c0a01f225c2967bcd6b9eafb18403250c69a36f5ac8b833dc774",
-   "size": 1876
+   "sha256": "sha256:a58fd64ab8a7028b8680f8739eb4d1e4f5e91df697e40368bd175a4061f5751d",
+   "size": 1899
   },
   {
    "path": "fixtures/performance/cli.toml",
@@ -352,8 +352,8 @@
   },
   {
    "path": "fixtures/performance/golden/native.json",
-   "sha256": "sha256:bd4fd50dd1ac1597607fc4200b45fae8535280de1eb6d81fa03863920e2bf18a",
-   "size": 21436
+   "sha256": "sha256:e37feb1e0de62abe709c1a1462a0494e84eae22591858185db5432ce898c2ef4",
+   "size": 24178
   },
   {
    "path": "fixtures/performance/schema/activation-verification/invalid-dropped-obligations.json",
@@ -1852,8 +1852,8 @@
   },
   {
    "path": "fixtures/performance/suite.toml",
-   "sha256": "sha256:e7003d10c74d1c1baee7a766e00b38cadb0ab9a8b1514bf72dfea4bfb7252ddb",
-   "size": 32662
+   "sha256": "sha256:aa4afdeca9161b747c3ffeb6da082f419dce1c8471a1b20809dbb73cd5edc9c3",
+   "size": 33753
   },
   {
    "path": "fixtures/performance/synthetic/suite.toml",
@@ -2107,8 +2107,8 @@
   },
   {
    "path": "scripts/performance/perflab/reference.py",
-   "sha256": "sha256:8e1418c19aed77c399c52fd09548c39494074ad2091fa522e52d65ab1d442f22",
-   "size": 27634
+   "sha256": "sha256:03c3252f4b90ff06c157cd11006817c3c00d27d9b060d15b72c307023089fd5e",
+   "size": 27655
   },
   {
    "path": "scripts/performance/perflab/release.py",
@@ -2327,8 +2327,8 @@
   },
   {
    "path": "scripts/performance/tests/test_oracle.py",
-   "sha256": "sha256:d99658155c5ea5b2de3346266d9573879bead74c9907d43c252939e9f4122622",
-   "size": 55036
+   "sha256": "sha256:12706a1a7deeb9984c8963b7143eb98567b2a7e44d21a62fd750a6cbb1a3b0ad",
+   "size": 55456
   },
   {
    "path": "scripts/performance/tests/test_performance_workflow.py",
@@ -2337,8 +2337,8 @@
   },
   {
    "path": "scripts/performance/tests/test_planning.py",
-   "sha256": "sha256:5197a7af23dc209aabd4e829436227ec734e7cab4c4af78c433dcd6265d4c5bd",
-   "size": 48379
+   "sha256": "sha256:0a4bb5a1e5228ebd3f185b9b9b1d9f43778e7dec13c6d0d3ca5a9ff496b2a5e7",
+   "size": 48394
   },
   {
    "path": "scripts/performance/tests/test_reference.py",
@@ -2387,8 +2387,8 @@
   },
   {
    "path": "scripts/performance/tests/test_suite.py",
-   "sha256": "sha256:0b3a92e1ff3778c79e56e479f73ed8959161e36bddedab1b5da66ccb28a16db1",
-   "size": 21002
+   "sha256": "sha256:d20507d0d0f216bf92a4e8e43e5e078fd8ec08b86d89ec59300658e067e87067",
+   "size": 21113
   },
   {
    "path": "scripts/performance/tests/test_supervise.py",
@@ -2416,7 +2416,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:04bb925652a2dbf64dfd1707c0e1f0aca26b01af09b20a41f1bd0b563d1ab5db",
+ "harness_digest": "sha256:573f4da45c4ca4b428735fad1922a908417366dfcb6fc5d3e02e1f8f333b0f60",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

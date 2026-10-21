@@ -287,6 +287,109 @@ pub fn build_then<T>(
     Ok((AuthorityFixture { cas, store, lease }, value))
 }
 
+/// Restore the sample's private copy of an admitted seed. No lease capability, validator or
+/// Store connection survives the seed writer. Restore packages against the fixture's trusted
+/// file digests, not a plan's claims, and capture the region's authority only after this returns
+/// its inputs. The measuring writer takes its own production lease after that capture.
+pub fn restore_then<T>(
+    root: &Path,
+    padding: Option<Vec<u8>>,
+    then: impl FnOnce(&mut EventStore, &Cas, &BTreeMap<String, String>, &Region<'_>) -> T,
+) -> Result<(Cas, T), Failure> {
+    let fixture = |error: String| Failure::new(FailureKind::FixtureFailed, error);
+    let cas = Cas::open_existing(root.join("cas")).map_err(|e| fixture(e.to_string()))?;
+    let mut store =
+        EventStore::open(root.join("events.sqlite")).map_err(|e| fixture(e.to_string()))?;
+    let state = store
+        .task_projection(&cas, TASK_ID)
+        .map_err(|e| fixture(e.to_string()))?
+        .ok_or_else(|| fixture("the seed has no Task".into()))?;
+    let run_id =
+        review_store::store::task::task_run_id(TASK_ID).map_err(|e| fixture(e.to_string()))?;
+    let events = store.replay(&run_id).map_err(|e| fixture(e.to_string()))?;
+    // Expiry is not release. An expired setup lease must never be healed by a reader's lease.
+    let expected = [
+        "opened",
+        "plan_proposed",
+        "lease_released",
+        "lease_taken",
+        "plan_admitted",
+        "lease_released",
+    ];
+    if events.len() != expected.len()
+        || events
+            .iter()
+            .zip(expected)
+            .any(|(event, kind)| event.payload["change"]["kind"].as_str() != Some(kind))
+        || !state.admitted
+    {
+        return Err(fixture(
+            "the seed must hold exactly the admitted Task with both setup leases released".into(),
+        ));
+    }
+    if now_ms().map_err(fixture)? >= state.revision.limits.deadline_unix_ms {
+        return Err(fixture(
+            "the seed Task's original deadline has elapsed".into(),
+        ));
+    }
+    let plan_id = state
+        .plan_id
+        .ok_or_else(|| fixture("the seed Task has no plan".into()))?;
+    let plan: ExecutionPlanV1 = serde_json::from_value(
+        cas.get_artifact(&plan_id)
+            .map_err(|e| fixture(e.to_string()))?
+            .payload,
+    )
+    .map_err(|e| fixture(e.to_string()))?;
+    let graph: CompiledTask = serde_json::from_value(
+        cas.get_artifact(&plan.compiled_graph_id)
+            .map_err(|e| fixture(e.to_string()))?
+            .payload,
+    )
+    .map_err(|e| fixture(e.to_string()))?;
+    let mut compiler = compiler(&cas).map_err(fixture)?;
+    let mut packages = BTreeMap::new();
+    for (name, files) in [
+        (fixtures::PIPELINE_PACKAGE, fixtures::pipeline_files()),
+        (fixtures::AUTHOR_PACKAGE, fixtures::author_files(padding)),
+        (fixtures::CHECKER_PACKAGE, fixtures::checker_files()),
+    ] {
+        let dependency = plan
+            .dependencies
+            .get(name)
+            .ok_or_else(|| fixture(format!("the seed plan lacks {name}")))?;
+        compiler
+            .restore_package(
+                &cas,
+                name,
+                &package_digest_from_files(&files),
+                &dependency.artifact_id,
+            )
+            .map_err(fixture)?;
+        packages.insert(name.to_string(), dependency.artifact_id.clone());
+    }
+    for name in [fixtures::AUTHOR_PACKAGE, fixtures::CHECKER_PACKAGE] {
+        compiler
+            .bind_worker(
+                name,
+                AdmittedWorkerSettings {
+                    execution: WorkerExecutionV1::Command {},
+                    invocation_policy_id: fixtures::POLICY_ID.into(),
+                },
+            )
+            .map_err(fixture)?;
+    }
+    let region = Region {
+        cas: &cas,
+        compiler: &compiler,
+        task: &state.revision,
+        plan: &plan,
+        graph: &graph,
+    };
+    let value = then(&mut store, &cas, &packages, &region);
+    Ok((cas, value))
+}
+
 /// A setup write's result: a failure is `lease_expired` only when the Store reports its lease
 /// lapsed or fenced, and the fixture's otherwise.
 fn written<T>(

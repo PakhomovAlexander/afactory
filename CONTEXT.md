@@ -330,7 +330,11 @@ _Avoid_: counting setup inside a Performance Sample's primary metric.
 **Seed**:
 A large fixture one side's own writers write once per shard, under the Performance Supervisor
 and in the shard's containment: CLI Task and Campaign state, or the repository and event log a
-library probe reads. Once every writer process has exited it is sealed and identified by one
+library probe reads, or an admitted Task whose setup leases were released while live. Authority
+readers restore a private copy, capture a fresh validator and take a fresh production lease;
+the original revision deadline is preserved
+([ADR-0193](docs/adr/0193-seed-admitted-authority-fixtures-and-distribute-the-full-suite.md)).
+Once every writer process has exited it is sealed and identified by one
 digest, verified around every sample, and each sample copies it privately in its untimed
 Fixture Setup; a native seed's writer check is judged against its Golden Entry first
 ([ADR-0169](docs/adr/0169-coordinate-a-machine-seed-each-side-once-and-build-linux-recipes-in-a-pinned-image.md),

@@ -20,8 +20,9 @@ equivalence_group = "native_probe_public_api_v1"
 package = "review-pipeline"
 example = "perf-probe"
 contracts = [
-  "authority_plan_check_v1",
-  "authority_runtime_new_v1",
+  "authority_plan_check_v2",
+  "authority_runtime_new_v2",
+  "authority_seed_v1",
   "canonical_serialize_v1",
   "canonical_validate_v1",
   "cas_raw_get_verify_v1",

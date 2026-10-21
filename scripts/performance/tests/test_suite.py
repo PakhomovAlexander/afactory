@@ -270,10 +270,12 @@ class Registry(unittest.TestCase):
                   if suite.seed_of(self.suite.doc, item) is not None]
         self.assertEqual(sorted(set(suite.seed_of(self.suite.doc, item)["seed_id"]
                                     for item in seeded)), [
+            "authority_seed__package_issue_255_large",
+            "authority_seed__package_issue_255_medium",
             "source_capture_seed__files_10000_tree_source_files_128b",
             "source_capture_seed__files_100_tree_source_files_128b",
             "state_projection_seed__log_events_10000"])
-        self.assertEqual(len(seeded), 4)
+        self.assertEqual(len(seeded), 8)
 
     def test_a_recipe_pins_its_build_image_by_a_canonical_digest(self):
         pin = 'target = "x86_64-unknown-linux-gnu"\n'
