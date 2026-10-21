@@ -2,8 +2,8 @@
  "files": [
   {
    "path": "Cargo.lock",
-   "sha256": "sha256:899b091665d8be3692f3a5d77b6f66cbfc1b4722d11eb8d2cb80a74cf1557881",
-   "size": 62214
+   "sha256": "sha256:cdf0012660c92b8aaedc3931503c3406737591da70db83726cfa4944209f7a0f",
+   "size": 62419
   },
   {
    "path": "Cargo.toml",
@@ -12,8 +12,8 @@
   },
   {
    "path": "crates/af/Cargo.toml",
-   "sha256": "sha256:38f933e9940876e5bcd7499da78552086092529e9cc77125efbd3231f105e6f9",
-   "size": 3317
+   "sha256": "sha256:b7a6d8f6467b1ed04fa6f48f8e333f6036a9eb9af2e763084a5693aada532089",
+   "size": 3396
   },
   {
    "path": "crates/af/build.rs",
@@ -27,8 +27,8 @@
   },
   {
    "path": "crates/review-check/Cargo.toml",
-   "sha256": "sha256:3ab5b9974a432165e98c4a268ddce3bf6010ed13c2cc9d5e8e174e9dc20c84f1",
-   "size": 913
+   "sha256": "sha256:c9d4dc1c39b4c5bd948bda9958bf3836bf5b0a84355d4693f7e48b9a0a83e48c",
+   "size": 1060
   },
   {
    "path": "crates/review-config/Cargo.toml",
@@ -62,8 +62,8 @@
   },
   {
    "path": "crates/review-pipeline/Cargo.toml",
-   "sha256": "sha256:a2546201106d1ab3d951a8f1e1df5f64bf787b07feee0cdf11907b3ea60f1f6e",
-   "size": 2310
+   "sha256": "sha256:51c1a029b7723706ef54afd7081b904f96573757e2ccbfe9fd7fbd72091d053c",
+   "size": 2441
   },
   {
    "path": "crates/review-pipeline/build.rs",
@@ -127,18 +127,18 @@
   },
   {
    "path": "crates/review-runner/Cargo.toml",
-   "sha256": "sha256:634af9090ef65fb24b63f5a7baf411bace9676ceeee4064ce84f97f5cb9ad311",
-   "size": 929
+   "sha256": "sha256:325ac51d3e12324fea0183b2af4f2e8df67bf01fdb17242732122780820aa0f6",
+   "size": 1008
   },
   {
    "path": "crates/review-sandbox/Cargo.toml",
-   "sha256": "sha256:023bb7eb778f6042f92fd2888a6764ed0bd78a77dbe28fdcd37f42a091d9debb",
-   "size": 1769
+   "sha256": "sha256:47364d67058b066bd4fe2ab36f6e057ca3003cca74acff69e794b531251a083a",
+   "size": 1900
   },
   {
    "path": "crates/review-source-git/Cargo.toml",
-   "sha256": "sha256:d9ae70bcc059059e80c9121fb5b80df49a3aa9a82de8104a0742ecc103cb6028",
-   "size": 1199
+   "sha256": "sha256:1c7f36df3d7d128f08f5b801e0306a98de177f4d191a37514c14f9a83f000eb0",
+   "size": 1330
   },
   {
    "path": "crates/review-source-task/Cargo.toml",
@@ -147,8 +147,8 @@
   },
   {
    "path": "crates/review-store/Cargo.toml",
-   "sha256": "sha256:d44965279f80abbf271fe057bb52ac3dcb87b34476e9bf217a5d5d37eeeae96b",
-   "size": 1505
+   "sha256": "sha256:3425b4ffbdde869de097442e464201ae223309b3b17808df22d1e75a3031ef3d",
+   "size": 1807
   },
   {
    "path": "crates/review-telemetry/Cargo.toml",
@@ -2416,7 +2416,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:04bb925652a2dbf64dfd1707c0e1f0aca26b01af09b20a41f1bd0b563d1ab5db",
+ "harness_digest": "sha256:7c14ccf425eea553f3c32dcdd8a8a4543b512a792540cb6e928a2c0b0a5b7adc",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
