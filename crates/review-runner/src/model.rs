@@ -1406,7 +1406,17 @@ impl ModelRunner {
                 self.output_cap,
             )
         });
-        record_harness(&span, &output);
+        // Output past the cap is not evidence the kernel can keep whole: whatever the exit
+        // status said, the Attempt failed (M2), and its span ends failed with the cap's reason.
+        let capped = match (&output.status, output.truncation.reason()) {
+            (Ok(status), Some(reason)) => Some((status.code().unwrap_or(-1), reason)),
+            _ => None,
+        };
+        record_harness(
+            &span,
+            &output,
+            capped.as_ref().map(|(_, reason)| reason.as_str()),
+        );
         capture.stdout = redact(output.stdout, &self.redactions);
         capture.stderr = redact(output.stderr, &self.redactions);
         if output.stderr_held {
@@ -1421,11 +1431,10 @@ impl ModelRunner {
                 review_process::descendant_cleanup_fallback(),
             );
         }
-        // Output past the cap is not evidence the kernel can keep whole: whatever the exit
-        // status said, the Attempt failed (M2). The kept prefix is still stored for usage.
-        if let (Ok(status), Some(reason)) = (&output.status, output.truncation.reason()) {
+        // The kept prefix of a capped capture is still stored for usage.
+        if let Some((exit_code, reason)) = capped {
             capture.status = Err(RunnerError::Failed {
-                exit_code: status.code().unwrap_or(-1),
+                exit_code,
                 stderr_excerpt: reason,
             });
             return capture;
@@ -1447,8 +1456,14 @@ impl ModelRunner {
 }
 
 /// End the `af.harness` span with what the supervisor returned: the process, its resource use
-/// and stream sizes, and on anything but a clean exit the kernel's class.
-fn record_harness(span: &tracing::Span, output: &review_process::SupervisedCapture) {
+/// and stream sizes, and on anything but a clean exit the kernel's class. `capped` is the cap
+/// reason when the Attempt rejected the capture for its truncation: the span ends `failed`
+/// with it, whatever the exit status said.
+fn record_harness(
+    span: &tracing::Span,
+    output: &review_process::SupervisedCapture,
+    capped: Option<&str>,
+) {
     if span.is_disabled() {
         return;
     }
@@ -1469,20 +1484,21 @@ fn record_harness(span: &tracing::Span, output: &review_process::SupervisedCaptu
     if let Ok(status) = &output.status {
         facts = facts.with_status(status);
     }
-    let failure = match &output.status {
-        Ok(status) if status.success() => None,
-        Ok(_) => Some(("failed", "the harness exited unsuccessfully".to_string())),
-        Err(SupervisedError::TimedOut { .. }) => {
+    let failure = match (&output.status, capped) {
+        (Ok(_), Some(reason)) => Some(("failed", reason.to_string())),
+        (Ok(status), None) if status.success() => None,
+        (Ok(_), None) => Some(("failed", "the harness exited unsuccessfully".to_string())),
+        (Err(SupervisedError::TimedOut { .. }), _) => {
             Some(("timed_out", "the harness exceeded its deadline".to_string()))
         }
-        Err(SupervisedError::Cancelled) => {
+        (Err(SupervisedError::Cancelled), _) => {
             Some(("refused", "the Attempt was cancelled".to_string()))
         }
-        Err(SupervisedError::Spawn(_)) => Some((
+        (Err(SupervisedError::Spawn(_)), _) => Some((
             "unavailable",
             "the harness could not be started".to_string(),
         )),
-        Err(error) => Some(("failed", error.to_string())),
+        (Err(error), _) => Some(("failed", error.to_string())),
     };
     review_telemetry::process::finish(
         span,

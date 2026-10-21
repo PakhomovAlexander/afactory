@@ -105,6 +105,8 @@
   schema. Every `review-process` result carries the capture cap's `truncation` beside the
   leader's process id and resource use, a check, an Attempt, a container command or a gate call
   past the cap fails naming it inside its `af.check`, `af.harness`, `af.process` or `af.git`
-  span, and the Linux subreaper's reaps of escaped descendants take the same reap lock. At
+  span, which ends after that judgement: a capture rejected for its cap ends its process span as
+  failed (`error.type = "failed"`) with the cap reason, whatever the exit code, its stream sizes
+  and resource use still recorded, and the Linux subreaper's reaps of escaped descendants take the same reap lock. At
   `metrics` a recording command's segment header keeps `argv[0]` and the subcommand chain the
   argument parser matched, which `af task run` and the other recording commands now pass in.

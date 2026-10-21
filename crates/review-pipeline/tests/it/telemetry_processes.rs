@@ -252,3 +252,56 @@ fn telemetry_rusage_is_absent_not_zero() {
     assert!(!text.contains("\"af.git\""), "{text}");
     assert!(!text.contains("\"af.store."), "{text}");
 }
+
+/// A model process that writes past its output cap and exits 0 fails its Attempt naming the cap,
+/// and its `af.harness` span ends the same way, after that judgement: `error.type = "failed"`
+/// with the cap's reason, the exit, the kept stream sizes and the resource use still those of
+/// the capture.
+#[test]
+fn telemetry_harness_span_fails_past_the_output_cap() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let work = temp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let reason = "stdout was truncated at the 4 KiB output cap: it wrote 10000 bytes, of which \
+                  only the first 4 KiB were kept";
+    let spans = recorded(temp.path(), || {
+        let capped = ModelRunner::new(&work, WALL)
+            .with_harness("anthropic", Some("m".into()))
+            .with_output_cap(4096)
+            .capture(
+                &cas,
+                &sh("cat >/dev/null; head -c 10000 /dev/zero; exit 0"),
+                b"input".to_vec(),
+                None,
+            );
+        match capped.status {
+            Err(review_runner::RunnerError::Failed {
+                exit_code,
+                stderr_excerpt,
+            }) => {
+                assert_eq!(exit_code, 0);
+                assert_eq!(stderr_excerpt, reason);
+            }
+            other => panic!("the Attempt must fail naming the cap: {other:?}"),
+        }
+    });
+    let harness: Vec<_> = spans
+        .iter()
+        .filter(|(name, kind, ..)| name == "af.harness" && kind == "process")
+        .collect();
+    assert_eq!(harness.len(), 1, "{spans:#?}");
+    let end = &harness[0].3;
+    let attributes = &end["attributes"];
+    assert_eq!(end["status"], "error", "{end}");
+    assert_eq!(attributes["error.type"], "failed", "{end}");
+    assert_eq!(attributes["af.failure.class"], "failed", "{end}");
+    assert_eq!(attributes["af.failure.reason"], reason, "{end}");
+    assert_eq!(attributes["af.outcome"], "failed", "{end}");
+    assert_eq!(attributes["process.exit_code"], 0, "{end}");
+    assert_eq!(attributes["af.stdout_bytes"], 4096, "{end}");
+    assert_eq!(attributes["af.stderr_bytes"], 0, "{end}");
+    assert_eq!(attributes["af.stderr_held"], false, "{end}");
+    assert!(attributes["process.pid"].is_u64(), "{end}");
+    assert!(attributes["af.rusage.user_ms"].is_u64(), "{end}");
+}

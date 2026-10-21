@@ -113,7 +113,10 @@ nothing.
 and `af.rusage.user_ms`, `af.rusage.system_ms` and `af.rusage.max_rss_bytes`. The supervisor
 (`review-process`, which links no telemetry) carries them through every result it returns, a
 timed-out, killed or cancelled process included; the crates that receive the result record the
-span. The workspace forbids `unsafe` code and no crate it already depends on offers a safe
+span. A process span ends after its caller judged the capture: an Attempt, check, gate call or
+container command whose output went past the capture cap ends it with `error.type = "failed"`
+and the cap reason in `af.failure.reason`, whatever the exit code, its stream sizes those kept
+within the cap. The workspace forbids `unsafe` code and no crate it already depends on offers a safe
 per-child `wait4(2)` (`nix` 0.31 and `rustix` expose none), so the figures come from
 `getrusage(RUSAGE_CHILDREN)`: the change of the process's children totals across a reap is the
 reaped child's own (its CPU time, with that of the descendants it waited for, as `wait4` reports

@@ -449,7 +449,7 @@ fn version(
             review_process::ExitPolicy::KillProcessGroup,
         ),
     };
-    crate::telemetry::process_capture(&span, &captured);
+    crate::telemetry::process_capture(&span, &captured, None);
     match captured.status {
         Ok(status) if status.success() && !captured.stdout.is_empty() => Ok(captured.stdout),
         Ok(status) => Err(format!("{program} -vV exited with {status}")),

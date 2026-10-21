@@ -308,14 +308,15 @@ impl<'a> CheckRunner<'a> {
     pub fn run_traced(&self, definition: &CheckDefinition) -> (CheckResult, CheckEnding) {
         let span = self.span(definition);
         let mut facts = review_telemetry::process::ProcessFacts::default();
-        let (result, ending) = span.in_scope(|| self.run_process(definition, &span, &mut facts));
+        let (result, ending, capped) =
+            span.in_scope(|| self.run_process(definition, &span, &mut facts));
         let result = if ending == CheckEnding::NotStarted {
             result
         } else {
             let fallback = review_process::descendant_cleanup_fallback();
             noting_cleanup_fallback(result, fallback)
         };
-        finish_span(&span, &facts, &result, ending);
+        finish_span(&span, &facts, &result, ending, capped);
         (result, ending)
     }
 
@@ -359,18 +360,20 @@ impl<'a> CheckRunner<'a> {
         }
     }
 
+    /// The recorded result, how the process ended, and whether a stream wrote past its cap (the
+    /// result then fails naming it).
     fn run_process(
         &self,
         definition: &CheckDefinition,
         span: &tracing::Span,
         facts: &mut review_telemetry::process::ProcessFacts,
-    ) -> (CheckResult, CheckEnding) {
+    ) -> (CheckResult, CheckEnding, bool) {
         let base = base_result(definition);
         let argv = match resolved_args(definition, &base) {
             Ok(argv) => argv,
             Err(result) => {
                 span.record("af.check.fingerprint", crate::fingerprint::UNKNOWN);
-                return (*result, CheckEnding::NotStarted);
+                return (*result, CheckEnding::NotStarted, false);
             }
         };
         self.fingerprint(span, definition, &argv);
@@ -402,6 +405,7 @@ impl<'a> CheckRunner<'a> {
                         ..base
                     },
                     ending,
+                    false,
                 );
             }
             RunResult::TimedOut => {
@@ -414,6 +418,7 @@ impl<'a> CheckRunner<'a> {
                         ..base
                     },
                     CheckEnding::TimedOut,
+                    false,
                 );
             }
             RunResult::CouldNotStart(error) => {
@@ -426,6 +431,7 @@ impl<'a> CheckRunner<'a> {
                         ..base
                     },
                     CheckEnding::NotStarted,
+                    false,
                 );
             }
         };
@@ -435,7 +441,12 @@ impl<'a> CheckRunner<'a> {
         } else {
             CheckEnding::Signaled
         };
-        (self.finish(base, output, stderr_held, truncated), ending)
+        let capped = truncated.is_some();
+        (
+            self.finish(base, output, stderr_held, truncated),
+            ending,
+            capped,
+        )
     }
 
     /// Execute through the normal shared runner and retain the actual AF-observed host interval.
@@ -477,7 +488,7 @@ impl<'a> CheckRunner<'a> {
         } else {
             CheckEnding::Exited
         };
-        finish_span(&span, &facts, &result, ending);
+        finish_span(&span, &facts, &result, ending, false);
         result
     }
 
@@ -801,12 +812,14 @@ fn resource_use(rusage: review_process::Rusage) -> review_telemetry::process::Re
 /// End an `af.check` span: the process's facts, `af.check.status`, and on anything but a pass
 /// the kernel's class — `gate_failed` for a failed check, `timed_out`, `refused` for a
 /// cancelled one, `unavailable` for one that never started, `failed` for evidence not
-/// preserved — with the recorded reason.
+/// preserved and for output past the cap (`capped`), whatever the exit code — with the
+/// recorded reason.
 fn finish_span(
     span: &tracing::Span,
     facts: &review_telemetry::process::ProcessFacts,
     result: &CheckResult,
     ending: CheckEnding,
+    capped: bool,
 ) {
     if span.is_disabled() {
         return;
@@ -822,6 +835,7 @@ fn finish_span(
     );
     let class = match (result.status, ending) {
         (CheckStatus::Passed, _) => None,
+        (CheckStatus::Failed, _) if capped => Some("failed"),
         (CheckStatus::Failed, _) => Some("gate_failed"),
         (CheckStatus::NotRun, CheckEnding::TimedOut) => Some("timed_out"),
         (CheckStatus::NotRun, CheckEnding::Cancelled) => Some("refused"),
