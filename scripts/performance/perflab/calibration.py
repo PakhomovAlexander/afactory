@@ -860,9 +860,12 @@ def _judge_run(cohort, calibration, run, trials_after):
             observed[evidence.doc["shard"]] = group
             if group is None:
                 run.fail("invalid", "cpu_group_mismatch")
-    for case in plan["cases"]:
-        group = observed.get(case["shard"])
-        run.cpu_groups[case["instance_id"]] = group
+    # A wrong plan remains an invalid original, including when it substitutes a case.
+    # Report observations for the declared cases only; an absent case stays unobserved.
+    owners = {case["instance_id"]: case["shard"] for case in plan["cases"]}
+    for case in cohort["cases"]:
+        ident = case["instance_id"]
+        run.cpu_groups[ident] = observed.get(owners.get(ident))
     if any(entry["status"] != "healthy" for entry in verdict["health"]):
         run.fail("unhealthy", "health_unstable")
     if verdict["aggregate"]["coverage"]["missing_records"]:

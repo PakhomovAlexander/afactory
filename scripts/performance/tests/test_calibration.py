@@ -127,6 +127,37 @@ class MixedHostedGroups(unittest.TestCase):
         self.assertEqual(doc["tallies"]["power_members"], 10)
         self.assertEqual(doc["tallies"]["power_qualifying"], 0)
 
+    def test_wrong_case_set_is_retained_as_an_invalid_original(self):
+        lab = fixtures.Lab(os.path.join(self.tmp, "wrong-cases"))
+        lab.run_phase(("aa",), skip=("aa_20",))
+
+        def rename(plan):
+            before, after = "synthetic_advisory", "synthetic_advisory_changed"
+            for case in plan["cases"]:
+                if case["instance_id"] == before:
+                    case["instance_id"] = after
+                    case["warmup_orders"] = schedule.block_orders(
+                        plan["seed"], after, "warmup", case["warmup_pairs"])
+                    case["measured_orders"] = schedule.block_orders(
+                        plan["seed"], after, "measured", case["pairs"])
+            for shard in plan["shards"]:
+                shard["instances"] = [after if ident == before else ident
+                                      for ident in shard["instances"]]
+
+        lab.run("aa_20", minute=20, plan_edit=rename)
+        lab.run_phase(("preparation",))
+        lab.prepare()
+        doc = lab.readiness()
+        member = next(item for item in doc["members"] if item["member_id"] == "aa_20")
+        self.assertEqual(member["status"], "invalid")
+        self.assertIn("wrong_plan", member["reasons"])
+        self.assertEqual(set(member["cpu_groups"]),
+                         {case["instance_id"] for case in lab.cohort["cases"]})
+        self.assertIsNone(member["cpu_groups"]["synthetic_advisory"])
+        self.assertEqual(doc["tallies"]["aa_members"], 20)
+        self.assertEqual(doc["tallies"]["aa_within_tolerance"], 19)
+        self.assertFalse(doc["ready"])
+
     def test_missing_or_relabelled_case_group_cannot_validate(self):
         for change in ("missing", "relabelled", "unknown"):
             with self.subTest(change=change):

@@ -34,7 +34,9 @@ and cannot be summed as independent trials or used to combine successes across t
 Mixed-host fixture cohorts use different A0 values and loop costs for two CPU groups, rotate
 hosts during preparation, and exercise the real planner, evidence collection and readiness
 calculation. They check independent parameters, correct per-case targets, whole-trial counts,
-unknown-host refusal and missing or relabelled case-group refusal. Activation recomputes the
+unknown-host refusal and missing or relabelled case-group refusal. A substituted case set
+remains an invalid original in the denominator, with absent declared cases unobserved.
+Activation recomputes the
 same complete readiness document. No real cohort or empirical readiness is claimed by tests.
 
 The calibration authority and protected harness digest change. Full-suite sampling semantics
