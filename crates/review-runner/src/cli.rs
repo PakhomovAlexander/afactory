@@ -690,7 +690,7 @@ Options:
     const CREDENTIAL_LINES: [&str; 4] = [
         "error: unknown option '--safe-mode'; API_KEY=sk-secret",
         "Authorization: Bearer abcFIXTUREdefFIXTUREghi",
-        "fetch failed for 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f",
+        "fetch failed for 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b",
         "config: OPENAI_API_KEY=\"sk-proj-FIXTURE\"",
     ];
 
@@ -738,7 +738,8 @@ Options:
 
     /// Issue #259, round 3: a run is a secret by its shape — 32 or more hex characters, 32 or
     /// more base64 characters mixing upper case, lower case and digits, or a JSON Web Token —
-    /// and a run of letters alone, a word or a path, is not.
+    /// and a run of letters alone, a word or a path, is not; nor is a git object id or a SHA-256
+    /// digest standing alone.
     #[test]
     fn runs_are_withheld_by_their_shape_and_letters_alone_pass() {
         let mixed_base64 = "Ab3dEf6hIj9lMn2pQr5tUv8xYz1BcD4fGh7jKl0nOp-";
@@ -750,14 +751,16 @@ Options:
             "session eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlc2lnbmF0dXJl. expired",
             "token=\"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlc2lnbmF0dXJl\"",
             &format!("fetch failed: {mixed_base64}"),
-            &format!("sha256 {digest}"),
-            &format!("blob/{digest}/x"),
+            &format!("sha256 {}", &digest[..48]),
             "upload id ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abc",
         ] {
             assert!(looks_like_credential(line), "{line}");
             assert_eq!(bounded_cli_line(line), WITHHELD_LINE, "{line}");
         }
         for line in [
+            // A SHA-256 digest or a git object id is an identity, never a secret (audit M7).
+            &format!("sha256 {digest}"),
+            &format!("blob/{digest}/x"),
             &"g".repeat(40),
             "mnpqrstuvwxyzmnpqrstuvwxyzmnpqrstuvwxyz",
             "/Users/alice/bs/apkhmv-main/af/afactory-wt-cli-compat/crates/af",

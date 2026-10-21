@@ -26,7 +26,7 @@ pub use git::{
 };
 pub use manifest::{
     Entry, EntryKind, Manifest, ManifestDigest, ManifestError, decode_path, digest_bytes,
-    digest_reader_with_buffer, encode_path, fs_path,
+    digest_reader_with_buffer, encode_path, fs_path, git_refuses_path,
 };
 pub use materialize::{MaterializeError, materialize};
 pub use rebase::{apply_tree_diff, scan_tree};

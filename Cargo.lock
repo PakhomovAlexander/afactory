@@ -47,6 +47,7 @@ dependencies = [
  "toml",
  "toml_edit",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -1462,6 +1463,7 @@ version = "0.12.0-rc.5"
 dependencies = [
  "comrak",
  "jsonschema",
+ "nix 0.31.3",
  "review-attempt",
  "review-check",
  "review-config",
@@ -1489,6 +1491,8 @@ name = "review-process"
 version = "0.12.0-rc.5"
 dependencies = [
  "nix 0.31.3",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1578,6 +1582,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tracing",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -2508,6 +2513,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "zeroize"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

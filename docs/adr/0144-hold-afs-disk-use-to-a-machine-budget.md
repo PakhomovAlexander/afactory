@@ -195,6 +195,33 @@ remote check left two branches and a draft pull request open.
    also removes the af-made project directories in every registered Claude config directory and
    every registered Store, and lists the gate leftovers it could not reach.
 
+**Amended 2026-10-20** (GA-readiness and security audit, findings H2, M6 and L4). A Store is
+created only in a directory that is absent, empty, or already an af Store (nothing in it but af's
+entries, each by its exact name: `events.sqlite` with its `-wal`, `-shm` and `-journal`, `cas/`,
+`git-home/`, `af-running.lock`, `task-delivery-lock.sqlite` with its `-wal`, `-shm` and
+`-journal`, the owner marker, and a removal claim af made; no prefix, suffix or extension makes a
+name af's, so `notes.lock` or `events.sqlite.notes` is the user's). A claim is named
+`.af-removing-<pid>-<device>-<inode>` after the directory it claims, and a claim-shaped entry is
+af's only while it is exactly such a name and a directory with that very device and inode; any
+other, such as a user's file `.af-removing-1-2-3`, is the user's: kept, reported as left, not
+measured, and it keeps the Store from going whole; the sweep finishes only proven claims too.
+An explicit `--state` that holds anything else is refused
+before anything is written or registered, and the `--state` help says the directory becomes
+af-owned. A Store made in an absent or empty directory carries the owner marker `.af-store`. `/`
+is no longer a trusted anchor for removing a registered Store whole: the sweep, `af storage prune
+--apply`, `af review gc --state-root` and `af self uninstall --purge` remove a Store outside af's
+own roots whole only while it is marked and holds nothing but af's entries; otherwise they remove
+af's entries alone through the opened directory and report the directory and everything else as
+left in place (`left` in `af/storage-prune@4`). A Store an earlier release made carries no marker
+and is not proven af's, so its directory stays. Such a Store is measured by its af entries alone.
+Every directory af creates for its state (state and telemetry roots, Stores, `cas/`, `git-home/`)
+is `0700` and every file there `0600`, the SQLite database and its `-wal` and `-shm` included,
+whatever the umask; af changes no process umask, and narrows an existing root its effective user
+owns to `0700` when it opens it. A Task cancelled, or abandoned by a writer that died, after its
+gate published is settled once no writer holds its lease: its gate leftovers are listed and
+cleaned up like a finished Task's, and its log records the `gate_cleanup` in whatever phase it
+stopped; a done cleanup covers only the pull requests it closed.
+
 ## Consequences
 
 - af holds a bounded, visible amount of disk: `af storage` shows it, and nothing an operator

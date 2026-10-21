@@ -1,0 +1,577 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-archive-event:1",
+  "title": "af.perf-archive-event/1",
+  "description": "One immutable entry of an archive's append-only index (ADR-0172): an admitted run and its content-addressed members, an explicit retention record, a pin, a supersession or a reference-traced garbage collection.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-archive-event/1"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 999999999999
+    },
+    "unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "event": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "gc"
+            },
+            "removed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "sha256": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "size": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  }
+                },
+                "required": [
+                  "sha256",
+                  "size"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 1048576
+            },
+            "freed_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            }
+          },
+          "required": [
+            "kind",
+            "removed",
+            "freed_bytes"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "pin"
+            },
+            "run_id": {
+              "$ref": "#/$defs/id"
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "active_cohort",
+                "release_budget"
+              ]
+            },
+            "note": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "kind",
+            "run_id",
+            "reason",
+            "note"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "retention"
+            },
+            "run_id": {
+              "$ref": "#/$defs/id"
+            },
+            "run_sequence": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 999999999999
+            },
+            "manifest": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/relative_path"
+                  },
+                  "sha256": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "size": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  },
+                  "class": {
+                    "type": "string",
+                    "enum": [
+                      "plan",
+                      "build_manifest",
+                      "manifest",
+                      "shard",
+                      "samples",
+                      "verdict",
+                      "summary",
+                      "log",
+                      "transported_view",
+                      "profile",
+                      "symbol"
+                    ]
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256",
+                  "size",
+                  "class"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 65536
+            },
+            "expired": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/relative_path"
+                  },
+                  "sha256": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "class": {
+                    "type": "string",
+                    "enum": [
+                      "plan",
+                      "build_manifest",
+                      "manifest",
+                      "shard",
+                      "samples",
+                      "verdict",
+                      "summary",
+                      "log",
+                      "transported_view",
+                      "profile",
+                      "symbol"
+                    ]
+                  },
+                  "due_unix_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740992
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256",
+                  "class",
+                  "due_unix_ms"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 65536
+            },
+            "available": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/relative_path"
+              },
+              "minItems": 0,
+              "maxItems": 65536
+            },
+            "numeric": {
+              "type": "string",
+              "enum": [
+                "complete",
+                "expired"
+              ]
+            },
+            "profile_reproduction": {
+              "type": "string",
+              "enum": [
+                "not_applicable",
+                "available",
+                "expired"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "run_id",
+            "run_sequence",
+            "manifest",
+            "expired",
+            "available",
+            "numeric",
+            "profile_reproduction"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "run"
+            },
+            "run_id": {
+              "$ref": "#/$defs/id"
+            },
+            "plan_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "source": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "actions"
+                    },
+                    "repository": {
+                      "type": "string",
+                      "maxLength": 201,
+                      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+                    },
+                    "actions_run_id": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740992
+                    },
+                    "artifacts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740992
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          },
+                          "size": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9223372036854775807
+                          },
+                          "created_unix_ms": {
+                            "anyOf": [
+                              {
+                                "type": "null"
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740992
+                              }
+                            ]
+                          },
+                          "expires_unix_ms": {
+                            "anyOf": [
+                              {
+                                "type": "null"
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740992
+                              }
+                            ]
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "downloaded",
+                              "expired",
+                              "refused",
+                              "not_collected"
+                            ]
+                          },
+                          "sha256": {
+                            "anyOf": [
+                              {
+                                "type": "null"
+                              },
+                              {
+                                "$ref": "#/$defs/digest"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "size",
+                          "created_unix_ms",
+                          "expires_unix_ms",
+                          "state",
+                          "sha256"
+                        ]
+                      },
+                      "minItems": 0,
+                      "maxItems": 1000
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "repository",
+                    "actions_run_id",
+                    "artifacts"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "local"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                }
+              ]
+            },
+            "verdict": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "result": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "incomplete"
+                  ]
+                },
+                "exit_code": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4
+                },
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "partial_scope",
+                    "bootstrap",
+                    "calibration",
+                    "diagnostic"
+                  ]
+                },
+                "provenance": {
+                  "type": "string",
+                  "enum": [
+                    "measured",
+                    "synthetic",
+                    "mixed",
+                    "none"
+                  ]
+                },
+                "satisfies_required_check": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "result",
+                "exit_code",
+                "scope",
+                "provenance",
+                "satisfies_required_check"
+              ]
+            },
+            "bundles": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "run": {
+                  "$ref": "#/$defs/digest"
+                },
+                "shards": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "shard": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 15
+                      },
+                      "bundle": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/$defs/digest"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "shard",
+                      "bundle"
+                    ]
+                  },
+                  "minItems": 1,
+                  "maxItems": 16
+                }
+              },
+              "required": [
+                "run",
+                "shards"
+              ]
+            },
+            "run_ended_unix_ms": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740992
+                }
+              ]
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/relative_path"
+                  },
+                  "sha256": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "size": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  },
+                  "class": {
+                    "type": "string",
+                    "enum": [
+                      "plan",
+                      "build_manifest",
+                      "manifest",
+                      "shard",
+                      "samples",
+                      "verdict",
+                      "summary",
+                      "log",
+                      "transported_view",
+                      "profile",
+                      "symbol"
+                    ]
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256",
+                  "size",
+                  "class"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 65536
+            }
+          },
+          "required": [
+            "kind",
+            "run_id",
+            "plan_digest",
+            "source",
+            "verdict",
+            "bundles",
+            "run_ended_unix_ms",
+            "members"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "supersede"
+            },
+            "run_id": {
+              "$ref": "#/$defs/id"
+            },
+            "superseded_by": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "run_id",
+            "superseded_by"
+          ]
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "sequence",
+    "unix_ms",
+    "event"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

@@ -1,7 +1,7 @@
 //! `af catalog digest` prints exactly the digest a catalog pin records, through the same recipe
 //! and validation Task capture uses, and reads nothing but the package directory.
 
-use crate::common::{AF, Sandbox, Signer, VERSION, af, err, out, write};
+use crate::common::{Sandbox, Signer, VERSION, af, af_binary, err, out, write};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -345,7 +345,7 @@ fn the_digest_never_dispatches_installs_or_schedules_an_update_check() {
         state_files(&sandbox.versions()),
     );
 
-    for binary in [Path::new(AF), real.as_path()] {
+    for binary in [af_binary(), real.as_path()] {
         let run = |args: &[&std::ffi::OsStr]| {
             sandbox
                 .command(binary)

@@ -1,6 +1,7 @@
 # ADR-0118: Let a review Worker that declares `execute-checks` run in an ephemeral clone
 
-Status: accepted, 2026-09-23.
+Status: accepted, 2026-09-23. Amended 2026-10-20: what holds for a child that leaves the
+Attempt's process group (see [Bounds and children](#bounds-and-children)).
 
 ## Context
 
@@ -103,6 +104,30 @@ The Attempt's wall clock and token reservation are unchanged. `ModelRunner` gain
 cancellation already killed the group. Now the group is also killed when the model process exits,
 before it is reaped, so a background shell child cannot outlive the Attempt or write into the
 tree being sealed.
+
+Amended 2026-10-20. The group kill reaches only the Attempt's process group, and a shell child
+that calls `setsid` (or moves to a group of its own) leaves it. `ModelRunner` now selects
+`ExitPolicy::KillDescendants`. On Linux af makes itself a child subreaper
+(`PR_SET_CHILD_SUBREAPER`), so a descendant the Attempt orphaned becomes af's child, and before
+the leader is reaped af kills and reaps every member of the group, every child of its own that
+started with this run's `AF_PROCESS_TREE` value (which the leader is given and every descendant
+inherits, so a `setsid` child or a `set -m` job in another group of the same session is told from
+any other run's, however many Attempts and checks one af runs at once), and every descendant of
+any of these, until none is left. Whether an orphan is this run's is decided only from the value
+it inherited, fixed when it was created, never from how many runs are live while af looks: a run
+never ends a process another live run started. So a descendant that keeps its inherited
+`AF_PROCESS_TREE` value is ended whatever its session or group, and one that clears or replaces
+that variable and leaves the run's process group can outlive the Attempt and write into its
+tree, on Linux as on macOS. A process af did not start is never its child and never touched.
+The guarantee holds on Linux only while the subreaper is set: when
+`PR_SET_CHILD_SUBREAPER` cannot be set, af says so once per process on stderr, and every check
+records in its `reason`, and every Attempt in its stored stderr, that descendant cleanup fell back
+to the process-group kill. On macOS the policy is the group kill alone: under `trusted_local` a
+`setsid` child can outlive the Attempt and write into its tree, before or while the kernel seals
+it.
+`trusted_local` is no security boundary; a project that runs code it does not trust demands
+container isolation, where the container is removed whole. The check runner selects the same policy for every
+host-local check.
 
 ## Consequences
 

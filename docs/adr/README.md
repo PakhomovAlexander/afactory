@@ -208,10 +208,11 @@ future readers need.
 - [0117 — Bind a Task input port to a recorded Task's
   output](0117-bind-task-inputs-to-recorded-task-outputs.md)
 - [0118 — Let a review Worker that declares `execute-checks` run in an ephemeral
-  clone](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md)
+  clone](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md) (amended 2026-10-20:
+  [a `setsid` child](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md#bounds-and-children))
 - [0119 — Open a read-first browser on bare `af`](0119-open-a-read-first-browser-on-bare-af.md)
 - [0120 — Give a source-writing Worker that declares `execute-checks` a
-  shell](0120-give-a-source-writing-worker-a-shell.md)
+  shell](0120-give-a-source-writing-worker-a-shell.md) (amended 2026-10-20 with ADR-0118)
 - [0121 — Show recorded Tasks in the browser from their inspection
   documents](0121-show-recorded-tasks-in-the-browser.md)
 - [0122 — Show committed Workers and the Attempts their recorded plans
@@ -252,7 +253,8 @@ future readers need.
 - [0140 — Run a declared check through a gate pull
   request](0140-run-a-declared-check-through-a-gate-pull-request.md) (amended 2026-10-05: [the
   pipeline chooses](0140-run-a-declared-check-through-a-gate-pull-request.md#amendment-2026-10-05-the-pipeline-chooses);
-  2026-10-07 by [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md))
+  2026-10-07 by [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md); 2026-10-20: [what
+  the workflow runs](0140-run-a-declared-check-through-a-gate-pull-request.md#amendment-2026-10-20-what-the-workflow-runs))
 - [0141 — List a logged-out default context only until its kind is
   registered](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)
 - [0142 — Carry the `af task report` of its Tasks in every pull
@@ -294,3 +296,65 @@ future readers need.
   port](0160-carry-a-bounded-project-brief-on-a-declared-port.md)
 - [0161 — Refresh native check source mtimes before reusing a Cargo
   target](0161-refresh-native-check-source-mtimes-before-reusing-cargo-target.md)
+- [0162 — Freeze performance plans and judge them by exact paired
+  verdicts](0162-freeze-performance-plans-and-judge-them-by-exact-paired-verdicts.md)
+- [0163 — Measure native workloads through a public-API probe and independent golden
+  oracles](0163-measure-native-workloads-through-a-public-api-probe-and-independent-golden-oracles.md)
+- [0164 — Judge only declared probe requests against a reference-checked
+  golden](0164-judge-only-declared-probe-requests-against-a-reference-checked-golden.md)
+- [0165 — Own probe scratch in the driver and take lease expiry only from the
+  Store](0165-own-probe-scratch-in-the-driver-and-take-lease-expiry-only-from-the-store.md)
+- [0166 — Build frozen plans and supervise samples with one authority
+  instrument](0166-build-frozen-plans-and-supervise-samples-with-one-authority-instrument.md)
+- [0167 — Bound every supervisor wait and verify only what was
+  observed](0167-bound-every-supervisor-wait-and-verify-only-what-was-observed.md)
+- [0168 — Run frozen shards with whole-CLI oracles and only a per-sample
+  scratch](0168-run-frozen-shards-with-whole-cli-oracles-and-only-a-per-sample-scratch.md)
+- [0169 — Coordinate a machine, seed each side once, and build Linux recipes in a pinned
+  image](0169-coordinate-a-machine-seed-each-side-once-and-build-linux-recipes-in-a-pinned-image.md)
+- [0170 — Seed native fixtures, freeze the build image and bound the run by one
+  deadline](0170-seed-native-fixtures-freeze-the-build-image-and-bound-the-run-by-one-deadline.md)
+- [0171 — Cancel samples through their supervisor, carry the deadline through preflight, and
+  observe history order](0171-cancel-samples-through-their-supervisor-carry-the-deadline-through-preflight-and-observe-history-order.md)
+- [0172 — Admit candidate files through bounded descriptors, observe streamed JSON by path, and
+  report, archive and trend runs offline](0172-admit-candidate-files-through-bounded-descriptors-and-report-archive-and-trend-runs-offline.md)
+- [0173 — Own the supervisor a test runs, and bound admission, collection, scratch and
+  cancellation by absolute deadlines](0173-own-the-supervisor-a-test-runs-and-bound-admission-collection-scratch-and-cancellation-by-absolute-deadlines.md)
+- [0174 — Diagnose in separate child runs that record only the bracketed region, and share one
+  test executable boundary](0174-diagnose-in-separate-child-runs-that-record-only-the-bracketed-region-and-share-one-test-executable-boundary.md)
+- [0175 — Supervise every diagnostic execution, admit what it wrote, and record what it
+  used](0175-supervise-every-diagnostic-execution-admit-what-it-wrote-and-record-what-it-used.md)
+- [0176 — Diagnose CLI cases and contained Linux runs, and bound every step and seed before it is
+  used](0176-diagnose-cli-cases-and-contained-linux-runs-and-bound-every-step-and-seed-before-it-is-used.md)
+- [0177 — Schedule continuous runs from the trusted control, and move builds once to bounded
+  shards](0177-schedule-continuous-runs-from-trusted-control-and-move-builds-once-to-bounded-shards.md)
+- [0178 — Admit linked diagnostic views by their renderer, and read dispatched branches where
+  the checkout fetched them](0178-admit-linked-diagnostic-views-by-their-renderer-and-read-dispatched-branches-where-the-checkout-fetched-them.md)
+- [0179 — Link only sanitized views, and bind a diagnostic child to its parent's workloads and
+  its frozen recipe kind](0179-link-only-sanitized-views-and-bind-a-diagnostic-child-to-its-parent-workloads-and-frozen-recipe-kind.md)
+- [0180 — Hand off published releases read-only, and measure each claimed identity
+  once](0180-hand-off-published-releases-read-only-and-measure-each-claimed-identity-once.md)
+- [0181 — Declare cohorts before they run, inject only the candidate, and count whole power
+  trials](0181-declare-cohorts-before-they-run-inject-only-the-candidate-and-count-whole-power-trials.md)
+- [0182 — Bind each calibration member to its first dispatch and its authority's plan, and give
+  each probe setup write its own lease](0182-bind-each-calibration-member-to-its-first-dispatch-and-its-authoritys-plan.md)
+- [0183 — Detect deleted originals, recompute parameters, and verify activations from retained
+  evidence](0183-detect-deleted-originals-recompute-parameters-and-verify-activations-from-retained-evidence.md)
+- [0184 — Verify proposed activations in trusted CI, and bind bridges, groups and costs to
+  retained executions](0184-verify-proposed-activations-in-trusted-ci-and-bind-bridges-groups-and-costs-to-retained-executions.md)
+- [0185 — Measure guarded kernel experiments through a literal bootstrap over a protected
+  harness](0185-measure-guarded-kernel-experiments-through-a-literal-bootstrap-over-a-protected-harness.md)
+- [0186 — Fold protected paths, key warm targets by the whole Snapshot, bound measure output and
+  replan bridge runs](0186-fold-protected-paths-key-warm-targets-by-the-whole-snapshot-bound-measure-output-and-replan-bridge-runs.md)
+- [0187 — Bind kernel receipts to their Task results, word reports by what was admitted, and
+  retain a real local run](0187-bind-kernel-receipts-to-their-task-results-word-reports-by-what-was-admitted-and-retain-a-real-local-run.md)
+- [0188 — Validate kernel receipts as the kernel does, and restore the retained
+  history](0188-validate-kernel-receipts-as-the-kernel-does-and-restore-the-retained-history.md)
+- [0189 — Read a Task result's sets in the kernel's order, and reconcile a second repair through
+  the first](0189-read-a-task-result-s-sets-in-the-kernel-s-order-and-reconcile-a-second-repair-through-the-first.md)
+- [0190 — Integrate performance checks, images and evidence
+  collection](0190-integrate-performance-checks-images-and-evidence-collection.md)
+- [0191 — Keep guarded measure source paths stable by
+  content](0191-keep-guarded-measure-source-paths-stable-by-content.md)
+- [0192 — Admit single downloads and run CLI measurements
+  offline](0192-admit-single-downloads-and-run-cli-measurements-offline.md)

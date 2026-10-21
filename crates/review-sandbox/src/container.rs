@@ -15,8 +15,10 @@
 //! # What the tests here do and do not prove
 //!
 //! The invocation this builds — `--network=none`, a single bind of the sandbox, no inherited
-//! environment — is asserted exactly, using a recording stub in place of the runtime. That proves
-//! the *plumbing*: the right flags, the right mount, nothing extra.
+//! host environment, no capabilities, no privilege gain, a process ceiling and an init that
+//! reaps — is asserted exactly, using a recording stub in place of the runtime. That proves the
+//! *plumbing*: the right flags, the right mount, nothing extra. `--env-file /dev/null` keeps the
+//! host's environment out; it does not clear the `ENV` the image itself declares.
 //!
 //! It does **not** prove containment. Only a real runtime can do that, and
 //! `tests/container_probes.rs` does exactly that — the containment probes that need isolation
@@ -26,7 +28,9 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use review_process::{SupervisedError, run_supervised};
+use review_process::{
+    ExitPolicy, SupervisedCapture, SupervisedError, run_supervised, run_supervised_captured_bounded,
+};
 
 use crate::{Isolation, Mode, Sandbox, SandboxTemplate};
 
@@ -40,6 +44,10 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// before its writable bind can be sealed. Cleanup is bounded too, so a wedged daemon cannot
 /// replace the check deadline with an unbounded second wait.
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The most processes one container check may hold at once. A fork bomb ends at this ceiling
+/// inside the container's own pids cgroup instead of filling the host's process table.
+pub const DEFAULT_PIDS_LIMIT: u32 = 4096;
 
 /// The default sandbox image, pinned by manifest digest — the same never-`latest` rule as
 /// reviewer packages. The digest names a multi-arch manifest list (amd64 CI, arm64 laptops),
@@ -82,6 +90,12 @@ pub struct ContainerProvider {
     image: String,
     /// Mount the check runtime's `tmpfs` directories (see [`crate::CheckRuntime`]).
     check_runtime: bool,
+    /// `--memory` and `--memory-swap`, when the Gate binding names a ceiling.
+    memory: Option<String>,
+    /// `--cpus`, when the Gate binding names a ceiling.
+    cpus: Option<String>,
+    /// The bytes kept of each output stream of a container command.
+    output_cap: usize,
 }
 
 #[derive(Debug)]
@@ -133,6 +147,9 @@ impl ContainerProvider {
             availability: Self::probe(None),
             image: DEFAULT_IMAGE.to_string(),
             check_runtime: false,
+            memory: None,
+            cpus: None,
+            output_cap: review_process::MAX_CAPTURED_STREAM_BYTES,
         }
     }
 
@@ -142,6 +159,9 @@ impl ContainerProvider {
             availability: Self::probe(Some(deadline)),
             image: DEFAULT_IMAGE.to_string(),
             check_runtime: false,
+            memory: None,
+            cpus: None,
+            output_cap: review_process::MAX_CAPTURED_STREAM_BYTES,
         }
     }
 
@@ -153,11 +173,29 @@ impl ContainerProvider {
             availability: Self::probe_one(&path),
             image: DEFAULT_IMAGE.to_string(),
             check_runtime: false,
+            memory: None,
+            cpus: None,
+            output_cap: review_process::MAX_CAPTURED_STREAM_BYTES,
         }
     }
 
     pub fn with_image(mut self, image: impl Into<String>) -> Self {
         self.image = image.into();
+        self
+    }
+
+    /// Cap the container's memory (swap included: `--memory-swap` equals `--memory`) and its
+    /// CPUs, each only when the Gate binding names a value; the binding validated both.
+    pub fn with_limits(mut self, memory: Option<String>, cpus: Option<String>) -> Self {
+        self.memory = memory;
+        self.cpus = cpus;
+        self
+    }
+
+    /// Keep at most `cap` bytes of each output stream of a container command instead of
+    /// [`review_process::MAX_CAPTURED_STREAM_BYTES`]. A command that writes more fails.
+    pub fn with_output_cap(mut self, cap: usize) -> Self {
+        self.output_cap = cap;
         self
     }
 
@@ -259,8 +297,9 @@ impl ContainerProvider {
     /// The exact argv for running a command inside the sandbox.
     ///
     /// Built even when the runtime is unusable, because it is the part worth asserting: one bind,
-    /// no network, only declared environment, a reaping identity, and the command in a value
-    /// position after the image.
+    /// no network, only declared environment, no capabilities and no privilege gain, a process
+    /// ceiling, an init that reaps, a reaping identity, and the command in a value position after
+    /// the image.
     pub fn invocation(
         &self,
         sandbox_root: &Path,
@@ -282,7 +321,26 @@ impl ContainerProvider {
             // reintroduced explicitly.
             "--env-file".to_string(),
             "/dev/null".to_string(),
+            // A fork bomb ends at the container's own ceiling, not the host's process table.
+            "--pids-limit".to_string(),
+            DEFAULT_PIDS_LIMIT.to_string(),
+            // A check needs no capability, and nothing it runs may gain privilege (setuid).
+            "--cap-drop=ALL".to_string(),
+            "--security-opt=no-new-privileges".to_string(),
+            // An init as PID 1 reaps orphans and forwards signals, so a stop ends the check.
+            "--init".to_string(),
         ];
+        if let Some(memory) = &self.memory {
+            argv.extend([
+                "--memory".to_string(),
+                memory.clone(),
+                "--memory-swap".to_string(),
+                memory.clone(),
+            ]);
+        }
+        if let Some(cpus) = &self.cpus {
+            argv.extend(["--cpus".to_string(), cpus.clone()]);
+        }
         argv.extend([
             "--user".to_string(),
             format!(
@@ -412,32 +470,18 @@ impl ContainerProvider {
     ) -> Result<ContainerExecution, ContainerExecutionError> {
         let mut command = std::process::Command::new(runtime);
         command.args(self.invocation(sandbox_root, program, args, environment, execution_name));
-        let executed = match cancellation {
-            None => run_bounded_evidenced(command, timeout, "container command"),
-            Some(flag) => {
-                let span = process_span(&command, "container command");
-                let captured = span.in_scope(|| {
-                    review_process::run_supervised_captured_cancellable(
-                        &mut command,
-                        None,
-                        timeout,
-                        flag,
-                    )
-                });
-                record_capture(&span, &captured);
-                captured
-            }
-            .into_result()
-            .map(|output| ContainerExecution {
-                output: std::process::Output {
-                    status: output.status,
-                    stdout: output.stdout,
-                    stderr: output.stderr,
-                },
-                stderr_held: output.stderr_held,
-            })
-            .map_err(std::io::Error::other),
-        };
+        let span = process_span(&command, "container command");
+        let captured = span.in_scope(|| {
+            run_supervised_captured_bounded(
+                &mut command,
+                None,
+                timeout,
+                ExitPolicy::PreserveProcessGroup,
+                cancellation,
+                self.output_cap,
+            )
+        });
+        let executed = container_execution(&span, captured, timeout);
         // Cancellation stops the foreground runtime; the existing bounded rm confirms the
         // daemon no longer owns this writable bind. Never cancel the cleanup itself.
         match executed {
@@ -456,6 +500,47 @@ impl ContainerProvider {
             },
         }
     }
+}
+
+/// A container command's capture as execution evidence. Output past the cap is an execution
+/// failure naming the cap, so the check never passes on a prefix of its output. The command's
+/// span ends after that judgement: a capture rejected for its truncation ends it `failed` with
+/// the cap's reason.
+fn container_execution(
+    span: &tracing::Span,
+    captured: SupervisedCapture,
+    timeout: Duration,
+) -> Result<ContainerExecution, std::io::Error> {
+    let capped = captured
+        .status
+        .is_ok()
+        .then(|| captured.truncation.reason())
+        .flatten();
+    record_capture(span, &captured, capped.as_deref());
+    if let Some(reason) = capped {
+        return Err(std::io::Error::other(format!("container command {reason}")));
+    }
+    captured
+        .into_result()
+        .map(|output| ContainerExecution {
+            output: std::process::Output {
+                status: output.status,
+                stdout: output.stdout,
+                stderr: output.stderr,
+            },
+            stderr_held: output.stderr_held,
+        })
+        .map_err(|error| match error {
+            SupervisedError::TimedOut { .. } => std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "container command did not finish within {}s",
+                    timeout.as_secs_f64()
+                ),
+            ),
+            SupervisedError::Cancelled => std::io::Error::other(error),
+            error => std::io::Error::other(format!("container command: {error}")),
+        })
 }
 
 fn remove_container(runtime: &Path, execution_name: &str) -> Result<(), String> {
@@ -540,8 +625,13 @@ fn resource_use(rusage: review_process::Rusage) -> review_telemetry::process::Re
     }
 }
 
-/// End a container process's span from its capture: `ok` when it exited 0.
-fn record_capture(span: &tracing::Span, captured: &review_process::SupervisedCapture) {
+/// End a container process's span from its capture: `ok` when it exited 0 and the execution
+/// kept it; `capped` is the cap reason when the execution rejected it for its truncation.
+fn record_capture(
+    span: &tracing::Span,
+    captured: &review_process::SupervisedCapture,
+    capped: Option<&str>,
+) {
     if span.is_disabled() {
         return;
     }
@@ -556,7 +646,12 @@ fn record_capture(span: &tracing::Span, captured: &review_process::SupervisedCap
     if let Ok(status) = &captured.status {
         facts = facts.with_status(status);
     }
-    finish_process(span, &facts, captured.status.as_ref().map(|status| *status));
+    finish_process(
+        span,
+        &facts,
+        captured.status.as_ref().map(|status| *status),
+        capped,
+    );
 }
 
 /// End a container process's span from its bounded run.
@@ -591,26 +686,33 @@ fn record_output(
         },
         Err(_) => review_telemetry::process::ProcessFacts::default(),
     };
-    finish_process(span, &facts, output.as_ref().map(|output| output.status));
+    finish_process(
+        span,
+        &facts,
+        output.as_ref().map(|output| output.status),
+        None,
+    );
 }
 
 fn finish_process(
     span: &tracing::Span,
     facts: &review_telemetry::process::ProcessFacts,
     status: Result<std::process::ExitStatus, &SupervisedError>,
+    capped: Option<&str>,
 ) {
-    let failure = match status {
-        Ok(status) if status.success() => None,
-        Ok(_) => Some(("failed", "the runtime exited unsuccessfully".to_string())),
-        Err(SupervisedError::TimedOut { .. }) => {
+    let failure = match (status, capped) {
+        (Ok(_), Some(reason)) => Some(("failed", reason.to_string())),
+        (Ok(status), None) if status.success() => None,
+        (Ok(_), None) => Some(("failed", "the runtime exited unsuccessfully".to_string())),
+        (Err(SupervisedError::TimedOut { .. }), _) => {
             Some(("timed_out", "the runtime exceeded its deadline".to_string()))
         }
-        Err(SupervisedError::Cancelled) => Some(("refused", "cancelled".to_string())),
-        Err(SupervisedError::Spawn(_)) => Some((
+        (Err(SupervisedError::Cancelled), _) => Some(("refused", "cancelled".to_string())),
+        (Err(SupervisedError::Spawn(_)), _) => Some((
             "unavailable",
             "the runtime could not be started".to_string(),
         )),
-        Err(error) => Some(("failed", error.to_string())),
+        (Err(error), _) => Some(("failed", error.to_string())),
     };
     review_telemetry::process::finish(
         span,
@@ -917,6 +1019,11 @@ mod tests {
                 "--network=none",
                 "--env-file",
                 "/dev/null",
+                "--pids-limit",
+                "4096",
+                "--cap-drop=ALL",
+                "--security-opt=no-new-privileges",
+                "--init",
                 "--user",
                 user.as_str(),
                 "-e",
@@ -940,6 +1047,167 @@ mod tests {
         assert!(!argv.iter().any(|a| a == "--privileged"));
         assert!(!argv.iter().any(|a| a.starts_with("--network=host")));
         assert!(!argv.iter().any(|a| a == "--tmpfs"));
+        // No memory or CPU ceiling unless the binding names one.
+        assert!(
+            !argv
+                .iter()
+                .any(|a| a.starts_with("--memory") || a.starts_with("--cpus"))
+        );
+    }
+
+    /// Memory (swap included) and CPU ceilings appear exactly when the Gate binding names them,
+    /// before the image, and change nothing else: the digest-pinned image, `--network=none`
+    /// and the single bind stay as they are.
+    #[test]
+    fn configured_limits_add_memory_and_cpu_ceilings_and_nothing_else() {
+        let image = DEFAULT_IMAGE;
+        let plain = ContainerProvider::with_runtime("/nonexistent/runtime");
+        let argv = |provider: &ContainerProvider| {
+            provider.invocation(
+                Path::new("/tmp/sandbox-root"),
+                "/bin/true",
+                &[],
+                &[],
+                "af-gate-test",
+            )
+        };
+        let base = argv(&plain);
+        let flag_value = |argv: &[String], flag: &str| {
+            argv.iter()
+                .position(|a| a == flag)
+                .map(|index| argv[index + 1].clone())
+        };
+        for (memory, cpus) in [
+            (Some("8g"), Some("1.5")),
+            (Some("512m"), None),
+            (None, Some("4")),
+        ] {
+            let limited = argv(
+                &plain
+                    .clone()
+                    .with_limits(memory.map(str::to_owned), cpus.map(str::to_owned)),
+            );
+            assert_eq!(flag_value(&limited, "--memory").as_deref(), memory);
+            assert_eq!(flag_value(&limited, "--memory-swap").as_deref(), memory);
+            assert_eq!(flag_value(&limited, "--cpus").as_deref(), cpus);
+            let image_at = limited.iter().position(|a| a == image).unwrap();
+            for flag in ["--memory", "--memory-swap", "--cpus"] {
+                if let Some(at) = limited.iter().position(|a| a == flag) {
+                    assert!(at < image_at, "{flag} after the image");
+                }
+            }
+            let rest: Vec<&String> = limited
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    !["--memory", "--memory-swap", "--cpus"].iter().any(|flag| {
+                        limited[*index] == *flag || (*index > 0 && limited[*index - 1] == *flag)
+                    })
+                })
+                .map(|(_, a)| a)
+                .collect();
+            assert_eq!(rest, base.iter().collect::<Vec<_>>());
+            assert!(limited.contains(&"--network=none".to_string()));
+            assert_eq!(limited.iter().filter(|a| *a == "--volume").count(), 1);
+            assert!(image.contains("@sha256:"));
+        }
+    }
+
+    /// A container command that writes past the output cap is an execution failure naming the
+    /// cap, never a passing check on a prefix (M2).
+    #[test]
+    fn container_output_past_the_cap_fails_the_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("runtime");
+        write_runtime(
+            &fake,
+            "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then exit 0; fi\nhead -c 10000 /dev/zero\n",
+        );
+        let provider = ContainerProvider::with_runtime(&fake).with_output_cap(4096);
+        let error = provider
+            .exec_evidenced_controlled(dir.path(), "/bin/true", &[], &[], LOAD_SAFE_WALL, None)
+            .unwrap_err();
+        assert!(error.cleanup_confirmed(), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("stdout was truncated at the 4 KiB output cap: it wrote 10000 bytes"),
+            "{error}"
+        );
+        let within = ContainerProvider::with_runtime(&fake)
+            .with_output_cap(16384)
+            .exec_evidenced_controlled(dir.path(), "/bin/true", &[], &[], LOAD_SAFE_WALL, None)
+            .unwrap();
+        assert_eq!(within.output.stdout.len(), 10000);
+    }
+
+    /// The container command's `af.process` span ends after the cap judgement: a command that
+    /// writes past its cap and exits 0 fails its execution naming the cap, and its span ends
+    /// with `error.type = "failed"` and the cap's reason, the exit and the kept stream sizes
+    /// still those of the capture.
+    #[test]
+    fn container_output_past_the_cap_ends_its_span_failed() {
+        use review_telemetry::level::Level;
+        use review_telemetry::record::SealExit;
+        use review_telemetry::segment::writer::{Writer, WriterOptions};
+        use serde_json::Value;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("runtime");
+        write_runtime(
+            &fake,
+            "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then exit 0; fi\nhead -c 10000 /dev/zero\nexit 0\n",
+        );
+        let reason = "stdout was truncated at the 4 KiB output cap: it wrote 10000 bytes, of \
+                      which only the first 4 KiB were kept";
+        let writer = Writer::new(WriterOptions::new(
+            dir.path().join("telemetry"),
+            Level::Spans,
+        ))
+        .unwrap();
+        let dispatch = tracing::Dispatch::new(
+            review_telemetry::subscriber::TelemetrySubscriber::new(writer.clone()),
+        );
+        tracing::dispatcher::with_default(&dispatch, || {
+            let run = tracing::info_span!("af.run", af.run_id = "run-1");
+            let _run = run.enter();
+            let error = ContainerProvider::with_runtime(&fake)
+                .with_output_cap(4096)
+                .exec_evidenced_controlled(dir.path(), "/bin/true", &[], &[], LOAD_SAFE_WALL, None)
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("container command {reason}")),
+                "{error}"
+            );
+        });
+        writer.flush();
+        let text = std::fs::read_to_string(writer.path().unwrap()).unwrap();
+        writer.finish(SealExit::Ok).unwrap();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let start = lines
+            .iter()
+            .find(|line| {
+                line["t"] == "span_start"
+                    && line["attributes"]["af.process.kind"] == "container command"
+            })
+            .unwrap_or_else(|| panic!("no container command span: {text}"));
+        let end = lines
+            .iter()
+            .find(|line| line["t"] == "span_end" && line["span_id"] == start["span_id"])
+            .unwrap_or_else(|| panic!("no end for {start}"));
+        let attributes = &end["attributes"];
+        assert_eq!(end["status"], "error", "{end}");
+        assert_eq!(attributes["error.type"], "failed", "{end}");
+        assert_eq!(attributes["af.failure.class"], "failed", "{end}");
+        assert_eq!(attributes["af.failure.reason"], reason, "{end}");
+        assert_eq!(attributes["process.exit_code"], 0, "{end}");
+        assert_eq!(attributes["af.stdout_bytes"], 4096, "{end}");
+        assert_eq!(attributes["af.stderr_bytes"], 0, "{end}");
+        assert!(attributes["process.pid"].is_u64(), "{end}");
     }
 
     #[test]

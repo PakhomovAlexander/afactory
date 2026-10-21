@@ -31,8 +31,9 @@
 //! directory: current Claude treats an explicit `$HOME/.claude` differently from its unset
 //! default and therefore selects the wrong credential profile. Ambient API keys are not
 //! forwarded because they can silently override the selected subscription identity. Granting
-//! the real `HOME` is a deliberate loosening relative to the codex adapter; every grant's value
-//! is redacted from everything stored.
+//! the real `HOME` is a deliberate loosening relative to the codex adapter. `CLAUDE_CONFIG_DIR` is
+//! redacted from everything stored, as granted and canonical; `HOME` and `USER` are not, since a
+//! finding may legitimately name a home path or a user.
 //!
 //! **The bound model is the only model.** A Task Attempt runs with
 //! `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, beside the nonessential-traffic and terminal-title

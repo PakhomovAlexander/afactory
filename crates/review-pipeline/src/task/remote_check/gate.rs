@@ -7,11 +7,12 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use review_process::{ExitPolicy, SupervisedError};
+use review_process::{ExitPolicy, SupervisedCapture, SupervisedError};
 use review_source_git::{EntryKind, Manifest};
 use review_store::Cas;
 
@@ -23,20 +24,56 @@ const LOCAL_CALL: Duration = Duration::from_secs(600);
 const NETWORK_CALL: Duration = Duration::from_secs(600);
 const MAX_CHAIN: usize = 512;
 
-/// Environment variables that would point a `git` call at another repository, index or object
-/// store than the one the kernel names.
-const REPOSITORY_LOCATORS: [&str; 10] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_NAMESPACE",
-    "GIT_PREFIX",
-    "GIT_QUARANTINE_PATH",
-    "GIT_CONFIG_PARAMETERS",
+/// The only variables of the operator's environment a gate `git` or `gh` sees (L3): what they
+/// need to find their configuration and authenticate, through a proxy or a private CA. The
+/// environment is cleared first, so nothing else reaches them: no `GIT_CONFIG_COUNT`,
+/// `GIT_CONFIG_KEY_<n>`/`VALUE_<n>` or `GIT_CONFIG_PARAMETERS` configuration, no
+/// `GIT_EXTERNAL_DIFF`, `GIT_SSH_COMMAND` or `GIT_ASKPASS` program, no repository locator such
+/// as `GIT_DIR`, and no `GH_HOST`, `GH_TOKEN` or `GITHUB_TOKEN`: `gh` reads the login `gh auth
+/// login` stored. `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR` reach the keyring `gh` keeps
+/// that login in on Linux.
+pub(super) const INHERITED_ENVIRONMENT: [&str; 20] = [
+    "PATH",
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "GH_CONFIG_DIR",
+    "SSH_AUTH_SOCK",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "GIT_SSL_CAINFO",
+    "GIT_SSL_CAPATH",
+    "CURL_CA_BUNDLE",
 ];
+
+/// The fixed values every gate `git` and `gh` runs with, beside the inherited ones.
+const FIXED_ENVIRONMENT: [(&str, &str); 8] = [
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GH_PROMPT_DISABLED", "1"),
+    ("GH_NO_UPDATE_NOTIFIER", "1"),
+    ("GH_PAGER", "cat"),
+    ("GIT_PAGER", "cat"),
+    ("NO_COLOR", "1"),
+    ("CLICOLOR", "0"),
+    ("LC_ALL", "C"),
+];
+
+/// The values of [`INHERITED_ENVIRONMENT`] that `lookup` holds.
+fn inherited(lookup: impl Fn(&str) -> Option<OsString>) -> Vec<(&'static str, OsString)> {
+    INHERITED_ENVIRONMENT
+        .into_iter()
+        .filter_map(|name| lookup(name).map(|value| (name, value)))
+        .collect()
+}
 
 /// How a supervised call ended when it did not succeed.
 #[derive(Debug)]
@@ -83,7 +120,8 @@ impl Tools<'_> {
 
     /// Run `program` with `args`. `local` calls touch only the private repository and run
     /// without the operator's Git configuration, so nothing in it can change a gate commit;
-    /// remote calls keep the operator's ambient configuration and authentication.
+    /// remote calls keep the operator's ambient configuration and authentication, through the
+    /// environment [`INHERITED_ENVIRONMENT`] names and nothing else.
     pub(super) fn run<S: AsRef<OsStr>>(
         &self,
         program: &'static str,
@@ -93,6 +131,77 @@ impl Tools<'_> {
         cwd: &Path,
         environment: &[(&str, &OsStr)],
     ) -> Result<Vec<u8>, ToolError> {
+        self.run_capped(
+            program,
+            args,
+            input,
+            local,
+            cwd,
+            environment,
+            review_process::MAX_CAPTURED_STREAM_BYTES,
+        )
+    }
+
+    /// [`Self::run`] keeping at most `cap` bytes of each stream; a test lowers it.
+    #[allow(clippy::too_many_arguments)]
+    fn run_capped<S: AsRef<OsStr>>(
+        &self,
+        program: &'static str,
+        args: &[S],
+        input: Option<Vec<u8>>,
+        local: bool,
+        cwd: &Path,
+        environment: &[(&str, &OsStr)],
+        cap: usize,
+    ) -> Result<Vec<u8>, ToolError> {
+        let (mut command, timeout) = self.command(program, args, local, cwd, environment)?;
+        let span = tool_span(program, args);
+        let _running = span.enter();
+        let captured = review_process::run_supervised_captured_bounded(
+            &mut command,
+            input,
+            timeout,
+            ExitPolicy::KillProcessGroup,
+            self.cancellation,
+            cap,
+        );
+        self.settle(program, &span, captured)
+    }
+
+    /// [`Self::run`] with stdin streamed by `writer`, so a large input is never one buffer.
+    pub(super) fn run_streaming<S, F>(
+        &self,
+        program: &'static str,
+        args: &[S],
+        local: bool,
+        cwd: &Path,
+        writer: F,
+    ) -> Result<Vec<u8>, ToolError>
+    where
+        S: AsRef<OsStr>,
+        F: FnOnce(&mut dyn Write) -> std::io::Result<()> + Send,
+    {
+        let (mut command, timeout) = self.command(program, args, local, cwd, &[])?;
+        let span = tool_span(program, args);
+        let _running = span.enter();
+        let captured = review_process::run_supervised_captured_streaming(
+            &mut command,
+            timeout,
+            ExitPolicy::KillProcessGroup,
+            self.cancellation,
+            writer,
+        );
+        self.settle(program, &span, captured)
+    }
+
+    fn command<S: AsRef<OsStr>>(
+        &self,
+        program: &'static str,
+        args: &[S],
+        local: bool,
+        cwd: &Path,
+        environment: &[(&str, &OsStr)],
+    ) -> Result<(std::process::Command, Duration), ToolError> {
         if self.cancelled() {
             return Err(ToolError::Cancelled);
         }
@@ -102,25 +211,12 @@ impl Tools<'_> {
             return Err(ToolError::TimedOut);
         }
         let mut command = std::process::Command::new(program);
-        command.args(args).current_dir(cwd);
-        for name in REPOSITORY_LOCATORS {
-            command.env_remove(name);
-        }
+        command.args(args).current_dir(cwd).env_clear();
+        command.envs(inherited(|name| std::env::var_os(name)));
         if let Some(path) = self.path {
             command.env("PATH", path);
         }
-        for (name, value) in [
-            ("GIT_TERMINAL_PROMPT", "0"),
-            ("GH_PROMPT_DISABLED", "1"),
-            ("GH_NO_UPDATE_NOTIFIER", "1"),
-            ("GH_PAGER", "cat"),
-            ("GIT_PAGER", "cat"),
-            ("NO_COLOR", "1"),
-            ("CLICOLOR", "0"),
-            ("LC_ALL", "C"),
-        ] {
-            command.env(name, value);
-        }
+        command.envs(FIXED_ENVIRONMENT);
         if local {
             command
                 .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -129,33 +225,30 @@ impl Tools<'_> {
         for (name, value) in environment {
             command.env(name, value);
         }
-        // A git process is an `af.git` span like every other; `gh` is an `af.process`.
-        let span = if program == "git" {
-            crate::telemetry::git(
-                args.first()
-                    .map(|arg| arg.as_ref().to_string_lossy().into_owned())
-                    .as_deref(),
-            )
-        } else {
-            crate::telemetry::process(program, "remote_check")
-        };
-        let _running = span.enter();
-        let captured = match self.cancellation {
-            Some(flag) => review_process::run_supervised_captured_cancellable_with_policy(
-                &mut command,
-                input,
-                timeout,
-                ExitPolicy::KillProcessGroup,
-                flag,
-            ),
-            None => review_process::run_supervised_captured_with_policy(
-                &mut command,
-                input,
-                timeout,
-                ExitPolicy::KillProcessGroup,
-            ),
-        };
-        crate::telemetry::process_capture(&span, &captured);
+        Ok((command, timeout))
+    }
+
+    /// Judge a call's capture and end its span: the span ends after the cap judgement, so a
+    /// capture rejected for its truncation ends it `failed` with the cap's reason.
+    fn settle(
+        &self,
+        program: &'static str,
+        span: &tracing::Span,
+        captured: SupervisedCapture,
+    ) -> Result<Vec<u8>, ToolError> {
+        // A prefix of an answer is not the answer: past the cap, the call failed (M2).
+        let capped = captured
+            .status
+            .is_ok()
+            .then(|| captured.truncation.reason())
+            .flatten();
+        crate::telemetry::process_capture(span, &captured, capped.as_deref());
+        if let Some(reason) = capped {
+            return Err(ToolError::Failed(
+                self.redactor
+                    .diagnostic(format!("`{program}` {reason}").as_bytes()),
+            ));
+        }
         match captured.status {
             Ok(status) if status.success() => Ok(captured.stdout),
             Ok(_) => {
@@ -175,6 +268,20 @@ impl Tools<'_> {
                 self.redactor.diagnostic(error.to_string().as_bytes()),
             )),
         }
+    }
+}
+
+/// The span of one call: a git process is an `af.git` span like every other; `gh` is an
+/// `af.process`.
+fn tool_span<S: AsRef<OsStr>>(program: &'static str, args: &[S]) -> tracing::Span {
+    if program == "git" {
+        crate::telemetry::git(
+            args.first()
+                .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+                .as_deref(),
+        )
+    } else {
+        crate::telemetry::process(program, "remote_check")
     }
 }
 
@@ -381,60 +488,87 @@ impl GateRepository {
         static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let call = CALLS.fetch_add(1, Ordering::Relaxed);
         let mut marks: BTreeMap<&str, usize> = BTreeMap::new();
-        let mut stream = Vec::new();
+        let mut blobs: Vec<&review_source_git::Entry> = Vec::new();
         for manifest in manifests {
             for entry in &manifest.entries {
-                if marks.contains_key(entry.content.as_str()) {
-                    continue;
+                if !marks.contains_key(entry.content.as_str()) {
+                    marks.insert(&entry.content, marks.len() + 1);
+                    blobs.push(entry);
                 }
-                let mark = marks.len() + 1;
-                let bytes = cas
-                    .get(&entry.content)
-                    .map_err(|error| Err(format!("reading a Snapshot blob: {error}")))?;
-                stream.extend_from_slice(
-                    format!("blob\nmark :{mark}\ndata {}\n", bytes.len()).as_bytes(),
-                );
-                stream.extend_from_slice(&bytes);
-                stream.push(b'\n');
-                marks.insert(&entry.content, mark);
             }
         }
-        for (index, manifest) in manifests.iter().enumerate() {
-            stream.extend_from_slice(
-                format!(
+        // The stream goes to fast-import one blob at a time, each read from the CAS straight
+        // into the pipe and verified on the way: no buffer ever holds every blob (M2).
+        let unreadable = std::sync::Mutex::new(None::<String>);
+        let fail = |message: String| {
+            *unreadable.lock().unwrap_or_else(|e| e.into_inner()) = Some(message.clone());
+            std::io::Error::other(message)
+        };
+        let write_stream = |stdin: &mut dyn Write| -> std::io::Result<()> {
+            let mut input = std::io::BufWriter::with_capacity(256 * 1024, stdin);
+            for (index, entry) in blobs.iter().enumerate() {
+                let mut object = cas
+                    .open_for_verified_read(&entry.content)
+                    .map_err(|error| fail(format!("reading a Snapshot blob: {error}")))?;
+                let length = object.len();
+                if length != entry.size {
+                    return Err(fail(
+                        "a Snapshot blob's size differs from its manifest".into(),
+                    ));
+                }
+                write!(input, "blob\nmark :{}\ndata {length}\n", index + 1)?;
+                let copied = object
+                    .copy_to_and_verify(&mut input)
+                    .map_err(|error| fail(format!("reading a Snapshot blob: {error}")))?;
+                if copied != length {
+                    return Err(fail(
+                        "a Snapshot blob's size differs from its manifest".into(),
+                    ));
+                }
+                input.write_all(b"\n")?;
+            }
+            for (index, manifest) in manifests.iter().enumerate() {
+                write!(
+                    input,
                     "commit refs/af/scratch/{call}-{index}\ncommitter {GATE_IDENTITY}\ndata 0\n"
-                )
-                .as_bytes(),
-            );
-            for entry in &manifest.entries {
-                stream.extend_from_slice(
-                    format!(
+                )?;
+                for entry in &manifest.entries {
+                    let mut line = format!(
                         "M {} :{} ",
                         entry.kind.mode(),
                         marks[entry.content.as_str()]
                     )
-                    .as_bytes(),
-                );
-                quote_path(&review_core::decode_path(&entry.path), &mut stream);
-                stream.push(b'\n');
+                    .into_bytes();
+                    quote_path(&review_core::decode_path(&entry.path), &mut line);
+                    line.push(b'\n');
+                    input.write_all(&line)?;
+                }
+                input.write_all(b"\n")?;
             }
-            stream.push(b'\n');
-        }
-        stream.extend_from_slice(b"done\n");
+            input.write_all(b"done\n")?;
+            input.flush()
+        };
         let marks_file = self.root.join("marks");
-        self.git(
-            tools,
+        let imported = tools.run_streaming(
+            "git",
             &[
+                OsString::from(format!("--git-dir={}", self.git_dir.display())),
                 OsString::from("fast-import"),
                 OsString::from("--quiet"),
                 OsString::from("--done"),
                 OsString::from(format!("--export-marks={}", marks_file.display())),
             ],
-            Some(stream),
             true,
-            &[],
-        )
-        .map_err(Ok)?;
+            &self.root,
+            write_stream,
+        );
+        if let Some(message) = unreadable
+            .into_inner()
+            .unwrap_or_else(|error| error.into_inner())
+        {
+            return Err(Err(message));
+        }
+        imported.map_err(Ok)?;
         let exported = std::fs::read_to_string(&marks_file)
             .map_err(|error| Err(format!("reading the gate repository's marks: {error}")))?;
         let mut blobs = BTreeMap::new();
@@ -822,6 +956,34 @@ fn quote_path(path: &[u8], out: &mut Vec<u8>) {
 mod tests {
     use super::*;
 
+    /// Whatever the operator's environment holds, only the allowlist is inherited: never a
+    /// configuration, program or host override (L3).
+    #[test]
+    fn only_the_allowlist_is_inherited() {
+        let everything = inherited(|name| Some(OsString::from(format!("value-of-{name}"))));
+        let names: Vec<&str> = everything.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, INHERITED_ENVIRONMENT);
+        for refused in [
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_EXTERNAL_DIFF",
+            "GIT_SSH_COMMAND",
+            "GIT_ASKPASS",
+            "SSH_ASKPASS",
+            "GIT_DIR",
+            "GIT_EXEC_PATH",
+            "GH_HOST",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+        ] {
+            assert!(!names.contains(&refused), "{refused}");
+        }
+        assert!(inherited(|_| None).is_empty());
+    }
+
     #[test]
     fn gate_messages_parse_back_exactly() {
         let snapshot = format!("sha256:{}", "a".repeat(64));
@@ -953,5 +1115,80 @@ mod tests {
         let mut out = Vec::new();
         quote_path(b"a \"b\"\\c\nd\xff", &mut out);
         assert_eq!(out, b"\"a \\\"b\\\"\\\\c\\nd\\377\"");
+    }
+
+    /// A gate call that writes past its cap and exits 0 fails naming the cap, and its process
+    /// span ends after that judgement: `error.type = "failed"` with the cap's reason, the exit
+    /// and the kept stream sizes still those of the capture.
+    #[test]
+    fn a_gate_call_past_the_cap_ends_its_span_failed() {
+        use review_telemetry::level::Level;
+        use review_telemetry::record::SealExit;
+        use review_telemetry::segment::writer::{Writer, WriterOptions};
+        use serde_json::Value;
+        let temp = tempfile::tempdir().unwrap();
+        let reason = "stdout was truncated at the 4 KiB output cap: it wrote 10000 bytes, of \
+                      which only the first 4 KiB were kept";
+        let redactor = Redactor::default();
+        let tools = Tools {
+            path: Some(OsStr::new("/usr/bin:/bin")),
+            deadline: Instant::now() + Duration::from_secs(120),
+            cancellation: None,
+            redactor: &redactor,
+        };
+        let writer = Writer::new(WriterOptions::new(
+            temp.path().join("telemetry"),
+            Level::Spans,
+        ))
+        .unwrap();
+        let dispatch = tracing::Dispatch::new(
+            review_telemetry::subscriber::TelemetrySubscriber::new(writer.clone()),
+        );
+        tracing::dispatcher::with_default(&dispatch, || {
+            let run = tracing::info_span!("af.run", af.run_id = "run-1");
+            let _run = run.enter();
+            let error = tools
+                .run_capped(
+                    "sh",
+                    &["-c", "head -c 10000 /dev/zero; exit 0"],
+                    None,
+                    true,
+                    temp.path(),
+                    &[],
+                    4096,
+                )
+                .unwrap_err();
+            match error {
+                ToolError::Failed(Some(diagnostic)) => {
+                    assert!(diagnostic.contains(reason), "{diagnostic}")
+                }
+                other => panic!("the call must fail naming the cap: {other:?}"),
+            }
+        });
+        writer.flush();
+        let text = std::fs::read_to_string(writer.path().unwrap()).unwrap();
+        writer.finish(SealExit::Ok).unwrap();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let start = lines
+            .iter()
+            .find(|line| line["t"] == "span_start" && line["name"] == "af.process")
+            .unwrap_or_else(|| panic!("no gate call span: {text}"));
+        assert_eq!(start["attributes"]["af.process.kind"], "remote_check");
+        let end = lines
+            .iter()
+            .find(|line| line["t"] == "span_end" && line["span_id"] == start["span_id"])
+            .unwrap_or_else(|| panic!("no end for {start}"));
+        let attributes = &end["attributes"];
+        assert_eq!(end["status"], "error", "{end}");
+        assert_eq!(attributes["error.type"], "failed", "{end}");
+        assert_eq!(attributes["af.failure.class"], "failed", "{end}");
+        assert_eq!(attributes["af.failure.reason"], reason, "{end}");
+        assert_eq!(attributes["process.exit_code"], 0, "{end}");
+        assert_eq!(attributes["af.stdout_bytes"], 4096, "{end}");
+        assert_eq!(attributes["af.stderr_bytes"], 0, "{end}");
+        assert!(attributes["process.pid"].is_u64(), "{end}");
     }
 }

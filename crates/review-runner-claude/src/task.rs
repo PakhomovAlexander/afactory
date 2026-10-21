@@ -286,7 +286,13 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             runner = runner.killing_process_group_on_exit();
         }
         for (name, value) in &self.grants {
-            runner = runner.with_env(name, value);
+            // The config directory is redacted from everything stored, in every spelling, as
+            // `CODEX_HOME` is; `HOME` and `USER` are ordinary context a finding may name.
+            runner = if name == "CLAUDE_CONFIG_DIR" {
+                runner.with_grant(name, value)
+            } else {
+                runner.with_env(name, value)
+            };
         }
         // Sandbox-local, non-secret context resolved by the kernel for this exact Attempt.
         for (name, value) in environment {

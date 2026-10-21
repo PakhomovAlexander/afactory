@@ -18,8 +18,15 @@ check: preflight-check fmt lint test release-check
 fmt:
 	$(CI_STEP) fmt cargo fmt --all -- --check
 
+# The default-off diagnostic features (ADR-0174) and the calibration loop (ADR-0181) are compiled
+# and linted as the laboratory's diagnostic and calibration builds use them, and the trace
+# recorder's and the loop's feature-on tests run; no product build or test above enables them.
+# The calibration builds of the probe and of `af` are built and executed too (ADR-0182).
 lint:
 	$(CI_STEP) lint cargo clippy --all-targets --locked -- -D warnings
+	$(CI_STEP) lint-diagnostic-features cargo clippy --locked -p review-pipeline -p af --example perf-probe --bin af --features review-pipeline/perf-trace,review-pipeline/perf-control,review-pipeline/perf-calibration,af/perf-trace,af/perf-control,af/perf-calibration -- -D warnings
+	$(CI_STEP) test-perf-trace cargo test --locked -p review-core --features perf-trace,perf-calibration --lib perf_
+	$(CI_STEP) test-perf-calibration cargo test --locked -p review-pipeline --features perf-calibration --test perf_probe calibration_build
 
 test:
 ifeq ($(TEST_RUNNER),nextest)
@@ -64,11 +71,17 @@ release-check:
 	$(CI_STEP) af-pin-tests python3 scripts/test-af-pin.py
 	$(CI_STEP) af-pin python3 scripts/af-pin.py --check
 
-# Offline advisory orchestration checks against the native inspection fixture, and the pull
-# request description check against the `af task report` renderer's fixture (ADR-0142).
+# Offline advisory orchestration checks against the native inspection fixture, the pull
+# request description check against the `af task report` renderer's fixture (ADR-0142), and
+# the performance laboratory's deterministic contract, planning and verdict tests with its
+# schema parity (ADR-0162), and the guarded kernel experiments' protected-harness digest against
+# the staged policy and any installed guarded measure (ADR-0185); they never run a benchmark.
 preflight-check:
 	$(CI_STEP) task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) nextest-gate python3 scripts/test-nextest-gate.py
 	$(CI_STEP) test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) provider-auth-host python3 scripts/test-provider-auth-host.py
 	$(CI_STEP) pr-report python3 scripts/test-check-pr-report.py
+	$(CI_STEP) performance-lab python3 scripts/test-performance.py
+	$(CI_STEP) performance-schemas python3 scripts/performance/schemas.py
+	$(CI_STEP) performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check

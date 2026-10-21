@@ -415,3 +415,45 @@ fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
         }
     }
 }
+
+/// A Codex Attempt's HOME is a private directory af owns for that Attempt, not the candidate
+/// tree it works in, so a committed dotfile never configures its tools' shell (L9). CODEX_HOME
+/// is still the granted auth directory, redacted from what is stored.
+#[test]
+fn a_codex_attempt_home_is_private_and_not_the_candidate_tree() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let workdir = temp.path().join("candidate");
+    std::fs::create_dir(&workdir).unwrap();
+    std::fs::write(workdir.join(".bash_profile"), "echo planted\n").unwrap();
+    let auth = temp.path().join("codex-auth");
+    std::fs::create_dir(&auth).unwrap();
+    let program = temp.path().join("fake-codex");
+    std::fs::write(&program, format!("#!/bin/sh\ncat >/dev/null\nprintf 'home=%s\\n' \"$HOME\" >&2\n[ -d \"$HOME\" ] && [ -w \"$HOME\" ] && [ -z \"$(ls -A \"$HOME\")\" ] && printf 'private-empty\\n' >&2\nprintf 'codex_home=%s\\n' \"$CODEX_HOME\" >&2\n{}printf '%s\\n' '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}'\n", write_reply("OK"))).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = CodexTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![]))
+        .unwrap()
+        .with_codex_home(auth.display().to_string());
+    let returned = adapter.invoke(
+        &cas,
+        &workdir,
+        b"implement".to_vec(),
+        LOAD_SAFE_WALL,
+        WorkerAccess::WriteSourceWithShell,
+        None,
+        &[],
+    );
+    assert_eq!(returned.message.unwrap(), b"OK");
+    let stderr = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+    let home = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("home="))
+        .unwrap();
+    assert!(stderr.contains("private-empty\n"), "{stderr}");
+    let candidate = workdir.canonicalize().unwrap();
+    assert!(!home.is_empty() && std::path::Path::new(home).is_absolute());
+    assert_ne!(std::path::Path::new(home), workdir);
+    assert!(!std::path::Path::new(home).starts_with(&workdir));
+    assert!(!std::path::Path::new(home).starts_with(&candidate));
+    assert!(stderr.contains("codex_home=[redacted]\n"), "{stderr}");
+}

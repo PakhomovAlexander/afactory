@@ -1318,3 +1318,28 @@ fn a_read_only_store_creates_nothing_changes_no_byte_and_excludes_writers() {
     assert!(ProjectStore::open_read_only(&state, &id).is_err());
     assert!(!directory.join("project.lock").exists());
 }
+
+/// M6 on a Project Store: an existing `project.lock` open to others is narrowed to 0600 when the
+/// Store opens, and a `project.lock` that is a link is refused, never followed: the file it
+/// names keeps its mode.
+#[test]
+fn an_open_lock_is_narrowed_and_a_linked_lock_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    let id = project_id(ROOTS);
+    drop(ProjectStore::open_unrecorded(&state, &id).unwrap());
+    let lock = store_directory(&state, &id).join("project.lock");
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+    drop(ProjectStore::open_unrecorded(&state, &id).unwrap());
+    assert_eq!(mode(&lock), 0o600);
+
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::write(&elsewhere, b"").unwrap();
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o666)).unwrap();
+    std::fs::remove_file(&lock).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &lock).unwrap();
+    assert!(ProjectStore::open_unrecorded(&state, &id).is_err());
+    assert_eq!(mode(&elsewhere), 0o666);
+}

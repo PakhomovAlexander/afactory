@@ -135,7 +135,8 @@ oversized policy names, and the Worker packages they reference; it drops a pin w
 `.af/workers/NAME` package or `.af/pipelines/NAME.toml` file no longer exists.\n\
   * .af/af.lock records the af release that wrote it and the archive digest of that release for \
 every target. Inside such a project any `af` on PATH runs that release, installing it on demand \
-only when the bytes match; --refresh-lock re-pins to the running release, and --af VERSION runs \
+only as `[self] install_pins` allows and only when the bytes match the lock and the signed \
+release checksums; --refresh-lock re-pins to the running release, and --af VERSION runs \
 the command under another installed-or-installable release, which is how a pin moves forward. A \
 build without an install receipt (a source build) pins nothing.\n\n\
 The command never calls a model, executes a Gate, reads credentials, creates Campaign state, \
@@ -232,9 +233,10 @@ history, and previews a report-only common Task. Binary-management subcommands r
 project dispatch.\n\n\
 Installed versions live under `$XDG_DATA_HOME/af/versions/<v>/` with a receipt each; the \
 default is the `~/.local/bin/af` symlink. A project whose `.af/af.lock` pins another version \
-is run by that version: `af` execs it, installing it on demand when the archive matches the \
-digest the lock records. Outside a lock, releases are verified against their signed \
-`SHA256SUMS`. Updates are checked by a detached, rate-limited child and applied by the policy \
+is run by that version: `af` execs it. One not installed yet is installed on demand as \
+`[self] install_pins` says (\"ask\" by default: a confirmation at the terminal, none without \
+one), and only when the archive matches both the digest the lock records and the release's \
+signed `SHA256SUMS`, which verify every install. Updates are checked by a detached, rate-limited child and applied by the policy \
 in `[self]` (see `af help self`).\n\n\
 An explicit `af self install V` run from a cargo/source-installed af at the default path replaces \
 that running executable with the verified release and adopts the self-managed layout. Other \
@@ -359,7 +361,8 @@ pub(crate) struct RunArgs {
     /// the pipeline the project's routes select from the changed paths]
     #[arg(long, value_name = "FILE", help_heading = "Selector")]
     pub(crate) pipeline: Option<PathBuf>,
-    /// Explicit Campaign state directory (outside the repository)
+    /// Explicit Campaign state directory outside the repository: absent, empty or already an
+    /// af Store; it becomes af-owned, and af may remove it whole
     #[arg(long, value_name = "DIR", help_heading = "Selector")]
     pub(crate) state: Option<PathBuf>,
     /// Campaign name; state lives under XDG state by an opaque id
@@ -1177,7 +1180,8 @@ pub(crate) enum TaskCommand {
             help_heading = "Selector"
         )]
         repo: PathBuf,
-        /// Explicit state directory (outside the repository)
+        /// Explicit state directory outside the repository: absent, empty or already an af
+        /// Store; it becomes af-owned, and af may remove it whole
         #[arg(long, value_name = "DIR", help_heading = "Selector")]
         state: Option<PathBuf>,
         /// The Workspace whose Store and bindings file to use, by label (`af project workspaces`)
@@ -1802,7 +1806,7 @@ another telemetry version such as `v0/`, never read; a segment with an invalid l
 valid one or a line over the 16 KiB record bound, never indexed); and every telemetry directory \
 registered on this machine, with its overlap rechecked: `none`, `overlapping`, or `unknown` when \
 the Store registry cannot be read (the problem is named among the problems and the exit code is \
-unchanged).\n\n\
+unchanged). Paths under the home directory are written `~/…`, under `--json` too.\n\n\
 Never: recovers or removes a segment, records telemetry, reads a Store, reads around an index of \
 another schema version, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the telemetry directory cannot be read or its index is of another \
@@ -2354,7 +2358,7 @@ pub(crate) enum SelfCommand {
         /// Repository whose pin, source identity and catalog apply
         #[arg(long, value_name = "DIR", default_value = ".")]
         repo: PathBuf,
-        /// Explicit common Task state directory outside the repository
+        /// Explicit common Task state directory outside the repository; it becomes af-owned
         #[arg(long, value_name = "DIR")]
         state: Option<PathBuf>,
         /// One JSON document on stdout

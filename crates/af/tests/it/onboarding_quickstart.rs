@@ -12,7 +12,7 @@ fn shell(root: &Path, script: &str) -> std::process::Output {
         .arg("-c")
         .arg(script)
         .current_dir(root)
-        .env("AF_BIN", env!("CARGO_BIN_EXE_af"))
+        .env("AF_BIN", crate::common::af_binary())
         .env("AF_SELF_OFFLINE", "1")
         .env_remove("AF_VERSION")
         .env_remove("AF_RELEASE_KEY")

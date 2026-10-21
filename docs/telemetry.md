@@ -9,7 +9,8 @@ direction, with the packages still to come, is the design note
 
 The kernel never reads it. Identity, replay, the Ledger, budgets, admission and every Worker
 input are the same whether Telemetry is on, off or deleted, and nothing it captures reaches a
-prompt. Nothing leaves the machine unless an OTLP sink is configured.
+prompt. Nothing leaves the machine: this release has no sink, and the `sink` keys are refused
+at load as not implemented.
 
 ## What this release records
 
@@ -113,7 +114,10 @@ nothing.
 and `af.rusage.user_ms`, `af.rusage.system_ms` and `af.rusage.max_rss_bytes`. The supervisor
 (`review-process`, which links no telemetry) carries them through every result it returns, a
 timed-out, killed or cancelled process included; the crates that receive the result record the
-span. The workspace forbids `unsafe` code and no crate it already depends on offers a safe
+span. A process span ends after its caller judged the capture: an Attempt, check, gate call or
+container command whose output went past the capture cap ends it with `error.type = "failed"`
+and the cap reason in `af.failure.reason`, whatever the exit code, its stream sizes those kept
+within the cap. The workspace forbids `unsafe` code and no crate it already depends on offers a safe
 per-child `wait4(2)` (`nix` 0.31 and `rustix` expose none), so the figures come from
 `getrusage(RUSAGE_CHILDREN)`: the change of the process's children totals across a reap is the
 reaped child's own (its CPU time, with that of the descendants it waited for, as `wait4` reports
@@ -263,20 +267,36 @@ none of this.
 | `content` | `spans` plus content blobs: Worker inputs, assistant text, reasoning, tool arguments and results, check output, Store event payloads, Finding bodies, `.af/af.toml` ([Content](#content)) |
 
 `AF_TELEMETRY__LEVEL=content af task run TASK_ID` raises the level for one run. `content` is
-labelled *perturbing* by `af telemetry status`: it keeps blobs and is not bounded by the
-overhead gate.
+labelled *perturbing* by `af telemetry status`: it keeps blobs of what Workers saw and did.
+
+### The segment header
+
+Each segment begins with one header record (`af/TelemetrySegment@1`). Its fields by level:
+
+| Field | `metrics` | `spans` and `content` |
+| --- | --- | --- |
+| `segment_id`, `af_version`, `af_commit`, `pid`, `parent_pid`, `host`, `started_unix_ns`, `mono_origin_unix_ns`, `level` | recorded | recorded |
+| `argv` | `argv[0]` and the subcommand path only (`af task show`), exactly as the caller's argument parser matched it and never guessed from the words; `argv[0]` alone when no parsed path was passed in: no option, no other argument | the whole command line; the value after an option named like a secret (`--api-key`, `--password`, `--pw`) or after `-p` is `[withheld]`, and every argument is judged whole by the credential rules below |
+| `cwd` | `""`: not recorded | the working directory, judged whole, home prefix as `~` |
 
 ## Credentials
 
-Credential-looking material is withheld at every level, by the same rules `af` applies to a
-Provider's own words, and before any bound can cut it:
+Credential-looking material is withheld at every level, before any bound can cut it, by a
+bounded heuristic: the same rules `af` applies to a Provider's own words
+([`providers.md`](providers.md) lists them). It recognises the common shapes of keys, tokens,
+passwords and login challenges; it is not a promise to recognise every secret.
 
 - A text line that looks like a credential (an assignment to a `key`, `token`, `secret`,
-  `password`, `passwd`, `credential` or `auth` name, a bearer token, a token prefix such as
-  `sk-` or `ghp_`, a JSON Web Token, a long hex or base64 run, login-challenge material) becomes
-  `[line withheld: looks like credential material]`.
+  `password`, `passwd`, `passphrase`, `credential` or `auth` name, a password after whitespace,
+  a URL carrying a password, a bearer token, a token prefix such as `sk-` or `ghp_`, an AWS
+  access key id, a JSON Web Token, a long hex, base64 or lower-case run, a device code, the
+  account a login holds, login-challenge material, two long words that are one secret split by a
+  space) becomes `[line withheld: looks like credential material]`. A `sha256:` digest and a
+  40- or 64-hex git object id are no credentials and pass.
 - In a JSON document a member named like a secret keeps its key and loses its value
-  (`{"password":"[withheld]"}`); an object holding a member whose name itself looks like a
+  (`{"password":"[withheld]"}`, `{"pw":"[withheld]"}`); every other string is judged whole by the
+  line rules, whatever its member is named (`{"url":"[withheld]"}` for
+  `https://alice:hunter2@…`); an object holding a member whose name itself looks like a
   credential becomes the string `"[withheld]"`. The document still parses.
 - A line or JSON document too long to be judged whole is withheld whole, never cut.
 - A record attribute whose name itself looks like a credential (a token prefix, a JSON Web
@@ -296,10 +316,11 @@ Provider's own words, and before any bound can cut it:
   `parent_span_id`, the digest fields such as `af.context.manifest` and `plan_digest`, and the
   like), and its value is exactly one of the kernel's identity grammars: a `sha256:` digest of
   64 lowercase hex digits (or a Task's run id, `task:` and a digest), a lowercase-hex id of 16,
-  32 or 64 digits (span ids and `af.corr`, trace ids, Store ids), a segment id, an occurrence id
+  26, 32 or 64 digits (span ids and `af.corr`, Store event ids, trace ids, Store ids), a segment id, an occurrence id
   `segment_id:seq`, or a decimal ordinal. Every other value, an identity-shaped one included
   (`af.run_id = "sk-proj-…"`), is judged as untrusted text, so a credential is withheld there as
-  anywhere; a digest outside an identity position is a long hex run and is withheld too.
+  anywhere; a 32-hex id outside an identity position is a long hex run and is withheld too,
+  while a digest there passes the text rules like any other digest.
 - Token and charge counters are exact decimal strings only. They are, by name and then by
   family (`*` is any text): `af.usage.input_tokens`, `af.usage.output_tokens`,
   `af.usage.cache_read_tokens`, `af.usage.cache_write_tokens`, `af.usage.reasoning_tokens`,
@@ -321,8 +342,12 @@ Provider's own words, and before any bound can cut it:
 - Environment values are never recorded; the home directory prefix becomes `~`. When `HOME`
   gives no usable prefix (unset, not absolute, `/`), the segment records one `redaction`
   problem saying home paths are not replaced, never a silent omission.
+- A Provider's granted path becomes `<grant:NAME>` in every spelling: as given, through the
+  home prefix (`~/.claude-work`), resolved through links, JSON-escaped (`\/Users\/…`),
+  percent-encoded (`%2FUsers%2F…`), and written through `.`, `..` or doubled separators
+  (`/Users/alice/./.claude-work`).
 
-Each blob occurrence records the rules its bytes passed, `af-redact/1`.
+Each blob occurrence records the rules its bytes passed, `af-redact/2`.
 
 ## The `[telemetry]` table
 
@@ -337,7 +362,7 @@ table.
 | --- | --- | --- |
 | `level` | `"spans"` | `off`, `metrics`, `spans`, `content` |
 | `dir` | `""` (`$XDG_STATE_HOME/af/telemetry`) | an absolute path overlapping no Store, cache or other telemetry directory |
-| `max_bytes` | `"4GiB"` | `256MiB` to `[storage] max_bytes` |
+| `max_bytes` | `"4GiB"` | `256MiB` to `[storage] max_bytes`; the Storage Budget's sweep evicts sealed segments to meet it, and `af telemetry status` warns when the directory is over it that the next sweep evicts |
 | `flush_bytes` | `"64KiB"` | `4KiB` to `16MiB` |
 | `flush_latency_ms` | `1000` | 50 to 10000 |
 | `observer_queue_bytes` | `"4MiB"` | `256KiB` to `64MiB` |
@@ -351,10 +376,10 @@ table.
 | `content_model_bodies` | `true` | boolean |
 | `content_index` | `true` | boolean |
 | `harness_native` | `false` | boolean |
-| `sink` | `"none"` | `none`, `otlp` |
-| `sink_endpoint` | `""` | an `http://` or `https://` URL, required with `sink = "otlp"` and refused otherwise |
-| `sink_headers_file` | `""` | a path |
-| `sink_timeout_ms` | `5000` | 100 to 60000 |
+| `sink` | `"none"` | `none`; `otlp` is refused, not implemented in this release |
+| `sink_endpoint` | `""` | empty; a URL is refused, not implemented in this release |
+| `sink_headers_file` | `""` | empty; a path is refused, not implemented in this release |
+| `sink_timeout_ms` | `5000` | 100 to 60000; reserved, no sink reads it |
 
 There is no telemetry `keep_days`: collection by age is `[storage] keep_days` under
 `[storage] auto_gc` or an applied prune, as for every kind of entry
@@ -392,8 +417,13 @@ read or is of another version — then every directory's check is `unknown`, the
 is named among the problems (`registry`), and the exit code is unchanged. It never recovers or
 removes a segment.
 
-`--json` prints one `af/telemetry-status@1` document
-([`schemas/telemetry-status-v1.json`](../schemas/telemetry-status-v1.json)). `--dir PATH` reads
+When the directory holds more than `[telemetry] max_bytes`, `status` says so on stderr, naming
+the next storage sweep that evicts sealed segments to meet it, and marks the bytes line `over`.
+`--json` prints one
+`af/telemetry-status@1` document
+([`schemas/telemetry-status-v1.json`](../schemas/telemetry-status-v1.json)); its paths are
+written as the text output writes them, a path under the home directory as `~/…`.
+`--dir PATH` reads
 another telemetry directory, such as one copied from another machine. Exit codes: 0; 1 when the
 directory cannot be read (or `--dir` names none) or its index is of another schema version;
 2 for a wrong command line or a refused `[telemetry]` key.

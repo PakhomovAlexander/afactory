@@ -1,6 +1,9 @@
 //! Executing a check and recording what happened.
 
-use review_process::{ExitPolicy, SupervisedError, run_supervised_with_policy};
+use review_process::{
+    ExitPolicy, MAX_CAPTURED_STREAM_BYTES, SupervisedError, run_supervised_captured_bounded,
+    sanitized_path,
+};
 use review_store::{Cas, NewEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -190,6 +193,9 @@ pub struct CheckRunner<'a> {
     fingerprint: Option<crate::fingerprint::FingerprintInputs>,
     /// The warm cache result the caller observed (`af.check.warm`): `hit`, `miss` or `none`.
     warm: Option<&'static str>,
+    /// The bytes kept of each output stream of a host-local check; a check that writes more
+    /// fails, naming the cap.
+    output_cap: usize,
 }
 
 impl<'a> CheckRunner<'a> {
@@ -198,9 +204,11 @@ impl<'a> CheckRunner<'a> {
             cas,
             workdir: workdir.as_ref().to_path_buf(),
             local_env: vec![
+                // Existing absolute directories only: an empty or relative entry would resolve
+                // a program against the candidate tree the check runs in.
                 (
                     "PATH".to_string(),
-                    std::env::var("PATH").unwrap_or_default(),
+                    sanitized_path().into_string().unwrap_or_default(),
                 ),
                 ("LC_ALL".to_string(), "C".to_string()),
                 ("TZ".to_string(), "UTC".to_string()),
@@ -213,6 +221,7 @@ impl<'a> CheckRunner<'a> {
             cancellation: None,
             fingerprint: None,
             warm: None,
+            output_cap: MAX_CAPTURED_STREAM_BYTES,
         }
     }
 
@@ -227,6 +236,13 @@ impl<'a> CheckRunner<'a> {
     /// The warm cache result of this check (`hit`, `miss` or `none`), for `af.check.warm`.
     pub fn with_warm_result(mut self, warm: &'static str) -> Self {
         self.warm = Some(warm);
+        self
+    }
+
+    /// Keep at most `cap` bytes of each stream of a host-local check instead of
+    /// [`MAX_CAPTURED_STREAM_BYTES`].
+    pub fn with_output_cap(mut self, cap: usize) -> Self {
+        self.output_cap = cap;
         self
     }
 
@@ -286,12 +302,21 @@ impl<'a> CheckRunner<'a> {
     }
 
     /// [`Self::run`], with how the process ended beside the recorded result. The execution is
-    /// one `af.check` process span (design §7.1, §7.2).
+    /// one `af.check` process span (design §7.1, §7.2). A check whose process ran while
+    /// descendant cleanup fell back to the process-group kill says so in its recorded `reason`
+    /// ([`review_process::descendant_cleanup_fallback`]).
     pub fn run_traced(&self, definition: &CheckDefinition) -> (CheckResult, CheckEnding) {
         let span = self.span(definition);
         let mut facts = review_telemetry::process::ProcessFacts::default();
-        let (result, ending) = span.in_scope(|| self.run_local(definition, &span, &mut facts));
-        finish_span(&span, &facts, &result, ending);
+        let (result, ending, capped) =
+            span.in_scope(|| self.run_process(definition, &span, &mut facts));
+        let result = if ending == CheckEnding::NotStarted {
+            result
+        } else {
+            let fallback = review_process::descendant_cleanup_fallback();
+            noting_cleanup_fallback(result, fallback)
+        };
+        finish_span(&span, &facts, &result, ending, capped);
         (result, ending)
     }
 
@@ -335,18 +360,20 @@ impl<'a> CheckRunner<'a> {
         }
     }
 
-    fn run_local(
+    /// The recorded result, how the process ended, and whether a stream wrote past its cap (the
+    /// result then fails naming it).
+    fn run_process(
         &self,
         definition: &CheckDefinition,
         span: &tracing::Span,
         facts: &mut review_telemetry::process::ProcessFacts,
-    ) -> (CheckResult, CheckEnding) {
+    ) -> (CheckResult, CheckEnding, bool) {
         let base = base_result(definition);
         let argv = match resolved_args(definition, &base) {
             Ok(argv) => argv,
             Err(result) => {
                 span.record("af.check.fingerprint", crate::fingerprint::UNKNOWN);
-                return (*result, CheckEnding::NotStarted);
+                return (*result, CheckEnding::NotStarted, false);
             }
         };
         self.fingerprint(span, definition, &argv);
@@ -358,11 +385,12 @@ impl<'a> CheckRunner<'a> {
         for (key, value) in &self.local_env {
             cmd.env(key, value);
         }
-        let (output, stderr_held) = match self.run_with_deadline(&mut cmd, facts) {
+        let (output, stderr_held, truncated) = match self.run_with_deadline(&mut cmd, facts) {
             RunResult::Completed {
                 output,
                 stderr_held,
-            } => (output, stderr_held),
+                truncated,
+            } => (output, stderr_held, truncated),
             RunResult::Interrupted {
                 reason,
                 stdout,
@@ -378,6 +406,7 @@ impl<'a> CheckRunner<'a> {
                         ..base
                     },
                     ending,
+                    false,
                 );
             }
             RunResult::TimedOut => {
@@ -390,6 +419,7 @@ impl<'a> CheckRunner<'a> {
                         ..base
                     },
                     CheckEnding::TimedOut,
+                    false,
                 );
             }
             RunResult::CouldNotStart(error) => {
@@ -402,6 +432,7 @@ impl<'a> CheckRunner<'a> {
                         ..base
                     },
                     CheckEnding::NotStarted,
+                    false,
                 );
             }
         };
@@ -412,7 +443,12 @@ impl<'a> CheckRunner<'a> {
             CheckEnding::Signaled
         };
         record_output(span, &output.stdout, &output.stderr);
-        (self.finish(base, output, stderr_held), ending)
+        let capped = truncated.is_some();
+        (
+            self.finish(base, output, stderr_held, truncated),
+            ending,
+            capped,
+        )
     }
 
     /// Execute through the normal shared runner and retain the actual AF-observed host interval.
@@ -454,7 +490,7 @@ impl<'a> CheckRunner<'a> {
         } else {
             CheckEnding::Exited
         };
-        finish_span(&span, &facts, &result, ending);
+        finish_span(&span, &facts, &result, ending, false);
         result
     }
 
@@ -501,7 +537,7 @@ impl<'a> CheckRunner<'a> {
                     ..Default::default()
                 }
                 .with_status(&output.status);
-                self.finish(base, output, stderr_held)
+                self.finish(base, output, stderr_held, None)
             }
             Err(error) => CheckResult {
                 reason: Some(format!("execution provider refused or failed: {error}")),
@@ -541,11 +577,13 @@ impl<'a> CheckRunner<'a> {
         }
     }
 
+    /// `truncated` is the reason when a stream wrote more than its cap kept.
     fn finish(
         &self,
         base: CheckResult,
         output: std::process::Output,
         stderr_held: bool,
+        truncated: Option<String>,
     ) -> CheckResult {
         let stdout = self.cas.put(&output.stdout);
         let stderr = self.cas.put(&output.stderr);
@@ -573,6 +611,19 @@ impl<'a> CheckRunner<'a> {
         }
         let (stdout, stderr) = (stdout.ok(), stderr.ok());
 
+        // Output past the cap is not whole evidence: whatever the exit code, the check failed,
+        // and its reason names the cap. The kept prefix is still recorded.
+        if let Some(reason) = truncated {
+            return CheckResult {
+                status: CheckStatus::Failed,
+                exit_code: Some(code.unwrap_or(-1)),
+                reason: Some(format!("output over the cap fails the check: {reason}")),
+                stdout,
+                stderr,
+                ..base
+            };
+        }
+
         if let Some(reason) = stderr_held_reason(stderr_held) {
             return CheckResult {
                 status: CheckStatus::NotRun,
@@ -599,6 +650,18 @@ impl<'a> CheckRunner<'a> {
             ..base
         }
     }
+}
+
+/// `result`, its `reason` naming `fallback` when descendant cleanup fell back to the
+/// process-group kill: a check never claims that guarantee silently. Its own reason comes first.
+fn noting_cleanup_fallback(mut result: CheckResult, fallback: Option<&str>) -> CheckResult {
+    if let Some(fallback) = fallback {
+        result.reason = Some(match result.reason.take() {
+            Some(reason) => format!("{reason}; {fallback}"),
+            None => fallback.to_owned(),
+        });
+    }
+    result
 }
 
 fn base_result(definition: &CheckDefinition) -> CheckResult {
@@ -660,6 +723,8 @@ enum RunResult {
     Completed {
         output: std::process::Output,
         stderr_held: bool,
+        /// Why the output is only a prefix, when a stream wrote more than its cap.
+        truncated: Option<String>,
     },
     TimedOut,
     CouldNotStart(std::io::Error),
@@ -667,32 +732,35 @@ enum RunResult {
 
 impl CheckRunner<'_> {
     /// Use the shared process supervisor with the check-specific exit policy: a successful check
-    /// is over when its leader exits, so background descendants are reaped immediately rather
-    /// than being allowed to hold evidence pipes open.
+    /// is over when its leader exits, so background descendants, a `setsid` one included on
+    /// Linux, are ended before the tree it ran in is sealed rather than being allowed to hold
+    /// evidence pipes open or write after the check.
     fn run_with_deadline(
         &self,
         cmd: &mut std::process::Command,
         facts: &mut review_telemetry::process::ProcessFacts,
     ) -> RunResult {
-        if let Some(flag) = self.cancellation {
-            let captured = review_process::run_supervised_captured_cancellable_with_policy(
-                cmd,
-                None,
-                self.timeout,
-                ExitPolicy::KillProcessGroup,
-                flag,
-            );
-            *facts = review_telemetry::process::ProcessFacts {
-                pid: captured.pid,
-                rusage: captured.rusage.map(resource_use),
-                stdout_bytes: Some(captured.stdout.len() as u64),
-                stderr_bytes: Some(captured.stderr.len() as u64),
-                stderr_held: captured.stderr_held,
-                ..Default::default()
-            };
-            if let Ok(status) = &captured.status {
-                *facts = std::mem::take(facts).with_status(status);
-            }
+        let captured = run_supervised_captured_bounded(
+            cmd,
+            None,
+            self.timeout,
+            ExitPolicy::KillDescendants,
+            self.cancellation,
+            self.output_cap,
+        );
+        *facts = review_telemetry::process::ProcessFacts {
+            pid: captured.pid,
+            rusage: captured.rusage.map(resource_use),
+            stdout_bytes: Some(captured.stdout.len() as u64),
+            stderr_bytes: Some(captured.stderr.len() as u64),
+            stderr_held: captured.stderr_held,
+            ..Default::default()
+        };
+        if let Ok(status) = &captured.status {
+            *facts = std::mem::take(facts).with_status(status);
+        }
+        let truncated = captured.truncation.reason();
+        if self.cancellation.is_some() {
             return match captured.status {
                 Ok(status) => RunResult::Completed {
                     output: std::process::Output {
@@ -701,6 +769,7 @@ impl CheckRunner<'_> {
                         stderr: captured.stderr,
                     },
                     stderr_held: captured.stderr_held,
+                    truncated,
                 },
                 Err(error) => RunResult::Interrupted {
                     ending: match &error {
@@ -716,41 +785,17 @@ impl CheckRunner<'_> {
             };
         }
 
-        match run_supervised_with_policy(cmd, None, self.timeout, ExitPolicy::KillProcessGroup) {
-            Ok(output) => {
-                *facts = review_telemetry::process::ProcessFacts {
-                    pid: output.pid,
-                    rusage: output.rusage.map(resource_use),
-                    stdout_bytes: Some(output.stdout.len() as u64),
-                    stderr_bytes: Some(output.stderr.len() as u64),
-                    stderr_held: output.stderr_held,
-                    ..Default::default()
-                }
-                .with_status(&output.status);
-                RunResult::Completed {
-                    stderr_held: output.stderr_held,
-                    output: std::process::Output {
-                        status: output.status,
-                        stdout: output.stdout,
-                        stderr: output.stderr,
-                    },
-                }
-            }
-            Err(SupervisedError::TimedOut {
-                stdout,
-                stderr,
-                pid,
-                rusage,
-            }) => {
-                *facts = review_telemetry::process::ProcessFacts {
-                    pid,
-                    rusage: rusage.map(resource_use),
-                    stdout_bytes: Some(stdout.len() as u64),
-                    stderr_bytes: Some(stderr.len() as u64),
-                    ..Default::default()
-                };
-                RunResult::TimedOut
-            }
+        match captured.status {
+            Ok(status) => RunResult::Completed {
+                stderr_held: captured.stderr_held,
+                output: std::process::Output {
+                    status,
+                    stdout: captured.stdout,
+                    stderr: captured.stderr,
+                },
+                truncated,
+            },
+            Err(SupervisedError::TimedOut { .. }) => RunResult::TimedOut,
             Err(SupervisedError::Spawn(error)) => RunResult::CouldNotStart(error),
             Err(error) => RunResult::CouldNotStart(std::io::Error::other(error)),
         }
@@ -790,12 +835,14 @@ fn record_output(span: &tracing::Span, stdout: &[u8], stderr: &[u8]) {
 /// End an `af.check` span: the process's facts, `af.check.status`, and on anything but a pass
 /// the kernel's class — `gate_failed` for a failed check, `timed_out`, `refused` for a
 /// cancelled one, `unavailable` for one that never started, `failed` for evidence not
-/// preserved — with the recorded reason.
+/// preserved and for output past the cap (`capped`), whatever the exit code — with the
+/// recorded reason.
 fn finish_span(
     span: &tracing::Span,
     facts: &review_telemetry::process::ProcessFacts,
     result: &CheckResult,
     ending: CheckEnding,
+    capped: bool,
 ) {
     if span.is_disabled() {
         return;
@@ -811,6 +858,7 @@ fn finish_span(
     );
     let class = match (result.status, ending) {
         (CheckStatus::Passed, _) => None,
+        (CheckStatus::Failed, _) if capped => Some("failed"),
         (CheckStatus::Failed, _) => Some("gate_failed"),
         (CheckStatus::NotRun, CheckEnding::TimedOut) => Some("timed_out"),
         (CheckStatus::NotRun, CheckEnding::Cancelled) => Some("refused"),
@@ -830,6 +878,41 @@ mod tests {
     use super::*;
     use crate::{CheckDefinition, Command};
     use review_store::Cas;
+
+    /// V4 of the security close-out: a check that ran while af could not become a child
+    /// subreaper records that its descendant cleanup fell back to the process-group kill, beside
+    /// any reason of its own; with the subreaper set nothing is added.
+    #[test]
+    fn a_check_records_that_descendant_cleanup_fell_back() {
+        let fallback = "descendant cleanup fell back to the process-group kill: af could not \
+                        become a child subreaper (PR_SET_CHILD_SUBREAPER: EPERM)";
+        let passed = CheckResult {
+            name: "test".into(),
+            status: CheckStatus::Passed,
+            exit_code: Some(0),
+            reason: None,
+            program: Some("true".into()),
+            args: Vec::new(),
+            stdout: None,
+            stderr: None,
+            required: true,
+            remote: None,
+        };
+        assert_eq!(noting_cleanup_fallback(passed.clone(), None), passed);
+        let noted = noting_cleanup_fallback(passed.clone(), Some(fallback));
+        assert_eq!(noted.status, CheckStatus::Passed);
+        assert_eq!(noted.reason.as_deref(), Some(fallback));
+        let signalled = CheckResult {
+            reason: Some("terminated by a signal".into()),
+            ..passed
+        };
+        assert_eq!(
+            noting_cleanup_fallback(signalled, Some(fallback))
+                .reason
+                .unwrap(),
+            format!("terminated by a signal; {fallback}")
+        );
+    }
 
     #[test]
     fn held_stderr_is_explicitly_unverifiable() {

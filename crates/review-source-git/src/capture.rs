@@ -15,7 +15,7 @@
 //! reviewed snapshot X, and no such X was ever on disk.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
@@ -27,7 +27,9 @@ use review_store::Cas;
 use sha2::{Digest, Sha256};
 
 use crate::git::{GitError, Repo, TreeId, split_nul};
-use crate::manifest::{Entry, EntryKind, Manifest, ManifestError, digest_bytes, encode_path};
+use crate::manifest::{
+    Entry, EntryKind, Manifest, ManifestError, digest_bytes, encode_path, git_refuses_path,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WorktreeFingerprint {
@@ -76,6 +78,11 @@ pub enum CaptureError {
     UnsafePath {
         path: String,
     },
+    /// A path git itself refuses to check out: a spelling of `.git`, or a symlinked
+    /// `.gitmodules`. Refused, never dropped: the snapshot is the whole tree or none.
+    GitPath {
+        path: String,
+    },
     Watch {
         detail: String,
     },
@@ -113,6 +120,10 @@ impl std::fmt::Display for CaptureError {
             CaptureError::UnsafePath { path } => write!(
                 f,
                 "worktree path {path} has a symlink or non-directory parent; refusing capture outside the checkout"
+            ),
+            CaptureError::GitPath { path } => write!(
+                f,
+                "refusing to capture `{path}`: git refuses it as a Git administration path"
             ),
             CaptureError::Watch { detail } => {
                 write!(
@@ -271,8 +282,14 @@ impl CaptureObserver for NoObserver {}
 /// How many times a changing worktree may be retried before the capture fails closed.
 const MAX_ATTEMPTS: u32 = 3;
 
-/// Where a streamed object lands. Capture hands each blob here exactly once, as it arrives.
-type ObjectSink<'a> = dyn FnMut(&str, &[u8]) -> Result<(), CaptureError> + Send + 'a;
+/// Where a streamed object lands. Capture hands each blob here exactly once, as it arrives: its
+/// object id, its declared size, and a reader framed to exactly that many body bytes.
+type ObjectSink<'a> = dyn FnMut(&str, u64, &mut dyn Read) -> Result<(), StreamError> + Send + 'a;
+
+/// The one buffer committed capture reads object bodies through: a blob no larger is stored
+/// from it directly, a larger one is spooled through it, so no blob is ever resident whole
+/// (ADR-0020's 64 KiB per worker).
+const OBJECT_BUFFER_BYTES: usize = 64 * 1024;
 
 pub struct Capture<'a> {
     repo: &'a Repo,
@@ -306,8 +323,9 @@ impl<'a> Capture<'a> {
             let Some(tab) = record.iter().position(|b| *b == b'\t') else {
                 continue;
             };
-            let (meta, path) = record.split_at(tab);
-            let path = encode_path(&path[1..]);
+            let (meta, raw_path) = record.split_at(tab);
+            let raw_path = &raw_path[1..];
+            let path = encode_path(raw_path);
             let meta = String::from_utf8_lossy(meta);
             let mut fields = meta.split_whitespace();
             let (Some(mode), Some(kind), Some(oid)) = (fields.next(), fields.next(), fields.next())
@@ -318,6 +336,9 @@ impl<'a> Capture<'a> {
             // submodule list, never fetched — implicit recursion is exactly what capture must
             // not do.
             if kind == "commit" && mode == "160000" {
+                if git_refuses_path(raw_path, EntryKind::File) {
+                    return Err(CaptureError::GitPath { path });
+                }
                 submodules.push(Submodule {
                     path,
                     revision: oid.to_string(),
@@ -330,18 +351,22 @@ impl<'a> Capture<'a> {
             }
             let entry_kind = EntryKind::from_mode(mode)
                 .ok_or_else(|| CaptureError::UnsupportedEntry { path: path.clone() })?;
+            if git_refuses_path(raw_path, entry_kind) {
+                return Err(CaptureError::GitPath { path });
+            }
             oids.push((path, entry_kind, oid.to_string()));
         }
 
         // Each distinct object is read once, stored as it arrives, and reduced to its digest —
-        // one blob resident at a time, not the tree.
+        // at most one buffer of one blob resident at a time, not the blob and not the tree.
         let mut unique: Vec<String> = oids.iter().map(|(_, _, o)| o.clone()).collect();
         unique.sort();
         unique.dedup();
         let mut stored: BTreeMap<String, (String, u64)> = BTreeMap::new();
-        self.read_objects(&unique, &mut |oid, bytes| {
-            let digest = self.store(bytes)?;
-            stored.insert(oid.to_string(), (digest, bytes.len() as u64));
+        let mut store = ObjectStore::new(self.cas);
+        self.read_objects(&unique, &mut |oid, size, body| {
+            let digest = store.put(size, body)?;
+            stored.insert(oid.to_string(), (digest, size));
             Ok(())
         })?;
 
@@ -546,6 +571,9 @@ impl<'a> Capture<'a> {
         } else {
             return Ok(None);
         };
+        if git_refuses_path(&crate::manifest::decode_path(&path), kind) {
+            return Err(CaptureError::GitPath { path });
+        }
 
         let fingerprint = if kind == EntryKind::Symlink {
             let bytes = read_link_bytes(&full)?;
@@ -674,6 +702,79 @@ enum StreamError {
     Protocol(CaptureError),
 }
 
+/// Stores framed object bodies in the CAS through one bounded buffer. A body that fits the
+/// buffer is stored from it; a larger one is copied through it into one reused spool file, which
+/// the CAS then reads as it reads a worktree file (`Cas::put_reader_with_buffer`). Either way the
+/// object's bytes and digest are exactly what storing the whole blob at once would give.
+struct ObjectStore<'a> {
+    cas: &'a Cas,
+    buffer: Vec<u8>,
+    spool: Option<std::fs::File>,
+}
+
+impl<'a> ObjectStore<'a> {
+    fn new(cas: &'a Cas) -> Self {
+        Self {
+            cas,
+            buffer: vec![0_u8; OBJECT_BUFFER_BYTES],
+            spool: None,
+        }
+    }
+
+    /// Store the `size` bytes `body` yields and return their digest. Reading is git's protocol;
+    /// writing is the sink's: a short body is a protocol failure the caller detects from the
+    /// framing, a spool or CAS failure is the sink's own.
+    fn put(&mut self, size: u64, body: &mut dyn Read) -> Result<String, StreamError> {
+        let protocol = |error: std::io::Error| StreamError::Protocol(CaptureError::Io(error));
+        let sink = |error: std::io::Error| StreamError::Sink(CaptureError::Io(error));
+        let cas =
+            |error: review_store::CasError| StreamError::Sink(CaptureError::Cas(error.to_string()));
+        if let Ok(small) = usize::try_from(size)
+            && small <= self.buffer.len()
+        {
+            let bytes = &mut self.buffer[..small];
+            body.read_exact(bytes).map_err(protocol)?;
+            let digest = self.cas.put(bytes).map_err(cas)?;
+            debug_assert_eq!(digest, digest_bytes(bytes));
+            return Ok(digest);
+        }
+        let spool = match &mut self.spool {
+            Some(spool) => spool,
+            spool @ None => spool.insert(tempfile::tempfile().map_err(sink)?),
+        };
+        spool.set_len(0).map_err(sink)?;
+        spool.rewind().map_err(sink)?;
+        let mut copied = 0_u64;
+        loop {
+            let read = match body.read(&mut self.buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(protocol(error)),
+            };
+            spool.write_all(&self.buffer[..read]).map_err(sink)?;
+            copied += read as u64;
+        }
+        if copied != size {
+            // Nothing short is stored: git broke its own framing.
+            return Err(StreamError::Protocol(CaptureError::Batch {
+                detail: format!("an object ended after {copied} of its {size} declared bytes"),
+            }));
+        }
+        spool.rewind().map_err(sink)?;
+        let (digest, stored) = self
+            .cas
+            .put_reader_with_buffer(spool, &mut self.buffer)
+            .map_err(cas)?;
+        if stored != size {
+            return Err(StreamError::Sink(CaptureError::Cas(format!(
+                "spooled object stored {stored} of {size} bytes"
+            ))));
+        }
+        Ok(digest)
+    }
+}
+
 /// `<oid> SP <type> SP <size>\n<content>\n`, repeated — or `<oid> SP missing\n`, which is a
 /// refusal, not a skip.
 fn parse_batch_stream(
@@ -696,16 +797,22 @@ fn parse_batch_stream(
                 }));
             }
             [oid, _kind, size] => {
-                let size: usize = size.parse().map_err(|_| {
+                let size: u64 = size.parse().map_err(|_| {
                     StreamError::Protocol(CaptureError::Batch {
                         detail: format!("unparseable size in header {:?}", header.trim_end()),
                     })
                 })?;
-                let mut bytes = vec![0u8; size];
-                reader.read_exact(&mut bytes).map_err(io)?;
+                // The body is handed on framed to its declared length, never read into one
+                // allocation of that length: a multi-gigabyte blob streams like any other.
+                let mut body = reader.by_ref().take(size);
+                sink(oid, size, &mut body)?;
+                if body.limit() != 0 {
+                    return Err(StreamError::Protocol(CaptureError::Batch {
+                        detail: format!("object {oid} ended before its {size} declared bytes"),
+                    }));
+                }
                 let mut newline = [0u8; 1];
                 reader.read_exact(&mut newline).map_err(io)?;
-                sink(oid, &bytes).map_err(StreamError::Sink)?;
             }
             _ => {
                 return Err(StreamError::Protocol(CaptureError::Batch {
@@ -863,4 +970,108 @@ pub fn worktree_state(repo: &Repo) -> Result<String, CaptureError> {
         }
     }
     Ok(review_core::hex::encode(&hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufRead, Cursor, Read};
+
+    use super::*;
+
+    /// A `cat-file --batch` stream that remembers the largest read anyone asked of it.
+    struct Recording {
+        inner: Cursor<Vec<u8>>,
+        largest_read: usize,
+    }
+
+    impl Read for Recording {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.largest_read = self.largest_read.max(buffer.len());
+            self.inner.read(buffer)
+        }
+    }
+
+    impl BufRead for Recording {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            self.inner.fill_buf()
+        }
+        fn consume(&mut self, amount: usize) {
+            self.inner.consume(amount);
+        }
+    }
+
+    fn batch(objects: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut stream = Vec::new();
+        for (oid, body) in objects {
+            stream.extend_from_slice(format!("{oid} blob {}\n", body.len()).as_bytes());
+            stream.extend_from_slice(body);
+            stream.push(b'\n');
+        }
+        stream
+    }
+
+    /// A blob many times the buffer is read through the buffer, never asked for whole, and its
+    /// stored bytes and digest are exactly those of storing it at once.
+    #[test]
+    fn a_blob_larger_than_the_buffer_streams_into_the_cas() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let large: Vec<u8> = (0..OBJECT_BUFFER_BYTES * 5 + 17)
+            .map(|index| (index * 31 % 251) as u8)
+            .collect();
+        let small = b"small body\n".to_vec();
+        let exact = vec![b'x'; OBJECT_BUFFER_BYTES];
+        let mut stream = Recording {
+            inner: Cursor::new(batch(&[
+                ("aaaa", &large),
+                ("bbbb", &small),
+                ("cccc", &exact),
+                ("dddd", &large),
+            ])),
+            largest_read: 0,
+        };
+        let mut store = ObjectStore::new(&cas);
+        let mut stored = Vec::new();
+        let result = parse_batch_stream(&mut stream, &mut |oid, size, body| {
+            stored.push((oid.to_owned(), size, store.put(size, body)?));
+            Ok(())
+        });
+        assert!(result.is_ok());
+        assert!(
+            stream.largest_read <= OBJECT_BUFFER_BYTES,
+            "a read of {} bytes; the buffer is {OBJECT_BUFFER_BYTES}",
+            stream.largest_read
+        );
+        let expected = [
+            ("aaaa", &large),
+            ("bbbb", &small),
+            ("cccc", &exact),
+            ("dddd", &large),
+        ];
+        assert_eq!(stored.len(), expected.len());
+        for ((oid, size, digest), (want_oid, bytes)) in stored.iter().zip(expected) {
+            assert_eq!(oid, want_oid);
+            assert_eq!(*size, bytes.len() as u64);
+            assert_eq!(*digest, digest_bytes(bytes));
+            assert_eq!(&cas.get(digest).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn a_body_shorter_than_its_header_is_a_protocol_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        for declared in [5_usize, OBJECT_BUFFER_BYTES * 2] {
+            let mut stream = format!("aaaa blob {declared}\n").into_bytes();
+            stream.extend_from_slice(b"abc");
+            let mut store = ObjectStore::new(&cas);
+            let result = parse_batch_stream(&mut Cursor::new(stream), &mut |_, size, body| {
+                store.put(size, body).map(drop)
+            });
+            assert!(
+                matches!(result, Err(StreamError::Protocol(_))),
+                "a short body of {declared} declared bytes was accepted"
+            );
+        }
+    }
 }

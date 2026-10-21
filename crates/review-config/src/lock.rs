@@ -90,13 +90,16 @@ pub enum LockError {
         name: String,
         root: PathBuf,
     },
-    /// The package holds more files or bytes than the walk was bounded to; refused before the
-    /// excess is read.
+    /// The package holds more files or bytes, or one file of it more bytes, than the walk was
+    /// bounded to ([`PackageBounds`]); refused before the excess is read.
     TooLarge {
         name: String,
         root: PathBuf,
+        /// The package-relative file whose turn crossed a bound.
+        at: String,
         files: usize,
         bytes: usize,
+        file_bytes: usize,
     },
     Io {
         path: PathBuf,
@@ -189,11 +192,14 @@ impl std::fmt::Display for LockError {
             LockError::TooLarge {
                 name,
                 root,
+                at,
                 files,
                 bytes,
+                file_bytes,
             } => write!(
                 f,
-                "package `{name}` at {} exceeds {files} files or {bytes} bytes",
+                "package `{name}` at {} is refused at `{at}`: a package is at most {files} files \
+                 and {bytes} bytes, a package file is at most {file_bytes} bytes",
                 root.display()
             ),
             LockError::Io { path, error } => write!(f, "{}: {error}", path.display()),
@@ -414,7 +420,13 @@ impl Registry {
         // The directory `locate` checked is the one read: its root is opened without following a
         // symlink and must still be that very directory, so a package swapped after the check is
         // refused rather than read from wherever the swap points.
-        let files = collect_no_follow(name, &root, RootLink::Located(located), None, before_open)?;
+        let files = collect_no_follow(
+            name,
+            &root,
+            RootLink::Located(located),
+            Some(AUTHORITY_PACKAGE_BOUNDS),
+            before_open,
+        )?;
         Ok((root, files))
     }
 
@@ -495,6 +507,14 @@ fn validate_pin(name: &str, pin: &Pin) -> Result<(), LockError> {
     Ok(())
 }
 
+/// The most bytes af reads from one authority file: a policy, a lock, one file of a Worker
+/// package.
+pub const MAX_AUTHORITY_FILE_BYTES: u64 = 1024 * 1024;
+/// The most bytes one Worker package on disk may hold in all.
+pub const MAX_PACKAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// The most files one Worker package on disk may hold.
+pub const MAX_PACKAGE_FILES: usize = 256;
+
 /// Whether the package root itself may be reached through a symlink. [`package_digest`] follows
 /// one; a directory an author names must be the package itself; a registry reads exactly the
 /// directory, by device and inode, that it located.
@@ -505,20 +525,38 @@ enum RootLink {
     Located((u64, u64)),
 }
 
-/// The most regular files and bytes, in total, one walk may read. Each is enforced before the
-/// bytes that would exceed it are read, never after.
+/// The most regular files and bytes, in total and in one file, one walk may read. Each is
+/// enforced before the bytes that would exceed it are read, never after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackageBounds {
     pub files: usize,
     pub bytes: usize,
+    /// The most bytes of any one file.
+    pub file_bytes: usize,
 }
+
+/// The bounds of a Worker package af reads as authority: a pinned reviewer package and its
+/// digest ([`package_digest`], [`Registry`]).
+pub const AUTHORITY_PACKAGE_BOUNDS: PackageBounds = PackageBounds {
+    files: MAX_PACKAGE_FILES,
+    bytes: MAX_PACKAGE_BYTES as usize,
+    file_bytes: MAX_AUTHORITY_FILE_BYTES as usize,
+};
 
 /// Read every regular file in the package into memory, keyed by `/`-separated relative path.
 ///
 /// One read serves both the digest and the manifest parse, so what was verified is what is
-/// interpreted — a second read from disk could race with a writer.
+/// interpreted — a second read from disk could race with a writer. Every file is read without
+/// following a link and within [`MAX_AUTHORITY_FILE_BYTES`]; the package within
+/// [`MAX_PACKAGE_FILES`] files and [`MAX_PACKAGE_BYTES`] bytes.
 fn collect(name: &str, root: &Path) -> Result<BTreeMap<String, Vec<u8>>, LockError> {
-    collect_no_follow(name, root, RootLink::Follow, None, &mut |_| {})
+    collect_no_follow(
+        name,
+        root,
+        RootLink::Follow,
+        Some(AUTHORITY_PACKAGE_BOUNDS),
+        &mut |_| {},
+    )
 }
 
 /// The walk behind [`collect`]. Every directory and file below the root is opened relative to
@@ -572,11 +610,13 @@ fn collect_no_follow(
     // `O_NONBLOCK` keeps a FIFO swapped in for a file from hanging the open.
     let file_flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK;
 
-    let too_large = |bounds: PackageBounds| LockError::TooLarge {
+    let too_large = |bounds: PackageBounds, at: &str| LockError::TooLarge {
         name: name.to_string(),
         root: root.to_path_buf(),
+        at: at.to_string(),
         files: bounds.files,
         bytes: bounds.bytes,
+        file_bytes: bounds.file_bytes,
     };
 
     before_open(root);
@@ -716,7 +756,7 @@ fn collect_no_follow(
                     if let Some(bounds) = bounds
                         && files.len() >= bounds.files
                     {
-                        return Err(too_large(bounds));
+                        return Err(too_large(bounds, &relative));
                     }
                     before_open(&path);
                     let fd = openat(
@@ -743,11 +783,11 @@ fn collect_no_follow(
                             (&file).read_to_end(&mut bytes).map_err(|e| io(&path, e))?;
                         }
                         Some(bounds) => {
-                            let left = bounds.bytes - total;
+                            let left = (bounds.bytes - total).min(bounds.file_bytes);
                             // The size is checked before anything is read, and the read takes at
                             // most one byte past what is left, enough to tell growth from fit.
                             if usize::try_from(stat.st_size).map_or(true, |size| size > left) {
-                                return Err(too_large(bounds));
+                                return Err(too_large(bounds, &relative));
                             }
                             let limit = u64::try_from(left).unwrap_or(u64::MAX).saturating_add(1);
                             (&file)
@@ -755,7 +795,7 @@ fn collect_no_follow(
                                 .read_to_end(&mut bytes)
                                 .map_err(|e| io(&path, e))?;
                             if bytes.len() > left {
-                                return Err(too_large(bounds));
+                                return Err(too_large(bounds, &relative));
                             }
                             total += bytes.len();
                         }
@@ -907,8 +947,8 @@ impl Lockfile {
     /// Parse and validate. A floating version or malformed digest is refused *here*, so a bad
     /// pin cannot sit latent in a file that parses.
     pub fn from_toml(text: &str) -> Result<Lockfile, LockError> {
-        let lockfile: Lockfile =
-            toml::from_str(text).map_err(|e| LockError::Parse(e.to_string()))?;
+        let lockfile: Lockfile = toml::from_str(text)
+            .map_err(|e| LockError::Parse(crate::excerpt::bounded(&e.to_string())))?;
         if lockfile.version != 1 {
             return Err(LockError::Parse(format!(
                 "unsupported lockfile version {}; this kernel understands version 1",
@@ -1054,8 +1094,11 @@ impl Lockfile {
             })?;
         let text = std::str::from_utf8(bytes)
             .map_err(|e| LockError::Parse(format!("reviewer.toml for `{name}`: {e}")))?;
-        let manifest: PackageManifest = toml::from_str(text)
-            .map_err(|e| LockError::Parse(format!("reviewer.toml for `{name}`: {e}")))?;
+        let manifest: PackageManifest = toml::from_str(text).map_err(|e| {
+            LockError::Parse(crate::excerpt::bounded(&format!(
+                "reviewer.toml for `{name}`: {e}"
+            )))
+        })?;
         if manifest.subjects.is_empty() {
             return Err(LockError::Parse(format!(
                 "reviewer.toml for `{name}` accepts no Subject kind"

@@ -32,8 +32,8 @@ use review_core::{
 use review_store::Cas;
 
 use review_process::{
-    ExitPolicy, SupervisedError, run_supervised_captured_cancellable_with_policy,
-    run_supervised_captured_observed, run_supervised_captured_with_policy,
+    ExitPolicy, MAX_CAPTURED_STREAM_BYTES, SupervisedError,
+    run_supervised_captured_bounded_observed, sanitized_path,
 };
 
 use crate::native_failure::{NativeFailureKind, classify_native_failure};
@@ -292,7 +292,25 @@ fn normalize(value: &mut serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_proposal_declaration, parse_reviewer_result};
+    use super::{note_cleanup_fallback, parse_proposal_declaration, parse_reviewer_result};
+
+    /// V4 of the security close-out: an Attempt that ran while af could not become a child
+    /// subreaper records, in its stored stderr, that descendant cleanup fell back to the
+    /// process-group kill; with the subreaper set nothing is added.
+    #[test]
+    fn an_attempt_records_that_descendant_cleanup_fell_back() {
+        let mut stderr = b"worker said".to_vec();
+        note_cleanup_fallback(&mut stderr, None);
+        assert_eq!(stderr, b"worker said");
+        note_cleanup_fallback(
+            &mut stderr,
+            Some("descendant cleanup fell back to the process-group kill: EPERM"),
+        );
+        assert_eq!(
+            stderr,
+            b"worker said\ndescendant cleanup fell back to the process-group kill: EPERM\n"
+        );
+    }
 
     #[test]
     fn a_findings_keyed_answer_is_read_as_reports() {
@@ -1192,10 +1210,13 @@ pub struct ModelRunner {
     workdir: PathBuf,
     timeout: Duration,
     grants: Vec<Grant>,
+    /// Every spelling of a granted value scrubbed from what is stored, longest first.
+    redactions: Vec<String>,
     environment: Vec<Grant>,
     exit_policy: ExitPolicy,
     /// What the `af.harness` span names: the GenAI provider and the bound model.
     harness: Option<(&'static str, Option<String>)>,
+    output_cap: usize,
 }
 
 impl ModelRunner {
@@ -1204,9 +1225,11 @@ impl ModelRunner {
             workdir: workdir.as_ref().to_path_buf(),
             timeout,
             grants: Vec::new(),
+            redactions: Vec::new(),
             environment: Vec::new(),
             exit_policy: ExitPolicy::PreserveProcessGroup,
             harness: None,
+            output_cap: MAX_CAPTURED_STREAM_BYTES,
         }
     }
 
@@ -1218,20 +1241,44 @@ impl ModelRunner {
         self
     }
 
-    /// End the whole process group when the model process exits, as a check does. An Attempt
-    /// that may run a shell sets this so no background child outlives it and keeps writing into
-    /// the sandbox the kernel is about to seal; deadline and cancellation already kill the group.
+    /// Keep at most `cap` bytes of each stream instead of
+    /// [`MAX_CAPTURED_STREAM_BYTES`]. A process that writes more fails its Attempt either way.
+    pub fn with_output_cap(mut self, cap: usize) -> Self {
+        self.output_cap = cap;
+        self
+    }
+
+    /// End the whole process group when the model process exits, as a check does, and on Linux
+    /// every descendant that left it (`ExitPolicy::KillDescendants`). An Attempt that may run a
+    /// shell sets this so no background child outlives it and keeps writing into the sandbox
+    /// the kernel is about to seal; deadline and cancellation already kill the group.
     pub fn killing_process_group_on_exit(mut self) -> Self {
-        self.exit_policy = ExitPolicy::KillProcessGroup;
+        self.exit_policy = ExitPolicy::KillDescendants;
         self
     }
 
     /// Grant one credential to the child. The value never appears in anything stored: it is
-    /// scrubbed from stdout and stderr before either is kept or quoted.
+    /// scrubbed from stdout and stderr before either is kept or quoted. A value that is an
+    /// absolute path is scrubbed in its canonical spelling too (`/var/…` and `/private/var/…`
+    /// on macOS, a symbolic link resolved), since a CLI may print the path it resolved.
     pub fn with_grant(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        let value = value.into();
+        let path = Path::new(&value);
+        let canonical = path
+            .is_absolute()
+            .then(|| std::fs::canonicalize(path).ok())
+            .flatten()
+            .and_then(|canonical| canonical.to_str().map(str::to_owned));
+        for spelling in std::iter::once(value.clone()).chain(canonical) {
+            if !spelling.is_empty() && !self.redactions.contains(&spelling) {
+                self.redactions.push(spelling);
+            }
+        }
+        self.redactions
+            .sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         self.grants.push(Grant {
             name: name.into(),
-            value: value.into(),
+            value,
         });
         self
     }
@@ -1423,7 +1470,7 @@ impl ModelRunner {
         cmd.args(&argv);
         cmd.current_dir(&self.workdir);
         cmd.env_clear();
-        cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
+        cmd.env("PATH", sanitized_path());
         cmd.env("HOME", &self.workdir);
         cmd.env("LC_ALL", "C");
         for variable in &self.environment {
@@ -1469,41 +1516,54 @@ impl ModelRunner {
                     .collect(),
             )
         });
-        let output = span.in_scope(|| match (&observation, cancellation) {
-            (Some(observation), cancellation) => run_supervised_captured_observed(
+        let output = span.in_scope(|| {
+            run_supervised_captured_bounded_observed(
                 &mut cmd,
                 Some(input),
                 self.timeout,
                 self.exit_policy,
                 cancellation,
-                observation.observer(),
-            ),
-            (None, Some(flag)) => run_supervised_captured_cancellable_with_policy(
-                &mut cmd,
-                Some(input),
-                self.timeout,
-                self.exit_policy,
-                flag,
-            ),
-            (None, None) => run_supervised_captured_with_policy(
-                &mut cmd,
-                Some(input),
-                self.timeout,
-                self.exit_policy,
-            ),
+                observation.as_ref().map(Observation::observer),
+                self.output_cap,
+            )
         });
         if let Some(observation) = &observation {
             observation.close();
         }
-        let harness = HarnessRecord::new(span, &output, observation);
-        capture.stdout = redact(output.stdout, &self.grants);
-        capture.stderr = redact(output.stderr, &self.grants);
+        // Output past the cap is not evidence the kernel can keep whole: whatever the exit
+        // status said, the Attempt failed (M2), and its span ends failed with the cap's reason.
+        let capped = match (&output.status, output.truncation.reason()) {
+            (Ok(status), Some(reason)) => Some((status.code().unwrap_or(-1), reason)),
+            _ => None,
+        };
+        let harness = HarnessRecord::new(
+            span,
+            &output,
+            observation,
+            capped.as_ref().map(|(_, reason)| reason.as_str()),
+        );
+        capture.stdout = redact(output.stdout, &self.redactions);
+        capture.stderr = redact(output.stderr, &self.redactions);
         if output.stderr_held {
             capture
                 .stderr
                 .extend_from_slice(b"\nstderr was still held after 5 seconds\n");
         }
         capture.started = !matches!(output.status, Err(SupervisedError::Spawn(_)));
+        if capture.started && self.exit_policy == ExitPolicy::KillDescendants {
+            note_cleanup_fallback(
+                &mut capture.stderr,
+                review_process::descendant_cleanup_fallback(),
+            );
+        }
+        // The kept prefix of a capped capture is still stored for usage.
+        if let Some((exit_code, reason)) = capped {
+            capture.status = Err(RunnerError::Failed {
+                exit_code,
+                stderr_excerpt: reason,
+            });
+            return (capture, Some(harness));
+        }
         capture.status = output.status.map_err(|error| match error {
             SupervisedError::TimedOut { .. } => RunnerError::TimedOut {
                 after_ms: self.timeout.as_millis() as u64,
@@ -1570,8 +1630,9 @@ impl HarnessRecord {
         span: tracing::Span,
         output: &review_process::SupervisedCapture,
         observation: Option<Observation>,
+        capped: Option<&str>,
     ) -> Self {
-        let (facts, failure) = harness_facts(output);
+        let (facts, failure) = harness_facts(output, capped);
         let observation = observation.map(|observation| {
             (
                 observation,
@@ -1623,9 +1684,12 @@ impl HarnessRecord {
 }
 
 /// What the `af.harness` span records of what the supervisor returned: the process, its resource
-/// use and stream sizes, and on anything but a clean exit the kernel's class.
+/// use and stream sizes, and on anything but a clean exit the kernel's class. `capped` is the cap
+/// reason when the Attempt rejected the capture for its truncation: the span ends `failed`
+/// with it, whatever the exit status said.
 fn harness_facts(
     output: &review_process::SupervisedCapture,
+    capped: Option<&str>,
 ) -> (
     review_telemetry::process::ProcessFacts,
     Option<(&'static str, String)>,
@@ -1647,31 +1711,40 @@ fn harness_facts(
     if let Ok(status) = &output.status {
         facts = facts.with_status(status);
     }
-    let failure = match &output.status {
-        Ok(status) if status.success() => None,
-        Ok(_) => Some(("failed", "the harness exited unsuccessfully".to_string())),
-        Err(SupervisedError::TimedOut { .. }) => {
+    let failure = match (&output.status, capped) {
+        (Ok(_), Some(reason)) => Some(("failed", reason.to_string())),
+        (Ok(status), None) if status.success() => None,
+        (Ok(_), None) => Some(("failed", "the harness exited unsuccessfully".to_string())),
+        (Err(SupervisedError::TimedOut { .. }), _) => {
             Some(("timed_out", "the harness exceeded its deadline".to_string()))
         }
-        Err(SupervisedError::Cancelled) => {
+        (Err(SupervisedError::Cancelled), _) => {
             Some(("refused", "the Attempt was cancelled".to_string()))
         }
-        Err(SupervisedError::Spawn(_)) => Some((
+        (Err(SupervisedError::Spawn(_)), _) => Some((
             "unavailable",
             "the harness could not be started".to_string(),
         )),
-        Err(error) => Some(("failed", error.to_string())),
+        (Err(error), _) => Some(("failed", error.to_string())),
     };
     (facts, failure)
 }
 
-/// Replace every occurrence of every grant value. Byte-level, because captured output is not
-/// guaranteed to be UTF-8 and a secret split across an encoding error must still be caught
+/// Record in an Attempt's stored stderr, as a held pipe is, that its descendant cleanup fell back
+/// to the process-group kill: an Attempt never claims that guarantee silently.
+fn note_cleanup_fallback(stderr: &mut Vec<u8>, fallback: Option<&str>) {
+    if let Some(fallback) = fallback {
+        stderr.extend_from_slice(format!("\n{fallback}\n").as_bytes());
+    }
+}
+
+/// Replace every occurrence of every granted spelling. Byte-level, because captured output is
+/// not guaranteed to be UTF-8 and a secret split across an encoding error must still be caught
 /// where it appears intact.
-fn redact(bytes: Vec<u8>, grants: &[Grant]) -> Vec<u8> {
+fn redact(bytes: Vec<u8>, redactions: &[String]) -> Vec<u8> {
     let mut out = bytes;
-    for grant in grants {
-        let secret = grant.value.as_bytes();
+    for secret in redactions {
+        let secret = secret.as_bytes();
         if secret.is_empty() {
             continue;
         }

@@ -449,7 +449,7 @@ fn version(
             review_process::ExitPolicy::KillProcessGroup,
         ),
     };
-    crate::telemetry::process_capture(&span, &captured);
+    crate::telemetry::process_capture(&span, &captured, None);
     match captured.status {
         Ok(status) if status.success() && !captured.stdout.is_empty() => Ok(captured.stdout),
         Ok(status) => Err(format!("{program} -vV exited with {status}")),
@@ -621,6 +621,52 @@ pub(crate) struct PreparedCheck {
     /// A declared Cache Snapshot that could not be materialized: the check does not run, exactly
     /// as a Gate does not dispatch its command.
     pub(crate) refusal: Option<String>,
+}
+
+impl PreparedCheck {
+    /// Order sources against the actual held target, not an assumed monotonic wall clock.
+    /// If the target is future-dated, bind a cold private target for this check. Keep the
+    /// original locks and byte monitoring, and leave Cargo home warm. No cache mutation or
+    /// unbounded removal is needed on this deadline-sensitive path.
+    pub(crate) fn refresh_source_mtimes(
+        &mut self,
+        sandbox: &review_sandbox::Sandbox,
+        runtime: &Path,
+        cancellation: Option<&AtomicBool>,
+        budget: Duration,
+    ) -> std::io::Result<usize> {
+        let started = Instant::now();
+        let mut after = self
+            .directories
+            .iter()
+            .find(|(kind, _)| *kind == WarmBuildCacheKind::CargoTarget)
+            .map(|(_, directory)| directory.latest_mtime(cancellation, budget))
+            .transpose()?
+            .flatten();
+        if after.is_some_and(|latest| latest > std::time::SystemTime::now()) {
+            let kind = WarmBuildCacheKind::CargoTarget;
+            let target = self
+                .environment
+                .iter_mut()
+                .find(|(name, _)| name == kind.variable())
+                .ok_or_else(|| std::io::Error::other("held target has no environment binding"))?;
+            target.1 = runtime.join("target").display().to_string();
+            let observation = self
+                .observations
+                .iter_mut()
+                .find(|observation| observation.kind == kind.as_str())
+                .ok_or_else(|| std::io::Error::other("held target has no observation"))?;
+            observation.kind = "cargo_target:future_mtime".into();
+            observation.eligible = false;
+            observation.bytes_available = 0;
+            after = None;
+        }
+        sandbox.refresh_source_mtimes(
+            after,
+            cancellation,
+            budget.saturating_sub(started.elapsed()),
+        )
+    }
 }
 
 /// The warm layer of one check Attempt. The toolchain is resolved once per distinct hashed

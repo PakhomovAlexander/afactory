@@ -315,3 +315,71 @@ fn the_check_span_carries_its_fingerprint_and_status() {
         "{text}"
     );
 }
+
+/// A check that writes past its output cap and exits 0 fails naming the cap, and its `af.check`
+/// span ends after that judgement with `error.type = "failed"` — not `gate_failed`, which is a
+/// check's own verdict — and the recorded reason naming the cap, the exit and the kept stream
+/// sizes still those of the capture.
+#[test]
+fn the_check_span_fails_past_the_output_cap() {
+    use review_check::CheckStatus;
+    use review_telemetry::level::Level;
+    use review_telemetry::record::SealExit;
+    use review_telemetry::segment::writer::{Writer, WriterOptions};
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let sandbox = temp.path().join("sandbox");
+    std::fs::create_dir_all(&sandbox).unwrap();
+    let writer = Writer::new(WriterOptions::new(
+        temp.path().join("telemetry"),
+        Level::Spans,
+    ))
+    .unwrap();
+    let dispatch = tracing::Dispatch::new(review_telemetry::subscriber::TelemetrySubscriber::new(
+        writer.clone(),
+    ));
+    let cap = "stdout was truncated at the 4 KiB output cap: it wrote 10000 bytes, of which only \
+               the first 4 KiB were kept";
+    let reason = tracing::dispatcher::with_default(&dispatch, || {
+        let run = tracing::info_span!("af.run", af.run_id = "run-1");
+        let _run = run.enter();
+        let result =
+            CheckRunner::new(&cas, &sandbox)
+                .with_output_cap(4096)
+                .run(&CheckDefinition::new(
+                    "loud",
+                    Command::new(
+                        "/bin/sh",
+                        vec![
+                            Arg::literal("-c"),
+                            Arg::literal("head -c 10000 /dev/zero; exit 0"),
+                        ],
+                    ),
+                ));
+        assert_eq!(result.status, CheckStatus::Failed);
+        assert_eq!(result.exit_code, Some(0));
+        let reason = result.reason.unwrap();
+        assert!(reason.contains(cap), "{reason}");
+        reason
+    });
+    writer.flush();
+    let text = std::fs::read_to_string(writer.path().unwrap()).unwrap();
+    writer.finish(SealExit::Ok).unwrap();
+    let ends: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|line| line["t"] == "span_end" && line["attributes"]["af.check.status"].is_string())
+        .collect();
+    assert_eq!(ends.len(), 1, "{text}");
+    let end = &ends[0];
+    let attributes = &end["attributes"];
+    assert_eq!(end["status"], "error", "{end}");
+    assert_eq!(attributes["af.check.status"], "failed", "{end}");
+    assert_eq!(attributes["error.type"], "failed", "{end}");
+    assert_eq!(attributes["af.failure.class"], "failed", "{end}");
+    assert_eq!(attributes["af.failure.reason"], reason.as_str(), "{end}");
+    assert_eq!(attributes["process.exit_code"], 0, "{end}");
+    assert_eq!(attributes["af.stdout_bytes"], 4096, "{end}");
+    assert_eq!(attributes["af.stderr_bytes"], 0, "{end}");
+    assert!(attributes["process.pid"].is_u64(), "{end}");
+}

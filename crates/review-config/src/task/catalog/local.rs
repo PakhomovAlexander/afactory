@@ -67,6 +67,7 @@ impl TaskPlanCompiler {
         let bounds = PackageBounds {
             files: MAX_FILES,
             bytes: MAX_BYTES,
+            file_bytes: MAX_BYTES,
         };
         let files = located_package_files(&label, root, located, bounds, before_open).map_err(
             |error| match error {

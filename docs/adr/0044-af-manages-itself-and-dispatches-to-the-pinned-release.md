@@ -16,6 +16,18 @@ Superseded in part by
 [ADR-0154](0154-check-for-updates-after-headless-and-json-commands.md): the check is scheduled
 after headless and `--json` commands too; only the notice stays on a TTY.
 
+**Amended 2026-10-20** (security audit, finding H3 and M9). `[self] install_pins` is three-valued:
+`"ask"`, the new default, installs a lock's pin on demand only after a confirmation at the
+terminal (stdin and stderr) that names the version, the lock, and whether the release is older
+than the running `af` or a pre-release, and without a terminal installs nothing: an older pin's
+command runs under the current `af` after one notice naming `af self install <version>`;
+`"always"` installs as before; `"never"` is part 2's `false`. The booleans keep their meaning
+(`true` = `"always"`, `false` = `"never"`). `af review plan`, token-free and stateless, never
+installs. Part 3's GitHub source reaches a public repository anonymously over HTTPS with `curl`,
+as `install.sh` does, and uses `gh` only when that is refused (401, 403, 404, or no `curl`),
+judging it by the call it makes rather than by `gh auth status`. `af self update` without
+`--version` refuses a listed newest that is older than the running release.
+
 Consumers ran `af` through per-repository launcher scripts that carried a version and digests,
 while `af.lock` (ADR for #47) already recorded the release that wrote it and could only warn or
 refuse on drift. The CLI parsed argv by hand with one usage string for every command, had no

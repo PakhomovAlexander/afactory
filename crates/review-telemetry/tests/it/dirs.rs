@@ -28,6 +28,7 @@ fn start(root: &std::path::Path, directory: std::path::PathBuf, level: Level) ->
         af_version: "0.0.0-test".into(),
         af_commit: "test".into(),
         write_hook: None,
+        command: Vec::new(),
     }
 }
 

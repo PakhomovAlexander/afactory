@@ -18,8 +18,9 @@ use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use nix::dir::Dir;
 use nix::errno::Errno;
@@ -600,6 +601,71 @@ impl WarmDirectory {
     /// directory should be, is `Uninspectable`, never smaller.
     pub fn bytes(&self) -> Result<u64, Uninspectable> {
         count_child(&self.key, &self.name, &self.path)
+    }
+
+    /// Newest entry mtime in this held target. Traversal never follows links and checks the
+    /// caller's cancellation/deadline even while enumerating one very wide directory.
+    /// An uninspectable target cannot supply a freshness floor.
+    pub fn latest_mtime(
+        &self,
+        cancellation: Option<&AtomicBool>,
+        budget: Duration,
+    ) -> std::io::Result<Option<SystemTime>> {
+        let started = Instant::now();
+        self.latest_mtime_controlled(&mut || {
+            crate::check_refresh_budget(cancellation, started, budget)
+        })
+    }
+
+    fn latest_mtime_controlled(
+        &self,
+        control: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> std::io::Result<Option<SystemTime>> {
+        control()?;
+        let root = open_child(&self.key, &self.name)
+            .map_err(std::io::Error::other)?
+            .ok_or_else(|| std::io::Error::other("held target disappeared"))?;
+        let mut latest = None;
+        let mut interrupted = None;
+        let mut stop_error = None;
+        let walked = walk_from_controlled(
+            root,
+            &self.path,
+            &mut |_, stat| {
+                let nanos =
+                    i128::from(stat.st_mtime) * 1_000_000_000 + i128::from(stat.st_mtime_nsec);
+                let magnitude = Duration::new(
+                    (nanos.unsigned_abs() / 1_000_000_000) as u64,
+                    (nanos.unsigned_abs() % 1_000_000_000) as u32,
+                );
+                let modified = if nanos < 0 {
+                    SystemTime::UNIX_EPOCH.checked_sub(magnitude)
+                } else {
+                    SystemTime::UNIX_EPOCH.checked_add(magnitude)
+                };
+                match modified {
+                    Some(modified) => {
+                        latest = Some(latest.map_or(modified, |old: SystemTime| old.max(modified)))
+                    }
+                    None => interrupted = Some(std::io::Error::other("target mtime out of range")),
+                }
+                true
+            },
+            &mut || match control() {
+                Ok(()) => true,
+                Err(error) => {
+                    // Set below after the walk; a stopped traversal never yields a partial floor.
+                    stop_error = Some(error);
+                    false
+                }
+            },
+        );
+        if let Some(error) = stop_error.or(interrupted) {
+            return Err(error);
+        }
+        walked.map_err(|error| std::io::Error::other(error.detail))?;
+        control()?;
+        Ok(latest)
     }
 
     /// Make the directory a private real directory owned by this user, holding only real files
@@ -1206,6 +1272,15 @@ fn walk_from(
     display: &Path,
     visit: &mut dyn FnMut(&Path, &FileStat) -> bool,
 ) -> Result<(), Uninspectable> {
+    walk_from_controlled(root, display, visit, &mut || true)
+}
+
+fn walk_from_controlled(
+    root: OwnedFd,
+    display: &Path,
+    visit: &mut dyn FnMut(&Path, &FileStat) -> bool,
+    keep_going: &mut dyn FnMut() -> bool,
+) -> Result<(), Uninspectable> {
     let failed = |path: &Path, errno: Errno| Uninspectable {
         counted: 0,
         detail: format!("an uninspectable entry at {}: {errno}", path.display()),
@@ -1215,6 +1290,9 @@ fn walk_from(
     let mut next = Some((root, display.to_path_buf()));
     let mut pending: Vec<(Rc<Dir>, CString, PathBuf)> = Vec::new();
     loop {
+        if !keep_going() {
+            return Ok(());
+        }
         let (descriptor, path) = match next.take() {
             Some(opened) => opened,
             None => {
@@ -1236,6 +1314,9 @@ fn walk_from(
         let mut directory = Dir::from_fd(descriptor).map_err(|errno| failed(&path, errno))?;
         let mut names = Vec::new();
         for entry in directory.iter() {
+            if !keep_going() {
+                return Ok(());
+            }
             let entry = entry.map_err(|errno| failed(&path, errno))?;
             let name = entry.file_name();
             if name.to_bytes() != b"." && name.to_bytes() != b".." {
@@ -1244,6 +1325,9 @@ fn walk_from(
         }
         let directory = Rc::new(directory);
         for name in names {
+            if !keep_going() {
+                return Ok(());
+            }
             let child = path.join(OsStr::from_bytes(name.to_bytes()));
             let stat = match nix::sys::stat::fstatat(
                 &*directory,
@@ -1305,6 +1389,85 @@ mod tests {
 
     fn key(fill: char) -> String {
         fill.to_string().repeat(64)
+    }
+
+    #[test]
+    fn target_mtime_scan_is_deep_nofollow_and_interruptible_inside_flat_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let TaskBuildCacheLock::Held(directory) = lock_task_build_cache(
+            root.path(),
+            &key('a'),
+            &key('b'),
+            "cargo_target",
+            Duration::ZERO,
+        )
+        .unwrap() else {
+            panic!("uncontended target lock");
+        };
+        directory.ensure().unwrap();
+        let nested = directory.path().join("debug/.fingerprint/unit");
+        std::fs::create_dir_all(&nested).unwrap();
+        let future = SystemTime::now() + Duration::from_secs(86_400);
+        let fingerprint = File::create(nested.join("dep-lib-unit")).unwrap();
+        fingerprint
+            .set_times(std::fs::FileTimes::new().set_modified(future))
+            .unwrap();
+        let observed = fingerprint.metadata().unwrap().modified().unwrap();
+        assert_eq!(
+            directory
+                .latest_mtime(None, Duration::from_secs(1))
+                .unwrap(),
+            Some(observed)
+        );
+        let outside = root.path().join("outside");
+        let file = File::create(&outside).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(future + Duration::from_secs(86_400)),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside, directory.path().join("link")).unwrap();
+        assert_eq!(
+            directory
+                .latest_mtime(None, Duration::from_secs(1))
+                .unwrap(),
+            Some(observed)
+        );
+        for index in 0..100 {
+            File::create(directory.path().join(format!("entry-{index}"))).unwrap();
+        }
+        for kind in [
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            let mut checkpoints = 0;
+            let error = directory
+                .latest_mtime_controlled(&mut || {
+                    checkpoints += 1;
+                    if checkpoints == 8 {
+                        Err(std::io::Error::new(kind, "stop inside enumeration"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(checkpoints, 8, "no partial floor or continued scan");
+        }
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            directory
+                .latest_mtime(Some(&cancelled), Duration::from_secs(1))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+        assert_eq!(
+            directory
+                .latest_mtime(None, Duration::ZERO)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
     }
 
     #[test]

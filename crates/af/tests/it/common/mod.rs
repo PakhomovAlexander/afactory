@@ -7,7 +7,18 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const AF: &str = env!("CARGO_BIN_EXE_af");
+#[path = "../../../../review-process/tests/support/executables.rs"]
+mod executables;
+
+/// The binary under test as this test process starts it: its own link to the `af` cargo built
+/// for these tests, taken under the boundary every test builder and launcher of a workspace
+/// output shares (ADR-0174). `review-pipeline`'s tests build `af` again, and every cargo build
+/// replaces `CARGO_BIN_EXE_af` (on macOS it removes and copies the file), so starting that path
+/// itself could meet a missing file; the link is the same inode, whatever replaces the path.
+pub fn af_binary() -> &'static Path {
+    static HELD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    HELD.get_or_init(|| executables::held(Path::new(env!("CARGO_BIN_EXE_af"))))
+}
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const TARGET: &str = env!("AF_TARGET");
 
@@ -24,7 +35,7 @@ pub const TARGET: &str = env!("AF_TARGET");
 /// has a terminal, and that check would ask the real release source over the network. Tests of
 /// the check use [`Sandbox::command`], whose release source is a directory.
 pub fn af() -> Command {
-    let mut command = Command::new(AF);
+    let mut command = Command::new(af_binary());
     for (name, value) in private_home_env() {
         command.env(name, value);
     }
@@ -208,6 +219,24 @@ impl Sandbox {
     }
 
     fn publish_script(&self, version: &str, script: &str, tamper: bool) -> String {
+        self.publish_script_for(version, TARGET, script, tamper)
+    }
+
+    /// [`Sandbox::publish`] for the target `target`, as `install.sh` names its host.
+    pub fn publish_for(&self, version: &str, target: &str) -> String {
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"af {version}\"; exit 0; fi\necho \"fake af {version} $*\"\n"
+        );
+        self.publish_script_for(version, target, &script, false)
+    }
+
+    fn publish_script_for(
+        &self,
+        version: &str,
+        target: &str,
+        script: &str,
+        tamper: bool,
+    ) -> String {
         let tag_dir = self.release_dir(version);
         std::fs::create_dir_all(&tag_dir).unwrap();
         let stage = self.path(&format!("stage-{version}"));
@@ -218,7 +247,7 @@ impl Sandbox {
             std::fs::set_permissions(stage.join("af"), std::fs::Permissions::from_mode(0o755))
                 .unwrap();
         }
-        let asset = Self::asset(version);
+        let asset = format!("af-v{version}-{target}.tar.gz");
         let status = Command::new("tar")
             .arg("-czf")
             .arg(tag_dir.join(&asset))
@@ -261,7 +290,7 @@ impl Sandbox {
 
     /// Adopt the real binary under test as an installed, receipted version.
     pub fn adopt_real_binary(&self) -> PathBuf {
-        self.adopt_real_binary_with(&sha256_hex(&std::fs::read(AF).unwrap()))
+        self.adopt_real_binary_with(&sha256_hex(&std::fs::read(af_binary()).unwrap()))
     }
 
     /// Adopt the real binary with a receipt claiming `digest` for its archive — what a real
@@ -269,7 +298,7 @@ impl Sandbox {
     pub fn adopt_real_binary_with(&self, digest: &str) -> PathBuf {
         let dir = self.versions().join(VERSION);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::copy(AF, dir.join("af")).unwrap();
+        std::fs::copy(af_binary(), dir.join("af")).unwrap();
         write(
             &dir.join("receipt.toml"),
             &format!(
@@ -295,6 +324,15 @@ impl Sandbox {
         command
     }
 
+    /// `[self] install_pins = <value>` as the whole machine configuration: `"always"` installs a
+    /// lock's pin on demand without the terminal confirmation the default `"ask"` needs.
+    pub fn install_pins(&self, value: &str) {
+        write(
+            &self.path("config/af/config.toml"),
+            &format!("[self]\ninstall_pins = {value}\n"),
+        );
+    }
+
     /// A lock pinning `version`, with the archive digest for this target when given.
     pub fn lock(version: &str, digest: Option<&str>) -> String {
         let mut text = format!("version = 1\n\n[af]\nversion = \"{version}\"\n");
@@ -315,10 +353,113 @@ impl Sandbox {
     }
 }
 
+/// A directory holding links to `tools` as the real `PATH` finds them, those it has, and nothing
+/// else: as `PATH`, it has no `gh`, `minisign` or `curl` unless a test puts one there.
+pub fn tool_dir(root: &Path, tools: &[&str]) -> PathBuf {
+    let dir = root.join("tools");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for tool in tools {
+        if let Some(found) = std::env::split_paths(&path)
+            .map(|dir| dir.join(tool))
+            .find(|candidate| candidate.is_file())
+        {
+            std::os::unix::fs::symlink(found, dir.join(tool)).unwrap();
+        }
+    }
+    dir
+}
+
+/// Write `script` at `path` and make it executable.
+pub fn executable(path: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    write(path, script);
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A `curl` that answers as GitHub would from the release directory `$FAKE_RELEASES` for the
+/// repository `$FAKE_REPO`, or with `$FAKE_CURL_STATUS` for everything; it logs every call to
+/// `$FAKE_CURL_LOG` and refuses one not pinned to HTTPS. It needs `cp` and `basename`.
+pub const FAKE_CURL: &str = r#"#!/bin/sh
+echo "$*" >> "$FAKE_CURL_LOG"
+out=""; url=""; proto=""; redir=""; tls=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -w|-H|--retry) shift ;;
+    --proto) proto="$2"; shift ;;
+    --proto-redir) redir="$2"; shift ;;
+    --tlsv1.2) tls=1 ;;
+    https://*) url="$1" ;;
+  esac
+  shift
+done
+[ "$proto" = "=https" ] && [ "$redir" = "=https" ] && [ -n "$tls" ] || { echo "not pinned to https" >&2; exit 2; }
+if [ -n "${FAKE_CURL_STATUS:-}" ]; then printf '%s' "$FAKE_CURL_STATUS"; exit 0; fi
+case "$url" in
+  "https://api.github.com/repos/$FAKE_REPO/releases?per_page=100")
+    sep=""; printf '[' > "$out"
+    for dir in "$FAKE_RELEASES"/*/; do
+      tag=$(basename "$dir")
+      case "$tag" in *-*) pre=true ;; *) pre=false ;; esac
+      printf '%s{"tag_name":"%s","prerelease":%s,"draft":false}' "$sep" "$tag" "$pre" >> "$out"
+      sep=","
+    done
+    printf ']' >> "$out"
+    printf 200 ;;
+  "https://github.com/$FAKE_REPO/releases/download/"*)
+    rest=${url#"https://github.com/$FAKE_REPO/releases/download/"}
+    if [ -f "$FAKE_RELEASES/$rest" ]; then cp "$FAKE_RELEASES/$rest" "$out"; printf 200; else printf 404; fi ;;
+  *) printf 404 ;;
+esac
+"#;
+
+/// A `gh` that serves `release list` and `release download` from `$FAKE_RELEASES`, logging
+/// every call to `$FAKE_GH_LOG`.
+pub const FAKE_GH: &str = r#"#!/bin/sh
+echo "$*" >> "$FAKE_GH_LOG"
+case "$1 $2" in
+  "release list")
+    sep=""; printf '['
+    for dir in "$FAKE_RELEASES"/*/; do
+      tag=$(basename "$dir")
+      case "$tag" in *-*) pre=true ;; *) pre=false ;; esac
+      printf '%s{"tagName":"%s","isPrerelease":%s,"isDraft":false}' "$sep" "$tag" "$pre"
+      sep=","
+    done
+    printf ']\n' ;;
+  "release download")
+    tag="$3"; shift 3; pattern=""; dir=""
+    while [ $# -gt 0 ]; do
+      case "$1" in --pattern) pattern="$2"; shift ;; --dir) dir="$2"; shift ;; esac
+      shift
+    done
+    [ -f "$FAKE_RELEASES/$tag/$pattern" ] || { echo "release not found" >&2; exit 1; }
+    cp "$FAKE_RELEASES/$tag/$pattern" "$dir/$pattern" ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac
+"#;
+
 pub fn out(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 pub fn err(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// An empty directory in `parent` (created when absent) named as a removal of process `pid`
+/// claims it, `.af-removing-<pid>-<device>-<inode>`, binding its own device and inode: a claim
+/// af can prove it made (ADR-0144), unlike a name that is only claim-shaped.
+pub fn af_claim(parent: &Path, pid: u32) -> PathBuf {
+    std::fs::create_dir_all(parent).unwrap();
+    let made = tempfile::Builder::new()
+        .prefix("claimed-")
+        .tempdir_in(parent)
+        .unwrap()
+        .keep();
+    let identity = review_sandbox::Identity::of(&made).unwrap();
+    let claim = parent.join(review_sandbox::claim_name(pid, identity));
+    std::fs::rename(&made, &claim).unwrap();
+    claim
 }

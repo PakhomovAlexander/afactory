@@ -815,6 +815,57 @@ fn version_three_requires_an_explicit_root_gate_execution_binding() {
     ));
 }
 
+/// A container Gate may cap the check's memory and CPUs (M3); the values are typed, never a
+/// free-form option, and a trusted-local Gate has nothing to cap.
+#[test]
+fn a_container_gate_accepts_only_typed_memory_and_cpu_limits() {
+    let container = |extra: &str| {
+        MINIMAL.replace(
+            "version = 2",
+            &format!(
+                "version = 3\n\n[gate]\nprovider = \"container\"\nrequired_isolation = \"container\"\nmode = \"ephemeral-write\"\nimage = \"ghcr.io/example/gate@sha256:{}\"\n{extra}",
+                "a".repeat(64)
+            ),
+        )
+    };
+    let loaded = Definition::from_toml(&container("memory = \"8g\"\ncpus = \"1.5\""))
+        .unwrap()
+        .load()
+        .unwrap();
+    let binding = loaded.gate_execution().unwrap();
+    assert_eq!(binding.memory.as_deref(), Some("8g"));
+    assert_eq!(binding.cpus.as_deref(), Some("1.5"));
+    let unlimited = Definition::from_toml(&container(""))
+        .unwrap()
+        .load()
+        .unwrap();
+    assert_eq!(unlimited.gate_execution().unwrap().memory, None);
+    for (extra, refusal) in [
+        ("memory = \"--privileged\"", "`memory"),
+        ("memory = \"0g\"", "`memory"),
+        ("memory = \"8gb\"", "`memory"),
+        ("cpus = \"0\"", "`cpus"),
+        ("cpus = \"-1\"", "`cpus"),
+        ("cpus = \"2.\"", "`cpus"),
+    ] {
+        assert!(
+            matches!(
+                Definition::from_toml(&container(extra)).unwrap().load(),
+                Err(ConfigError::Binding(message)) if message.contains(refusal)
+            ),
+            "{extra}"
+        );
+    }
+    let trusted = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"\nmemory = \"8g\"",
+    );
+    assert!(matches!(
+        Definition::from_toml(&trusted).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("cannot declare container")
+    ));
+}
+
 #[test]
 fn version_three_accepts_only_unique_known_symbolic_gate_caches() {
     let cached = MINIMAL.replace(

@@ -91,9 +91,10 @@ fn a_check_inherits_no_credentials() {
         .filter_map(|line| line.split_once('=').map(|(key, _)| key.to_string()))
         .collect();
     received.sort();
-    // Exactly the allowlist. Whatever this test process carries — cargo's own variables, HOME,
-    // SSH_AUTH_SOCK, any token a developer or CI runner exported — stays behind.
-    assert_eq!(received, vec!["LC_ALL", "PATH", "TZ"]);
+    // Exactly the allowlist, plus the run marker af itself sets so the reaper can tell this run's
+    // descendants from another's. Whatever this test process carries — cargo's own variables,
+    // HOME, SSH_AUTH_SOCK, any token a developer or CI runner exported — stays behind.
+    assert_eq!(received, vec!["AF_PROCESS_TREE", "LC_ALL", "PATH", "TZ"]);
 }
 
 /// Probe: argument injection. **Discharged** by the check crate's typed slots — asserted here

@@ -191,18 +191,20 @@ const TELEMETRY: &str = "\
 Telemetry records what af does while it works, in its own store, never in a Task or Campaign
 Store (ADR-0153). The kernel's execution authority never reads it: identity, replay, the Ledger,
 budgets, admission and every Worker input are the same whether it is on, off or deleted, and
-nothing it captures reaches a prompt. Nothing leaves the machine unless `sink = \"otlp\"` is set.
+nothing it captures reaches a prompt. Nothing leaves the machine: this release has no sink.
 
 Levels
   off       nothing: no directory, no subscriber
   metrics   command, run, gate, check, node, Attempt, harness and sweep spans with identity and
-            numeric attributes; failures; resource use
+            numeric attributes; failures; resource use; the segment header keeps argv[0] and
+            the subcommand path only, and no working directory
   spans     every span and event, the configuration record, the Store commit mirror and Finding
             summaries; sizes and digests of content, never the content (the default)
   content   spans plus content blobs: Worker inputs, assistant text, reasoning, tool arguments
-            and results, check output (perturbing: not bounded by the overhead gate)
+            and results, check output (perturbing: it keeps that content)
 
-Credential-looking material is withheld at every level, before any bound cuts it: a line that
+Credential-looking material is withheld at every level by a bounded heuristic (not a promise to
+recognise every secret), before any bound cuts it: a line that
 looks like a credential becomes `[line withheld: looks like credential material]`, a JSON member
 named like a secret keeps its key and loses its value (`[withheld]`), a configuration row whose
 key is named like a secret or itself looks like a credential loses its value and origin (and
@@ -347,7 +349,8 @@ the key:
   dir = \"\"                             default $XDG_STATE_HOME/af/telemetry; an absolute path
                                        that neither contains nor lies inside a Store, a cache
                                        or another telemetry directory
-  max_bytes = \"4GiB\"                   256MiB to [storage] max_bytes; counted in the budget
+  max_bytes = \"4GiB\"                   256MiB to [storage] max_bytes; the storage sweep evicts
+                                       sealed segments past it, status warns when over
   flush_bytes = \"64KiB\"                4KiB to 16MiB: the buffer written in one write
   flush_latency_ms = 1000              50 to 10000: the longest a record waits while a run is open
   observer_queue_bytes = \"4MiB\"        256KiB to 64MiB: the stream queue; full, it drops chunks
@@ -362,10 +365,11 @@ the key:
   content_model_bodies = true          keep raw API bodies at content
   content_index = true                 maintain the full-text index over text blobs
   harness_native = false               receive the harness's own telemetry on loopback
-  sink = \"none\"                        none | otlp: push after each run
-  sink_endpoint = \"\"                   an http:// or https:// URL; required with otlp only
-  sink_headers_file = \"\"               one `Name: value` per line, read at push time
-  sink_timeout_ms = 5000               100 to 60000
+  sink = \"none\"                        none: no sink exists; otlp is refused, not implemented
+                                       in this release
+  sink_endpoint = \"\"                   reserved: a value is refused, not implemented
+  sink_headers_file = \"\"               reserved: a value is refused, not implemented
+  sink_timeout_ms = 5000               100 to 60000; reserved
 
 Layout
   $XDG_STATE_HOME/af/telemetry/v1/segments/   one JSONL segment per process: live under its
@@ -400,37 +404,43 @@ Layout
   $XDG_DATA_HOME/af/versions/<v>/af          every installed version, immutable once verified
   $XDG_DATA_HOME/af/versions/<v>/receipt.toml what was installed, from where, verified how
   $XDG_BIN_HOME/af  ->  versions/<v>/af       the default; the symlink is the record
-  $XDG_STATE_HOME/af/self.toml                activation history, last check
+  $XDG_STATE_HOME/af/self.toml                activation history, last check, pinned projects seen
   $XDG_CACHE_HOME/af/self/latest.toml         the cached release check
 
 Pins
   A project's `.af/af.lock` records the af release that wrote it and, per target, the digest of
   that release's archive: the pin names bytes, not just a version. When you run `af` inside such a
-  project, af execs that version; if it is absent, af installs it only when the archive it
-  downloads matches the lock's digest for this machine's target, and an installed copy must carry
-  that digest too. A pin without a digest for this target is never installed on demand:
-  `af self install <v>` trusts the release checksums explicitly, and `af onboard --refresh-lock`
-  run online records every target. AF_SELF_OFFLINE=1 or `[self] install_pins = false` refuses,
-  printing the command to run. AF_VERSION=<v> overrides the pin for one invocation;
-  `af onboard --refresh-lock --af <v>` moves the pin to <v> (that release writes the lock).
+  project, af execs that version; an installed copy must carry the lock's digest. If it is
+  absent, `[self] install_pins` decides: \"ask\" (the default) asks on the terminal, naming the
+  version, the lock and whether it is older than this af or a pre-release, and without a
+  terminal installs nothing; \"always\" installs; \"never\" does not (true and false mean always
+  and never). Whatever is not installed leaves this af to run an older pin's command, printing
+  `af self install <v>`; a newer pin is refused. `af review plan` never installs. An install
+  from a lock needs the archive to match both the lock's digest for this machine's target and
+  the release's signed SHA256SUMS. A pin without a digest for this target is never installed
+  on demand: `af self install <v>` trusts the release checksums explicitly, and
+  `af onboard --refresh-lock` run online records every target. AF_SELF_OFFLINE=1 refuses too.
+  AF_VERSION=<v> overrides the pin for one invocation; `af onboard --refresh-lock --af <v>`
+  moves the pin to <v> (that release writes the lock).
 
   Only a released, receipted binary writes a pin; a source build leaves the lock unpinned or the
   existing pin untouched. Nothing older than 0.8.0 — the oldest supported release — is ever
   dispatched to or made the default.
 
 What binds bytes
-  Under a lock: the lock's digest. Outside one: the release's SHA256SUMS, which every release
-  signs (minisign) with the key embedded in the binary at build time; an unsigned or badly
-  signed SHA256SUMS is refused. `af self status` shows whether this build carries the key; a
-  receipt's verified_by says which check installed each version (lock, minisign, or sha256sums
-  when a build without a key or install.sh without minisign checked the checksum alone).
+  The release's SHA256SUMS, which every release signs (minisign) with the key embedded in the
+  binary at build time; an unsigned or badly signed SHA256SUMS is refused. Under a lock, the
+  lock's digest as well: both must match. `af self status` shows whether this build carries the
+  key; a receipt's verified_by says which checks installed each version (lock+signature,
+  minisign, or sha256sums when a build without a key, or install.sh under
+  AF_INSTALL_ALLOW_UNSIGNED=1, checked the checksum alone).
 
 Updates — `[self]` in ~/.config/af/config.toml
   update_check = true      look for a newer release, at most once per check_every
   check_every = \"24h\"
   auto_update = \"notify\"   notify | always | never
   channel = \"stable\"       stable | rc
-  install_pins = true
+  install_pins = \"ask\"     ask | always | never
   keep_versions = 3
 
   The check never runs on the hot path. After an eligible command — any but help, --version,
@@ -438,14 +448,16 @@ Updates — `[self]` in ~/.config/af/config.toml
   refreshes the cache and exits, with or without a terminal and under --json too. The child holds
   none of the command's pipes, and never changes its output or exit status. check_every
   throttles invocations, a failed attempt included: no timer, daemon or service runs between
-  them. CI, AF_SELF_OFFLINE, update_check = false and auto_update = \"never\" turn the check
-  off. Inside a pinned project the af that dispatches schedules it, once. Only an interactive
+  them. Releases come anonymously over HTTPS (curl) from a public repository, through gh only
+  when that is refused. CI, AF_SELF_OFFLINE, update_check = false and auto_update = \"never\"
+  turn the check off. Inside a pinned project the af that dispatches schedules it, once. Only an interactive
   run — stderr a terminal, no --json — prints the cached notice, one line on stderr; under a
   pin, the af that dispatches prints it. With `always`, the child installs the newer release
   and retargets the default, unless `af self update` or `rollback` changed it meanwhile; the
   running process and every pinned project are untouched. Its \"updated the default\" notice is
   shown only while the activation it announces stands: one a later update or rollback made
-  stale, even an update back to the same version, is dropped.
+  stale, even an update back to the same version, is dropped. `af self update` without
+  --version never moves the default to a release older than the running one.
 
 Commands
   af self status | update [--check] | rollback | install V | remove V | prune

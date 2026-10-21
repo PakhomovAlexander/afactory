@@ -658,6 +658,11 @@ impl CampaignReviewPlanCompiler {
         Ok((plan, captured))
     }
 
+    /// Whether a structural validation is held for reuse by a later check of the same plan.
+    pub fn holds_validated_plan(&self) -> bool {
+        self.validated.lock().map_or(true, |known| known.is_some())
+    }
+
     pub fn validate_plan(
         &self,
         cas: &Cas,

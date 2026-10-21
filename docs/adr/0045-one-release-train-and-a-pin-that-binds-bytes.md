@@ -10,6 +10,16 @@ binary now onboards and plans a fresh repository instead). Extended by
 [ADR-0138](0138-the-repository-pins-its-newest-release.md): the train ends by pinning the
 published release in this repository's own lock.
 
+**Amended 2026-10-20** (security audit, finding H3). Part 2's on-demand install no longer trusts
+the lock's digest alone: it fetches the release's `SHA256SUMS` and `SHA256SUMS.minisig`, verifies
+the signature with the embedded key exactly as an install outside a lock does, and requires both
+the lock's digest and the signed checksum to equal the archive's digest; the receipt says
+`verified_by = "lock+signature"`. A release without signature material is refused under a lock
+as it is outside one. The `--clobber` rationale below still holds: the lock picks the bytes, and
+the signature proves the release published them. The installer (Consequences) refuses without
+`minisign` unless `AF_INSTALL_ALLOW_UNSIGNED=1`, fetches over HTTPS only, and verifies an
+installed copy again on a re-run.
+
 Release `v0.7.1` shipped `af self` and dispatch, but three things stayed manual or unbound: a
 release was a hand-edited version bump and a hand-pushed tag with no changelog, no signature, and
 no `make check` on the tagged commit; a lock pinned a version *name*, so the on-demand install

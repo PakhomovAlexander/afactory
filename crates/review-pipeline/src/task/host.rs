@@ -345,6 +345,15 @@ impl<'a> CapturedTaskAuthority<'a> {
             developer,
         }
     }
+
+    /// Whether a plan check through this authority would reuse an earlier structural
+    /// validation instead of recompiling. A newly constructed Task authority holds none.
+    pub fn holds_validated_plan(&self) -> bool {
+        match &self.compiler {
+            CapturedCompiler::Task(compiler) => compiler.holds_validated_plan(),
+            CapturedCompiler::Review(compiler) => compiler.holds_validated_plan(),
+        }
+    }
 }
 
 impl TaskAuthority for CapturedTaskAuthority<'_> {

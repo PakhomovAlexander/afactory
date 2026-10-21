@@ -128,7 +128,7 @@ fn telemetry_identifier_fields_are_untrusted_by_default() {
             request_id = TOKEN,
             af.attempt_id = "ghp_FIXTURE1234",
             upstream.id = TOKEN,
-            af.pipeline.digest = DIGEST,
+            af.pipeline.digest = "0123456789abcdef0123456789abcdef",
             af.failure.class = TOKEN
         );
         let _entered = span.enter();

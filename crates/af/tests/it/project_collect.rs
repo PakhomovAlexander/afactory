@@ -1838,9 +1838,10 @@ fn an_abandoned_claim_is_planned_and_listed_alike_by_preview_and_apply() {
     let machine = Machine::new();
     let repo = repository(&machine, "");
     refresh(&machine, &repo, &at(0), true);
-    let claim = machine
-        .root()
-        .join("state/af/review/campaigns/.af-removing-999999999-7-0");
+    let claim = crate::common::af_claim(
+        &machine.root().join("state/af/review/campaigns"),
+        999_999_999,
+    );
     std::fs::create_dir_all(claim.join("cas")).unwrap();
     std::fs::write(claim.join("cas/object"), vec![1_u8; 64 * 1024]).unwrap();
     let claim_bytes = allocated(&claim);
@@ -2070,7 +2071,7 @@ fn a_registered_store_renamed_into_a_dead_claim_is_recovered_and_unregistered_al
     refresh(&machine, &repo, &at(0), true);
     let parent = machine.root().join("custom/stores");
     let registered = parent.join("state");
-    let claim = parent.join(".af-removing-999999999-3-0");
+    let claim = crate::common::af_claim(&parent, 999_999_999);
     let claim_bytes = dead_claim(&claim, 64 * 1024);
     register(&machine, &registered, "task");
 
@@ -2114,7 +2115,7 @@ fn a_claim_under_a_project_store_is_counted_once() {
     let repo = repository(&machine, "");
     refresh(&machine, &repo, &at(0), true);
     let workspace = machine.store().join("workspaces/main");
-    let claim = workspace.join(".af-removing-999999999-4-0");
+    let claim = crate::common::af_claim(&workspace, 999_999_999);
     let claim_bytes = dead_claim(&claim, 128 * 1024);
     register(&machine, &workspace.join("state"), "task");
 
@@ -2843,9 +2844,10 @@ fn an_unmeasurable_dead_claim_is_left_and_reported_by_preview_and_apply() {
     let machine = Machine::new();
     let repo = repository(&machine, "");
     refresh(&machine, &repo, &at(0), true);
-    let claim = machine
-        .root()
-        .join("state/af/review/campaigns/.af-removing-999999999-8-0");
+    let claim = crate::common::af_claim(
+        &machine.root().join("state/af/review/campaigns"),
+        999_999_999,
+    );
     let mut deep = claim.clone();
     for _ in 0..300 {
         deep = deep.join("d");
@@ -2888,9 +2890,10 @@ fn an_unmeasurable_dead_claim_is_left_and_reported_by_preview_and_apply() {
 fn af_storage_counts_an_abandoned_claim_as_the_preview_does() {
     let machine = Machine::new();
     let directory = machine.root().join("home");
-    let claim = machine
-        .root()
-        .join("state/af/review/campaigns/.af-removing-999999999-9-0");
+    let claim = crate::common::af_claim(
+        &machine.root().join("state/af/review/campaigns"),
+        999_999_999,
+    );
     let claim_bytes = dead_claim(&claim, 96 * 1024);
     let shown = machine.json(&directory, &[], &["storage", "--json"]);
     schemas::valid(&schemas::validator("storage-v4.json"), &shown);

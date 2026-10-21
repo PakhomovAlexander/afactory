@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
-use review_sandbox::{Mode, Sandbox};
+use review_sandbox::{Mode, Sandbox, TaskBuildCacheLock, lock_task_build_cache};
 use review_source_git::{Entry, EntryKind, Manifest, fs_path};
 use review_store::Cas;
 
@@ -100,7 +100,18 @@ fn shared_cargo_target_builds_a_then_b_then_a_from_fixed_old_source_mtimes() {
     std::fs::create_dir_all(&target_root).unwrap();
     let temp = tempfile::tempdir_in(target_root).unwrap();
     let cas = Cas::open(temp.path().join("cas")).unwrap();
-    let target = temp.path().join("shared-target");
+    let TaskBuildCacheLock::Held(warm) = lock_task_build_cache(
+        &temp.path().join("warm"),
+        &"a".repeat(64),
+        &"b".repeat(64),
+        "cargo_target",
+        Duration::ZERO,
+    )
+    .unwrap() else {
+        panic!("uncontended target lock");
+    };
+    warm.ensure().unwrap();
+    let target = warm.path();
     let private = temp.path().join("private");
     let a = snapshot(&cas, "pub fn value() -> &'static str { \"A\" }\n");
     let b = snapshot(&cas, "pub fn value() -> &'static str { \"B\" }\n");
@@ -126,18 +137,22 @@ fn shared_cargo_target_builds_a_then_b_then_a_from_fixed_old_source_mtimes() {
         .collect::<Vec<_>>();
     let first = Sandbox::materialize(&a, &cas, Mode::ReadOnly).unwrap();
     old_mtimes(first.root(), &a);
-    assert_eq!(run_cargo(first.root(), &target, &private), "A");
+    assert_eq!(run_cargo(first.root(), target, &private), "A");
 
     let second = Sandbox::materialize(&b, &cas, Mode::ReadOnly).unwrap();
     old_mtimes(second.root(), &b);
     // The control demonstrates the stale-link failure with this same target and old blob.
-    assert_eq!(run_cargo(second.root(), &target, &private), "A");
+    assert_eq!(run_cargo(second.root(), target, &private), "A");
     let source = second.root().join("answer/src/lib.rs");
     let mode_before = std::fs::metadata(&source).unwrap().permissions().mode();
     let bytes_before = std::fs::read(&source).unwrap();
     assert_eq!(
         second
-            .refresh_source_mtimes(None, Duration::from_secs(5))
+            .refresh_source_mtimes(
+                warm.latest_mtime(None, Duration::from_secs(5)).unwrap(),
+                None,
+                Duration::from_secs(5)
+            )
             .unwrap(),
         b.entries.len()
     );
@@ -146,17 +161,21 @@ fn shared_cargo_target_builds_a_then_b_then_a_from_fixed_old_source_mtimes() {
         mode_before
     );
     assert_eq!(std::fs::read(&source).unwrap(), bytes_before);
-    assert_eq!(run_cargo(second.root(), &target, &private), "B");
+    assert_eq!(run_cargo(second.root(), target, &private), "B");
 
     let third = Sandbox::materialize(&a, &cas, Mode::ReadOnly).unwrap();
     old_mtimes(third.root(), &a);
     assert_eq!(
         third
-            .refresh_source_mtimes(None, Duration::from_secs(5))
+            .refresh_source_mtimes(
+                warm.latest_mtime(None, Duration::from_secs(5)).unwrap(),
+                None,
+                Duration::from_secs(5)
+            )
             .unwrap(),
         a.entries.len()
     );
-    assert_eq!(run_cargo(third.root(), &target, &private), "A");
+    assert_eq!(run_cargo(third.root(), target, &private), "A");
     for sandbox in [first, second, third] {
         assert!(sandbox.seal().unwrap().unchanged());
     }

@@ -302,3 +302,99 @@ fn an_oversized_input_switches_to_the_declared_pipeline_and_explicit_is_never_ov
     assert_eq!(explicit["route"]["policy"], "explicit");
     assert_eq!(explicit["pipeline"]["inputs_fit"], false);
 }
+
+/// M5 of the 2026-10-20 audit: a hostile route pattern against a long changed path is matched
+/// in O(pattern × path), not exponentially, and a pattern beyond 1024 bytes or 64 wildcards is
+/// refused when the policy is loaded.
+#[test]
+fn a_hostile_route_pattern_plans_at_once_and_an_oversized_one_is_refused() {
+    let hostile =
+        "[[routes]]\nname = \"hostile\"\npaths = [\"*a*a*a*a*a*a*a*a b\"]\npipeline = \"docs\"\n";
+    let routed = Routed::new(hostile);
+    std::fs::write(routed.repo.join("a".repeat(60)), "x\n").unwrap();
+    commit(&routed.repo, "one long name");
+    let started = std::time::Instant::now();
+    let plan = routed.planned(&[]);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(plan["route"]["policy"], "default");
+
+    for (pattern, refusal) in [
+        (format!("{}b", "*a".repeat(65)), "65 wildcards"),
+        ("a".repeat(1025), "1025 bytes"),
+    ] {
+        let project = routed.repo.join(".af/af.toml");
+        let text = std::fs::read_to_string(&project).unwrap();
+        let base = text
+            .split("\n[[routes]]")
+            .next()
+            .unwrap()
+            .trim_end()
+            .to_string();
+        std::fs::write(
+            &project,
+            format!("{base}\n[[routes]]\nname = \"wide\"\npaths = [\"{pattern}\"]\npipeline = \"docs\"\n"),
+        )
+        .unwrap();
+        commit(&routed.repo, "policy: an oversized pattern");
+        let refused = routed.plan(&[]);
+        assert!(!refused.status.success());
+        assert!(stderr(&refused).contains(refusal), "{}", stderr(&refused));
+    }
+}
+
+/// L10 and L14 of the 2026-10-20 audit: an authority file beyond its bound is refused in one
+/// line before it is read whole, and a parse error quotes only a short excerpt of its line.
+#[test]
+fn an_oversized_authority_file_is_refused_in_one_line_and_errors_quote_a_short_excerpt() {
+    let routed = Routed::new(DOCS_ROUTE);
+    let project = routed.repo.join(".af/af.toml");
+    let text = std::fs::read_to_string(&project).unwrap();
+    std::fs::write(routed.repo.join("README.md"), "# Demo\n\nmore\n").unwrap();
+    commit(&routed.repo, "docs");
+    std::fs::write(
+        &project,
+        format!("{text}\n# {}\n", "x".repeat(2 * 1024 * 1024)),
+    )
+    .unwrap();
+    commit(&routed.repo, "policy: two MiB");
+    let refused = routed.plan(&[]);
+    assert!(!refused.status.success());
+    let shown = stderr(&refused);
+    assert_eq!(shown.trim_end().lines().count(), 1, "{shown}");
+    assert!(shown.contains("1048576 bytes"), "{shown}");
+    assert!(shown.len() < 1024, "{} bytes", shown.len());
+
+    // A 200 KB offending line: the error quotes an excerpt of it, not the line.
+    std::fs::write(&project, format!("{text}\nx = {}\n", "[".repeat(200_000))).unwrap();
+    commit(&routed.repo, "policy: one long line");
+    let refused = routed.plan(&[]);
+    assert!(!refused.status.success());
+    let shown = stderr(&refused);
+    assert!(shown.len() < 1024, "{} bytes: {shown}", shown.len());
+    std::fs::write(&project, &text).unwrap();
+    commit(&routed.repo, "policy: back");
+
+    // A Worker package file beyond the bound is refused before it is read whole.
+    let worker = std::fs::read_dir(routed.repo.join(".af/workers"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::write(worker.join("blob.bin"), vec![0_u8; 2 * 1024 * 1024]).unwrap();
+    let refused = af(
+        &routed.state_home(),
+        &["onboard", "--repo", routed.repo.to_str().unwrap(), "--json"],
+    );
+    assert!(!refused.status.success());
+    let shown = stderr(&refused);
+    assert!(
+        shown.contains("blob.bin") && shown.contains("a package file is at most 1048576 bytes"),
+        "{shown}"
+    );
+    assert_eq!(shown.trim_end().lines().count(), 1, "{shown}");
+}

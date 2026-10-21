@@ -469,7 +469,7 @@ fn a_classified_failure_without_events_keeps_its_exit_and_stderr_excerpt() {
             WITHHELD_LINE,
         ),
         (
-            "network failed: 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f",
+            "network failed: 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b",
             NativeFailureKind::Network,
             WITHHELD_LINE,
         ),

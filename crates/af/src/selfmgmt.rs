@@ -3,17 +3,20 @@
 //! Layout: every installed version under `$XDG_DATA_HOME/af/versions/<v>/` with a receipt; the
 //! default is the `$XDG_BIN_HOME/af` symlink; activation history and the pinned projects this
 //! machine has seen in `$XDG_STATE_HOME/af/self.toml`; the cached release check in
-//! `$XDG_CACHE_HOME/af/self/latest.toml`. Releases come from a `ReleaseSource`: GitHub through
-//! `gh` (the private repository, no token stored) or a local directory (`AF_RELEASE_SOURCE`, the
-//! second implementation and the test double).
+//! `$XDG_CACHE_HOME/af/self/latest.toml`. Releases come from a `ReleaseSource`: GitHub, anonymously
+//! over HTTPS with `curl` and through `gh` only when that is refused (a repository that is not
+//! public; no token stored), or a local directory (`AF_RELEASE_SOURCE`, the second implementation
+//! and the test double).
 //!
-//! What binds bytes: under a project lock, the digest the lock records for this target; outside
-//! one, the release's `SHA256SUMS`, which every release signs with the key embedded at build
-//! time. A pin without a digest for this target is never installed on demand.
+//! What binds bytes: the release's `SHA256SUMS`, which every release signs with the key embedded
+//! at build time, and under a project lock also the digest the lock records for this target: an
+//! install from a lock needs both. A pin without a digest for this target is never installed on
+//! demand, and one that is not installed is installed on demand only as `[self] install_pins`
+//! says: after a terminal confirmation (`ask`, the default), always, or never.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
-use std::io::{IsTerminal, Write as _};
+use std::io::{BufRead as _, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::cli::{Af, Shell};
-use crate::config::{self, AutoUpdate, Channel, SelfPolicy};
+use crate::config::{self, AutoUpdate, Channel, InstallPins, SelfPolicy};
 
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const TARGET: &str = env!("AF_TARGET");
@@ -56,9 +59,10 @@ pub(crate) struct Receipt {
     pub(crate) source: String,
     pub(crate) asset: String,
     pub(crate) sha256: String,
-    /// `lock` (matched the project lock's digest), `minisign` (a signed `SHA256SUMS`), or
-    /// `sha256sums` (the checksum alone: a build without a release key, or `install.sh` without
-    /// `minisign`).
+    /// `lock+signature` (matched both the project lock's digest and a signed `SHA256SUMS`),
+    /// `minisign` (a signed `SHA256SUMS`), or `sha256sums` (the checksum alone: a build without a
+    /// release key, or `install.sh` under `AF_INSTALL_ALLOW_UNSIGNED=1`; `lock+sha256sums` when
+    /// such a build installs from a lock).
     pub(crate) verified_by: String,
     pub(crate) installed_at: String,
 }
@@ -520,104 +524,254 @@ trait ReleaseSource {
     fn fetch(&self, tag: &str, asset: &str, dir: &Path) -> Result<PathBuf, String>;
 }
 
-struct GhSource {
+/// GitHub as `install.sh` reaches it: anonymously over HTTPS with `curl`, the release download
+/// URLs and the public releases API, never with a token. A repository that is not public answers
+/// 401, 403 or 404, and a host may have no `curl`: then the GitHub CLI makes the same call under
+/// the user's own login. `gh` is judged by that call alone, never by `gh auth status`, whose exit
+/// code also counts accounts and hosts the call does not use.
+struct GithubSource {
     repo: String,
+    /// Set once the releases API refused the anonymous route: every later call goes through `gh`.
+    via_gh: std::cell::Cell<bool>,
 }
 
-impl ReleaseSource for GhSource {
+impl GithubSource {
+    fn new(repo: String) -> Self {
+        GithubSource {
+            repo,
+            via_gh: std::cell::Cell::new(false),
+        }
+    }
+}
+
+/// The statuses that mean the anonymous route is not open to this repository, so `gh` tries.
+fn anonymous_refused(code: u16) -> bool {
+    matches!(code, 401 | 403 | 404)
+}
+
+impl ReleaseSource for GithubSource {
     fn describe(&self) -> String {
         format!("github:{}", self.repo)
     }
 
     fn tags(&self, include_rc: bool) -> Result<Vec<String>, String> {
-        require_gh()?;
-        let output = review_process::reap::output(Command::new("gh").args([
-            "release",
-            "list",
-            "--repo",
-            &self.repo,
-            "--limit",
-            "100",
-            "--json",
-            "tagName,isPrerelease,isDraft",
-        ]))
-        .map_err(|error| format!("running gh: {error}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "gh release list failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
+        if !self.via_gh.get() {
+            let tmp =
+                tempfile::tempdir().map_err(|error| format!("temporary directory: {error}"))?;
+            let body = tmp.path().join("releases.json");
+            let url = format!(
+                "https://api.github.com/repos/{}/releases?per_page=100",
+                self.repo
+            );
+            match curl_get(&url, &body, true)? {
+                Some(200) => {
+                    let text = std::fs::read(&body).map_err(|error| error.to_string())?;
+                    return api_tags(&text, include_rc);
+                }
+                Some(code) if anonymous_refused(code) => self.via_gh.set(true),
+                None => self.via_gh.set(true),
+                Some(code) => {
+                    return Err(format!(
+                        "the GitHub API answered HTTP {code} listing the releases of {} — fix: retry later",
+                        self.repo
+                    ));
+                }
+            }
         }
-        #[derive(Deserialize)]
-        struct Row {
-            #[serde(rename = "tagName")]
-            tag: String,
-            #[serde(rename = "isPrerelease", default)]
-            prerelease: bool,
-            #[serde(rename = "isDraft", default)]
-            draft: bool,
-        }
-        let rows: Vec<Row> = serde_json::from_slice(&output.stdout)
-            .map_err(|error| format!("gh output: {error}"))?;
-        Ok(rows
-            .into_iter()
-            .filter(|row| !row.draft && (include_rc || !row.prerelease))
-            .map(|row| row.tag)
-            .collect())
+        gh_tags(&self.repo, include_rc)
     }
 
     fn fetch(&self, tag: &str, asset: &str, dir: &Path) -> Result<PathBuf, String> {
-        require_gh()?;
-        let output = review_process::reap::output(
-            Command::new("gh")
-                .args([
-                    "release",
-                    "download",
-                    tag,
-                    "--repo",
-                    &self.repo,
-                    "--pattern",
-                    asset,
-                    "--clobber",
-                    "--dir",
-                ])
-                .arg(dir),
-        )
-        .map_err(|error| format!("running gh: {error}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stderr = stderr.trim();
-            if stderr.contains("release not found") {
-                return Err(format!(
-                    "release {tag} does not exist at {} — fix: `af self update --check` (add --rc for pre-releases) names the newest",
-                    self.describe()
-                ));
+        let mut refused = None;
+        if !self.via_gh.get() {
+            let to = dir.join(asset);
+            let url = format!(
+                "https://github.com/{}/releases/download/{tag}/{asset}",
+                self.repo
+            );
+            match curl_get(&url, &to, false)? {
+                Some(200) => return Ok(to),
+                Some(code) if anonymous_refused(code) => refused = Some(code),
+                None => {}
+                Some(code) => {
+                    return Err(format!(
+                        "downloading {asset} of {tag} from {} answered HTTP {code}",
+                        self.describe()
+                    ));
+                }
             }
-            return Err(format!("gh release download {tag} {asset}: {stderr}"));
         }
-        let path = dir.join(asset);
-        if !path.is_file() {
-            return Err(format!("release {tag} has no asset named {asset}"));
+        match gh_fetch(&self.repo, tag, asset, dir) {
+            Err(GhError::Missing) => Err(match refused {
+                Some(code) => format!(
+                    "{} has no {asset} in release {tag} for an anonymous download (HTTP {code}), and the GitHub CLI is not installed to ask as a signed-in user — fix: check the version (`af self update --check`), or install gh and run `gh auth login` for a repository that is not public",
+                    self.describe()
+                ),
+                None => GhError::Missing.to_string(),
+            }),
+            Err(GhError::Failed(text)) => Err(text),
+            Ok(path) => Ok(path),
         }
-        Ok(path)
     }
 }
 
-fn require_gh() -> Result<(), String> {
-    let status = review_process::reap::status(
-        Command::new("gh")
-            .args(["auth", "status"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null()),
-    )
-    .map_err(|_| {
-        "GitHub CLI is required to reach the release — fix: install gh and run `gh auth login`"
-            .to_string()
-    })?;
-    if !status.success() {
-        return Err("gh is not authenticated — fix: gh auth login (an account with access to the release repository)".into());
+/// What `curl` answered for `url`, the body in `out` (removed unless the answer is 200): the
+/// HTTP status, or `None` when `curl` is not installed. Pinned to HTTPS, redirects included, at
+/// TLS 1.2 or later, as `install.sh` pins it.
+fn curl_get(url: &str, out: &Path, api: bool) -> Result<Option<u16>, String> {
+    let mut command = Command::new("curl");
+    command.args([
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "--tlsv1.2",
+        "-sSL",
+        "--retry",
+        "3",
+        "-w",
+        "%{http_code}",
+    ]);
+    if api {
+        command.args(["-H", "Accept: application/vnd.github+json"]);
     }
-    Ok(())
+    let output = match review_process::reap::output(
+        command.arg("-o").arg(out).arg(url).stdin(Stdio::null()),
+    ) {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("running curl: {error}")),
+    };
+    let code = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u16>()
+        .unwrap_or(0);
+    if code != 200 {
+        let _ = std::fs::remove_file(out);
+    }
+    if code == 0 {
+        return Err(format!(
+            "curl {url}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(Some(code))
+}
+
+/// The tags of a releases API answer: drafts never, pre-releases when asked for.
+fn api_tags(body: &[u8], include_rc: bool) -> Result<Vec<String>, String> {
+    #[derive(Deserialize)]
+    struct Row {
+        tag_name: String,
+        #[serde(default)]
+        prerelease: bool,
+        #[serde(default)]
+        draft: bool,
+    }
+    let rows: Vec<Row> = serde_json::from_slice(body)
+        .map_err(|error| format!("the GitHub releases API answer: {error}"))?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| !row.draft && (include_rc || !row.prerelease))
+        .map(|row| row.tag_name)
+        .collect())
+}
+
+/// Why a `gh` call did not answer: not installed, or the call itself failed (the text says how).
+enum GhError {
+    Missing,
+    Failed(String),
+}
+
+impl std::fmt::Display for GhError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GhError::Missing => f.write_str(
+                "the release repository is not public and the GitHub CLI is not installed — fix: install gh and run `gh auth login` with an account that can read it",
+            ),
+            GhError::Failed(text) => f.write_str(text),
+        }
+    }
+}
+
+/// `gh` with `args`: its output, judged by the caller from this very call.
+fn gh(args: &[&OsStr]) -> Result<std::process::Output, GhError> {
+    review_process::reap::output(Command::new("gh").args(args).stdin(Stdio::null())).map_err(
+        |error| match error.kind() {
+            std::io::ErrorKind::NotFound => GhError::Missing,
+            _ => GhError::Failed(format!("running gh: {error}")),
+        },
+    )
+}
+
+fn gh_tags(repo: &str, include_rc: bool) -> Result<Vec<String>, String> {
+    let output = gh(&[
+        OsStr::new("release"),
+        OsStr::new("list"),
+        OsStr::new("--repo"),
+        OsStr::new(repo),
+        OsStr::new("--limit"),
+        OsStr::new("100"),
+        OsStr::new("--json"),
+        OsStr::new("tagName,isPrerelease,isDraft"),
+    ])
+    .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "gh release list --repo {repo} failed: {} — fix: `gh auth login` with an account that can read {repo}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(rename = "tagName")]
+        tag: String,
+        #[serde(rename = "isPrerelease", default)]
+        prerelease: bool,
+        #[serde(rename = "isDraft", default)]
+        draft: bool,
+    }
+    let rows: Vec<Row> =
+        serde_json::from_slice(&output.stdout).map_err(|error| format!("gh output: {error}"))?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| !row.draft && (include_rc || !row.prerelease))
+        .map(|row| row.tag)
+        .collect())
+}
+
+fn gh_fetch(repo: &str, tag: &str, asset: &str, dir: &Path) -> Result<PathBuf, GhError> {
+    let output = gh(&[
+        OsStr::new("release"),
+        OsStr::new("download"),
+        OsStr::new(tag),
+        OsStr::new("--repo"),
+        OsStr::new(repo),
+        OsStr::new("--pattern"),
+        OsStr::new(asset),
+        OsStr::new("--clobber"),
+        OsStr::new("--dir"),
+        dir.as_os_str(),
+    ])?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.contains("release not found") {
+            return Err(GhError::Failed(format!(
+                "release {tag} does not exist at github:{repo} — fix: `af self update --check` (add --rc for pre-releases) names the newest"
+            )));
+        }
+        return Err(GhError::Failed(format!(
+            "gh release download {tag} {asset}: {stderr}"
+        )));
+    }
+    let path = dir.join(asset);
+    if !path.is_file() {
+        return Err(GhError::Failed(format!(
+            "release {tag} has no asset named {asset}"
+        )));
+    }
+    Ok(path)
 }
 
 /// `<root>/<tag>/<asset>` on disk. Offline installs, mirrors, and the test double.
@@ -661,9 +815,7 @@ fn source(policy: &SelfPolicy) -> Box<dyn ReleaseSource> {
         Some(root) if !root.is_empty() => Box::new(DirSource {
             root: PathBuf::from(root),
         }),
-        _ => Box::new(GhSource {
-            repo: policy.source.clone(),
-        }),
+        _ => Box::new(GithubSource::new(policy.source.clone())),
     }
 }
 
@@ -858,8 +1010,9 @@ fn already_installed(
 }
 
 /// Download, verify, extract, prove the version, and record a receipt. Never touches the default
-/// symlink. `lock_digest` is the digest a project lock records for this target: when present it
-/// is the only thing the bytes must match; otherwise the release's checksums decide.
+/// symlink. The bytes must match the release's `SHA256SUMS`, signed whenever this build carries
+/// a key; `lock_digest`, the digest a project lock records for this target, must match as well
+/// when present: a lock picks bytes the release itself signed, never bytes it did not.
 ///
 /// The versions lock is held only to look for an installed copy and to publish the verified one,
 /// never across the release source: a command that records a seen pin, activates or sweeps waits
@@ -894,27 +1047,32 @@ fn install(
     );
     let archive = src.fetch(&tag, &asset, tmp.path())?;
     let actual = sha256_file(&archive)?;
-    let (expected_sha256, verified_by) = match lock_digest {
-        Some(digest) => (strip_sha256(digest).to_string(), "lock"),
-        None => {
-            let (sums, verified_by) = verified_sums(src.as_ref(), &tag, tmp.path())?;
-            (
-                find_sum(&sums, &asset)
-                    .ok_or_else(|| format!("SHA256SUMS of {tag} does not list {asset}"))?,
-                verified_by,
-            )
-        }
-    };
-    if actual != expected_sha256 {
+    if let Some(digest) = lock_digest
+        && actual != strip_sha256(digest)
+    {
         return Err(InstallError::Mismatch(format!(
-            "checksum mismatch for {asset} ({})\nexpected {expected_sha256}\nactual   {actual}",
-            if verified_by == "lock" {
-                "against the project lock's digest"
+            "checksum mismatch for {asset} (against the project lock's digest)\nexpected {}\nactual   {actual}",
+            strip_sha256(digest)
+        )));
+    }
+    let (sums, sums_verified_by) = verified_sums(src.as_ref(), &tag, tmp.path())?;
+    let listed = find_sum(&sums, &asset)
+        .ok_or_else(|| format!("SHA256SUMS of {tag} does not list {asset}"))?;
+    if actual != listed {
+        return Err(InstallError::Mismatch(format!(
+            "checksum mismatch for {asset} (against the release checksums{})\nexpected {listed}\nactual   {actual}",
+            if lock_digest.is_some() {
+                ", which disagree with the project lock's digest"
             } else {
-                "against the release checksums"
+                ""
             }
         )));
     }
+    let verified_by = match (lock_digest, sums_verified_by) {
+        (None, verified_by) => verified_by,
+        (Some(_), "minisign") => "lock+signature",
+        (Some(_), _) => "lock+sha256sums",
+    };
     let unpack = tmp.path().join("unpack");
     std::fs::create_dir_all(&unpack).map_err(|error| error.to_string())?;
     let status = review_process::reap::status(
@@ -1220,12 +1378,46 @@ pub(crate) struct Pinned {
 }
 
 /// The pin a repository carries, read leniently so a lock written by a newer release still
-/// dispatches to it.
+/// dispatches to it. A lock [`read_lock`] refuses pins nothing, and says why in one line on
+/// stderr, once per lock and process.
 pub(crate) fn pinned(repo: &Path) -> Option<Pinned> {
-    let toplevel = config::git_toplevel(repo)?;
+    match read_pinned(repo) {
+        Ok(pinned) => pinned,
+        Err(line) => {
+            static SAID: std::sync::Mutex<BTreeSet<String>> =
+                std::sync::Mutex::new(BTreeSet::new());
+            let mut said = SAID.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if said.insert(line.clone()) {
+                eprintln!("af: {line}");
+            }
+            None
+        }
+    }
+}
+
+/// [`pinned`], with a refused lock as its one-line reason.
+fn read_pinned(repo: &Path) -> Result<Option<Pinned>, String> {
+    let Some(toplevel) = config::git_toplevel(repo) else {
+        return Ok(None);
+    };
     let lock = toplevel.join(".af/af.lock");
-    let text = std::fs::read_to_string(&lock).ok()?;
-    review_config::lock::pinned_af(&text).map(|pin| Pinned { pin, lock })
+    let Some(text) = read_lock(&lock)? else {
+        return Ok(None);
+    };
+    Ok(review_config::lock::pinned_af(&text).map(|pin| Pinned { pin, lock }))
+}
+
+/// A project's `.af/af.lock`, read as every authority file is ([`config::read_authority`]):
+/// as named, without following a link, and within 1 MiB, an oversized lock refused before it is
+/// read whole. `None` when nothing is there; a refusal is one line naming the lock.
+fn read_lock(lock: &Path) -> Result<Option<String>, String> {
+    match std::fs::symlink_metadata(lock) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        _ => {}
+    }
+    config::read_authority(lock)
+        .map(Some)
+        .map_err(|error| format!("{} is not read as a pin: {error}", lock.display()))
 }
 
 fn strip_sha256(digest: &str) -> &str {
@@ -1281,10 +1473,8 @@ fn browser_invocation(argv: &[String]) -> bool {
     true
 }
 
-fn exempt_from_dispatch(argv: &[String]) -> bool {
-    if browser_invocation(argv) {
-        return true;
-    }
+/// Where the command words begin: past the leading `--repo DIR` or `--repo=DIR`.
+fn command_index(argv: &[String]) -> usize {
     let mut command_index = 1;
     while let Some(word) = argv.get(command_index) {
         if word == "--repo" && argv.get(command_index + 1).is_some() {
@@ -1295,6 +1485,22 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
             break;
         }
     }
+    command_index
+}
+
+/// `af review plan`: token-free and stateless, so it never installs a release on demand. Any
+/// `plan` word after `review` counts: mistaking another command for it only skips an install.
+fn plan_invocation(argv: &[String]) -> bool {
+    let index = command_index(argv);
+    argv.get(index).map(String::as_str) == Some("review")
+        && argv.iter().skip(index + 1).any(|word| word == "plan")
+}
+
+fn exempt_from_dispatch(argv: &[String]) -> bool {
+    if browser_invocation(argv) {
+        return true;
+    }
+    let command_index = command_index(argv);
     let first = argv.get(command_index).map(String::as_str);
     // Bootstrap is machine-local, not project authority. Dispatching it through an older project
     // pin would make the newly installed command disappear precisely where users need it.
@@ -1403,7 +1609,8 @@ fn pins_still_held(paths: &Paths, locked: bool) -> BTreeSet<String> {
 fn keep_live_pins(state: &mut SelfState, versions: &mut BTreeSet<String>) -> bool {
     let before = state.pins.len();
     state.pins.retain_mut(|seen| {
-        let Some(text) = std::fs::read_to_string(&seen.lock).ok() else {
+        // Bounded and never through a link, as dispatch reads it: a lock it refuses pins nothing.
+        let Ok(Some(text)) = read_lock(&seen.lock) else {
             return false;
         };
         let Some(pin) = review_config::lock::pinned_af(&text) else {
@@ -1518,17 +1725,32 @@ pub(crate) fn maybe_dispatch(argv: &[String]) {
                 let attempt = match policy {
                     Err(error) => Err(InstallError::Other(format!("self policy: {error}"))),
                     Ok(_) if offline() => Err(InstallError::Other(format!("{OFFLINE_ENV} is set"))),
-                    Ok(policy) if !policy.install_pins => Err(InstallError::Other(
-                        "[self] install_pins = false".to_string(),
+                    Ok(_) if plan_invocation(argv) => Err(InstallError::Other(
+                        "`af review plan` never installs a release".to_string(),
                     )),
+                    Ok(policy) if policy.install_pins == InstallPins::Never => Err(
+                        InstallError::Other("[self] install_pins = \"never\"".to_string()),
+                    ),
                     Ok(_) if request.lock.is_some() && request.digest.is_none() => {
                         Err(InstallError::Other(format!(
                             "the lock records no digest for {TARGET}, and a pin without bytes is never installed on demand"
                         )))
                     }
-                    Ok(policy) => {
-                        install(&paths, &policy, &request.version, request.digest.as_deref())
-                    }
+                    Ok(policy) => match &request.lock {
+                        Some(lock) if policy.install_pins == InstallPins::Ask => {
+                            confirm_pin_install(&request.version, lock, &policy)
+                                .map_err(InstallError::Other)
+                                .and_then(|()| {
+                                    install(
+                                        &paths,
+                                        &policy,
+                                        &request.version,
+                                        request.digest.as_deref(),
+                                    )
+                                })
+                        }
+                        _ => install(&paths, &policy, &request.version, request.digest.as_deref()),
+                    },
                 };
                 match attempt {
                     Ok(binary) => binary,
@@ -1593,6 +1815,51 @@ pub(crate) fn maybe_dispatch(argv: &[String]) {
             binary.display()
         );
     }
+}
+
+/// Under `install_pins = "ask"`, ask the person at the terminal before the release a project lock
+/// pins is installed on demand. Only with stdin and stderr both a terminal; `Err` says why it is
+/// not installed: no terminal to ask on, or the answer.
+fn confirm_pin_install(version: &str, lock: &Path, policy: &SelfPolicy) -> Result<(), String> {
+    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+        return Err(format!(
+            "[self] install_pins = \"ask\" and no terminal to ask on; `af self install {version}` installs it, `install_pins = \"always\"` installs pins without asking"
+        ));
+    }
+    eprint!("{}", pin_prompt(version, lock, &source(policy).describe()));
+    let mut answer = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut answer)
+        .map_err(|error| format!("reading the answer: {error}"))?;
+    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Ok(())
+    } else {
+        Err("not confirmed at the prompt".to_string())
+    }
+}
+
+/// The question [`confirm_pin_install`] asks: the version, the lock that pins it, where it comes
+/// from, and whether it is older than this af or a pre-release.
+fn pin_prompt(version: &str, lock: &Path, source: &str) -> String {
+    let mut caveats = Vec::new();
+    if let (Ok(pinned), Ok(running)) = (Version::parse(version), Version::parse(VERSION)) {
+        if pinned < running {
+            caveats.push(format!("OLDER than the running af {VERSION}"));
+        }
+        if !pinned.pre.is_empty() {
+            caveats.push("a pre-release".to_string());
+        }
+    }
+    let caveats = if caveats.is_empty() {
+        String::new()
+    } else {
+        format!("; it is {}", caveats.join(" and "))
+    };
+    format!(
+        "af: {} pins af {version}, which is not installed{caveats}.\naf: install af {version} from {source} and run this command with it? [y/N] ",
+        lock.display()
+    )
 }
 
 /// The installed binary of `version`, still carrying the lock's bytes, and the pin that keeps it
@@ -2013,7 +2280,7 @@ struct PolicyView {
     check_every_secs: u64,
     auto_update: &'static str,
     channel: &'static str,
-    install_pins: bool,
+    install_pins: &'static str,
     keep_versions: usize,
     source: String,
 }
@@ -2061,7 +2328,7 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
                 Channel::Stable => "stable",
                 Channel::Rc => "rc",
             },
-            install_pins: policy.install_pins,
+            install_pins: policy.install_pins.name(),
             keep_versions: policy.keep_versions,
             source: policy.source.clone(),
         },
@@ -2170,6 +2437,7 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
     let policy = config::load_machine()?.self_policy()?;
     let channel = if rc { Channel::Rc } else { policy.channel };
     let src = source(&policy);
+    let explicit = version.is_some();
     let target = match version {
         Some(version) => Version::parse(version.trim_start_matches('v'))
             .map_err(|error| format!("--version {version}: {error}"))?,
@@ -2196,6 +2464,13 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
         }
         println!("af {VERSION} is up to date");
         return Ok(());
+    }
+    // A listing that hides newer releases, or a stale mirror, never moves the default back.
+    if !explicit && target < running {
+        return Err(format!(
+            "the newest release {} lists is af {target}, older than the running af {VERSION}; `af self update` never moves the default backwards — fix: `af self update --version {target}` chooses it explicitly",
+            src.describe()
+        ));
     }
     let target = target.to_string();
     require_self_managed(&target)?;
@@ -2284,8 +2559,17 @@ fn remove_version(paths: &Paths, version: &str) -> Result<(), String> {
             "af {version} is pinned by a project this machine has seen (`af self status --json` lists them) — fix: re-pin those projects first"
         ));
     }
+    remove_version_dir(paths, version)
+}
+
+/// Remove an installed version's directory through the descriptor primitive uninstall uses,
+/// never following a link: a version directory that is a link is left in place, and refused.
+fn remove_version_dir(paths: &Paths, version: &str) -> Result<(), String> {
     let dir = version_dir(paths, version);
-    std::fs::remove_dir_all(&dir).map_err(|error| format!("removing {}: {error}", dir.display()))
+    match measured_directory(&dir)? {
+        Some(identity) => remove_below_parent(&dir, identity),
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn prune() -> Result<(), String> {
@@ -2316,7 +2600,7 @@ fn prune_versions(paths: &Paths, keep: usize) -> Result<usize, String> {
         if protected || within_keep {
             continue;
         }
-        std::fs::remove_dir_all(version_dir(paths, &version)).map_err(|error| error.to_string())?;
+        remove_version_dir(paths, &version)?;
         println!("removed af {version}");
         removed += 1;
     }
@@ -2350,10 +2634,19 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
                 staging.display()
             ));
         }
-        if paths.bin.exists() || std::fs::symlink_metadata(&paths.bin).is_ok() {
-            std::fs::remove_file(&paths.bin)
-                .map_err(|error| format!("removing {}: {error}", paths.bin.display()))?;
-            println!("removed {}", paths.bin.display());
+        match std::fs::symlink_metadata(&paths.bin) {
+            Ok(_) if default_link_is_ours(&paths) => {
+                std::fs::remove_file(&paths.bin)
+                    .map_err(|error| format!("removing {}: {error}", paths.bin.display()))?;
+                println!("removed {}", paths.bin.display());
+            }
+            Ok(_) => println!(
+                "left {} in place: it is not af's link into {}",
+                paths.bin.display(),
+                paths.versions.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspecting {}: {error}", paths.bin.display())),
         }
         if let Some(identity) = measured_directory(&paths.versions)? {
             remove_below_parent(&paths.versions, identity)?;
@@ -2383,6 +2676,31 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
         println!("kept config, state, and cache (add --purge to remove them)");
     }
     Ok(())
+}
+
+/// Whether `$XDG_BIN_HOME/af` is the link `af self` made: a symlink into the versions directory,
+/// even one whose version is gone. Anything else there, a binary built by hand or another tool's
+/// link, is not af's to remove.
+fn default_link_is_ours(paths: &Paths) -> bool {
+    if !std::fs::symlink_metadata(&paths.bin)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return false;
+    }
+    if default_version(paths).is_some() {
+        return true;
+    }
+    std::fs::read_link(&paths.bin).is_ok_and(|target| {
+        let target = match paths.bin.parent() {
+            Some(parent) if target.is_relative() => parent.join(target),
+            _ => target,
+        };
+        !target
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+            && target.starts_with(&paths.versions)
+            && target != paths.versions
+    })
 }
 
 /// The identity of the directory `dir` names when uninstall chooses it, without following a
@@ -2636,7 +2954,7 @@ mod tests {
             check_every: std::time::Duration::from_secs(86_400),
             auto_update,
             channel: Channel::Stable,
-            install_pins: true,
+            install_pins: InstallPins::Ask,
             keep_versions: 3,
             source: "owner/repo".to_string(),
         }
@@ -3358,6 +3676,74 @@ mod tests {
         assert_eq!(state.pins[0].version, "0.9.7");
     }
 
+    /// V2 of the security close-out: dispatch's `pinned` and `keep_live_pins` read a
+    /// `.af/af.lock` as every authority file is read: an oversized lock is refused in one line
+    /// before it is read whole, a linked lock is refused rather than followed, and neither pins.
+    #[test]
+    fn an_oversized_or_linked_lock_is_refused_by_dispatch_and_by_the_remembered_pins() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(repo.join(".af")).unwrap();
+        let lock = repo.join(".af/af.lock");
+        let pin = "version = 1\n\n[af]\nversion = \"0.9.7\"\n";
+        std::fs::write(&lock, pin).unwrap();
+        assert_eq!(pinned(&repo).unwrap().pin.version, "0.9.7");
+
+        let seen = || SelfState {
+            pins: vec![SeenPin {
+                lock: lock.clone(),
+                version: "0.9.7".to_string(),
+                seen: iso_now(),
+            }],
+            ..SelfState::default()
+        };
+        let mut versions = BTreeSet::new();
+        let mut state = seen();
+        assert!(!keep_live_pins(&mut state, &mut versions));
+        assert_eq!(versions, BTreeSet::from(["0.9.7".to_string()]));
+
+        // Over 1 MiB: refused from its size, before it is read whole.
+        std::fs::write(&lock, format!("{pin}# {}\n", "x".repeat(2 * 1024 * 1024))).unwrap();
+        let Err(refused) = read_pinned(&repo) else {
+            panic!("the lock is refused");
+        };
+        assert!(
+            refused.starts_with(&lock.display().to_string()),
+            "{refused}"
+        );
+        assert!(
+            refused.contains("over the bound of 1048576 bytes"),
+            "{refused}"
+        );
+        assert_eq!(refused.lines().count(), 1);
+        assert!(pinned(&repo).is_none());
+        let (mut state, mut versions) = (seen(), BTreeSet::new());
+        assert!(keep_live_pins(&mut state, &mut versions));
+        assert!(state.pins.is_empty() && versions.is_empty());
+
+        // A link to a lock elsewhere: refused, never followed.
+        let elsewhere = root.join("elsewhere.lock");
+        std::fs::write(&elsewhere, pin).unwrap();
+        std::fs::remove_file(&lock).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &lock).unwrap();
+        let Err(refused) = read_pinned(&repo) else {
+            panic!("the lock is refused");
+        };
+        assert!(refused.contains("symbolic link"), "{refused}");
+        assert_eq!(refused.lines().count(), 1);
+        assert!(pinned(&repo).is_none());
+        let (mut state, mut versions) = (seen(), BTreeSet::new());
+        assert!(keep_live_pins(&mut state, &mut versions));
+        assert!(state.pins.is_empty() && versions.is_empty());
+
+        // No lock at all pins nothing, and is no refusal.
+        std::fs::remove_file(&lock).unwrap();
+        assert!(read_pinned(&repo).unwrap().is_none());
+    }
+
     #[test]
     fn dropping_a_forgotten_pin_keeps_what_another_writer_recorded_under_the_lock() {
         let root = tempfile::tempdir().unwrap();
@@ -3420,6 +3806,147 @@ mod tests {
             "refresh-check"
         ])));
         assert!(update_policy(&argv(&["af", "self", "refresh-check"])).is_none());
+    }
+
+    #[test]
+    fn the_install_prompt_names_the_version_the_lock_and_what_is_unusual_about_it() {
+        let lock = Path::new("/work/repo/.af/af.lock");
+        let older = pin_prompt("0.8.1", lock, "github:owner/repo");
+        assert!(
+            older.starts_with("af: /work/repo/.af/af.lock pins af 0.8.1, which is not installed; it is OLDER than the running af "),
+            "{older}"
+        );
+        assert!(
+            older.ends_with(
+                "install af 0.8.1 from github:owner/repo and run this command with it? [y/N] "
+            ),
+            "{older}"
+        );
+        assert!(!older.contains("pre-release"), "{older}");
+        let candidate = pin_prompt("0.8.1-rc.1", lock, "dir:/r");
+        assert!(
+            candidate.contains("OLDER than the running af")
+                && candidate.contains("and a pre-release"),
+            "{candidate}"
+        );
+        let newer = pin_prompt("999.0.0", lock, "dir:/r");
+        assert!(
+            newer.contains("pins af 999.0.0, which is not installed.\n"),
+            "{newer}"
+        );
+        assert!(!newer.contains("OLDER"), "{newer}");
+    }
+
+    #[test]
+    fn review_plan_is_recognized_wherever_its_repository_is_named() {
+        let argv = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert!(plan_invocation(&argv(&["af", "review", "plan"])));
+        assert!(plan_invocation(&argv(&[
+            "af", "--repo", "/x", "review", "plan", "--json"
+        ])));
+        assert!(plan_invocation(&argv(&[
+            "af",
+            "--repo=/x",
+            "review",
+            "plan"
+        ])));
+        assert!(!plan_invocation(&argv(&["af", "review", "run"])));
+        assert!(!plan_invocation(&argv(&["af", "review"])));
+        assert!(!plan_invocation(&argv(&["af", "task", "plan"])));
+    }
+
+    #[test]
+    fn the_releases_api_answer_yields_tags_without_drafts_and_pre_releases_on_request() {
+        let body = br#"[{"tag_name":"v0.9.0","prerelease":false,"draft":false},
+            {"tag_name":"v1.0.0-rc.1","prerelease":true,"draft":false},
+            {"tag_name":"v1.0.0","prerelease":false,"draft":true}]"#;
+        assert_eq!(api_tags(body, false).unwrap(), vec!["v0.9.0"]);
+        assert_eq!(api_tags(body, true).unwrap(), vec!["v0.9.0", "v1.0.0-rc.1"]);
+        assert!(api_tags(b"{\"message\":\"Not Found\"}", false).is_err());
+        for code in [401, 403, 404] {
+            assert!(anonymous_refused(code));
+        }
+        for code in [200, 429, 500, 502] {
+            assert!(!anonymous_refused(code));
+        }
+    }
+
+    #[test]
+    fn only_afs_own_link_is_the_default_uninstall_removes() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = installed_releases(root.path(), &["0.9.0"]);
+        std::fs::create_dir_all(paths.bin.parent().unwrap()).unwrap();
+        assert!(!default_link_is_ours(&paths), "nothing is there");
+
+        // A binary built by hand, and a link elsewhere: not af's.
+        std::fs::write(&paths.bin, "#!/bin/sh\n").unwrap();
+        assert!(!default_link_is_ours(&paths));
+        std::fs::remove_file(&paths.bin).unwrap();
+        let elsewhere = root.path().join("elsewhere/af");
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        std::fs::write(&elsewhere, "#!/bin/sh\n").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &paths.bin).unwrap();
+        assert!(!default_link_is_ours(&paths));
+        // Nor one that only spells its way through the versions directory to leave it.
+        std::fs::remove_file(&paths.bin).unwrap();
+        std::os::unix::fs::symlink(paths.versions.join("../elsewhere/af"), &paths.bin).unwrap();
+        assert!(!default_link_is_ours(&paths));
+
+        // The link an activation makes, and one whose version has gone since.
+        std::fs::remove_file(&paths.bin).unwrap();
+        set_default(&paths, "0.9.0").unwrap();
+        assert!(default_link_is_ours(&paths));
+        std::fs::remove_file(&paths.bin).unwrap();
+        std::os::unix::fs::symlink(version_binary(&paths, "0.9.9"), &paths.bin).unwrap();
+        assert!(default_link_is_ours(&paths));
+    }
+
+    #[test]
+    fn remove_and_prune_never_follow_a_link_in_the_versions() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = installed_releases(root.path(), &["0.9.0", "0.9.1"]);
+        set_default(&paths, "0.9.1").unwrap();
+        // An installed-looking version that is a link to a directory elsewhere, the oldest, so a
+        // prune keeping one reaches it first.
+        let elsewhere = root.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        staged(&elsewhere.join("0.8.9"), "0.8.9", "cc");
+        std::os::unix::fs::symlink(elsewhere.join("0.8.9"), version_dir(&paths, "0.8.9")).unwrap();
+        assert!(installed(&paths, "0.8.9").is_some());
+        // And a link inside a real version, to a file elsewhere.
+        std::fs::write(elsewhere.join("keep"), "mine").unwrap();
+        std::os::unix::fs::symlink(
+            elsewhere.join("keep"),
+            version_dir(&paths, "0.9.0").join("link"),
+        )
+        .unwrap();
+
+        let refused = remove_version(&paths, "0.8.9");
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("left in place")),
+            "{refused:?}"
+        );
+        assert!(version_dir(&paths, "0.8.9").is_symlink());
+        assert!(elsewhere.join("0.8.9/af").is_file());
+
+        let refused = prune_versions(&paths, 1);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("left in place")),
+            "{refused:?}"
+        );
+        assert!(elsewhere.join("0.8.9/af").is_file());
+
+        // The real directory goes, its link with it, and what the link names stays.
+        remove_version(&paths, "0.9.0").unwrap();
+        assert!(!version_dir(&paths, "0.9.0").exists());
+        assert_eq!(
+            std::fs::read_to_string(elsewhere.join("keep")).unwrap(),
+            "mine"
+        );
     }
 
     #[test]

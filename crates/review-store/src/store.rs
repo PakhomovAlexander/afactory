@@ -354,6 +354,12 @@ fn immutable_uri(path: &Path) -> String {
 
 impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        // Created private before SQLite sees it: SQLite creates a missing database 0644 under
+        // the umask, and gives its `-wal` and `-shm` files the database's own mode. A failure
+        // here is SQLite's to report when it opens the same path.
+        if !path.as_ref().as_os_str().is_empty() && path.as_ref() != Path::new(":memory:") {
+            let _ = crate::local_fs::create_private_file(path.as_ref());
+        }
         let conn = Connection::open(path)?;
         Self::init(conn)
     }

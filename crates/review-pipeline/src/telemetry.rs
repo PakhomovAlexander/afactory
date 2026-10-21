@@ -1328,7 +1328,13 @@ fn resource_use(rusage: review_process::Rusage) -> review_telemetry::process::Re
 }
 
 /// End a process span from a supervised capture: `ok` for a clean exit, else the class.
-pub(crate) fn process_capture(span: &tracing::Span, captured: &review_process::SupervisedCapture) {
+/// `capped` is the cap reason when the caller rejected the capture for its truncation: the
+/// span ends `failed` with it, whatever the exit status said.
+pub(crate) fn process_capture(
+    span: &tracing::Span,
+    captured: &review_process::SupervisedCapture,
+    capped: Option<&str>,
+) {
     if span.is_disabled() {
         return;
     }
@@ -1343,7 +1349,12 @@ pub(crate) fn process_capture(span: &tracing::Span, captured: &review_process::S
     if let Ok(status) = &captured.status {
         facts = facts.with_status(status);
     }
-    process_end(span, &facts, captured.status.as_ref().map(|status| *status));
+    process_end(
+        span,
+        &facts,
+        captured.status.as_ref().map(|status| *status),
+        capped,
+    );
 }
 
 /// End a process span from a supervised run's result.
@@ -1378,27 +1389,34 @@ pub(crate) fn process_output(
         },
         Err(_) => review_telemetry::process::ProcessFacts::default(),
     };
-    process_end(span, &facts, output.as_ref().map(|output| output.status));
+    process_end(
+        span,
+        &facts,
+        output.as_ref().map(|output| output.status),
+        None,
+    );
 }
 
 fn process_end(
     span: &tracing::Span,
     facts: &review_telemetry::process::ProcessFacts,
     status: Result<std::process::ExitStatus, &review_process::SupervisedError>,
+    capped: Option<&str>,
 ) {
     use review_process::SupervisedError;
-    let failure = match status {
-        Ok(status) if status.success() => None,
-        Ok(_) => Some(("failed", "the process exited unsuccessfully".to_string())),
-        Err(SupervisedError::TimedOut { .. }) => {
+    let failure = match (status, capped) {
+        (Ok(_), Some(reason)) => Some(("failed", reason.to_string())),
+        (Ok(status), None) if status.success() => None,
+        (Ok(_), None) => Some(("failed", "the process exited unsuccessfully".to_string())),
+        (Err(SupervisedError::TimedOut { .. }), _) => {
             Some(("timed_out", "the process exceeded its deadline".to_string()))
         }
-        Err(SupervisedError::Cancelled) => Some(("refused", "cancelled".to_string())),
-        Err(SupervisedError::Spawn(_)) => Some((
+        (Err(SupervisedError::Cancelled), _) => Some(("refused", "cancelled".to_string())),
+        (Err(SupervisedError::Spawn(_)), _) => Some((
             "unavailable",
             "the process could not be started".to_string(),
         )),
-        Err(error) => Some(("failed", error.to_string())),
+        (Err(error), _) => Some(("failed", error.to_string())),
     };
     review_telemetry::process::finish(
         span,

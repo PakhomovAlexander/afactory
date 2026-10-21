@@ -1,0 +1,80 @@
+{
+  "schema": "af.perf-archive-event/1",
+  "sequence": 3,
+  "unix_ms": 1807776000000,
+  "event": {
+    "kind": "retention",
+    "run_id": "fixture_run",
+    "run_sequence": 1,
+    "manifest": [
+      {
+        "class": "build_manifest",
+        "path": "builds.json",
+        "sha256": "sha256:81fd52d8b4cea98e129137661157e2b4fa276923b39fbc4b66538ec0b1258e8d",
+        "size": 7066
+      },
+      {
+        "class": "manifest",
+        "path": "manifest.json",
+        "sha256": "sha256:6adb537969b3842b2ebcaff4ae56ce440737a73db44362b775415509978255aa",
+        "size": 277
+      },
+      {
+        "class": "summary",
+        "path": "report.json",
+        "sha256": "sha256:c0637ef6a54af6c35679a153821cb63e69fee9fae32222c11421855b03066012",
+        "size": 15280
+      },
+      {
+        "class": "plan",
+        "path": "run.json",
+        "sha256": "sha256:ce4e9e7b7b44459475f7f5a66ad4c3dd8a0b5c2dd70f7def2bcf24579f9a52df",
+        "size": 4821
+      },
+      {
+        "class": "manifest",
+        "path": "shards/0/manifest.json",
+        "sha256": "sha256:c50d927ed5c8141abee99edb4e8ce8ef3b6e04d7aa47e3420a0a7ae6496fc8b3",
+        "size": 282
+      },
+      {
+        "class": "samples",
+        "path": "shards/0/samples.jsonl",
+        "sha256": "sha256:12d71aba86114a288a6c0ad096298262ec70ecfb1c86cbccc9de8bac16a41b35",
+        "size": 64062
+      },
+      {
+        "class": "shard",
+        "path": "shards/0/shard.json",
+        "sha256": "sha256:eb3270a0226f8c6027f8d5e8ca54c531c4f3ca0f8b086e3705f7cb7e4bdf0d76",
+        "size": 2815
+      },
+      {
+        "class": "verdict",
+        "path": "verdict.json",
+        "sha256": "sha256:3c531655dcf67fc6adebaa1ba8ad4539c39df3a79c0052a8d292d3d3efec528a",
+        "size": 1580
+      }
+    ],
+    "expired": [
+      {
+        "path": "verdict.json",
+        "sha256": "sha256:3c531655dcf67fc6adebaa1ba8ad4539c39df3a79c0052a8d292d3d3efec528a",
+        "class": "verdict",
+        "due_unix_ms": 1807776000000
+      }
+    ],
+    "available": [
+      "builds.json",
+      "manifest.json",
+      "report.json",
+      "run.json",
+      "shards/0/manifest.json",
+      "shards/0/samples.jsonl",
+      "shards/0/shard.json",
+      "verdict.json"
+    ],
+    "numeric": "expired",
+    "profile_reproduction": "not_applicable"
+  }
+}

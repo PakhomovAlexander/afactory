@@ -2,10 +2,11 @@
 //! signed checksums, pins that bind bytes, the oldest supported release, and the versions `remove`
 //! and `prune` must keep.
 
-use std::path::Path;
-
 use crate::common;
-use common::{AF, Sandbox, Signer, TARGET, VERSION, err, out, write};
+use common::{
+    FAKE_CURL, FAKE_GH, Sandbox, Signer, TARGET, VERSION, err, executable, out, tool_dir, write,
+};
+use std::path::Path;
 
 // Update fixtures must remain newer than the binary under test as releases advance.
 fn next_release_version() -> String {
@@ -29,7 +30,7 @@ fn self_install_update_rollback_and_remove_against_a_directory_source() {
     sandbox.sign("0.8.5", &signer, None);
 
     let install = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["self", "install", "0.8.1"])
         .output()
         .unwrap();
@@ -44,7 +45,7 @@ fn self_install_update_rollback_and_remove_against_a_directory_source() {
     );
 
     let tampered = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["self", "install", "0.8.5"])
         .output()
         .unwrap();
@@ -59,7 +60,7 @@ fn self_install_update_rollback_and_remove_against_a_directory_source() {
 
     // Update and rollback need a receipt: this binary has none.
     let foreign = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["self", "update"])
         .output()
         .unwrap();
@@ -140,7 +141,7 @@ fn a_source_installed_binary_reports_and_adopts_its_default_path() {
     sandbox.publish("0.8.1", false);
     sandbox.sign("0.8.1", &signer, None);
     let source_install = sandbox.path("bin/af");
-    std::fs::copy(AF, &source_install).unwrap();
+    std::fs::copy(common::af_binary(), &source_install).unwrap();
 
     let status = sandbox
         .command(&source_install)
@@ -193,7 +194,7 @@ fn self_install_does_not_replace_an_unrelated_default_file() {
     write(&unrelated, "leave me alone\n");
 
     let install = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["self", "install", "0.8.1"])
         .output()
         .unwrap();
@@ -213,7 +214,11 @@ fn nothing_older_than_the_oldest_supported_release_is_activated_or_dispatched_to
         &["self", "install", "0.7.1"][..],
         &["self", "update", "--version", "0.7.1"],
     ] {
-        let refused = sandbox.command(Path::new(AF)).args(args).output().unwrap();
+        let refused = sandbox
+            .command(common::af_binary())
+            .args(args)
+            .output()
+            .unwrap();
         assert!(!refused.status.success(), "{args:?}");
         assert!(
             err(&refused).contains("older than the oldest supported release"),
@@ -226,7 +231,7 @@ fn nothing_older_than_the_oldest_supported_release_is_activated_or_dispatched_to
     // A lock below the floor is an older pin this binary cannot honour: it runs and says so.
     let repo = sandbox.pinned_repo("repo", &Sandbox::lock("0.7.1", None));
     let run = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "campaigns"])
         .current_dir(&repo)
         .output()
@@ -242,7 +247,7 @@ fn nothing_older_than_the_oldest_supported_release_is_activated_or_dispatched_to
 
     // An explicit request below the floor is refused outright.
     let explicit = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "campaigns"])
         .env("AF_VERSION", "0.7.1")
         .output()
@@ -261,11 +266,13 @@ fn dispatch_runs_the_version_a_project_pins_when_the_bytes_match() {
     let signer = Signer::new(keys.path());
     let sandbox = Sandbox::new().with_key(&signer);
     let digest = sandbox.publish("0.8.1", false);
+    sandbox.sign("0.8.1", &signer, None);
+    sandbox.install_pins("\"always\"");
     let repo = sandbox.pinned_repo("repo", &Sandbox::lock("0.8.1", Some(&digest)));
 
     // Not installed, offline: the running binary continues and names the fix.
     let offline = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "plan", "--repo"])
         .arg(&repo)
         .env("AF_SELF_OFFLINE", "1")
@@ -278,19 +285,55 @@ fn dispatch_runs_the_version_a_project_pins_when_the_bytes_match() {
     );
     assert!(!out(&offline).contains("fake af"), "{}", out(&offline));
 
-    // Online: installed on demand against the lock's digest, then exec'd with the same argv.
-    let dispatched = sandbox
-        .command(Path::new(AF))
+    // `af review plan` is token-free and stateless: online and under "always" it still installs
+    // nothing, and the running binary plans.
+    let plan = sandbox
+        .command(common::af_binary())
         .args(["review", "plan", "--repo"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        err(&plan).contains("`af review plan` never installs a release")
+            && err(&plan).contains("af self install 0.8.1"),
+        "{}",
+        err(&plan)
+    );
+    assert!(!out(&plan).contains("fake af"), "{}", out(&plan));
+    assert!(!sandbox.versions().join("0.8.1").exists());
+
+    // Online: installed on demand against the lock's digest and the signed checksums, then
+    // exec'd with the same argv.
+    let dispatched = sandbox
+        .command(common::af_binary())
+        .args(["review", "campaigns", "--repo"])
         .arg(&repo)
         .output()
         .unwrap();
     assert!(dispatched.status.success(), "{}", err(&dispatched));
     let text = out(&dispatched);
-    assert!(text.contains("fake af 0.8.1 review plan --repo"), "{text}");
+    assert!(
+        text.contains("fake af 0.8.1 review campaigns --repo"),
+        "{text}"
+    );
     assert!(text.contains(&format!("from={VERSION}")), "{text}");
     let receipt = std::fs::read_to_string(sandbox.versions().join("0.8.1/receipt.toml")).unwrap();
-    assert!(receipt.contains("verified_by = \"lock\""), "{receipt}");
+    assert!(
+        receipt.contains("verified_by = \"lock+signature\""),
+        "{receipt}"
+    );
+    // Installed, the pin dispatches `af review plan` too.
+    let plan = sandbox
+        .command(common::af_binary())
+        .args(["review", "plan", "--repo"])
+        .arg(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        out(&plan).contains("fake af 0.8.1 review plan --repo"),
+        "{}",
+        out(&plan)
+    );
 
     // The dispatch is remembered, so the pinned version survives remove and prune elsewhere.
     let real = sandbox.adopt_real_binary();
@@ -354,7 +397,7 @@ fn dispatch_runs_the_version_a_project_pins_when_the_bytes_match() {
     let repo = sandbox.pinned_repo("repo", &Sandbox::lock("0.8.1", Some(&digest)));
     for args in [&["self", "status"][..], &["--version"], &["help", "self"]] {
         let output = sandbox
-            .command(Path::new(AF))
+            .command(common::af_binary())
             .args(args)
             .current_dir(&repo)
             .output()
@@ -368,19 +411,19 @@ fn dispatch_runs_the_version_a_project_pins_when_the_bytes_match() {
 
     // AF_VERSION overrides the pin; so does `af onboard --af`.
     let forced = sandbox
-        .command(Path::new(AF))
-        .args(["review", "plan"])
+        .command(common::af_binary())
+        .args(["review", "campaigns"])
         .env("AF_VERSION", "0.8.1")
         .current_dir(sandbox.path("home"))
         .output()
         .unwrap();
     assert!(
-        out(&forced).contains("fake af 0.8.1 review plan"),
+        out(&forced).contains("fake af 0.8.1 review campaigns"),
         "{}",
         out(&forced)
     );
     let onboard = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["onboard", "--refresh-lock", "--af", "0.8.1"])
         .current_dir(sandbox.path("home"))
         .output()
@@ -394,7 +437,7 @@ fn dispatch_runs_the_version_a_project_pins_when_the_bytes_match() {
     // A pin matching the running version runs in place.
     write(&repo.join(".af/af.lock"), &Sandbox::lock(VERSION, None));
     let same = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["config", "paths", "--repo"])
         .arg(&repo)
         .output()
@@ -409,11 +452,12 @@ fn a_pin_binds_bytes_not_just_a_version() {
     let sandbox = Sandbox::new().with_key(&signer);
     let digest = sandbox.publish("0.8.1", false);
     sandbox.sign("0.8.1", &signer, None);
+    sandbox.install_pins("\"always\"");
 
     // No digest for this target: never installed on demand; an explicit install still works.
     let repo = sandbox.pinned_repo("repo", &Sandbox::lock("0.8.1", None));
     let older = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "campaigns"])
         .current_dir(&repo)
         .output()
@@ -429,7 +473,7 @@ fn a_pin_binds_bytes_not_just_a_version() {
     assert!(!sandbox.versions().join("0.8.1").exists());
     let newer = sandbox.pinned_repo("newer", &Sandbox::lock("9.9.9", None));
     let refused = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "campaigns"])
         .current_dir(&newer)
         .output()
@@ -441,7 +485,7 @@ fn a_pin_binds_bytes_not_just_a_version() {
     let wrong: String = digest.chars().rev().collect();
     let mismatched = sandbox.pinned_repo("mismatch", &Sandbox::lock("0.8.1", Some(&wrong)));
     let refused = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "campaigns"])
         .current_dir(&mismatched)
         .output()
@@ -456,13 +500,13 @@ fn a_pin_binds_bytes_not_just_a_version() {
 
     // Installed explicitly (release checksums), the digest-less pin dispatches …
     let install = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["self", "install", "0.8.1"])
         .output()
         .unwrap();
     assert!(install.status.success(), "{}", err(&install));
     let dispatched = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "campaigns"])
         .current_dir(&repo)
         .output()
@@ -474,7 +518,7 @@ fn a_pin_binds_bytes_not_just_a_version() {
     );
     // … but a lock whose digest disagrees with the installed receipt is refused.
     let refused = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "campaigns"])
         .current_dir(&mismatched)
         .output()
@@ -498,7 +542,7 @@ fn every_release_must_carry_a_valid_signature_when_the_build_has_a_key() {
     sandbox.publish("0.8.2", false);
 
     let unsigned = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["self", "install", "0.8.0"])
         .output()
         .unwrap();
@@ -511,7 +555,7 @@ fn every_release_must_carry_a_valid_signature_when_the_build_has_a_key() {
 
     sandbox.sign("0.8.1", &other, None);
     let forged = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["self", "install", "0.8.1"])
         .output()
         .unwrap();
@@ -520,7 +564,7 @@ fn every_release_must_carry_a_valid_signature_when_the_build_has_a_key() {
 
     sandbox.sign("0.8.2", &signer, Some(b"not the sums"));
     let tampered = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["self", "install", "0.8.2"])
         .output()
         .unwrap();
@@ -533,7 +577,7 @@ fn every_release_must_carry_a_valid_signature_when_the_build_has_a_key() {
 
     sandbox.sign("0.8.0", &signer, None);
     let signed = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["self", "install", "0.8.0"])
         .output()
         .unwrap();
@@ -543,7 +587,7 @@ fn every_release_must_carry_a_valid_signature_when_the_build_has_a_key() {
 
     let status: serde_json::Value = serde_json::from_slice(
         &sandbox
-            .command(Path::new(AF))
+            .command(common::af_binary())
             .args(["self", "status", "--json"])
             .output()
             .unwrap()
@@ -610,7 +654,7 @@ fn a_malformed_truncated_or_recommented_signature_is_refused_and_installs_nothin
         sandbox.sign(version, &signer, None);
         damage_signature(&sandbox, version, damage);
         let refused = sandbox
-            .command(Path::new(AF))
+            .command(common::af_binary())
             .args(["self", "install", version])
             .output()
             .unwrap();
@@ -631,7 +675,7 @@ fn a_malformed_truncated_or_recommented_signature_is_refused_and_installs_nothin
     sandbox.publish("0.8.6", false);
     sandbox.sign("0.8.6", &signer, None);
     let signed = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["self", "install", "0.8.6"])
         .output()
         .unwrap();
@@ -705,7 +749,7 @@ fn project_config_cannot_steer_dispatch_and_unavailable_newer_pins_fail_closed()
         "[self]\nsource = \"attacker/repo\"\ninstall_pins = true\n",
     );
     let older = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "campaigns"])
         .current_dir(&repo)
         .output()
@@ -731,7 +775,7 @@ fn project_config_cannot_steer_dispatch_and_unavailable_newer_pins_fail_closed()
         &Sandbox::lock("9.9.9", Some(&digest)),
     );
     let newer = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "campaigns"])
         .current_dir(&repo)
         .output()
@@ -746,7 +790,7 @@ fn project_config_cannot_steer_dispatch_and_unavailable_newer_pins_fail_closed()
 
     // An explicit AF_VERSION that is not installed is a refusal too.
     let explicit = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "campaigns"])
         .env("AF_VERSION", "5.5.5")
         .env("AF_SELF_OFFLINE", "1")
@@ -759,8 +803,12 @@ fn project_config_cannot_steer_dispatch_and_unavailable_newer_pins_fail_closed()
 
 #[test]
 fn a_bare_binary_without_a_receipt_is_not_installed() {
-    let sandbox = Sandbox::new();
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
     let digest = sandbox.publish("0.8.1", false);
+    sandbox.sign("0.8.1", &signer, None);
+    sandbox.install_pins("\"always\"");
     let dir = sandbox.versions().join("0.8.1");
     write(&dir.join("af"), "#!/bin/sh\necho planted\n");
     {
@@ -769,7 +817,7 @@ fn a_bare_binary_without_a_receipt_is_not_installed() {
     }
     let status: serde_json::Value = serde_json::from_slice(
         &sandbox
-            .command(Path::new(AF))
+            .command(common::af_binary())
             .args(["self", "status", "--json"])
             .output()
             .unwrap()
@@ -781,7 +829,7 @@ fn a_bare_binary_without_a_receipt_is_not_installed() {
     // Dispatch does not exec it; install replaces it with a verified, receipted binary.
     let repo = sandbox.pinned_repo("repo", &Sandbox::lock("0.8.1", Some(&digest)));
     let dispatched = sandbox
-        .command(Path::new(AF))
+        .command(common::af_binary())
         .args(["review", "campaigns"])
         .current_dir(&repo)
         .output()
@@ -846,7 +894,7 @@ fn remove_takes_a_version_never_a_path_and_a_same_version_pin_still_binds_bytes(
         err(&refused)
     );
     // With the receipt's own digest, or no digest, it runs in place.
-    let own = common::sha256_hex(&std::fs::read(AF).unwrap());
+    let own = common::sha256_hex(&std::fs::read(common::af_binary()).unwrap());
     for lock in [
         Sandbox::lock(VERSION, Some(&own)),
         Sandbox::lock(VERSION, None),
@@ -864,15 +912,367 @@ fn remove_takes_a_version_never_a_path_and_a_same_version_pin_still_binds_bytes(
     // AF_VERSION accepts a leading `v`.
     let forced = sandbox
         .command(&real)
-        .args(["review", "plan"])
+        .args(["review", "campaigns"])
         .env("AF_VERSION", "v0.8.1")
         .current_dir(sandbox.path("home"))
         .output()
         .unwrap();
     assert!(
-        out(&forced).contains("fake af 0.8.1 review plan"),
+        out(&forced).contains("fake af 0.8.1 review campaigns"),
         "{}\n{}",
         out(&forced),
         err(&forced)
     );
+}
+
+#[test]
+fn an_install_from_a_lock_needs_the_signed_checksums_to_agree_with_the_lock() {
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
+    sandbox.install_pins("\"always\"");
+    let run = |repo: &Path| {
+        sandbox
+            .command(common::af_binary())
+            .args(["review", "campaigns"])
+            .current_dir(repo)
+            .output()
+            .unwrap()
+    };
+
+    // A release source holding only the archive: the lock's digest alone installs nothing, and
+    // this newer af runs the older pin's command instead.
+    let digest = sandbox.publish("0.8.1", false);
+    std::fs::remove_file(sandbox.release_dir("0.8.1").join("SHA256SUMS")).unwrap();
+    let repo = sandbox.pinned_repo("bare", &Sandbox::lock("0.8.1", Some(&digest)));
+    let bare = run(&repo);
+    assert!(bare.status.success(), "{}", err(&bare));
+    assert!(
+        err(&bare).contains("has no SHA256SUMS") && err(&bare).contains("af self install 0.8.1"),
+        "{}",
+        err(&bare)
+    );
+    assert!(!out(&bare).contains("fake af"), "{}", out(&bare));
+    assert!(!sandbox.versions().join("0.8.1").exists());
+
+    // Checksums without a signature: refused as outside a lock.
+    let digest = sandbox.publish("0.8.2", false);
+    let repo = sandbox.pinned_repo("unsigned", &Sandbox::lock("0.8.2", Some(&digest)));
+    let unsigned = run(&repo);
+    assert!(
+        err(&unsigned).contains("must be signed"),
+        "{}",
+        err(&unsigned)
+    );
+    assert!(!sandbox.versions().join("0.8.2").exists());
+
+    // Signed checksums that disagree with the lock and the archive: a refusal, never a fallback.
+    let digest = sandbox.publish("0.8.3", true);
+    sandbox.sign("0.8.3", &signer, None);
+    let repo = sandbox.pinned_repo("disagree", &Sandbox::lock("0.8.3", Some(&digest)));
+    let disagree = run(&repo);
+    assert_eq!(disagree.status.code(), Some(1), "{}", err(&disagree));
+    assert!(
+        err(&disagree).contains("checksum mismatch")
+            && err(&disagree).contains("disagree with the project lock"),
+        "{}",
+        err(&disagree)
+    );
+    assert!(!out(&disagree).contains("fake af"), "{}", out(&disagree));
+    assert!(!sandbox.versions().join("0.8.3").exists());
+
+    // Both agree: installed, and the receipt names both checks.
+    let digest = sandbox.publish("0.8.4", false);
+    sandbox.sign("0.8.4", &signer, None);
+    let repo = sandbox.pinned_repo("agree", &Sandbox::lock("0.8.4", Some(&digest)));
+    let agree = run(&repo);
+    assert!(
+        out(&agree).contains("fake af 0.8.4 review campaigns"),
+        "{}",
+        err(&agree)
+    );
+    let receipt = std::fs::read_to_string(sandbox.versions().join("0.8.4/receipt.toml")).unwrap();
+    assert!(
+        receipt.contains("verified_by = \"lock+signature\""),
+        "{receipt}"
+    );
+}
+
+#[test]
+fn install_pins_asks_by_default_and_without_a_terminal_runs_this_af() {
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
+    let mut repos = Vec::new();
+    for version in ["0.8.1", "0.8.2", "0.8.3"] {
+        let digest = sandbox.publish(version, false);
+        sandbox.sign(version, &signer, None);
+        repos.push(sandbox.pinned_repo(
+            &format!("repo-{version}"),
+            &Sandbox::lock(version, Some(&digest)),
+        ));
+    }
+    let run = |repo: &Path, args: &[&str]| {
+        sandbox
+            .command(common::af_binary())
+            .args(args)
+            .current_dir(repo)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+
+    // The default asks, and with no terminal to ask on installs nothing: this af runs, after one
+    // line naming the step and the setting.
+    let asked = run(&repos[0], &["review", "campaigns"]);
+    assert!(asked.status.success(), "{}", err(&asked));
+    let stderr = err(&asked);
+    let notice: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("pins af 0.8.1"))
+        .collect();
+    assert_eq!(notice.len(), 1, "{}", err(&asked));
+    assert!(
+        notice[0].contains("install_pins = \"ask\"")
+            && notice[0].contains("no terminal to ask on")
+            && notice[0].contains("af self install 0.8.1"),
+        "{}",
+        notice[0]
+    );
+    assert!(!out(&asked).contains("fake af"), "{}", out(&asked));
+    assert!(!sandbox.versions().join("0.8.1").exists());
+
+    // `false` is "never": nothing installed either.
+    sandbox.install_pins("false");
+    let never = run(&repos[0], &["review", "campaigns"]);
+    assert!(never.status.success(), "{}", err(&never));
+    assert!(
+        err(&never).contains("install_pins = \"never\""),
+        "{}",
+        err(&never)
+    );
+    assert!(!sandbox.versions().join("0.8.1").exists());
+
+    // Under every setting, `af review plan` installs nothing.
+    for setting in ["\"ask\"", "\"always\"", "true", "\"never\""] {
+        sandbox.install_pins(setting);
+        let plan = run(&repos[2], &["review", "plan", "--policy-rev", "HEAD"]);
+        assert!(!out(&plan).contains("fake af"), "{setting}: {}", out(&plan));
+        assert!(
+            !sandbox.versions().join("0.8.3").exists(),
+            "{setting}: review plan installed"
+        );
+    }
+
+    // `true` is "always", and so is "always": installed and run.
+    for (setting, index, version) in [("true", 0, "0.8.1"), ("\"always\"", 1, "0.8.2")] {
+        sandbox.install_pins(setting);
+        let always = run(&repos[index], &["review", "campaigns"]);
+        assert!(
+            out(&always).contains(&format!("fake af {version} review campaigns")),
+            "{setting}: {}",
+            err(&always)
+        );
+    }
+
+    // Installed, a pin dispatches under "ask" without asking.
+    sandbox.install_pins("\"ask\"");
+    let installed = run(&repos[1], &["review", "campaigns"]);
+    assert!(
+        out(&installed).contains("fake af 0.8.2 review campaigns"),
+        "{}",
+        err(&installed)
+    );
+}
+
+#[test]
+fn update_without_a_version_never_moves_the_default_backwards() {
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
+    sandbox.publish("0.8.1", false);
+    sandbox.sign("0.8.1", &signer, None);
+    let real = sandbox.adopt_real_binary();
+    let update = |args: &[&str]| {
+        sandbox
+            .command(&real)
+            .args(["self", "update"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    // The newest release listed is older than this one: refused, naming both and the way out.
+    let refused = update(&[]);
+    assert!(!refused.status.success(), "{}", out(&refused));
+    assert!(
+        err(&refused).contains("af 0.8.1")
+            && err(&refused).contains(&format!("older than the running af {VERSION}"))
+            && err(&refused).contains("--version 0.8.1"),
+        "{}",
+        err(&refused)
+    );
+    assert!(!sandbox.versions().join("0.8.1").exists());
+    assert!(sandbox.default_target().is_none());
+    let check = update(&["--check"]);
+    assert!(check.status.success(), "{}", err(&check));
+    assert!(out(&check).contains("is up to date"), "{}", out(&check));
+
+    // Named explicitly, it is the operator's choice.
+    let explicit = update(&["--version", "0.8.1"]);
+    assert!(explicit.status.success(), "{}", err(&explicit));
+    assert_eq!(sandbox.default_target().as_deref(), Some("0.8.1"));
+}
+
+#[test]
+fn updates_reach_a_public_repository_anonymously_and_use_gh_only_as_a_fallback() {
+    let newer = next_release_version();
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
+    sandbox.publish(&newer, false);
+    sandbox.sign(&newer, &signer, None);
+    sandbox.publish("0.8.1", false);
+    sandbox.sign("0.8.1", &signer, None);
+    let real = sandbox.adopt_real_binary();
+    write(
+        &sandbox.path("config/af/config.toml"),
+        "[self]\nsource = \"owner/repo\"\n",
+    );
+    let tools = tool_dir(
+        &sandbox.path("fakes"),
+        &["sh", "tar", "gzip", "cp", "basename"],
+    );
+    executable(&tools.join("curl"), FAKE_CURL);
+    let gh_dir = sandbox.path("fakes/gh");
+    executable(&gh_dir.join("gh"), FAKE_GH);
+    let (curl_log, gh_log) = (sandbox.path("curl.log"), sandbox.path("gh.log"));
+    let with_gh = std::env::join_paths([&gh_dir, &tools]).unwrap();
+    let run = |path: &std::ffi::OsStr, args: &[&str], status: Option<&str>| {
+        let mut command = sandbox.command(&real);
+        command
+            .args(args)
+            .env_remove("AF_RELEASE_SOURCE")
+            .env("PATH", path)
+            .env("FAKE_RELEASES", sandbox.path("releases"))
+            .env("FAKE_REPO", "owner/repo")
+            .env("FAKE_CURL_LOG", &curl_log)
+            .env("FAKE_GH_LOG", &gh_log);
+        if let Some(status) = status {
+            command.env("FAKE_CURL_STATUS", status);
+        }
+        command.output().unwrap()
+    };
+
+    // No gh on PATH: the check and an install go over anonymous HTTPS.
+    let check = run(tools.as_os_str(), &["self", "update", "--check"], None);
+    assert_eq!(check.status.code(), Some(10), "{}", err(&check));
+    assert!(out(&check).contains(&newer), "{}", out(&check));
+    let install = run(tools.as_os_str(), &["self", "install", "0.8.1"], None);
+    assert!(install.status.success(), "{}", err(&install));
+    let receipt = std::fs::read_to_string(sandbox.versions().join("0.8.1/receipt.toml")).unwrap();
+    assert!(
+        receipt.contains("source = \"github:owner/repo\"")
+            && receipt.contains("verified_by = \"minisign\""),
+        "{receipt}"
+    );
+    let calls = std::fs::read_to_string(&curl_log).unwrap();
+    assert!(
+        calls.contains("--proto =https --proto-redir =https --tlsv1.2"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("https://github.com/owner/repo/releases/download/v0.8.1/SHA256SUMS.minisig"),
+        "{calls}"
+    );
+
+    // With gh on PATH and the anonymous route open, gh is never asked.
+    let check = run(&with_gh, &["self", "update", "--check"], None);
+    assert_eq!(check.status.code(), Some(10), "{}", err(&check));
+    assert!(!gh_log.exists(), "gh was asked");
+
+    // A repository that is not public answers 404 anonymously: gh answers instead, and without
+    // it the failure says what is missing.
+    let check = run(&with_gh, &["self", "update", "--check"], Some("404"));
+    assert_eq!(check.status.code(), Some(10), "{}", err(&check));
+    assert!(
+        std::fs::read_to_string(&gh_log)
+            .unwrap()
+            .contains("release list --repo owner/repo"),
+        "gh was not asked"
+    );
+    let install = run(&with_gh, &["self", "install", &newer], Some("404"));
+    assert!(install.status.success(), "{}", err(&install));
+    let without = run(
+        tools.as_os_str(),
+        &["self", "update", "--check"],
+        Some("404"),
+    );
+    assert!(!without.status.success(), "{}", out(&without));
+    assert!(
+        err(&without).contains("GitHub CLI is not installed"),
+        "{}",
+        err(&without)
+    );
+}
+
+#[test]
+fn uninstall_leaves_a_default_path_that_is_not_afs_link() {
+    let sandbox = Sandbox::new();
+    let real = sandbox.adopt_real_binary();
+    let uninstall = || {
+        sandbox
+            .command(&real)
+            .args(["self", "uninstall"])
+            .output()
+            .unwrap()
+    };
+
+    // A binary the user built and put there is theirs.
+    let user_built = sandbox.path("bin/af");
+    write(&user_built, "#!/bin/sh\necho mine\n");
+    let kept = uninstall();
+    assert!(kept.status.success(), "{}", err(&kept));
+    assert!(
+        out(&kept).contains(&format!("left {} in place", user_built.display())),
+        "{}",
+        out(&kept)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&user_built).unwrap(),
+        "#!/bin/sh\necho mine\n"
+    );
+    assert!(!sandbox.versions().exists());
+
+    // So is a link to something outside af's versions.
+    std::fs::remove_file(&user_built).unwrap();
+    let elsewhere = sandbox.path("elsewhere/af");
+    write(&elsewhere, "#!/bin/sh\n");
+    std::os::unix::fs::symlink(&elsewhere, &user_built).unwrap();
+    let real = sandbox.adopt_real_binary();
+    let kept = sandbox
+        .command(&real)
+        .args(["self", "uninstall"])
+        .output()
+        .unwrap();
+    assert!(kept.status.success(), "{}", err(&kept));
+    assert!(std::fs::symlink_metadata(&user_built).is_ok());
+    assert!(elsewhere.is_file());
+
+    // af's own link goes.
+    std::fs::remove_file(&user_built).unwrap();
+    let real = sandbox.adopt_real_binary();
+    std::os::unix::fs::symlink(&real, &user_built).unwrap();
+    let removed = sandbox
+        .command(&real)
+        .args(["self", "uninstall"])
+        .output()
+        .unwrap();
+    assert!(removed.status.success(), "{}", err(&removed));
+    assert!(
+        out(&removed).contains(&format!("removed {}", user_built.display())),
+        "{}",
+        out(&removed)
+    );
+    assert!(std::fs::symlink_metadata(&user_built).is_err());
 }

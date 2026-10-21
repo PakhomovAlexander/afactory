@@ -4,6 +4,7 @@ use super::*;
 const BOUNDS: PackageBounds = PackageBounds {
     files: 4096,
     bytes: 16 * 1024 * 1024,
+    file_bytes: 16 * 1024 * 1024,
 };
 
 /// A package `pkg` beside an `outside` directory holding bytes no package may contain.
@@ -255,6 +256,7 @@ fn a_bounded_walk_refuses_one_file_or_byte_past_its_bounds_and_admits_exactly_th
     let exact = PackageBounds {
         files: files.len(),
         bytes,
+        file_bytes: bytes,
     };
     assert_eq!(package_files("pkg", &root, exact).unwrap(), files);
     for tight in [

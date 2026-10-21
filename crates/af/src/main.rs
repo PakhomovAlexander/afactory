@@ -98,8 +98,12 @@ impl Options {
         {
             validate_campaign_name(campaign)?;
         }
-        let repository = std::fs::canonicalize(&self.repo)
-            .map_err(|error| format!("opening repository {}: {error}", self.repo.display()))?;
+        let repository = std::fs::canonicalize(&self.repo).map_err(|error| {
+            format!(
+                "opening repository {}: {error}",
+                terminal_text(&self.repo.display().to_string())
+            )
+        })?;
         if state.starts_with(&repository) {
             return Err(format!(
                 "state {} is inside the repository; af state must live under XDG state or an explicit external --state directory",
@@ -107,6 +111,9 @@ impl Options {
             ));
         }
         if self.state.is_some() {
+            // An explicit directory becomes af-owned: one holding anything else is refused
+            // before anything is written or registered (ADR-0144).
+            storage::owned::admit(&state)?;
             storage::registry::record(&state, storage::registry::StoreKind::Review);
         }
         Ok(state)
@@ -162,15 +169,65 @@ fn campaign_state_beneath(root: &Path, campaign: &str) -> Result<PathBuf, String
 }
 
 fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
-    let repository = std::fs::canonicalize(repository)
-        .map_err(|error| format!("opening repository {}: {error}", repository.display()))?;
+    let repository = std::fs::canonicalize(repository).map_err(|error| {
+        format!(
+            "opening repository {}: {error}",
+            terminal_text(&repository.display().to_string())
+        )
+    })?;
     let identity = Sha256::digest(repository.as_os_str().as_encoded_bytes());
     Ok(xdg_state_root()?
         .join("af/review/local")
         .join(&review_core::hex::encode(&identity)[..16]))
 }
 
+/// The longest Campaign label, in bytes: listings show it whole.
+const MAX_CAMPAIGN_LABEL_BYTES: usize = 128;
+
+/// Whether `character` is a Unicode format character (general category Cf, the bidi controls
+/// among them) or a line or paragraph separator (Zl, Zp): invisible in a listing, or able to
+/// reorder or break the text around it.
+fn is_invisible_or_reordering(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
 fn validate_campaign_name(campaign: &str) -> Result<(), String> {
+    if campaign.len() > MAX_CAMPAIGN_LABEL_BYTES {
+        return Err(format!(
+            "campaign name is {} bytes; a campaign name is at most {MAX_CAMPAIGN_LABEL_BYTES} bytes",
+            campaign.len()
+        ));
+    }
+    if let Some(character) = campaign.chars().find(|c| is_invisible_or_reordering(*c)) {
+        return Err(format!(
+            "campaign name {campaign:?} holds U+{:04X}, an invisible format, bidi control or \
+             separator character that could disguise it in a listing",
+            u32::from(character)
+        ));
+    }
     validate_campaign_component(campaign)?;
     if campaign.trim() != campaign
         || campaign
@@ -225,8 +282,12 @@ fn resolve_filesystem_path(path: &Path) -> Result<PathBuf, String> {
             .then_some(())
             .ok_or_else(|| format!("path {} has no existing ancestor", absolute.display()))?;
     }
-    let mut resolved = std::fs::canonicalize(&existing)
-        .map_err(|error| format!("opening {}: {error}", existing.display()))?;
+    let mut resolved = std::fs::canonicalize(&existing).map_err(|error| {
+        format!(
+            "opening {}: {error}",
+            terminal_text(&existing.display().to_string())
+        )
+    })?;
     for component in suffix.into_iter().rev() {
         resolved.push(component);
     }
@@ -414,6 +475,7 @@ fn campaign_state(state: &Option<PathBuf>, campaign: &str) -> Result<PathBuf, St
         Some(state) => {
             let state = resolve_filesystem_path(state)?;
             validate_campaign_name(campaign)?;
+            storage::owned::admit(&state)?;
             storage::registry::record(&state, storage::registry::StoreKind::Review);
             Ok(state)
         }
@@ -445,7 +507,11 @@ fn parse_changed_region(value: &str) -> Result<review_core::ChangedRegionV1, Str
 
 /// A usage error clap could not express: print only the failing command's usage and exit 2.
 fn usage_error(command: &str, message: &str) -> ! {
-    eprintln!("error: {message}\n  try: af {command} --help");
+    eprintln!(
+        "error: {}\n  try: af {} --help",
+        terminal_lines(message),
+        terminal_text(command)
+    );
     std::process::exit(2);
 }
 
@@ -618,9 +684,20 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
             };
             // Through descriptors from the root, no link followed, and only while it is still
             // the directory enumerated (ADR-0144).
-            review_sandbox::remove_beneath(&root, &path, Some(identity))
-                .map_err(|error| format!("removing {}: {error}", path.display()))?;
-            reclaimed = reclaimed.saturating_add(campaign.state_bytes.unwrap_or(0));
+            if options.state_root.is_some() {
+                // Below an explicit root, whole only when it is proven af's; otherwise af's
+                // entries alone, and what was left is said.
+                let removed = storage::owned::remove(&root, &path, identity)
+                    .map_err(|error| format!("removing {}: {error}", path.display()))?;
+                if let Some(line) = storage::owned::left_line(&path, &removed.left) {
+                    eprintln!("af review gc: {}", terminal_text(&line));
+                }
+                reclaimed = reclaimed.saturating_add(removed.bytes);
+            } else {
+                review_sandbox::remove_beneath(&root, &path, Some(identity))
+                    .map_err(|error| format!("removing {}: {error}", path.display()))?;
+                reclaimed = reclaimed.saturating_add(campaign.state_bytes.unwrap_or(0));
+            }
             "removed"
         } else {
             "would remove"
@@ -677,8 +754,8 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
         println!(
             "  {:<12} {} ({}): {}; {}{}",
             candidate.action,
-            candidate.label.escape_debug(),
-            candidate.state_dir,
+            terminal_text(&candidate.label),
+            terminal_text(&candidate.state_dir),
             human_bytes(candidate.state_bytes),
             candidate
                 .last_activity_unix_ms
@@ -687,15 +764,15 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
             candidate
                 .in_use
                 .as_deref()
-                .map(|why| format!("; {why}"))
+                .map(|why| format!("; {}", terminal_text(why)))
                 .unwrap_or_default()
         );
     }
     for problem in &enumeration.problems {
         println!(
             "  skipped      {}: {}",
-            problem.directory.escape_debug(),
-            problem.reason.escape_debug()
+            terminal_text(&problem.directory),
+            terminal_text(&problem.reason)
         );
     }
     Ok(())
@@ -1058,7 +1135,7 @@ fn help_command(words: &[String]) -> Result<i32, String> {
                 let topics: Vec<&str> = topics::TOPICS.iter().map(|(name, _, _)| *name).collect();
                 eprintln!(
                     "error: `{}` is neither a topic nor a command\n  topics: {}\n  try: af --help",
-                    words.join(" "),
+                    terminal_text(&words.join(" ")),
                     topics.join(", ")
                 );
                 return Ok(2);
@@ -1078,6 +1155,10 @@ fn help_command(words: &[String]) -> Result<i32, String> {
 
 fn main() {
     use clap::{CommandFactory as _, Parser as _};
+    use review_core::perf_trace::{self, Phase};
+    // Inert outside a `perf-trace` diagnostic build (ADR-0174): startup composition, then the
+    // dispatched command, exported when the command returns through here.
+    let startup = perf_trace::span(Phase::CliStartup);
     let argv: Vec<String> = match std::env::args_os()
         .map(|argument| argument.into_string())
         .collect()
@@ -1086,11 +1167,22 @@ fn main() {
         Err(argument) => {
             eprintln!(
                 "af: command-line argument {} is not valid UTF-8",
-                argument.to_string_lossy()
+                terminal_text(&argument.to_string_lossy())
             );
             std::process::exit(2);
         }
     };
+    // The calibration loop of a laboratory slowdown trial runs inside this process, before
+    // anything else (ADR-0181); a build without `perf-calibration` refuses its control.
+    if let Err(error) = review_core::perf_calibration::configure_from_env() {
+        eprintln!("af: {error}");
+        std::process::exit(2);
+    }
+    if review_core::perf_calibration::inject().is_some()
+        && let Some(line) = review_core::perf_calibration::report_line()
+    {
+        eprintln!("{line}");
+    }
     if let Some(code) = providers::auth_handoff::supervise_early(&argv) {
         std::process::exit(code);
     }
@@ -1114,12 +1206,22 @@ fn main() {
         return;
     }
     selfmgmt::maybe_dispatch(&argv);
-    let parsed = cli::Af::parse_from(&argv);
+    // `parse_from`, with the trace exported before help, usage and errors exit.
+    let parsed = match cli::Af::try_parse_from(&argv) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            drop(startup);
+            perf_trace::finish();
+            error.exit()
+        }
+    };
     if parsed.version {
         if let Err(error) = selfmgmt::print_version(parsed.json) {
-            eprintln!("af: {error}");
+            eprintln!("af: {}", terminal_lines(&error.to_string()));
             std::process::exit(1);
         }
+        drop(startup);
+        perf_trace::finish();
         return;
     }
     let Some(command) = parsed.command else {
@@ -1134,7 +1236,7 @@ fn main() {
             }
         }
         let code = tui::launch(parsed.repo.as_deref()).unwrap_or_else(|error| {
-            eprintln!("af: {error}");
+            eprintln!("af: {}", terminal_lines(&error.to_string()));
             1
         });
         selfmgmt::after_command(&argv);
@@ -1144,7 +1246,7 @@ fn main() {
     if needs_interrupt_handling(&command)
         && let Err(error) = interrupt::install()
     {
-        eprintln!("af: {error}");
+        eprintln!("af: {}", terminal_lines(&error.to_string()));
         std::process::exit(1);
     }
     let sandbox_sweep = runs_task_work(&command)
@@ -1156,15 +1258,17 @@ fn main() {
         // The free-disk floor and the budget step before a new warm key (ADR-0144). Without
         // them no check or Worker may start, so work is refused rather than run unguarded.
         eprintln!(
-            "af: the storage budget cannot be set up, so no Task or review work starts: {error}; \
-             see `af config show --origin` for [storage] and the XDG directories"
+            "af: the storage budget cannot be set up, so no Task or review work starts: {}; \
+             see `af config show --origin` for [storage] and the XDG directories",
+            terminal_lines(&error.to_string())
         );
         std::process::exit(1);
     }
     let collects_after = collects_after_run(&command);
     // A command that runs a kernel run records it (ADR-0153); every other command opens no
     // telemetry directory.
-    let mut recording = recorded_run(&command).map(telemetry::begin);
+    let mut recording =
+        recorded_run(&command).map(|kind| telemetry::begin(kind, telemetry::command_chain(&argv)));
     // Registered best effort (ADR-0158): `af task plan|start` before `--workspace` resolves,
     // every other command once it ran.
     let registers = projects::lazy_target(&command);
@@ -1177,6 +1281,8 @@ fn main() {
         cli::Command::Onboard(args) if args.apply => Some((args.repo.clone(), args.json)),
         _ => None,
     };
+    drop(startup);
+    let dispatched = perf_trace::span(Phase::CliCommand);
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
         cli::Command::Review(namespace) => ("af review", review_command(namespace)),
         cli::Command::Provider { command } => ("af provider", provider_command(command)),
@@ -1479,7 +1585,7 @@ fn main() {
                 });
                 println!("{document}");
             }
-            eprintln!("{prefix}: {error}");
+            eprintln!("{prefix}: {}", terminal_lines(&error));
             1
         }
     };
@@ -1498,6 +1604,8 @@ fn main() {
         // before the process ends, so a stale directory never outlives two Task-running commands.
         let _ = sweep.join();
     }
+    drop(dispatched);
+    perf_trace::finish();
     selfmgmt::after_command(&argv);
     if code != 0 {
         std::process::exit(code);
@@ -1825,7 +1933,7 @@ fn exit_interrupted(
     };
     if let Some(error) = error {
         if error != interrupt::INTERRUPTED {
-            eprintln!("{prefix}: {error}");
+            eprintln!("{prefix}: {}", terminal_lines(&error));
         }
         if argv.iter().skip(1).any(|word| word == "--json") {
             let document = serde_json::json!({
@@ -1837,7 +1945,7 @@ fn exit_interrupted(
             println!("{document}");
         }
     }
-    eprintln!("{prefix}: {message}");
+    eprintln!("{prefix}: {}", terminal_lines(&message));
     let _ = std::io::stdout().flush();
     interrupt::exit(signal);
 }
@@ -1924,8 +2032,12 @@ fn provider_kind(kind: cli::ProviderKindArg) -> &'static str {
 fn print_render(options: &Options) -> Result<(), String> {
     let scratch = tempfile::tempdir().map_err(|error| error.to_string())?;
     let cas = Cas::open(scratch.path().join("cas")).map_err(|error| error.to_string())?;
-    let repository = std::fs::canonicalize(&options.repo)
-        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    let repository = std::fs::canonicalize(&options.repo).map_err(|error| {
+        format!(
+            "opening repository {}: {error}",
+            terminal_text(&options.repo.display().to_string())
+        )
+    })?;
     let git_home = scratch.path().join("git-home");
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(repository, git_home)
@@ -1940,13 +2052,17 @@ fn print_render(options: &Options) -> Result<(), String> {
     }
     // The header goes to stderr and the exact bytes to stdout, so `> prompt.md` is exact.
     eprintln!("review render (token-free; no Campaign state)");
-    eprintln!("node      {} ({})", view.node, view.runner);
+    eprintln!(
+        "node      {} ({})",
+        terminal_text(&view.node),
+        terminal_text(&view.runner)
+    );
     if let Some(package) = &view.package {
         eprintln!(
             "package   {} {} {}",
-            package["name"].as_str().unwrap_or("?"),
-            package["version"].as_str().unwrap_or("?"),
-            package["digest"].as_str().unwrap_or("?")
+            terminal_text(package["name"].as_str().unwrap_or("?")),
+            terminal_text(package["version"].as_str().unwrap_or("?")),
+            terminal_text(package["digest"].as_str().unwrap_or("?"))
         );
     }
     eprintln!(
@@ -1966,11 +2082,13 @@ fn print_render(options: &Options) -> Result<(), String> {
     for entry in &view.manifest.entries {
         eprintln!(
             "context   {} {} bytes ({})",
-            entry.name, entry.rendered_bytes, entry.required_by
+            terminal_text(&entry.name),
+            entry.rendered_bytes,
+            terminal_text(&entry.required_by)
         );
     }
     for item in &view.not_rendered {
-        eprintln!("omitted   {item}");
+        eprintln!("omitted   {}", terminal_text(item));
     }
     eprintln!("effects   no state, Gates, Provider calls, Workers, or token spend");
     let mut stdout = std::io::stdout().lock();
@@ -1982,8 +2100,12 @@ fn print_render(options: &Options) -> Result<(), String> {
 fn print_plan(options: &Options) -> Result<(), String> {
     let scratch = tempfile::tempdir().map_err(|error| error.to_string())?;
     let cas = Cas::open(scratch.path().join("cas")).map_err(|error| error.to_string())?;
-    let repository = std::fs::canonicalize(&options.repo)
-        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    let repository = std::fs::canonicalize(&options.repo).map_err(|error| {
+        format!(
+            "opening repository {}: {error}",
+            terminal_text(&options.repo.display().to_string())
+        )
+    })?;
     let git_home = scratch.path().join("git-home");
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(repository, git_home)
@@ -1992,7 +2114,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
     if options.json {
         // The document's shape is unchanged; the model lines go to stderr (ADR-0148).
         for line in &models {
-            eprintln!("{line}");
+            eprintln!("{}", terminal_text(line));
         }
         println!(
             "{}",
@@ -2005,23 +2127,24 @@ fn print_plan(options: &Options) -> Result<(), String> {
     println!("review plan (token-free; no Campaign state)");
     println!(
         "policy   {} => {}",
-        selectors["policy_rev"].as_str().unwrap_or("?"),
-        resolved["policy_snapshot_id"].as_str().unwrap_or("?")
+        terminal_text(selectors["policy_rev"].as_str().unwrap_or("?")),
+        terminal_text(resolved["policy_snapshot_id"].as_str().unwrap_or("?"))
     );
     if let Some(base) = selectors["base"].as_str() {
         println!(
-            "base     {base} => {}",
-            resolved["base_snapshot_id"].as_str().unwrap_or("?")
+            "base     {} => {}",
+            terminal_text(base),
+            terminal_text(resolved["base_snapshot_id"].as_str().unwrap_or("?"))
         );
     }
     println!(
         "candidate {} => {}",
-        selectors["candidate"].as_str().unwrap_or("?"),
-        resolved["candidate_snapshot_id"].as_str().unwrap_or("?")
+        terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
+        terminal_text(resolved["candidate_snapshot_id"].as_str().unwrap_or("?"))
     );
     println!(
         "subject  {} ({} paths, {} patch bytes{})",
-        plan["subject"]["kind"].as_str().unwrap_or("?"),
+        terminal_text(plan["subject"]["kind"].as_str().unwrap_or("?")),
         plan["subject"]["changed_paths"]
             .as_array()
             .map_or(0, Vec::len),
@@ -2037,28 +2160,35 @@ fn print_plan(options: &Options) -> Result<(), String> {
         .into_iter()
         .flatten()
     {
-        println!("  change  {}", path.as_str().unwrap_or("?"));
+        println!("  change  {}", terminal_text(path.as_str().unwrap_or("?")));
     }
     if let Some(route) = plan["route"].as_object() {
         println!(
             "route    {} => {}{}{}",
-            route
-                .get("policy")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("?"),
-            route
-                .get("pipeline_path")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("?"),
+            terminal_text(
+                route
+                    .get("policy")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?")
+            ),
+            terminal_text(
+                route
+                    .get("pipeline_path")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?")
+            ),
             route
                 .get("name")
                 .and_then(serde_json::Value::as_str)
-                .map(|name| format!(" ({name})"))
+                .map(|name| format!(" ({})", terminal_text(name)))
                 .unwrap_or_default(),
             route
                 .get("replaced")
                 .and_then(serde_json::Value::as_str)
-                .map(|replaced| format!("; replaced {replaced}: its Worker input exceeded the cap"))
+                .map(|replaced| format!(
+                    "; replaced {}: its Worker input exceeded the cap",
+                    terminal_text(replaced)
+                ))
                 .unwrap_or_default()
         );
     }
@@ -2070,8 +2200,8 @@ fn print_plan(options: &Options) -> Result<(), String> {
     {
         println!(
             "  node {} [{}]",
-            node["id"].as_str().unwrap_or("?"),
-            node["kind"].as_str().unwrap_or("?")
+            terminal_text(node["id"].as_str().unwrap_or("?")),
+            terminal_text(node["kind"].as_str().unwrap_or("?"))
         );
     }
     for edge in plan["pipeline"]["topology"]["edges"]
@@ -2081,16 +2211,16 @@ fn print_plan(options: &Options) -> Result<(), String> {
     {
         println!(
             "  {}.{} -> {}.{}",
-            edge["from"]["node"].as_str().unwrap_or("?"),
-            edge["from"]["port"].as_str().unwrap_or("?"),
-            edge["to"]["node"].as_str().unwrap_or("?"),
-            edge["to"]["port"].as_str().unwrap_or("?")
+            terminal_text(edge["from"]["node"].as_str().unwrap_or("?")),
+            terminal_text(edge["from"]["port"].as_str().unwrap_or("?")),
+            terminal_text(edge["to"]["node"].as_str().unwrap_or("?")),
+            terminal_text(edge["to"]["port"].as_str().unwrap_or("?"))
         );
     }
     for gate in plan["pipeline"]["gates"].as_array().into_iter().flatten() {
         println!(
             "gate     {} ({})",
-            gate["name"].as_str().unwrap_or("?"),
+            terminal_text(gate["name"].as_str().unwrap_or("?")),
             if gate["required"].as_bool() == Some(true) {
                 "required"
             } else {
@@ -2120,9 +2250,9 @@ fn print_plan(options: &Options) -> Result<(), String> {
             .map(|reservation| {
                 format!(
                     "{} {} ({})",
-                    reservation["node"].as_str().unwrap_or("?"),
+                    terminal_text(reservation["node"].as_str().unwrap_or("?")),
                     reservation["tokens"].as_u64().unwrap_or(0),
-                    reservation["source"].as_str().unwrap_or("?")
+                    terminal_text(reservation["source"].as_str().unwrap_or("?"))
                 )
             })
             .collect::<Vec<_>>();
@@ -2139,7 +2269,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
             };
             println!(
                 "input    {} {bytes} bytes (about {} tokens){}",
-                reservation["node"].as_str().unwrap_or("?"),
+                terminal_text(reservation["node"].as_str().unwrap_or("?")),
                 reservation["input_tokens"].as_u64().unwrap_or(0),
                 if reservation["fits"].as_bool() == Some(false) {
                     " — EXCEEDS its Attempt cap; run will refuse"
@@ -2156,12 +2286,12 @@ fn print_plan(options: &Options) -> Result<(), String> {
     for provider in plan["providers"].as_array().into_iter().flatten() {
         println!(
             "provider {} -> {}",
-            provider["node"].as_str().unwrap_or("?"),
-            provider["binding"].as_str().unwrap_or("MISSING")
+            terminal_text(provider["node"].as_str().unwrap_or("?")),
+            terminal_text(provider["binding"].as_str().unwrap_or("MISSING"))
         );
     }
     for line in &models {
-        println!("{line}");
+        println!("{}", terminal_text(line));
     }
     let bound = plan["providers"]
         .as_array()
@@ -2179,11 +2309,14 @@ fn print_plan(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// One progress line of `af review run`: findings, nodes and reasons a reviewer or the
+/// repository authored included, so it is shown through [`terminal_text`].
 fn run_progress(options: &Options, arguments: fmt::Arguments<'_>) {
+    let line = terminal_text(&arguments.to_string());
     if options.json {
-        eprintln!("{arguments}");
+        eprintln!("{line}");
     } else {
-        println!("{arguments}");
+        println!("{line}");
     }
 }
 
@@ -2230,7 +2363,7 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     for finding in &findings {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}:{}\t{}",
-            finding.key,
+            terminal_text(&finding.key),
             format!("{:?}", finding.severity).to_lowercase(),
             finding.status.as_str(),
             finding.convergence_scope_label(),
@@ -2238,9 +2371,9 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
                 .convergence_severity
                 .map(|severity| format!("{severity:?}").to_lowercase())
                 .unwrap_or_else(|| "-".to_string()),
-            finding.file,
+            terminal_text(&finding.file),
             finding.line.map_or("-".to_string(), |l| l.to_string()),
-            finding.title
+            terminal_text(&finding.title)
         );
         if !finding.aliases.is_empty() {
             print_indented("aliases", &finding.aliases.join(", "));
@@ -2256,10 +2389,10 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
                     .map(|report| {
                         format!(
                             "{} round {}={} at {}:{}",
-                            report.source,
+                            terminal_text(&report.source),
                             report.round,
                             report.scope_label(),
-                            report.file,
+                            terminal_text(&report.file),
                             report.line.map_or("-".to_string(), |line| line.to_string())
                         )
                     })
@@ -2285,7 +2418,7 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let wall = task_accounting.wall_ms();
     let task_summary = report_tasks::summary(&task_accounting.tasks);
     if !task_summary.is_empty() {
-        eprintln!("{task_summary}");
+        eprintln!("{}", terminal_lines(&task_summary));
     }
     eprintln!(
         "round {}; {} findings: {}; {} required demands open/stale{}",
@@ -2300,7 +2433,7 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
 }
 
 fn print_indented(label: &str, value: &str) {
-    let mut lines = value.lines();
+    let mut lines = value.lines().map(terminal_text);
     println!("  {label}: {}", lines.next().unwrap_or_default());
     for line in lines {
         println!("    {line}");
@@ -2468,15 +2601,19 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     print_scope_authority_warnings(&ledger);
     let finding = ledger
         .finding_view(&options.key)
-        .ok_or_else(|| format!("no finding with key {}", options.key))?;
+        .ok_or_else(|| format!("no finding with key {}", terminal_text(&options.key)))?;
     let run_id = campaign_run_id(&options.campaign);
     let head = current_campaign_head(&store, &cas, &run_id)?;
     let proposals = campaign_proposals(&store, &cas, &run_id)?;
     let (finding_ids, report_ids) = finding_claim_ids(&finding, &cas)?;
 
-    println!("{} [{}]", finding.title, finding.key);
+    println!(
+        "{} [{}]",
+        terminal_text(&finding.title),
+        terminal_text(&finding.key)
+    );
     if !finding.aliases.is_empty() {
-        println!("aliases={}", finding.aliases.join(","));
+        println!("aliases={}", terminal_text(&finding.aliases.join(",")));
     }
     println!(
         "severity={} effective_severity={} status={} scope={} location={}:{}",
@@ -2487,7 +2624,7 @@ fn show(options: &ShowOptions) -> Result<(), String> {
             .unwrap_or_else(|| "-".to_string()),
         finding.status.as_str(),
         finding.convergence_scope_label(),
-        finding.file,
+        terminal_text(&finding.file),
         finding
             .line
             .map_or("-".to_string(), |line| line.to_string())
@@ -2496,23 +2633,25 @@ fn show(options: &ShowOptions) -> Result<(), String> {
         println!(
             "\nreport {}: reviewer={} round={} severity={} scope={} location={}:{} id={}",
             index + 1,
-            attached.source,
+            terminal_text(&attached.source),
             attached.round,
             format!("{:?}", attached.severity).to_lowercase(),
             attached.scope_label(),
-            attached.file,
+            terminal_text(&attached.file),
             attached
                 .line
                 .map_or("-".to_string(), |line| line.to_string()),
-            attached.report_id
+            terminal_text(&attached.report_id)
         );
         let report = cas
             .get_json(&attached.report_id)
             .map_err(|e| format!("reading report {}: {e}", attached.report_id))?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
-        );
+        // JSON escapes C0 controls itself; DEL and C1 controls it leaves raw, so each line is
+        // shown through the helper too.
+        let pretty = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+        for line in pretty.lines() {
+            println!("{}", terminal_text(line));
+        }
     }
 
     println!("\nhistory:");
@@ -2524,13 +2663,13 @@ fn show(options: &ShowOptions) -> Result<(), String> {
             transition
                 .note
                 .as_deref()
-                .map(|note| format!(" - {note}"))
+                .map(|note| format!(" - {}", one_line(note)))
                 .unwrap_or_default()
         );
     }
     println!(
         "current note: {}",
-        finding.current_note().unwrap_or("(none)")
+        one_line(finding.current_note().unwrap_or("(none)"))
     );
     println!("\nproposals:");
     let linked = proposals
@@ -2541,20 +2680,32 @@ fn show(options: &ShowOptions) -> Result<(), String> {
         println!("  (none)");
     } else {
         for proposal in linked {
-            println!(
-                "  {} base={} applicability={} paths={}",
-                proposal.id,
-                proposal.proposal.base_snapshot_id,
-                if proposal.proposal.base_snapshot_id == head {
-                    "current"
-                } else {
-                    "stale"
-                },
-                proposal.proposal.paths.join(",")
-            );
+            println!("{}", proposal_line(proposal, &head));
         }
     }
     Ok(())
+}
+
+/// One Proposal of `af review show`. Its paths are model-authored, so each is shown through
+/// [`terminal_text`]: a control character in one can neither drive the terminal nor forge a line.
+fn proposal_line(proposal: &CampaignProposal, head: &str) -> String {
+    format!(
+        "  {} base={} applicability={} paths={}",
+        terminal_text(&proposal.id),
+        terminal_text(&proposal.proposal.base_snapshot_id),
+        if proposal.proposal.base_snapshot_id == head {
+            "current"
+        } else {
+            "stale"
+        },
+        proposal
+            .proposal
+            .paths
+            .iter()
+            .map(|path| terminal_text(path))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
 }
 
 #[derive(serde::Serialize)]
@@ -2949,10 +3100,15 @@ fn read_campaign_view(
 fn print_campaigns_text(view: &CampaignListView) {
     println!("Campaigns: {}", view.campaigns.len());
     for campaign in &view.campaigns {
-        println!("{} ({})", campaign.label.escape_debug(), campaign.id);
+        println!(
+            "{} ({})",
+            terminal_text(&campaign.label),
+            terminal_text(&campaign.id)
+        );
         println!(
             "  authority: snapshot {}; manifest {}",
-            campaign.authority_snapshot_id, campaign.campaign_manifest_id
+            terminal_text(&campaign.authority_snapshot_id),
+            terminal_text(&campaign.campaign_manifest_id)
         );
         println!(
             "  subject: {}{}",
@@ -2960,24 +3116,24 @@ fn print_campaigns_text(view: &CampaignListView) {
             campaign
                 .base_snapshot_id
                 .as_deref()
-                .map(|base| format!("; base {base}"))
+                .map(|base| format!("; base {}", terminal_text(base)))
                 .unwrap_or_default()
         );
         println!(
             "  last subject: {}",
-            campaign.last_subject_id.as_deref().unwrap_or("not started")
+            terminal_text(campaign.last_subject_id.as_deref().unwrap_or("not started"))
         );
         match last_closed_summary(
             campaign.last_closed_round,
             campaign.last_closed_epoch,
             campaign.verdict.as_deref(),
         ) {
-            Some(summary) => println!("  last closed: {summary}"),
+            Some(summary) => println!("  last closed: {}", terminal_text(&summary)),
             None => println!("  last closed: none"),
         }
         println!(
             "  state: {}{}{}",
-            campaign.state_dir,
+            terminal_text(&campaign.state_dir),
             campaign
                 .state_bytes
                 .map(|bytes| format!(", {}", human_bytes(bytes)))
@@ -2991,7 +3147,7 @@ fn print_campaigns_text(view: &CampaignListView) {
             println!("  wall: {}", human_duration(wall));
         }
         for summary in report_tasks::summary(&campaign.task_accounting).lines() {
-            println!("  {summary}");
+            println!("  {}", terminal_text(summary));
         }
         if let Some(findings) = &campaign.findings {
             println!("  findings: {}", findings_summary_line(findings));
@@ -3006,7 +3162,7 @@ fn print_campaigns_text(view: &CampaignListView) {
                 round.run,
                 optional_number(round.round),
                 optional_number(round.epoch),
-                round.verdict,
+                terminal_text(&round.verdict),
                 round.tokens_label()
             );
         }
@@ -3015,8 +3171,8 @@ fn print_campaigns_text(view: &CampaignListView) {
     for problem in &view.problems {
         println!(
             "  {}: {}",
-            problem.directory.escape_debug(),
-            problem.reason.escape_debug()
+            terminal_text(&problem.directory),
+            terminal_text(&problem.reason)
         );
     }
 }
@@ -3321,15 +3477,15 @@ fn report_round_authority(
 }
 
 fn print_report_text(report: &ReviewReportView) {
-    println!("Review campaign: {}", report.campaign);
+    println!("Review campaign: {}", terminal_text(&report.campaign));
     println!("Runs recorded: {}", report.runs_recorded);
     println!("Ledger round: {}", report.ledger_round);
     println!(
         "Final verdict: {}",
-        report.final_verdict.as_deref().unwrap_or("not recorded")
+        terminal_text(report.final_verdict.as_deref().unwrap_or("not recorded"))
     );
     for reason in &report.final_reasons {
-        println!("  reason: {reason}");
+        println!("  reason: {}", terminal_text(reason));
     }
     if let Some(wall) = report.wall_ms {
         println!("Wall-clock: {}", human_duration(wall));
@@ -3348,11 +3504,14 @@ fn print_report_text(report: &ReviewReportView) {
             round.run,
             optional_number(round.round),
             optional_number(round.epoch),
-            round.verdict,
+            terminal_text(&round.verdict),
             round.tokens_label()
         );
     }
-    print!("{}", report_tasks::render(&report.task_accounting, false));
+    // Node IDs in it are repository-authored: every line is shown through the helper.
+    for line in report_tasks::render(&report.task_accounting, false).lines() {
+        println!("{}", terminal_text(line));
+    }
     println!("Demands:");
     if report.demands.is_empty() {
         println!("  none");
@@ -3363,14 +3522,14 @@ fn print_report_text(report: &ReviewReportView) {
             demand_requirement_label(demand.requirement),
             demand_status_label(demand.status),
             one_line(&demand.claim),
-            demand.demand_id
+            terminal_text(&demand.demand_id)
         );
         println!("    why: {}", one_line(&demand.why));
         println!(
             "    suggested method: {}",
             one_line(&demand.suggested_method)
         );
-        println!("    source: {}", demand.source);
+        println!("    source: {}", terminal_text(&demand.source));
     }
     println!("Findings:");
     if report.findings.is_empty() {
@@ -3387,8 +3546,8 @@ fn print_report_text(report: &ReviewReportView) {
                 .map(severity_label)
                 .unwrap_or("-"),
             one_line(&finding.title),
-            finding.key,
-            finding.file,
+            terminal_text(&finding.key),
+            terminal_text(&finding.file),
             finding
                 .line
                 .map_or("-".to_string(), |line| line.to_string())
@@ -3407,13 +3566,13 @@ fn print_report_text(report: &ReviewReportView) {
 }
 
 fn print_report_markdown(report: &ReviewReportView) {
-    println!("# Review campaign `{}`", report.campaign);
+    println!("# Review campaign `{}`", terminal_text(&report.campaign));
     println!();
     println!("- Runs recorded: {}", report.runs_recorded);
     println!("- Ledger round: {}", report.ledger_round);
     println!(
         "- Final verdict: {}",
-        report.final_verdict.as_deref().unwrap_or("not recorded")
+        terminal_text(report.final_verdict.as_deref().unwrap_or("not recorded"))
     );
     for reason in &report.final_reasons {
         println!("  - reason: {}", markdown_line(reason));
@@ -3436,12 +3595,15 @@ fn print_report_markdown(report: &ReviewReportView) {
             round.run,
             optional_number(round.round),
             optional_number(round.epoch),
-            round.verdict,
+            terminal_text(&round.verdict),
             round.tokens_cell()
         );
     }
     println!();
-    print!("{}", report_tasks::render(&report.task_accounting, true));
+    // Node IDs in it are repository-authored: every line is shown through the helper.
+    for line in report_tasks::render(&report.task_accounting, true).lines() {
+        println!("{}", terminal_text(line));
+    }
     println!("## Demands");
     if report.demands.is_empty() {
         println!();
@@ -3453,15 +3615,15 @@ fn print_report_markdown(report: &ReviewReportView) {
             "- **[{}, {}] {}** (`{}`)",
             demand_requirement_label(demand.requirement),
             demand_status_label(demand.status),
-            demand.claim,
-            demand.demand_id
+            markdown_line(&demand.claim),
+            terminal_text(&demand.demand_id)
         );
         println!("  - Why: {}", markdown_line(&demand.why));
         println!(
             "  - Suggested method: {}",
             markdown_line(&demand.suggested_method)
         );
-        println!("  - Source: {}", demand.source);
+        println!("  - Source: {}", terminal_text(&demand.source));
     }
     println!();
     println!("## Findings");
@@ -3502,9 +3664,9 @@ fn print_report_markdown(report: &ReviewReportView) {
                     .convergence_severity
                     .map(severity_label)
                     .unwrap_or("-"),
-                finding.title,
-                finding.key,
-                finding.file,
+                one_line(&finding.title),
+                terminal_text(&finding.key),
+                terminal_text(&finding.file),
                 finding
                     .line
                     .map_or("-".to_string(), |line| line.to_string())
@@ -3517,14 +3679,14 @@ fn print_report_markdown(report: &ReviewReportView) {
                 .map(|attached| {
                     format!(
                         "{} round {} scope={} at {}:{} `{}`",
-                        attached.source,
+                        terminal_text(&attached.source),
                         attached.round,
                         attached.scope_label(),
-                        attached.file,
+                        terminal_text(&attached.file),
                         attached
                             .line
                             .map_or("-".to_string(), |line| line.to_string()),
-                        attached.report_id
+                        terminal_text(&attached.report_id)
                     )
                 })
                 .collect::<Vec<_>>()
@@ -3605,7 +3767,38 @@ fn last_closed_summary(
 }
 
 fn one_line(value: &str) -> String {
-    value.lines().collect::<Vec<_>>().join(" ")
+    terminal_text(&value.lines().collect::<Vec<_>>().join(" "))
+}
+
+/// A repository- or model-authored string made safe for text-mode output: every control
+/// character (C0, DEL and C1, so ESC, BEL, a newline and a tab too) is shown as a visible
+/// `\u{…}` escape instead of reaching the terminal, so a changed path or a finding title can
+/// neither drive the terminal nor forge an output line. The control set is the one
+/// `review_runner::cli::bounded_cli_line` removes; unlike that line, nothing here is dropped,
+/// collapsed, bounded or withheld, so two distinct paths stay two distinct lines. `--json`
+/// documents never pass through it: JSON escapes them itself.
+fn terminal_text(value: &str) -> String {
+    let mut shown = String::with_capacity(value.len());
+    for c in value.chars() {
+        if c.is_control() {
+            shown.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
+        } else {
+            shown.push(c);
+        }
+    }
+    shown
+}
+
+/// [`terminal_text`] for a message af composed that may span lines, an error above all: every
+/// line goes through it, so no value interpolated into the message can drive the terminal, and
+/// the message's own line breaks stay line breaks. A value that must not forge a line either is
+/// passed through [`terminal_text`] where it is interpolated.
+fn terminal_lines(message: &str) -> String {
+    message
+        .split('\n')
+        .map(terminal_text)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn run_report(event: &review_core::RunEvent) -> Result<RunReportPayloadV6, String> {
@@ -3634,7 +3827,7 @@ fn render_verdict_v3(verdict: RunVerdictV3) -> String {
 }
 
 fn markdown_line(value: &str) -> String {
-    value.lines().collect::<Vec<_>>().join(" ")
+    one_line(value)
 }
 
 fn print_scope_authority_warnings(ledger: &Ledger) {
@@ -3642,11 +3835,16 @@ fn print_scope_authority_warnings(ledger: &Ledger) {
         match failure.authority {
             review_store::ScopeAuthorityKind::RoundBinding => eprintln!(
                 "warning: round {} Report Scope is unknown: round binding disagrees for Subject {}: {}",
-                failure.round, failure.authority_id, failure.reason
+                failure.round,
+                terminal_text(&failure.authority_id),
+                terminal_text(&failure.reason)
             ),
             authority => eprintln!(
                 "warning: round {} Report Scope is unknown: {:?} authority {} is unavailable: {}",
-                failure.round, authority, failure.authority_id, failure.reason
+                failure.round,
+                authority,
+                terminal_text(&failure.authority_id),
+                terminal_text(&failure.reason)
             ),
         }
     }
@@ -3689,7 +3887,11 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
         .finding_view(&options.key)
         .map(|f| f.status.as_str())
         .unwrap_or("?");
-    println!("resolved {} -> {} ({resolution_id})", options.key, now);
+    println!(
+        "resolved {} -> {} ({resolution_id})",
+        terminal_text(&options.key),
+        now
+    );
     Ok(())
 }
 
@@ -3710,7 +3912,7 @@ fn attest_change(options: &AttestChangeOptions) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     println!(
         "attested {} -> pending-verification ({id})",
-        options.finding_id
+        terminal_text(&options.finding_id)
     );
     Ok(())
 }
@@ -3735,11 +3937,11 @@ fn verify_fix(options: &VerifyFixOptions) -> Result<(), String> {
     match resolution {
         Some(resolution) => println!(
             "verified {} -> fixed (verification {verification}, resolution {resolution})",
-            options.finding_id
+            terminal_text(&options.finding_id)
         ),
         None => println!(
             "verification for {} was negative ({verification}); Finding remains pending-verification",
-            options.finding_id
+            terminal_text(&options.finding_id)
         ),
     }
     Ok(())
@@ -3760,7 +3962,10 @@ fn challenge_resolution(options: &ChallengeResolutionOptions) -> Result<(), Stri
             options.evidence_ids.clone(),
         )
         .map_err(|e| e.to_string())?;
-    println!("challenged {} -> contested ({id})", options.finding_id);
+    println!(
+        "challenged {} -> contested ({id})",
+        terminal_text(&options.finding_id)
+    );
     Ok(())
 }
 
@@ -3795,12 +4000,20 @@ fn group(options: &GroupOptions, undo: bool) -> Result<(), String> {
         ingest
             .ungroup(&options.from, &options.into)
             .map_err(|e| e.to_string())?;
-        println!("ungrouped {} from {}", options.from, options.into);
+        println!(
+            "ungrouped {} from {}",
+            terminal_text(&options.from),
+            terminal_text(&options.into)
+        );
     } else {
         ingest
             .group(&options.from, &options.into)
             .map_err(|e| e.to_string())?;
-        println!("grouped {} into {}", options.from, options.into);
+        println!(
+            "grouped {} into {}",
+            terminal_text(&options.from),
+            terminal_text(&options.into)
+        );
     }
     Ok(())
 }
@@ -3832,7 +4045,10 @@ fn add_evidence(options: &EvidenceAddOptions) -> Result<(), String> {
             &operator_actor(options.actor.as_deref())?,
         )
         .map_err(|error| error.to_string())?;
-    println!("evidence {evidence_id} recorded for {}", options.demand_id);
+    println!(
+        "evidence {evidence_id} recorded for {}",
+        terminal_text(&options.demand_id)
+    );
     Ok(())
 }
 
@@ -3869,7 +4085,9 @@ fn satisfy_evidence(options: &EvidenceSatisfyOptions) -> Result<(), String> {
         .transpose()?;
     println!(
         "demand {} satisfied by {} under {} ({satisfaction_id})",
-        options.demand_id, options.evidence_id, options.policy_revision
+        terminal_text(&options.demand_id),
+        terminal_text(&options.evidence_id),
+        terminal_text(&options.policy_revision)
     );
     if let Some(reuse_id) = reuse_id {
         println!("future-Subject Evidence reuse admitted ({reuse_id})");
@@ -3891,7 +4109,10 @@ fn waive_demand(options: &DemandWaiveOptions) -> Result<(), String> {
             &options.reason,
         )
         .map_err(|error| error.to_string())?;
-    println!("demand {} waived ({waiver_id})", options.demand_id);
+    println!(
+        "demand {} waived ({waiver_id})",
+        terminal_text(&options.demand_id)
+    );
     Ok(())
 }
 
@@ -4106,12 +4327,12 @@ fn provider_doctor(options: &Options) -> Result<i32, String> {
         return Err("provider doctor requires `--campaign NAME` so admission evidence can be reused by review run".into());
     }
     let state = options.resolved_state_dir()?;
-    std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
+    storage::owned::prepare(&state, options.state.is_some())?;
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
     let mut store =
         EventStore::open(state.join("events.sqlite")).map_err(|error| error.to_string())?;
     let git_home = state.join("git-home");
-    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    storage::owned::private_dir(&git_home)?;
     let repo = Repo::open(&options.repo, &git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
     let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
@@ -4137,7 +4358,7 @@ fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<()>> 
                     "af: removed {} stale sandbox director{} left by exited processes under {}",
                     report.removed,
                     if report.removed == 1 { "y" } else { "ies" },
-                    std::env::temp_dir().display()
+                    terminal_text(&std::env::temp_dir().display().to_string())
                 );
             }
         })
@@ -4146,7 +4367,7 @@ fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<()>> 
 
 fn run(options: &Options) -> Result<RunVerdict, String> {
     let state = options.resolved_state_dir()?;
-    std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
+    storage::owned::prepare(&state, options.state.is_some())?;
     // Held for the whole run: no sweep and no `af review gc` removes this campaign under it.
     // A run that cannot hold it does not start: unprotected, a sweep could remove its Store.
     let _running = storage::hold_running(&state)?;
@@ -4154,12 +4375,88 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let mut store =
         EventStore::open(state.join("events.sqlite")).map_err(|error| error.to_string())?;
     let git_home = state.join("git-home");
-    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    storage::owned::private_dir(&git_home)?;
     let repo = Repo::open(&options.repo, &git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
     let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
     review_task::require_common_campaign(&cas, &store, &campaign)?;
     review_task::run(options, &cas, &mut store, &repo, &campaign)
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::{
+        CampaignProposal, markdown_line, one_line, proposal_line, terminal_lines, terminal_text,
+    };
+
+    /// A message af composed keeps its own line breaks; every line of it is shown through
+    /// `terminal_text`, so a value interpolated into it sends no control character (audit C3).
+    #[test]
+    fn a_message_keeps_its_lines_and_sends_no_control_character() {
+        assert_eq!(
+            terminal_lines("opening esc\x1b]0;PWNED\x07repo: gone\n  try: af --help\r"),
+            "opening esc\\u{1b}]0;PWNED\\u{7}repo: gone\n  try: af --help\\u{d}"
+        );
+        assert_eq!(terminal_lines("plain"), "plain");
+        assert_eq!(terminal_lines(""), "");
+    }
+
+    #[test]
+    fn every_control_character_is_shown_not_sent() {
+        assert_eq!(
+            terminal_text("esc\x1b]0;PWNED\x07name"),
+            "esc\\u{1b}]0;PWNED\\u{7}name"
+        );
+        assert_eq!(
+            terminal_text("new\nline\ttab\r"),
+            "new\\u{a}line\\u{9}tab\\u{d}"
+        );
+        assert_eq!(
+            terminal_text("del\x7f c1\u{9b}31m"),
+            "del\\u{7f} c1\\u{9b}31m"
+        );
+        // Printable text, Unicode included, is untouched: nothing is dropped or bounded.
+        let plain = "src/caf\u{e9}.rs \u{2014} a title with `code` and 100% of it";
+        assert_eq!(terminal_text(plain), plain);
+        let long = "x".repeat(10_000);
+        assert_eq!(terminal_text(&long), long);
+        for value in ["esc\x1b[2J", "bell\x07", "a\nb", "c1\u{85}", "\x00"] {
+            for shown in [terminal_text(value), one_line(value), markdown_line(value)] {
+                assert!(!shown.chars().any(char::is_control), "{shown:?}");
+            }
+        }
+        assert_eq!(one_line("two\nlines\x1b"), "two lines\\u{1b}");
+    }
+
+    /// A Proposal's paths are model-authored: `af review show` prints one holding ESC, BEL or a
+    /// newline escaped, on its one line.
+    #[test]
+    fn a_proposal_path_is_shown_not_sent() {
+        let proposal = CampaignProposal {
+            id: "sha256:proposal".into(),
+            proposal: review_core::PatchProposal {
+                base_snapshot_id: "sha256:head".into(),
+                patch_artifact_id: "sha256:patch".into(),
+                finding_refs: Vec::new(),
+                evidence_ids: Vec::new(),
+                paths: vec![
+                    "esc\x1b]0;PWNED\x07name".into(),
+                    "new\n  sha256:forged base=x applicability=current paths=y".into(),
+                ],
+                description: String::new(),
+                auto_apply_nominated: false,
+            },
+        };
+        let line = proposal_line(&proposal, "sha256:head");
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert_eq!(line.lines().count(), 1, "{line}");
+        assert_eq!(
+            line,
+            "  sha256:proposal base=sha256:head applicability=current \
+             paths=esc\\u{1b}]0;PWNED\\u{7}name,new\\u{a}  sha256:forged base=x \
+             applicability=current paths=y"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -4301,6 +4598,35 @@ mod option_tests {
         for valid in ["heavy", "af-tui", "round_4", "v2.1-audit"] {
             assert!(validate_campaign_name(valid).is_ok());
         }
+    }
+
+    /// A label that a listing could not show truthfully is refused: too long to show whole, or
+    /// holding a character that is invisible or reorders the text around it.
+    #[test]
+    fn campaign_labels_are_bounded_and_refuse_invisible_or_reordering_characters() {
+        assert!(validate_campaign_name(&"a".repeat(128)).is_ok());
+        assert!(validate_campaign_name(&"é".repeat(64)).is_ok());
+        let error = validate_campaign_name(&"a".repeat(129)).unwrap_err();
+        assert!(error.contains("at most 128 bytes"), "{error}");
+        assert!(validate_campaign_name(&"é".repeat(65)).is_err());
+        for hostile in [
+            "audit\u{2028}approved",
+            "audit\u{2029}approved",
+            "audit\u{202E}devorppa",
+            "audit\u{200B}",
+            "\u{2066}isolate\u{2069}",
+            "soft\u{00AD}hyphen",
+            "bom\u{FEFF}",
+            "tag\u{E0041}",
+        ] {
+            let error = validate_campaign_name(hostile).unwrap_err();
+            assert!(error.contains("U+"), "{hostile:?}: {error}");
+            assert!(
+                !error.contains(['\u{2028}', '\u{2029}', '\u{202E}']),
+                "{error}"
+            );
+        }
+        assert!(validate_campaign_name("révision-ünicode-中文").is_ok());
     }
 
     #[test]

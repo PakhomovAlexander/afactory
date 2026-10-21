@@ -171,9 +171,9 @@ impl Entry {
 }
 
 /// For each shown Worker (its declaration, its prompt, and whether `commit` holds that prompt),
-/// the files whose working-tree copy differs from `commit`, from one `git diff` for them all.
-/// `git diff` ignores an untracked file, so a prompt `commit` lacks differs when the working
-/// tree has one, a link included. A comparison git cannot make counts as a difference.
+/// the files whose working-tree copy differs from `commit`, from one comparison for them all
+/// (`differing`). A prompt `commit` lacks differs when the working tree has one, a link
+/// included. A comparison git cannot make counts as a difference.
 fn drift(root: &Path, commit: &str, shown: &[(&str, &str, bool)]) -> Vec<Vec<String>> {
     let mut tracked = Vec::new();
     for (declaration, prompt, committed) in shown {

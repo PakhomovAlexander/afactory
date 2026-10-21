@@ -90,6 +90,9 @@ pub const MAX_CHECK_LOG_BYTES: usize = 1024 * 1024;
 /// requests they opened. A cleanup touches only what still equals this record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateEvidence {
+    /// The repository identity of the Task's source, which selects the mapping's push target
+    /// for the cleanup, as it selected the target the branches were pushed to.
+    pub repository_id: String,
     /// The `owner/name` every recorded remote check named.
     pub github: String,
     /// The commit `af-gate/<task-id>/base` was pushed with.
@@ -98,6 +101,16 @@ pub struct GateEvidence {
     pub head_commit: Option<String>,
     /// The draft gate pull requests the evidence recorded.
     pub pull_requests: Vec<u64>,
+}
+
+/// The repository identity of the Task Snapshot `snapshot_id`: what the mapping is keyed by.
+pub fn repository_of(cas: &Cas, snapshot_id: &str) -> Result<String, String> {
+    let (snapshot, _) = review_source_git::task::read_snapshot(cas, snapshot_id)?;
+    Ok(
+        review_source_git::task::read_origin(cas, &snapshot.origin_id)?
+            .repository_id()
+            .to_owned(),
+    )
 }
 
 /// Remove what one Task's remote checks left on GitHub (ADR-0144), proving ownership first. A
@@ -325,10 +338,11 @@ pub fn run(
         return Ok(refuse_all(
             RemoteCheckReasonV1::RemoteCandidateChangesCi,
             format!(
-                "the candidate differs from the Task's source Snapshot under `.github/` (first \
-                 at `{path}`), so it is never sent to a remote executor; run this Task where the \
-                 check is local, with a pipeline whose check node lists it in `checks` instead \
-                 of `remote_checks`"
+                "the candidate differs from the Task's source Snapshot in a path the gate \
+                 workflow trusts (`.github`, `.gitmodules`, `.cargo/` or a root `action.yml`; \
+                 first at `{path}`), so it is never sent to a remote executor; run this Task \
+                 where the check is local, with a pipeline whose check node lists it in \
+                 `checks` instead of `remote_checks`"
             ),
             None,
         ));
@@ -1054,14 +1068,28 @@ fn wait(tools: &Tools<'_>, interval: Duration) {
     }
 }
 
-/// The first path under `.github/` whose presence, mode or content differs between the two
-/// manifests, rendered for a message.
+/// Whether a candidate may not change `path` and still be sent to a gate workflow (M1, L2): the
+/// workflow files under `.github/` and `.github` itself, and what Actions and Cargo read before
+/// any job's own command runs, `.gitmodules`, `.cargo/` and a root `action.yml`/`action.yaml`
+/// (`uses: ./`). Everything else the workflow runs is candidate code all the same.
+fn workflow_trusts(path: &[u8]) -> bool {
+    path == b".github"
+        || path.starts_with(b".github/")
+        || path == b".gitmodules"
+        || path == b".cargo"
+        || path.starts_with(b".cargo/")
+        || path == b"action.yml"
+        || path == b"action.yaml"
+}
+
+/// The first path the gate workflow trusts ([`workflow_trusts`]) whose presence, mode or content
+/// differs between the two manifests, rendered for a message.
 fn ci_difference(source: &Manifest, candidate: &Manifest) -> Option<String> {
     let under = |manifest: &Manifest| {
         manifest
             .entries
             .iter()
-            .filter(|entry| review_core::decode_path(&entry.path).starts_with(b".github/"))
+            .filter(|entry| workflow_trusts(&review_core::decode_path(&entry.path)))
             .map(|entry| {
                 (
                     entry.path.clone(),
@@ -1428,6 +1456,10 @@ fn prove(
     Ok(Proof::Proven(merge))
 }
 
+/// Every REST call names its host: the one `gh auth status --hostname github.com` checked,
+/// whatever the operator's `gh` configuration would otherwise pick (L3).
+const GH_API: [&str; 3] = ["api", "--hostname", "github.com"];
+
 /// The GitHub REST calls the executor makes, all through `gh api`.
 struct Api<'a> {
     tools: &'a Tools<'a>,
@@ -1437,7 +1469,7 @@ struct Api<'a> {
 
 impl Api<'_> {
     fn call(&self, args: &[&str]) -> Result<Value, ToolError> {
-        let mut full = vec!["api"];
+        let mut full = GH_API.to_vec();
         full.extend(args);
         let out = self.tools.run("gh", &full, None, false, self.cwd, &[])?;
         serde_json::from_slice(&out).map_err(|_| {
@@ -1474,8 +1506,9 @@ impl Api<'_> {
     /// One job's log as GitHub serves it. It is plain text, not JSON.
     fn job_log(&self, job: u64) -> Result<Vec<u8>, ToolError> {
         let path = format!("repos/{}/actions/jobs/{job}/logs", self.github);
-        self.tools
-            .run("gh", &["api", &path], None, false, self.cwd, &[])
+        let mut full = GH_API.to_vec();
+        full.push(&path);
+        self.tools.run("gh", &full, None, false, self.cwd, &[])
     }
 
     fn create_pull(&self, task_id: &str, head: &str, base: &str) -> Result<Pull, ToolError> {
@@ -1794,5 +1827,91 @@ mod tests {
             ci_difference(&source, &added).as_deref(),
             Some(".github/x.yml")
         );
+    }
+
+    /// What the workflow trusts besides its own files: `.github` as a file or a link where the
+    /// source had none, `.gitmodules`, `.cargo/` and a root action. A nested action or a name
+    /// that only begins like one is candidate code like any other.
+    #[test]
+    fn a_ci_difference_covers_what_the_workflow_trusts() {
+        use review_source_git::{Entry, EntryKind};
+        let digest = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+        let entry = |path: &str, kind, content| Entry {
+            path: path.into(),
+            kind,
+            content,
+            size: 1,
+        };
+        let source = Manifest::new(vec![
+            entry(".cargo/config.toml", EntryKind::File, digest('1')),
+            entry(".gitmodules", EntryKind::File, digest('2')),
+            entry("action.yml", EntryKind::File, digest('3')),
+            entry("src/a.rs", EntryKind::File, digest('4')),
+        ])
+        .unwrap();
+        let with = |extra: Vec<Entry>, drop: &str| {
+            let mut entries: Vec<Entry> = source
+                .entries
+                .iter()
+                .filter(|e| e.path != drop)
+                .cloned()
+                .collect();
+            entries.extend(extra);
+            Manifest::new(entries).unwrap()
+        };
+        for (candidate, first) in [
+            (
+                with(vec![entry(".github", EntryKind::File, digest('5'))], ""),
+                ".github",
+            ),
+            (
+                with(vec![entry(".github", EntryKind::Symlink, digest('5'))], ""),
+                ".github",
+            ),
+            (
+                with(
+                    vec![entry(".gitmodules", EntryKind::File, digest('6'))],
+                    ".gitmodules",
+                ),
+                ".gitmodules",
+            ),
+            (with(vec![], ".gitmodules"), ".gitmodules"),
+            (
+                with(
+                    vec![entry(".cargo/credentials", EntryKind::File, digest('7'))],
+                    "",
+                ),
+                ".cargo/credentials",
+            ),
+            (
+                with(
+                    vec![entry(".cargo/config.toml", EntryKind::File, digest('8'))],
+                    ".cargo/config.toml",
+                ),
+                ".cargo/config.toml",
+            ),
+            (
+                with(
+                    vec![entry("action.yml", EntryKind::Executable, digest('3'))],
+                    "action.yml",
+                ),
+                "action.yml",
+            ),
+            (
+                with(vec![entry("action.yaml", EntryKind::File, digest('9'))], ""),
+                "action.yaml",
+            ),
+        ] {
+            assert_eq!(ci_difference(&source, &candidate).as_deref(), Some(first));
+        }
+        for path in [
+            "sub/action.yml",
+            ".cargo-other/x",
+            ".githubx",
+            "src/.github/x",
+        ] {
+            let candidate = with(vec![entry(path, EntryKind::File, digest('a'))], "");
+            assert_eq!(ci_difference(&source, &candidate), None, "{path}");
+        }
     }
 }

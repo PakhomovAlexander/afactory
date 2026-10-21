@@ -1,0 +1,384 @@
+# SYNTHETIC registry for laboratory tests and committed comparison fixtures. It is not the
+# product registry and no number produced under it describes the AF product. Its policy
+# blocks are copied from fixtures/performance/suite.toml; its cases are synthetic.
+#
+# Four layers stay separate: workload (cases, parameter domains, oracles, timing and cache
+# scope), policy (criticality, tolerances, budgets, pairs), recipe (build and instrument) and
+# environment (capabilities and resources). `python3 scripts/performance/cli.py list` validates
+# every reference and expands every parameter domain without building anything.
+#
+# Status: nothing here is executable. Every recipe, environment and case says so, its probe is
+# declared not executable and every oracle is pending. Planning works; a run refuses.
+# Every pair count and tolerance below is an initial policy choice, not a demonstrated
+# sufficient value; the readiness cohort decides whether it is.
+
+schema = "af.perf-suite/3"
+suite_id = "af_performance_synthetic"
+description = "Synthetic registry: small cases for deterministic comparison fixtures."
+
+[product_constraints]
+# Recorded so fixtures are generated against them; the laboratory never changes them.
+task_lease_ms = 15000
+artifact_envelope_cap_bytes = 8388608
+description = "Production Task lease and CAS artifact envelope cap at the design base."
+
+[probe]
+source = "crates/review-pipeline/examples/perf-probe.rs"
+request = "af.perf-probe-request/2"
+message = "af.perf-probe/1"
+golden = "golden/synthetic.json"
+sentinel_contract = "sentinel_canonical_v1"
+state = "not_yet_executable"
+pending = "Synthetic registry; its probe contracts are never executed."
+description = "SYNTHETIC probe declaration."
+
+[verdict]
+algorithm = "paired_median_tolerance_v2"
+family_alpha = "0.05"
+advisory_alpha = "0.05"
+
+[health]
+rule = "sentinel_start_end_v1"
+workload = "sentinel_canonical"
+metric = "wall_ms"
+# Fixed before calibration and never tuned after seeing candidate results.
+batch_repetitions = 64
+start_pairs = 5
+end_pairs = 5
+max_median_shift = "0.2"
+max_mad_ratio = "0.2"
+denominator_floor = "1"
+state = "provisional"
+description = "Baseline-versus-baseline sentinel pairs bracket each shard's schedule."
+
+[health.oracle]
+kind = "golden_canonical_digest"
+state = "pending_native_oracle"
+description = "The golden digest checks every repetition of the sentinel batch."
+
+[limits]
+sample_log_bytes = 262144
+shard_bundle_bytes = 134217728
+build_artifact_bytes = 1073741824
+worktree_bytes = 42949672960
+free_disk_floor_bytes = 10737418240
+build_minutes = 20
+
+# Metrics -------------------------------------------------------------------------------------
+
+[metrics.wall_ms]
+unit = "ms"
+direction = "lower_is_better"
+description = "Monotonic wall time of the declared timing boundary; the product metric."
+
+[metrics.user_cpu_ms]
+unit = "ms"
+direction = "lower_is_better"
+description = "OS-accounted user CPU time; diagnostic, never summed with overlapping records."
+
+[metrics.system_cpu_ms]
+unit = "ms"
+direction = "lower_is_better"
+description = "OS-accounted system CPU time; diagnostic."
+
+[metrics.context_switches]
+unit = "count"
+direction = "lower_is_better"
+description = "Voluntary plus involuntary context switches as the OS reports them; diagnostic."
+
+[metrics.page_faults]
+unit = "count"
+direction = "lower_is_better"
+description = "Major plus minor page faults as the OS reports them; diagnostic."
+
+[metrics.cgroup_peak_memory_bytes]
+unit = "bytes"
+direction = "lower_is_better"
+description = "cgroup v2 memory.peak of the sample's process tree, including accounted cache; not RSS."
+
+[metrics.wait4_maxrss_bytes]
+unit = "bytes"
+direction = "lower_is_better"
+description = "wait4 maximum resident set size converted to bytes per platform; diagnostic."
+
+[metrics.logical_bytes]
+unit = "bytes"
+direction = "lower_is_better"
+description = "Logical bytes written or read by a persistence diagnostic."
+
+# Policies ------------------------------------------------------------------------------------
+
+[policies.wall_time_default]
+metric = "wall_ms"
+relative_tolerance = "0.05"
+absolute_tolerance = "1"
+calibration = "initial"
+description = "Initial wall-time policy r = 0.05, a = 1 ms; not a claim that hosted CI resolves 5%."
+
+# Budgets begin pending calibration; a reviewed policy change may enable them. -----------------
+
+[budgets.cli_discovery_under_50ms]
+metric = "wall_ms"
+limit = "50"
+unit = "ms"
+comparison = "every_sample_strictly_below"
+minimum_samples = 20
+state = "pending_calibration"
+tiers = ["nightly", "release"]
+environments = ["linux_x86_64_musl_hosted", "macos_arm64_local"]
+recipes = ["linux_musl_shipping", "macos_arm64_native_release"]
+description = "CLI discovery under 50 ms: every shipping sample on the named environment."
+
+[budgets.state_read_under_200ms]
+metric = "wall_ms"
+limit = "200"
+unit = "ms"
+comparison = "every_sample_strictly_below"
+minimum_samples = 20
+state = "pending_calibration"
+tiers = ["nightly", "release"]
+environments = ["linux_x86_64_musl_hosted"]
+recipes = ["linux_musl_shipping"]
+description = "State reads of 10,000 relevant events under 200 ms; macOS coverage is unavailable in v1."
+
+# Workload fixtures: descriptors only. Package p2 generates the bytes and the golden entries. --
+
+[fixtures.sentinel_canonical]
+kind = "canonical_small"
+description = "Fixed small canonical workload repeated batch_repetitions times by every sentinel."
+golden = "pending_native_oracle"
+
+[fixtures.small_envelope]
+kind = "typed_envelope"
+description = "A small typed envelope for the cheap canonical and CAS cases."
+serialized_envelope_bytes = 4096
+size_rule = "approximate"
+golden = "pending_native_oracle"
+
+[fixtures.issue_255_medium]
+kind = "typed_envelope"
+description = "Issue #255 medium package: approximately 1.9 MB of serialized envelope."
+serialized_envelope_bytes = 1900000
+size_rule = "approximate"
+golden = "pending_native_oracle"
+
+[fixtures.issue_255_large]
+kind = "typed_envelope"
+description = "Issue #255 large package: exactly 5,605,230 serialized envelope bytes, below the cap."
+serialized_envelope_bytes = 5605230
+size_rule = "exact"
+golden = "pending_native_oracle"
+
+[fixtures.source_files_128b]
+kind = "file_tree"
+description = "Deterministic 128-byte files; the file count is the case parameter."
+file_bytes = 128
+golden = "pending_native_oracle"
+
+[fixtures.events_10000]
+kind = "event_log"
+description = "Exactly 10,000 valid relevant events for the state library projection."
+events = 10000
+golden = "pending_native_oracle"
+
+[fixtures.cli_state_10000]
+kind = "cli_state"
+description = "Task and Campaign state with exactly 10,000 relevant events, written by each side's own writers."
+events = 10000
+golden = "pending_native_oracle"
+
+[fixtures.cli_task_roots]
+kind = "cli_task"
+description = "A Task with RootInputs and a check of `true`; each side creates it through its supported writers."
+golden = "pending_native_oracle"
+
+# Recipes -------------------------------------------------------------------------------------
+
+[recipes.linux_gnu_native_release]
+description = "Quick CI: native uninstrumented release build on the declared Linux GNU environment."
+os = "linux"
+target = "x86_64-unknown-linux-gnu"
+toolchain = "1.88.0"
+profile = "release"
+builder = "cargo"
+linker = "system_cc"
+features = []
+rustflags = []
+instrumented = false
+debug_symbols = false
+frame_pointers = false
+state = "not_yet_executable"
+pending = "p3a: pinned container image digest and authority-built worktree orchestration."
+
+[recipes.linux_musl_shipping]
+description = "Nightly and release: the shipping Linux musl recipe of the release workflow."
+os = "linux"
+target = "x86_64-unknown-linux-musl"
+toolchain = "1.88.0"
+profile = "release"
+builder = "cargo_zigbuild"
+cargo_zigbuild = "0.23.4"
+zig = "0.15.2"
+linker = "zig_cc"
+features = []
+rustflags = []
+instrumented = false
+debug_symbols = false
+frame_pointers = false
+state = "not_yet_executable"
+pending = "p3a: pinned container image digest and authority-built worktree orchestration."
+
+[recipes.macos_arm64_native_release]
+description = "Compatible manual runs on a named local macOS arm64 host."
+os = "macos"
+target = "aarch64-apple-darwin"
+toolchain = "1.88.0"
+profile = "release"
+builder = "cargo"
+linker = "apple_ld"
+features = []
+rustflags = []
+instrumented = false
+debug_symbols = false
+frame_pointers = false
+state = "not_yet_executable"
+pending = "p3a: build orchestration; p3b: trusted local process-group execution."
+
+# Environments --------------------------------------------------------------------------------
+
+[environments.linux_x86_64_gnu_hosted]
+description = "Hosted Linux x86_64 GNU for quick comparisons; affinity never claims exclusive CPUs."
+os = "linux"
+arch = "x86_64"
+libc = "gnu"
+runner = "github_hosted"
+runner_label = "ubuntu-latest"
+containment = "linux_container"
+logical_cpus = 2
+prefer_separate_physical_cores = true
+memory_limit_bytes = 4294967296
+pid_limit = 256
+swap = "disabled"
+network = "disabled"
+cpu_quota = "none"
+scratch_limit_bytes = 2147483648
+state = "not_yet_executable"
+pending = "p3a/p3b: native PID-1 supervisor, container capability probe and host fingerprint."
+
+[environments.linux_x86_64_musl_hosted]
+description = "Hosted Linux x86_64 running the shipping musl binary."
+os = "linux"
+arch = "x86_64"
+libc = "musl"
+runner = "github_hosted"
+runner_label = "ubuntu-latest"
+containment = "linux_container"
+logical_cpus = 2
+prefer_separate_physical_cores = true
+memory_limit_bytes = 4294967296
+pid_limit = 256
+swap = "disabled"
+network = "disabled"
+cpu_quota = "none"
+scratch_limit_bytes = 2147483648
+state = "not_yet_executable"
+pending = "p3a/p3b: native PID-1 supervisor, container capability probe and host fingerprint."
+
+[environments.macos_arm64_local]
+description = "A named, explicitly trusted local macOS arm64 host: discovery and nonspawning library cases."
+os = "macos"
+arch = "aarch64"
+libc = "darwin"
+runner = "trusted_local"
+runner_label = "named-local-macos-arm64"
+containment = "trusted_local_process_group"
+swap = "host_default"
+network = "host_default"
+cpu_quota = "none"
+scratch_limit_bytes = 2147483648
+state = "not_yet_executable"
+pending = "p3b: trusted local process-group execution and host fingerprint."
+
+# Tiers: the first profile is the default; a manual run may select another. ------------------
+
+[tiers.quick]
+description = "Pull requests and main pushes."
+profiles = [{ environment = "linux_x86_64_gnu_hosted", recipe = "linux_gnu_native_release" }]
+shards = 2
+concurrent_jobs = 2
+shard_sampling_minutes = 15
+run_total_minutes = 60
+
+[tiers.nightly]
+description = "Frozen main against the highest reachable stable release."
+profiles = [
+  { environment = "linux_x86_64_musl_hosted", recipe = "linux_musl_shipping" },
+  { environment = "macos_arm64_local", recipe = "macos_arm64_native_release" },
+]
+shards = 4
+concurrent_jobs = 4
+shard_sampling_minutes = 45
+run_total_minutes = 120
+
+# Synthetic cases -----------------------------------------------------------------------------
+
+[cases.synthetic_fast]
+family = "synthetic"
+description = "SYNTHETIC: a cheap library case."
+kind = "library"
+requires_linux_containment = false
+timing = { boundary = "library_region", region = "synthetic_region", setup_excluded = [], description = "Synthetic region." }
+cache = { process = "fresh", store = "not_applicable", projection = "not_applicable", os_page_cache = "warm" }
+oracle = { kind = "golden_canonical_digest", state = "pending_native_oracle", description = "Synthetic." }
+execution = { state = "not_yet_executable", pending = "Synthetic fixture; never executed." }
+tiers = ["quick", "nightly"]
+criticality = "critical"
+primary_metric = "wall_ms"
+optional_metrics = []
+policy = "fast_policy"
+pairs = { quick = 12, nightly = 20 }
+warmup_pairs = 2
+sample_timeout_seconds = 30
+budgets = []
+probe = { contract_id = "synthetic_fast_v1", repetitions = 1 }
+
+[cases.synthetic_process]
+family = "synthetic"
+description = "SYNTHETIC: a process case with an optional metric and a discovery budget."
+kind = "process"
+requires_linux_containment = false
+timing = { boundary = "child_process_lifetime", description = "Synthetic process lifetime." }
+cache = { process = "fresh", store = "not_applicable", projection = "not_applicable", os_page_cache = "warm" }
+oracle = { kind = "cli_version_and_usage_tokens", state = "pending_cli_fixture", description = "Synthetic." }
+execution = { state = "not_yet_executable", pending = "Synthetic fixture; never executed." }
+parameters = { size = { kind = "integer", values = [1, 2] } }
+tier_parameters = { quick = { size = [1] } }
+tiers = ["quick", "nightly"]
+criticality = "critical"
+primary_metric = "wall_ms"
+optional_metrics = ["user_cpu_ms"]
+policy = "wall_time_default"
+pairs = { quick = 12, nightly = 20 }
+warmup_pairs = 2
+sample_timeout_seconds = 30
+budgets = ["cli_discovery_under_50ms"]
+
+[cases.synthetic_advisory]
+family = "synthetic"
+description = "SYNTHETIC: an advisory case outside the corrected gate family."
+kind = "library"
+requires_linux_containment = false
+timing = { boundary = "library_region", region = "synthetic_region", setup_excluded = [], description = "Synthetic region." }
+cache = { process = "fresh", store = "not_applicable", projection = "not_applicable", os_page_cache = "warm" }
+oracle = { kind = "persistence_round_trip", state = "pending_native_oracle", description = "Synthetic." }
+execution = { state = "not_yet_executable", pending = "Synthetic fixture; never executed." }
+tiers = ["quick", "nightly"]
+criticality = "advisory"
+primary_metric = "wall_ms"
+optional_metrics = []
+policy = "wall_time_default"
+pairs = { quick = 12, nightly = 20 }
+warmup_pairs = 2
+sample_timeout_seconds = 30
+budgets = []
+probe = { contract_id = "synthetic_advisory_v1", repetitions = 1 }

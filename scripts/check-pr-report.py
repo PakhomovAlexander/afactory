@@ -7,7 +7,8 @@ payload GitHub hands the workflow (`$GITHUB_EVENT_PATH`): no API call, no token.
 compare the report with the Store it came from, which lives on the author's machine; it
 checks that a well-formed block is there.
 
-A pull request opened by Dependabot, or from a `release/` branch, is exempt. Anything else
+A pull request opened by Dependabot, or from a `release/` branch of this repository itself (a
+fork's branch of that name is not), is exempt. Anything else
 passes only with exactly one block: the begin marker, then the end marker, and between them at
 least one pipeline line (`**name@version**: ` and its steps, or `**unknown pipeline**: not
 retained` for a Task whose plan is not retained), then the round table: a header with exactly
@@ -604,10 +605,14 @@ def exemption(event):
     """Why `event`'s pull request needs no block, or None."""
     pull = (event or {}).get('pull_request') or {}
     author = ((pull.get('user') or {}).get('login') or '')
-    branch = ((pull.get('head') or {}).get('ref') or '')
+    head = pull.get('head') or {}
+    branch = head.get('ref') or ''
+    # Anyone can name a fork's branch `release/…`: only the base repository's own counts.
+    head_repo = (head.get('repo') or {}).get('full_name') or ''
+    base_repo = ((pull.get('base') or {}).get('repo') or {}).get('full_name') or ''
     if author in EXEMPT_AUTHORS:
         return f'opened by {author}'
-    if branch.startswith(EXEMPT_BRANCH_PREFIX):
+    if branch.startswith(EXEMPT_BRANCH_PREFIX) and head_repo and head_repo == base_repo:
         return f'a release pull request from {branch}'
     return None
 

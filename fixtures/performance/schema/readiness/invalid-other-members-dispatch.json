@@ -1,0 +1,3100 @@
+{
+  "schema": "af.perf-readiness/5",
+  "cohort_id": "synthetic_cohort",
+  "cohort_digest": "sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c",
+  "calibration_digest": "sha256:7370fd2786e97ab0cf728496a8e39c24f09eb1a3b2bceef31dc7ec14a76b9f1f",
+  "recomputed_calibration_digest": "sha256:7370fd2786e97ab0cf728496a8e39c24f09eb1a3b2bceef31dc7ec14a76b9f1f",
+  "history": {
+    "after_run_number": 41,
+    "latest_run_number": 103,
+    "runs": 62
+  },
+  "members": [
+    {
+      "member_id": "aa_01",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7001,
+        "run_number": 42,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_01",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1759989660000,
+        "attempt_updated_unix_ms": 1759989690000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7001_a1_primary",
+        "artifact_name": "af-perf-gh7001_a1_primary-run",
+        "artifact_id": 101,
+        "artifact_created_unix_ms": 1759989680000,
+        "plan_digest": "sha256:a31d11381366391ea95e79a33618610c969801053cff3288c856f59dac023d39",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:93d2f05614c0f1b9a236804822b7ceb1e334d73b733283765796dd6bf1561648",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_02",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7002,
+        "run_number": 43,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_02",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760076120000,
+        "attempt_updated_unix_ms": 1760076150000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7002_a1_primary",
+        "artifact_name": "af-perf-gh7002_a1_primary-run",
+        "artifact_id": 104,
+        "artifact_created_unix_ms": 1760076140000,
+        "plan_digest": "sha256:0da397648691b7be3c3e8f11ee48372889c7e823ce5b8f5fffc19431f0d895fe",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:3a0de526213489c6e59b45e340bcad355bd392896d96903842ea8779c50b875b",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_03",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7003,
+        "run_number": 44,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_03",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1759989780000,
+        "attempt_updated_unix_ms": 1759989810000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7003_a1_primary",
+        "artifact_name": "af-perf-gh7003_a1_primary-run",
+        "artifact_id": 107,
+        "artifact_created_unix_ms": 1759989800000,
+        "plan_digest": "sha256:7a00fbea68be32e9727ec02ea94e7cf7d397890cd12c2715eb749f8bdcd8e4d0",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:d5339bdf1dd081e52f9369408dc5848a0b604c17d0a0bfcb7d70bbd00a1786bd",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_04",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7004,
+        "run_number": 45,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_04",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760076240000,
+        "attempt_updated_unix_ms": 1760076270000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7004_a1_primary",
+        "artifact_name": "af-perf-gh7004_a1_primary-run",
+        "artifact_id": 110,
+        "artifact_created_unix_ms": 1760076260000,
+        "plan_digest": "sha256:d39692c98c5994ec8f9092bbf70ee0bac5d42b2a0cc8a8fbc76345557a87ce1f",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:9e4d687f1c7a46dfad1a911082652cf8a7a3a7969aa628188169c2dbea3a1468",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_05",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7005,
+        "run_number": 46,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_05",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1759989900000,
+        "attempt_updated_unix_ms": 1759989930000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7005_a1_primary",
+        "artifact_name": "af-perf-gh7005_a1_primary-run",
+        "artifact_id": 113,
+        "artifact_created_unix_ms": 1759989920000,
+        "plan_digest": "sha256:66c6256561b90da892a41e9cef91a9639890eb34e08728e3eeb6f84fa29ff6c5",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:b7dc7c0d12fea9ee90b6b890e4b8f561a3485d4f4aafe9c5d2c04265f88d3b9b",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_06",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7006,
+        "run_number": 47,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_06",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760076360000,
+        "attempt_updated_unix_ms": 1760076390000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7006_a1_primary",
+        "artifact_name": "af-perf-gh7006_a1_primary-run",
+        "artifact_id": 116,
+        "artifact_created_unix_ms": 1760076380000,
+        "plan_digest": "sha256:d0c7a7d322cd56821a6216a4f5001aa95a423a6dd9701558f2dc9c00e99f1d60",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:62bf590f2de0deb15d087ddc275c0160dbc803d7d290563c543d16a8b6f8eb3b",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_07",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7007,
+        "run_number": 48,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_07",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1759990020000,
+        "attempt_updated_unix_ms": 1759990050000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7007_a1_primary",
+        "artifact_name": "af-perf-gh7007_a1_primary-run",
+        "artifact_id": 119,
+        "artifact_created_unix_ms": 1759990040000,
+        "plan_digest": "sha256:971c5e4100e74b21e3f3a95953a344fc06e27febb9b290db43e0f5182c6c0ce7",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:7ffd9b2ea4d0a8c1dcbf687c0c2e0e8e2828d660352981e3b8a7e0861596e809",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_08",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7008,
+        "run_number": 49,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_08",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760076480000,
+        "attempt_updated_unix_ms": 1760076510000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7008_a1_primary",
+        "artifact_name": "af-perf-gh7008_a1_primary-run",
+        "artifact_id": 122,
+        "artifact_created_unix_ms": 1760076500000,
+        "plan_digest": "sha256:8b147399bf11fa5108855044986fde258cbdefc3bdd9cdbbbb07027d94ddf9c4",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:1e130b2b60b5bf6a1741ed774ea12c458425e2daf058a8676cf0cce3dade2622",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_09",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7009,
+        "run_number": 50,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_09",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1759990140000,
+        "attempt_updated_unix_ms": 1759990170000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7009_a1_primary",
+        "artifact_name": "af-perf-gh7009_a1_primary-run",
+        "artifact_id": 125,
+        "artifact_created_unix_ms": 1759990160000,
+        "plan_digest": "sha256:a10e9e1339f925e764acdfa1a7714a7384fae3542894166343376aecbdf07aed",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:56ccc3aad8ef37d941cadef69c2e07a4e812b56fbd3dd96fde86c8b7d3feb0c4",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_10",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7010,
+        "run_number": 51,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_10",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760076600000,
+        "attempt_updated_unix_ms": 1760076630000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7010_a1_primary",
+        "artifact_name": "af-perf-gh7010_a1_primary-run",
+        "artifact_id": 128,
+        "artifact_created_unix_ms": 1760076620000,
+        "plan_digest": "sha256:fb95f06939da9ff356349b5d7cb7db0098dec05a4ea98c787573527ac9869e32",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:3458dfc8123e9a9a867f2d0ef40b74bf540ae615bb7c03d7dbf8a67caf5263c8",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_11",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7011,
+        "run_number": 52,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_11",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1759990260000,
+        "attempt_updated_unix_ms": 1759990290000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7011_a1_primary",
+        "artifact_name": "af-perf-gh7011_a1_primary-run",
+        "artifact_id": 131,
+        "artifact_created_unix_ms": 1759990280000,
+        "plan_digest": "sha256:e0ad87ec35a8e57f74077d7bcd3fd79e120d5f231913376de0d36ffcb9fb7797",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:fe420f46ca31e6f6e94af692c8abdd7c33f2cc3363ab341acb1c5215e9366d98",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_12",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7012,
+        "run_number": 53,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_12",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760076720000,
+        "attempt_updated_unix_ms": 1760076750000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7012_a1_primary",
+        "artifact_name": "af-perf-gh7012_a1_primary-run",
+        "artifact_id": 134,
+        "artifact_created_unix_ms": 1760076740000,
+        "plan_digest": "sha256:9ee7a2a40346622aa4693c52aa881091deff6965714bd6c5b20eb0574489d632",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:0f89a92a647992653198c78880182103f3df586b04e7e3d2801f12b46cf474ab",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_13",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7013,
+        "run_number": 54,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_13",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1759990380000,
+        "attempt_updated_unix_ms": 1759990410000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7013_a1_primary",
+        "artifact_name": "af-perf-gh7013_a1_primary-run",
+        "artifact_id": 137,
+        "artifact_created_unix_ms": 1759990400000,
+        "plan_digest": "sha256:ff9b736a004b2a31b357c1c4d916a70fc8ed98e655ed418d67f8244464b68c93",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:8c53237a03375c2c637da045be1184e81148fc459d1dca191d8b1e6af1e06e1f",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_14",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7014,
+        "run_number": 55,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_14",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760076840000,
+        "attempt_updated_unix_ms": 1760076870000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7014_a1_primary",
+        "artifact_name": "af-perf-gh7014_a1_primary-run",
+        "artifact_id": 140,
+        "artifact_created_unix_ms": 1760076860000,
+        "plan_digest": "sha256:322be3ecf3da147cbcb28e8182ad38dc8703badb0e7bda8c509c185168244a59",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:901d7fb9b3f1a6b9658984505d859e7425a58a939efde051b66e95418a3f8dff",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_15",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7015,
+        "run_number": 56,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_15",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1759990500000,
+        "attempt_updated_unix_ms": 1759990530000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7015_a1_primary",
+        "artifact_name": "af-perf-gh7015_a1_primary-run",
+        "artifact_id": 143,
+        "artifact_created_unix_ms": 1759990520000,
+        "plan_digest": "sha256:8ce4506468514b3ab4edd73c4878ba6e272f2a913615d36018834cece2af3abc",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:6fca76f5b21014235c5b03952175e5fb4533a71084d56db9d78aa14487c478e9",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_16",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7016,
+        "run_number": 57,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_16",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760076960000,
+        "attempt_updated_unix_ms": 1760076990000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7016_a1_primary",
+        "artifact_name": "af-perf-gh7016_a1_primary-run",
+        "artifact_id": 146,
+        "artifact_created_unix_ms": 1760076980000,
+        "plan_digest": "sha256:de38544a0dda84bbecd90eac798bfc124d3a723cb673c7a81d0058910f37b2c6",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:38cfab52fc1ec2753b88d103b6008901e77f0e23ec7c1b7d021fc6d85ded3403",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_17",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7017,
+        "run_number": 58,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_17",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1759990620000,
+        "attempt_updated_unix_ms": 1759990650000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7017_a1_primary",
+        "artifact_name": "af-perf-gh7017_a1_primary-run",
+        "artifact_id": 149,
+        "artifact_created_unix_ms": 1759990640000,
+        "plan_digest": "sha256:7048ae426dabd5664fd79af2b22faa0d07168bd69ee0c63842182c4c38175599",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:a9dc453c2420c2f512995838841c6ce900e65c3626357f6625e93a0823cfed09",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_18",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7018,
+        "run_number": 59,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_18",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760077080000,
+        "attempt_updated_unix_ms": 1760077110000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7018_a1_primary",
+        "artifact_name": "af-perf-gh7018_a1_primary-run",
+        "artifact_id": 152,
+        "artifact_created_unix_ms": 1760077100000,
+        "plan_digest": "sha256:2e8849635edb11c8aef1a0511164e086a00a8b72e9c02fbb35055efc5fff7d25",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:9f18831540529ca374031dab1c8ff69548927320e31d55eb03b53bbc6d2d7006",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_19",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7019,
+        "run_number": 60,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_19",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1759990740000,
+        "attempt_updated_unix_ms": 1759990770000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7019_a1_primary",
+        "artifact_name": "af-perf-gh7019_a1_primary-run",
+        "artifact_id": 155,
+        "artifact_created_unix_ms": 1759990760000,
+        "plan_digest": "sha256:0d4e5892c9c46dda7bc42f9a3be9ee01ebb889c0bec05e827dd134a5844be521",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:9630f5b60eb844eee38acce35421d5f4923f11c4bf3bbd3440b5d44ba092bf6a",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "aa_20",
+      "kind": "aa",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7020,
+        "run_number": 61,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c aa_20",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760077200000,
+        "attempt_updated_unix_ms": 1760077230000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7020_a1_primary",
+        "artifact_name": "af-perf-gh7020_a1_primary-run",
+        "artifact_id": 158,
+        "artifact_created_unix_ms": 1760077220000,
+        "plan_digest": "sha256:2fdc235b81d4c6c21f7a9f7a501179ad861c73a9c9012f3cba6152cfb1a75039",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:d036a23048cb755881e331f2e20abdc963ba8c3b01e372cb8d4297664c9d2d0b",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "prep_01",
+      "kind": "preparation",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7021,
+        "run_number": 62,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c prep_01",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760163660000,
+        "attempt_updated_unix_ms": 1760163690000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7021_a1_primary",
+        "artifact_name": "af-perf-gh7021_a1_primary-run",
+        "artifact_id": 161,
+        "artifact_created_unix_ms": 1760163680000,
+        "plan_digest": "sha256:96db5e1791318edd4d9fcad0fff2fc4f3ced5f97b4dfbc42a4dedb8b7ea74fbd",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:c13f55dad163c567ee5e6b9f759e5412e500f19da4827e507cc02c691368afca",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "prep_02",
+      "kind": "preparation",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7022,
+        "run_number": 63,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c prep_02",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760163720000,
+        "attempt_updated_unix_ms": 1760163750000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7022_a1_primary",
+        "artifact_name": "af-perf-gh7022_a1_primary-run",
+        "artifact_id": 164,
+        "artifact_created_unix_ms": 1760163740000,
+        "plan_digest": "sha256:0c4d474a1a854bcecda73d61821da80009bcfdafdd7df979cff68106bdeadb45",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:28b155bc91c6c120e3a7240c4425cd5a8d1afc0cbf6ed6651c925e58fcfc88c4",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": null,
+          "target_ms": null,
+          "injection_valid": null
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "inj2_01",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7023,
+        "run_number": 64,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj2_01",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760248860000,
+        "attempt_updated_unix_ms": 1760248890000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7023_a1_primary",
+        "artifact_name": "af-perf-gh7023_a1_primary-run",
+        "artifact_id": 167,
+        "artifact_created_unix_ms": 1760248880000,
+        "plan_digest": "sha256:12ee10e6f24bc3d7b7070a047ed81995258b2df0306ffabfaf2168c8ae633639",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:983eed9ff88ae41aa137fc713e9b61b294f220d75471fae7f2c273ace6be653f",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_02",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7024,
+        "run_number": 65,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj2_02",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760335320000,
+        "attempt_updated_unix_ms": 1760335350000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7024_a1_primary",
+        "artifact_name": "af-perf-gh7024_a1_primary-run",
+        "artifact_id": 170,
+        "artifact_created_unix_ms": 1760335340000,
+        "plan_digest": "sha256:7e48db72d2cd4af97c8ad610effdb77110e9a7b64b072438711811d498a079b3",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:73dc7f6e4cc7226e5ac52db1a907e92c7071d8f17ecef31c75da8058b3eaf0dc",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_03",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7025,
+        "run_number": 66,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj2_03",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760248980000,
+        "attempt_updated_unix_ms": 1760249010000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7025_a1_primary",
+        "artifact_name": "af-perf-gh7025_a1_primary-run",
+        "artifact_id": 173,
+        "artifact_created_unix_ms": 1760249000000,
+        "plan_digest": "sha256:b912b3703563a79edd1d4d44bddebf89ec44acbb0ddbdd2692f46acddbb9c47d",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:2dd7d3c9644dcb6f13ba49f0c24c9160b84b391dec4ffd1c463c1a3e9df9ab23",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_04",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7026,
+        "run_number": 67,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj2_04",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760335440000,
+        "attempt_updated_unix_ms": 1760335470000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7026_a1_primary",
+        "artifact_name": "af-perf-gh7026_a1_primary-run",
+        "artifact_id": 176,
+        "artifact_created_unix_ms": 1760335460000,
+        "plan_digest": "sha256:8705d22dd35b5feb399077d0c5aa2177ec24764d2137dd23358223c7c5ae234d",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:8396d990f315e454a899a1390bd3a24b2090dbaef9c2b44cac7978b61b1612b9",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_05",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7027,
+        "run_number": 68,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj2_05",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760249100000,
+        "attempt_updated_unix_ms": 1760249130000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7027_a1_primary",
+        "artifact_name": "af-perf-gh7027_a1_primary-run",
+        "artifact_id": 179,
+        "artifact_created_unix_ms": 1760249120000,
+        "plan_digest": "sha256:d65769232ef1dbfc3ace3672c772e1a035b238fe6c64a8e0c367d963afbdf0b8",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:0d8a3cd7677ea1ea3be711ca164f98a3229e4d43284111d096aac09caed1be9c",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_06",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7028,
+        "run_number": 69,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj2_06",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760335560000,
+        "attempt_updated_unix_ms": 1760335590000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7028_a1_primary",
+        "artifact_name": "af-perf-gh7028_a1_primary-run",
+        "artifact_id": 182,
+        "artifact_created_unix_ms": 1760335580000,
+        "plan_digest": "sha256:b5858e96e7748e8c5e33ee4f9db2196ac546e8911738fd0d81d17a640df0cf2e",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:1da4407d487d625221297b0c66ffd1a6d25df7a9d7d7b96d0d38c9857e9799b9",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_07",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7029,
+        "run_number": 70,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj2_07",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760249220000,
+        "attempt_updated_unix_ms": 1760249250000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7029_a1_primary",
+        "artifact_name": "af-perf-gh7029_a1_primary-run",
+        "artifact_id": 185,
+        "artifact_created_unix_ms": 1760249240000,
+        "plan_digest": "sha256:61dcc479af62833a4a665ba3f1f6adf47de82634f28851e904791d59e10a9b37",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:b54554e91cba92e91ad20b13d09137ed96b84e3ac667a37e68d8a7b98cb814fb",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_08",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7030,
+        "run_number": 71,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj2_08",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760335680000,
+        "attempt_updated_unix_ms": 1760335710000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7030_a1_primary",
+        "artifact_name": "af-perf-gh7030_a1_primary-run",
+        "artifact_id": 188,
+        "artifact_created_unix_ms": 1760335700000,
+        "plan_digest": "sha256:4623bf2416ccce84f955595ea63a232c9db60aa2d362bbc7071e293f012dfd98",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:b37ad976f2ecada8c30f03a4419fc5bfe379653c201cfebc364ce737185cf61d",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_09",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7031,
+        "run_number": 72,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj2_09",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760249340000,
+        "attempt_updated_unix_ms": 1760249370000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7031_a1_primary",
+        "artifact_name": "af-perf-gh7031_a1_primary-run",
+        "artifact_id": 191,
+        "artifact_created_unix_ms": 1760249360000,
+        "plan_digest": "sha256:f9fb01e572405da1f78ca9c91fa69c401ee344636d70f1031997a0f6b831d9f2",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:4f51b344f15435bbe971b2e408b6a943658d103066cd7fb19b0d926870c93d14",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj2_10",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7032,
+        "run_number": 73,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj2_10",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760335800000,
+        "attempt_updated_unix_ms": 1760335830000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7032_a1_primary",
+        "artifact_name": "af-perf-gh7032_a1_primary-run",
+        "artifact_id": 194,
+        "artifact_created_unix_ms": 1760335820000,
+        "plan_digest": "sha256:ea00850de029cbf212e795db70b2ed3f4381fff9ce9a845ee57cf323daf7fd83",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:3f5bd21164ce30745fd491ab2de5cb9a11c3964c2821acaaa019dcefe824ee3f",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "2",
+          "target_ms": "2",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_01",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7033,
+        "run_number": 74,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj5_01",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760249460000,
+        "attempt_updated_unix_ms": 1760249490000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7033_a1_primary",
+        "artifact_name": "af-perf-gh7033_a1_primary-run",
+        "artifact_id": 197,
+        "artifact_created_unix_ms": 1760249480000,
+        "plan_digest": "sha256:1f72d77ca544bfede350d10f575f0e2eabaef21f81a40651f930bc8021e346df",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:555aed5c7ec9ce12dba809fa57de5c0c44fb34b58ae43a014a9b09a95fa21718",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_02",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7034,
+        "run_number": 75,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj5_02",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760335920000,
+        "attempt_updated_unix_ms": 1760335950000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7034_a1_primary",
+        "artifact_name": "af-perf-gh7034_a1_primary-run",
+        "artifact_id": 200,
+        "artifact_created_unix_ms": 1760335940000,
+        "plan_digest": "sha256:6621fb97c5ed80847f2949b95ce4c64d433b810f3ef2854b7573dd4c90dced38",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:92db8a7bf09562e0eee6dab54243a7834f1a96969d356352544fbf268fba3709",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_03",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7035,
+        "run_number": 76,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj5_03",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760249580000,
+        "attempt_updated_unix_ms": 1760249610000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7035_a1_primary",
+        "artifact_name": "af-perf-gh7035_a1_primary-run",
+        "artifact_id": 203,
+        "artifact_created_unix_ms": 1760249600000,
+        "plan_digest": "sha256:f129faf9df94c50e3d9fd6ef1855931754cb99083d572328b66936f2c6941d9e",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:8b0b8cba57d88370fc1aaa37e99740e9c50d64192447a9a70fca1e1df8bd8904",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_04",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7036,
+        "run_number": 77,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj5_04",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760336040000,
+        "attempt_updated_unix_ms": 1760336070000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7036_a1_primary",
+        "artifact_name": "af-perf-gh7036_a1_primary-run",
+        "artifact_id": 206,
+        "artifact_created_unix_ms": 1760336060000,
+        "plan_digest": "sha256:4183c7b2eb28c00ae1efffa6e7dd2c9a10fc0e57eae1926a0ded5ac363f2882f",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:cfa752242976e258421a2d19930e896bd680573c79bb1bfaed98159e2e0f4639",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_05",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7037,
+        "run_number": 78,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj5_05",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760249700000,
+        "attempt_updated_unix_ms": 1760249730000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7037_a1_primary",
+        "artifact_name": "af-perf-gh7037_a1_primary-run",
+        "artifact_id": 209,
+        "artifact_created_unix_ms": 1760249720000,
+        "plan_digest": "sha256:f2889f00b4aaad7344ca1e6355cabe5c5b4d70e54709e17d89724ac31adee32f",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:9b9aef2bb866283f0b5847b5c13fbfe3c7319542745a30a488fad695e66fa5a5",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_06",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7038,
+        "run_number": 79,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj5_06",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760336160000,
+        "attempt_updated_unix_ms": 1760336190000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7038_a1_primary",
+        "artifact_name": "af-perf-gh7038_a1_primary-run",
+        "artifact_id": 212,
+        "artifact_created_unix_ms": 1760336180000,
+        "plan_digest": "sha256:83e165a0bbc6979b704d224a7fdd1d962cab6d2c6f363e9ccb8ea97823e95dc7",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:d14895cef53c53194a572cca560ac6576484623822625b77165bcc504b252c56",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_07",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7039,
+        "run_number": 80,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj5_07",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760249820000,
+        "attempt_updated_unix_ms": 1760249850000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7039_a1_primary",
+        "artifact_name": "af-perf-gh7039_a1_primary-run",
+        "artifact_id": 215,
+        "artifact_created_unix_ms": 1760249840000,
+        "plan_digest": "sha256:620845426256f64788320377aa88a2e57dc561a51e587ed5aa32cc391f35405b",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:c85bb5f317e4b3fccf171966be3d7b9f36dbf4d9ca8a8a5826ba7e7a79967666",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_08",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7040,
+        "run_number": 81,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj5_08",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760336280000,
+        "attempt_updated_unix_ms": 1760336310000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7040_a1_primary",
+        "artifact_name": "af-perf-gh7040_a1_primary-run",
+        "artifact_id": 218,
+        "artifact_created_unix_ms": 1760336300000,
+        "plan_digest": "sha256:a8a8318b291617eb396e12894e458fda2d1118a1690d120f51c9a0e1b7d767bb",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:f6532bbd87d696b3ec398be434e7d5755ff13ac704acc2ef7b55999782cbea67",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_09",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7041,
+        "run_number": 82,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj5_09",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760249940000,
+        "attempt_updated_unix_ms": 1760249970000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7041_a1_primary",
+        "artifact_name": "af-perf-gh7041_a1_primary-run",
+        "artifact_id": 221,
+        "artifact_created_unix_ms": 1760249960000,
+        "plan_digest": "sha256:62f9edd16ac77cdb56b41885efc2050a7a48e384c5469cf5c02635329a9cf178",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:b2dbc53038fb579930c861ffef370fbcdabcba40e0d128d81e8c3ddbae2b1e69",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj5_10",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7042,
+        "run_number": 83,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj5_10",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760336400000,
+        "attempt_updated_unix_ms": 1760336430000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7042_a1_primary",
+        "artifact_name": "af-perf-gh7042_a1_primary-run",
+        "artifact_id": 224,
+        "artifact_created_unix_ms": 1760336420000,
+        "plan_digest": "sha256:3e2c5e83a35dbb1485ca97b5f3bb3630cb230a34b70af2f848c47a821763428f",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:88ccc460ed3ae041dd2d74486699f97c3af2520ebd2c0e9d2be51ba20f7ef92b",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "within_tolerance",
+          "injected_median_ms": "5",
+          "target_ms": "5",
+          "injection_valid": true
+        }
+      },
+      "qualifies": false
+    },
+    {
+      "member_id": "inj10_01",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7043,
+        "run_number": 84,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj10_01",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760250060000,
+        "attempt_updated_unix_ms": 1760250090000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7043_a1_primary",
+        "artifact_name": "af-perf-gh7043_a1_primary-run",
+        "artifact_id": 227,
+        "artifact_created_unix_ms": 1760250080000,
+        "plan_digest": "sha256:7d7d548f62e981e48645cef35b8e76310647bc94fc05eb8b4453ad0ee161dce9",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:391b14ee9a963ccd3b51dddbb7c852ccafc8a0e9541d51ad62c1ee08ccc3f4b3",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "inj10_02",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7044,
+        "run_number": 85,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj10_02",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760336520000,
+        "attempt_updated_unix_ms": 1760336550000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7044_a1_primary",
+        "artifact_name": "af-perf-gh7044_a1_primary-run",
+        "artifact_id": 230,
+        "artifact_created_unix_ms": 1760336540000,
+        "plan_digest": "sha256:165b75240a1174a9069fed3aa0c85542b3d4ae2def45429262d393fbad4fe3c3",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:acd869d58eaad0315d9ed1f32f6ffa1079dd851cef5ae42efeee55cfcb380615",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "inj10_03",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7045,
+        "run_number": 86,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj10_03",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760250180000,
+        "attempt_updated_unix_ms": 1760250210000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7045_a1_primary",
+        "artifact_name": "af-perf-gh7045_a1_primary-run",
+        "artifact_id": 233,
+        "artifact_created_unix_ms": 1760250200000,
+        "plan_digest": "sha256:d7ed4424ded0bbf97f3b257ae66384f90df65471d33dfbba58b64736dbdf6954",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:4b35d46aac117d1b2c5639fe30888d77de35db3959d6d0eb83a62e64125669e5",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "inj10_04",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7046,
+        "run_number": 87,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj10_04",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760336640000,
+        "attempt_updated_unix_ms": 1760336670000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7046_a1_primary",
+        "artifact_name": "af-perf-gh7046_a1_primary-run",
+        "artifact_id": 236,
+        "artifact_created_unix_ms": 1760336660000,
+        "plan_digest": "sha256:a50db37477d8e48cfda4fa7d6e0cca54aef1939131b2717245dfedf27056cae2",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:3723c526ce4bc65e2621d81eaf43b31e76e7ec0a4327786a30cfc1129d1635f9",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "inj10_05",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7047,
+        "run_number": 88,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj10_05",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760250300000,
+        "attempt_updated_unix_ms": 1760250330000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7047_a1_primary",
+        "artifact_name": "af-perf-gh7047_a1_primary-run",
+        "artifact_id": 239,
+        "artifact_created_unix_ms": 1760250320000,
+        "plan_digest": "sha256:e22e2c7d0092ffea5583366150600c7167659789b38fe38020097b8557ca833c",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:0a19bf483dc245010c9893fcad15cf8d54469ec997a1e537be998b1da252787b",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "inj10_06",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7048,
+        "run_number": 89,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj10_06",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760336760000,
+        "attempt_updated_unix_ms": 1760336790000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7048_a1_primary",
+        "artifact_name": "af-perf-gh7048_a1_primary-run",
+        "artifact_id": 242,
+        "artifact_created_unix_ms": 1760336780000,
+        "plan_digest": "sha256:421672799cc4a9c0b9e4654277edbb178245d9757dd7b82a459281d37d4f2dc8",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:24fb07bfbaa35ea01f8adfa452fdba5df95c46477fa8990e6241c1d72c8a0202",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "inj10_07",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7049,
+        "run_number": 90,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj10_07",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760250420000,
+        "attempt_updated_unix_ms": 1760250450000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7049_a1_primary",
+        "artifact_name": "af-perf-gh7049_a1_primary-run",
+        "artifact_id": 245,
+        "artifact_created_unix_ms": 1760250440000,
+        "plan_digest": "sha256:e62bd39757b23d959765ec8c899dea49cb8c9c21a2bd3b1cd1d954e37d682cf1",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:24566f7db023b0a34aa850d66cddb7d960a8a20208f8e5c0573e219ac0cb7e51",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "inj10_08",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7050,
+        "run_number": 91,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj10_08",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760336880000,
+        "attempt_updated_unix_ms": 1760336910000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7050_a1_primary",
+        "artifact_name": "af-perf-gh7050_a1_primary-run",
+        "artifact_id": 248,
+        "artifact_created_unix_ms": 1760336900000,
+        "plan_digest": "sha256:c4b571725481b3450e09b5a7ae6af7d2bcdfe35983a34efbb54a2ae82f358b77",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:23db8db43899a51c83fa6d64d7053bd12c121c61a0e0e466aeb5dadc981fa364",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "inj10_09",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7051,
+        "run_number": 92,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj10_09",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760250540000,
+        "attempt_updated_unix_ms": 1760250570000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7051_a1_primary",
+        "artifact_name": "af-perf-gh7051_a1_primary-run",
+        "artifact_id": 251,
+        "artifact_created_unix_ms": 1760250560000,
+        "plan_digest": "sha256:7d0a1107641524ddbb9a1715ed458e4cc44d80ee59be8cf5d7b6ab4426374c59",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:c886a88cf1ecd7556382abdf0c6cc53343cc32a0704b431c3228eb1cc4c0b3c7",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "inj10_10",
+      "kind": "injection",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7052,
+        "run_number": 93,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c inj10_10",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760337000000,
+        "attempt_updated_unix_ms": 1760337030000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7052_a1_primary",
+        "artifact_name": "af-perf-gh7052_a1_primary-run",
+        "artifact_id": 254,
+        "artifact_created_unix_ms": 1760337020000,
+        "plan_digest": "sha256:559d1ceb6b0232b01f11359a5b8c562179e8205a658636f7a5f6b570a36ff123",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:f9e575276e395e92288bb9b224d2e6a8e7c6b4c2a00a8852e94abcb3c4c8f832",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "power_01",
+      "kind": "power",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7053,
+        "run_number": 94,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c power_02",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760250660000,
+        "attempt_updated_unix_ms": 1760250690000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7053_a1_primary",
+        "artifact_name": "af-perf-gh7053_a1_primary-run",
+        "artifact_id": 257,
+        "artifact_created_unix_ms": 1760250680000,
+        "plan_digest": "sha256:ffc47ca3704baf8d0ba5ff967ff111bf6026deff6005a21a77db40b86ce3754f",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:198f6ab9217361e2389e9deaa61aff0d299adee681743974e57c44c68ce0ae82",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "power_02",
+      "kind": "power",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7054,
+        "run_number": 95,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c power_02",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760337120000,
+        "attempt_updated_unix_ms": 1760337150000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7054_a1_primary",
+        "artifact_name": "af-perf-gh7054_a1_primary-run",
+        "artifact_id": 260,
+        "artifact_created_unix_ms": 1760337140000,
+        "plan_digest": "sha256:65333cdbde20a21ada4d3424a9d1c0367bb7f82b9b01da2c449d43b7f1fe734f",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:51d1fa0c0a19a3a7ab542f066cce4476d799f6001378ab90529f7aa9717e9d71",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "power_03",
+      "kind": "power",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7055,
+        "run_number": 96,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c power_03",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760250780000,
+        "attempt_updated_unix_ms": 1760250810000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7055_a1_primary",
+        "artifact_name": "af-perf-gh7055_a1_primary-run",
+        "artifact_id": 263,
+        "artifact_created_unix_ms": 1760250800000,
+        "plan_digest": "sha256:8dfeb8eb9721eb970f2fb0b09ebb0163b55d9e10e01f75d5a35b1ae7d928d4fd",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:2c5f7038369268069588713b22aa5dd890378a36357faa1bb3d588a8ea484a91",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "power_04",
+      "kind": "power",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7056,
+        "run_number": 97,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c power_04",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760337240000,
+        "attempt_updated_unix_ms": 1760337270000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7056_a1_primary",
+        "artifact_name": "af-perf-gh7056_a1_primary-run",
+        "artifact_id": 266,
+        "artifact_created_unix_ms": 1760337260000,
+        "plan_digest": "sha256:825e49ddffa2b1949e610a63402c6435d68b857de084acf5fb020e902ed9299e",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:b452e9df8902a57979bdc1eed7d6dfc7de919c238f7cb1b1de5217db18847c71",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "power_05",
+      "kind": "power",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7057,
+        "run_number": 98,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c power_05",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760250900000,
+        "attempt_updated_unix_ms": 1760250930000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7057_a1_primary",
+        "artifact_name": "af-perf-gh7057_a1_primary-run",
+        "artifact_id": 269,
+        "artifact_created_unix_ms": 1760250920000,
+        "plan_digest": "sha256:1699ffcff63bcfb16347fcebb7387cdea6840ed61319956cc916e8ef0bc94b55",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:7bdfe8916ca00e9ae91538ae4e8af73b30e0786a9486192d0436b2436d5174fd",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "power_06",
+      "kind": "power",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7058,
+        "run_number": 99,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c power_06",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760337360000,
+        "attempt_updated_unix_ms": 1760337390000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7058_a1_primary",
+        "artifact_name": "af-perf-gh7058_a1_primary-run",
+        "artifact_id": 272,
+        "artifact_created_unix_ms": 1760337380000,
+        "plan_digest": "sha256:ee0e07cce478f100d2bbe5fdc52e151856c25fdd6921e218f47e218684e79792",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:4438706da8ba28af13bee0afa01b9c4a94c55cf6da0df356bb500ef959b64582",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "power_07",
+      "kind": "power",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7059,
+        "run_number": 100,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c power_07",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760251020000,
+        "attempt_updated_unix_ms": 1760251050000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7059_a1_primary",
+        "artifact_name": "af-perf-gh7059_a1_primary-run",
+        "artifact_id": 275,
+        "artifact_created_unix_ms": 1760251040000,
+        "plan_digest": "sha256:d69edf6845c10b209497fac9d4b02f16cda0fa506b190e54db7c5dd506e00139",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:28833912a5ac90242870331b055947bedb4361bb7db76999fe86934446cfaeae",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "power_08",
+      "kind": "power",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7060,
+        "run_number": 101,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c power_08",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760337480000,
+        "attempt_updated_unix_ms": 1760337510000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7060_a1_primary",
+        "artifact_name": "af-perf-gh7060_a1_primary-run",
+        "artifact_id": 278,
+        "artifact_created_unix_ms": 1760337500000,
+        "plan_digest": "sha256:04f5e671dad451f77b4270fad95dacbc4af72f9f1c0ad55a72a3b664a64c9b36",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:e0cdb69d46b574710ee11c3b44a93c67addd3524bbdfbaa7fc5a0bf3f807b5f7",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "power_09",
+      "kind": "power",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7061,
+        "run_number": 102,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c power_09",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760251140000,
+        "attempt_updated_unix_ms": 1760251170000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7061_a1_primary",
+        "artifact_name": "af-perf-gh7061_a1_primary-run",
+        "artifact_id": 281,
+        "artifact_created_unix_ms": 1760251160000,
+        "plan_digest": "sha256:cc51b143e1a2619df99adb977ed661aafb69e8fe98b2cafd8cd1f92fb25e393f",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:43e555b3fdcbb94233dc47d2eb06ec9e9e5503ad2c8641f6c8b62b951f0f1ded",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    },
+    {
+      "member_id": "power_10",
+      "kind": "power",
+      "status": "complete",
+      "reasons": [],
+      "provenance": {
+        "actions_run_id": 7062,
+        "run_number": 103,
+        "run_attempt": 1,
+        "display_title": "af-perf calibration sha256:8b7906e88ee426cca6fa936bdd369e016387ef135fdf99dcc28e58993bdf820c power_10",
+        "head_sha": "e803ddc28c003fa8e47738218060d5e403dfc2d3",
+        "attempt_started_unix_ms": 1760337600000,
+        "attempt_updated_unix_ms": 1760337630000,
+        "attempt_conclusion": "success",
+        "lab_run_id": "gh7062_a1_primary",
+        "artifact_name": "af-perf-gh7062_a1_primary-run",
+        "artifact_id": 284,
+        "artifact_created_unix_ms": 1760337620000,
+        "plan_digest": "sha256:19bed05e41cdf167d83680173e693c9b3dbb0875686e7523ba5b5a315eb09852",
+        "runner": {
+          "label": "ubuntu-latest",
+          "runner_group": "GitHub Actions",
+          "jobs": 3
+        }
+      },
+      "cpu_group": "hosted_x86",
+      "verdict_sha256": "sha256:6296c8d00c3b72aee32dcb31c89e11ca03047e3ace9d60b5fadbdffc064e28d6",
+      "cases": {
+        "synthetic_advisory": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_fast": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        },
+        "synthetic_process__size_1": {
+          "classification": "regression",
+          "injected_median_ms": "10",
+          "target_ms": "10",
+          "injection_valid": true
+        }
+      },
+      "qualifies": true
+    }
+  ],
+  "refused_evidence": [],
+  "tallies": {
+    "aa_members": 20,
+    "aa_within_tolerance": 20,
+    "power_members": 10,
+    "power_qualifying": 10,
+    "power_by_case": {
+      "synthetic_fast": {
+        "detections": 10,
+        "valid_injections": 10
+      },
+      "synthetic_process__size_1": {
+        "detections": 10,
+        "valid_injections": 10
+      }
+    },
+    "power_by_group": {
+      "hosted_x86": {
+        "members": 10,
+        "qualifying": 10
+      }
+    },
+    "injection": {
+      "injection_2": {
+        "members": 10,
+        "regressions": 0,
+        "valid_injections": 10
+      },
+      "injection_5": {
+        "members": 10,
+        "regressions": 0,
+        "valid_injections": 10
+      },
+      "injection_10": {
+        "members": 10,
+        "regressions": 10,
+        "valid_injections": 10
+      }
+    }
+  },
+  "groups": {
+    "hosted_x86": {
+      "ready": true,
+      "unavailable": []
+    }
+  },
+  "ready": true,
+  "claim": "9 of 10 power trials is a readiness decision for the demonstrated targets, not proof of 90% population detection power; group tallies are descriptive"
+}

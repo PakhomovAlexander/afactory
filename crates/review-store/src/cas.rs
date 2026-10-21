@@ -149,7 +149,9 @@ pub struct Cas {
 impl Cas {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CasError> {
         let root = root.as_ref().to_path_buf();
-        fs::create_dir_all(root.join("objects"))?;
+        // The CAS holds whole source snapshots, prompts and results: private, whatever the
+        // umask (crate::local_fs).
+        crate::local_fs::create_private_dir_all(&root.join("objects"))?;
         Ok(Self::at_root(root))
     }
 
@@ -191,6 +193,7 @@ impl Cas {
     /// Store content bytes, returning their content digest. Idempotent: storing the same bytes twice is one
     /// object and one digest.
     pub fn put(&self, bytes: &[u8]) -> Result<String, CasError> {
+        let _span = review_core::perf_trace::span(review_core::perf_trace::Phase::CasPut);
         let digest = canonical::blob_content_id(bytes);
         let final_path = self.path_for(&digest);
         if final_path.exists() {
@@ -211,7 +214,7 @@ impl Cas {
             return Ok(digest);
         }
         let dir = final_path.parent().expect("object path has a parent");
-        fs::create_dir_all(dir)?;
+        crate::local_fs::create_private_dir_all(dir)?;
 
         // The temp name must be unique per call, not per digest: two threads storing the
         // same bytes would otherwise race on one temp file, and the loser's rename fails.
@@ -219,7 +222,11 @@ impl Cas {
         let sequence = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let temp_path = dir.join(format!(".tmp-{}-{sequence}", &digest[7..23]));
         {
-            let mut file = fs::File::create(&temp_path)?;
+            let mut file = crate::local_fs::private_file_options()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&temp_path)?;
             file.write_all(bytes)?;
         }
         fs::rename(&temp_path, &final_path)?;
@@ -245,7 +252,7 @@ impl Cas {
         }
 
         let shard = final_path.parent().expect("object path has a parent");
-        fs::create_dir_all(shard)?;
+        crate::local_fs::create_private_dir_all(shard)?;
         reader.rewind()?;
         let mut temporary = tempfile::NamedTempFile::new_in(shard)?;
         let (published_digest, published_size) = {
@@ -288,7 +295,7 @@ impl Cas {
         }
 
         let expected_shard = expected_path.parent().expect("object path has a parent");
-        fs::create_dir_all(expected_shard)?;
+        crate::local_fs::create_private_dir_all(expected_shard)?;
         let mut temporary = tempfile::NamedTempFile::new_in(expected_shard)?;
         let (actual_digest, actual_size) = {
             let mut copying = CopyingReader {
@@ -311,7 +318,9 @@ impl Cas {
         if final_path.exists() {
             return self.accept_existing_streamed_object(digest, size, final_path, buffer);
         }
-        fs::create_dir_all(final_path.parent().expect("object path has a parent"))?;
+        crate::local_fs::create_private_dir_all(
+            final_path.parent().expect("object path has a parent"),
+        )?;
         temporary
             .persist(&final_path)
             .map_err(|error| CasError::Io(error.error))?;
@@ -451,7 +460,7 @@ impl Cas {
             return Ok(());
         }
         let directory = final_path.parent().expect("object path has a parent");
-        fs::create_dir_all(directory)?;
+        crate::local_fs::create_private_dir_all(directory)?;
         let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
         temporary.write_all(bytes)?;
         temporary
@@ -504,6 +513,7 @@ impl Cas {
 
     /// Verify and read one object only when its authoritative stored length fits `max_bytes`.
     pub fn get_bounded(&self, digest: &str, max_bytes: u64) -> Result<Vec<u8>, CasError> {
+        let _span = review_core::perf_trace::span(review_core::perf_trace::Phase::CasGet);
         let bytes = self.read_bounded_bytes(digest, max_bytes)?;
         // Verify on read: a CAS that trusts its own filenames cannot detect corruption at all.
         verify_object_bytes(digest, &bytes)?;
@@ -514,6 +524,7 @@ impl Cas {
     /// canonical stored bytes and the requested artifact ID are checked on every call.
     /// Returning the decoded envelope avoids repeating this work at the caller boundary.
     pub fn get_artifact(&self, digest: &str) -> Result<review_core::ArtifactEnvelope, CasError> {
+        let _span = review_core::perf_trace::span(review_core::perf_trace::Phase::CasGetArtifact);
         let bytes = self.read_bounded_bytes(digest, MAX_ARTIFACT_ENVELOPE_BYTES)?;
         decode_artifact_bytes(digest, &bytes)
     }

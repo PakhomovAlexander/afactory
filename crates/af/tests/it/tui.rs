@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
-const AF: &str = env!("CARGO_BIN_EXE_af");
 const ROWS: usize = 30;
 const COLS: usize = 100;
 /// The bar's columns before its `|` separator.
@@ -314,7 +313,7 @@ impl Browser {
             pixel_height: 0,
         };
         let pair = native_pty_system().openpty(size).unwrap();
-        let mut command = CommandBuilder::new(AF);
+        let mut command = CommandBuilder::new(crate::common::af_binary());
         command.env_clear();
         command.cwd(cwd);
         for (name, value) in environment(home) {
@@ -349,19 +348,38 @@ impl Browser {
 
     /// The screen once `ready` holds for it; a timeout shows the last screen.
     fn wait_for(&mut self, what: &str, ready: impl Fn(&Screen) -> bool) -> Screen {
+        self.wait_written(0, what, |screen, _| ready(screen))
+    }
+
+    /// The screen once `ready` holds for it and for what the browser wrote from the byte offset
+    /// `from` on; a timeout shows the last screen.
+    fn wait_written(
+        &mut self,
+        from: usize,
+        what: &str,
+        ready: impl Fn(&Screen, &[u8]) -> bool,
+    ) -> Screen {
         let deadline = Instant::now() + Duration::from_secs(300);
         loop {
             while let Ok(chunk) = self.output.try_recv() {
                 self.bytes.extend(chunk);
             }
             let screen = Screen::parse(&self.bytes, self.rows, self.columns);
-            if ready(&screen) {
+            if ready(&screen, &self.bytes[from..]) {
                 return screen;
             }
             let shown = screen.text();
             assert!(Instant::now() < deadline, "no {what} on:\n{shown}");
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Everything the browser has written so far; the offset where what it writes next begins.
+    fn drained(&mut self) -> usize {
+        while let Ok(chunk) = self.output.try_recv() {
+            self.bytes.extend(chunk);
+        }
+        self.bytes.len()
     }
 
     /// Type keys; each batch gets its own read by the browser.
@@ -934,13 +952,24 @@ fn exit_line(line: &str, ended: &str) -> String {
 }
 
 /// Type `:LINE` in the browser and wait for the released screen's exit line; return the screen
-/// and the row the exit line is on.
+/// and the row the exit line is on. A repeated command's earlier exit lines stay on the main
+/// screen, so only the line written after these keys counts: an Enter sent on a stale line
+/// would reach the terminal while the command still runs, and be flushed with its keys.
 fn hand_off(browser: &mut Browser, line: &str, ended: &str) -> (Screen, usize) {
+    let from = browser.drained();
     browser.keys(format!(":{line}\r").as_bytes());
     let shown = exit_line(line, ended);
-    let ended = |screen: &Screen| screen.lines().contains(&shown);
-    let screen = browser.wait_for("the exit line", ended);
-    let at = screen.lines().iter().position(|row| *row == shown).unwrap();
+    let fresh = |screen: &Screen, written: &[u8]| {
+        let needle = shown.as_bytes();
+        screen.lines().contains(&shown)
+            && written.windows(needle.len()).any(|window| window == needle)
+    };
+    let screen = browser.wait_written(from, "this hand-off's own exit line", fresh);
+    let at = screen
+        .lines()
+        .iter()
+        .rposition(|row| *row == shown)
+        .unwrap();
     (screen, at)
 }
 
@@ -1247,4 +1276,72 @@ fn tree_listed(screen: &Screen) -> bool {
     bar_rows(screen)
         .iter()
         .any(|row| row.contains("providers/"))
+}
+
+/// The checkout's `.git/config` is as untrusted as its tree (SECURITY.md): an fsmonitor and a
+/// clean filter it configures, with a committed `* filter=pwn` and edited declarations in the
+/// working tree, never run while bare `af` loads every pane and marks the drift.
+#[test]
+fn the_browser_runs_nothing_a_hostile_git_config_names() {
+    let (_temp, root) = temp_root();
+    let repo = hub(&root);
+    std::fs::write(repo.join(".gitattributes"), "* filter=pwn\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(
+        &repo,
+        &["commit", "-qm", "every path through the pwn filter"],
+    );
+    for edited in [
+        ".af/pipelines/review.toml",
+        ".af/task-packages/fixture/implementation/pipeline.toml",
+        ".af/task-packages/fixture/implementer/worker.toml",
+    ] {
+        let path = repo.join(edited);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{text}\n# edited in the working tree\n")).unwrap();
+    }
+    let marker = root.join("MARKER");
+    let script = root.join("pwn.sh");
+    let body = format!("#!/bin/sh\necho \"$0 $*\" >> '{}'\ncat\n", marker.display());
+    std::fs::write(&script, body).unwrap();
+    let permissions = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&script, permissions).unwrap();
+    let script = script.to_str().unwrap();
+    for (key, value) in [
+        ("core.fsmonitor", script),
+        ("core.hooksPath", root.to_str().unwrap()),
+        ("filter.pwn.clean", script),
+        ("filter.pwn.smudge", script),
+        ("filter.pwn.required", "true"),
+    ] {
+        git(&repo, &["config", key, value]);
+    }
+    assert!(!marker.exists(), "the fixture itself ran the filter");
+
+    let mut browser = Browser::launch(&repo, &root.join("home"));
+    // Every pane has loaded once no folder of the bar carries a discovery spinner.
+    let loaded = |screen: &Screen| {
+        let bar = bar_rows(screen);
+        ["  v pipelines/", "  v workers/", "  v tasks/"]
+            .iter()
+            .all(|folder| bar.iter().any(|row| row == folder))
+            && screen.text().contains("SETTINGS  project: hub")
+    };
+    browser.wait_for("every pane loaded", loaded);
+    // The Workers pane reads `HEAD` and its drift once its folder is opened (ADR-0122).
+    browser.keys(b"]]]]");
+    browser.keys(b"\r");
+    let listed = |screen: &Screen| {
+        let bar = bar_rows(screen);
+        let shown = |name: &str| bar.iter().any(|row| row.starts_with(name));
+        shown("      fixture/evaluator") && shown("      fixture/implementer")
+    };
+    browser.wait_for("the Workers in the bar", listed);
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+    assert!(
+        !marker.exists(),
+        "checkout-configured code ran: {}",
+        std::fs::read_to_string(&marker).unwrap_or_default()
+    );
 }

@@ -32,6 +32,8 @@ pub mod integration;
 pub mod json;
 pub mod patch;
 pub mod path;
+pub mod perf_calibration;
+pub mod perf_trace;
 pub mod project;
 pub mod resolution;
 pub mod reviewer_result;

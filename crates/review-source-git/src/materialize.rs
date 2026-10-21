@@ -6,16 +6,25 @@
 //! symlinked parent directories all fail closed rather than being sanitized into something
 //! plausible.
 //!
+//! A path git itself refuses (a spelling of `.git`, a symlinked `.gitmodules`) is refused too:
+//! written into a sandbox, its `.git/config` would configure every `git` a gate or reviewer runs
+//! there. And on a volume that folds case or Unicode normalisation, two manifest paths that name
+//! one file are refused rather than left for the last write to win.
+//!
 //! Nothing here consults git. A materialized tree is a function of the manifest and the CAS,
 //! which is what makes it reproducible on a machine that has never seen the repository.
 
+use std::collections::hash_map::Entry as Slot;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use review_store::Cas;
 
-use crate::manifest::{EntryKind, Manifest};
+use unicode_normalization::UnicodeNormalization;
+
+use crate::manifest::{EntryKind, Manifest, encode_path, git_refuses_path};
 
 const MAX_SYMLINK_TARGET_BYTES: u64 = 16 * 1024;
 
@@ -28,6 +37,16 @@ pub enum MaterializeError {
     Escape {
         path: String,
     },
+    /// A path git itself refuses to check out: a spelling of `.git`, or a symlinked
+    /// `.gitmodules`.
+    GitPath {
+        path: String,
+    },
+    /// Two manifest paths that the sandbox volume resolves to one file or directory.
+    Collision {
+        first: String,
+        second: String,
+    },
 }
 
 impl std::fmt::Display for MaterializeError {
@@ -39,6 +58,15 @@ impl std::fmt::Display for MaterializeError {
             MaterializeError::Escape { path } => {
                 write!(f, "refusing to materialize outside the sandbox: {path}")
             }
+            MaterializeError::GitPath { path } => write!(
+                f,
+                "refusing to materialize `{path}`: git refuses it as a Git administration path"
+            ),
+            MaterializeError::Collision { first, second } => write!(
+                f,
+                "refusing to materialize `{first}` and `{second}`: the sandbox volume ignores \
+                 case or Unicode normalisation, so they would name one file"
+            ),
         }
     }
 }
@@ -106,10 +134,11 @@ fn materialize_tree(manifest: &Manifest, cas: &Cas, root: &Path) -> Result<(), M
     let decoded_paths: Vec<PathBuf> = manifest
         .entries
         .iter()
-        .map(|entry| checked_relative_path(&entry.path))
+        .map(|entry| checked_relative_path(&entry.path, entry.kind))
         .collect::<Result<_, _>>()?;
 
     refuse_symlink_ancestors(manifest, &decoded_paths)?;
+    refuse_folded_collisions(root, &decoded_paths)?;
     prepare_directories(root, manifest, &decoded_paths)?;
 
     // Preserve first-occurrence order while grouping in O(entries): the hash map is lookup only,
@@ -241,7 +270,10 @@ fn materialize_group_source(
     Ok(())
 }
 
-pub(crate) fn checked_relative_path(encoded: &str) -> Result<PathBuf, MaterializeError> {
+pub(crate) fn checked_relative_path(
+    encoded: &str,
+    kind: EntryKind,
+) -> Result<PathBuf, MaterializeError> {
     let decoded = crate::manifest::decode_path(encoded);
     let raw = crate::manifest::fs_path_bytes(&decoded);
     if !crate::manifest::is_canonical_path_encoding(encoded, &decoded) || encoded.is_empty() {
@@ -263,7 +295,124 @@ pub(crate) fn checked_relative_path(encoded: &str) -> Result<PathBuf, Materializ
             path: encoded.to_string(),
         });
     }
+    if git_refuses_path(&decoded, kind) {
+        return Err(MaterializeError::GitPath {
+            path: encoded.to_string(),
+        });
+    }
     Ok(raw)
+}
+
+/// What the volume holding a sandbox root treats as one name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Folding {
+    /// `Makefile` and `makefile` are one file (APFS and HFS+ by default, NTFS).
+    case: bool,
+    /// The NFC and NFD spellings of `café` are one file (APFS, HFS+).
+    normalization: bool,
+}
+
+impl Folding {
+    /// Ask the volume once per root: create one probe name in it and look it up spelled with its
+    /// ASCII case swapped and with its `é` decomposed.
+    fn probe(root: &Path) -> Result<Folding, MaterializeError> {
+        let probe = tempfile::Builder::new()
+            .prefix("af-Fold-Probe-\u{e9}-")
+            .tempfile_in(root)?;
+        let name = probe
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("the probe is named in UTF-8");
+        let swapped: String = name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_lowercase() {
+                    c.to_ascii_uppercase()
+                } else {
+                    c.to_ascii_lowercase()
+                }
+            })
+            .collect();
+        let decomposed = name.replace('\u{e9}', "e\u{301}");
+        let found = |spelling: &str| fs::symlink_metadata(root.join(spelling)).is_ok();
+        Ok(Folding {
+            case: found(&swapped),
+            normalization: found(&decomposed),
+        })
+    }
+
+    /// The one spelling the volume gives every name `path` may be written as.
+    fn fold(self, path: &[u8]) -> Vec<u8> {
+        let Ok(text) = std::str::from_utf8(path) else {
+            // Not UTF-8, so nothing to normalise; ASCII case is all a volume can fold.
+            return if self.case {
+                path.to_ascii_lowercase()
+            } else {
+                path.to_vec()
+            };
+        };
+        let mut folded: String = if self.normalization {
+            text.nfd().collect()
+        } else {
+            text.to_owned()
+        };
+        if self.case {
+            folded = folded.chars().flat_map(char::to_lowercase).collect();
+            if self.normalization {
+                folded = folded.nfd().collect();
+            }
+        }
+        folded.into_bytes()
+    }
+}
+
+/// Refuse a manifest two of whose paths, or of whose directories, the volume holding `root`
+/// resolves to one name. Judged from the paths alone, before anything is written: no read-back
+/// of the materialized tree is needed to know that a last write would win.
+fn refuse_folded_collisions(
+    root: &Path,
+    decoded_paths: &[PathBuf],
+) -> Result<(), MaterializeError> {
+    if decoded_paths.len() < 2 {
+        return Ok(());
+    }
+    let folding = Folding::probe(root)?;
+    refuse_collisions_under(folding, decoded_paths)
+}
+
+fn refuse_collisions_under(
+    folding: Folding,
+    decoded_paths: &[PathBuf],
+) -> Result<(), MaterializeError> {
+    if folding == Folding::default() {
+        return Ok(());
+    }
+    let mut spelled: HashMap<Vec<u8>, &[u8]> = HashMap::new();
+    for path in decoded_paths {
+        let bytes = path.as_os_str().as_bytes();
+        let ends = bytes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, byte)| (*byte == b'/').then_some(index))
+            .chain([bytes.len()]);
+        for end in ends {
+            let name = &bytes[..end];
+            match spelled.entry(folding.fold(name)) {
+                Slot::Occupied(first) if *first.get() != name => {
+                    return Err(MaterializeError::Collision {
+                        first: encode_path(first.get()),
+                        second: encode_path(name),
+                    });
+                }
+                Slot::Occupied(_) => {}
+                Slot::Vacant(slot) => {
+                    slot.insert(name);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn prepare_directories(
@@ -353,7 +502,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    checked_relative_path(path),
+                    checked_relative_path(path, EntryKind::File),
                     Err(MaterializeError::Manifest(_))
                 ),
                 "{path} was not refused as noncanonical"
@@ -372,17 +521,178 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    checked_relative_path(path),
+                    checked_relative_path(path, EntryKind::File),
                     Err(MaterializeError::Escape { path: refused }) if refused == path
                 ),
                 "{path} was not refused as an escape"
             );
         }
-        assert!(checked_relative_path("a/b/c.rs").is_ok());
-        assert!(checked_relative_path("a%FFb").is_ok());
-        assert!(checked_relative_path("%20notes.md").is_ok());
+        assert!(checked_relative_path("a/b/c.rs", EntryKind::File).is_ok());
+        assert!(checked_relative_path("a%FFb", EntryKind::File).is_ok());
+        assert!(checked_relative_path("%20notes.md", EntryKind::File).is_ok());
         // A path that merely *contains* dots is fine; only a real parent component escapes.
-        assert!(checked_relative_path("a/..b/c").is_ok());
+        assert!(checked_relative_path("a/..b/c", EntryKind::File).is_ok());
+    }
+
+    #[test]
+    fn every_spelling_of_git_administration_is_refused_by_name() {
+        for path in [
+            ".git/config",
+            ".GIT/HEAD",
+            ".git./x",
+            "git~1/x",
+            "sub/.Git/hooks/post-checkout",
+            ".git /x",
+            ".git%20/%FF",
+        ] {
+            assert!(
+                matches!(
+                    checked_relative_path(path, EntryKind::File),
+                    Err(MaterializeError::GitPath { path: refused }) if refused == path
+                ),
+                "{path} was not refused"
+            );
+        }
+        assert!(matches!(
+            checked_relative_path(".gitmodules", EntryKind::Symlink),
+            Err(MaterializeError::GitPath { .. })
+        ));
+        assert!(checked_relative_path(".gitmodules", EntryKind::File).is_ok());
+        assert!(checked_relative_path(".github/ci.yml", EntryKind::File).is_ok());
+    }
+
+    #[test]
+    fn a_tree_with_git_administration_is_refused_before_any_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = Cas::open(dir.path().join("cas")).unwrap();
+        let config = cas.put(b"[core]\n\tfsmonitor = ./pwn\n").unwrap();
+        let link = cas.put(b"elsewhere").unwrap();
+        for (path, kind, content) in [
+            (".git/config", EntryKind::File, &config),
+            (".GIT/HEAD", EntryKind::File, &config),
+            (".git./x", EntryKind::File, &config),
+            ("git~1/x", EntryKind::File, &config),
+            (".gitmodules", EntryKind::Symlink, &link),
+        ] {
+            let size = cas.get(content).unwrap().len() as u64;
+            let manifest = Manifest::new(vec![
+                crate::manifest::Entry {
+                    path: "a.txt".into(),
+                    kind: EntryKind::File,
+                    content: link.clone(),
+                    size: 9,
+                },
+                crate::manifest::Entry {
+                    path: path.into(),
+                    kind,
+                    content: content.clone(),
+                    size,
+                },
+            ])
+            .unwrap();
+            let root = dir.path().join("tree");
+            let error = materialize(&manifest, &cas, &root).unwrap_err();
+            assert!(
+                matches!(&error, MaterializeError::GitPath { path: refused } if refused == path),
+                "{path}: {error}"
+            );
+            assert!(error.to_string().contains(path), "{error}");
+            assert!(!root.join("a.txt").exists(), "{path} let a write happen");
+        }
+    }
+
+    #[test]
+    fn paths_one_folded_spelling_names_are_collisions() {
+        let paths = |names: &[&str]| -> Vec<PathBuf> {
+            names.iter().map(|name| PathBuf::from(*name)).collect()
+        };
+        let case = Folding {
+            case: true,
+            normalization: false,
+        };
+        let normalization = Folding {
+            case: false,
+            normalization: true,
+        };
+        let both = Folding {
+            case: true,
+            normalization: true,
+        };
+        let twins = paths(&["Makefile", "makefile"]);
+        for folding in [case, both] {
+            let error = refuse_collisions_under(folding, &twins).unwrap_err();
+            assert!(
+                matches!(&error, MaterializeError::Collision { first, second }
+                    if first == "Makefile" && second == "makefile"),
+                "{error}"
+            );
+        }
+        refuse_collisions_under(normalization, &twins).unwrap();
+        refuse_collisions_under(Folding::default(), &twins).unwrap();
+        // Directories collide too: `Src/a` and `src/b` would share one directory.
+        let error = refuse_collisions_under(case, &paths(&["Src/a", "src/b"])).unwrap_err();
+        assert!(
+            matches!(&error, MaterializeError::Collision { first, second }
+                if first == "Src" && second == "src"),
+            "{error}"
+        );
+        let unicode = paths(&["caf\u{e9}.md", "cafe\u{301}.md"]);
+        for folding in [normalization, both] {
+            assert!(matches!(
+                refuse_collisions_under(folding, &unicode),
+                Err(MaterializeError::Collision { .. })
+            ));
+        }
+        refuse_collisions_under(case, &unicode).unwrap();
+        // Distinct names, and one directory named the same way twice, are fine.
+        refuse_collisions_under(both, &paths(&["a/x", "a/y", "b", "Makefile.in"])).unwrap();
+    }
+
+    #[test]
+    fn a_colliding_manifest_is_refused_only_where_the_volume_folds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = Cas::open(dir.path().join("cas")).unwrap();
+        let upper = cas.put(b"upper").unwrap();
+        let lower = cas.put(b"lower").unwrap();
+        let manifest = Manifest::new(vec![
+            crate::manifest::Entry {
+                path: "Makefile".into(),
+                kind: EntryKind::File,
+                content: upper,
+                size: 5,
+            },
+            crate::manifest::Entry {
+                path: "makefile".into(),
+                kind: EntryKind::File,
+                content: lower,
+                size: 5,
+            },
+        ])
+        .unwrap();
+        let root = dir.path().join("tree");
+        std::fs::create_dir_all(&root).unwrap();
+        let folding = Folding::probe(&root).unwrap();
+        let probes: Vec<_> = std::fs::read_dir(&root).unwrap().collect();
+        assert!(probes.is_empty(), "the probe outlived its question");
+        let result = materialize(&manifest, &cas, &root);
+        if folding.case {
+            let error = result.unwrap_err();
+            assert!(
+                error.to_string().contains("`Makefile` and `makefile`"),
+                "{error}"
+            );
+            assert!(!root.join("Makefile").exists());
+        } else {
+            result.unwrap();
+            assert_eq!(std::fs::read(root.join("Makefile")).unwrap(), b"upper");
+            assert_eq!(std::fs::read(root.join("makefile")).unwrap(), b"lower");
+        }
+        let left: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().starts_with("af-Fold-Probe"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     #[test]
