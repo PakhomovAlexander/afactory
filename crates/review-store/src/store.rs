@@ -376,6 +376,28 @@ impl EventStore {
         if events.is_empty() {
             return Ok(Vec::new());
         }
+        let span = store_span("af.store.append", "append");
+        let appended = span.in_scope(|| {
+            self.append_batch_committed(run_id, cas, events, task_permit, review_permit)
+        });
+        if !span.is_disabled() {
+            let bytes = events
+                .iter()
+                .map(|event| event.payload.to_string().len() as u64)
+                .fold(0_u64, u64::saturating_add);
+            record_store(&span, events.len(), bytes, appended.as_ref().err());
+        }
+        appended
+    }
+
+    fn append_batch_committed(
+        &mut self,
+        run_id: &str,
+        cas: &Cas,
+        events: &[NewEvent],
+        task_permit: Option<&task::WritePermit>,
+        review_permit: Option<&task::execution::review::WritePermit>,
+    ) -> Result<Vec<RunEvent>, StoreError> {
         if events.iter().any(|e| {
             matches!(
                 e.event_type,
@@ -565,6 +587,22 @@ impl EventStore {
         run_id: &str,
         first_sequence: u64,
     ) -> Result<Vec<RunEvent>, StoreError> {
+        let span = store_span("af.store.read", "replay");
+        let mut bytes = 0_u64;
+        let replayed = span.in_scope(|| self.replay_rows(run_id, first_sequence, &mut bytes));
+        if !span.is_disabled() {
+            let events = replayed.as_ref().map_or(0, Vec::len);
+            record_store(&span, events, bytes, replayed.as_ref().err());
+        }
+        replayed
+    }
+
+    fn replay_rows(
+        &self,
+        run_id: &str,
+        first_sequence: u64,
+        bytes: &mut u64,
+    ) -> Result<Vec<RunEvent>, StoreError> {
         let first_sequence_sql = i64::try_from(first_sequence).map_err(|_| {
             StoreError::Conflict("event replay sequence exceeds SQLite range".into())
         })?;
@@ -611,6 +649,7 @@ impl EventStore {
             // event would rebuild a different state than the run committed, silently — the
             // exact failure the publication ordering exists to prevent, on the read side.
             let (mut event, raw_sequence, refs, payload) = row?;
+            *bytes = bytes.saturating_add(payload.len() as u64);
             let sequence = u64::try_from(raw_sequence).map_err(|_| {
                 StoreError::Conflict(format!("negative sequence {raw_sequence} in run {run_id}"))
             })?;
@@ -694,6 +733,58 @@ impl EventStore {
 
     pub fn is_empty(&self, run_id: &str) -> Result<bool, StoreError> {
         Ok(self.len(run_id)? == 0)
+    }
+}
+
+/// A Store phase span (`af.store.append`, `af.store.read`; telemetry design §7.1), opened only
+/// inside a span of a run, so a Store touched outside one records nothing. Telemetry
+/// only: what the Store commits or returns never depends on it (ADR-0153).
+fn store_span(name: &'static str, op: &'static str) -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    match name {
+        "af.store.append" => tracing::info_span!(
+            "af.store.append",
+            af.store.op = op,
+            af.store.events = tracing::field::Empty,
+            af.store.bytes = tracing::field::Empty,
+            af.outcome = tracing::field::Empty,
+            af.failure.class = tracing::field::Empty,
+            af.failure.reason = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            af.status = tracing::field::Empty,
+        ),
+        _ => tracing::info_span!(
+            "af.store.read",
+            af.store.op = op,
+            af.store.events = tracing::field::Empty,
+            af.store.bytes = tracing::field::Empty,
+            af.outcome = tracing::field::Empty,
+            af.failure.class = tracing::field::Empty,
+            af.failure.reason = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            af.status = tracing::field::Empty,
+        ),
+    }
+}
+
+/// End a Store phase span: its event count and payload bytes, `ok` or the Store's refusal.
+fn record_store(span: &tracing::Span, events: usize, bytes: u64, error: Option<&StoreError>) {
+    span.record("af.store.events", events as u64);
+    span.record("af.store.bytes", bytes);
+    match error {
+        None => {
+            span.record("af.outcome", "succeeded");
+            span.record("af.status", "ok");
+        }
+        Some(error) => {
+            span.record("af.outcome", "failed");
+            span.record("af.status", "error");
+            span.record("af.failure.class", "refused");
+            span.record("error.type", "refused");
+            span.record("af.failure.reason", error.to_string().as_str());
+        }
     }
 }
 

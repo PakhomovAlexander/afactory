@@ -254,11 +254,18 @@ impl Visit for Fields {
     }
 }
 
+/// The attributes every span of a run names (design §5): a span that does not name one itself
+/// takes its parent's, so a phase a crate below the runtime records (a check, a git operation,
+/// a Store append) names the Store, run, kind and execution it worked for without knowing them.
+pub const RUN_IDENTITY: [&str; 4] = ["af.store_id", "af.run_id", "af.run.kind", "af.execution_id"];
+
 struct SpanState {
     metadata: &'static Metadata<'static>,
     /// `None` when the writer did not keep the start (the segment limit).
     span_id: Option<String>,
     trace_id: Option<String>,
+    /// The [`RUN_IDENTITY`] attributes the span named or took from its parent.
+    identity: Vec<(String, Attr)>,
     depth: usize,
     end: Attrs,
     status: Option<SpanStatus>,
@@ -335,6 +342,29 @@ pub fn current_writer() -> Option<Writer> {
     .filter(|writer| !writer.failed())
 }
 
+/// Whether the span current on this thread works for a run: it names, or took from its parent,
+/// an `af.run_id` (design §5). A phase of §7.1 that belongs to a run — a Store operation, a git
+/// process, a capture — is recorded only then, so the same phase before a run opens, or on a
+/// thread no span was handed to, never becomes a span of no run. `false` at `off`.
+pub fn in_run() -> bool {
+    tracing_core::dispatcher::get_default(|dispatch| {
+        dispatch
+            .downcast_ref::<TelemetrySubscriber>()
+            .is_some_and(TelemetrySubscriber::current_in_run)
+    })
+}
+
+impl TelemetrySubscriber {
+    fn current_in_run(&self) -> bool {
+        let Some(current) = self.current() else {
+            return false;
+        };
+        lock(&self.spans)
+            .get(&current)
+            .is_some_and(|state| state.identity.iter().any(|(key, _)| key == "af.run_id"))
+    }
+}
+
 /// The process's `af.command` span, which every `af.run` names as its parent whichever thread
 /// opens it.
 static COMMAND: Mutex<Option<tracing::Span>> = Mutex::new(None);
@@ -377,17 +407,29 @@ impl Subscriber for TelemetrySubscriber {
         let mut fields = Fields::default();
         span.record(&mut fields);
         let parent = self.parent_of(span.parent(), span.is_contextual());
-        let (parent_span, parent_trace, depth) = parent
+        let (parent_span, parent_trace, parent_identity, depth) = parent
             .and_then(|parent| {
                 lock(&self.spans).get(&parent).map(|state| {
                     (
                         state.span_id.clone(),
                         state.trace_id.clone(),
+                        state.identity.clone(),
                         state.depth + 1,
                     )
                 })
             })
-            .unwrap_or((None, None, 0));
+            .unwrap_or((None, None, Vec::new(), 0));
+        // A run identity the span does not name is its parent's, written first so the record
+        // bound never drops it before the span's own attributes.
+        let inherited: Vec<(String, Attr)> = parent_identity
+            .into_iter()
+            .filter(|(key, _)| !fields.attrs.0.iter().any(|(name, _)| name == key))
+            .collect();
+        fields.attrs.0.splice(0..0, inherited);
+        let identity: Vec<(String, Attr)> = RUN_IDENTITY
+            .iter()
+            .filter_map(|key| fields.attrs.0.iter().find(|(name, _)| name == key).cloned())
+            .collect();
         let text = |key: &str| {
             fields.attrs.0.iter().find_map(|(name, value)| match value {
                 Attr::Id(text) | Attr::Text(text) if name == key => Some(text.clone()),
@@ -414,6 +456,7 @@ impl Subscriber for TelemetrySubscriber {
                 metadata: span.metadata(),
                 span_id,
                 trace_id,
+                identity,
                 depth,
                 end: Attrs::new(),
                 status: fields.status,

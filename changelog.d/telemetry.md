@@ -45,3 +45,20 @@
   `changed`, when one is no longer what the inventory found, with temporaries, unreferenced blobs
   and free index pages reclaimed by every applied sweep and an overlapping directory reported
   `overlapping`, never evicted as telemetry.
+- Telemetry, third package: every phase of a run is a span of the crate that owns it —
+  `af.admission`, `af.context.compose`, `af.harness`, `af.output.parse` and `af.usage.account`
+  under an Attempt, `af.gate` with its `af.check` spans and `af.warm.restore`/`af.warm.save`
+  under a check node, and `af.snapshot.capture`, `af.cas.materialize`, `af.store.append`,
+  `af.store.read`, `af.git`, `af.remote_check` and `af.process` wherever the run does them — each
+  named in the catalogue in `docs/architecture.md`. Every supervised process now carries its
+  process id and its CPU time and peak memory through every `review-process` result, a
+  timed-out, killed or cancelled one included, and its span records them (`af.rusage.*`, absent
+  when the platform did not deliver a figure, never zero), read safely from the children totals
+  around each reap because the workspace forbids the `unsafe` a direct `wait4` needs. A check
+  records `af.check.status` and its comparability key `af.check.fingerprint`
+  (`af/check-fingerprint@1`, the environment only as a digest, `unknown` when a part is
+  unavailable); a kernel measurement is a run of its own (`af.run.kind = measure`,
+  `af.measurement.id`). At `spans` each execution's run starts with its configuration record
+  (`af/TelemetryConfig@1`, as many 16 KiB parts as it needs, an environment-origin value as
+  `<env>`), which `af telemetry config RUN [--execution ID]` assembles, saying `incomplete` when
+  a part is missing (`--json`: `af/TelemetryConfig@1`).

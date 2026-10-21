@@ -51,13 +51,46 @@ impl From<std::io::Error> for MaterializeError {
     }
 }
 
-/// Write every entry of `manifest` under `root`.
+/// Write every entry of `manifest` under `root`, as one `af.cas.materialize` span (telemetry
+/// design §7.1) when a recorded span is current.
 pub fn materialize(
     manifest: &Manifest,
     cas: &Cas,
     root: impl AsRef<Path>,
 ) -> Result<(), MaterializeError> {
-    let root = root.as_ref();
+    let span = if review_telemetry::process::in_run() {
+        tracing::info_span!(
+            "af.cas.materialize",
+            af.cas.op = review_telemetry::subscriber::Typed::enumerated("materialize").field(),
+            af.cas.files = manifest.entries.len() as u64,
+            af.cas.bytes = manifest
+                .entries
+                .iter()
+                .map(|entry| entry.size)
+                .fold(0_u64, u64::saturating_add),
+            af.outcome = tracing::field::Empty,
+            af.failure.class = tracing::field::Empty,
+            af.failure.reason = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            af.status = tracing::field::Empty,
+        )
+    } else {
+        tracing::Span::none()
+    };
+    let written = span.in_scope(|| materialize_tree(manifest, cas, root.as_ref()));
+    review_telemetry::process::outcome(
+        &span,
+        written
+            .as_ref()
+            .err()
+            .map(|error| ("failed", error.to_string()))
+            .as_ref()
+            .map(|(class, reason)| (*class, reason.as_str())),
+    );
+    written
+}
+
+fn materialize_tree(manifest: &Manifest, cas: &Cas, root: &Path) -> Result<(), MaterializeError> {
     manifest
         .validate()
         .map_err(|error| MaterializeError::Manifest(error.to_string()))?;

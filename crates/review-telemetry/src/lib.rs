@@ -4,7 +4,8 @@
 //!
 //! A leaf crate: it links nothing in the workspace, and `review-process` never links it
 //! (ADR-0026). The write side — [`record`], [`segment::writer`], [`blob`], [`redact`],
-//! [`level`], [`subscriber`], [`trace`], [`dirs`] — is for every crate that records. The read
+//! [`level`], [`subscriber`], [`trace`], [`dirs`], [`process`] — is for every crate that
+//! records. The read
 //! side — [`segment::reader`], [`index`], [`status`], [`view`], [`budget`], [`blob::reader`] and
 //! [`blob::collect`] — is linked only by `af telemetry`, `af storage` and the TUI (clause 1); a
 //! source test holds every other crate to that.
@@ -20,6 +21,7 @@ pub mod dirs;
 pub mod index;
 pub mod layout;
 pub mod level;
+pub mod process;
 pub mod record;
 pub mod redact;
 pub mod segment;
@@ -29,6 +31,11 @@ pub mod trace;
 pub mod view;
 
 use std::path::PathBuf;
+
+/// `tracing`, for [`process_span!`]: a recording crate opens a process span without naming the
+/// substrate's version itself.
+#[doc(hidden)]
+pub use tracing as __tracing;
 
 use crate::dirs::Accounted;
 use crate::level::{Level, Settings};

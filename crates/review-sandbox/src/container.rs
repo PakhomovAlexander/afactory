@@ -414,12 +414,19 @@ impl ContainerProvider {
         command.args(self.invocation(sandbox_root, program, args, environment, execution_name));
         let executed = match cancellation {
             None => run_bounded_evidenced(command, timeout, "container command"),
-            Some(flag) => review_process::run_supervised_captured_cancellable(
-                &mut command,
-                None,
-                timeout,
-                flag,
-            )
+            Some(flag) => {
+                let span = process_span(&command, "container command");
+                let captured = span.in_scope(|| {
+                    review_process::run_supervised_captured_cancellable(
+                        &mut command,
+                        None,
+                        timeout,
+                        flag,
+                    )
+                });
+                record_capture(&span, &captured);
+                captured
+            }
             .into_result()
             .map(|output| ContainerExecution {
                 output: std::process::Output {
@@ -485,7 +492,10 @@ fn run_bounded_evidenced(
     timeout: Duration,
     operation: &str,
 ) -> Result<ContainerExecution, std::io::Error> {
-    run_supervised(&mut command, None, timeout)
+    let span = process_span(&command, operation);
+    let output = span.in_scope(|| run_supervised(&mut command, None, timeout));
+    record_output(&span, &output);
+    output
         .map(|output| ContainerExecution {
             output: std::process::Output {
                 status: output.status,
@@ -504,6 +514,111 @@ fn run_bounded_evidenced(
             ),
             error => std::io::Error::other(format!("{operation}: {error}")),
         })
+}
+
+/// The `af.process` span of one container-runtime process (telemetry design §7.2): the runtime
+/// program only, never its arguments, and what the process was for.
+fn process_span(command: &std::process::Command, operation: &str) -> tracing::Span {
+    if !review_telemetry::process::in_run() {
+        return tracing::Span::none();
+    }
+    let program = Path::new(command.get_program())
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    review_telemetry::process_span!(
+        "af.process",
+        process.command = program.as_deref(),
+        af.process.kind = operation,
+    )
+}
+
+fn resource_use(rusage: review_process::Rusage) -> review_telemetry::process::ResourceUse {
+    review_telemetry::process::ResourceUse {
+        user_ms: rusage.user_ms,
+        system_ms: rusage.system_ms,
+        max_rss_bytes: rusage.max_rss_bytes,
+    }
+}
+
+/// End a container process's span from its capture: `ok` when it exited 0.
+fn record_capture(span: &tracing::Span, captured: &review_process::SupervisedCapture) {
+    if span.is_disabled() {
+        return;
+    }
+    let mut facts = review_telemetry::process::ProcessFacts {
+        pid: captured.pid,
+        rusage: captured.rusage.map(resource_use),
+        stdout_bytes: Some(captured.stdout.len() as u64),
+        stderr_bytes: Some(captured.stderr.len() as u64),
+        stderr_held: captured.stderr_held,
+        ..Default::default()
+    };
+    if let Ok(status) = &captured.status {
+        facts = facts.with_status(status);
+    }
+    finish_process(span, &facts, captured.status.as_ref().map(|status| *status));
+}
+
+/// End a container process's span from its bounded run.
+fn record_output(
+    span: &tracing::Span,
+    output: &Result<review_process::SupervisedOutput, SupervisedError>,
+) {
+    if span.is_disabled() {
+        return;
+    }
+    let facts = match output {
+        Ok(output) => review_telemetry::process::ProcessFacts {
+            pid: output.pid,
+            rusage: output.rusage.map(resource_use),
+            stdout_bytes: Some(output.stdout.len() as u64),
+            stderr_bytes: Some(output.stderr.len() as u64),
+            stderr_held: output.stderr_held,
+            ..Default::default()
+        }
+        .with_status(&output.status),
+        Err(SupervisedError::TimedOut {
+            stdout,
+            stderr,
+            pid,
+            rusage,
+        }) => review_telemetry::process::ProcessFacts {
+            pid: *pid,
+            rusage: rusage.map(resource_use),
+            stdout_bytes: Some(stdout.len() as u64),
+            stderr_bytes: Some(stderr.len() as u64),
+            ..Default::default()
+        },
+        Err(_) => review_telemetry::process::ProcessFacts::default(),
+    };
+    finish_process(span, &facts, output.as_ref().map(|output| output.status));
+}
+
+fn finish_process(
+    span: &tracing::Span,
+    facts: &review_telemetry::process::ProcessFacts,
+    status: Result<std::process::ExitStatus, &SupervisedError>,
+) {
+    let failure = match status {
+        Ok(status) if status.success() => None,
+        Ok(_) => Some(("failed", "the runtime exited unsuccessfully".to_string())),
+        Err(SupervisedError::TimedOut { .. }) => {
+            Some(("timed_out", "the runtime exceeded its deadline".to_string()))
+        }
+        Err(SupervisedError::Cancelled) => Some(("refused", "cancelled".to_string())),
+        Err(SupervisedError::Spawn(_)) => Some((
+            "unavailable",
+            "the runtime could not be started".to_string(),
+        )),
+        Err(error) => Some(("failed", error.to_string())),
+    };
+    review_telemetry::process::finish(
+        span,
+        facts,
+        failure
+            .as_ref()
+            .map(|(class, reason)| (*class, reason.as_str())),
+    );
 }
 
 fn which(name: &str) -> Result<PathBuf, ()> {

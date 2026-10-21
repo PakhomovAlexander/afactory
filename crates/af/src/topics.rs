@@ -219,6 +219,9 @@ unwritable directory, a full segment) is one problem and the run continues.
   af telemetry runs             every run: executions, active, execution and elapsed time,
                                 outcome, charge, failures, coverage, retained history
   af telemetry show RUN         the span tree: start offset, total and self time, status
+  af telemetry config RUN       an execution's configuration record: version, configuration
+                                with origins (an environment value is <env>), plan, bindings,
+                                Providers, harness versions, host, AF_*/OTEL_* names
   af telemetry tail [RUN]       follow the live segments: every span end and event as written
   af telemetry gc [--apply]     what the Storage Budget's sweep evicts from the telemetry kind
 
@@ -236,6 +239,18 @@ overlap: active time is their union, execution time their sum, elapsed time firs
 end. Its history is
 `prefix:k` or `partial`, never complete, and its open executions are named beside the sealed
 ones (retained executions 1–1, open: 2).
+
+Below the run every phase is a span of the crate that owns it (the catalogue is in
+docs/architecture.md): af.admission, af.context.compose, af.harness, af.output.parse and
+af.usage.account under an Attempt; af.gate and its af.check spans, af.warm.restore and
+af.warm.save under a check node; af.snapshot.capture, af.cas.materialize, af.store.append,
+af.store.read, af.git, af.remote_check and af.process wherever the run does them. Every process
+span carries process.pid, process.command (the program only), its exit, its stream sizes and
+af.rusage.user_ms, af.rusage.system_ms and af.rusage.max_rss_bytes, each absent when the
+platform did not deliver it. An af.check carries af.check.status and af.check.fingerprint, the
+comparability key af/check-fingerprint@1 (or `unknown`). A kernel measurement is a run of its
+own (af.run.kind = measure, af.measurement.id), its repetitions child spans. At spans and above
+each execution's run starts with its configuration record.
 
 The [telemetry] table, machine layers only (built-in, system, user, AF_TELEMETRY__<KEY>); a
 repository's .af/af.toml cannot set it, and a value outside its bound refuses the load naming

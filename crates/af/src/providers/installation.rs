@@ -178,7 +178,42 @@ pub(super) enum VersionCheck {
     Undetermined,
 }
 
+/// Every harness version a `--version` check reported in this process, by program name, for
+/// the telemetry configuration record (design §7.4). Nothing the kernel decides reads it.
+static PROBED: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The harness versions this process's preflight probed: program name and the first line it
+/// reported.
+pub(crate) fn probed_versions() -> Vec<(String, String)> {
+    PROBED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .map(|(program, version)| (program.clone(), version.clone()))
+        .collect()
+}
+
 pub(super) fn version_check(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    attempt_deadline: Option<Instant>,
+) -> VersionCheck {
+    let checked = version_run(program, spec, probe_path, cancelled, attempt_deadline);
+    if let VersionCheck::Reported(Some(line)) = &checked
+        && let Some(name) = program.file_name()
+    {
+        PROBED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(name.to_string_lossy().into_owned(), line.clone());
+    }
+    checked
+}
+
+fn version_run(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,

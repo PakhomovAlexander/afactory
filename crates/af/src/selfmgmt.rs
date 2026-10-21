@@ -2566,23 +2566,37 @@ struct VersionView {
     receipt: Option<PathBuf>,
 }
 
-pub(crate) fn print_version(json: bool) -> Result<(), String> {
-    if !json {
-        println!("af {VERSION}");
-        return Ok(());
-    }
+fn version_view() -> VersionView {
     let receipt = paths().ok().and_then(|paths| {
         running_receipt(&paths)
             .map(|receipt| version_dir(&paths, &receipt.version).join("receipt.toml"))
     });
-    let view = VersionView {
+    VersionView {
         version: VERSION,
         commit: COMMIT,
         target: TARGET,
         release_key: release_key_source(),
         dispatched_from: std::env::var(DISPATCHED_ENV).ok(),
         receipt,
-    };
+    }
+}
+
+/// What `af --version --json` prints, for the telemetry configuration record; the dispatcher
+/// variable's value is an environment value and never leaves here (`<env>` stands for it).
+pub(crate) fn version_document() -> serde_json::Value {
+    let mut view = version_view();
+    if view.dispatched_from.is_some() {
+        view.dispatched_from = Some("<env>".into());
+    }
+    serde_json::to_value(view).unwrap_or(serde_json::Value::Null)
+}
+
+pub(crate) fn print_version(json: bool) -> Result<(), String> {
+    if !json {
+        println!("af {VERSION}");
+        return Ok(());
+    }
+    let view = version_view();
     let mut stdout = std::io::stdout().lock();
     serde_json::to_writer_pretty(&mut stdout, &view).map_err(|error| error.to_string())?;
     writeln!(stdout).map_err(|error| error.to_string())

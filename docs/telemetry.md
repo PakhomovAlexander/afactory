@@ -70,8 +70,115 @@ empty `.jsonl` or renames a corrupt one, and removed by the sweep after an hour.
 `af: telemetry problem (…), the command is unaffected: …`, recorded in the segment when it can
 be.
 
-The supervised processes, the harness streams, the configuration record, the Store mirror and
-the content blobs arrive with later packages of the design.
+Every phase below the run, the supervised processes and the configuration record are recorded
+too ([below](#phases-processes-and-the-configuration-record)); the harness streams, the Store
+mirror and the content blobs arrive with later packages of the design.
+
+## Phases, processes and the configuration record
+
+Below the run every phase of the design's catalogue is a span of the crate that owns it, each
+with its total and self time in `af telemetry show`; the catalogue, one row per span with its
+kind, parent and attributes, is in [`architecture.md`](architecture.md#telemetry-span-catalogue),
+and a test fails when a source emits a name it does not list. `af.turn`, `af.tool` and `af.sink`
+come later.
+
+| Span | Under | What it carries |
+| --- | --- | --- |
+| `af.admission` | `af.attempt` | the reservation (`af.admission.reserved_tokens`), the Provider, `af.admission.wait_ms`; `refused` below the free-disk floor |
+| `af.context.compose` | `af.attempt` | the composed Worker input: `af.context.manifest` (its digest), `af.context.bytes`, `af.context.estimated_tokens`, `af.context.layers` — never its bytes |
+| `af.harness` | `af.attempt` | the model process: `gen_ai.operation.name = invoke_agent`, `gen_ai.provider.name`, `gen_ai.request.model`, `af.native = unavailable` |
+| `af.output.parse` | `af.attempt` | `af.output.contract`, `af.output.valid`, the refusal (`invalid_output_contract`) |
+| `af.usage.account` | `af.attempt` | `af.usage.observation` (`complete`, `incomplete`, `unknown`), `af.usage.unknown_cause`, the charge |
+| `af.gate` | a check node's Attempt, the review Gate | `af.gate.checks`, `af.gate.decision`, `af.check.warm` |
+| `af.check` | `af.gate` | the check process: `af.check.name`, `af.check.status` (`passed`, `failed`, `not_run`), `af.check.fingerprint`, `af.check.warm` (`hit`, `miss`, `none`) |
+| `af.warm.restore`, `af.warm.save` | a check node's Attempt | the Warm Check Cache: `af.warm.key`, `af.warm.result`, `af.warm.kinds`, `af.warm.bytes` |
+| `af.snapshot.capture` | any span of a run | `af.snapshot` (the digest), `af.snapshot.files`, `af.snapshot.bytes` |
+| `af.cas.materialize` | any span of a run | `af.cas.op`, `af.cas.files`, `af.cas.bytes` |
+| `af.store.append`, `af.store.read` | any span of a run | `af.store.op`, `af.store.events`, `af.store.bytes` |
+| `af.git` | any span of a run | the git process, `af.git.op` (its subcommand); `ok` whenever git exited, the code in `process.exit_code` |
+| `af.remote_check` | `af.gate` | the gate branch, the checks, the gate pull request, the outcome |
+| `af.process` | any span of a run | any other supervised process (a container runtime, a toolchain probe, `gh`), `af.process.kind` |
+
+A span that does not name the run takes `af.store_id`, `af.run_id`, `af.run.kind` and
+`af.execution_id` from its parent, and a phase that belongs to a run is recorded only inside one:
+a Store read or a git process before a run opens, or on a thread no span was handed to, records
+nothing.
+
+**Processes and their resource use.** Every process span — `af.harness`, `af.check`, `af.git`,
+`af.process` — carries `process.pid`, `process.command` (the program, never its arguments),
+`process.exit_code` or `process.signal`, `af.stdout_bytes`, `af.stderr_bytes`, `af.stderr_held`,
+and `af.rusage.user_ms`, `af.rusage.system_ms` and `af.rusage.max_rss_bytes`. The supervisor
+(`review-process`, which links no telemetry) carries them through every result it returns, a
+timed-out, killed or cancelled process included; the crates that receive the result record the
+span. The workspace forbids `unsafe` code and no dependency offers a safe `wait4(2)`, so the
+figures come from `getrusage(RUSAGE_CHILDREN)`: every reap the supervisor performs runs under one
+lock between two readings of the process's children totals, and the difference is the reaped
+child's own (its CPU time, with that of the descendants it waited for, as `wait4` reports it).
+Those totals keep only the largest peak of any reaped child, so a process's peak is recorded
+when its reap raised that maximum and is absent otherwise. A figure the platform did not deliver
+is absent, never zero; a process that never started records no process id and no `af.rusage.*`.
+
+**The check fingerprint.** `af.check.fingerprint` is `sha256:` and the 64 hex digits of SHA-256
+over the canonical JSON of an `af/check-fingerprint@1` document
+([`schemas/check-fingerprint-v1.json`](../schemas/check-fingerprint-v1.json)): the declared check
+(program, resolved arguments, timeout, working-directory policy), the executor (platform triple,
+the digest of the resolved program's bytes, the toolchain snapshot id when one is declared), a
+digest of the effective environment — every name and value the check ran with, after the runtime
+paths the check node introduced (the sandbox root, its runtime directory with `HOME`, `TMPDIR`
+and a cold `CARGO_TARGET_DIR`, `RUSTUP_HOME`, the warm cache directories) became placeholders,
+hashed and never retained — and the Snapshot digest. Two checks declared identically on the same
+Snapshot, executor and effective environment share one fingerprint; a changed argument or a
+changed `PATH` value gives another. It is `unknown` when a part is unavailable: a program that
+does not resolve, a toolchain declared without its id, a check through a container provider, or
+a caller that did not name the runtime paths it introduced.
+
+**Measurements.** A kernel measurement (ADR-0132) is a run of its own: `af.run` with
+`af.run.kind = measure` under the measure Attempt, its run id derived from the Task's run, the
+Attempt and the measure, `af.measure`, and at its end `af.measurement.id`, the
+`af/Measurement@1` it recorded. Each repetition is an `af.measurement.repetition` span with the
+repetition's `af.check` below it. Nothing is added to the Measurement the Store records.
+
+**The configuration record.** At `spans` and above each execution's run starts with its
+configuration record, `af/TelemetryConfig@1`: metadata only, written as one or more `config`
+parts of at most 16 KiB each (`execution_id`, `part`, `parts`, `complete`), its rows in one fixed
+order, each row a key, a value, a `layer` and an `origin`:
+
+1. `af --version --json`, one row per member (`version`); the dispatcher's variable, when set,
+   is `<env>`.
+2. The effective configuration, one row per key with the layer it came from and its file
+   (home-relative) and line; a value whose origin is the environment is `<env>`, with the
+   variable's name as its origin — never the value.
+3. The policy revision, the pipeline's name, digest and nodes, the digests of `.af/af.toml` and
+   `.af/af.lock`, and the Task's id, kind and pipeline (`policy`).
+4. The execution bindings: node, Worker, Provider, model and effort (`binding`).
+5. The Provider registry entries by name and kind, the auth directory only as its grant
+   placeholder (`provider`); `unknown` with the reason when the registry cannot be read.
+6. The harness versions this process's preflight probed, and the Claude Code managed-settings
+   digests, empty until the harness-native package reads them (`harness`).
+7. The host (`host`).
+8. The names, never the values, of the `AF_*` and `OTEL_*` variables present (`variable`).
+
+Every row passes the credential rules (a secret-named key withholds its value); a row keyed by
+an identity position (`af.policy_rev`, `af.pipeline.digest`, `af.af_toml.digest`,
+`af.af_lock.digest`) keeps a value that is exactly a digest. At `content` the record names the
+texts of the pipeline, the Task file and `.af/af.toml` by the event `af.config.text` with their
+digest and size; their bytes are blobs once the content level stores them.
+
+## `af telemetry config`
+
+```text
+af telemetry config RUN [--store ID] [--execution ID] [--json] [--dir PATH]
+```
+
+Assembles one execution's configuration record from its parts and prints its rows in order —
+`layer  key = value   # origin` — then the texts it names; the latest execution by default (the
+greatest committed ordinal), `--execution ID` for another. It says `complete` with the number of
+parts, `incomplete` naming the parts that are missing (what is left is never presented as the
+whole record), or `absent` for an execution recorded below `spans`. When two Stores record the
+run id it lists both and asks for `--store ID`. `--json` prints one `af/TelemetryConfig@1`
+document ([`schemas/telemetry-config-v1.json`](../schemas/telemetry-config-v1.json)). Exit
+codes: 0; 1 when the directory cannot be read or the run or execution is unknown; 2 for a wrong
+command line, a run two Stores share without `--store`, or a refused `[telemetry]` key.
 
 ## Executions and retained history
 
@@ -541,8 +648,7 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
 
 ## Not yet captured
 
-Supervised processes and their resource use, the configuration record, the harness streams
-(turns, tool calls, reasoning), the Store mirror and Finding summaries, content blobs, the
-harnesses' own OpenTelemetry export, and the commands `turns`, `tools`, `context`, `reasoning`,
-`config`, `ledger`, the analytics, `search`, `sql` and `export` all belong to later packages of
-the design note.
+The harness streams (turns, tool calls, reasoning), the Store mirror and Finding summaries,
+content blobs, the harnesses' own OpenTelemetry export, the OTLP sink, and the commands `turns`,
+`tools`, `context`, `reasoning`, `ledger`, the analytics, `search`, `sql` and `export` all
+belong to later packages of the design note.

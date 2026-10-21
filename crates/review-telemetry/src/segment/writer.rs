@@ -1789,7 +1789,9 @@ impl Writer {
     }
 
     /// An execution's configuration snapshot, split into as many `config` parts as the record
-    /// bound needs, in the rows' order. Each row is judged by its original key first: a key the
+    /// bound needs, in the rows' order. A row whose key is an identity position
+    /// ([`record::is_identity_position`]) keeps a value that is exactly a kernel identity. Each
+    /// row is judged by its original key first: a key the
     /// credential rule judges a credential (a token prefix, a JSON Web Token, a long secret
     /// run, an assignment) or the secret-name rule matches (`key`, `token`, `secret`,
     /// `password`, …) withholds the whole pair: the value and the origin become the withheld
@@ -1819,8 +1821,17 @@ impl Writer {
                     let withheld = row.origin.map(|_| redact::WITHHELD.to_string());
                     (key, redact::WITHHELD.to_string(), withheld)
                 } else {
+                    // A row keyed by an identity position keeps a value that is exactly a kernel
+                    // identity (a policy revision, a pipeline or file digest), as an attribute
+                    // there does; every other value is judged whole.
+                    let value = if record::is_identity_position(&row.key)
+                        && redact::is_kernel_identity(&row.value)
+                    {
+                        row.value
+                    } else {
+                        judge(&row.value)
+                    };
                     let key = judge(&row.key);
-                    let value = judge(&row.value);
                     let origin = row.origin.map(|origin| judge(&origin));
                     (key, value, origin)
                 };

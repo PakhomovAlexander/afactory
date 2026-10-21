@@ -432,6 +432,8 @@ fn version(
         .current_dir(workdir)
         .env_clear()
         .envs(environment.iter().map(|(key, value)| (key, value)));
+    let span = crate::telemetry::process(program, "toolchain_probe");
+    let _probing = span.enter();
     let captured = match cancellation {
         Some(flag) => review_process::run_supervised_captured_cancellable_with_policy(
             &mut command,
@@ -447,6 +449,7 @@ fn version(
             review_process::ExitPolicy::KillProcessGroup,
         ),
     };
+    crate::telemetry::process_capture(&span, &captured);
     match captured.status {
         Ok(status) if status.success() && !captured.stdout.is_empty() => Ok(captured.stdout),
         Ok(status) => Err(format!("{program} -vV exited with {status}")),
@@ -466,6 +469,75 @@ fn key_digest(domain: &str, fields: &[&[u8]]) -> String {
 
 fn hex(digest: &str) -> String {
     digest.strip_prefix("sha256:").unwrap_or(digest).to_string()
+}
+
+/// Whether a check ran warm, for `af.check.warm`: `none` without a warm layer, `hit` when a
+/// bound warm directory held bytes for it, `miss` otherwise.
+pub(crate) fn warm_result(declared: bool, prepared: Option<&PreparedCheck>) -> &'static str {
+    if !declared {
+        return "none";
+    }
+    let hit = prepared.is_some_and(|prepared| {
+        prepared.observations.iter().any(|observation| {
+            observation.eligible
+                && observation.discarded.is_none()
+                && observation.bytes_available > 0
+        })
+    });
+    if hit { "hit" } else { "miss" }
+}
+
+/// End an `af.warm.restore` span: the toolchain key, whether the check got a warm directory,
+/// how many kinds it declared and the bytes available to it.
+pub(crate) fn record_restore(span: &tracing::Span, prepared: &Result<PreparedCheck, String>) {
+    match prepared {
+        Ok(prepared) => crate::telemetry::warm_end(
+            span,
+            prepared
+                .observations
+                .iter()
+                .find_map(|observation| observation.toolchain_id.as_deref()),
+            warm_result(true, Some(prepared)) == "hit",
+            prepared.observations.len(),
+            prepared
+                .observations
+                .iter()
+                .filter(|observation| observation.eligible)
+                .map(|observation| observation.bytes_available)
+                .fold(0_u64, u64::saturating_add),
+            prepared.refusal.as_deref(),
+        ),
+        Err(reason) => crate::telemetry::warm_end(span, None, false, 0, 0, Some(reason)),
+    }
+}
+
+/// End an `af.warm.save` span: what the check left in its warm directories, and the bytes the
+/// bounds evicted after it.
+pub(crate) fn record_save(
+    span: &tracing::Span,
+    observations: &[Observation],
+    saved: &Result<Vec<(String, u64)>, String>,
+) {
+    let key = observations
+        .iter()
+        .find_map(|observation| observation.toolchain_id.as_deref());
+    let hit = observations.iter().any(|observation| {
+        observation.eligible && observation.discarded.is_none() && observation.bytes_available > 0
+    });
+    match saved {
+        Ok(evicted) => crate::telemetry::warm_end(
+            span,
+            key,
+            hit,
+            observations.len(),
+            evicted
+                .iter()
+                .map(|(_, bytes)| *bytes)
+                .fold(0_u64, u64::saturating_add),
+            None,
+        ),
+        Err(reason) => crate::telemetry::warm_end(span, key, hit, 0, 0, Some(reason)),
+    }
 }
 
 /// One measured observation before it receives its content identity.
