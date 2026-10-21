@@ -1387,6 +1387,7 @@ impl EventStore {
         cas: &Cas,
         task_id: &str,
     ) -> Result<Option<TaskProjection>, StoreError> {
+        let _span = review_core::perf_trace::span(review_core::perf_trace::Phase::TaskProjection);
         match self.task_projection_uncollected(cas, task_id) {
             // A sweep may have removed this Task's artifacts between the tombstone check and
             // the reads: a Task collected meanwhile is reported as collected, never as corrupt
@@ -2162,6 +2163,8 @@ impl EventStore {
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
     ) -> Result<ExecutionPlanV1, StoreError> {
+        let _span =
+            review_core::perf_trace::span(review_core::perf_trace::Phase::AuthorityPlanCheck);
         self.checked_task_recording(cas, lease, authority)
             .map(|(_, plan)| plan)
     }

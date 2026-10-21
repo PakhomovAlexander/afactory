@@ -222,6 +222,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         authority: &'host dyn TaskAuthority,
         host: &'host dyn TaskOperatorHost,
     ) -> Result<Self, String> {
+        let _span = review_core::perf_trace::span(review_core::perf_trace::Phase::TaskRuntimeNew);
         Self::with_store(SharedEventStore::new(store), cas, lease, authority, host)
     }
 

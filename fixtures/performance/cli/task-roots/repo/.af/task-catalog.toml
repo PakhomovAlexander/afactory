@@ -1,0 +1,29 @@
+# The fixture's catalog. Each pin is the reviewer-package@1 digest of the package beside it,
+# which perflab.clicases.package_digest computes by the independent reference encoding; a
+# laboratory test requires every pin to equal it.
+schema = "af.task-catalog/2"
+code_policy = ".af/code-policy.toml"
+
+[packages."perf/accept"]
+version = "1.0.0"
+digest = "sha256:a72b9e5186f080ea36b5467b87abde90abf010b654351da146cc6a01aecff557"
+path = ".af/task-packages/perf/accept"
+
+[packages."perf/check-true"]
+version = "1.0.0"
+digest = "sha256:2d8c45c6dcac743f72d3d4a8789bc46515a2fc6536bfff3af8a9cb3307493e7c"
+path = ".af/task-packages/perf/check-true"
+
+[packages."perf/verification-kind"]
+version = "1.0.0"
+digest = "sha256:075fc229c61ba9a615906fa3733a3baadcd95769494e8491306de2994b024b03"
+path = ".af/task-packages/perf/verification-kind"
+
+[kinds]
+verification = "perf/verification-kind"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false

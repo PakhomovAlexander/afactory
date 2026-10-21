@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 mod capture;
 mod control;
 mod drain;
+pub mod json_stream;
 mod live;
+pub mod sample;
 mod spawn;
 
 use capture::run_supervised_inner;

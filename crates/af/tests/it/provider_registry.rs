@@ -115,7 +115,7 @@ fn setup_in_terminal(
         ),
     ];
     env.extend_from_slice(extra_env);
-    in_terminal(OsStr::new(env!("CARGO_BIN_EXE_af")), &arguments, &env)
+    in_terminal(crate::common::af_binary().as_os_str(), &arguments, &env)
 }
 
 #[test]
@@ -489,7 +489,7 @@ exit 64
                 "umask 0777; PATH=\"$3\" exec \"$1\" provider setup codex-main --kind codex --auth-dir \"$2\" --login",
             ),
             OsStr::new("sh"),
-            OsStr::new(env!("CARGO_BIN_EXE_af")),
+            crate::common::af_binary().as_os_str(),
             auth.as_os_str(),
             bin.as_os_str(),
         ],
@@ -903,7 +903,7 @@ fn add_creates_private_registry_state_even_with_a_wide_umask() {
         );
         let output = Command::new("/bin/sh")
             .args(["-c", &script, "sh"])
-            .arg(env!("CARGO_BIN_EXE_af"))
+            .arg(crate::common::af_binary())
             .arg(&auth)
             .env("HOME", root.path())
             .env("XDG_CONFIG_HOME", root.path().join("config"))
@@ -920,7 +920,7 @@ fn add_creates_private_registry_state_even_with_a_wide_umask() {
         );
         let second = Command::new("/bin/sh")
             .args(["-c", &second_script, "sh"])
-            .arg(env!("CARGO_BIN_EXE_af"))
+            .arg(crate::common::af_binary())
             .arg(&second_auth)
             .env("HOME", root.path())
             .env("XDG_CONFIG_HOME", root.path().join("config"))

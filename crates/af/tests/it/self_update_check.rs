@@ -24,7 +24,7 @@ use std::process::Output;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common;
-use common::{AF, Sandbox, Signer, TARGET, VERSION, err, out, write};
+use common::{Sandbox, Signer, TARGET, VERSION, af_binary, err, out, write};
 
 /// A release newer than the binary under test, as releases advance.
 fn newer_release() -> String {
@@ -165,7 +165,7 @@ fn on_terminal(sandbox: &Sandbox, args: &[&str]) -> (u32, String, String) {
 
 /// [`on_terminal`] in the directory `cwd`.
 fn on_terminal_in(sandbox: &Sandbox, cwd: &Path, args: &[&str]) -> (u32, String, String) {
-    program_on_terminal(sandbox, cwd, Path::new(AF), args)
+    program_on_terminal(sandbox, cwd, af_binary(), args)
 }
 
 /// [`on_terminal`] for `program` with `args` in the directory `cwd`.
@@ -227,7 +227,7 @@ impl OnTerminal {
         command.arg(program);
         command.args(args);
         command.cwd(cwd);
-        let template = sandbox.command(Path::new(AF));
+        let template = sandbox.command(af_binary());
         for (name, value) in template.get_envs() {
             match value {
                 Some(value) => command.env(name, value),
@@ -405,7 +405,7 @@ fn the_check_is_suppressed_offline_under_ci_disabled_never_and_for_exempt_comman
     sandbox.publish(&newer, false);
     let home = sandbox.path("home");
     let storage = |env: &[(&str, &str)]| {
-        let mut command = sandbox.command(Path::new(AF));
+        let mut command = sandbox.command(af_binary());
         command
             .args(["storage", "--json"])
             .current_dir(&home)
@@ -432,7 +432,7 @@ fn the_check_is_suppressed_offline_under_ci_disabled_never_and_for_exempt_comman
         &["config", "paths"],
         &["completions", "bash"],
     ] {
-        headless(&sandbox, Path::new(AF), &home, args);
+        headless(&sandbox, af_binary(), &home, args);
     }
     assert_eq!(scheduled(&sandbox), 0, "nothing above may check");
     assert!(!cache_file(&sandbox).exists());
@@ -479,7 +479,7 @@ fn a_pinned_command_is_checked_once_by_the_af_that_dispatches_it() {
     let lock = Sandbox::lock("0.8.1", Some(&digest));
     let repo = sandbox.pinned_repo("repo", &lock);
 
-    let dispatched = headless(&sandbox, Path::new(AF), &repo, &["storage", "--json"]);
+    let dispatched = headless(&sandbox, af_binary(), &repo, &["storage", "--json"]);
     assert!(dispatched.status.success(), "{}", err(&dispatched));
     let text = out(&dispatched);
     assert!(text.contains("fake af 0.8.1 storage --json"), "{text}");
@@ -494,14 +494,14 @@ fn a_pinned_command_is_checked_once_by_the_af_that_dispatches_it() {
     assert!(sandbox.default_target().is_none());
 
     // Fresh now: the next dispatch runs without a check.
-    let again = headless(&sandbox, Path::new(AF), &repo, &["storage", "--json"]);
+    let again = headless(&sandbox, af_binary(), &repo, &["storage", "--json"]);
     assert!(again.status.success(), "{}", err(&again));
     assert_eq!(scheduled(&sandbox), 1);
 
     // A due check is not scheduled twice: an af that was dispatched to leaves it to the af that
     // dispatched it.
     std::fs::remove_file(cache_file(&sandbox)).unwrap();
-    let mut command = sandbox.command(Path::new(AF));
+    let mut command = sandbox.command(af_binary());
     let output = command
         .args(["storage", "--json"])
         .current_dir(sandbox.path("home"))
@@ -524,7 +524,7 @@ fn a_pinned_release_never_runs_while_the_pin_that_keeps_it_cannot_be_recorded() 
     fresh_cache(&sandbox, VERSION);
     let state = sandbox.path("state/af/self.toml");
     let versions_lock = sandbox.versions().join(".lock");
-    let dispatch = || headless(&sandbox, Path::new(AF), &repo, &["storage", "--json"]);
+    let dispatch = || headless(&sandbox, af_binary(), &repo, &["storage", "--json"]);
 
     // Installed on demand, pinned, and run.
     let first = dispatch();
@@ -600,7 +600,7 @@ fn an_unavailable_release_source_is_asked_once_per_check_every_and_keeps_the_las
     );
     let home = sandbox.path("home");
 
-    let first = headless(&sandbox, Path::new(AF), &home, &["storage", "--json"]);
+    let first = headless(&sandbox, af_binary(), &home, &["storage", "--json"]);
     storage_document(&first);
     assert!(err(&first).is_empty(), "{}", err(&first));
     assert_eq!(scheduled(&sandbox), 1, "a stale cache is due a check");
@@ -616,7 +616,7 @@ fn an_unavailable_release_source_is_asked_once_per_check_every_and_keeps_the_las
 
     // Until `check_every` passes, the outage costs no further query.
     for _ in 0..2 {
-        let again = headless(&sandbox, Path::new(AF), &home, &["storage", "--json"]);
+        let again = headless(&sandbox, af_binary(), &home, &["storage", "--json"]);
         storage_document(&again);
         assert!(err(&again).is_empty(), "{}", err(&again));
     }
@@ -740,7 +740,7 @@ fn a_delayed_check_leaves_when_an_earlier_one_has_answered() {
     // until the first has released the check lock.
     let refresh = || {
         sandbox
-            .refresh_check(Path::new(AF))
+            .refresh_check(af_binary())
             .current_dir(sandbox.path("home"))
             .output()
             .unwrap()
@@ -822,7 +822,7 @@ fn a_pinned_command_never_waits_for_a_background_install() {
 
     // Meanwhile a project pinned to the installed release, with its bytes, runs to the end: it
     // records its pin under the versions lock, which the stalled install does not hold.
-    let digest = common::sha256_hex(&std::fs::read(AF).unwrap());
+    let digest = common::sha256_hex(&std::fs::read(af_binary()).unwrap());
     let lock = Sandbox::lock(VERSION, Some(&digest));
     let repo = sandbox.pinned_repo("repo", &lock);
     let pinned = headless(&sandbox, &real, &repo, &["storage", "--json"]);
@@ -1049,7 +1049,7 @@ fn a_pinned_command_on_a_terminal_shows_the_cached_notice_before_it_dispatches()
     assert!(stdout.contains("fake af 0.8.1 storage --json"), "{stdout}");
     assert!(!stdout.contains("is available"), "{stdout}");
     assert!(!shown.contains("is available"), "{shown}");
-    let piped = headless(&sandbox, Path::new(AF), &repo, &["storage"]);
+    let piped = headless(&sandbox, af_binary(), &repo, &["storage"]);
     assert!(piped.status.success(), "{}", err(&piped));
     assert!(!err(&piped).contains("is available"), "{}", err(&piped));
     assert!(!out(&piped).contains("is available"), "{}", out(&piped));
@@ -1092,7 +1092,7 @@ fn an_interrupted_installs_staging_counts_until_the_next_install_recovers_it() {
     let mut running = sleeper();
     let live = staging(running.id());
 
-    let storage = headless(&sandbox, Path::new(AF), &home, &["storage", "--json"]);
+    let storage = headless(&sandbox, af_binary(), &home, &["storage", "--json"]);
     let document = storage_document(&storage);
     let entry = |dir: &Path| {
         let name = dir.file_name().unwrap().to_str().unwrap().to_string();
@@ -1115,12 +1115,7 @@ fn an_interrupted_installs_staging_counts_until_the_next_install_recovers_it() {
     assert_eq!(live_entry["in_use"], "staged by a running installer");
 
     // The next install recovers what the killed one left, and only that.
-    let install = headless(
-        &sandbox,
-        Path::new(AF),
-        &home,
-        &["self", "install", "0.8.1"],
-    );
+    let install = headless(&sandbox, af_binary(), &home, &["self", "install", "0.8.1"]);
     assert!(install.status.success(), "{}", err(&install));
     assert!(sandbox.versions().join("0.8.1/af").is_file());
     assert!(!abandoned.exists(), "the abandoned staging is recovered");
@@ -1251,7 +1246,7 @@ fn an_uninstall_refuses_while_a_background_install_runs_and_a_later_check_recrea
     // A check scheduled before the uninstall that starts only now finds no check lock to take,
     // and recreates nothing.
     let late = sandbox
-        .command(Path::new(AF))
+        .command(af_binary())
         .args(["self", "refresh-check"])
         .current_dir(&home)
         .output()
@@ -1275,7 +1270,7 @@ fn a_check_whose_state_cannot_be_written_is_still_throttled_by_check_every() {
     let state = sandbox.path("state/af/self.toml");
     std::fs::create_dir_all(&state).unwrap();
 
-    let first = headless(&sandbox, Path::new(AF), &home, &["storage", "--json"]);
+    let first = headless(&sandbox, af_binary(), &home, &["storage", "--json"]);
     storage_document(&first);
     assert!(err(&first).is_empty(), "{}", err(&first));
     assert_eq!(scheduled(&sandbox), 1, "a missing cache is due a check");
@@ -1288,7 +1283,7 @@ fn a_check_whose_state_cannot_be_written_is_still_throttled_by_check_every() {
 
     // Until `check_every` passes, no further command asks the release source.
     for _ in 0..2 {
-        let again = headless(&sandbox, Path::new(AF), &home, &["storage", "--json"]);
+        let again = headless(&sandbox, af_binary(), &home, &["storage", "--json"]);
         storage_document(&again);
         assert!(err(&again).is_empty(), "{}", err(&again));
     }
@@ -1436,7 +1431,7 @@ fn an_update_notice_whose_clearing_fails_stays_unshown_on_a_terminal_until_it_ca
                 OsStr::new("mkdir \"$1.tmp.$$\" && shift && exec \"$@\""),
                 OsStr::new("sh"),
                 stem.as_os_str(),
-                OsStr::new(AF),
+                af_binary().as_os_str(),
                 OsStr::new("storage"),
             ],
         )

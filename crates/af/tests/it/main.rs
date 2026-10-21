@@ -24,6 +24,7 @@ mod common_review_summaries;
 mod lock_af_version;
 mod onboard;
 mod onboarding_quickstart;
+mod perf_kernel_measure;
 mod project;
 mod project_brief;
 mod project_collect;

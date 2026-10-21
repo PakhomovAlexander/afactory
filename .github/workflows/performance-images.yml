@@ -1,0 +1,64 @@
+# Trusted infrastructure provisioning only. No pull request or product build runs here.
+name: Performance images
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: performance-images
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe: [gnu, musl]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and verify the pinned toolchain
+        env:
+          RECIPE: ${{ matrix.recipe }}
+        run: |
+          set -eu
+          image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')-perf-$RECIPE:$GITHUB_SHA"
+          docker build --platform linux/amd64 --target "$RECIPE" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            -t "$image" scripts/performance/images
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = linux/amd64
+          docker run --rm --network none "$image" rustc --version | grep '^rustc 1.88.0 '
+          if [ "$RECIPE" = musl ]; then
+            test "$(docker run --rm --network none "$image" zig version)" = 0.15.2
+            docker run --rm --network none "$image" cargo-zigbuild --version | grep '0.23.4'
+          fi
+          echo "PERF_IMAGE=$image" >> "$GITHUB_ENV"
+      - name: Publish the verified image
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          export DOCKER_CONFIG="$RUNNER_TEMP/perf-publish-auth"
+          trap 'docker logout ghcr.io >/dev/null 2>&1; rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$PERF_IMAGE"
+          docker pull "$PERF_IMAGE"
+          docker image inspect --format '{{index .RepoDigests 0}}' "$PERF_IMAGE" > "$RUNNER_TEMP/image-reference.txt"
+          cat "$RUNNER_TEMP/image-reference.txt" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify anonymous access for credential-free benchmarks
+        run: |
+          set -eu
+          mkdir "$RUNNER_TEMP/perf-anonymous"
+          DOCKER_CONFIG="$RUNNER_TEMP/perf-anonymous" docker pull "$(cat "$RUNNER_TEMP/image-reference.txt")"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: perf-image-${{ matrix.recipe }}
+          path: ${{ runner.temp }}/image-reference.txt
+          if-no-files-found: error
+          retention-days: 90

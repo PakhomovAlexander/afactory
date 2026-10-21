@@ -45,6 +45,7 @@ impl std::error::Error for CanonicalError {}
 
 /// Serialize a value to RFC 8785 canonical JSON bytes.
 pub fn canonicalize(value: &Value) -> Result<Vec<u8>, CanonicalError> {
+    let _span = review_core::perf_trace::span(review_core::perf_trace::Phase::Canonicalize);
     let mut out = Vec::new();
     write_value(value, &mut out)?;
     Ok(out)
@@ -224,6 +225,7 @@ pub fn artifact_id(envelope: &review_core::ArtifactEnvelope) -> Result<String, C
 
 /// Validate both identities carried by a decoded artifact envelope.
 pub fn validate_envelope(envelope: &review_core::ArtifactEnvelope) -> Result<(), String> {
+    let _span = review_core::perf_trace::span(review_core::perf_trace::Phase::EnvelopeValidate);
     envelope.validate()?;
     let content = content_id(&envelope.payload).map_err(|error| error.to_string())?;
     if content != envelope.content_id {

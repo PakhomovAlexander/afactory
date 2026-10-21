@@ -54,3 +54,10 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   configuration a run ran under, a mirror of the Store's events, failures — with `af telemetry`
   views, OTLP and Perfetto exports, and an optional loopback receiver for the harnesses' native
   OpenTelemetry. Packages T1–T6; under review, nothing shipped.
+- [`continuous-performance.md`](continuous-performance.md) — a paired, same-host performance
+  laboratory for pull requests, nightly runs, releases and experiments: a reviewed registry,
+  frozen plans, exact `paired_median_tolerance_v2` verdicts, health sentinels, profiles,
+  archive and calibrated, advisory-first enforcement. Accepted 2026-10-19; package p1, the
+  contracts, registry, planning and verdicts, is
+  [ADR-0162](../adr/0162-freeze-performance-plans-and-judge-them-by-exact-paired-verdicts.md),
+  and p2–p8 are in flight.

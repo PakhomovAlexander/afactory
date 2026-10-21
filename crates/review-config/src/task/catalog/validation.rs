@@ -33,6 +33,15 @@ impl<'a> CapturedTaskPlanValidator<'a> {
         }
     }
 
+    /// Whether a structural validation is held for reuse. A fresh validator holds none, so its
+    /// first check of a plan is a complete recompilation.
+    pub fn holds_validated_plan(&self) -> bool {
+        self.validated
+            .lock()
+            .expect("captured Task plan validation")
+            .is_some()
+    }
+
     pub fn validate_plan(
         &self,
         cas: &Cas,

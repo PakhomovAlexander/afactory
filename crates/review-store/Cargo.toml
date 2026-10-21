@@ -27,5 +27,9 @@ reflink-copy = "0.1.30"
 # must match the log's durability grade (plain fsync), not exceed it — see cas.rs.
 nix = { version = "0.31.3", default-features = false, features = ["fs"] }
 
+[features]
+# Phase spans of canonicalization, CAS and projection for diagnostic builds only (ADR-0174).
+perf-trace = ["review-core/perf-trace"]
+
 [lints]
 workspace = true

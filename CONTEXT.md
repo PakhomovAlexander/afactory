@@ -228,6 +228,210 @@ requirements and never execution authority; resume reads captured input without 
 An explicit source refresh creates a new Task revision when selected fields change, invalidates
 its affected plan approval and retains the original execution allowance and all prior spend.
 
+### Performance laboratory
+
+**Performance Case**:
+A reviewed entry of `fixtures/performance/suite.toml`: one workload with its independent oracle,
+timing boundary, cache treatment and policy, expanded over finite parameter domains into
+instances before any plan is sharded
+([ADR-0162](docs/adr/0162-freeze-performance-plans-and-judge-them-by-exact-paired-verdicts.md)).
+Its capability state says whether it can run yet; a not-yet-executable case names what is missing.
+_Avoid_: **Measurement** — the kernel never runs a Performance Case, and a case produces no
+Measurement. Nor "benchmark" for its numbers.
+
+**Performance Sample**:
+One execution of one side in one planned slot of a Performance Run, failed or not, with exact
+decimal metrics, its oracle outcome and the source, binary and host identities it ran with. A
+failed sample is kept; nothing deletes, replaces or adds one.
+_Avoid_: a repetition of a Measurement.
+
+**Performance Run**:
+A frozen plan (`run.json`) and the evidence bundles recorded against it. The plan fixes the
+resolved revisions and the Cargo.lock digest of each, measuring authority, cases, pairs, seeded
+order, sentinels and limits before measurement and is never rewritten; a rerun is a new Run with
+a parent link.
+_Avoid_: "a CI job" — one Run may span shards on several hosts.
+
+**Performance Verdict**:
+The laboratory's `pass`, `fail` or `incomplete` for one Performance Run under
+`paired_median_tolerance_v2`, recomputed from the run's evidence alone: exact intervals of
+baseline-normalized paired losses for the critical family, side-attributed failures, health,
+budgets, and each shard's terminal status and record coverage. A missing record of any case or
+sentinel, or a shard that did not complete, makes it incomplete.
+_Avoid_: **Comparison** — the kernel's fold of two Measurements under an objective. A Performance
+Verdict satisfies no Demand and drives no kernel decision.
+
+**Sentinel**:
+The baseline-versus-baseline pairs that bracket each shard's schedule. They are health evidence:
+an unstable or missing sentinel makes its shard's cases incomplete, and sentinels never enter the
+gate family.
+
+**Performance Probe**:
+The `perf-probe` example of `review-pipeline`: one process per library Performance Sample. It
+generates the case's fixture through the product's public writers, times one production
+operation per declared repetition, reports setup separately, and writes one `af.perf-probe/1`
+message ([ADR-0163](docs/adr/0163-measure-native-workloads-through-a-public-api-probe-and-independent-golden-oracles.md)).
+Its own `passed` is never the oracle.
+_Avoid_: "benchmark harness" — the probe asserts nothing about speed.
+
+**Performance Supervisor**:
+The `perf-supervisor` example of `review-process`, built once from the measuring authority and
+launched as the same bytes for both sides. One process supervises one sample. It brackets child
+launch through the observed exit with a monotonic clock, drains capped output and forwards
+termination signals. It establishes what its containment can about descendants: a whole Linux
+PID namespace as its PID 1, or only a process group in trusted local mode
+([ADR-0166](docs/adr/0166-build-frozen-plans-and-supervise-samples-with-one-authority-instrument.md)).
+The host cancels it at its backstop or the run's total deadline by SIGTERM, which it forwards to
+its sample, and its reply confirms the sample's end or says it is uncertain; a supervisor that
+does not reply is killed, and nothing its sample could reach is then removed
+([ADR-0171](docs/adr/0171-cancel-samples-through-their-supervisor-carry-the-deadline-through-preflight-and-observe-history-order.md)).
+A cancellation admitted before its launch gate prevents the spawn, and one arriving during the
+spawn cancels the launched child
+([ADR-0173](docs/adr/0173-own-the-supervisor-a-test-runs-and-bound-admission-collection-scratch-and-cancellation-by-absolute-deadlines.md)).
+_Avoid_: "process-group containment" for a Linux namespace guarantee; killing the supervisor in
+place of its sample.
+
+**Protected Harness**:
+Every file a guarded kernel experiment's instrument is built or run from: the laboratory driver,
+its fixtures and golden entries, the Performance Probe and Probe Adapters, the trace and
+calibration helpers, and every Cargo manifest, lock, build script, toolchain pin and Cargo
+configuration, wherever one is added. The literal bootstrap a captured code policy runs hashes
+it, refusing links and any missing or extra file, before it imports the candidate's driver or
+builds anything; the staged policy subtree that holds the expected digest is its only exclusion
+([ADR-0185](docs/adr/0185-measure-guarded-kernel-experiments-through-a-literal-bootstrap-over-a-protected-harness.md)).
+_Avoid_: calling product code under measurement trustworthy because the harness is protected;
+golden oracles and review still judge it.
+
+**Probe Adapter**:
+A reviewed closure of authority example files in `fixtures/performance/adapters.toml`, copied
+into a measured source to build its probe. Adapters are tried in fixed priority order and the
+first that compiles is chosen; runtime results never select another. Two sides compare library
+cases only within one equivalence group.
+
+**CLI Adapter**:
+A reviewed entry of `fixtures/performance/cli.toml` covering AF package versions from a declared
+minimum. For every instance of a `process` Performance Case it names the actual AF argv, the
+Fixture Setup before it and the oracle rules its output must satisfy, or why the instance is
+pending. A side's version comes from its own Cargo.lock as the plan bound it, never from its
+binary; a side no adapter covers has no CLI coverage
+([ADR-0168](docs/adr/0168-run-frozen-shards-with-whole-cli-oracles-and-only-a-per-sample-scratch.md)).
+_Avoid_: "golden output" — rules check versions, tokens, outcomes, counts and the declared JSON
+fields the supervisor observes over the whole output as one complete document
+([ADR-0172](docs/adr/0172-admit-candidate-files-through-bounded-descriptors-and-report-archive-and-trend-runs-offline.md)),
+never whole formatting, and are never learned from an execution.
+
+**Fixture Setup**:
+The untimed step the Performance Supervisor runs before a sample's measured child, under the same
+containment and in the same scratch, writing that side's fixture through that side's own
+binaries. Only a setup that exits 0 with a verified lifecycle lets the measured child launch; its
+time is reported apart from the child interval.
+_Avoid_: counting setup inside a Performance Sample's primary metric.
+
+**Seed**:
+A large fixture one side's own writers write once per shard, under the Performance Supervisor
+and in the shard's containment: CLI Task and Campaign state, or the repository and event log a
+library probe reads. Once every writer process has exited it is sealed and identified by one
+digest, verified around every sample, and each sample copies it privately in its untimed
+Fixture Setup; a native seed's writer check is judged against its Golden Entry first
+([ADR-0169](docs/adr/0169-coordinate-a-machine-seed-each-side-once-and-build-linux-recipes-in-a-pinned-image.md),
+[ADR-0170](docs/adr/0170-seed-native-fixtures-freeze-the-build-image-and-bound-the-run-by-one-deadline.md)).
+_Avoid_: sharing one Store, projection or copy between samples or sides. Nor reading, sealing or
+removing a seed except through held descriptors that never follow a symlink, within its declared
+entry, depth and logical-byte bounds
+([ADR-0172](docs/adr/0172-admit-candidate-files-through-bounded-descriptors-and-report-archive-and-trend-runs-offline.md)).
+
+**Golden Entry**:
+The expected fixture identity, digest and count of one native instance in
+`fixtures/performance/golden/native.json`, derived by the independent reference generator from
+reference bytes or explicit semantic facts, never from an execution being judged. The trusted
+driver refuses a golden document that generator does not derive and a request the registry
+does not declare, then checks each side's probe message against the entry
+([ADR-0164](docs/adr/0164-judge-only-declared-probe-requests-against-a-reference-checked-golden.md)).
+
+**Measuring authority**:
+The revision whose registry, driver, fixtures and supervisor measure both sides of a Performance
+Run. A full run's authority is the one the control revision's
+`fixtures/performance/activation.toml` binds; a candidate cannot measure itself with its own
+instrument.
+_Avoid_: **Authority Snapshot** — the Review Kernel's pinned review policy.
+
+**Performance Schedule**:
+The `af.perf-schedule/2` record of one Actions event, resolved once to full SHAs by the trusted
+control revision's own scripts: the event and its pull request, whether it is trusted and which
+executor it may use, each comparison it freezes or why that comparison is unavailable or
+refused, and the Release Claim it measures, if any. Enforcement in it is always advisory
+([ADR-0177](docs/adr/0177-schedule-continuous-runs-from-trusted-control-and-move-builds-once-to-bounded-shards.md),
+[ADR-0180](docs/adr/0180-hand-off-published-releases-read-only-and-measure-each-claimed-identity-once.md)).
+_Avoid_: **Pipeline**, **Task** — the Afactory execution abstractions.
+
+**Release Claim**:
+The immutable `af.perf-release-claim/1` artifact a read-only release handoff writes before any
+sample of a published release. It names the release's identity, the upstream Release run ID, tag
+and SHA, never the attempt, and its canonical key. Only the first valid claim of an identity is
+measured; a later run of it links that claim's retained result or reports it incomplete, and only
+an explicit remeasurement measures again, under its own claim
+([ADR-0180](docs/adr/0180-hand-off-published-releases-read-only-and-measure-each-claimed-identity-once.md)).
+_Avoid_: **Remote Check**, **lease** — the kernel's gate pull request and Task leases.
+
+**Performance Report**:
+The offline page, `af.perf-report/2` document and job-summary table of one Performance Run,
+rendered by the laboratory's trusted renderer from its recomputed Performance Verdict: every
+planned slot as a raw point, exact bounds, provenance and every reason the run does not satisfy
+the required check. It shows measured results, never calibrated sensitivity
+([ADR-0172](docs/adr/0172-admit-candidate-files-through-bounded-descriptors-and-report-archive-and-trend-runs-offline.md)),
+and links validated diagnostic child runs by parent identity and artifact hashes, with
+reproduction commands that keep the frozen configuration
+([ADR-0177](docs/adr/0177-schedule-continuous-runs-from-trusted-control-and-move-builds-once-to-bounded-shards.md)).
+_Avoid_: rendering or trusting a transported report; it is artifact data.
+
+**Performance Archive**:
+A content-addressed filesystem archive of whole Performance Runs, with an append-only index,
+explicit retention records, pins and capacity health, filled only by the trusted collector
+from verified run directories or Actions transport artifacts. Nothing in it is executed.
+_Avoid_: "database" — none is required; and a benchmark holding the collector's credential.
+
+**Compatible History**:
+Performance Runs grouped by one case's workload, fixture definitions, policy, recipe,
+environment and provenance identity. Run IDs, sources and seed artifacts are provenance, never a
+reason to split a group.
+_Avoid_: a same-host paired result — a trend compares separate runs.
+
+**Diagnostic Child Run**:
+A separate, bounded run of a Performance Run's cases under a diagnostic recipe of
+`fixtures/performance/diagnostics.toml`, linked to its parent by run ID and plan digest: CPU
+profiles of exactly the bracketed region with flamegraphs, phase traces with their measured
+overhead, or counters, each with what it observed or why it is unavailable. It never changes
+the parent's Performance Verdict
+([ADR-0174](docs/adr/0174-diagnose-in-separate-child-runs-that-record-only-the-bracketed-region-and-share-one-test-executable-boundary.md)).
+_Avoid_: a profile of a verdict sample — verdict samples stay uninstrumented; and presenting a
+capture of fixture setup as attribution of the timed region.
+
+**Calibration Cohort**:
+A predeclared set of A/A, injected-slowdown and power comparisons of one proposed measuring
+authority. Every member stays in its denominators; readiness is recomputed from its members,
+never accepted as written, and only a reviewed activation that cites it lets full runs gate.
+A member is a logical identity fixed before it runs; the Actions run that executes it is
+provenance recorded beside the cohort, never written into it
+([ADR-0181](docs/adr/0181-declare-cohorts-before-they-run-inject-only-the-candidate-and-count-whole-power-trials.md)).
+A member's original is its first dispatch, named for the cohort and the member as the run is
+created, at attempt 1, whatever became of its artifacts
+([ADR-0182](docs/adr/0182-bind-each-calibration-member-to-its-first-dispatch-and-its-authoritys-plan.md)).
+Only an original that succeeded counts. A deleted original is detected by the missing run
+number after the cohort's declared anchor, never replaced
+([ADR-0183](docs/adr/0183-detect-deleted-originals-recompute-parameters-and-verify-activations-from-retained-evidence.md)).
+_Avoid_: counting per-case detections across different trials as a passing power trial; and
+choosing a member's original among the runs whose evidence is still readable.
+
+**Activation**:
+The reviewed `fixtures/performance/activation.toml` that makes a calibrated measuring authority
+active: it binds the cohort, its parameters and its readiness by path and SHA-256, every
+original run, and the environment, recipe and CPU/image groups the cohort calibrated. Every
+active plan verifies it from those records, and the activation change is verified from the
+cohort's retained Actions evidence
+([ADR-0183](docs/adr/0183-detect-deleted-originals-recompute-parameters-and-verify-activations-from-retained-evidence.md)).
+_Avoid_: treating an author-written readiness document or an archive copy as promotion
+evidence; calling an uncalibrated group or an equivalent adapter calibrated.
+
 ### What is reviewed
 
 **Snapshot**:

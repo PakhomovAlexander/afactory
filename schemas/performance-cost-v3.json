@@ -1,0 +1,890 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-cost:3",
+  "title": "af.perf-cost/3",
+  "description": "A cost demonstration (ADR-0183, ADR-0184): every retained pull-request and same-source run, failed attempts included, with its observed cold or warm build cache, source, plan, bundle, build and binary identities, build and per-shard sampling time, per-case sample counts and wall time, artifact bytes and failures; each group's completed and failed runs, the median and maximum of its completed runs, and whether five distinct completed measured comparisons demonstrate it.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-cost/3"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "demonstrated",
+        "pending"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      },
+      "minItems": 0,
+      "maxItems": 64
+    },
+    "runs_per_group": {
+      "const": 5
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "$ref": "#/$defs/id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "pr",
+              "same_source"
+            ]
+          },
+          "cache": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "cold",
+                  "warm"
+                ]
+              }
+            ]
+          },
+          "cache_source": {
+            "type": "string",
+            "enum": [
+              "observed",
+              "declared",
+              "unknown"
+            ]
+          },
+          "cache_identity": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "dependency_fetch": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "prefetched",
+                  "host_network",
+                  "container_network"
+                ]
+              }
+            ]
+          },
+          "execution": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "failed"
+            ]
+          },
+          "provenance": {
+            "type": "string",
+            "enum": [
+              "measured",
+              "synthetic",
+              "mixed",
+              "none"
+            ]
+          },
+          "environment_id": {
+            "$ref": "#/$defs/id"
+          },
+          "recipe_id": {
+            "$ref": "#/$defs/id"
+          },
+          "result": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "incomplete"
+            ]
+          },
+          "identity": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "baseline_sha": {
+                "$ref": "#/$defs/git_sha"
+              },
+              "candidate_sha": {
+                "$ref": "#/$defs/git_sha"
+              },
+              "plan_digest": {
+                "$ref": "#/$defs/digest"
+              },
+              "run_bundle": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/digest"
+                  }
+                ]
+              },
+              "builds_sha256": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/digest"
+                  }
+                ]
+              },
+              "binaries": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "baseline": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "af": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/$defs/digest"
+                          }
+                        ]
+                      },
+                      "probe": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/$defs/digest"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "af",
+                      "probe"
+                    ]
+                  },
+                  "candidate": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "af": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/$defs/digest"
+                          }
+                        ]
+                      },
+                      "probe": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/$defs/digest"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "af",
+                      "probe"
+                    ]
+                  },
+                  "supervisor": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/$defs/digest"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "baseline",
+                  "candidate",
+                  "supervisor"
+                ]
+              },
+              "shard_bundles": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/digest"
+                    }
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 16
+              }
+            },
+            "required": [
+              "baseline_sha",
+              "candidate_sha",
+              "plan_digest",
+              "run_bundle",
+              "builds_sha256",
+              "binaries",
+              "shard_bundles"
+            ]
+          },
+          "build_ms": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              }
+            ]
+          },
+          "priming_ms": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              }
+            ]
+          },
+          "shard_sampling_ms": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 16
+          },
+          "artifact_bytes": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "build": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  }
+                ]
+              },
+              "shards": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              }
+            },
+            "required": [
+              "build",
+              "shards"
+            ]
+          },
+          "cases": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 64,
+            "patternProperties": {
+              "^[a-z][a-z0-9_]{0,63}$": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "samples": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  },
+                  "unmeasured": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  },
+                  "sample_ms": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/$defs/rational"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "samples",
+                  "unmeasured",
+                  "sample_ms"
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "where": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "detail": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "required": [
+                "where",
+                "detail"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 256
+          }
+        },
+        "required": [
+          "run_id",
+          "kind",
+          "cache",
+          "cache_source",
+          "cache_identity",
+          "dependency_fetch",
+          "execution",
+          "provenance",
+          "environment_id",
+          "recipe_id",
+          "result",
+          "identity",
+          "build_ms",
+          "priming_ms",
+          "shard_sampling_ms",
+          "artifact_bytes",
+          "cases",
+          "failures"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 256
+    },
+    "groups": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pr_cold": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "completed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "failures": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "build_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "build_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            },
+            "priming_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "priming_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            },
+            "sampling_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "sampling_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            }
+          },
+          "required": [
+            "runs",
+            "completed",
+            "failed",
+            "failures",
+            "build_ms_median",
+            "build_ms_max",
+            "priming_ms_median",
+            "priming_ms_max",
+            "sampling_ms_median",
+            "sampling_ms_max"
+          ]
+        },
+        "pr_warm": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "completed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "failures": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "build_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "build_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            },
+            "priming_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "priming_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            },
+            "sampling_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "sampling_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            }
+          },
+          "required": [
+            "runs",
+            "completed",
+            "failed",
+            "failures",
+            "build_ms_median",
+            "build_ms_max",
+            "priming_ms_median",
+            "priming_ms_max",
+            "sampling_ms_median",
+            "sampling_ms_max"
+          ]
+        },
+        "same_source_cold": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "completed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "failures": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "build_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "build_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            },
+            "priming_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "priming_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            },
+            "sampling_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "sampling_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            }
+          },
+          "required": [
+            "runs",
+            "completed",
+            "failed",
+            "failures",
+            "build_ms_median",
+            "build_ms_max",
+            "priming_ms_median",
+            "priming_ms_max",
+            "sampling_ms_median",
+            "sampling_ms_max"
+          ]
+        },
+        "same_source_warm": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "completed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "failures": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "build_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "build_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            },
+            "priming_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "priming_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            },
+            "sampling_ms_median": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/rational"
+                }
+              ]
+            },
+            "sampling_ms_max": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              ]
+            }
+          },
+          "required": [
+            "runs",
+            "completed",
+            "failed",
+            "failures",
+            "build_ms_median",
+            "build_ms_max",
+            "priming_ms_median",
+            "priming_ms_max",
+            "sampling_ms_median",
+            "sampling_ms_max"
+          ]
+        }
+      },
+      "required": [
+        "pr_cold",
+        "pr_warm",
+        "same_source_cold",
+        "same_source_warm"
+      ]
+    },
+    "failed_attempts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "minItems": 0,
+      "maxItems": 256,
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema",
+    "status",
+    "reasons",
+    "runs_per_group",
+    "runs",
+    "groups",
+    "failed_attempts"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "rational": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?$",
+      "description": "Exact signed rational in lowest terms, such as -3/4 or 2."
+    }
+  }
+}
