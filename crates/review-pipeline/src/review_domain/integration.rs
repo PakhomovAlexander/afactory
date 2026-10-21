@@ -684,7 +684,8 @@ impl IntegrationCheckSequence<'_> {
                                 .image
                                 .as_deref()
                                 .ok_or("container Integration binding has no pinned image")?,
-                        ),
+                        )
+                        .with_limits(binding.memory.clone(), binding.cpus.clone()),
                 ),
             };
             if let Some(provider) = container.as_ref()

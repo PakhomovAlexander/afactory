@@ -142,8 +142,9 @@ impl ProjectFile {
     }
 
     pub fn parse(text: &str) -> Result<Self, String> {
-        let project: Self = toml::from_str(text)
-            .map_err(|error| format!("authority project `.af/af.toml`: {error}"))?;
+        let project: Self = toml::from_str(text).map_err(|error| {
+            review_config::excerpt::bounded(&format!("authority project `.af/af.toml`: {error}"))
+        })?;
         project.validate()?;
         Ok(project)
     }
@@ -274,8 +275,11 @@ impl ProjectFile {
             #[serde(default)]
             delivery: Delivery,
         }
-        let read: DeliveryOnly = toml::from_str(text)
-            .map_err(|error| format!("authority project `.af/af.toml` [delivery]: {error}"))?;
+        let read: DeliveryOnly = toml::from_str(text).map_err(|error| {
+            review_config::excerpt::bounded(&format!(
+                "authority project `.af/af.toml` [delivery]: {error}"
+            ))
+        })?;
         Ok(read.delivery.undeclared_af_paths)
     }
 
@@ -293,7 +297,30 @@ fn preview(paths: &[String]) -> String {
     }
 }
 
+/// The longest route pattern policy may declare, in bytes.
+const MAX_PATTERN_BYTES: usize = 1024;
+/// The most wildcards (`?`, and each run of `*`) one route pattern may hold.
+const MAX_PATTERN_WILDCARDS: usize = 64;
+
 fn validate_pattern(pattern: &str, route: &str) -> Result<(), String> {
+    if pattern.len() > MAX_PATTERN_BYTES {
+        return Err(format!(
+            "authority project route `{route}` has a pattern of {} bytes; a route pattern is at most {MAX_PATTERN_BYTES} bytes",
+            pattern.len()
+        ));
+    }
+    let wildcards = pattern
+        .bytes()
+        .enumerate()
+        .filter(|&(index, byte)| {
+            byte == b'?' || (byte == b'*' && (index == 0 || pattern.as_bytes()[index - 1] != b'*'))
+        })
+        .count();
+    if wildcards > MAX_PATTERN_WILDCARDS {
+        return Err(format!(
+            "authority project route `{route}` has a pattern with {wildcards} wildcards; a route pattern holds at most {MAX_PATTERN_WILDCARDS}"
+        ));
+    }
     if pattern.is_empty()
         || pattern.starts_with('/')
         || pattern.ends_with('/')
@@ -302,7 +329,8 @@ fn validate_pattern(pattern: &str, route: &str) -> Result<(), String> {
             .any(|segment| segment.is_empty() || segment == "." || segment == "..")
     {
         return Err(format!(
-            "authority project route `{route}` pattern `{pattern}` must be a root-anchored repository path pattern without empty, `.`, or `..` segments"
+            "authority project route `{route}` pattern `{}` must be a root-anchored repository path pattern without empty, `.`, or `..` segments",
+            review_config::excerpt::quoted(pattern)
         ));
     }
     Ok(())
@@ -578,6 +606,147 @@ mod tests {
         // Canonical encoding: a non-UTF-8 byte is `%FF` in the path both sides see.
         assert!(glob_matches("**", "dir/a%FFb"));
         assert!(glob_matches("dir/a*b", "dir/a%FFb"));
+    }
+
+    /// The recursive matcher the iterative one replaced: exponential, but the semantics.
+    fn recursive_matches(pattern: &str, path: &str) -> bool {
+        fn segment(pattern: &[u8], text: &[u8]) -> bool {
+            match (pattern.first(), text.first()) {
+                (None, None) => true,
+                (None, Some(_)) => false,
+                (Some(b'*'), _) => {
+                    segment(&pattern[1..], text)
+                        || (!text.is_empty() && segment(pattern, &text[1..]))
+                }
+                (Some(b'?'), Some(_)) => segment(&pattern[1..], &text[1..]),
+                (Some(&expected), Some(&actual)) if expected == actual => {
+                    segment(&pattern[1..], &text[1..])
+                }
+                _ => false,
+            }
+        }
+        fn segments(pattern: &[&str], path: &[&str]) -> bool {
+            match pattern.split_first() {
+                None => path.is_empty(),
+                Some((&"**", rest)) => (0..=path.len()).any(|skip| segments(rest, &path[skip..])),
+                Some((head, rest)) => match path.split_first() {
+                    Some((first, remaining)) => {
+                        segment(head.as_bytes(), first.as_bytes()) && segments(rest, remaining)
+                    }
+                    None => false,
+                },
+            }
+        }
+        let pattern: Vec<&str> = pattern.split('/').collect();
+        let path: Vec<&str> = path.split('/').collect();
+        segments(&pattern, &path)
+    }
+
+    #[test]
+    fn the_iterative_matcher_agrees_with_the_recursive_one() {
+        let patterns = [
+            "**",
+            "**/**",
+            "**/**/x",
+            "*",
+            "a*",
+            "*a",
+            "*a*",
+            "a*b*c",
+            "a**b",
+            "?",
+            "??",
+            "a?",
+            "*?",
+            "?*",
+            "docs/**",
+            "docs/**/*.md",
+            "**/b/**",
+            "**/b",
+            "a/**/b/**/c",
+            "*/*",
+            "a/*/c",
+            "**/*.md",
+            "src/*/lib.rs",
+            "*a*a*b",
+            "x/**/",
+            "a/**/**/b",
+        ];
+        let paths = [
+            "a",
+            "b",
+            "ab",
+            "abc",
+            "aab",
+            "aaab",
+            "acb",
+            "a/b",
+            "a/b/c",
+            "a/x/b/y/c",
+            "docs",
+            "docs/a.md",
+            "docs/x/y/z.md",
+            "b",
+            "x/b",
+            "x/y/b",
+            "src/core/lib.rs",
+            "src/core/inner/lib.rs",
+            "README.md",
+            "aaaaab",
+            "aaaa",
+            "x",
+            "x/y",
+            "a/c",
+            "a/b/b/c",
+        ];
+        for pattern in patterns {
+            for path in paths {
+                assert_eq!(
+                    glob_matches(pattern, path),
+                    recursive_matches(pattern, path),
+                    "{pattern} against {path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_hostile_pattern_against_a_long_path_returns_at_once() {
+        let started = std::time::Instant::now();
+        let long = "a".repeat(60);
+        assert!(!glob_matches("*a*a*a*a*a*a*a*a b", &long));
+        assert!(!glob_matches(&"*a".repeat(64), &"a".repeat(63)));
+        assert!(!glob_matches(
+            &format!("{}c", "**/".repeat(64)),
+            &format!("{}b", "a/".repeat(500))
+        ));
+        assert!(glob_matches(
+            &format!("{}b", "*a".repeat(30)),
+            &format!("{long}b")
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    }
+
+    #[test]
+    fn a_pattern_beyond_the_byte_or_wildcard_cap_is_refused_at_load() {
+        let route = |pattern: &str| {
+            format!(
+                "[[routes]]\nname = \"wide\"\npaths = [{}]\npipeline = \"docs\"\n",
+                toml::Value::String(pattern.to_string())
+            )
+        };
+        let within = format!("{}b", "*a".repeat(64));
+        assert!(ProjectFile::parse(&project(&route(&within), "0.6")).is_ok());
+        let error = ProjectFile::parse(&project(&route(&format!("{within}*")), "0.6")).unwrap_err();
+        assert!(error.contains("65 wildcards"), "{error}");
+        assert!(error.contains("at most 64"), "{error}");
+        // A run of stars is one wildcard.
+        assert!(ProjectFile::parse(&project(&route(&"**/".repeat(64)[..191]), "0.6")).is_ok());
+        let long = "a".repeat(1025);
+        let error = ProjectFile::parse(&project(&route(&long), "0.6")).unwrap_err();
+        assert!(error.contains("1025 bytes"), "{error}");
+        assert!(error.contains("at most 1024 bytes"), "{error}");
+        assert!(ProjectFile::parse(&project(&route(&"a".repeat(1024)), "0.6")).is_ok());
     }
 
     #[test]

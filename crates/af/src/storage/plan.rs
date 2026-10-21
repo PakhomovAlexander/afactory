@@ -52,6 +52,9 @@ pub(crate) struct Ran {
     /// immediately before anything was unlinked; `None` where nothing measured it (a Survey's
     /// file, a Task's collection), whose freed bytes are then all the total loses.
     pub(crate) started: Option<u64>,
+    /// What the removal left in place: a Store outside af's state that was not proven af's, or
+    /// held what is not af's, keeps its directory and everything that is not af's (ADR-0144).
+    pub(crate) left: Vec<PathBuf>,
 }
 
 impl Ran {
@@ -61,6 +64,7 @@ impl Ran {
             freed,
             unreadable: None,
             started: None,
+            left: Vec::new(),
         }
     }
 }
@@ -247,6 +251,7 @@ fn removal(kind: Kind, path: PathBuf, task_id: Option<String>, bytes: u64, rule:
         total_after: None,
         unreadable: None,
         outcome: None,
+        left: Vec::new(),
     }
 }
 
@@ -674,6 +679,7 @@ pub(crate) fn run(
                 });
                 removal.bytes = ran.freed;
                 removal.unreadable = ran.unreadable;
+                removal.left = ran.left;
                 removal.total_after = total;
                 report.removals.push(removal);
             }
@@ -1493,6 +1499,7 @@ mod tests {
                     freed: 20 * MIB,
                     unreadable: None,
                     started: Some(20 * MIB),
+                    left: Vec::new(),
                 })
             }
         });

@@ -781,6 +781,242 @@ fn the_sweep_that_ends_a_run_is_an_observation_of_its_task() {
     assert!(line.contains(" budget"), "{line}");
 }
 
+fn mode(path: &Path) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).unwrap().mode() & 0o777
+}
+
+/// `af review run --state DIR`: a run that fails right after it opened its Store, which is all
+/// these tests need (no policy revision is given).
+fn review_run(machine: &Machine, repo: &Path, state: &Path, env: &[(&str, &str)]) -> Output {
+    machine.af(
+        repo,
+        env,
+        &[
+            "review",
+            "run",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--campaign",
+            "keep",
+            "--state",
+            state.to_str().unwrap(),
+        ],
+    )
+}
+
+fn git_repo(machine: &Machine) -> PathBuf {
+    let repo = machine.root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let status = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    repo
+}
+
+/// H2 and M6 of the 2026-10-20 audit: an explicit `--state` directory that holds anything but
+/// af's own entries is refused before anything is written or registered; an absent or empty one
+/// becomes a Store with the owner marker, private whatever the umask; an af-owned root open to
+/// others is narrowed; and what af writes into the user's checkout keeps the user's umask.
+#[test]
+fn an_explicit_state_directory_must_be_new_empty_or_afs_and_a_new_store_is_private() {
+    let machine = Machine::new();
+    let repo = git_repo(&machine);
+    let mydocs = machine.root.join("mydocs");
+    std::fs::create_dir_all(mydocs.join("photos")).unwrap();
+    std::fs::write(mydocs.join("important.txt"), b"mine").unwrap();
+    std::fs::write(mydocs.join("photos/1.jpg"), b"jpg").unwrap();
+    let refused = review_run(&machine, &repo, &mydocs, &[]);
+    let (stdout, stderr) = text(&refused);
+    assert!(!refused.status.success(), "{stdout}\n{stderr}");
+    assert!(stderr.contains("holds what is not af's"), "{stderr}");
+    assert!(stderr.contains("becomes af-owned"), "{stderr}");
+    let mut names: Vec<String> = std::fs::read_dir(&mydocs)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["important.txt", "photos"], "nothing was written");
+    let registry = machine.state_home().join("af/stores.toml");
+    assert!(
+        std::fs::read_to_string(&registry)
+            .map_or(true, |text| !text.contains(&mydocs.display().to_string())),
+        "nothing was registered"
+    );
+
+    let empty = machine.root.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let absent = machine.root.join("outside/absent");
+    for state in [&empty, &absent] {
+        let opened = review_run(&machine, &repo, state, &[]);
+        let (_, stderr) = text(&opened);
+        assert!(
+            !stderr.contains("holds what is not af's"),
+            "{}: {stderr}",
+            state.display()
+        );
+        assert!(
+            state.join(".af-store").is_file(),
+            "{}: {stderr}",
+            state.display()
+        );
+        assert_eq!(mode(state), 0o700, "{}", state.display());
+        for file in [
+            ".af-store",
+            "events.sqlite",
+            "events.sqlite-wal",
+            "events.sqlite-shm",
+        ] {
+            if state.join(file).exists() {
+                assert_eq!(mode(&state.join(file)), 0o600, "{file}");
+            }
+        }
+        assert!(state.join("events.sqlite").is_file());
+        for directory in ["cas", "cas/objects", "git-home"] {
+            assert_eq!(mode(&state.join(directory)), 0o700, "{directory}");
+        }
+    }
+    assert_eq!(mode(&machine.state_home().join("af")), 0o700);
+
+    // An af-owned root open to others is narrowed when af opens it again.
+    for root in [&absent, &machine.state_home().join("af")] {
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let reopened = review_run(&machine, &repo, &absent, &[]);
+    let (_, stderr) = text(&reopened);
+    assert!(!stderr.contains("holds what is not af's"), "{stderr}");
+    assert_eq!(mode(&absent), 0o700);
+    assert_eq!(mode(&machine.state_home().join("af")), 0o700);
+
+    // What af writes into the user's checkout keeps the user's umask: no process-wide umask.
+    let onboarded = machine.af(
+        &repo,
+        &[],
+        &[
+            "onboard",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--runner",
+            "codex",
+            "--gate",
+            "check=true",
+            "--apply",
+        ],
+    );
+    let (stdout, stderr) = text(&onboarded);
+    assert!(onboarded.status.success(), "{stdout}\n{stderr}");
+    let reference = machine.root.join("reference");
+    std::fs::create_dir(&reference).unwrap();
+    std::fs::write(reference.join("file"), b"").unwrap();
+    assert_eq!(mode(&repo.join(".af")), mode(&reference));
+    assert_eq!(
+        mode(&repo.join(".af/af.toml")),
+        mode(&reference.join("file"))
+    );
+}
+
+/// A Store af created at `--state`, into which the user has since put their own files, with
+/// every af entry last used `old` ago.
+fn shared_store(machine: &Machine, repo: &Path, name: &str) -> PathBuf {
+    let state = machine.root.join(name);
+    let opened = review_run(machine, repo, &state, &[]);
+    assert!(state.join(".af-store").is_file(), "{}", text(&opened).1);
+    std::fs::write(state.join("important.txt"), b"mine").unwrap();
+    std::fs::create_dir_all(state.join("photos")).unwrap();
+    std::fs::write(state.join("photos/1.jpg"), vec![9_u8; 2 << 20]).unwrap();
+    age(&state, 3 * DAY);
+    state
+}
+
+/// H2 of the 2026-10-20 audit, the reproduction: a registered `--state` Store that also holds
+/// the user's files, over a tiny budget. `af storage` counts af's entries alone; `af storage
+/// prune --apply` and the sweep that ends a run remove af's entries and leave the user's files
+/// and the directory, saying so.
+#[test]
+fn a_registered_store_keeps_the_users_files_through_prune_and_the_sweep_after_a_run() {
+    let machine = Machine::new();
+    let repo = git_repo(&machine);
+    let mydocs = shared_store(&machine, &repo, "mydocs");
+
+    let shown = json(&machine.af(&machine.root, &[], &["storage", "--json"]));
+    let entry = shown["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == mydocs.display().to_string())
+        .unwrap_or_else(|| panic!("{shown}"));
+    assert_eq!(entry["kind"], "campaign");
+    assert!(
+        entry["bytes"].as_u64().unwrap() < 1 << 20,
+        "the user's 2 MiB are not af's: {entry}"
+    );
+
+    let budget = [("AF_STORAGE__MAX_BYTES", "1KiB")];
+    let pruned = json(&machine.af(
+        &machine.root,
+        &budget,
+        &["storage", "prune", "--apply", "--json"],
+    ));
+    schemas::valid(&schemas::validator("storage-prune-v3.json"), &pruned);
+    let removal = pruned["removals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|removal| removal["path"] == mydocs.display().to_string())
+        .unwrap_or_else(|| panic!("{pruned}"));
+    assert_eq!(
+        removal["left"],
+        serde_json::json!([
+            mydocs.display().to_string(),
+            mydocs.join("important.txt").display().to_string(),
+            mydocs.join("photos").display().to_string(),
+        ]),
+        "{pruned}"
+    );
+    assert_eq!(
+        std::fs::read(mydocs.join("important.txt")).unwrap(),
+        b"mine"
+    );
+    assert!(mydocs.join("photos/1.jpg").is_file());
+    assert!(!mydocs.join("events.sqlite").exists() && !mydocs.join("cas").exists());
+
+    // The sweep that ends a run, a refused one included, keeps them the same way.
+    let other = shared_store(&machine, &repo, "other");
+    let refused = machine.af(
+        &machine.root,
+        &budget,
+        &["task", "run", "no-such-task", "--execute"],
+    );
+    let (_, stderr) = text(&refused);
+    assert!(!refused.status.success());
+    assert!(
+        stderr.contains(&format!(
+            "removed af's entries of {} and left the directory with what is not af's",
+            other.display()
+        )),
+        "{stderr}"
+    );
+    assert!(other.join("important.txt").is_file() && other.join("photos/1.jpg").is_file());
+    assert!(!other.join("events.sqlite").exists());
+
+    // A marked Store that holds nothing but af's entries still goes whole.
+    let whole = machine.root.join("whole");
+    let opened = review_run(&machine, &repo, &whole, &[]);
+    assert!(whole.join(".af-store").is_file(), "{}", text(&opened).1);
+    age(&whole, 3 * DAY);
+    let pruned = json(&machine.af(
+        &machine.root,
+        &budget,
+        &["storage", "prune", "--apply", "--json"],
+    ));
+    assert!(!whole.exists(), "{pruned}");
+}
+
 /// Every directory below `root`, made readable and writable again, so the machine's temporary
 /// root can go.
 fn unseal(root: &Path) {
@@ -808,8 +1044,8 @@ fn a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its
     let campaigns = machine.state_home().join("af/review/campaigns");
     // Two removals dead processes left claimed: one the sweep finishes, and one in which a
     // directory turns unreadable just before its removal, as another process could make it.
-    let whole = campaigns.join(".af-removing-999999999-8-0");
-    let partly = campaigns.join(".af-removing-999999999-9-0");
+    let whole = crate::common::af_claim(&campaigns, 999_999_999);
+    let partly = crate::common::af_claim(&campaigns, 999_999_998);
     for (claim, directories) in [(&whole, &["free"][..]), (&partly, &["free", "kept"][..])] {
         for directory in directories {
             std::fs::create_dir_all(claim.join(directory)).unwrap();

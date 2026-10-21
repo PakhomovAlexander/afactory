@@ -566,3 +566,34 @@ fn projection_applies_the_same_writers_earlier_time_and_fences_every_other_case(
         assert!(error.to_string().contains("finished"), "{error}");
     }
 }
+
+/// L4 of the 2026-10-20 audit: a Task stopped before it finished — cancelled, or abandoned by a
+/// writer that died — takes a gate cleanup record from the writer that cleans up after it, in
+/// whatever phase it stopped; the phase stays as it was.
+#[test]
+fn a_gate_cleanup_is_recorded_for_a_task_that_stopped_before_it_finished() {
+    let mut f = Fixture::new(false);
+    let lease = f.open();
+    f.propose(&lease);
+    f.store.release_task_lease(&f.cas, &lease).unwrap();
+    let phase = f.state().phase;
+    assert!(!matches!(phase, TaskPhaseV1::Finished { .. }));
+    let cleaner = f
+        .store
+        .take_task_lease(&f.cas, "task-1", "af-gate-cleanup", 30_000)
+        .unwrap();
+    let cleanup = review_core::task::remote_check::TaskGateCleanupV1 {
+        schema: review_core::task::remote_check::TASK_GATE_CLEANUP_V1.into(),
+        github: "owner/repo".into(),
+        pull_requests: vec![12],
+        branches: review_core::task::remote_check::TaskGateCleanupV1::branches_of("task-1"),
+        outcome: review_core::task::remote_check::GateCleanupOutcomeV1::Done,
+        reason: None,
+    };
+    f.store
+        .record_task_gate_cleanup(&f.cas, &cleaner, cleanup.clone())
+        .unwrap();
+    let state = f.state();
+    assert_eq!(state.gate_cleanups, [cleanup]);
+    assert_eq!(state.phase, phase);
+}

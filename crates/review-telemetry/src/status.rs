@@ -81,7 +81,7 @@ pub const UNRECOGNIZED_NAMES: usize = 16;
 #[serde(deny_unknown_fields)]
 pub struct Bytes {
     pub total: u64,
-    /// `[telemetry] max_bytes`.
+    /// `[telemetry] max_bytes`: advisory on this release, which removes nothing to meet it.
     pub max_bytes: u64,
     pub entries: Vec<Entry>,
 }
@@ -177,8 +177,10 @@ pub const REGISTRY_PROBLEM: &str = "registry";
 pub struct Status {
     pub schema: String,
     pub level: Level,
-    /// `content` keeps blobs and is not bounded by the overhead gate.
+    /// `content`: blobs of what Workers saw and did are kept.
     pub perturbing: bool,
+    /// The telemetry directory read; under the home directory it is written `~/…`, as the text
+    /// output writes it, and so is every other path of the document.
     pub directory: String,
     pub exists: bool,
     pub bytes: Bytes,
@@ -214,6 +216,43 @@ impl BlobVerification {
     }
 }
 
+/// `path` with the home directory prefix written `~`; any other path as it is.
+pub fn home_relative(path: &str, home: &Path) -> String {
+    match Path::new(path).strip_prefix(home) {
+        Ok(rest) if home.is_absolute() && home != Path::new("/") => {
+            if rest.as_os_str().is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{}", rest.display())
+            }
+        }
+        _ => path.to_string(),
+    }
+}
+
+impl Status {
+    /// Every path of the document written relative to `home`, as the text output writes it.
+    pub fn relative_to(mut self, home: &Path) -> Self {
+        self.directory = home_relative(&self.directory, home);
+        for unreadable in &mut self.unreadable {
+            unreadable.path = home_relative(&unreadable.path, home);
+        }
+        for registered in &mut self.registered {
+            registered.path = home_relative(&registered.path, home);
+        }
+        self
+    }
+
+    /// How far the directory is over `[telemetry] max_bytes`, which this release only reports:
+    /// nothing removes telemetry to meet it.
+    pub fn over_max_bytes(&self) -> Option<u64> {
+        self.bytes
+            .total
+            .checked_sub(self.bytes.max_bytes)
+            .filter(|over| *over > 0)
+    }
+}
+
 /// One recovered segment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -245,6 +284,17 @@ pub struct Reindex {
     /// opened, and `missing_blobs` and `corrupt_blobs` say nothing.
     pub blob_verification: BlobVerification,
     pub unreadable: Vec<Unreadable>,
+}
+
+impl Reindex {
+    /// Every path of the document written relative to `home`, as the text output writes it.
+    pub fn relative_to(mut self, home: &Path) -> Self {
+        self.directory = home_relative(&self.directory, home);
+        for unreadable in &mut self.unreadable {
+            unreadable.path = home_relative(&unreadable.path, home);
+        }
+        self
+    }
 }
 
 fn registered(
@@ -835,4 +885,63 @@ pub fn reindex(root: &Path) -> Result<Reindex, String> {
         None => document.blob_verification = BlobVerification::Deferred,
     }
     Ok(document)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_under_home_are_written_with_a_tilde() {
+        let home = Path::new("/Users/alice");
+        assert_eq!(
+            home_relative("/Users/alice/.local/state/af/telemetry", home),
+            "~/.local/state/af/telemetry"
+        );
+        assert_eq!(home_relative("/Users/alice", home), "~");
+        // Another user whose name begins the same is not this home, and `/` is no home.
+        assert_eq!(
+            home_relative("/Users/alicette/x", home),
+            "/Users/alicette/x"
+        );
+        assert_eq!(
+            home_relative("/srv/telemetry", Path::new("/")),
+            "/srv/telemetry"
+        );
+    }
+
+    #[test]
+    fn over_max_bytes_is_reported_only_past_the_cap() {
+        let mut bytes = Bytes {
+            total: 10,
+            max_bytes: 10,
+            entries: Vec::new(),
+        };
+        let status = |bytes: &Bytes| Status {
+            schema: STATUS_SCHEMA.into(),
+            level: Level::Spans,
+            perturbing: false,
+            directory: "/srv/telemetry".into(),
+            exists: true,
+            bytes: bytes.clone(),
+            segments: Segments::default(),
+            runs: 0,
+            withheld_attempts: 0,
+            missing_blobs: 0,
+            blob_verification: BlobVerification::Verified,
+            index: IndexState {
+                state: "absent".into(),
+                reason: None,
+                ingested_segments: 0,
+                ingested_records: 0,
+                ingested_bytes: 0,
+            },
+            problems: Vec::new(),
+            unreadable: Vec::new(),
+            registered: Vec::new(),
+        };
+        assert_eq!(status(&bytes).over_max_bytes(), None);
+        bytes.total = 11;
+        assert_eq!(status(&bytes).over_max_bytes(), Some(1));
+    }
 }

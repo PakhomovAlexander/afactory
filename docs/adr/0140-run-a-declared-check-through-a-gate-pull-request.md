@@ -4,6 +4,9 @@ Status: accepted, 2026-10-04; amended 2026-10-05 ([the pipeline chooses](#amendm
 which replaces the per-machine selection of option 3 and of *Declaration and selection*; amended
 on 2026-10-07 by [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md): when the Task
 finishes, the kernel closes its draft gate pull request and deletes its two `af-gate/` branches.
+Amended 2026-10-20 ([what the workflow runs](#amendment-2026-10-20-what-the-workflow-runs)): the
+refusal protects the workflow *file* and what Actions and Cargo read first, never what the
+workflow runs, and the gate's `git` and `gh` start from an allowlisted environment.
 Supersedes, for operator-authorized gate branches and the gate pull request only, the rule that
 publishing is a human action ([`docs/values.md`](../values.md), [`AGENTS.md`](../../AGENTS.md)).
 Delivery is unchanged ([ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md)).
@@ -53,7 +56,9 @@ The four choices below were made on 2026-10-04.
      all.
 4. **A candidate that changes `.github/`.**
    - *Refused before anything is published* — chosen: `remote_candidate_changes_ci`. A Worker
-     must never decide what the workflow that judges its work does.
+     cannot change the workflow *file* that judges its work; everything that workflow runs
+     (`Makefile`, `build.rs`, scripts, tests) is candidate code
+     ([amended 2026-10-20](#amendment-2026-10-20-what-the-workflow-runs)).
    - *Published and flagged* — rejected. A flag is advice; a candidate that rewrites the workflow
      would already have run with the repository's secrets.
 
@@ -211,7 +216,8 @@ commits, pushes, opens a pull request or invokes a remote.
   Snapshot by a merge-ref proof, and recorded once.
 - CI executes candidate code with whatever permissions and secrets the repository's workflows
   give a same-repository pull request. The mapping is the operator's statement that this is
-  acceptable; the `.github/` refusal keeps a Worker from changing what those workflows are.
+  acceptable; the `.github/` refusal keeps a Worker from changing the workflow files, not what
+  those workflows run, which is candidate code (amended 2026-10-20).
 - The evidence proves which run and merge commit GitHub reported, not what the runner did; a
   compromised runner or account is outside the model, as a compromised local toolchain is.
 - A kept log excerpt is GitHub's text, with the push URL and machine paths replaced like every
@@ -305,3 +311,36 @@ no per-machine override.
 - This repository's remote twins are staged under
   [`fixtures/remote-checks/packages/`](../../fixtures/remote-checks/packages/README.md) for a
   person to install, since a Worker may not write `.af/`.
+
+## Amendment, 2026-10-20: what the workflow runs
+
+An audit of 2026-10-20 found the refusal of option 4 described as more than it is. The kernel
+compares the candidate's workflow files with the source's, so a Worker cannot change the
+workflow *file*. Everything the workflow runs is candidate code: a `Makefile`, a `justfile`,
+`package.json` scripts, `build.rs`, test code. Gate branches live in the repository itself, so
+the `pull_request` run has the default `GITHUB_TOKEN` and the secrets the repository gives
+same-repository pull requests. A Worker can therefore run code with those permissions. This was
+always the case; the text now says so.
+
+- **The refusal covers what Actions and Cargo read before any job's command.** A difference in
+  `.github` itself (a file or a link where the source had a directory or nothing), any path
+  under `.github/`, `.gitmodules`, `.cargo` or any path under `.cargo/` (`runner`, `rustflags`),
+  or a root `action.yml` or `action.yaml` (`uses: ./`) refuses every remote check with
+  `remote_candidate_changes_ci` before anything is published. A nested action and every other
+  path stay candidate code.
+- **Recommendation.** Point a Remote Check at a dedicated gate workflow with `permissions: {}`
+  and no organisation or repository secrets, or give its jobs an `environment:` with required
+  reviewers for `af-gate/**` bases, so that a person approves a run that needs a secret.
+- **The gate's tools see only an allowlist.** `git` and `gh` start from an empty environment
+  plus `PATH`, `HOME`, `XDG_CONFIG_HOME`, `GH_CONFIG_DIR`, `SSH_AUTH_SOCK`, the keyring session
+  (`DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`), proxy variables and CA paths, and the fixed
+  values above. `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`,
+  `GIT_CONFIG_PARAMETERS`, `GIT_EXTERNAL_DIFF`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GH_HOST`,
+  `GH_TOKEN` and `GITHUB_TOKEN` never reach them: `gh` uses the login `gh auth login` stored.
+  Every `gh api` call passes `--hostname github.com`, the host `gh auth status` checked.
+- **Redaction.** Besides the push URL, the mapping path and the private repository's path, a
+  kept diagnostic loses the user information of any URL (`://user:token@`), which an operator's
+  `insteadOf` rewrite can put in a URL the executor was never told.
+- **No blob is resident as a whole stream.** The trees are written by streaming each blob from
+  the CAS into `git fast-import`, verified on the way; a gate `git` or `gh` answer longer than
+  64 MiB fails the call instead of being read in part.

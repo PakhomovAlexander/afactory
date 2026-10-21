@@ -503,7 +503,7 @@ fn remove_tree(
     // Claim the directory under a private name before anything is removed: whatever takes
     // `name` from now on is never touched. The claim is checked by identity, so a directory
     // that took `name` between the open above and the rename is put back and left.
-    let claimed = claim_name();
+    let claimed = claim_name(std::process::id(), found);
     renameat(&parent, name, &parent, claimed.as_str()).map_err(io::Error::from)?;
     let at_claim = nix::sys::stat::fstatat(
         &parent,
@@ -679,13 +679,29 @@ fn before_final_unlink(claim: &str) {
     let _ = claim;
 }
 
-/// Whether `name` is a claim [`remove_tree_at`] makes, and the pid of the process that made it.
-fn claim_owner(name: &str) -> Option<u32> {
-    name.strip_prefix(".af-removing-")?
-        .split('-')
-        .next()?
-        .parse()
-        .ok()
+/// The pid of the process that made the claim `name` in `parent`, when [`remove_tree_at`] made
+/// it: `name` is exactly the name [`claim_name`] gives, and `parent` holds there, not followed
+/// through a link, a directory with the very device and inode that name binds. Any other name,
+/// however claim-shaped, is not af's (ADR-0144).
+pub fn claim_owner_at(parent: impl AsFd, name: &OsStr) -> Option<u32> {
+    let text = name.to_str()?;
+    let mut fields = text.strip_prefix(".af-removing-")?.split('-');
+    let pid: u32 = fields.next()?.parse().ok()?;
+    let bound = Identity {
+        device: fields.next()?.parse().ok()?,
+        inode: fields.next()?.parse().ok()?,
+        born: None,
+    };
+    // Exactly as written: no fourth field, sign or leading zero.
+    if claim_name(pid, bound) != text {
+        return None;
+    }
+    let stat =
+        nix::sys::stat::fstatat(&parent, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW).ok()?;
+    let directory = nix::sys::stat::SFlag::from_bits_truncate(stat.st_mode)
+        & nix::sys::stat::SFlag::S_IFMT
+        == nix::sys::stat::SFlag::S_IFDIR;
+    (directory && Identity::of_stat(&stat) == bound).then_some(pid)
 }
 
 /// A removal a process that has since died left claimed, as one listing found it.
@@ -720,28 +736,36 @@ pub enum Unmeasured {
 }
 
 /// List, reading only, the removals a process that has since died left claimed in `parent`:
-/// every `.af-removing-<pid>-…` directory whose process is gone, with its identity and what
-/// the walk measured of it, or why it could not. A claim of a live process is its own business
-/// and is not listed.
+/// every `.af-removing-<pid>-…` directory that is a claim af made ([`claim_owner_at`]) and whose
+/// process is gone, with its identity and what the walk measured of it, or why it could not. A
+/// claim of a live process is its own business and is not listed; a claim-shaped name af cannot
+/// prove its own is a user's entry and is never listed (ADR-0144).
 pub fn abandoned_claims(parent: &Path) -> Vec<AbandonedClaim> {
+    let Ok(anchor) = open_anchor(parent) else {
+        return Vec::new();
+    };
     let Ok(entries) = std::fs::read_dir(parent) else {
         return Vec::new();
     };
     let mut claims = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(name) = name.to_str() else {
+        let Some(pid) = claim_owner_at(&anchor, &name) else {
             continue;
         };
-        let Some(pid) = claim_owner(name) else {
+        let Some(name) = name.to_str() else {
             continue;
         };
         if crate::stale::process_exists(pid) {
             continue;
         }
+        // Still the directory its name binds: what took the name since the proof is not listed.
         let Ok(identity) = Identity::of(&entry.path()) else {
             continue;
         };
+        if claim_name(pid, identity) != name {
+            continue;
+        }
         let measured = match crate::storage::allocated_bytes_and_depth(&entry.path()) {
             Ok((bytes, depth)) => Ok(ClaimSize { bytes, depth }),
             Err(error) if crate::storage::is_nested_too_deep(&error) => {
@@ -792,20 +816,11 @@ pub fn finish_abandoned_claims(parent: &Path) -> (Vec<(String, u64)>, Vec<String
     (removed, left)
 }
 
-/// A private name for a directory being removed: hidden, unique to this process and call, and
-/// never one a caller passes in.
-fn claim_name() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.subsec_nanos())
-        .unwrap_or(0);
-    format!(
-        ".af-removing-{}-{nanos}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )
+/// The private name the process `pid` claims the directory `identity` under while removing it:
+/// hidden, unique to the process and the directory, never one a caller passes in, and the proof
+/// [`claim_owner_at`] checks against what is on disk (`.af-removing-<pid>-<device>-<inode>`).
+pub fn claim_name(pid: u32, identity: Identity) -> String {
+    format!(".af-removing-{pid}-{}-{}", identity.device, identity.inode)
 }
 
 /// Remove `target`, a directory strictly below `anchor`, through descriptors: `anchor` opened as
@@ -897,27 +912,83 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(claims.len(), 1, "{claims:?}");
-        assert!(claims[0].starts_with(&format!(".af-removing-{}-", std::process::id())));
+        assert_eq!(claims, [claim_name(std::process::id(), identity)]);
+        assert_eq!(
+            claim_owner_at(&fd, OsStr::new(&claims[0])),
+            Some(std::process::id())
+        );
         // This process is alive: its claim is its own and stays.
         let (removed, _) = finish_abandoned_claims(&parent);
         assert!(removed.is_empty());
-        // A claim whose process is gone is finished; one that is not a claim is never touched.
-        std::fs::create_dir_all(parent.join(".af-removing-999999999-1-0/inner")).unwrap();
+        // A claim whose process is gone is finished; one that is not a claim is never touched,
+        // nor is a claim-shaped name whose entry is not the directory it binds (audit C2).
+        std::fs::create_dir_all(parent.join("abandoned/inner")).unwrap();
+        let abandoned = claim_name(
+            999_999_999,
+            Identity::of(&parent.join("abandoned")).unwrap(),
+        );
+        std::fs::rename(parent.join("abandoned"), parent.join(&abandoned)).unwrap();
         std::fs::create_dir(parent.join("neighbour")).unwrap();
-        // Listing reads only: the dead owner's claim with what it is, and nothing else.
+        std::fs::create_dir_all(parent.join(".af-removing-999999999-1-0/inner")).unwrap();
+        std::fs::write(parent.join(".af-removing-1-2-3"), b"mine").unwrap();
+        // Listing reads only: the dead owner's proven claim with what it is, and nothing else.
         let listed = abandoned_claims(&parent);
         assert_eq!(listed.len(), 1, "{listed:?}");
-        assert_eq!(listed[0].name, ".af-removing-999999999-1-0");
+        assert_eq!(listed[0].name, abandoned);
         assert_eq!(
             listed[0].identity,
-            Identity::of(&parent.join(".af-removing-999999999-1-0")).unwrap()
+            Identity::of(&parent.join(&abandoned)).unwrap()
         );
-        assert!(parent.join(".af-removing-999999999-1-0/inner").is_dir());
+        assert!(parent.join(&abandoned).join("inner").is_dir());
         let (removed, _) = finish_abandoned_claims(&parent);
         assert_eq!(removed.len(), 1);
-        assert_eq!(removed[0].0, ".af-removing-999999999-1-0");
+        assert_eq!(removed[0].0, abandoned);
         assert!(parent.join("neighbour").is_dir());
+        assert!(parent.join(".af-removing-999999999-1-0/inner").is_dir());
+        assert_eq!(
+            std::fs::read(parent.join(".af-removing-1-2-3")).unwrap(),
+            b"mine"
+        );
+    }
+
+    /// A claim-shaped name is af's only while it names exactly the directory it binds: the
+    /// device and inode in its name, a directory, written as `claim_name` writes it (audit C2).
+    #[test]
+    fn a_claim_is_proven_only_by_the_directory_its_name_binds() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path();
+        std::fs::create_dir(parent.join("made")).unwrap();
+        let identity = Identity::of(&parent.join("made")).unwrap();
+        let name = claim_name(42, identity);
+        std::fs::rename(parent.join("made"), parent.join(&name)).unwrap();
+        let fd = open_anchor(parent).unwrap();
+        assert_eq!(claim_owner_at(&fd, OsStr::new(&name)), Some(42));
+        // Another directory, a file, or a link at a name binding some identity is not a claim.
+        let other = Identity::of(&parent.join(&name)).unwrap();
+        let padded = format!(".af-removing-42-0{}-{}", other.device, other.inode);
+        std::fs::rename(parent.join(&name), parent.join(&padded)).unwrap();
+        assert_eq!(claim_owner_at(&fd, OsStr::new(&padded)), None);
+        std::fs::rename(parent.join(&padded), parent.join(&name)).unwrap();
+        std::fs::write(parent.join("file"), b"").unwrap();
+        let file = claim_name(42, Identity::of(&parent.join("file")).unwrap());
+        std::fs::rename(parent.join("file"), parent.join(&file)).unwrap();
+        assert_eq!(claim_owner_at(&fd, OsStr::new(&file)), None);
+        let link = claim_name(43, identity);
+        symlink(&name, parent.join(&link)).unwrap();
+        assert_eq!(claim_owner_at(&fd, OsStr::new(&link)), None);
+        std::fs::write(parent.join(".af-removing-1-2-3"), b"mine").unwrap();
+        for name in [
+            ".af-removing-1-2-3",
+            ".af-removing-1-2",
+            ".af-removing-",
+            ".af-removing-absent-1-2",
+            "made",
+        ] {
+            assert_eq!(claim_owner_at(&fd, OsStr::new(name)), None, "{name}");
+        }
+        let extra = format!("{name}-0");
+        std::fs::create_dir(parent.join(&extra)).unwrap();
+        assert_eq!(claim_owner_at(&fd, OsStr::new(&extra)), None);
     }
 
     /// The claim `parent` holds after a removal that stopped part way.
@@ -1094,13 +1165,17 @@ mod tests {
     fn an_unmeasurable_dead_claim_is_listed_as_such_and_never_finished() {
         let root = tempfile::tempdir().unwrap();
         let parent = root.path().join("parent");
-        let claim = parent.join(".af-removing-999999999-2-0");
-        let mut deep = claim.clone();
+        let made = parent.join("made");
+        let mut deep = made.clone();
         for _ in 0..300 {
             deep = deep.join("d");
         }
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::write(deep.join("file"), b"x").unwrap();
+        // A claim af made, so a proven one (ADR-0144): its name binds the directory it holds.
+        let claim = parent.join(claim_name(999_999_999, Identity::of(&made).unwrap()));
+        std::fs::rename(&made, &claim).unwrap();
+        let deep = claim.join(deep.strip_prefix(&made).unwrap());
         let listed = abandoned_claims(&parent);
         assert_eq!(listed.len(), 1, "{listed:?}");
         assert!(

@@ -103,7 +103,7 @@ impl Hint {
         };
         let written = path
             .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
+            .map_or(Ok(()), review_store::local_fs::create_private_dir_all)
             .and_then(|()| {
                 let staged = path.with_extension("json.staged");
                 std::fs::write(&staged, serde_json::to_vec(self).unwrap_or_default())?;

@@ -20,6 +20,8 @@ fn binding() -> review_config::GateExecutionSpec {
         build_caches: vec![],
         build_cache_max_bytes: None,
         build_cache_max_entries: None,
+        memory: None,
+        cpus: None,
     }
 }
 

@@ -564,7 +564,7 @@ mod tests {
         for line in [
             "error: unknown option '--safe-mode'; API_KEY=sk-secret",
             "Authorization: Bearer abcFIXTUREdefFIXTUREghi",
-            "error: 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f",
+            "error: 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b",
             "error: OPENAI_API_KEY=\"sk-proj-FIXTURE\"",
             "error: unexpected argument '--stdio' found",
         ] {

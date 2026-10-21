@@ -426,14 +426,27 @@ impl ProjectStore {
         wait: Wait,
     ) -> Result<Self, Unopened> {
         let directory = store_directory(state_home, project_id);
-        std::fs::create_dir_all(&directory)
+        // af's state is private whatever the umask: the Project Store and every directory af
+        // creates for it 0700, its files 0600, and af's state root narrowed (ADR-0144). The
+        // state home itself is the user's, created as any directory is.
+        std::fs::create_dir_all(state_home)
+            .map_err(|error| format!("creating {}: {error}", state_home.display()))?;
+        review_store::local_fs::create_private_dir_all(&directory)
             .map_err(|error| format!("creating {}: {error}", directory.display()))?;
-        let lock = std::fs::OpenOptions::new()
+        let _ = review_store::local_fs::narrow_owned_dir(&state_home.join("af"));
+        let _ = review_store::local_fs::narrow_owned_dir(&directory);
+        // Never through a link: the lock is af's own file, and narrowing it must not reach
+        // anything else.
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let lock = review_store::local_fs::private_file_options()
+            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
             .create(true)
             .truncate(false)
             .write(true)
             .open(directory.join("project.lock"))
             .map_err(|error| error.to_string())?;
+        // Created 0600; one an older release left open to others is narrowed (ADR-0144).
+        let _ = review_store::local_fs::narrow_owned_file(&lock);
         let lock = take_lock(lock, wait)?;
         let cas = Cas::open(directory.join("cas")).map_err(|error| error.to_string())?;
         let events = EventStore::open(directory.join("events.sqlite"))
