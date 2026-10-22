@@ -137,6 +137,7 @@ pub(super) fn worker_definition(
         name: format!("builtin/{name}"),
         version: "1.0.0".into(),
         signature: OperatorSignature {
+            unbound_allowed: Default::default(),
             retains: outgoing
                 .keys()
                 .map(|p| (p.clone(), incoming.keys().cloned().collect()))

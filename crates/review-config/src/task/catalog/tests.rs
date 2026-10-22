@@ -633,6 +633,7 @@ impl Fixture {
             name: "builtin/document-author".into(),
             version: "1.0.0".into(),
             signature: OperatorSignature {
+                unbound_allowed: Default::default(),
                 contract: PipelineContractV1 {
                     inputs: BTreeMap::from([(
                         "input".into(),

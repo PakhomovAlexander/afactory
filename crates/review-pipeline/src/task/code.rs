@@ -589,6 +589,7 @@ pub fn code_signatures(
     }
     let signature =
         |inputs, outputs, effects, evidence, retains, attempt, outcome_port| OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 { inputs, outputs },
             effects,
             evidence,
@@ -704,6 +705,7 @@ fn measure_signatures(policy: &CodeTaskPolicy) -> BTreeMap<String, OperatorSigna
     }
     let measure =
         |outputs: BTreeMap<String, PipelinePortV1>, wall_ms, outcome_port| OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 {
                 inputs: BTreeMap::from([(
                     "source".into(),
@@ -746,6 +748,7 @@ fn measure_signatures(policy: &CodeTaskPolicy) -> BTreeMap<String, OperatorSigna
         return signatures;
     }
     let compare = OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 {
             inputs: BTreeMap::from([
                 (

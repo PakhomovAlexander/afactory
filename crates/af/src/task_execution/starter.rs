@@ -93,6 +93,7 @@ fn worker(
         name: name.into(),
         version: "1.0.0".into(),
         signature: OperatorSignature {
+            unbound_allowed: Default::default(),
             retains: BTreeMap::from([(output_name.into(), inputs.keys().cloned().collect())]),
             contract: PipelineContractV1 {
                 inputs,
