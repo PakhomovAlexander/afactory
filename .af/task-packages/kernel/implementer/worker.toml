@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "kernel/implementer"
-version = "1.5.0"
+version = "1.6.0"
 
 [signature]
 effects = ["write-source", "execute-checks"]
@@ -54,7 +54,7 @@ report = ["requirements", "source"]
 
 [signature.attempt]
 tokens = 1500000
-wall_ms = 10800000
+wall_ms = 21600000
 
 [runner]
 kind = "model"
