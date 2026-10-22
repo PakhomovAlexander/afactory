@@ -38,3 +38,9 @@ opt-level = 2
 
 [profile.dev.package.serde_json]
 opt-level = 3
+
+# Telemetry judges every released harness content by the credential rules (design §8) line by
+# line on its consumer thread, each content renewing the run's 2 s shutdown bound. Keep the
+# redactor at production speed in debug/CI too: a 1 MiB content in tens of milliseconds.
+[profile.dev.package.review-telemetry]
+opt-level = 2

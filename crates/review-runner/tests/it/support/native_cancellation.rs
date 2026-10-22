@@ -33,9 +33,12 @@ fn state(pid: u32) -> String {
     }
 }
 
+/// `output` is what the native fixture prints on stdout; `kept` what the Store keeps of it, by the
+/// adapter's raw-output rule.
 pub fn check(
     make: impl Fn(&str) -> Box<dyn WorkerModelAdapter>,
     output: &[u8],
+    kept: &[u8],
     expected_usage: review_core::task::usage::TaskTokenUsageV3,
 ) {
     for cas_failure in [false, true] {
@@ -124,7 +127,7 @@ pub fn check(
             assert!(returned.raw_artifact_ids.is_empty());
         } else {
             assert_eq!(returned.raw_artifact_ids.len(), 2);
-            assert_eq!(cas.get(&returned.raw_artifact_ids[0]).unwrap(), output);
+            assert_eq!(cas.get(&returned.raw_artifact_ids[0]).unwrap(), kept);
             assert_eq!(
                 cas.get(&returned.raw_artifact_ids[1]).unwrap(),
                 b"diagnostic"

@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
+use review_telemetry::blob::{Document, Media};
+use review_telemetry::content::Scope;
 use review_telemetry::level::Level;
 use review_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
 use review_telemetry::segment::reader;
@@ -1146,4 +1148,116 @@ fn telemetry_replaced_live_name_withdraws_the_seal() {
         listing.sealed.is_empty() && listing.refs.is_empty() && listing.stale.is_empty(),
         "{listing:?}"
     );
+}
+
+/// Design §6 and §7.5: a kernel thread inside a Store commit only appends and signals. With
+/// the consumer held in a write, a content published detached (the mirror's payload at
+/// `content`) returns at once, where the attached publication takes the blob protocol's
+/// bounded waits for the consumer's flush; once the consumer is released, both events, their
+/// blob occurrences and the blob file are in the sealed segment.
+#[test]
+fn telemetry_detached_content_never_waits_for_the_consumer() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = options(temp.path(), Level::Content);
+    let held = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let (entered, gate) = (held.clone(), release.clone());
+    options.write_hook = Some(Arc::new(move |ordinal| {
+        // Every record write after the first holds the consumer thread until released.
+        if writer::phase() == writer::Phase::Records && ordinal > 1 {
+            entered.store(true, Ordering::SeqCst);
+            while !gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        Ok(())
+    }));
+    let writer = Writer::new(options).unwrap();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let run = writer
+        .span_start(
+            None,
+            Some(&command),
+            "af.run",
+            SpanKind::Internal,
+            Attrs::new(),
+        )
+        .unwrap();
+    writer.run_started();
+    writer.flush();
+    // The consumer enters its second write and is held there.
+    writer.event(&run, "af.note", Attrs::new());
+    let waiting = Instant::now();
+    while !held.load(Ordering::SeqCst) {
+        assert!(
+            waiting.elapsed() < Duration::from_secs(5),
+            "the consumer is held"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let payload = br#"{"schema":"af/TaskTransition@5","change":{"kind":"lease_renewed"}}"#;
+    let publish = |detached: bool| {
+        let started = Instant::now();
+        let media = Media::Kernel(Document::Record);
+        let seq = if detached {
+            writer.content_event_detached(
+                &run,
+                "af.store.event",
+                Attrs::new(),
+                payload,
+                media,
+                &Scope::Process,
+            )
+        } else {
+            writer.content_event(
+                &run,
+                "af.store.event",
+                Attrs::new(),
+                payload,
+                media,
+                &Scope::Process,
+            )
+        };
+        (seq, started.elapsed())
+    };
+    let (detached, took) = publish(true);
+    assert!(detached.is_some());
+    assert!(
+        took < Duration::from_millis(500),
+        "a detached publication waits for no flush: {took:?}"
+    );
+    let (attached, took) = publish(false);
+    assert!(attached.is_some());
+    assert!(
+        took >= review_telemetry::layout::LOCK_WAIT,
+        "the attached publication takes the protocol's bounded wait: {took:?}"
+    );
+    release.store(true, Ordering::SeqCst);
+    writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
+    writer.run_ended();
+    writer.begin_terminal();
+    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let lines = crate::sealed_lines(&sealed.path);
+    let events: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|line| line["name"] == "af.store.event")
+        .collect();
+    assert_eq!(events.len(), 2, "{lines:?}");
+    for event in &events {
+        assert!(
+            event["blob"].is_string(),
+            "the payload is a blob occurrence: {event}"
+        );
+    }
+    let blobs = std::fs::read_dir(temp.path().join("v1").join("blobs"))
+        .unwrap()
+        .flatten()
+        .filter(|prefix| prefix.path().is_dir())
+        .flat_map(|prefix| std::fs::read_dir(prefix.path()).unwrap().flatten())
+        .filter(|file| file.path().is_file())
+        .count();
+    assert!(blobs >= 1, "the blob file is in place");
 }

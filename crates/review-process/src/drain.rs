@@ -1,4 +1,5 @@
 use crate::control::{ReceiveError, receive};
+use crate::observe::Tap;
 use crate::{Leader, OUTPUT_DRAIN_GRACE, SupervisedError};
 use std::io::Read;
 use std::sync::atomic::AtomicBool;
@@ -32,22 +33,47 @@ pub(crate) struct Drained {
 /// Read `pipe` to its end on a thread of its own, keeping at most `cap` bytes. Past the cap it
 /// keeps reading and discards, so a child that writes without end never blocks on a full pipe,
 /// and counts every byte, so the caller can say the stream was truncated and by how much.
-pub(crate) fn drain_async(mut pipe: impl Read + Send + 'static, cap: usize) -> Drain {
+pub(crate) fn drain_async(pipe: impl Read + Send + 'static, cap: usize) -> Drain {
+    drain_observed(pipe, cap, None)
+}
+
+/// [`drain_async`] that also offers every chunk it reads to `tap`'s observer, after keeping what
+/// the cap allows of it: one non-blocking offer per read, the drain's only other work. The
+/// observer sees every byte in arrival order whether or not the kept capture is truncated.
+pub(crate) fn drain_observed(
+    mut pipe: impl Read + Send + 'static,
+    cap: usize,
+    tap: Option<Tap>,
+) -> Drain {
     let kept = Arc::new(Mutex::new(Kept::default()));
     let accumulated = Arc::clone(&kept);
     let (send, completion) = mpsc::channel();
     std::thread::spawn(move || {
         let mut chunk = [0; 16 * 1024];
+        let mut offset = 0_u64;
         let result = loop {
             match pipe.read(&mut chunk) {
                 Ok(0) => break Ok(()),
                 Ok(count) => {
-                    let mut kept = accumulated
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    let room = cap.saturating_sub(kept.bytes.len()).min(count);
-                    kept.bytes.extend_from_slice(&chunk[..room]);
-                    kept.total = kept.total.saturating_add(count as u64);
+                    let arrival = std::time::Instant::now();
+                    {
+                        let mut kept = accumulated
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        let room = cap.saturating_sub(kept.bytes.len()).min(count);
+                        kept.bytes.extend_from_slice(&chunk[..room]);
+                        kept.total = kept.total.saturating_add(count as u64);
+                    }
+                    if let Some(tap) = &tap {
+                        tap.observer.offer(
+                            tap.process,
+                            tap.stream,
+                            offset,
+                            &chunk[..count],
+                            arrival,
+                        );
+                    }
+                    offset += count as u64;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => break Err(error),

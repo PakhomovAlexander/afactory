@@ -27,6 +27,13 @@ pub type Charges = BTreeMap<String, (u128, Option<&'static str>)>;
 /// The fixture's Task.
 pub const TASK_ID: &str = "telemetry-accounting";
 
+/// The Task file the fixture's revision was read from (`af.task-file-adapter/1`).
+pub const TASK_FILE: &str =
+    "{\"schema\":\"af.task-file/1\",\"task_id\":\"telemetry-accounting\"}\n";
+
+/// The `pipeline.toml` the fixture's root pipeline package declares.
+pub const PIPELINE_TOML: &str = "name = \"builtin/document\"\nversion = 2\n";
+
 /// The fixture's lease: renewed before every operation, and short enough that a successor can
 /// take the Task once it lapses (ADR-0089).
 const LEASE_MS: u64 = 3_000;
@@ -301,7 +308,11 @@ impl TaskFixture {
         );
         task.authority.policy_id = policy.clone();
         task.acceptance.get_mut("checked").unwrap().verifier_policy = policy.clone();
-        task.provenance.adapter_id = policy.clone();
+        // The revision a Task file made: its adapter names the file's bytes as read.
+        let task_file = cas.put(TASK_FILE.as_bytes()).unwrap();
+        task.provenance.adapter_id = cas
+            .put_json(&json!({"schema":"af.task-file-adapter/1","source_file_id":task_file}))
+            .unwrap();
         task.provenance.input_artifact_ids = vec![source];
         task.limits.deadline_unix_ms = 9_000_000_000_000;
         task.limits.max_attempts = 10;
@@ -324,7 +335,18 @@ impl TaskFixture {
         second.id = "second".into();
         pipeline.nodes.extend([probe, second]);
         pipeline.max_attempts = 9;
-        let pipeline_id = put(&cas, "af/Pipeline@1", &pipeline);
+        // The root pipeline as the plan names it: the captured package declaring `pipeline.toml`.
+        let files = BTreeMap::from([(
+            "pipeline.toml".to_string(),
+            PIPELINE_TOML.as_bytes().to_vec(),
+        )]);
+        let pipeline_id = put(
+            &cas,
+            "af/TaskPackage@1",
+            json!({"schema":"af.task-package/1","name":"builtin/document","version":"1.0.0",
+                   "digest":review_config::lock::package_digest_from_files(&files),
+                   "files":files}),
+        );
         let mut output = pipeline.contract.outputs["document"].clone();
         output.covers.clear();
         let signature = OperatorSignature {

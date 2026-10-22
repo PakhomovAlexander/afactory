@@ -282,12 +282,13 @@ Campaign Store. The kernel never reads it: identity, replay, the Ledger, budgets
 every Worker input are the same whether it is on, off or deleted (ADR-0153). `[telemetry] \
 level` is `off`, `metrics`, `spans` (the default) or `content`, set from machine layers only; \
 see `af help telemetry`.\n\n\
-`status`, `runs`, `show`, `config`, `tail` and `ledger` read; `reindex` recovers crashed writers' segments and \
+`status`, `runs`, `show`, `turns`, `tools`, `config`, `tail`, `ledger`, `context`, `reasoning` \
+and `search` read; `reindex` recovers crashed writers' segments and \
 rebuilds the index; `gc --apply` evicts telemetry under the Storage Budget's rules. None records \
 telemetry, contacts a network or reads a Store. Exit codes: 0 success, 1 the telemetry \
 directory cannot be read, the index is in use or a run is unknown, 2 a wrong command line or a \
 refused `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry status\n  af telemetry runs --since 7d\n  af telemetry show RUN_ID\n  af telemetry config RUN_ID\n  af telemetry tail\n  af telemetry ledger RUN_ID\n  af telemetry gc\n  af telemetry status --json | jq .segments\n  af telemetry reindex\n  af telemetry status --dir ./copied-telemetry\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID"
+        after_long_help = "Examples:\n  af telemetry status\n  af telemetry runs --since 7d\n  af telemetry show RUN_ID\n  af telemetry turns RUN_ID\n  af telemetry tools RUN_ID\n  af telemetry config RUN_ID\n  af telemetry tail\n  af telemetry ledger RUN_ID\n  af telemetry context RUN_ID ATTEMPT_ID\n  af telemetry reasoning RUN_ID ATTEMPT_ID\n  af telemetry search 'connection refused'\n  af telemetry gc\n  af telemetry status --json | jq .segments\n  af telemetry reindex\n  af telemetry status --dir ./copied-telemetry\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID"
     )]
     Telemetry {
         #[command(subcommand)]
@@ -1918,6 +1919,201 @@ unknown, 2 a wrong command line, a run two Stores share without `--store`, or a 
         #[arg(long, value_name = "N", help_heading = "Selector")]
         depth: Option<u64>,
         /// Machine-readable af/telemetry-show@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// One run's model turns, one row each: timing by arrival, the harness's usage, stop reason, sizes
+    #[command(
+        long_about = "One run's model turns, one row each: timing by arrival, the harness's usage, stop reason, sizes.\n\n\
+RUN is the kernel run id `af telemetry runs` lists. At `spans` and above Telemetry taps each \
+harness's stream as it arrives (Claude `stream-json`, Codex `--json`): every Claude `assistant` \
+message and every Codex turn is an `af.turn`, timed by the arrival of the lines that opened and \
+closed it, with the harness's own per-turn usage (exact decimal strings, the `turn` series, \
+never added into the Attempt's or the run's totals, which are the kernel's), its stop reason \
+from a closed set, the bound model when the harness reported it as the model that answered, \
+the number and bytes of its text and thinking blocks and its tool calls — never their words, \
+which wait for the content level and Telemetry's release decision. Each row names its harness \
+process, Attempt and node, and whether that stream can be analysed whole: `complete`, \
+`incomplete` (the observer dropped chunks, a gap, a frame too long to judge) or `open` (the tap \
+has not ended). `--attempt ID` keeps one Attempt's turns. When two Stores record the same run id \
+it lists both and asks for `--store ID`.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or Attempt is \
+unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
+`[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry turns RUN_ID\n  af telemetry turns RUN_ID --attempt ATTEMPT_ID\n  af telemetry turns RUN_ID --json | jq '.turns[] | {ordinal, duration_us, usage}'"
+    )]
+    Turns {
+        /// The kernel run id
+        #[arg(value_name = "RUN")]
+        run: String,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// Only this Attempt's turns
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        attempt: Option<String>,
+        /// Machine-readable af/telemetry-turns@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// One run's tool calls, one row each: name, timing by arrival, outcome, input and output bytes
+    #[command(
+        long_about = "One run's tool calls, one row each: name, timing by arrival, outcome, input and output bytes.\n\n\
+RUN is the kernel run id `af telemetry runs` lists. Every Claude `tool_use` block is an \
+`af.tool` from its line's arrival to the arrival of the `tool_result` that answers it, and \
+every Codex `command_execution` or `mcp_tool_call` item one from `item.started` to \
+`item.completed`; each row carries the tool's name when it is in the invocation's own tool set \
+(`(unlisted)` otherwise), its correlation id, its turn, its outcome (`succeeded`, `failed`, \
+`incomplete`), the bytes of its arguments and of its result, and a command's exit code and an \
+item's status — never the arguments or the result themselves. Each row names its harness \
+process, Attempt and node, and whether that stream can be analysed whole (`complete`, \
+`incomplete`, `open`). `--attempt ID` keeps one Attempt's tool calls. When two Stores record \
+the same run id it lists both and asks for `--store ID`.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or Attempt is \
+unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
+`[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry tools RUN_ID\n  af telemetry tools RUN_ID --attempt ATTEMPT_ID\n  af telemetry tools RUN_ID --json | jq '.tools[] | {name, duration_us, output_bytes}'"
+    )]
+    Tools {
+        /// The kernel run id
+        #[arg(value_name = "RUN")]
+        run: String,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// Only this Attempt's tool calls
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        attempt: Option<String>,
+        /// Machine-readable af/telemetry-tools@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// One Attempt's composed Worker input as the content level kept it: the prompt bytes and the manifest
+    #[command(
+        long_about = "One Attempt's composed Worker input as the content level kept it: the prompt bytes and the manifest.\n\n\
+RUN is the kernel run id `af telemetry runs` lists and ATTEMPT the kernel Attempt id (`af telemetry \
+show RUN` names it). At `[telemetry] level = \"content\"`, and only there, the kernel keeps the \
+composed Worker input of `af.context.compose` as two blobs: the prompt bytes the Worker received \
+(`gen_ai.content.input`) and the context manifest they were composed by (`gen_ai.content.system`). \
+Each was redacted whole before any truncation: a line or value that looks like credential \
+material is withheld (the artifact and Snapshot ids of the request's values, and the identity \
+members of the manifest, stay), and content past `content_max_blob_bytes` keeps its head and \
+tail. Prints the Attempt's compose span, the manifest digest, the rendered size and layers, \
+each blob's occurrence, digest and sizes (its source digest is over the bytes the Worker \
+received), then the prompt itself; `--raw` prints only the prompt's retained bytes, exactly. \
+Below `content` it says the content was not captured, naming the level; an exhausted \
+`content_attempt_max_bytes` or a missing blob file is reported for the occurrence. The content \
+is the operator's: no Worker ever reads it. When two Stores record the same run id it lists \
+both and asks for `--store ID`.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or Attempt is \
+unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
+`[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry context RUN_ID ATTEMPT_ID\n  af telemetry context RUN_ID ATTEMPT_ID --raw > prompt.json\n  af telemetry context RUN_ID ATTEMPT_ID --json | jq '{state, manifest, input: .input.digest}'"
+    )]
+    Context {
+        /// The kernel run id
+        #[arg(value_name = "RUN")]
+        run: String,
+        /// The kernel Attempt id
+        #[arg(value_name = "ATTEMPT")]
+        attempt: String,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// Print only the prompt's retained bytes, exactly as kept
+        #[arg(long, conflicts_with = "json", help_heading = "Output")]
+        raw: bool,
+        /// Machine-readable af/telemetry-context@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// One Attempt's thinking blocks and reasoning summaries, in the order they arrived
+    #[command(
+        long_about = "One Attempt's thinking blocks and reasoning summaries, in the order they arrived.\n\n\
+RUN is the kernel run id `af telemetry runs` lists and ATTEMPT the kernel Attempt id. At \
+`[telemetry] level = \"content\"` with `content_reasoning = true`, a harness's Claude \
+`thinking` blocks and Codex `reasoning` items are pended while its process runs and, once \
+Telemetry's own release decision over the complete streams withheld nothing, kept as blobs \
+named by `af.content.reasoning` on their turn, redacted whole (grant values replaced, credential \
+lines withheld) before any truncation and counted against `content_attempt_max_bytes`. Prints \
+each of the Attempt's harness processes with the level it recorded at and whether its reasoning \
+was `captured`, `not_captured` (below `content`, or `content_reasoning = false`), `withheld` \
+(the release decision found login-challenge material or the adapter replaced the streams) or \
+`open` (not yet released), then every thought in order with its turn, occurrence, digest and \
+sizes and its retained text. The content is the operator's: no Worker, Warm Set, Worker Notes \
+or optimization source ever reads it. When two Stores record the same run id it lists both and \
+asks for `--store ID`.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or Attempt is \
+unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
+`[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry reasoning RUN_ID ATTEMPT_ID\n  af telemetry reasoning RUN_ID ATTEMPT_ID --json | jq '.thoughts[] | {ordinal, kind, turn_ordinal}'"
+    )]
+    Reasoning {
+        /// The kernel run id
+        #[arg(value_name = "RUN")]
+        run: String,
+        /// The kernel Attempt id
+        #[arg(value_name = "ATTEMPT")]
+        attempt: String,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// Machine-readable af/telemetry-reasoning@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// Full-text search over the content Telemetry kept: matching blobs, their span paths, a bounded excerpt
+    #[command(
+        long_about = "Full-text search over the content Telemetry kept: matching blobs, their span paths, a bounded excerpt.\n\n\
+TEXT is searched as one phrase (no query operators) in the FTS5 table `content_fts`, which \
+every `af telemetry` command keeps at ingest over the retained text blobs when \
+`[telemetry] content_index = true`: composed Worker inputs, assistant text, reasoning, tool \
+arguments and results, check output, Store event payloads, Finding bodies and configuration \
+texts, each as redacted when it was kept. Prints each matching blob's digest with a bounded \
+excerpt of its redacted text and its occurrences — the event that names it, its time, run, \
+Attempt and span path. `--since D` keeps occurrences of the last D (30m, 12h, 14d, 2w); \
+`--run RUN` keeps one run's (`--store ID` when two Stores record it). Search exists only at \
+`content`: below it, or with `content_index = false`, it is refused, because nothing \
+searchable is kept.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or the run is unknown, 2 a \
+wrong command line, a run two Stores share without `--store`, a refused `[telemetry]` key, or a \
+level below `content` or `content_index = false`.",
+        after_long_help = "Examples:\n  af telemetry search 'connection refused'\n  af telemetry search 'TODO' --since 7d\n  af telemetry search 'flaky' --run RUN_ID --json | jq '.matches[].occurrences[].span_path'"
+    )]
+    Search {
+        /// The text to find, as one phrase
+        #[arg(value_name = "TEXT")]
+        text: String,
+        /// Only occurrences of the last D (30m, 12h, 14d, 2w)
+        #[arg(long, value_name = "D", help_heading = "Selector")]
+        since: Option<String>,
+        /// Only this run's occurrences (the kernel run id)
+        #[arg(long, value_name = "RUN", help_heading = "Selector")]
+        run: Option<String>,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", requires = "run", help_heading = "Selector")]
+        store: Option<String>,
+        /// Machine-readable af/telemetry-search@1
         #[arg(long, help_heading = "Output")]
         json: bool,
         /// Read this telemetry directory instead of the configured one (one copied from another machine)

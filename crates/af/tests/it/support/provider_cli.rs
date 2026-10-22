@@ -39,6 +39,8 @@ Options:
   --safe-mode                           Start with all customizations disabled
   --strict-mcp-config                   Only use MCP servers from --mcp-config
   --tools <tools...>                    Specify the list of available tools
+  --verbose                             Override verbose mode setting from
+                                        config
   -v, --version                         Output the version number
 ";
 

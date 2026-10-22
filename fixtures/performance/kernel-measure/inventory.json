@@ -2,13 +2,13 @@
  "files": [
   {
    "path": "Cargo.lock",
-   "sha256": "sha256:cdf0012660c92b8aaedc3931503c3406737591da70db83726cfa4944209f7a0f",
-   "size": 62419
+   "sha256": "sha256:a81b233322fe6e6aae3eb43f9eaf72e93090406669dab1f9b9095fb334daf060",
+   "size": 62485
   },
   {
    "path": "Cargo.toml",
-   "sha256": "sha256:60ee4728cc024be02a9e82fb19732be03c30731d602ac96b12b3c7bf1660e74b",
-   "size": 1708
+   "sha256": "sha256:acd8630b870cee430fcfacd9b6a08f389d5c0c961b66f88521fece985a89668c",
+   "size": 2038
   },
   {
    "path": "crates/af/Cargo.toml",
@@ -117,13 +117,13 @@
   },
   {
    "path": "crates/review-runner-claude/Cargo.toml",
-   "sha256": "sha256:ec59e1ff6d1cd0288f85f4cfc65a7d51322ed6b1d0acf5ecf787c314d62febc0",
-   "size": 1425
+   "sha256": "sha256:3639ecf1c97e49d51b3510e5fd0d19896d084d26d248898f29b6b22b84b5ffb5",
+   "size": 1645
   },
   {
    "path": "crates/review-runner-codex/Cargo.toml",
-   "sha256": "sha256:3aaf0deb94ae65fd11195b3d4b0082a709c6bd1064a84c7e612f3a06231ac819",
-   "size": 1151
+   "sha256": "sha256:4ba1dadeada92b690379967a6e93c772e838216916e7bf5fc6d973e45edea638",
+   "size": 1371
   },
   {
    "path": "crates/review-runner/Cargo.toml",
@@ -2292,8 +2292,8 @@
   },
   {
    "path": "scripts/performance/tests/test_contracts.py",
-   "sha256": "sha256:d0d1f69a9ca6e51cbcb01ca566f5d9ac5abb2e4f1d3744c611ad4d102f764abc",
-   "size": 16756
+   "sha256": "sha256:bee1c01ba185e927dfb1011d4d63f17490cf3f368e247c5afddb99054aabb2ca",
+   "size": 17083
   },
   {
    "path": "scripts/performance/tests/test_costs.py",
@@ -2421,7 +2421,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:a0f14400ef4b07e3663656a805cf89f42ef56e8c9e6e0fde8279016f0b6d309d",
+ "harness_digest": "sha256:4c88b1597498313f789394f19a90ab28f6141c9a94b73f2fb91d460592159f9e",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

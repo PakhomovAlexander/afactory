@@ -47,6 +47,9 @@ const MESSAGE_FIELD: &str = "message";
 /// consumer thread.
 pub const RUN_SPAN: &str = "af.run";
 
+/// The span of one Attempt: content below it counts against its allowance (design §8).
+pub const ATTEMPT_SPAN: &str = "af.attempt";
+
 /// The spans recorded at `metrics` (design §8); every other span and every event is recorded
 /// from `spans` on.
 pub const METRICS_SPANS: [&str; 8] = [
@@ -267,6 +270,9 @@ struct SpanState {
     /// The [`RUN_IDENTITY`] attributes the span named or took from its parent.
     identity: Vec<(String, Attr)>,
     depth: usize,
+    /// The `span_id` of the nearest `af.attempt` at or above the span: whose content allowance
+    /// content on it counts against (design §8).
+    attempt: Option<String>,
     end: Attrs,
     status: Option<SpanStatus>,
     references: usize,
@@ -315,6 +321,19 @@ impl TelemetrySubscriber {
         })
     }
 
+    fn identity_of(&self, id: u64) -> Option<SpanIdentity> {
+        lock(&self.spans).get(&id).and_then(|state| {
+            state.span_id.clone().map(|span_id| SpanIdentity {
+                span: RecordedSpan {
+                    span_id,
+                    trace_id: state.trace_id.clone(),
+                },
+                identity: state.identity.clone(),
+                depth: state.depth,
+            })
+        })
+    }
+
     fn parent_of(&self, explicit: Option<&Id>, contextual: bool) -> Option<u64> {
         match explicit {
             Some(id) => Some(id.into_u64()),
@@ -340,6 +359,45 @@ pub fn recorded(span: &tracing::Span) -> Option<RecordedSpan> {
         dispatch
             .downcast_ref::<TelemetrySubscriber>()
             .and_then(|subscriber| subscriber.recorded(id.into_u64()))
+    })
+    .flatten()
+}
+
+/// A recorded span with the run identity it named or took from its parent ([`RUN_IDENTITY`]) and
+/// its depth (the root is 0): what a record written beside the subscriber — a harness stream's
+/// `af.turn` and `af.tool` spans — names to belong to the same run below it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpanIdentity {
+    pub span: RecordedSpan,
+    pub identity: Vec<(String, Attr)>,
+    pub depth: usize,
+}
+
+/// Whose content allowance content on `span` counts against: the Attempt of its nearest
+/// `af.attempt` (that span itself included), else the process's.
+pub fn content_scope(span: &tracing::Span) -> crate::content::Scope {
+    span.with_subscriber(|(id, dispatch)| {
+        dispatch
+            .downcast_ref::<TelemetrySubscriber>()
+            .and_then(|subscriber| {
+                lock(&subscriber.spans)
+                    .get(&id.into_u64())
+                    .and_then(|state| state.attempt.clone())
+            })
+    })
+    .flatten()
+    .map_or(
+        crate::content::Scope::Process,
+        crate::content::Scope::Attempt,
+    )
+}
+
+/// The [`SpanIdentity`] of `span`, when this crate's subscriber kept its start.
+pub fn span_identity(span: &tracing::Span) -> Option<SpanIdentity> {
+    span.with_subscriber(|(id, dispatch)| {
+        dispatch
+            .downcast_ref::<TelemetrySubscriber>()
+            .and_then(|subscriber| subscriber.identity_of(id.into_u64()))
     })
     .flatten()
 }
@@ -445,7 +503,7 @@ impl Subscriber for TelemetrySubscriber {
         let mut fields = Fields::default();
         span.record(&mut fields);
         let parent = self.parent_of(span.parent(), span.is_contextual());
-        let (parent_span, parent_trace, parent_identity, depth) = parent
+        let (parent_span, parent_trace, parent_identity, depth, parent_attempt) = parent
             .and_then(|parent| {
                 lock(&self.spans).get(&parent).map(|state| {
                     (
@@ -453,10 +511,11 @@ impl Subscriber for TelemetrySubscriber {
                         state.trace_id.clone(),
                         state.identity.clone(),
                         state.depth + 1,
+                        state.attempt.clone(),
                     )
                 })
             })
-            .unwrap_or((None, None, Vec::new(), 0));
+            .unwrap_or((None, None, Vec::new(), 0, None));
         // A run identity the span does not name is its parent's, written first so the record
         // bound never drops it before the span's own attributes.
         let inherited: Vec<(String, Attr)> = parent_identity
@@ -488,6 +547,11 @@ impl Subscriber for TelemetrySubscriber {
         if span.metadata().name() == RUN_SPAN && span_id.is_some() {
             self.writer.run_started();
         }
+        let attempt = if span.metadata().name() == ATTEMPT_SPAN {
+            span_id.clone()
+        } else {
+            parent_attempt
+        };
         lock(&self.spans).insert(
             id,
             SpanState {
@@ -496,6 +560,7 @@ impl Subscriber for TelemetrySubscriber {
                 trace_id,
                 identity,
                 depth,
+                attempt,
                 end: Attrs::new(),
                 status: fields.status,
                 references: 1,

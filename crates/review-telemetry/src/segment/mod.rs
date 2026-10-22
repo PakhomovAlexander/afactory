@@ -62,4 +62,9 @@ impl Clock {
     pub fn now_unix_ns(&self) -> u128 {
         self.origin_unix_ns + self.origin.elapsed().as_nanos()
     }
+
+    /// Unix nanoseconds of `instant` on this clock; an instant before the origin is the origin.
+    pub fn unix_ns_at(&self, instant: Instant) -> u128 {
+        self.origin_unix_ns + instant.saturating_duration_since(self.origin).as_nanos()
+    }
 }

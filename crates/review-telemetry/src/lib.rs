@@ -4,9 +4,10 @@
 //!
 //! A leaf crate: it links nothing in the workspace, and `review-process` never links it
 //! (ADR-0026). The write side — [`record`], [`segment::writer`], [`blob`], [`redact`],
-//! [`level`], [`subscriber`], [`trace`], [`dirs`], [`process`] — is for every crate that
-//! records. The read side — [`segment::reader`], [`index`], [`status`], [`view`], [`ledger`],
-//! [`accounting`], [`budget`], [`blob::reader`] and [`blob::collect`] — is linked only by
+//! [`level`], [`subscriber`], [`trace`], [`dirs`], [`process`], [`stream`], [`content`] — is
+//! for every crate that records. The read side — [`segment::reader`], [`index`], [`status`],
+//! [`view`], [`ledger`], [`accounting`], [`turns`], [`content_view`], [`budget`],
+//! [`blob::reader`] and [`blob::collect`] — is linked only by
 //! `af telemetry`, `af storage` and the TUI (clause 1); a source test holds every other crate
 //! to that.
 //!
@@ -18,6 +19,8 @@
 pub mod accounting;
 pub mod blob;
 pub mod budget;
+pub mod content;
+pub mod content_view;
 pub mod dirs;
 pub mod index;
 pub mod layout;
@@ -28,8 +31,10 @@ pub mod record;
 pub mod redact;
 pub mod segment;
 pub mod status;
+pub mod stream;
 pub mod subscriber;
 pub mod trace;
+pub mod turns;
 pub mod view;
 
 use std::path::PathBuf;
@@ -148,7 +153,8 @@ impl Telemetry {
     }
 
     /// The shutdown begins (the run spans' ends, the `af.command` end, then the seal): from here
-    /// every write is the consumer thread's and every wait shares one 2 s bound.
+    /// every write is the consumer thread's and every wait shares one bound — 2 s, renewed by
+    /// each content a released stream publishes under the seal (`Writer::renew_shutdown`).
     pub fn begin_terminal(&self) {
         if let Some(writer) = self.writer() {
             writer.begin_terminal();

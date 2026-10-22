@@ -397,6 +397,7 @@ impl<'a> CheckRunner<'a> {
                 stderr,
                 ending,
             } => {
+                record_output(span, &stdout, &stderr);
                 return (
                     CheckResult {
                         reason: Some(reason),
@@ -441,6 +442,7 @@ impl<'a> CheckRunner<'a> {
         } else {
             CheckEnding::Signaled
         };
+        record_output(span, &output.stdout, &output.stderr);
         let capped = truncated.is_some();
         (
             self.finish(base, output, stderr_held, truncated),
@@ -806,6 +808,27 @@ fn resource_use(rusage: review_process::Rusage) -> review_telemetry::process::Re
         user_ms: rusage.user_ms,
         system_ms: rusage.system_ms,
         max_rss_bytes: rusage.max_rss_bytes,
+    }
+}
+
+/// At `content`, the check's stdout and stderr as blobs named by `af.check.output` on its
+/// `af.check` span (design §8), each judged per line and only then bounded, counted against the
+/// process's content allowance; below `content`, nothing beyond the sizes the span records.
+fn record_output(span: &tracing::Span, stdout: &[u8], stderr: &[u8]) {
+    if span.is_disabled() || !review_telemetry::content::recording() {
+        return;
+    }
+    for (stream, bytes) in [("stdout", stdout), ("stderr", stderr)] {
+        if bytes.is_empty() {
+            continue;
+        }
+        review_telemetry::content::on_span_outside_attempts(
+            span,
+            review_telemetry::content::event::CHECK_OUTPUT,
+            review_telemetry::record::Attrs::new().enumerated("af.stream", stream),
+            bytes,
+            review_telemetry::blob::Media::Text,
+        );
     }
 }
 

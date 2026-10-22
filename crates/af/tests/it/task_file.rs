@@ -453,8 +453,11 @@ with open(home+'/served-by','a') as f: f.write(sys.argv[0]+'\n')
 if update_at=='admission' and len(open(home+'/calls').readlines())==1: update()
 if os.path.isfile(home+'/switch-after') and len(open(home+'/calls').readlines())==int(open(home+'/switch-after').read()):
  with open(home+'/account-email','w') as f: f.write('changed@example.test')
+# Under `stream-json` (Telemetry at `spans` and above) Claude prints its envelope as the
+# `result` line; under `json` this fixture prints it without a `type`.
+shape={'type':'result'} if 'stream-json' in sys.argv else {}
 if os.path.isfile(home+'/wide-usage'):
- print(json.dumps({'is_error':True,'result':'fixture provider failed after reporting usage','usage':{'input_tokens':18446744073709551615,'output_tokens':20,'cache_creation_input_tokens':0}}))
+ print(json.dumps({**shape,'is_error':True,'result':'fixture provider failed after reporting usage','usage':{'input_tokens':18446744073709551615,'output_tokens':20,'cache_creation_input_tokens':0}}))
  sys.exit(0)
 if request==PROBE_INPUT:
  result='OK'
@@ -463,7 +466,7 @@ else:
  assert set(value['inputs'])=={'source','subject','history','checks','assignment'}
  assert value['inputs']['assignment'][0]['payload']['findings']==[]
  result=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'reports':[],'benchmark_demands':[],'dispositions':[]}]}})
-envelope={'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}}
+envelope={**shape,'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}}
 if request!=PROBE_INPUT:
  assert '--json-schema' in sys.argv
  envelope['structured_output']=json.loads(result)
