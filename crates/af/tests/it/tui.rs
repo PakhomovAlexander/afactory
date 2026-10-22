@@ -78,6 +78,16 @@ fn temp_root() -> (tempfile::TempDir, PathBuf) {
 
 /// The machine a test's `af` sees: its own home and XDG directories, no update checks.
 fn environment(home: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
+    environment_from(home, std::env::var_os)
+}
+
+/// [`environment`] with the parent's variables read through `parent`. `PATH` and `TMPDIR` pass
+/// through as they are set, or not at all: af puts its sandboxes under `TMPDIR` and requires
+/// free space there, which the system default may not have.
+fn environment_from(
+    home: &Path,
+    parent: impl Fn(&'static str) -> Option<std::ffi::OsString>,
+) -> Vec<(&'static str, std::ffi::OsString)> {
     let mut environment = vec![
         ("HOME", home.as_os_str().to_owned()),
         ("XDG_CONFIG_HOME", home.join("config").into_os_string()),
@@ -92,8 +102,10 @@ fn environment(home: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
             crate::common::LOAD_SAFE_PROBE_TIMEOUT_MS.into(),
         ),
     ];
-    if let Some(path) = std::env::var_os("PATH") {
-        environment.push(("PATH", path));
+    for name in ["PATH", "TMPDIR"] {
+        if let Some(value) = parent(name) {
+            environment.push((name, value));
+        }
     }
     environment
 }
@@ -433,6 +445,37 @@ fn bare_af_on_a_pipe_prints_help_and_exits_2() {
     let help = String::from_utf8_lossy(&output.stderr);
     assert!(help.contains("Usage: af"), "{help}");
     assert!(help.contains("review"), "{help}");
+}
+
+/// Read from a supplied parent rather than this process's environment, which other tests share.
+#[test]
+fn the_environment_keeps_the_parents_tmpdir_and_path_only_when_set() {
+    use std::os::unix::ffi::OsStringExt;
+    let home = Path::new("/fixture/home");
+    let tmpdir = std::ffi::OsString::from_vec(b"/fixture/tmp-\xff".to_vec());
+    let set = environment_from(home, |name| match name {
+        "PATH" => Some("/fixture/bin".into()),
+        "TMPDIR" => Some(tmpdir.clone()),
+        _ => Some("ambient".into()),
+    });
+    let value = |environment: &[(&str, std::ffi::OsString)], name: &str| {
+        let mut values = environment.iter().filter(|(key, _)| *key == name);
+        let value = values.next().map(|(_, value)| value.clone());
+        assert!(values.next().is_none(), "{name} is set twice");
+        value
+    };
+    assert_eq!(value(&set, "TMPDIR"), Some(tmpdir));
+    assert_eq!(value(&set, "PATH"), Some("/fixture/bin".into()));
+    assert_eq!(value(&set, "HOME"), Some("/fixture/home".into()));
+    assert_eq!(
+        value(&set, "XDG_CONFIG_HOME"),
+        Some("/fixture/home/config".into())
+    );
+    assert!(set.iter().all(|(_, value)| value != "ambient"));
+    let unset = environment_from(home, |_| None);
+    assert_eq!(value(&unset, "TMPDIR"), None);
+    assert_eq!(value(&unset, "PATH"), None);
+    assert_eq!(value(&unset, "HOME"), Some("/fixture/home".into()));
 }
 
 #[test]
