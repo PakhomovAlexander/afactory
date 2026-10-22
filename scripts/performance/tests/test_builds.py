@@ -7,6 +7,7 @@ worktree's `.git` file.
 """
 import json
 import os
+import shutil
 import platform
 import subprocess
 import time
@@ -844,9 +845,15 @@ class RealToolchain(TempDir):
                         environment=environment,
                         trusted_host_build=environment.startswith("linux_"))
         builder = builds.Builder(repo.path, plan, REAL, registry(), free_bytes=PLENTY)
-        doc = builder.build()
+        # Admit this fixture's real C linker in the sanitized build path.
+        cc = shutil.which("cc")
+        self.assertIsNotNone(cc, "the real toolchain fixture needs a C linker")
+        with mock.patch.object(builds, "SYSTEM_PATH",
+                               os.path.dirname(cc) + ":" + builds.SYSTEM_PATH):
+            doc = builder.build()
         base_side, cand = doc["sides"]["baseline"], doc["sides"]["candidate"]
-        self.assertEqual(doc["supervisor"]["status"], "succeeded")
+        self.assertEqual(doc["supervisor"]["status"], "succeeded",
+                         read(os.path.join(builder.layout.logs, "supervisor.log")))
         for side, sha in ((base_side, base), (cand, head)):
             self.assertEqual(side["status"], "succeeded", side)
             self.assertEqual(side["embedded_commit"]["expected"], sha[:12])
