@@ -1344,12 +1344,23 @@ mod advisory_reviewer_tests {
         let reduce = &installed["operator/review-reduce"];
         assert_eq!(reduce.unbound_allowed, BTreeSet::from(["uix".to_string()]));
         for name in ["bugs", "correctness", "uix"] {
-            assert!(reduce.contract.inputs[name].optional, "{name} stays optional at runtime");
+            assert!(
+                reduce.contract.inputs[name].optional,
+                "{name} stays optional at runtime"
+            );
         }
         let bind = &installed["operator/review-bind"];
-        assert!(bind.unbound_allowed.is_empty(), "the bind still assigns every reviewer");
+        assert!(
+            bind.unbound_allowed.is_empty(),
+            "the bind still assigns every reviewer"
+        );
         let required_only = policy_with(&[("bugs", DemandRequirement::Required)]);
-        let installed = review_signatures(&format!("sha256:{}", "b".repeat(64)), &required_only).unwrap();
-        assert!(installed["operator/review-reduce"].unbound_allowed.is_empty());
+        let installed =
+            review_signatures(&format!("sha256:{}", "b".repeat(64)), &required_only).unwrap();
+        assert!(
+            installed["operator/review-reduce"]
+                .unbound_allowed
+                .is_empty()
+        );
     }
 }
