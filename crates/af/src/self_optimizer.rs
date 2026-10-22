@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use review_core::task::optimization::*;
 use review_core::task::usage::DecimalU64;
+use review_store::optimization::{UnavailableSourceReason, unavailable_source_gap};
 use review_store::{Cas, EventStore, content_id};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -252,6 +253,7 @@ fn source_path(config_path: &Path, declared: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+#[cfg(test)]
 fn digest(bytes: &[u8]) -> String {
     format!(
         "sha256:{}",
@@ -595,25 +597,20 @@ fn capture(options: &Options, repo: &Path, state: &Path) -> Result<OptimizationH
             }
             Err(error) => {
                 let reason = if error.contains("Retained source bytes changed") {
-                    "source_changed_"
+                    UnavailableSourceReason::Changed
                 } else if error.contains("Retained source range was truncated") {
-                    "source_truncated_"
+                    UnavailableSourceReason::Truncated
                 } else if error.contains("Retained source verification exceeds") {
-                    "source_verification_limit_"
+                    UnavailableSourceReason::VerificationLimit
                 } else if error.contains("Declared source identity changed") {
-                    "source_identity_changed_"
+                    UnavailableSourceReason::IdentityChanged
                 } else {
-                    ""
+                    UnavailableSourceReason::Unavailable
                 };
-                gaps.insert(format!(
-                    "unavailable_{}_{}{}",
-                    source.adapter,
+                gaps.insert(unavailable_source_gap(
+                    &source.adapter,
+                    &source.source_id,
                     reason,
-                    digest(source.source_id.as_bytes())
-                        .trim_start_matches("sha256:")
-                        .chars()
-                        .take(12)
-                        .collect::<String>()
                 ));
             }
         }

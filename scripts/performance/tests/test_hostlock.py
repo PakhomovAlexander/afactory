@@ -64,7 +64,7 @@ class MachineLock(TempDir):
 
     def helper(self, name, mode, directory="-", **kwargs):
         env, cwd = self.private_environment(name)
-        return subprocess.Popen([sys.executable, "-I", "-c", HELPER, mode, directory],
+        return subprocess.Popen([sys.executable, "-I", "-B", "-c", HELPER, mode, directory],
                                 env=env, cwd=cwd, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
 
@@ -102,14 +102,16 @@ class MachineLock(TempDir):
         self.assertEqual(first["path"], hostlock.default_path())
 
     def test_independent_processes_with_different_private_roots_never_both_hold_it(self):
-        holder, path = self.hold("holder")
-        self.assertEqual(path, hostlock.default_path())
-        refused = self.answer("other", "try")
+        locks = self.path("locks")
+        os.mkdir(locks, 0o755)
+        holder, path = self.hold("holder", locks)
+        self.assertEqual(path, os.path.join(os.path.realpath(locks), hostlock.MACHINE_LOCK_NAME))
+        refused = self.answer("other", "try", locks)
         self.assertEqual(refused["refused"], "concurrent_shard", refused)
         self.assertEqual(self.release(holder).strip(), "released")
         # The lock file stays for the next holder; its inode is never removed.
         info = os.lstat(path)
-        self.assertEqual(self.answer("third", "try")["held"], path)
+        self.assertEqual(self.answer("third", "try", locks)["held"], path)
         self.assertEqual(os.lstat(path).st_ino, info.st_ino)
 
     def test_a_shard_refuses_before_any_preflight_while_another_process_holds_it(self):
@@ -151,9 +153,16 @@ class MachineLock(TempDir):
         self.assertTrue(os.path.exists(docker + ".calls"))
 
     def test_a_scratch_enforcement_fill_takes_the_machine_lock(self):
-        holder, _ = self.hold("holder")
+        locks = self.path("locks")
+        os.mkdir(locks, 0o755)
+        holder, _ = self.hold("holder", locks)
         env, cwd = self.private_environment("capabilities")
-        result = subprocess.run([sys.executable, "-I", CLI, "capabilities",
+        bootstrap = ("import runpy,sys; sys.path.insert(0,%r); "
+                     "from perflab import runner; original=runner.machine_lock; "
+                     "runner.machine_lock=lambda: original(%r); "
+                     "sys.argv=[%r]+sys.argv[1:]; runpy.run_path(%r,run_name='__main__')"
+                     % (LAB, locks, CLI, CLI))
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", bootstrap, "capabilities",
                                  "--suite", os.path.join(ROOT, "fixtures/performance/suite.toml"),
                                  "--scratch", self.path("scratch-fs"),
                                  "--verify-scratch-enforcement"],

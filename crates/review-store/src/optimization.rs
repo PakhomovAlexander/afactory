@@ -242,6 +242,48 @@ fn span_kind_totals<'a>(
         .collect()
 }
 
+/// Reasons emitted when a declared history source cannot be read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnavailableSourceReason {
+    Unavailable,
+    Changed,
+    Truncated,
+    VerificationLimit,
+    IdentityChanged,
+}
+
+impl UnavailableSourceReason {
+    pub const ALL: [Self; 5] = [
+        Self::Unavailable,
+        Self::Changed,
+        Self::Truncated,
+        Self::VerificationLimit,
+        Self::IdentityChanged,
+    ];
+
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Unavailable => "",
+            Self::Changed => "source_changed_",
+            Self::Truncated => "source_truncated_",
+            Self::VerificationLimit => "source_verification_limit_",
+            Self::IdentityChanged => "source_identity_changed_",
+        }
+    }
+}
+
+/// Stable gap identity for an unavailable declared source.
+pub fn unavailable_source_gap(
+    adapter: &str,
+    source_id: &str,
+    reason: UnavailableSourceReason,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    let hash = review_core::hex::encode(&Sha256::digest(source_id.as_bytes()));
+    format!("unavailable_{adapter}_{}{}", reason.suffix(), &hash[..12])
+}
+
 /// Reduce a complete retained capture chain. Inputs are `(artifact_id, payload)` pairs in chain
 /// order. Replaying the same bytes produces the same projection and performs no inference.
 pub fn project_economics(
@@ -276,6 +318,21 @@ pub fn project_economics(
         expected_previous = Some(capture_id);
         capture_ids.push(capture_id.clone());
         cutoff = cutoff.max(capture.cutoff_unix_ms.get());
+        // A complete zero-based read supersedes earlier failures for this source.
+        // Add this capture's gaps afterwards so a newer failure remains visible.
+        for receipt in &capture.receipts {
+            if receipt.completeness == SourceCompletenessV1::Complete
+                && receipt.byte_start.get() == 0
+            {
+                for reason in UnavailableSourceReason::ALL {
+                    missing.remove(&unavailable_source_gap(
+                        &receipt.adapter,
+                        &receipt.source_id,
+                        reason,
+                    ));
+                }
+            }
+        }
         // Resolve a partial gap only after every affected source for that adapter is
         // covered. A complete receipt for an unrelated source proves nothing about it.
         for gap in &capture.gaps {
@@ -717,6 +774,79 @@ mod tests {
             observations,
             gaps: BTreeSet::new(),
             exposed_case_families: BTreeSet::from(["harness".into()]),
+        }
+    }
+
+    #[test]
+    fn unavailable_recovery_tracks_source_reason_and_capture_order() {
+        let first_id = digest('8');
+        let second_id = digest('9');
+        let source = "fixture.jsonl";
+        let gaps: BTreeSet<_> = UnavailableSourceReason::ALL
+            .into_iter()
+            .map(|reason| unavailable_source_gap("fixture", source, reason))
+            .collect();
+        let unrelated = unavailable_source_gap(
+            "fixture",
+            "other-source",
+            UnavailableSourceReason::Unavailable,
+        );
+        let mut failed = capture(None, vec![]);
+        failed.receipts.clear();
+        failed.gaps = gaps;
+        failed.gaps.insert(unrelated.clone());
+        let mut success = capture(Some(first_id.clone()), vec![]);
+        success.receipts[0].receipt_id = digest('6');
+        let recovered = project_economics(&[
+            (first_id.clone(), failed.clone()),
+            (second_id.clone(), success.clone()),
+        ])
+        .unwrap();
+        assert_eq!(recovered.capture_ids.len(), 2);
+        assert_eq!(
+            recovered.missing_fields,
+            BTreeSet::from([unrelated.clone()])
+        );
+
+        let mut later_failure = capture(Some(second_id.clone()), vec![]);
+        later_failure.receipts.clear();
+        let fresh_gap = unavailable_source_gap("fixture", source, UnavailableSourceReason::Changed);
+        later_failure.gaps.insert(fresh_gap.clone());
+        let latest = project_economics(&[
+            (first_id, failed),
+            (second_id, success),
+            (digest('a'), later_failure),
+        ])
+        .unwrap();
+        assert_eq!(
+            latest.missing_fields,
+            BTreeSet::from([unrelated, fresh_gap])
+        );
+    }
+
+    #[test]
+    fn partial_or_nonzero_receipt_cannot_clear_unavailable_gap() {
+        let first_id = digest('8');
+        let gap = unavailable_source_gap(
+            "fixture",
+            "fixture.jsonl",
+            UnavailableSourceReason::Unavailable,
+        );
+        let mut failed = capture(None, vec![]);
+        failed.receipts.clear();
+        failed.gaps.insert(gap.clone());
+        for (completeness, start) in [
+            (SourceCompletenessV1::Partial, 0),
+            (SourceCompletenessV1::Complete, 10),
+        ] {
+            let mut later = capture(Some(first_id.clone()), vec![]);
+            later.receipts[0].receipt_id = digest('6');
+            later.receipts[0].completeness = completeness;
+            later.receipts[0].byte_start = start.into();
+            let result =
+                project_economics(&[(first_id.clone(), failed.clone()), (digest('9'), later)])
+                    .unwrap();
+            assert!(result.missing_fields.contains(&gap));
         }
     }
 

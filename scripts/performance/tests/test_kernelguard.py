@@ -313,13 +313,18 @@ def measured_copy(target):
     """This repository's files as a materialized Snapshot holds them, owner-writable so the copy
     can be removed: a checkout's tracked and unignored files, else every file of the sealed tree
     but the root's build target, scratch and caches."""
-    paths = kernelguard.tracked_paths(support.ROOT)
+    # A sealed Task tree may contain an empty, read-only .git placeholder.
+    git = os.path.join(support.ROOT, ".git")
+    paths = (None if os.path.isdir(git) and not os.listdir(git)
+             else kernelguard.tracked_paths(support.ROOT))
     if paths is None:
         paths = []
         for current, dirs, files in os.walk(support.ROOT):
             relative = os.path.relpath(current, support.ROOT)
             if relative == ".":
-                dirs[:] = [name for name in dirs if name not in ("target", ".git", ".scratch")]
+                dirs[:] = [name for name in dirs if name not in (
+                    "target", ".git", ".scratch", ".agents", ".aws", ".codex", ".config",
+                    ".npm")]
             dirs[:] = [name for name in dirs if name != "__pycache__"]
             paths += [os.path.normpath(os.path.join(relative, name)) for name in files]
     for path in paths:
