@@ -279,3 +279,270 @@ fn planning_barrier_preserves_paid_history_fences_forgery_and_charges_late_usage
     );
     assert_eq!(execution.outputs["root.nodes.write"].0, output);
 }
+
+fn dependency_fixture() -> (Fixture, String) {
+    let mut f = Fixture::new(false);
+    let input_id = f.cas.put_json(&json!({"dependency_input": true})).unwrap();
+    let (id, envelope) = f
+        .cas
+        .put_artifact(
+            "af/Requirements@1",
+            producer(),
+            vec![input_id.clone()],
+            None,
+            json!({"text": "Extra plan dependency"}),
+        )
+        .unwrap();
+    f.plan.dependencies.insert(
+        "fixture/extra".into(),
+        PlanDependencyV1 {
+            name: "fixture/extra".into(),
+            content_digest: envelope.content_id,
+            artifact_id: id,
+        },
+    );
+    f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V1, &f.plan);
+    (f, input_id)
+}
+
+fn assert_dependency_reference_error(f: &Fixture, expected: &str) {
+    let state = f.state();
+    for change in [
+        TaskChangeV1::PlanProposed {
+            plan_id: f.plan_id.clone(),
+        },
+        TaskChangeV1::PlanAdmitted {
+            plan_id: f.plan_id.clone(),
+        },
+    ] {
+        assert_eq!(
+            references(&f.cas, &change, Some(&state))
+                .unwrap_err()
+                .to_string(),
+            expected,
+            "{change:?}"
+        );
+    }
+}
+
+#[test]
+fn plan_dependency_references_survive_proposal_admission_and_replay() {
+    let (mut f, input_id) = dependency_fixture();
+    let expected: Vec<String> = BTreeSet::from([
+        f.plan_id.clone(),
+        f.revision_id.clone(),
+        f.plan.engine_id.clone(),
+        f.plan.pipeline_id.clone(),
+        f.plan.compiled_graph_id.clone(),
+        f.plan.authority.policy_id.clone(),
+        f.plan.dependencies["fixture/extra"].artifact_id.clone(),
+        input_id,
+        f.plan.inputs["requirements"].artifact_ids[0].clone(),
+    ])
+    .into_iter()
+    .collect();
+    let lease = f.open();
+    let proposal = f
+        .store
+        .propose_task_plan(&f.cas, &lease, &f.plan_id, &f.authority)
+        .unwrap();
+    assert_eq!(proposal.artifact_refs, expected);
+    let admission = f
+        .store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    assert_eq!(admission.artifact_refs, expected);
+    let healthy = f.state();
+    assert!(healthy.admitted);
+    let cold = EventStore::open_read_only(&f.path).unwrap();
+    let replayed = cold.task_projection(&f.cas, "task-1").unwrap().unwrap();
+    assert_eq!(replayed.artifact_refs, healthy.artifact_refs);
+    assert_eq!(replayed.next_sequence, healthy.next_sequence);
+    assert_eq!(replayed.phase, healthy.phase);
+    assert!(replayed.admitted);
+}
+
+#[test]
+fn plan_dependency_references_reject_missing_corrupt_and_wrong_digest() {
+    for failure in [
+        "missing",
+        "corrupt",
+        "noncanonical",
+        "content",
+        "provenance",
+        "replacement",
+        "lock",
+    ] {
+        let (mut f, _) = dependency_fixture();
+        let lease = f.open();
+        let sequence = f.state().next_sequence;
+        let id = f.plan.dependencies["fixture/extra"].artifact_id.clone();
+        let path = f
+            ._dir
+            .path()
+            .join("cas/objects")
+            .join(&id[7..9])
+            .join(&id[9..]);
+        let mut envelope = f.cas.get_artifact(&id).unwrap();
+        let expected = match failure {
+            "missing" => {
+                std::fs::remove_file(&path).unwrap();
+                format!("event store artifact: cas object not found: {id}")
+            }
+            "lock" => {
+                f.plan
+                    .dependencies
+                    .get_mut("fixture/extra")
+                    .unwrap()
+                    .content_digest = f.plan.engine_id.clone();
+                f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V1, &f.plan);
+                "event store conflict: Plan dependency content disagrees with its lock".into()
+            }
+            _ => {
+                let bytes = match failure {
+                    "corrupt" => b"corrupt dependency".to_vec(),
+                    "noncanonical" => serde_json::to_vec_pretty(&envelope).unwrap(),
+                    "replacement" => f.cas.get(&f.plan.pipeline_id).unwrap(),
+                    _ => {
+                        if failure == "content" {
+                            envelope.content_id = f.plan.engine_id.clone();
+                        } else {
+                            envelope.producer = Producer::KernelOperation {
+                                run_id: "changed".into(),
+                                node_id: None,
+                                operation_id: "changed".into(),
+                            };
+                        }
+                        crate::canonicalize(&serde_json::to_value(envelope).unwrap()).unwrap()
+                    }
+                };
+                std::fs::write(&path, bytes).unwrap();
+                format!("event store artifact: cas object does not match its digest: {id}")
+            }
+        };
+        assert_dependency_reference_error(&f, &expected);
+        assert_eq!(
+            f.store
+                .propose_task_plan(&f.cas, &lease, &f.plan_id, &f.authority)
+                .unwrap_err()
+                .to_string(),
+            expected,
+            "{failure}"
+        );
+        assert_eq!(f.state().next_sequence, sequence, "{failure}");
+    }
+}
+
+#[test]
+fn plan_dependency_references_preserve_raw_envelope_errors() {
+    for case in [
+        "valid",
+        "noncanonical",
+        "duplicate_field",
+        "content",
+        "provenance",
+        "shape",
+        "oversize",
+    ] {
+        let (mut f, _) = dependency_fixture();
+        f.open();
+        let id = &f.plan.dependencies["fixture/extra"].artifact_id;
+        let mut raw = f.cas.get_json(id).unwrap();
+        let expected = match case {
+            "content" | "oversize" => {
+                if case == "oversize" {
+                    raw["payload"]["text"] = json!("x".repeat(8 * 1024 * 1024));
+                } else {
+                    raw["content_id"] = json!(f.plan.engine_id);
+                }
+                "event store conflict: artifact envelope content_id disagrees with its payload"
+                    .into()
+            }
+            "provenance" => {
+                raw["producer"]["operation_id"] = json!("changed");
+                "event store conflict: artifact envelope artifact_id disagrees with its provenance"
+                    .into()
+            }
+            "shape" => {
+                raw["unexpected"] = json!(true);
+                let error = serde_json::from_value::<ArtifactEnvelope>(raw.clone()).unwrap_err();
+                format!("event store json: {error}")
+            }
+            _ => "event store conflict: Plan dependency content disagrees with its lock".into(),
+        };
+        let bytes = if case == "noncanonical" {
+            serde_json::to_vec_pretty(&raw).unwrap()
+        } else if case == "duplicate_field" {
+            let text = String::from_utf8(crate::canonicalize(&raw).unwrap()).unwrap();
+            format!("{{\"type\":\"af/Ignored@1\",{}", &text[1..]).into_bytes()
+        } else {
+            crate::canonicalize(&raw).unwrap()
+        };
+        f.plan
+            .dependencies
+            .get_mut("fixture/extra")
+            .unwrap()
+            .artifact_id = f.cas.put(&bytes).unwrap();
+        f.plan_id = artifact(&f.cas, task::EXECUTION_PLAN_V1, &f.plan);
+        assert_dependency_reference_error(&f, &expected);
+    }
+}
+
+#[test]
+fn cached_plan_dependency_references_revalidate_dependency_and_inputs() {
+    let (mut f, input_id) = dependency_fixture();
+    let lease = f.open();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    let healthy = f.state(); // Prime the parsed prefix before changing any referenced bytes.
+    let replacement = f.cas.get(&f.plan.pipeline_id).unwrap();
+    for id in [
+        f.plan.dependencies["fixture/extra"].artifact_id.clone(),
+        input_id,
+    ] {
+        let path = f
+            ._dir
+            .path()
+            .join("cas/objects")
+            .join(&id[7..9])
+            .join(&id[9..]);
+        let original = std::fs::read(&path).unwrap();
+        for failure in ["corrupt", "missing", "replacement"] {
+            match failure {
+                "missing" => std::fs::remove_file(&path).unwrap(),
+                "replacement" => std::fs::write(&path, &replacement).unwrap(),
+                _ => std::fs::write(&path, b"corrupt dependency reference").unwrap(),
+            }
+            let expected = if failure == "missing" {
+                format!("event store artifact: cas object not found: {id}")
+            } else {
+                format!("event store artifact: cas object does not match its digest: {id}")
+            };
+            assert_eq!(
+                f.store
+                    .task_projection(&f.cas, "task-1")
+                    .unwrap_err()
+                    .to_string(),
+                expected,
+                "warm {failure}"
+            );
+            let cold = EventStore::open_read_only(&f.path).unwrap();
+            assert_eq!(
+                cold.task_projection(&f.cas, "task-1")
+                    .unwrap_err()
+                    .to_string(),
+                expected,
+                "cold {failure}"
+            );
+            std::fs::write(&path, &original).unwrap();
+            let restored = f.state();
+            assert_eq!(restored.next_sequence, healthy.next_sequence);
+            assert_eq!(restored.plan_id, healthy.plan_id);
+            assert_eq!(restored.phase, healthy.phase);
+            assert_eq!(restored.artifact_refs, healthy.artifact_refs);
+            assert!(restored.admitted);
+        }
+    }
+}
