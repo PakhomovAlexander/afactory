@@ -165,6 +165,11 @@ push_url = "git@github.com:PakhomovAlexander/afactory.git"
   API calls through `gh`.
 - The file selects no checks. One that still carries the `checks` key RC1 read is refused, with
   a message that the pipeline's check node chooses now.
+- An entry may list `no_perf_paths`, the operator's prose-only paths: a gate pull request whose
+  whole change from the source lies in them gets the `no-perf` label, and loses it before a head
+  update that does not
+  ([ADR-0196](../adr/0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md),
+  [Remote Checks](../task-execution/remote-checks.md#the-no-perf-label-of-a-gate-pull-request)).
 - It is read when a plan is captured. A pipeline with remote checks and no entry for the source
   Snapshot's repository is refused there, naming this file and the repository identity. A
   pipeline without remote checks never reads it.

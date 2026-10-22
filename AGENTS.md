@@ -27,6 +27,17 @@ review corpora belong in consuming repositories, not here.
   directory's figure, bar and share; the same check renders the block again from the pull
   request's commits and refuses a description whose block is missing or differs
   ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
+- A pull request labeled exactly `no-perf` is not measured by the `Performance` workflow; its
+  `Performance check` reports the exemption, not a pass. When opening or updating a pull
+  request, inspect its entire diff and apply `no-perf` only when every change is prose (an
+  ADR, a runbook, a change note) or a similarly clear non-executable edit that no build, test,
+  benchmark, af runtime input or embedded file reads, and say in the description why it has no
+  runtime impact. Small or easy code is not automatically safe: code of any size, dependencies
+  and build settings, the performance harness, fixtures and benchmarks, CI and performance
+  policy, `.af/` and anything mixed or uncertain keep the measurement. Re-evaluate on every
+  update and remove a `no-perf` that no longer holds
+  ([ADR-0196](docs/adr/0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md),
+  [the guidance](docs/performance-sdlc.md#the-no-perf-label)).
 - Product rebranding must not rename `review.kernel/*` artifact types, persisted events, or
   established Review Kernel domain terms until a separate accepted migration ADR supersedes this
   rule. Releases are cut only through `make release` and the release workflow; a lock pins the
@@ -114,12 +125,15 @@ review corpora belong in consuming repositories, not here.
   pipeline's check node lists in `remote_checks`, the kernel pushes exactly the two branches
   `af-gate/<task-id>/base` and `af-gate/<task-id>/head`, built from Task Snapshots, and opens one
   draft gate pull request between them. It never force-pushes, writes another ref, merges, marks
-  ready or comments, and never sends a candidate that changes `.github/`; when the Task finishes
-  it closes that pull request and deletes exactly those two branches, each only while it still
+  ready or comments, and never sends a candidate that changes `.github/`; the one label it sets or
+  removes is `no-perf` on that gate pull request, as the mapping's `no_perf_paths` classify the
+  whole candidate, and it never creates the label
+  ([ADR-0196](docs/adr/0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md));
+  when the Task finishes it closes that pull request and deletes exactly those two branches, each only while it still
   holds the commit the gate pushed (a lease on the deletion), and nothing else
   ([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)). The
   pipeline chooses where a check runs; the operator's machine-local mapping supplies only the
-  push target, and with it the authorization. A pipeline with remote checks cannot be planned on
+  push target, and with it the authorization, and optionally its prose-only `no_perf_paths`. A pipeline with remote checks cannot be planned on
   a machine without a target, and its plan carries `publish-gate` and the `github:` destination,
   so confirming the plan is the consent. Delivery above is unchanged
   ([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).

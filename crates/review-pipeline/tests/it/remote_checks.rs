@@ -5,6 +5,7 @@
 //! jobs' logs in that bare repository.
 
 mod executor;
+mod no_perf;
 mod task;
 
 use std::collections::BTreeSet;
@@ -68,6 +69,8 @@ pub struct Remote {
     pub bare: PathBuf,
     pub state: PathBuf,
     pub bin: PathBuf,
+    /// The mapping entry's `no_perf_paths`, written into it when not empty.
+    pub no_perf_paths: std::cell::RefCell<Vec<String>>,
 }
 
 impl Remote {
@@ -96,6 +99,7 @@ impl Remote {
             bare,
             state,
             bin,
+            no_perf_paths: Default::default(),
         }
     }
 
@@ -151,6 +155,22 @@ impl Remote {
 
     pub fn merge_mode(&self, mode: &str) {
         std::fs::write(self.state.join("merge-mode"), mode).unwrap();
+    }
+
+    /// Give the gate pull request (`labels`) or the repository (`repo-labels`) these labels.
+    pub fn labels_of(&self, file: &str, names: &[&str]) {
+        let text: String = names.iter().map(|name| format!("{name}\n")).collect();
+        Self::replace_in(&self.state, file, text.as_bytes());
+    }
+
+    /// The lines of one of the fake's label records: `labels`, `labels-added`,
+    /// `labels-removed` or `labels-created`.
+    pub fn label_lines(&self, file: &str) -> Vec<String> {
+        std::fs::read_to_string(self.state.join(file))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     pub fn calls(&self) -> String {
@@ -219,9 +239,15 @@ impl Remote {
     /// The operator's mapping for the fixture repository: a push target, and nothing that
     /// selects a check.
     pub fn mapping_text(&self) -> String {
+        let paths = self.no_perf_paths.borrow();
+        let no_perf = if paths.is_empty() {
+            String::new()
+        } else {
+            format!("no_perf_paths = {paths:?}\n")
+        };
         format!(
             "version = 1\n\n[[github_pr]]\nrepository_id = \"{ROOT}\"\ngithub = \"octo/gate\"\n\
-             push_url = \"{}\"\n",
+             push_url = \"{}\"\n{no_perf}",
             self.push_url()
         )
     }
@@ -297,14 +323,27 @@ impl Snapshots {
         kind: EntryKind,
         bytes: &[u8],
     ) -> (String, Manifest) {
+        self.derived_many(cas, &[(path, kind, bytes)])
+    }
+
+    /// A candidate derived from the source with every one of `changes` applied.
+    pub fn derived_many(
+        &self,
+        cas: &Cas,
+        changes: &[(&str, EntryKind, &[u8])],
+    ) -> (String, Manifest) {
         let mut entries: Vec<Entry> = self
             .source
             .entries
             .iter()
-            .filter(|e| e.path != path)
+            .filter(|e| !changes.iter().any(|(path, _, _)| e.path == *path))
             .cloned()
             .collect();
-        entries.push(entry(cas, path, kind, bytes));
+        entries.extend(
+            changes
+                .iter()
+                .map(|(path, kind, bytes)| entry(cas, path, *kind, bytes)),
+        );
         let manifest = Manifest::new(entries).unwrap();
         let id = capture_snapshot(cas, &manifest, &self.origin, Some(&self.source_id)).unwrap();
         assert_eq!(read_snapshot(cas, &id).unwrap().1, manifest);
