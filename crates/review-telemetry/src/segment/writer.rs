@@ -30,10 +30,13 @@
 //! **Bounded shutdown and sealing.** The seal is the consumer thread's: [`Writer::finish`] sends
 //! it one terminal request — the records still pending (the `af.command` end among them), the
 //! seal record, the `.refs` manifest, the compression and the publication — and waits for it
-//! once, at most [`layout::LOCK_WAIT`] (2 s), over all of it; once [`Writer::begin_terminal`]
-//! began the shutdown, that bound runs from there and every other wait of the shutdown (a
-//! publication's flush) ends with it too. A consumer that has not finished
-//! by then — a write blocked on the volume — is abandoned: no other thread writes, seals,
+//! once, at most [`layout::LOCK_WAIT`] (2 s) beyond the consumer's last progress, over all of
+//! it; once [`Writer::begin_terminal`] began the shutdown, that bound runs from there and every
+//! other wait of the shutdown (a publication's flush) ends with it too; and each content a
+//! released harness stream publishes under the seal moves the bound to [`layout::LOCK_WAIT`]
+//! from that moment (`Writer::renew_shutdown`), so a release still in progress completes. A
+//! consumer that makes no progress by then — a write blocked on the volume — is abandoned: no
+//! other thread writes, seals,
 //! compresses or replaces the segment, the records never written are absent, the lock ends with
 //! the process, and the next reader recovers the flushed prefix. The compressed segment and its
 //! manifest are staged in temporary files; the deadline governs the whole publication and is
@@ -2554,7 +2557,9 @@ impl Writer {
     /// consumer thread's work: the running consumer gets one terminal request — the records
     /// still pending, the seal record, the manifest, the compression and the publication — or
     /// one is started for it when none runs, and the caller waits for it once, at most
-    /// [`layout::LOCK_WAIT`], over all of it. A consumer that has not finished by then is
+    /// [`layout::LOCK_WAIT`] beyond the consumer's last progress — each content a released
+    /// stream publishes under the seal renews the bound ([`Self::renew_shutdown`]) — over all
+    /// of it. A consumer that makes no progress by then is
     /// abandoned: no other thread seals, compresses, replaces or writes the segment, which the
     /// next reader recovers, and the consumer itself publishes nothing after the deadline. The
     /// deadline governs the whole publication: a seal is reported only when the consumer

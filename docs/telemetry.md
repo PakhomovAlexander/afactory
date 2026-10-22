@@ -47,12 +47,15 @@ when a record is appended or the deadline passes; there is no timer and no polli
 is therefore in the live segment within `flush_latency_ms` of its creation while a run is open,
 whatever its depth and however silent the Worker. When the command ends it sends the consumer
 one terminal request — the records still pending, the command's end among them, the seal, the
-manifest, the compression and the publication — and waits for it once, at most 2 s, over all of
-it; a consumer that has not finished in time — a write blocked on the volume — is abandoned:
-nothing else seals, compresses, replaces or writes the segment, the command's exit status is its
-own, the lock ends with the process, `af telemetry status` counts the segment `unsealed`, and
-the next reader recovers what was written. The compressed segment and its manifest are staged in
-temporary files, and the 2 s govern the whole publication: the deadline check is the last thing
+manifest, the compression and the publication — and waits for it once, at most 2 s beyond the
+consumer's last progress, over all of it: each content a released harness stream publishes under
+the seal renews the bound, so a release still in progress completes, at most the Attempt's
+allowance of content later; a consumer that makes no progress for 2 s — a write blocked on the
+volume — is abandoned: nothing else seals, compresses, replaces or writes the segment, the
+command's exit status is its own, the lock ends with the process, `af telemetry status` counts
+the segment `unsealed`, and the next reader recovers what was written. The compressed segment
+and its manifest are staged in temporary files, and the same bound governs the whole
+publication: the deadline check is the last thing
 before each step — the manifest's rename, the compressed copy's rename and the unlink of the
 live `.jsonl`, which happens only while the deadline has not passed — with nothing between the
 check and the step, and it runs again when a rename returns; a consumer that finds the deadline
@@ -670,8 +673,9 @@ blocks and is never lost. A full queue — a stalled or failed consumer — drop
 and counts it; so the drain, what the supervisor collects, its status, its deadline, a held
 stdout (`OutputHeld`) or stderr (`stderr_held`) with its retained bytes, and the accounting are
 the same as without Telemetry. The process's completion never waits on the consumer, which
-finishes the process's chunks afterwards; at the command's end the consumer's 2 s bound of the
-consumer section above applies.
+finishes the process's chunks afterwards; at the command's end the consumer's bound of the
+consumer section above applies — 2 s beyond its last progress, each content of a released stream
+it publishes renewing it.
 
 The consumer frames each stream into lines incrementally and records, live, **validated
 structure only**: the record's kind, counts, byte sizes, the arrival time of each line (the
