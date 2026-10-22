@@ -1212,7 +1212,10 @@ cancellation in `review-process`, the duplex execution path in `review-sandbox`,
 broker with the read-only allowlist, the channel bounds, container cleanup, provisioned peers,
 `not_run` and `--require-boundary`, and the result bound to the content digest and target;
 **P1d**, the syscall audit of §3.15 in full, with every audit fixture. P0's ADR rides with
-P1a's pull request.
+P1a's pull request. Delivery order: P1a, P4 and P6 first, so that a first-party plugin with a
+pane runs from a development install before the install family, the conformance harness, the
+store readers, file-bound inputs and pins land; then P1b, P1c, P1d, P2, P3, P5 and P7. P4
+needs only P1a; P6 needs P1a and P4, and its pinned variant is P5's acceptance.
 
 ### P0 — The decision
 
@@ -1489,7 +1492,9 @@ runs); `override_precedes_the_pin_for_every_use` (a pin and `AF_PLUGIN_VERSION_<
 present, their manifests differing in `machine_only`: the override's bundle runs and governs
 `config show`, a hook and a pane alike); `background_resolution_never_invokes_the_release_source` (a pinned, uninstalled plugin:
 the hook fails with the install command in `hooks.log`, and a release source that would fail if
-touched is never touched).
+touched is never touched); `pane_load_of_an_uninstalled_pinned_plugin_is_one_error_row` (the
+pane of a pinned, uninstalled plugin is one error row naming `af plugin install`, the release
+source untouched).
 
 ### P6 — The pane
 
@@ -1509,8 +1514,7 @@ binding wins);
 `pane_load_runs_only_the_read_only_table` (a pane calling `task start --execute` is refused
 before any Attempt and its cancellation leaves no Worker; a pane calling `task start --file`
 without `--execute` or `task plan` is refused and the Store's event log is byte-identical);
-`pane_load_of_an_uninstalled_pinned_plugin_is_one_error_row` (naming `af plugin install`, the
-release source untouched); `pane_reload_and_timeout_leave_no_provider_process` (the hanging
+`pane_reload_and_timeout_leave_no_provider_process` (the hanging
 Provider fixture of P4); the existing
 `terminal_data_is_printable_ascii` and the TUI's timing tests unchanged.
 
