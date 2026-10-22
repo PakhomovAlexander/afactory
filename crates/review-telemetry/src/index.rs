@@ -1685,8 +1685,8 @@ mod tests {
                     "INSERT INTO blob_refs(occurrence_id, segment_id, seq, digest, span_id,
                      event_seq, source_digest, original_bytes, truncated, state, media_type,
                      redaction) VALUES (?1, 's', 1, ?2, 'x', 1, ?2, 1, 0, 'stored', 'text/plain',
-                     'af-redact/1')",
-                    params![occurrence, digest],
+                     ?3)",
+                    params![occurrence, digest, crate::redact::REDACTION_VERSION],
                 )
                 .unwrap();
         };

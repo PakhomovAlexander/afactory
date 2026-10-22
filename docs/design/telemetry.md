@@ -215,12 +215,12 @@ never renumbered, and every identity below that is built from a sequence uses `s
 | `span_start` | `af/TelemetrySpan@1` | `trace_id`, `span_id`, `parent_span_id` (null for a root), `name`, `kind` (`internal`, `process`, `client`), `start_unix_ns`, `attributes`. |
 | `span_end` | `af/TelemetrySpan@1` | `span_id`, `end_unix_ns`, `status` (`ok`, `error`, `unset`), `attributes` known only at the end (exit, usage, outcome). |
 | `event` | `af/TelemetryEvent@1` | `span_id`, `time_unix_ns`, `name`, `attributes`, optional `blob` (digest) and `blob_media_type`. |
-| `config` | `af/TelemetryConfig@1` | one part of the metadata-only configuration snapshot of §7.4: `execution_id`, `part`, `parts`, `complete`, and the rows this part carries; as many parts per execution as the record bound needs. |
+| `config` | `af/TelemetryConfig@2` | one part of the metadata-only configuration snapshot of §7.4: `execution_id`, the owning run (`run_id`, `run_span_id`), `section` (`configuration`, `plan`, `machine`), `part`, `parts`, `complete` (numbered within the section), and the `rows` this part carries (`af.redacted` counts the values withheld among them); as many parts per run as the record bound needs. |
 | `node` | `af/TelemetryNode@1` | one plan node of an execution: `execution_id`, `plan_digest`, `node_id`, `kind`, `package`, `depends_on` (a record field of up to 64 node ids, outside the attribute bounds), `expected_nodes`. §7.1. |
-| `finding` | `af/TelemetryFinding@1` | the bounded summary of an admitted Finding, §7.5. |
-| `demand` | `af/TelemetryDemand@1` | the bounded summary of a Demand, keyed by Demand id, §7.5. |
-| `blob` | `af/TelemetryBlob@1` | the shared object: `digest` (`sha256:` and 64 hex, over the retained redacted bytes), `bytes` (retained), `stored_bytes` (compressed), `media_type`, `redaction` (`af-redact/1`). Written once per digest per segment; the content is in `blobs/`. |
-| `blob_ref` | `af/TelemetryBlobRef@1` | one occurrence: `occurrence_id` (`segment_id:seq`), `digest`, `span_id` and the owning event's `seq`, `source_digest` (over the original bytes), `original_bytes`, `truncated`, `state` (`stored`, `dropped`). An event names its content by `occurrence_id`. |
+| `finding` | `af/TelemetryFinding@2` | the bounded summary of an admitted Finding, with the Store `log` and the committed `sequence` of the event that caused it, §7.5. |
+| `demand` | `af/TelemetryDemand@2` | the bounded summary of a Demand, keyed by Demand id, with the causing event's `log` and `sequence`, §7.5. |
+| `blob` | `af/TelemetryBlob@1` | the shared object: `digest` (`sha256:` and 64 hex, over the retained redacted bytes), `bytes` (retained), `stored_bytes` (compressed), `media_type`, `redaction` (`af-redact/2`). Written once per digest per segment; the content is in `blobs/`. |
+| `blob_ref` | `af/TelemetryBlobRef@1` | one occurrence: `occurrence_id` (`segment_id:seq`), `digest`, `span_id` and the owning event's `seq`, `source_digest` (over the original bytes), `original_bytes`, `truncated`, `state` (`stored`, `dropped`), and the `media_type` and the `redaction` version its bytes passed. An event names its content by `occurrence_id`. |
 | `problem` | `af/TelemetryProblem@1` | `time_unix_ns`, `what` (`write`, `blob`, `receiver`, `budget`, `redaction`, `sink`, `observer`), `reason`. Recorded once per distinct `what` and `reason` per process. |
 | `seal` | `af/TelemetrySeal@1` | `ended_unix_ns`, `exit` (`ok`, `error`, `signal`, `recovered`), `spans`, `events`, `blobs`, `dropped`, `dropped_chunks`, `discarded_bytes`, `refs` (the name of the segment's `.refs` manifest). The last line; a recovering reader writes it with `recovered`. |
 
@@ -654,12 +654,16 @@ which case `json` stays the shape at `off` and `metrics` and `stream-json` is th
 ### 7.4 Configuration snapshot
 
 At each execution's `af.run` start (§5) the writer records the configuration snapshot
-`af/TelemetryConfig@1`: a metadata-only, allow-listed document, permitted at `spans` because it
+`af/TelemetryConfig@2`: a metadata-only, allow-listed document, permitted at `spans` because it
 holds no model input and no value a Worker wrote, written as one or more `config` **parts**,
-each a record within the 16 KiB bound carrying `execution_id`, `part` (its ordinal), `parts`
-(the expected count) and `complete` (whether this is the last part), with the rows split across
-parts in one fixed order (version, configuration rows, policy and pipeline, bindings, Providers,
-harness versions, host, variable names), so that a valid 64-node plan with its bindings fits
+each a record within the 16 KiB bound carrying `execution_id`, the run that owns the part
+(`run_id` and `run_span_id`, the run's `af.run` span: a measurement run inside an Attempt has a
+record of its own, never the Task's), its `section` (`configuration` and `machine`, written as
+the run opens; `plan`, when the plan resolves), `part` (its ordinal within the section), `parts`
+(the section's expected count) and `complete` (whether this is the section's last part), with
+the rows split across parts in one fixed order (version, configuration rows, policy and
+pipeline, bindings, Providers, harness versions, host, variable names), so that a valid 64-node
+plan with its bindings fits
 without a content blob. `af telemetry config` assembles the parts and says `incomplete` when one
 is missing. It carries: `af --version --json`; the effective configuration as one row per key
 with the layer it came from, the file (home-relative) and line, and the value — except that a
@@ -724,14 +728,16 @@ yields the kernel's figures at every level.
 A Ledger is not a projection of events alone: its Findings come from the Report artifacts the
 events reference (ADR-0005; `apply_report` reads the Report from the CAS). So that `af telemetry
 ledger` and `findings` need no Store, the kernel records a `finding` record,
-`af/TelemetryFinding@1`, at the moment it admits a Report into the Ledger and whenever a
-disposition changes: Finding key, severity, effective severity, status, scope, file, line,
-title, the Report's artifact id, the node, Worker, model, Round and epoch; the body only at
+`af/TelemetryFinding@2`, at the moment it admits a Report into the Ledger and whenever a
+disposition changes: the Store log and the committed sequence of the event that caused it,
+Finding key, severity, effective severity, status, scope, file, line, title, the Report's
+artifact id, the node, Worker, model, Round and epoch; the body only at
 `content`. Dispositions (`fixed`, `rejected`, `wontfix`, contested) are events on the run span with the
 Finding's key. A Demand is an independent obligation with an identity of its own (ADR-0007) and
-need not belong to any Finding, so it has its own `demand` record, `af/TelemetryDemand@1`,
-keyed by the Demand id and carrying its kind, whether it is required, its Subject and Snapshot
-ids and its status, and its lifecycle — opened, evidence satisfied with the Evidence id, stale —
+need not belong to any Finding, so it has its own `demand` record, `af/TelemetryDemand@2`,
+keyed by the Demand id and carrying the causing event's log and sequence, its kind, whether it
+is required, its Subject and Snapshot ids and its status, and its lifecycle — opened, evidence
+satisfied with the Evidence id, stale —
 is events keyed by the Demand id, never by a Finding's key. A run whose summaries or events were
 dropped, cut or never written is `incomplete`, and every analytic over it says so.
 `af telemetry ledger RUN` renders the committed events, Finding and Demand summaries in order.
@@ -943,8 +949,9 @@ that review-runner re-exports for its own use:
 - Environment values are never recorded; Provider grant values (`HOME`, `USER`, `CODEX_HOME` and
   the auth directories) are replaced by `<grant:NAME>`; the home directory prefix becomes `~`.
 
-A redaction is counted on the record (`af.redacted`); a blob records `redaction = "af-redact/1"`,
-and a rule change bumps that version so a reader can tell. Fixtures plant credentials of every
+A redaction is counted on the record (`af.redacted`); a blob records `redaction = "af-redact/2"`
+(the security audit's rule change bumped `af-redact/1`), and a rule change bumps that version so
+a reader can tell. Fixtures plant credentials of every
 kind — short passwords under secret names, nested secret members, numeric credentials, tokens
 and keys in text, and token prefixes, JWTs and long secret runs as member names at every depth
 (`telemetry_redaction_withholds_credential_member_names`) — beside genuine digests and ids on
@@ -1041,7 +1048,7 @@ telemetry directory, such as one copied from another machine.
 | `turns RUN [--attempt ID]`, `tools RUN [--attempt ID]` | one row per turn or tool call with timing, usage, outcome and sizes | `af/telemetry-turns@1`, `af/telemetry-tools@1` |
 | `context RUN ATTEMPT [--turn N] [--raw]` | the composed Worker input; with P9, the request the model saw at turn N, with its `complete`, `partial` or `unavailable` state | `af/telemetry-context@1` |
 | `reasoning RUN ATTEMPT` | thinking blocks and reasoning summaries in order | `af/telemetry-reasoning@1` |
-| `config RUN [--execution ID]` | the execution's configuration record and, at `content`, the texts | `af/TelemetryConfig@1` |
+| `config RUN [--execution ID]` | the execution's configuration record and, at `content`, the texts | `af/TelemetryConfig@2` |
 | `ledger RUN` | the committed Store events and Finding summaries in sequence, with the coverage marker | `af/telemetry-ledger@1` |
 | `failures`, `flakes`, `findings`, `bottlenecks`, `critical-path RUN [--execution ID]`, `diff A B [--by execution]` or `[--by run]` | §9 | `af/telemetry-failures@1` to `af/telemetry-diff@1`, one type each |
 | `search`, `sql` | §9 | `af/telemetry-search@1`, `af/telemetry-sql@1` |
