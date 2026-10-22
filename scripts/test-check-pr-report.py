@@ -38,15 +38,19 @@ TYPE6_AUDIT = {
 assert len(TYPE6_AUDIT) == 63, len(TYPE6_AUDIT)
 
 
-def description(block):
-    return ('## What\n\nPaginate the listing.\n\n## af task report\n\n' + block
-            + '\n## Checklist\n\n- [x] `make check` passes locally.\n')
+LINES = '<!-- af-pr-lines:v1 -->\nLines added: none\n<!-- /af-pr-lines -->\n'
+TAIL = '\n## Lines added\n\n' + LINES + '\n## Checklist\n\n- [x] `make check` passes locally.\n'
+
+
+def description(block, lines=None):
+    """A description carrying the report `block` and the lines block (`LINES`, or `lines`)."""
+    tail = TAIL if lines is None else TAIL.replace(LINES, lines)
+    return '## What\n\nPaginate the listing.\n\n## af task report\n\n' + block + tail
 
 
 def right_after(lead, block):
     """A description whose `block` follows `lead` with no blank line between."""
-    return ('## What\n\nPaginate the listing.\n\n' + lead + block
-            + '\n## Checklist\n\n- [x] `make check` passes locally.\n')
+    return '## What\n\nPaginate the listing.\n\n' + lead + block + TAIL
 
 
 def event(body, author='contributor', branch='af/paginate', head_repo='owner/afactory'):
@@ -512,8 +516,80 @@ def main():
         if not rendered:
             assert 'no pipeline line' in said and 'no round table' not in said, \
                 f'<{tag}>:\n{said}'
+    # The lines added block (ADR-0195): exactly one, rendered as text, holding one line of the
+    # tool's form; the figures are compared with commits only when some are named (see
+    # scripts/test-pr-lines.py), so these cases judge the shape.
+    def lines_block(line):
+        return '<!-- af-pr-lines:v1 -->\n' + line + '\n<!-- /af-pr-lines -->\n'
+
+    lines_passing = {
+        'a lines block with figures': event(description(BLOCK, lines_block(
+            'Lines added: crates/12k docs/1.1k tests/5k Cargo.lock/17'))),
+        'a lines block with a dot directory and a tenth': event(description(BLOCK, lines_block(
+            'Lines added: .github/412 x/9.9k'))),
+        'the lines block before the report block': event(LINES + '\n' + description(BLOCK, '')),
+        'a comment after the lines line': event(description(BLOCK, lines_block(
+            'Lines added: docs/3 <!-- counted 2026-10-22 -->'))),
+        'the lines block with CRLF line endings': event(description(BLOCK).replace('\n', '\r\n')),
+    }
+    for case, payload in lines_passing.items():
+        code, said = check(payload)
+        assert code == 0, f'{case} failed:\n{said}'
+        assert 'the figures were not compared' in said, f'{case}:\n{said}'
+    lines_failing = {
+        'no lines block': (event(description(BLOCK, '')), 'no lines added block'),
+        'two lines blocks': (event(description(BLOCK, LINES + LINES)), '2 lines added blocks'),
+        'an empty lines block': (event(description(BLOCK, lines_block(''))), 'holds 0 lines'),
+        "the unfilled template's lines block": (event(TEMPLATE), 'holds 0 lines'),
+        'a lines block of two lines': (event(description(BLOCK, lines_block(
+            'Lines added: docs/3\nLines added: tests/4'))), 'holds 2 lines'),
+        'a lines line of another shape': (event(description(BLOCK, lines_block(
+            'Lines: docs/3'))), 'is not `Lines added: dir/figure'),
+        'an exact figure past 1000': (event(description(BLOCK, lines_block(
+            'Lines added: docs/5000'))), 'is not `Lines added: dir/figure'),
+        'a figure without its directory': (event(description(BLOCK, lines_block(
+            'Lines added: 5k'))), 'is not `Lines added: dir/figure'),
+        'a lines block in a backtick fence': (event(description(BLOCK, '```\n' + LINES
+                                                                + '```\n')), 'inside a code block'),
+        'a lines block indented four spaces': (event(description(BLOCK, ''.join(
+            '    ' + line for line in LINES.splitlines(keepends=True)))), 'inside a code block'),
+        'a lines block inside <pre>': (event(description(BLOCK, '<pre>\n' + LINES + '</pre>\n')),
+                                       'inside a raw HTML block'),
+        'the lines line inside a comment': (event(description(BLOCK, lines_block(
+            '<!-- Lines added: docs/3 -->'))), 'inside a code block, an HTML block or an HTML comment'),
+        # A line that opens with a comment is an HTML block to GitHub, whatever follows the
+        # comment on it (CommonMark 4.6, type 2).
+        'the lines line after a comment that opens it': (event(description(BLOCK, lines_block(
+            '<!-- counted --> Lines added: docs/3'))), 'inside a code block, an HTML block or an HTML comment'),
+        'a lines block with its end marker first': (event(description(BLOCK,
+            '<!-- /af-pr-lines -->\nLines added: none\n<!-- af-pr-lines:v1 -->\n')),
+            'comes before the begin marker'),
+        'a lines block without its end marker': (event(description(BLOCK,
+            '<!-- af-pr-lines:v1 -->\nLines added: none\n')), 'has no end marker'),
+    }
+    for case, (payload, expected) in lines_failing.items():
+        code, said = check(payload)
+        assert code == 1, f'{case} passed:\n{said}'
+        assert expected in said, f'{case}: expected {expected!r} in:\n{said}'
+        assert 'scripts/pr-lines.py' in said, f'{case} does not say how to produce the block:\n{said}'
+        if case != "the unfilled template's lines block":
+            assert 'af task report: the description carries one well-formed block' in said, \
+                f'{case}: the report block is judged on its own:\n{said}'
+    # Both checks run: a description failing both says both.
+    code, said = check(event(description(BLOCK.replace(pipeline + '\n', ''), '')))
+    assert code == 1 and 'no pipeline line' in said and 'no lines added block' in said, said
+    assert HOW in said and 'scripts/pr-lines.py' in said, said
+    # --no-diff keeps the shape check and says the figures were not compared.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'body.md'
+        path.write_text(description(BLOCK, lines_block('Lines added: docs/3')), encoding='utf-8')
+        result = subprocess.run([sys.executable, '-I', str(SCRIPT), '--body', str(path),
+                                 '--no-diff'], capture_output=True, text=True, env={})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert 'the figures were not compared' in result.stdout, result.stdout
     print(f'check-pr-report: {len(passing) + 1} passing and {len(failing)} failing cases, '
-          f'{len(TYPE6_AUDIT)} type 6 names')
+          f'{len(TYPE6_AUDIT)} type 6 names; lines added: {len(lines_passing)} passing and '
+          f'{len(lines_failing)} failing cases')
 
 
 if __name__ == '__main__':

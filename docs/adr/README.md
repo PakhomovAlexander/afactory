@@ -362,3 +362,5 @@ future readers need.
   suite](0193-seed-admitted-authority-fixtures-and-distribute-the-full-suite.md)
 - [0194 — Bind calibration to each case's observed shard CPU
   group](0194-bind-calibration-to-each-cases-observed-shard-cpu-group.md)
+- [0195 — State the lines a pull request adds per directory, and check
+  them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)

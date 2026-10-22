@@ -82,6 +82,7 @@ preflight-check:
 	$(CI_STEP) test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) provider-auth-host python3 scripts/test-provider-auth-host.py
 	$(CI_STEP) pr-report python3 scripts/test-check-pr-report.py
+	$(CI_STEP) pr-lines python3 scripts/test-pr-lines.py
 	$(CI_STEP) performance-lab python3 scripts/test-performance.py
 	$(CI_STEP) performance-schemas python3 scripts/performance/schemas.py
 	$(CI_STEP) performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
