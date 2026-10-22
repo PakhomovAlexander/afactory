@@ -58,7 +58,8 @@ def emit_diagnostic():
 if (root/'failure-before-prompt').exists():
     emit_diagnostic();sys.exit(1)
 if (root/'empty-output').exists(): sys.exit(0)
-if (root/'invalid-prompt').exists(): prompt=prompt.replace('0.159.2','0.159.3')
+# The frame is unchanged across releases apart from the version it displays.
+if (root/'version').exists(): prompt=prompt.replace('0.159.2',(root/'version').read_text())
 print(prompt,flush=True)
 while not (root/'complete').exists(): time.sleep(.01)
 if (root/'late-output').exists(): print('access_token=AF-FAKE-SECRET',flush=True)
@@ -190,6 +191,12 @@ sys.exit(p.returncode)
         std::fs::create_dir_all(&auth).unwrap();
         std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(auth.join(mode), "").unwrap();
+    }
+
+    /// The version the fake Codex displays in its device prompt instead of 0.159.2.
+    fn display_version(&self, version: &str) {
+        self.mode("version");
+        std::fs::write(self.root.path().join("auth/version"), version).unwrap();
     }
 
     /// Claude 2.1.289's login frames. A `callback` marker completes without a pasted code.
@@ -376,10 +383,53 @@ fn private_device_handoff_finishes_setup_without_model_calls_or_secret_output() 
 }
 
 #[test]
+fn older_current_and_later_codex_versions_register_only_after_exit_and_status() {
+    for version in ["0.158.0", "0.163.0", "1.0.0"] {
+        let fixture = Fixture::new();
+        fixture.display_version(version);
+        let (child, mut host) = fixture.begin();
+        let request = read(&mut host);
+        approve(&mut host, &request);
+        let challenge = read(&mut host);
+        assert_eq!(challenge["mode"], "device_code");
+        assert_eq!(challenge["url"], "https://auth.openai.com/codex/device");
+        assert_eq!(challenge["user_code"], "AF-FAKE-SECRET");
+        assert!(!fixture.root.path().join("auth/status-probes").exists());
+        assert!(
+            !fixture
+                .root
+                .path()
+                .join("config/af/providers.toml")
+                .exists()
+        );
+        send(&mut host, &response("delivered", &request));
+        fixture.complete();
+        assert_eq!(read(&mut host)["action"], "setup_completed");
+        let output = fixture.result(child);
+        assert!(output.status.success(), "{version}");
+        assert_eq!(state(&output)["state"], "authenticated_unverified");
+        assert_eq!(state(&output)["registered"], true);
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.path().join("auth/status-probes")).unwrap(),
+            "status\n"
+        );
+        fixture.no_secrets(&output);
+    }
+}
+
+#[test]
 fn codex_device_completion_requires_successful_native_exit_and_separate_status() {
-    for mode in ["nonzero-exit", "status-fails", "late-output"] {
+    for (mode, version) in [
+        ("nonzero-exit", "0.159.2"),
+        ("status-fails", "0.159.2"),
+        ("late-output", "0.159.2"),
+        ("nonzero-exit", "0.163.0"),
+        ("status-fails", "0.163.0"),
+        ("late-output", "0.163.0"),
+    ] {
         let fixture = Fixture::new();
         fixture.mode(mode);
+        fixture.display_version(version);
         let (child, mut host) = fixture.begin();
         let request = read(&mut host);
         approve(&mut host, &request);
@@ -525,10 +575,21 @@ fn truncated_and_oversized_native_stderr_remain_generic_without_echo() {
 }
 
 #[test]
-fn codex_unknown_version_or_success_without_a_challenge_cannot_register() {
-    for mode in ["invalid-prompt", "empty-output"] {
+fn codex_malformed_version_or_success_without_a_challenge_cannot_register() {
+    for version in [
+        Some("0.163.0-rc.5"),
+        Some("0.163.0+build.7"),
+        Some("0.163.00"),
+        Some("0.163"),
+        Some("0.163.0 access_token=AF-FAKE-SECRET"),
+        Some("0.163.0\x1b[0m\x1b]8;;https://auth.openai.com.evil.invalid\x1b\\"),
+        None,
+    ] {
         let fixture = Fixture::new();
-        fixture.mode(mode);
+        match version {
+            Some(version) => fixture.display_version(version),
+            None => fixture.mode("empty-output"),
+        }
         let (child, mut host) = fixture.begin();
         let request = read(&mut host);
         approve(&mut host, &request);
@@ -536,11 +597,17 @@ fn codex_unknown_version_or_success_without_a_challenge_cannot_register() {
         assert!(!output.status.success());
         assert_eq!(
             state(&output)["state"],
-            if mode == "invalid-prompt" {
+            if version.is_some() {
                 "unsupported"
             } else {
                 "authentication_failed"
             }
+        );
+        let mut host_tail = Vec::new();
+        host.reader.read_to_end(&mut host_tail).unwrap();
+        assert!(
+            host_tail.is_empty(),
+            "a refused prompt reached the host pipe"
         );
         assert!(!fixture.root.path().join("auth/status-probes").exists());
         assert!(
