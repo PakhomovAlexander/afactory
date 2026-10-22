@@ -364,3 +364,5 @@ future readers need.
   group](0194-bind-calibration-to-each-cases-observed-shard-cpu-group.md)
 - [0195 — State the lines a pull request adds per directory, and check
   them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)
+- [0196 — Recover an Attempt from a transient Provider failure and a reply that does not
+  parse](0196-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)

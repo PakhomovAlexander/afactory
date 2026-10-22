@@ -46,6 +46,7 @@ impl WorkerModelAdapter for Model {
         let raw = vec![cas.put(b"native failure fixture").unwrap()];
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             return ModelWorkerReturn {
+                notes: Default::default(),
                 native_failure: None,
                 usage_observation: None,
                 usage: Some(TaskTokenUsageV3::charge_only(7)),
@@ -73,6 +74,7 @@ impl WorkerModelAdapter for Model {
             }
         };
         ModelWorkerReturn {
+            notes: Default::default(),
             native_failure,
             usage_observation,
             usage: None,

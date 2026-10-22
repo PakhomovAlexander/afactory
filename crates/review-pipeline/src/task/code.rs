@@ -2363,6 +2363,7 @@ impl TaskOperatorHost for CodeTaskDomain {
             _ => Err("Code operator requires its captured Worker or domain adapter".into()),
         })();
         TaskWorkOutput {
+            notes: Default::default(),
             usage_observation: None,
             usage: None,
             outputs,

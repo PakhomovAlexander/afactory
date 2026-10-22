@@ -61,7 +61,7 @@ if '--input-format' in sys.argv:
  sys.exit(0)
 request=sys.stdin.read()
 if not os.path.exists(home+'/first-stdin'): open(home+'/first-stdin','w').write(request)
-kind='admission' if request==PROBE_INPUT else 'business'
+kind='admission' if request==PROBE_INPUT else 'alternate' if request==ALTERNATE_PROBE else 'business'
 with open(home+'/calls','a') as f: f.write(kind+' '+os.environ.get('CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK','unset')+' '+os.environ.get('CLAUDE_CODE_NO_MODEL_FALLBACK','unset')+'\n')
 sys.stdout.write(open(home+'/result').read())
 "#;
@@ -201,7 +201,9 @@ fn a_safety_classifier_fallback_at_admission_is_refused_charged_and_named_on_std
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stdout}\n{stderr}");
-    // Only the admission probe ran, with the fallback turned off and model substitution kept.
+    // Only the admission probe ran, with the fallback turned off and model substitution kept. A
+    // fallback's bill is not the bound model's alone, so the alternate probe is not sent on top
+    // of it (ADR-0196).
     assert_eq!(fixture.calls(), "admission 1 unset\n", "{stderr}");
     // One line on the run's own stderr names the node, the Provider, the bound model and effort,
     // both models with their output tokens, the counts, the cause, af's refusal and the next step.
@@ -228,6 +230,7 @@ fn a_safety_classifier_fallback_at_admission_is_refused_charged_and_named_on_std
     let (shown, diagnostics) = fixture.shown();
     assert_eq!(shown["chargeable_tokens"], "9496", "{shown}");
     assert_eq!(diagnostics.len(), 1, "{shown}");
+    assert!(shown.get("provider_events").is_none(), "{shown}");
     assert!(
         diagnostics[0]
             .starts_with("Claude Worker failed: the safety classifier of claude-fable-5-1"),
@@ -327,8 +330,13 @@ fn a_safeguards_refusal_beside_stringless_errors_is_named_and_not_retried() {
         let output = fixture.run(&["review", "run", "--file", "review.json"]);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{errors}: {stderr}");
-        // One Attempt of four allowed: a refusal is never retried.
-        assert_eq!(fixture.calls(), "admission 1 unset\n", "{errors}: {stderr}");
+        // One Attempt of four allowed: a refusal is never retried as an Attempt; within it the
+        // alternate probe wording is sent once (ADR-0196).
+        assert_eq!(
+            fixture.calls(),
+            "admission 1 unset\nalternate 1 unset\n",
+            "{errors}: {stderr}"
+        );
         let lines = Fixture::admission_lines(&stderr);
         assert_eq!(lines.len(), 1, "{errors}: {stderr}");
         assert!(
@@ -348,7 +356,7 @@ fn a_safeguards_refusal_beside_stringless_errors_is_named_and_not_retried() {
             "{}",
             diagnostics[0]
         );
-        assert_eq!(shown["chargeable_tokens"], "3212", "{shown}");
+        assert_eq!(shown["chargeable_tokens"], "6424", "{shown}");
     }
 }
 

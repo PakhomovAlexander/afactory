@@ -101,7 +101,7 @@ path = ".af/task-packages/kernel/review-light"
 
 [packages."kernel/implementation-reviewed"]
 version = "1.2.0"
-digest = "sha256:5d4b4eec72574adf86f2f1de69647249c6b7ec1f6893b0aaff4d59dfae4d8e2a"
+digest = "sha256:72bae6b8cf48c9cdbba5c78d6007fcd166c751b508737826ab5b1ff8b9c0506f"
 path = ".af/task-packages/kernel/implementation-reviewed"
 
 [packages."kernel/review-code"]
@@ -111,12 +111,12 @@ path = ".af/task-packages/kernel/review-code"
 
 [packages."kernel/verification-reviewed"]
 version = "1.2.0"
-digest = "sha256:e6050fa5881728e9d8a4f5e94a186d18380924fde4f0355e249b533bc8d8ef85"
+digest = "sha256:dd0ed85b000b374bc6a640a75a982a22b58015de030003910f73ba5e78b9a7ee"
 path = ".af/task-packages/kernel/verification-reviewed"
 
 [packages."kernel/verification"]
 version = "1.0.0"
-digest = "sha256:a410f4e80545b4d1a7295746f4a3d66f5438fe6129df15956d5a823722cc5a4f"
+digest = "sha256:bb6787695f3a7f682ba9498992a19ea6b2f2cf299bce4527594af118515e52bc"
 path = ".af/task-packages/kernel/verification"
 
 [packages."kernel/gate-accept"]
@@ -126,7 +126,7 @@ path = ".af/task-packages/kernel/gate-accept"
 
 [packages."kernel/gate-bench"]
 version = "1.0.0"
-digest = "sha256:5644bf8e52efd02be0892236d4fd979dd0547b4148e013ecad3a61278e68a16e"
+digest = "sha256:ee7e8c5fffff6e76afa1ef6c6d6c1f556672ca9908485b54a497aba59f0730f8"
 path = ".af/task-packages/kernel/gate-bench"
 
 [kinds]
@@ -134,7 +134,7 @@ verification = "warm/verification-kind"
 
 [packages."kernel/experiment"]
 version = "1.0.0"
-digest = "sha256:07ba05a2949e579055f85a3a959da3db64ef80ab266bdc6c05a5d74f6764f447"
+digest = "sha256:c2c2609124c7116bec1e13cef0f0f05f75f116a9175d29051783ade634dd39a1"
 path = ".af/task-packages/kernel/experiment"
 
 [packages."kernel/experiment-evaluator"]
@@ -144,12 +144,12 @@ path = ".af/task-packages/kernel/experiment-evaluator"
 
 [packages."kernel/experiment-trial"]
 version = "1.0.0"
-digest = "sha256:1938157d9fe082bf0a191b8f6235999355d56fecbcd453d0e6fcbdcc6e31fb79"
+digest = "sha256:7f96ce714daafcc9d61e11b71bcfadc4a08e3f44afcdf16eb3041590f746a6a9"
 path = ".af/task-packages/kernel/experiment-trial"
 
 [packages."kernel/report"]
 version = "1.0.0"
-digest = "sha256:6480b6a6175b6fa29c62ba077a93f683cbb61151427e8847469fa4bde72b5149"
+digest = "sha256:3a4050126b1e2c90fe8a0a1b4727b01aed07ce0d5ca055f748ffe988d3f24d82"
 path = ".af/task-packages/kernel/report"
 
 [packages."kernel/analyst"]

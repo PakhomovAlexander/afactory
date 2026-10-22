@@ -4,6 +4,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+#[path = "task_file/attempt_resilience.rs"]
+mod attempt_resilience;
 #[path = "task_file/model_discovery.rs"]
 mod model_discovery;
 #[path = "task_file/model_fallback.rs"]

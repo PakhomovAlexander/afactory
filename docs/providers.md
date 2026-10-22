@@ -299,8 +299,8 @@ login, `af` runs a token-free **capability check** of the resolved executable
 
 | What | Value |
 |---|---|
-| af invokes | `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s <mode> -o <file> [--model M -c model_reasoning_effort=…] -`, prompt on stdin |
-| Required options (`codex exec --help`) | `--ephemeral`, `--skip-git-repo-check`, `--json`, `-C`/`--cd`, `-s`/`--sandbox`, `-o`/`--output-last-message`, `--model`, `-c`/`--config` |
+| af invokes | `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s <mode> -o <file> [--output-schema <file>] [--model M -c model_reasoning_effort=…] -`, prompt on stdin; `--output-schema` names the typed reply's strict schema ([ADR-0196](adr/0196-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)) |
+| Required options (`codex exec --help`) | `--ephemeral`, `--skip-git-repo-check`, `--json`, `-C`/`--cd`, `-s`/`--sandbox`, `-o`/`--output-last-message`, `--output-schema`, `--model`, `-c`/`--config` |
 | Required protocol | `codex app-server`, started bare, answers JSON-RPC `initialize` (id 1) over its default stdio transport, then `account/read` or `account/rateLimits/read` (id 2); `codex login status` answers the status probe |
 | Checked | the options and the `initialize` answer by `af provider status` (with or without `--usage`), `af provider setup` and Task Provider admission; the whole protocol again by the identity probe before every private Worker send, and by `status --usage` |
 | Floor | 0.121.0 verified; older not verified |

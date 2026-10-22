@@ -30,19 +30,30 @@ pub const TARGET: &str = env!("AF_TARGET");
 /// it starts `RUSTUP_HOME` and `CARGO_HOME`. A test that sets any of these names itself
 /// afterwards wins, since the last `env` of a name counts.
 ///
-/// It also raises the provider probes' timeouts to [`LOAD_SAFE_PROBE_TIMEOUT_MS`], and sets
-/// `AF_SELF_OFFLINE`: an eligible command spawns the detached update check whether or not it
-/// has a terminal, and that check would ask the real release source over the network. Tests of
-/// the check use [`Sandbox::command`], whose release source is a directory.
+/// It also raises the provider probes' timeouts to [`LOAD_SAFE_PROBE_TIMEOUT_MS`], shortens the
+/// in-Attempt retry's first wait to [`TEST_RETRY_BASE_MS`], and sets `AF_SELF_OFFLINE`: an
+/// eligible command spawns the detached update check whether or not it has a terminal, and that
+/// check would ask the real release source over the network. Tests of the check use
+/// [`Sandbox::command`], whose release source is a directory.
 pub fn af() -> Command {
     let mut command = Command::new(af_binary());
     for (name, value) in private_home_env() {
         command.env(name, value);
     }
     command.env(PROBE_TIMEOUT_SETTING, LOAD_SAFE_PROBE_TIMEOUT_MS);
+    command.env(RETRY_BASE_SETTING, TEST_RETRY_BASE_MS);
     command.env("AF_SELF_OFFLINE", "1");
     command
 }
+
+/// The debug-only setting of the first wait before an Attempt calls its Provider again after a
+/// transient failure (ADR-0196); a release binary always waits its production 60 s.
+pub const RETRY_BASE_SETTING: &str = "AF_TEST_PROVIDER_RETRY_BASE_MS";
+
+/// Ten milliseconds in place of the production minute: a fake Provider's transient failure is
+/// retried as in production, without a test waiting minutes for it. A test whose subject is the
+/// wait sets its own.
+pub const TEST_RETRY_BASE_MS: &str = "10";
 
 /// The debug-only setting that raises the provider status, subscription, version and usage
 /// probes' timeouts (ADR-0114); a release binary never reads it.

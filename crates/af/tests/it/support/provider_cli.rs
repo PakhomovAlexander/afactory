@@ -10,8 +10,9 @@
 //! next two messages and exits, so a later request gets no answer.
 //!
 //! A fixture that tells the Provider admission probe from a business request by its stdin names
-//! the probe `PROBE_INPUT` and goes through [`with_probe`], so every fake reads the one constant
-//! af sends.
+//! the probe `PROBE_INPUT`, and the alternate probe af sends once after a refused one
+//! `ALTERNATE_PROBE`, and goes through [`with_probe`], so every fake reads the constants af
+//! sends.
 
 /// The options section of `claude --help` in Claude Code's commander layout, abridged to what af
 /// passes plus the usual neighbours; the layout and option names are those of 2.1.299, checked by
@@ -69,6 +70,8 @@ Options:
           Print events to stdout as JSONL
   -o, --output-last-message <FILE>
           Specifies file where the last message from the agent should be written
+      --output-schema <FILE>
+          Path to a JSON Schema file describing the model's final response shape
   -h, --help
           Print help
 ";
@@ -129,16 +132,28 @@ pub fn with_page(kind: &str, script: &str, help: &str) -> String {
 /// string literal of the whole stdin, newline included; under a shell one, a single-quoted word of
 /// the text without its newline, which `$(cat)` strips.
 pub fn with_probe(script: &str) -> String {
-    let probe = std::str::from_utf8(review_runner::task::provider::PROBE_INPUT).unwrap();
     let (interpreter, _) = script.split_once('\n').expect("a script with a body");
     assert!(script.contains("PROBE_INPUT"), "{script}");
-    let literal = if interpreter.contains("python") {
-        format!("{probe:?}")
-    } else {
-        assert!(!probe.contains('\''), "{probe}");
-        format!("'{}'", probe.trim_end_matches('\n'))
+    let python = interpreter.contains("python");
+    let literal = |probe: &[u8]| {
+        let probe = std::str::from_utf8(probe).unwrap();
+        if python {
+            format!("{probe:?}")
+        } else {
+            assert!(!probe.contains('\''), "{probe}");
+            format!("'{}'", probe.trim_end_matches('\n'))
+        }
     };
-    script.replace("PROBE_INPUT", &literal)
+    // The alternate probe af sends once after a refused one (ADR-0196), by its own word.
+    script
+        .replace(
+            "ALTERNATE_PROBE",
+            &literal(review_runner::task::provider::PROBE_INPUT_ALTERNATE),
+        )
+        .replace(
+            "PROBE_INPUT",
+            &literal(review_runner::task::provider::PROBE_INPUT),
+        )
 }
 
 /// The help page of a CLI accepting af's whole invocation.

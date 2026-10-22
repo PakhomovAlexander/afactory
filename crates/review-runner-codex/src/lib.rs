@@ -7,7 +7,9 @@
 //! runs it.
 //!
 //! The invocation shape: `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s
-//! <mode> -o <staging>/last-message <flags> -`, with the prompt streamed on stdin. Events arrive
+//! <mode> -o <staging>/last-message [--output-schema <staging>/reply-schema.json] <flags> -`, with
+//! the prompt streamed on stdin; the schema file is the typed reply's strict projection, written
+//! only for a typed request whose contract has one (ADR-0196). Events arrive
 //! as JSONL on stdout; the `-o` file holds the final answer; `turn.completed` events carry token
 //! usage. `--ephemeral` keeps session files off the host, `-C` roots the model in the kernel's
 //! sandbox, and `-s` is `workspace-write` when the Worker may write its own copy — and nothing
@@ -166,18 +168,24 @@ pub const CODEX_INVOCATION: CliInvocation = CliInvocation {
         CliFlag::short("-C", "--cd"),
         CliFlag::short("-s", "--sandbox"),
         CliFlag::short("-o", "--output-last-message"),
+        CliFlag::long("--output-schema"),
         CliFlag::long("--model"),
         CliFlag::short("-c", "--config"),
     ],
     upgrade: "npm install -g @openai/codex@latest",
 };
 
+/// The `codex exec` command of one Attempt. `schema` is the file holding the typed reply's
+/// strict output schema ([`review_runner::task::reply_schema::strict`]), when the Worker declares
+/// a typed reply with a strict projection: Codex then refuses a structurally wrong final message
+/// itself, before it is charged as a typed-reply failure (ADR-0196).
 fn codex_command(
     program: &str,
     model_flags: &[String],
     sandbox_root: &Path,
     mode: &str,
     output: &Path,
+    schema: Option<&Path>,
 ) -> Command {
     let mut args = vec![
         Arg::literal("exec"),
@@ -191,6 +199,12 @@ fn codex_command(
         Arg::literal("-o"),
         Arg::literal(output.display().to_string()),
     ];
+    if let Some(schema) = schema {
+        args.extend([
+            Arg::literal("--output-schema"),
+            Arg::literal(schema.display().to_string()),
+        ]);
+    }
     args.extend(model_flags.iter().map(Arg::literal));
     args.push(Arg::literal("-"));
     Command::new(program, args)
@@ -239,27 +253,30 @@ mod invocation_tests {
             WorkerAccess::WriteSource,
             WorkerAccess::WriteSourceWithShell,
         ] {
-            let command = codex_command(
-                "codex",
-                &model_flags,
-                Path::new("/sandbox"),
-                task::task_sandbox_mode(access),
-                Path::new("/staging/last-message"),
-            );
-            let argv = command.resolve().unwrap();
-            assert_eq!(argv[0], "exec", "the help checked is the subcommand's");
-            assert_eq!(
-                argv.last().map(String::as_str),
-                Some("-"),
-                "prompt on stdin"
-            );
-            for value in &argv[1..argv.len() - 1] {
-                if value.starts_with('-') {
-                    assert!(
-                        CODEX_INVOCATION.declares(value),
-                        "`{value}` is emitted but not required of the installed CLI"
-                    );
-                    emitted.insert(value.clone());
+            for schema in [None, Some(Path::new("/staging/reply-schema.json"))] {
+                let command = codex_command(
+                    "codex",
+                    &model_flags,
+                    Path::new("/sandbox"),
+                    task::task_sandbox_mode(access),
+                    Path::new("/staging/last-message"),
+                    schema,
+                );
+                let argv = command.resolve().unwrap();
+                assert_eq!(argv[0], "exec", "the help checked is the subcommand's");
+                assert_eq!(
+                    argv.last().map(String::as_str),
+                    Some("-"),
+                    "prompt on stdin"
+                );
+                for value in &argv[1..argv.len() - 1] {
+                    if value.starts_with('-') {
+                        assert!(
+                            CODEX_INVOCATION.declares(value),
+                            "`{value}` is emitted but not required of the installed CLI"
+                        );
+                        emitted.insert(value.clone());
+                    }
                 }
             }
         }

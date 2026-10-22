@@ -182,7 +182,7 @@ fn recorded_rounds(
     let mut seen = BTreeSet::new();
     let mut rounds = Vec::new();
     for event in store.replay(run_id).map_err(|e| e.to_string())? {
-        if review_store::store::task::is_execution_started(&event) {
+        if !review_store::store::task::is_transition(&event) {
             continue;
         }
         let transition =
@@ -514,6 +514,12 @@ fn event_times(
             let marker = review_store::store::task::read_execution_started(&event)
                 .map_err(|e| e.to_string())?;
             events.push((marker.epoch, marker.now_unix_ms, Mark::Other));
+            continue;
+        }
+        if review_store::store::task::is_provider_event(&event) {
+            let value = review_store::store::task::read_provider_event(&event)
+                .map_err(|e| e.to_string())?;
+            events.push((value.epoch, value.now_unix_ms, Mark::Other));
             continue;
         }
         let transition =

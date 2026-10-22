@@ -29,6 +29,32 @@ pub fn read_execution_started(
 pub fn is_execution_started(event: &RunEvent) -> bool {
     event.event_type == EventType::TaskExecutionStartedV1
 }
+/// Whether `event` of a Task log is a transition, not one of the log's other event kinds (an
+/// execution marker or a Provider event).
+pub fn is_transition(event: &RunEvent) -> bool {
+    event.event_type == EventType::TaskTransitionV5
+}
+/// Whether `event` of a Task log is what an Attempt did about its Provider (ADR-0196).
+pub fn is_provider_event(event: &RunEvent) -> bool {
+    event.event_type == EventType::TaskProviderEventV1
+}
+pub fn read_provider_event(
+    event: &RunEvent,
+) -> Result<review_core::task::provider_event::TaskProviderEventV1, StoreError> {
+    if event.event_type != EventType::TaskProviderEventV1 {
+        return Err(conflict("Expected a Task Provider event"));
+    }
+    let value: review_core::task::provider_event::TaskProviderEventV1 =
+        serde_json::from_value(event.payload.clone())?;
+    value.validate().map_err(conflict)?;
+    Ok(value)
+}
+pub(super) fn encode_provider_event(
+    value: &review_core::task::provider_event::TaskProviderEventV1,
+) -> Result<(EventType, serde_json::Value), StoreError> {
+    value.validate().map_err(conflict)?;
+    Ok((EventType::TaskProviderEventV1, serde_json::to_value(value)?))
+}
 pub(super) fn encode_execution_started(
     value: &review_core::task::execution_started::TaskExecutionStartedV1,
 ) -> Result<(EventType, serde_json::Value), StoreError> {
@@ -609,7 +635,7 @@ impl EventStore {
                 .replay(&task_run_id(lease.task_id())?)?
                 .into_iter()
                 .find(|event| {
-                    !is_execution_started(event)
+                    is_transition(event)
                         && read_task_transition(event)
                             .is_ok_and(|value| value.change == transition.change)
                 })

@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-provider-event:1",
+  "title": "af/TaskProviderEvent@1",
+  "description": "What one started Attempt did about its Provider without failing (ADR-0196): a wait before it calls again after a transient failure (`retry_wait`), a re-ask of a typed reply that did not parse (`reply_reasked`), an identity probe sent again because the first proved nothing (`identity_reprobed`), a Provider CLI update with the same account (`identity_refreshed`), or the alternate admission probe after a safety-classifier refusal (`admission_reprobed`). The payload of the Task log's own event kind `TaskProviderEvent@1`, beside `TaskTransition@5` and `TaskExecutionStarted@1`, whose shapes it leaves unchanged (ADR-0145). It names the lease that wrote it (`writer`, `epoch`), the started and unsettled Attempt and its node; it references no artifact and never changes a charge, a reservation, a deadline or the Task's result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "writer",
+    "epoch",
+    "now_unix_ms",
+    "attempt_id",
+    "node",
+    "event"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/TaskProviderEvent@1"
+    },
+    "writer": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "maxLength": 128
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "now_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9]{26}$"
+    },
+    "node": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*(\\.[A-Za-z0-9][A-Za-z0-9_-]*)*$"
+    },
+    "event": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "class",
+            "retry",
+            "max_retries",
+            "wait_ms",
+            "retry_after"
+          ],
+          "properties": {
+            "kind": {
+              "const": "retry_wait"
+            },
+            "class": {
+              "enum": [
+                "network",
+                "capacity",
+                "timeout",
+                "exited_without_output"
+              ]
+            },
+            "retry": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            },
+            "max_retries": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            },
+            "wait_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "retry_after": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "raw_reply_id",
+            "reask_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "reply_reasked"
+            },
+            "raw_reply_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "reask_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "cause",
+            "probe"
+          ],
+          "properties": {
+            "kind": {
+              "const": "identity_reprobed"
+            },
+            "cause": {
+              "enum": [
+                "timed_out",
+                "malformed"
+              ]
+            },
+            "probe": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 3
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "provider",
+            "previous_version",
+            "current_version"
+          ],
+          "properties": {
+            "kind": {
+              "const": "identity_refreshed"
+            },
+            "provider": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+              "maxLength": 128
+            },
+            "previous_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[\\x20-\\x7e]+$"
+            },
+            "current_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[\\x20-\\x7e]+$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "admission_reprobed"
+            },
+            "category": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[\\x20-\\x7e]+$"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

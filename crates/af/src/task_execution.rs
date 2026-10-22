@@ -2656,11 +2656,12 @@ fn present_with_format(
         for line in report_lines(cas, result.as_ref())? {
             println!("{line}");
         }
-        if let Some(last) = reports.last().and_then(|r| r["diagnostics"].as_object()) {
-            for (node, diagnostic) in last {
-                if let Some(message) = diagnostic["message"].as_str() {
-                    println!("{node}: {message}");
-                }
+        for line in provider_event_lines(&state) {
+            println!("{line}");
+        }
+        if let Some(last) = reports.last() {
+            for line in failed_node_lines(last) {
+                println!("{line}");
             }
         }
         if explain {
@@ -2695,6 +2696,109 @@ fn present_with_format(
         TaskAcceptanceV1::Unsatisfied => 3,
         TaskAcceptanceV1::Inconclusive => 4,
     }))
+}
+
+/// One line per running Attempt that recorded a Provider event (ADR-0196), from its latest:
+/// `NODE: waiting 120 s for capacity (retry 2 of 3)` while the wait lasts, then
+/// `NODE: retry 2 of 3 after capacity is running`. A settled Attempt prints none: its
+/// diagnostic carries its retry history.
+fn provider_event_lines(state: &TaskProjection) -> Vec<String> {
+    use review_core::task::provider_event::ProviderEventV1;
+    let running: BTreeSet<String> = state
+        .execution
+        .iter()
+        .flat_map(|execution| execution.attempt_accounting())
+        .filter(|attempt| attempt.started && attempt.settled_unix_ms.is_none() && !attempt.released)
+        .map(|attempt| attempt.attempt_id)
+        .collect();
+    let mut latest = BTreeMap::new();
+    for event in &state.provider_events {
+        if running.contains(&event.attempt_id) {
+            latest.insert(event.attempt_id.clone(), event);
+        }
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64);
+    latest
+        .values()
+        .map(|event| {
+            let line = match &event.event {
+                ProviderEventV1::RetryWait {
+                    class,
+                    retry,
+                    max_retries,
+                    wait_ms,
+                    ..
+                } if event.now_unix_ms.saturating_add(*wait_ms) <= now => format!(
+                    "retry {retry} of {max_retries} after {} is running",
+                    class.label()
+                ),
+                _ => event.describe(),
+            };
+            format!("{}: {line}", event.node)
+        })
+        .collect()
+}
+
+/// One line per failed node of a run report, in plan order: `NODE: failed (CLASS): FIRST LINE`.
+/// The class is the report's typed failure class, narrowed for an execution failure to the
+/// closed class af wrote into the diagnostic (`capacity`, `invalid_reply`, `environment`, …); the
+/// line is the diagnostic's first line, so a long native excerpt never hides which node failed.
+/// A node that failed only because the node it follows produced no receipt is a `consequence`,
+/// and its line names that node (ADR-0196).
+fn failed_node_lines(report: &serde_json::Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let nodes = report["report"]["nodes"].as_array().into_iter().flatten();
+    for node in nodes {
+        let outcome = &node["outcome"];
+        if outcome["kind"] != "failed" {
+            continue;
+        }
+        let Some(id) = node["node"].as_str() else {
+            continue;
+        };
+        let message = report["diagnostics"][id]["message"]
+            .as_str()
+            .unwrap_or_default();
+        let class = failure_label(outcome["class"].as_str().unwrap_or("execution"), message);
+        let first = message.lines().next().unwrap_or_default();
+        lines.push(format!("{id}: failed ({class}): {first}"));
+    }
+    lines
+}
+
+/// The class `af task show` names for one failed node: the closed class af wrote into its
+/// diagnostic — a native failure class in parentheses, or one of the fixed prefixes af writes
+/// itself — else the run report's typed class. Only af's own closed words are read.
+pub(crate) fn failure_label(class: &str, message: &str) -> String {
+    use review_runner::native_failure::{NativeFailureKind, TransientClass};
+    if class == "domain_publication" {
+        return class.into();
+    }
+    if message.starts_with("Required branch receipt was not produced") {
+        return "consequence".into();
+    }
+    if message.contains("identity recheck:") || message.contains("Provider environment failure") {
+        return "environment".into();
+    }
+    if message.contains("Invalid typed Worker reply")
+        || message.contains("Worker reply has an unsupported contract")
+        || message.starts_with("Worker output ")
+    {
+        return "invalid_reply".into();
+    }
+    let closed = NativeFailureKind::ALL
+        .iter()
+        .map(|kind| kind.as_str())
+        .chain(TransientClass::ALL.iter().map(|class| class.as_str()));
+    for word in closed {
+        if message.contains(&format!("({word})")) {
+            return word.into();
+        }
+    }
+    // The run's own class when af wrote no closed one: `execution` or `resources`.
+    class.into()
 }
 
 /// The Task's settled Attempts whose usage is unknown, by cause (ADR-0143): no usage was
@@ -3326,10 +3430,18 @@ fn inspection(
     let mut runtime_observations = Vec::new();
     let mut runtime_attempt_ids = BTreeSet::new();
     let mut decisions = Vec::new();
+    let mut provider_events = Vec::new();
     for event in events {
-        // A lease's execution marker is its own event kind, not a `TaskTransition@5`: the
-        // history lists the transitions only.
-        if review_store::store::task::is_execution_started(&event) {
+        // A lease's execution marker and a Provider event are their own event kinds, not
+        // `TaskTransition@5`: the history lists the transitions only; the Provider events are
+        // listed beside it.
+        if review_store::store::task::is_provider_event(&event) {
+            let value = review_store::store::task::read_provider_event(&event)
+                .map_err(|e| e.to_string())?;
+            provider_events.push(json!({"sequence":event.sequence,"record":value}));
+            continue;
+        }
+        if !review_store::store::task::is_transition(&event) {
             continue;
         }
         let transition =
@@ -3436,6 +3548,9 @@ fn inspection(
     }
     value["history"] = json!(history);
     value["execution_records"] = json!(execution);
+    if !provider_events.is_empty() {
+        value["provider_events"] = json!(provider_events);
+    }
     if !runtime_observations.is_empty() {
         let run_id = review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?;
         let walls = store
@@ -3986,5 +4101,66 @@ mod remote_check_line_tests {
         assert_ne!(first, second);
         let writer = format!("cli-{}-{first:016x}", std::process::id());
         assert!(review_core::task::is_name(&writer), "{writer}");
+    }
+}
+
+#[cfg(test)]
+mod failed_node_line_tests {
+    use super::*;
+
+    /// ADR-0196: `af task show` names, per failed node, its class and the first line of its
+    /// diagnostic. A node that failed only because the one it follows produced no receipt is a
+    /// consequence, and its line names that node; a node a typed reply failed twice reads as
+    /// `invalid_reply` with the kept reply in its line.
+    #[test]
+    fn show_prints_each_failed_nodes_class_and_first_line() {
+        let raw = format!("sha256:{}", "a".repeat(64));
+        let reask = format!(
+            "Invalid typed Worker reply: expected `,` or `]` at line 1 column 1042; raw reply \
+             kept: {raw}; re-asked once in the same Attempt, and the second reply did not parse \
+             either: Invalid typed Worker reply: trailing characters at line 1 column 88; raw \
+             reply kept: {raw}"
+        );
+        let report = json!({
+            "report": {"nodes": [
+                {"node": "root.providers.admit0", "outcome": {"kind": "completed", "output_id": raw}},
+                {"node": "root.nodes.review.nodes.bugs", "outcome": {"kind": "failed", "diagnostic_id": raw, "class": "execution"}},
+                {"node": "root.nodes.review.nodes.reduce", "outcome": {"kind": "failed", "diagnostic_id": raw, "class": "execution"}},
+                {"node": "root.nodes.capacity", "outcome": {"kind": "failed", "diagnostic_id": raw, "class": "execution"}},
+                {"node": "root.nodes.recheck", "outcome": {"kind": "failed", "diagnostic_id": raw, "class": "execution"}},
+                {"node": "root.nodes.budget", "outcome": {"kind": "failed", "diagnostic_id": raw, "class": "resources"}},
+                {"node": "root.nodes.accept", "outcome": {"kind": "suppressed", "reason": "upstream_missing"}}
+            ]},
+            "diagnostics": {
+                "root.nodes.review.nodes.bugs": {"message": reask, "truncated": false},
+                "root.nodes.review.nodes.reduce": {"message": "Required branch receipt was not produced: this node follows root.nodes.review.nodes.bugs, which did not produce its result receipt", "truncated": false},
+                "root.nodes.capacity": {"message": "Claude Worker failed: Provider model at capacity (capacity); it exited 1 without a parsable result and wrote no stderr; transient Provider failure (capacity) after 3 of 3 retries (retry 1 after capacity waited 60 s, retry 2 after capacity waited 120 s, retry 3 after capacity waited 240 s); not retried again: its 3 retries are spent\nsecond line", "truncated": false},
+                "root.nodes.recheck": {"message": "identity recheck: probe timed out 3× (up to 30 s each); the account was not verified as changed: the Provider's environment failed, not the model or the login (environment); run the Task again with `af task run`", "truncated": false},
+                "root.nodes.budget": {"message": "Task run budget exhausted", "truncated": false}
+            }
+        });
+        let lines = failed_node_lines(&report);
+        assert_eq!(
+            lines,
+            [
+                format!("root.nodes.review.nodes.bugs: failed (invalid_reply): {reask}"),
+                "root.nodes.review.nodes.reduce: failed (consequence): Required branch receipt \
+                 was not produced: this node follows root.nodes.review.nodes.bugs, which did not \
+                 produce its result receipt"
+                    .to_string(),
+                "root.nodes.capacity: failed (capacity): Claude Worker failed: Provider model at \
+                 capacity (capacity); it exited 1 without a parsable result and wrote no stderr; \
+                 transient Provider failure (capacity) after 3 of 3 retries (retry 1 after \
+                 capacity waited 60 s, retry 2 after capacity waited 120 s, retry 3 after \
+                 capacity waited 240 s); not retried again: its 3 retries are spent"
+                    .to_string(),
+                "root.nodes.recheck: failed (environment): identity recheck: probe timed out 3× \
+                 (up to 30 s each); the account was not verified as changed: the Provider's \
+                 environment failed, not the model or the login (environment); run the Task \
+                 again with `af task run`"
+                    .to_string(),
+                "root.nodes.budget: failed (resources): Task run budget exhausted".to_string(),
+            ]
+        );
     }
 }

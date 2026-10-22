@@ -1033,7 +1033,8 @@ SHA-256, the `af.config.text.digest` every level records, as its `source_digest`
   positions the schema of an artifact type `af` owns declares (`af/SourceTree@1`,
   `af/TaskCheckReceipt@1`, `af/TaskRetryFeedback@1`, `af/TaskReviewAssignment@1`,
   `af/TaskReviewSubject@2`, `af/ReviewHistory@1`, `af/TaskRepairContext@1`,
-  `af/DocumentContext@1`, `af/WorkerNotes@1`); every other payload — the Task's requirements
+  `af/DocumentContext@1`, `af/WorkerNotes@1`, `af/WorkerReplyReask@1`,
+  `af/ReportDraftValidation@1`); every other payload — the Task's requirements
   (`af/Requirements@1`, its `specification` included), another Worker's output — is untrusted
   JSON, whatever its members are named (`api_token_id`) or its values look like. In a Store
   payload and the manifest the typed positions are the members named `id`, `*_id`, `digest`,

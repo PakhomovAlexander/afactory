@@ -24,7 +24,7 @@ pub(super) fn explain_plan(
     let mut recorded_event_ids = Vec::new();
     for event in &events {
         // A lease's execution marker names no plan.
-        if review_store::store::task::is_execution_started(event) {
+        if !review_store::store::task::is_transition(event) {
             continue;
         }
         let transition = read_task_transition(event).map_err(|e| e.to_string())?;

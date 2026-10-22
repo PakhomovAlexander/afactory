@@ -2,7 +2,7 @@
 use super::*;
 use review_runner::cli::{
     WorkerStderr, classify_without_result, ended_without_result, startup_failure,
-    strongest_native_failure,
+    strongest_native_failure, transient_ending,
 };
 use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
 use review_runner::task::{
@@ -95,6 +95,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
     ) -> Result<ModelWorkerReturn, Unstarted> {
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return Ok(ModelWorkerReturn {
+                notes: Default::default(),
                 usage_observation: None,
                 message: Err("Worker invocation was cancelled before starting".into()),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
@@ -125,12 +126,37 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                 )));
             }
         };
+        // A typed request's reply contract, as the strict schema Codex enforces on the final
+        // message, written beside it in this Attempt's own staging directory (ADR-0196).
+        let schema = match review_runner::task::reply_schema::strict(&input) {
+            Ok(schema) => schema,
+            Err(error) => {
+                return Ok(ModelWorkerReturn {
+                    usage_observation: None,
+                    message: Err(format!("Codex Worker request refused: {error}")),
+                    usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+                    raw_artifact_ids: vec![],
+                    native_failure: None,
+                    notes: Default::default(),
+                });
+            }
+        };
+        let schema_file = staging.path().join("reply-schema.json");
+        if let Some(schema) = &schema
+            && let Err(error) = std::fs::write(&schema_file, schema.to_string())
+        {
+            return Ok(ModelWorkerReturn::failed(RunnerError::Unavailable(
+                format!("Cannot write the Codex Worker reply schema: {error}"),
+            )));
+        }
+        let request = schema.is_some().then(|| input.clone());
         let command = codex_command(
             &self.program,
             &self.model_flags,
             workdir,
             task_sandbox_mode(access),
             &last_message,
+            schema.is_some().then_some(schema_file.as_path()),
         );
         // A private, empty HOME in this Attempt's own runtime directory, never the candidate
         // tree: Codex hands HOME to the login shell its tools run in, so a committed
@@ -167,6 +193,10 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         let mut events = TaskEvents::default();
         let mut failure = None;
         let mut said = WorkerStderr::default();
+        // Read from the complete capture before any filter (ADR-0196): whether stdout held
+        // anything, and the native text a `Retry-After` may be named in.
+        let mut stdout_blank = false;
+        let mut ending_text = String::new();
         // The `-o` final message as a reply, only for a process that exited 0 with no `error`
         // or `turn.failed` event; `None` for every other ending.
         let mut reply: Option<Result<Option<Vec<u8>>, String>> = None;
@@ -178,6 +208,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             &review_runner::stream::HarnessStream::codex(),
             |failed, stdout, stderr, further| {
                 'classify: {
+                    stdout_blank = stdout.iter().all(u8::is_ascii_whitespace);
                     // Parse the bill before privacy filtering removes an authentication envelope.
                     events = TaskEvents::parse(stdout);
                     // The Worker's own last words, bounded and filtered, before the privacy filter
@@ -206,6 +237,11 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                     // speak only through their error fields: an agent message that quotes an auth or
                     // argument error is model output, never a native diagnostic.
                     let native_stdout = unframed(stdout);
+                    ending_text = format!(
+                        "{}\n{native_stdout}\n{}",
+                        String::from_utf8_lossy(stderr),
+                        events.error.as_deref().unwrap_or_default()
+                    );
                     let candidates = [
                         events
                             .upstream_failure
@@ -234,6 +270,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             },
         );
         let mut returned = ModelWorkerReturn {
+            notes: Default::default(),
             usage_observation: events.observation(),
             message: Err("Codex Worker framing failed".into()),
             usage: events.reported_usage(),
@@ -262,7 +299,14 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         let reply = reply.filter(|_| capture.status.as_ref().is_ok_and(|status| status.success()));
         let delivered = reply.is_some();
         returned.message = match reply {
-            Some(Ok(Some(bytes))) => Ok(bytes),
+            // What the strict schema made the model write beyond the contract is removed; the
+            // kernel judges the rest. The `-o` file itself is kept above as it was written.
+            Some(Ok(Some(bytes))) => Ok(match &request {
+                Some(request) => {
+                    review_runner::task::reply_schema::normalize_strict_reply(request, &bytes)
+                }
+                None => bytes,
+            }),
             reply => {
                 // An `error` or `turn.failed` event is a native failure even when its message is
                 // unclassified: its closed diagnostic names that, never the bare exit status.
@@ -316,6 +360,16 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                 )
             }
         };
+        if returned.message.is_err() {
+            returned.notes.transient = transient_ending(
+                &capture.status,
+                returned
+                    .native_failure
+                    .unwrap_or(NativeFailureKind::Unknown),
+                stdout_blank,
+                &ending_text,
+            );
+        }
         if capture.started {
             Ok(returned)
         } else {

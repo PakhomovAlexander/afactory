@@ -15,5 +15,6 @@ mod prior_bound;
 mod task_command_process_group;
 mod task_contexts;
 mod task_model_transport;
+mod task_reply_reask;
 mod task_usage;
 mod warm_render;

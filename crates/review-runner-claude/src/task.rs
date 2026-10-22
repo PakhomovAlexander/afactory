@@ -3,7 +3,7 @@ use super::*;
 use crate::hint;
 use review_runner::cli::{
     WorkerStderr, classify_without_result, ended_without_result, startup_failure,
-    strongest_native_failure, transport_outcome,
+    strongest_native_failure, transient_ending, transport_outcome,
 };
 use review_runner::native_failure::{
     NativeFailureKind, classify_native_failure, says_safeguards_flagged,
@@ -143,6 +143,7 @@ impl ClaudeTaskAdapter {
         envelope: Option<&serde_json::Value>,
         accounting: &model_usage::Accounting,
         failure: Option<NativeFailureKind>,
+        stream_category: Option<&str>,
     ) -> Option<String> {
         if accounting.switched {
             return accounting.error.clone();
@@ -166,7 +167,7 @@ impl ClaudeTaskAdapter {
                         .get("stop_reason")
                         .and_then(serde_json::Value::as_str)
                         == Some("refusal"),
-                    category: refusal_category(value),
+                    category: refusal_category(value).or(stream_category),
                 }
             }
             NativeFailureKind::ModelUnavailable => hint::ModelOutcome::Unavailable,
@@ -237,6 +238,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
     ) -> Result<ModelWorkerReturn, Unstarted> {
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return Ok(ModelWorkerReturn {
+                notes: Default::default(),
                 usage_observation: None,
                 message: Err("Worker invocation was cancelled before starting".into()),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
@@ -248,6 +250,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             Ok(schema) => schema,
             Err(error) => {
                 return Ok(ModelWorkerReturn {
+                    notes: Default::default(),
                     usage_observation: None,
                     message: Err(error),
                     usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
@@ -303,6 +306,12 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         let mut refused = false;
         let mut failure: Option<NativeFailureKind> = None;
         let mut said = WorkerStderr::default();
+        // Read from the complete capture before any filter: whether stdout held anything, the
+        // native text a `Retry-After` may be named in, and the refusal category a stream event's
+        // `stop_details` names (absent from the `json` result).
+        let mut stdout_blank = false;
+        let mut ending_text = String::new();
+        let mut stream_category: Option<String> = None;
         let capture = runner.capture_observed(
             cas,
             &command,
@@ -310,6 +319,8 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             cancellation,
             &review_runner::stream::HarnessStream::claude(task_tools(access)),
             |failed, stdout, stderr| {
+                stdout_blank = stdout.iter().all(u8::is_ascii_whitespace);
+                stream_category = stream_refusal_category(stdout);
                 // The raw-output rule: of stdout the Store keeps the result line alone (or the
                 // `json` document); Telemetry has the rest. Taken from the complete capture,
                 // before the adapter reads it.
@@ -343,6 +354,11 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                     // The Worker's own last words, bounded and filtered, before the privacy
                     // filter below may replace the stream.
                     said = WorkerStderr::read(stderr, &read);
+                    ending_text = format!(
+                        "{}\n{}",
+                        String::from_utf8_lossy(stderr),
+                        String::from_utf8_lossy(&read)
+                    );
                     let stderr_kind = classify_native_failure(&String::from_utf8_lossy(stderr));
                     let (kind, auth_seen) = match envelope {
                         // No parsable result, whatever the exit status or transport outcome: the
@@ -397,7 +413,9 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 envelope.expect("successful envelope"),
                 output_schema.is_some(),
             )
-        } else if let Some(hint) = self.hint(envelope, &accounting, failure) {
+        } else if let Some(hint) =
+            self.hint(envelope, &accounting, failure, stream_category.as_deref())
+        {
             // The bound model did not answer: one af-authored hint leads the diagnostic, so the
             // calling site can print it again (ADR-0147).
             let ended = match envelope {
@@ -444,12 +462,37 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 transport_outcome(&capture.status)
             ))
         };
+        let native_failure = (!success).then_some(failure).flatten();
+        // Only a call with no reply may be retried; a reply the model gave is never discarded.
+        let transient = (message.is_err() && envelope.is_none_or(|_| native_failure.is_some()))
+            .then(|| {
+                transient_ending(
+                    &capture.status,
+                    native_failure.unwrap_or(NativeFailureKind::Unknown),
+                    stdout_blank,
+                    &ending_text,
+                )
+            })
+            .flatten();
+        let refusal_category = (native_failure == Some(NativeFailureKind::ModelRefused))
+            .then(|| {
+                envelope
+                    .and_then(refusal_category)
+                    .map(str::to_owned)
+                    .or(stream_category.clone())
+            })
+            .flatten();
         let returned = ModelWorkerReturn {
             usage_observation: accounting.observation,
-            native_failure: (!success).then_some(failure).flatten(),
+            native_failure,
             message,
             usage: accounting.usage,
             raw_artifact_ids: capture.raw_artifact_ids,
+            notes: review_runner::task::CallNotes {
+                transient,
+                events: Vec::new(),
+                refusal_category,
+            },
         };
         if capture.started {
             Ok(returned)
@@ -571,6 +614,30 @@ fn refusal_category(value: &serde_json::Value) -> Option<&str> {
         .and_then(|details| details.get("category"))
         .or_else(|| value.get("api_refusal_category"))
         .and_then(serde_json::Value::as_str)
+}
+
+/// The policy category the stream named for a refusal: `stop_details.category` of any message,
+/// at its top level or in its `message`. Under `--output-format stream-json` the category lives
+/// in the assistant message's `stop_details`, which the `json` result leaves out.
+fn stream_refusal_category(stdout: &[u8]) -> Option<String> {
+    use review_runner::stream::lines;
+    let mut category = None;
+    for line in lines(stdout) {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
+        let named = [
+            value.get("stop_details"),
+            value.pointer("/message/stop_details"),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|details| details.get("category")?.as_str());
+        if let Some(named) = named {
+            category = Some(named.to_owned());
+        }
+    }
+    category
 }
 
 /// Whether stdout is a result envelope: a JSON object carrying the fields the adapter reads, a
@@ -749,5 +816,39 @@ mod invocation_tests {
             ["-p", "--output-format", "stream-json", "--verbose"]
         );
         assert_eq!(json[3..], stream[4..]);
+    }
+}
+
+#[cfg(test)]
+mod refusal_category_tests {
+    use super::*;
+
+    /// ADR-0196: under `stream-json` the refusal category lives in the assistant message's
+    /// `stop_details`, which the result line leaves out; the adapter reads it from any message,
+    /// the last one naming it winning, and a stream that names none has none.
+    #[test]
+    fn the_refusal_category_is_read_from_the_stream_messages() {
+        let stream = concat!(
+            r#"{"type":"system","subtype":"init"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber"}}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","is_error":true,"result":"","safety_stops":1}"#,
+            "\n"
+        );
+        assert_eq!(
+            stream_refusal_category(stream.as_bytes()).as_deref(),
+            Some("cyber")
+        );
+        let top = r#"{"type":"result","stop_details":{"category":"bio"}}"#;
+        assert_eq!(
+            stream_refusal_category(top.as_bytes()).as_deref(),
+            Some("bio")
+        );
+        assert_eq!(
+            stream_refusal_category(br#"{"type":"result","is_error":false}"#),
+            None
+        );
+        assert_eq!(stream_refusal_category(b"not json"), None);
     }
 }

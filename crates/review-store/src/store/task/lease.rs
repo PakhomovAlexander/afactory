@@ -78,19 +78,29 @@ impl EventStore {
             };
             // A lease's execution marker: written by the lease holder, at a time not before
             // the last recorded, and nothing more.
-            if super::is_execution_started(&event) {
+            // A lease's execution marker, or what one of its Attempts did about its Provider:
+            // written by the lease holder, at a time not before the last recorded, and nothing
+            // more.
+            let marker = if super::is_execution_started(&event) {
                 let marker = super::read_execution_started(&event)?;
-                if writer.as_ref() != Some(&(marker.writer.clone(), marker.epoch)) {
+                Some((marker.writer, marker.epoch, marker.now_unix_ms))
+            } else if super::is_provider_event(&event) {
+                let value = super::read_provider_event(&event)?;
+                Some((value.writer, value.epoch, value.now_unix_ms))
+            } else {
+                None
+            };
+            if let Some((marker_writer, marker_epoch, marker_time)) = marker {
+                if writer.as_ref() != Some(&(marker_writer.clone(), marker_epoch)) {
                     return Err(conflict(format!(
                         "Task writer lease is expired or fenced: event {sequence} was written by \
-                         {} epoch {}, not the lease holder",
-                        marker.writer, marker.epoch
+                         {marker_writer} epoch {marker_epoch}, not the lease holder"
                     )));
                 }
-                if marker.now_unix_ms < clock {
+                if marker_time < clock {
                     return Err(conflict("Task lease observation clock moved backwards"));
                 }
-                clock = marker.now_unix_ms;
+                clock = marker_time;
                 continue;
             }
             let value = read_task_transition(&event)?;

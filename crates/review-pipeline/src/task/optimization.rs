@@ -708,6 +708,7 @@ impl TaskOperatorHost for OptimizationTaskDomain {
             return super::control::refused(error);
         }
         let output = TaskWorkOutput {
+            notes: Default::default(),
             usage_observation: None,
             usage: None,
             outputs: self.outputs(cas, input),
@@ -2447,6 +2448,7 @@ impl TaskOperatorHost for OptimizationCandidateTaskDomain {
             return super::control::refused(error);
         }
         let output = TaskWorkOutput {
+            notes: Default::default(),
             outputs: self.pure_outputs(cas, input),
             usage_observation: None,
             usage: None,

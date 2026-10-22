@@ -147,6 +147,47 @@ Task ID is also the delivery confirmation. An unverified Task is evidence, not a
 read `task show`, fix the catalog, check, Worker or goal problem, then start a corrected Task
 under a new Task ID.
 
+### What an Attempt survives
+
+One call of an Attempt can fail and the Attempt still succeed
+([ADR-0196](adr/0196-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)).
+Everything below happens inside the Attempt's own wall and token reservation; the calls' usage
+adds up, and nothing is reset or refunded.
+
+- **A reply that does not parse.** A typed reply with prose around a valid JSON object is
+  admitted as that object. Any other reply that does not parse is re-asked once from the same
+  Worker, with the parser's message, line, column and the offending excerpt. Both replies are
+  kept, and a second failure names them in the diagnostic: `raw reply kept: sha256:…`.
+- **A transient Provider failure** — `network`, `capacity`, `timeout`, or an exit 1 that wrote
+  nothing (`exited_without_output`) — is waited out and the call is made again: the wait the
+  Provider asked for, else 60 s, then 120 s, then 240 s; at most three retries and ten minutes
+  of waiting. While a wait lasts, `af task show` prints `NODE: waiting 120 s for capacity (retry
+  2 of 3)`, and Ctrl-C ends it. A failure that outlasts the retries fails the node with its
+  class and the retry history.
+- **An identity probe that proves nothing.** Before every private send af checks that the
+  Provider's account is still the one the plan captured. A probe that times out or answers
+  malformed is sent again, three probes in all; then the node fails as `environment`, not as an
+  account change. A Provider CLI that updated itself, with the same account, passes; only
+  another account, authentication method or organization fails the check, with `run af task
+  plan again`.
+- **A refused admission probe.** When the bound model's safety classifier refuses the short
+  admission probe itself, af sends it once more in other words; the refusal category, when the
+  CLI names one, is in the diagnostic. Every Provider admission is decided before any other node
+  starts, so no gate or implementer runs for a reviewer or evaluator that will be refused.
+- **A report draft that fails its shape checks** — not exactly one draft, a citation set that
+  is not sorted and unique, a required section missing by its exact heading — is refused before
+  it is sealed, and the author's next Attempt receives the validation as feedback. The author's
+  instructions state the report policy verbatim; its size and citations are judged by the
+  report check after sealing, as before.
+
+The shipped reviewer and evaluator slots (`kernel/implementation-reviewed`,
+`kernel/verification-reviewed`, `kernel/verification`, `kernel/report`, `kernel/gate-bench`,
+`kernel/experiment` and `kernel/experiment-trial`) allow two Attempts each, so a Worker whose
+reply fails twice in one Attempt still has a second Attempt with typed feedback (issue #283).
+Every Provider event is in `af task show --json` as `provider_events`; for each failed node,
+`af task show` prints `NODE: failed (CLASS): FIRST LINE`, and a node that failed only because
+the one it follows produced no receipt is a `consequence` that names that node.
+
 ## Deliver the verified Snapshot
 
 Choose an absent branch and an absent sibling path. The source checkout must still be clean at
