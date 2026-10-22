@@ -364,3 +364,5 @@ future readers need.
   group](0194-bind-calibration-to-each-cases-observed-shard-cpu-group.md)
 - [0195 — State the lines a pull request adds per directory, and check
   them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)
+- [0196 — Recognize the Codex device prompt by its frame, not its
+  version](0196-recognize-the-codex-device-prompt-by-its-frame-not-its-version.md)

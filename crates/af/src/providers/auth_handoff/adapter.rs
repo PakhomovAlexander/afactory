@@ -285,15 +285,20 @@ impl Drop for NativeLogin {
     }
 }
 
-// Codex 0.159.2 login/src/device_code_auth.rs::device_code_prompt prints this exact
-// stdout frame, including unconditional SGR and the extra newline from println!. Match only
-// those SGR positions: never remove arbitrary terminal controls or search prose for a URL.
+// Codex login/src/device_code_auth.rs::device_code_prompt prints this exact stdout frame,
+// including unconditional SGR and the extra newline from println!; 0.158.0 through 0.163.0
+// differ only in the version they interpolate. Match only those SGR positions: never remove
+// arbitrary terminal controls or search prose for a URL. The version is one bounded, canonical
+// stable MAJOR.MINOR.PATCH between the banner and the rest of the frame, with no minimum or
+// maximum (ADR-0196); every other byte is fixed, and any other frame fails closed.
 // cli/src/login.rs::run_login_with_device_code reports completion on stderr and by exit status;
 // stderr stays inside the lifetime guard and yields only closed failure categories. No success
 // prose, app-server notification, or status alone completes login.
 const CODEX_DEVICE_URL: &str = "https://auth.openai.com/codex/device";
+const CODEX_DEVICE_BANNER: &str = "\nWelcome to Codex [v\x1b[90m";
+const MAX_CODEX_VERSION: usize = 32;
 const CODEX_DEVICE_PREFIX: &str = concat!(
-    "\nWelcome to Codex [v\x1b[90m0.159.2\x1b[0m]\n",
+    "\x1b[0m]\n",
     "\x1b[90mOpenAI's command-line coding agent\x1b[0m\n",
     "\nFollow these steps to sign in with ChatGPT using device code authorization:\n",
     "\n1. Open this link in your browser and sign in to your account\n",
@@ -327,19 +332,14 @@ impl Codex {
                 None => Ok(None),
             };
         }
-        let prefix = CODEX_DEVICE_PREFIX.as_bytes();
-        let common = output.len().min(prefix.len());
-        if output[..common] != prefix[..common] {
-            return Err(Failure::Unsupported);
-        }
-        if output.len() < prefix.len() {
+        let Some(header) = codex_device_header(output)? else {
             return if exit.is_some() {
                 Err(Failure::Failed)
             } else {
                 Ok(None)
             };
-        }
-        let field = &output[prefix.len()..];
+        };
+        let field = &output[header..];
         // Upstream treats user_code as an opaque server-issued String, not a fixed 4-4
         // regex. Support bounded uppercase/digit/hyphen codes conservatively; any other
         // alphabet requires explicit characterization, never guessing or forwarding tokens.
@@ -386,6 +386,50 @@ impl Codex {
             user_code: Some(Zeroizing::new(code)),
         })))
     }
+}
+
+/// The length of the complete native frame before the user code, or `None` while every byte so
+/// far can still begin one. Only the displayed version varies; it is complete at the first byte
+/// that is not a digit or dot, which the rest of the frame must then supply.
+fn codex_device_header(output: &[u8]) -> Result<Option<usize>, Failure> {
+    let banner = CODEX_DEVICE_BANNER.as_bytes();
+    let common = output.len().min(banner.len());
+    if output[..common] != banner[..common] {
+        return Err(Failure::Unsupported);
+    }
+    if output.len() < banner.len() {
+        return Ok(None);
+    }
+    let field = &output[banner.len()..];
+    let version_end = field
+        .iter()
+        .position(|byte| !(byte.is_ascii_digit() || *byte == b'.'));
+    if version_end.unwrap_or(field.len()) > MAX_CODEX_VERSION {
+        return Err(Failure::Unsupported);
+    }
+    let Some(version_len) = version_end else {
+        return Ok(None);
+    };
+    if !stable_version(&field[..version_len]) {
+        return Err(Failure::Unsupported);
+    }
+    let rest = &field[version_len..];
+    let prefix = CODEX_DEVICE_PREFIX.as_bytes();
+    let common = rest.len().min(prefix.len());
+    if rest[..common] != prefix[..common] {
+        return Err(Failure::Unsupported);
+    }
+    Ok((rest.len() >= prefix.len()).then_some(banner.len() + version_len + prefix.len()))
+}
+
+/// A canonical stable `MAJOR.MINOR.PATCH`: no prerelease, build metadata or leading zero.
+fn stable_version(field: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(field) else {
+        return false;
+    };
+    semver::Version::parse(text).is_ok_and(|version| {
+        version.pre.is_empty() && version.build.is_empty() && version.to_string() == text
+    })
 }
 
 /// Accept an exact native HTTPS authority; never repair, shorten, decode, or join URL output.
@@ -850,6 +894,25 @@ mod tests {
     // https://raw.githubusercontent.com/openai/codex/rust-v0.159.2/codex-rs/login/src/device_code_auth.rs
     const DEVICE: &str = "\nWelcome to Codex [v\x1b[90m0.159.2\x1b[0m]\n\x1b[90mOpenAI's command-line coding agent\x1b[0m\n\nFollow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n\n2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mTEST-CODE\x1b[0m\n\n\x1b[90mContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\x1b[0m\n\n";
 
+    /// The same frame as another release displays it: device_code_prompt is unchanged from
+    /// rust-v0.158.0 through rust-v0.163.0 apart from the interpolated version.
+    fn device(version: &str) -> String {
+        DEVICE.replace("0.159.2", version)
+    }
+
+    /// Released before and after 0.159.2, and later stable versions no release has shown.
+    const COMPATIBLE: [&str; 8] = [
+        "0.158.0",
+        "0.159.1",
+        "0.159.2",
+        "0.163.0",
+        "0.200.0",
+        "1.0.0",
+        "10.20.30",
+        // MAX_CODEX_VERSION bytes exactly.
+        "1234567890.1234567890.1234567890",
+    ];
+
     #[test]
     fn codex_0159_2_exact_native_device_prompt_and_successful_exit() {
         let mut protocol = Codex::default();
@@ -935,8 +998,13 @@ mod tests {
             DEVICE.replace("\n   \x1b[94m", "\n \x1b[94m"),
             DEVICE.replace("\n   \x1b[94m", "\n  \x1b[94m"),
             DEVICE.replace("\n   \x1b[94m", "\n    \x1b[94m"),
-            DEVICE.replace("0.159.2", "0.159.3"),
+            DEVICE.replace("0.159.2", "0.159.03"),
+            DEVICE.replace("0.159.2", "0.159.2-rc.1"),
             DEVICE.replace("0.159.2", "0.159.2; token=secret"),
+            DEVICE.replace("[v\x1b[90m0.159.2", "[\x1b[90m0.159.2"),
+            DEVICE.replace("[v\x1b[90m0.159.2", "[v0.159.2"),
+            DEVICE.replace("0.159.2\x1b[0m]", "0.159.2]"),
+            DEVICE.replace("0.159.2\x1b[0m]", "0.159.2\x1b[0m\x1b[0m]"),
             DEVICE.replace("auth.openai.com", "auth.openai.com.evil.invalid"),
             DEVICE.replace("codex/device", "codex/device?token=secret"),
             DEVICE.replace("TEST-CODE", ""),
@@ -986,17 +1054,154 @@ mod tests {
     }
 
     #[test]
-    fn codex_0159_2_rejects_late_output_and_a_replayed_prompt() {
-        for unexpected in [DEVICE, "\n", "Error logging in\n", "access_token=secret"] {
-            let mut protocol = Codex::default();
-            let mut output = DEVICE.as_bytes().to_vec();
-            protocol.consume(&mut output, None).unwrap();
-            output.extend_from_slice(unexpected.as_bytes());
-            assert!(
-                protocol
-                    .consume(&mut output, Some(ExitStatus::from_raw(0)))
-                    .is_err()
+    fn codex_device_prompt_accepts_old_current_and_later_stable_versions_in_the_exact_frame() {
+        for version in COMPATIBLE {
+            let frame = device(version);
+            let mut output = frame.clone().into_bytes();
+            let Some(Event::Challenge(challenge)) =
+                Codex::default().consume(&mut output, None).unwrap()
+            else {
+                panic!("expected a challenge for {version}");
+            };
+            assert!(challenge.mode == Mode::DeviceCode);
+            assert_eq!(challenge.url.as_str(), CODEX_DEVICE_URL);
+            assert_eq!(
+                challenge.user_code.as_deref().map(String::as_str),
+                Some("TEST-CODE")
             );
+            assert!(output.is_empty());
+            for boundary in 0..frame.len() {
+                let partial = &frame.as_bytes()[..boundary];
+                assert!(
+                    matches!(
+                        Codex::default()
+                            .consume(&mut partial.to_vec(), Some(ExitStatus::from_raw(0))),
+                        Err(Failure::Failed)
+                    ),
+                    "{version} truncated at exit at byte {boundary}"
+                );
+                let mut protocol = Codex::default();
+                let mut output = partial.to_vec();
+                assert!(
+                    matches!(protocol.consume(&mut output, None), Ok(None)),
+                    "{version} at byte {boundary}"
+                );
+                output.extend_from_slice(&frame.as_bytes()[boundary..]);
+                assert!(matches!(
+                    protocol.consume(&mut output, None),
+                    Ok(Some(Event::Challenge(_)))
+                ));
+            }
+            let mut protocol = Codex::default();
+            let mut output = Vec::new();
+            for (index, byte) in frame.bytes().enumerate() {
+                output.push(byte);
+                let result = protocol.consume(&mut output, None);
+                if index + 1 == frame.len() {
+                    assert!(matches!(result, Ok(Some(Event::Challenge(_)))));
+                } else {
+                    assert!(matches!(result, Ok(None)), "{version} at byte {index}");
+                }
+            }
+            assert!(matches!(
+                protocol.consume(&mut output, Some(ExitStatus::from_raw(0))),
+                Ok(Some(Event::Completed))
+            ));
+        }
+    }
+
+    #[test]
+    fn codex_device_prompt_refuses_malformed_versions_at_every_byte_boundary() {
+        for version in [
+            "",
+            ".",
+            "0",
+            "0.159",
+            "0..2",
+            "0.159.2.1",
+            "01.2.3",
+            "0.0159.2",
+            "0.159.02",
+            "0.163.0-rc.5",
+            "0.163.0-alpha",
+            "0.163.0+build.7",
+            "v0.163.0",
+            " 0.163.0",
+            "0.163.0 ",
+            "0.163.0\t",
+            "0.163.0\n",
+            "0.163.0\r",
+            "0.163.\x000",
+            "0.163.0\x1b[0m",
+            "0.163.0 access_token=secret",
+            "0.163.0https://auth.openai.com/codex/device",
+            "٠.١٦٣.٠",
+            "99999999999999999999.0.0",
+            "1234567890.1234567890.12345678901",
+        ] {
+            let frame = device(version);
+            assert!(
+                matches!(
+                    Codex::default().consume(&mut frame.clone().into_bytes(), None),
+                    Err(Failure::Unsupported)
+                ),
+                "{version:?}"
+            );
+            for boundary in 0..=frame.len() {
+                let mut protocol = Codex::default();
+                let mut output = frame.as_bytes()[..boundary].to_vec();
+                match protocol.consume(&mut output, None) {
+                    Err(_) => continue,
+                    Ok(None) => {}
+                    Ok(Some(_)) => panic!("{version:?} was actionable at byte {boundary}"),
+                }
+                output.extend_from_slice(&frame.as_bytes()[boundary..]);
+                assert!(
+                    protocol
+                        .consume(&mut output, Some(ExitStatus::from_raw(0)))
+                        .is_err()
+                );
+            }
+        }
+        // A field at its bound waits for its terminator; one byte more is refused without one.
+        let banner = CODEX_DEVICE_BANNER.as_bytes();
+        let mut output = [banner, "1".repeat(MAX_CODEX_VERSION).as_bytes()].concat();
+        assert!(matches!(
+            Codex::default().consume(&mut output.clone(), None),
+            Ok(None)
+        ));
+        assert!(matches!(
+            Codex::default().consume(&mut output.clone(), Some(ExitStatus::from_raw(0))),
+            Err(Failure::Failed)
+        ));
+        output.push(b'1');
+        assert!(matches!(
+            Codex::default().consume(&mut output, None),
+            Err(Failure::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn codex_device_rejects_late_output_and_a_replayed_prompt() {
+        let current = device("0.163.0");
+        for frame in [DEVICE, current.as_str()] {
+            for unexpected in [
+                DEVICE,
+                current.as_str(),
+                "\n",
+                "Error logging in\n",
+                "access_token=secret",
+            ] {
+                let mut protocol = Codex::default();
+                let mut output = frame.as_bytes().to_vec();
+                protocol.consume(&mut output, None).unwrap();
+                output.extend_from_slice(unexpected.as_bytes());
+                assert!(
+                    protocol
+                        .consume(&mut output, Some(ExitStatus::from_raw(0)))
+                        .is_err()
+                );
+            }
         }
     }
 
@@ -1373,22 +1578,41 @@ mod tests {
         assert!(matches!(login.poll(), Err(Failure::Failed)));
     }
 
-    fn device_script(tail: &str) -> String {
-        format!("printf '%s' '{}'; {tail}", DEVICE.replace('\'', "'\"'\"'"))
+    fn device_script(version: &str, tail: &str) -> String {
+        format!(
+            "printf '%s' '{}'; {tail}",
+            device(version).replace('\'', "'\"'\"'")
+        )
     }
 
     #[test]
     fn synthetic_codex_device_cli_is_reaped_on_successful_exit() {
-        let mut login = fixture(ProviderKind::Codex, &device_script("exit 0"));
-        let pid = login.child.id();
-        assert!(matches!(next_event(&mut login), Ok(Event::Challenge(_))));
-        assert_eq!(
-            login.submit_code("not-a-device-operation"),
-            Err(Failure::InvalidChallenge)
+        for version in ["0.159.2", "0.163.0"] {
+            let mut login = fixture(ProviderKind::Codex, &device_script(version, "exit 0"));
+            let pid = login.child.id();
+            assert!(matches!(next_event(&mut login), Ok(Event::Challenge(_))));
+            assert_eq!(
+                login.submit_code("not-a-device-operation"),
+                Err(Failure::InvalidChallenge)
+            );
+            assert!(matches!(next_event(&mut login), Ok(Event::Completed)));
+            assert!(login.stopped);
+            assert!(matches!(login.poll(), Err(Failure::Failed)));
+            drop(login);
+            assert!(nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_err());
+        }
+    }
+
+    #[test]
+    fn synthetic_codex_with_a_malformed_version_is_refused_before_a_challenge_and_reaped() {
+        let mut login = fixture(
+            ProviderKind::Codex,
+            &device_script("0.163.0-rc.5", "read -r unexpected; exit 0"),
         );
-        assert!(matches!(next_event(&mut login), Ok(Event::Completed)));
+        let pid = login.child.id();
+        assert!(matches!(next_event(&mut login), Err(Failure::Unsupported)));
         assert!(login.stopped);
-        assert!(matches!(login.poll(), Err(Failure::Failed)));
+        assert!(login.output.is_empty());
         drop(login);
         assert!(nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_err());
     }
@@ -1397,7 +1621,10 @@ mod tests {
     fn dropping_device_login_reaps_the_owned_native_cli_without_json_requests() {
         let temporary = tempfile::tempdir().unwrap();
         let marker = temporary.path().join("unexpected-native-input");
-        let script = device_script("read -r unexpected; printf unexpected > \"$1\"; exit 1");
+        let script = device_script(
+            "0.163.0",
+            "read -r unexpected; printf unexpected > \"$1\"; exit 1",
+        );
         let mut command = Command::new("/bin/sh");
         command
             .env_clear()
@@ -1413,14 +1640,16 @@ mod tests {
 
     #[test]
     fn codex_native_failure_cannot_complete_or_publish_a_stale_challenge() {
-        let mut login = fixture(ProviderKind::Codex, &device_script("exit 1"));
-        let deadline = Instant::now() + LOAD_SAFE_WALL;
-        while login.watch.exited() != Some(true) {
-            assert!(Instant::now() < deadline, "synthetic exit was not observed");
-            std::thread::sleep(Duration::from_millis(5));
+        for version in ["0.159.2", "0.163.0"] {
+            let mut login = fixture(ProviderKind::Codex, &device_script(version, "exit 1"));
+            let deadline = Instant::now() + LOAD_SAFE_WALL;
+            while login.watch.exited() != Some(true) {
+                assert!(Instant::now() < deadline, "synthetic exit was not observed");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(matches!(login.poll(), Err(Failure::Failed)));
+            assert!(login.stopped);
         }
-        assert!(matches!(login.poll(), Err(Failure::Failed)));
-        assert!(login.stopped);
     }
 
     #[test]

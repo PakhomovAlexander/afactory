@@ -293,10 +293,20 @@ existing Task identity fences.
 
 ## Verified provider surfaces and limitations
 
-- Codex 0.159.2's official `login --device-auth` command is documented for
+- Codex's official `login --device-auth` command is documented for
   [headless personal installations](https://learn.chatgpt.com/docs/auth#login-on-headless-devices).
-  The adapter validates its bounded, version-supported prompt and requires successful native
-  exit; no app-server auth endpoint or model turn is used. Codex clears old authentication when
+  The adapter validates its bounded device prompt as one exact frame and requires successful
+  native exit; no app-server auth endpoint or model turn is used. Its
+  [`device_code_prompt`](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/login/src/device_code_auth.rs)
+  is the same in 0.158.0, 0.159.1, 0.159.2 and 0.163.0 apart from the version it displays, so
+  the adapter accepts any bounded (at most 32 bytes), canonical stable `MAJOR.MINOR.PATCH` there,
+  with no minimum or maximum, and every other byte of the frame unchanged
+  ([ADR-0196](adr/0196-recognize-the-codex-device-prompt-by-its-frame-not-its-version.md)).
+  A prerelease or build suffix, a leading zero, a malformed or oversized version, or any other
+  change to the frame fails closed as `unsupported` before a challenge exists; output that ends
+  before the frame is complete is a failed login, never a challenge. This is not a
+  claim that every earlier or later CLI works: a release that changes the frame needs
+  recharacterization. Codex clears old authentication when
   starting device login, so cancellation can leave an existing context signed out. Native Codex
   also owns its normal diagnostic log. The host never reads or forwards that log. This personal
   CLI flow is not blanket permission to offer provider OAuth as a third-party hosted service.
