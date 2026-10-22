@@ -24,6 +24,41 @@ struct Expected {
 }
 
 #[test]
+fn unavailable_recovery_fixture_preserves_history_and_accounting() {
+    #[derive(Deserialize)]
+    struct RecoveryFixture {
+        captures: Vec<Capture>,
+        expected_current_gaps: Vec<String>,
+    }
+    let fixture: RecoveryFixture = serde_json::from_slice(include_bytes!(
+        "../../../../fixtures/self-optimizer/unavailable-recovery.json"
+    ))
+    .unwrap();
+    let captures: Vec<_> = fixture
+        .captures
+        .into_iter()
+        .map(|capture| (capture.artifact_id, capture.payload))
+        .collect();
+    let actual = project_economics(&captures).unwrap();
+    let replay = project_economics(&captures).unwrap();
+    let successful_only = project_economics(&[(
+        captures[1].0.clone(),
+        OptimizationHistoryV1 {
+            previous_capture_id: None,
+            ..captures[1].1.clone()
+        },
+    )])
+    .unwrap();
+    assert_eq!(actual, replay);
+    assert_eq!(actual.capture_ids.len(), 2);
+    assert_eq!(actual.af_usage, successful_only.af_usage);
+    assert_eq!(actual.rows, successful_only.rows);
+    let mut expected_missing = successful_only.missing_fields;
+    expected_missing.extend(fixture.expected_current_gaps);
+    assert_eq!(actual.missing_fields, expected_missing);
+}
+
+#[test]
 fn website_and_concurrent_work_fixture_has_independent_expected_totals() {
     let fixture: Fixture = serde_json::from_slice(include_bytes!(
         "../../../../fixtures/self-optimizer/m1-economics.json"
