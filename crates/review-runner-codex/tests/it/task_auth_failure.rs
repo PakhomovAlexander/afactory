@@ -208,9 +208,16 @@ fn successful_output_about_device_authentication_is_unchanged() {
         &[],
     );
     assert_eq!(returned.message.unwrap(), message.as_bytes());
+    // The raw-output rule: the Store keeps the turn line and the `-o` final message, never the
+    // agent message's stream line.
+    let kept = output.split_once('\n').unwrap().1;
     assert_eq!(
         cas.get(&returned.raw_artifact_ids[0]).unwrap(),
-        output.as_bytes()
+        kept.as_bytes()
+    );
+    assert_eq!(
+        cas.get(returned.raw_artifact_ids.last().unwrap()).unwrap(),
+        message.as_bytes()
     );
 }
 
@@ -247,9 +254,10 @@ fn model_text_about_revoked_credentials_cannot_replace_a_network_failure() {
     let error = returned.message.unwrap_err();
     assert!(error.contains("(network)"), "{error}");
     assert!(!error.contains("(auth_"), "{error}");
+    let kept = output.split_once('\n').unwrap().1;
     assert_eq!(
         cas.get(&returned.raw_artifact_ids[0]).unwrap(),
-        output.as_bytes()
+        kept.as_bytes()
     );
 }
 

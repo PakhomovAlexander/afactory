@@ -27,6 +27,34 @@ pub enum NativeFailureKind {
 }
 
 impl NativeFailureKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [Self; 13] = [
+        Self::AuthMissing,
+        Self::AuthRevoked,
+        Self::AuthExpired,
+        Self::AuthRefreshContended,
+        Self::AuthRefreshFailed,
+        Self::AuthRejected,
+        Self::Quota,
+        Self::Capacity,
+        Self::ModelUnavailable,
+        Self::Network,
+        Self::UnsupportedInvocation,
+        Self::ModelRefused,
+        Self::Unknown,
+    ];
+
+    /// Whether `stdout` and `stderr` are what [`Self::redact_capture`] leaves when it replaces
+    /// both streams: one closed diagnostic and nothing else. Telemetry's release decision reads
+    /// it after the adapter's filter (design §7.3), so it learns that the adapter withheld the
+    /// streams without the adapter telling it.
+    pub fn replaced_capture(stdout: &[u8], stderr: &[u8]) -> bool {
+        stderr.is_empty()
+            && Self::ALL
+                .iter()
+                .any(|kind| kind.diagnostic().as_bytes() == stdout)
+    }
+
     pub fn is_auth(self) -> bool {
         matches!(
             self,
@@ -309,6 +337,27 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_whole_capture_replacement_is_recognized_and_nothing_else() {
+        for kind in NativeFailureKind::ALL {
+            let mut stdout = b"device code ABCD-EFGH at https://claude.ai/oauth/authorize".to_vec();
+            let mut stderr = b"waiting".to_vec();
+            kind.redact_capture(false, &mut stdout, &mut stderr);
+            assert!(
+                NativeFailureKind::replaced_capture(&stdout, &stderr),
+                "{kind:?}"
+            );
+        }
+        assert!(!NativeFailureKind::replaced_capture(
+            b"{\"type\":\"result\"}\n",
+            b""
+        ));
+        assert!(!NativeFailureKind::replaced_capture(
+            NativeFailureKind::Quota.diagnostic().as_bytes(),
+            b"stderr kept"
+        ));
+    }
 
     #[test]
     fn distinguishes_authentication_from_other_native_failures() {

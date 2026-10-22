@@ -9,6 +9,7 @@ mod control;
 mod drain;
 pub mod json_stream;
 mod live;
+mod observe;
 pub mod reap;
 mod reaper;
 mod rusage;
@@ -18,11 +19,13 @@ mod spawn;
 use capture::{Caps, captured_inner, run_supervised_inner};
 pub use capture::{
     SupervisedCapture, run_supervised_captured, run_supervised_captured_bounded,
-    run_supervised_captured_cancellable, run_supervised_captured_cancellable_with_policy,
+    run_supervised_captured_bounded_observed, run_supervised_captured_cancellable,
+    run_supervised_captured_cancellable_with_policy, run_supervised_captured_observed,
     run_supervised_captured_streaming, run_supervised_captured_with_policy,
 };
 use drain::{collect_after_kill, collect_stderr, drain_async};
 pub use live::{kill_live_process_groups, live_process_groups};
+pub use observe::{ObservedChunk, ObservedOutput, ObservedStream, OutputObserver, observer};
 pub use reaper::{TREE_VARIABLE, descendant_cleanup_fallback};
 pub use rusage::Rusage;
 pub use spawn::spawn;
@@ -220,7 +223,16 @@ pub fn run_supervised_with_policy(
     timeout: Duration,
     exit_policy: ExitPolicy,
 ) -> Result<SupervisedOutput, SupervisedError> {
-    captured_inner(command, input, timeout, exit_policy, None, Caps::PROTOCOL).into_result()
+    captured_inner(
+        command,
+        input,
+        timeout,
+        exit_policy,
+        None,
+        None,
+        Caps::PROTOCOL,
+    )
+    .into_result()
 }
 
 /// Run a bounded process while a caller streams its stdin without first materializing one large

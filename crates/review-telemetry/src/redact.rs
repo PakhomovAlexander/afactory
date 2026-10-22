@@ -24,6 +24,8 @@
 //!
 //! Every rule change bumps [`REDACTION_VERSION`], so a reader can tell which rules a blob passed.
 
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 
 /// The version of these rules a blob records (`af/TelemetryBlob@1` `redaction`).
@@ -950,6 +952,14 @@ impl Redactor {
         })
     }
 
+    /// A JSON document af itself produced whose identity positions follow a rule rather than a
+    /// list: `exempt` judges each JSON pointer, and a value there skips the heuristic only when
+    /// it is exactly a kernel identity, a canonical decimal, a number or a boolean, as in
+    /// [`Self::kernel_json`].
+    pub fn kernel_json_where(&self, value: &mut Value, exempt: &dyn Fn(&str) -> bool) -> u32 {
+        self.json_at(value, "", exempt)
+    }
+
     fn json_at(&self, value: &mut Value, pointer: &str, exempt: &dyn Fn(&str) -> bool) -> u32 {
         if exempt(pointer) && typed_value(value) {
             return 0;
@@ -1057,6 +1067,207 @@ fn typed_value(value: &Value) -> bool {
     }
 }
 
+/// The identity positions of the Worker request the kernel composes (`af.worker-request/1`):
+/// each input and feedback value's `artifact_id` and `snapshot_id`, which the request's schema
+/// types as digests, and inside its `payload` only the positions the schema of an artifact type
+/// af owns declares as identities ([`KERNEL_PAYLOAD_IDENTITIES`]). Every other payload — the
+/// Task's requirements (`af/Requirements@1`, its `specification` included), another Worker's
+/// output, any type the table does not name — is untrusted JSON whatever its members are named
+/// or its values look like, and so are the instructions, the reply format and the output
+/// schemas: all are judged whole. Read from the document itself (each value's `artifact_type`).
+#[derive(Debug, Clone, Default)]
+pub struct WorkerRequestPositions {
+    /// Each input and feedback value's JSON pointer, with its type's declared payload positions.
+    values: BTreeMap<String, &'static [&'static str]>,
+}
+
+impl WorkerRequestPositions {
+    pub fn of(document: &Value) -> Self {
+        let mut values = BTreeMap::new();
+        let mut value = |pointer: String, value: &Value| {
+            let declared = value
+                .get("artifact_type")
+                .and_then(Value::as_str)
+                .and_then(|kind| {
+                    KERNEL_PAYLOAD_IDENTITIES
+                        .iter()
+                        .find(|(owned, _)| *owned == kind)
+                })
+                .map_or(&[][..], |(_, positions)| *positions);
+            values.insert(pointer, declared);
+        };
+        if let Some(inputs) = document.get("inputs").and_then(Value::as_object) {
+            for (port, items) in inputs {
+                for (index, item) in items.as_array().into_iter().flatten().enumerate() {
+                    value(format!("/inputs/{}/{index}", escape_pointer(port)), item);
+                }
+            }
+        }
+        for (index, item) in document
+            .get("feedback")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            value(format!("/feedback/{index}"), item);
+        }
+        Self { values }
+    }
+
+    /// Whether `pointer` is one of the request's identity positions.
+    pub fn contains(&self, pointer: &str) -> bool {
+        let segments: Vec<&str> = pointer.split('/').skip(1).collect();
+        let prefix = match segments.first() {
+            Some(&"inputs") => 3,
+            Some(&"feedback") => 2,
+            _ => return false,
+        };
+        if segments.len() <= prefix {
+            return false;
+        }
+        let Some(declared) = self
+            .values
+            .get(&format!("/{}", segments[..prefix].join("/")))
+        else {
+            return false;
+        };
+        match &segments[prefix..] {
+            ["artifact_id" | "snapshot_id"] => true,
+            ["payload", rest @ ..] => declared.iter().any(|position| {
+                let position: Vec<&str> = position.split('/').collect();
+                position.len() == rest.len()
+                    && position
+                        .iter()
+                        .zip(rest)
+                        .all(|(want, have)| *want == "*" || want == have)
+            }),
+            _ => false,
+        }
+    }
+}
+
+/// The artifact types af owns that can reach a Worker request, each with the payload positions
+/// its schema under `schemas/` types as identities (digests, and the retry feedback's Attempt
+/// id); `*` is any member of a map or element of an array. Admission validated each payload
+/// against that schema before the request was composed; a position not listed here is judged.
+pub const KERNEL_PAYLOAD_IDENTITIES: [(&str, &[&str]); 9] = [
+    // source-tree-v1.json
+    ("af/SourceTree@1", &["snapshot_id"]),
+    // task-check-receipt-v1.json
+    (
+        "af/TaskCheckReceipt@1",
+        &["plan_id", "snapshot_id", "policy_id", "checks/*"],
+    ),
+    // task-retry-feedback-v1.json
+    (
+        "af/TaskRetryFeedback@1",
+        &["attempt_id", "contract_id", "compiler/proposal_id"],
+    ),
+    // task-review-assignment-v1.json
+    (
+        "af/TaskReviewAssignment@1",
+        &["subject_id", "prior_history_id", "findings/*/report_ids/*"],
+    ),
+    // task-review-subject-v2.json
+    (
+        "af/TaskReviewSubject@2",
+        &[
+            "subject_id",
+            "snapshot_id",
+            "prior_history_id",
+            "continuation_id",
+            "subject/head_snapshot_id",
+            "subject/base_snapshot_id",
+            "subject/change_set_id",
+            "change_scope/patch/content_id",
+        ],
+    ),
+    // review-history-v1.json
+    (
+        "af/ReviewHistory@1",
+        &[
+            "lineage_id",
+            "subject_id",
+            "finding_set_id",
+            "demand_set_id",
+            "round_report_id",
+        ],
+    ),
+    // task-repair-context-v1.json
+    (
+        "af/TaskRepairContext@1",
+        &[
+            "claims/*/attestation/change_set_id",
+            "claims/*/attestation/evidence_ids/*",
+            "claims/*/attestation/expected_finding_view_id",
+            "claims/*/attestation/subject_id",
+            "claims/*/attestation_id",
+            "claims/*/current_view_id",
+            "claims/*/original_view_id",
+            "continuation/claims/*",
+            "continuation/current_snapshot_id",
+            "continuation/current_subject_id",
+            "continuation/plan_id",
+            "continuation/policy_id",
+            "continuation/previous_subject_id",
+            "continuation/prior_history_id",
+            "continuation/task_revision_id",
+            "continuation_id",
+            "invocation/inputs/*/artifact_ids/*",
+            "invocation/inputs/*/snapshot_id",
+            "invocation/plan_id",
+            "previous_snapshot_id",
+            "subject/base_snapshot_id",
+            "subject/change_set_id",
+            "subject/head_snapshot_id",
+        ],
+    ),
+    // document-context-v1.json
+    (
+        "af/DocumentContext@1",
+        &[
+            "feedback_ids/*",
+            "invocation/inputs/*/artifact_ids/*",
+            "invocation/inputs/*/snapshot_id",
+            "invocation/plan_id",
+        ],
+    ),
+    // worker-notes-v1.json
+    (
+        "af/WorkerNotes@1",
+        &["head_snapshot_id", "inspected/*/tree_entry_digest"],
+    ),
+];
+
+/// The typed positions of a record of the kernel's own (a Store event payload, a context
+/// manifest), by the naming its schemas follow: identities — a member named `id`, `*_id`,
+/// `digest` or `*_digest`, an element of an array member named `*_ids` or `artifact_refs` — and
+/// token counters, a member named `tokens` or `*_tokens`. A value there keeps only when it is
+/// exactly a kernel identity, a canonical decimal or a number; any other is judged, and every
+/// other position is untrusted text.
+pub fn record_identity_position(pointer: &str) -> bool {
+    let mut segments = pointer.rsplit('/');
+    let Some(last) = segments.next() else {
+        return false;
+    };
+    let typed_name = |name: &str| {
+        name == "id"
+            || name.ends_with("_id")
+            || name == "digest"
+            || name.ends_with("_digest")
+            || name == "tokens"
+            || name.ends_with("_tokens")
+    };
+    if typed_name(last) {
+        return true;
+    }
+    last.parse::<usize>().is_ok()
+        && segments
+            .next()
+            .is_some_and(|parent| parent.ends_with("_ids") || parent == "artifact_refs")
+}
+
 fn escape_pointer(name: &str) -> String {
     name.replace('~', "~0").replace('/', "~1")
 }
@@ -1115,6 +1326,93 @@ pub fn redact_json(value: &mut Value) -> u32 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Design §16 item 2: a kernel-composed Worker request keeps typed identities only in the
+    /// positions its kind declares — each value's `artifact_id` and `snapshot_id`, and inside a
+    /// payload only what the schema of an artifact type af owns declares; every other position
+    /// is untrusted JSON judged whole: a credential under an `_id` name and a secret-named
+    /// member are withheld, while a digest there is text, and a digest is no credential (the
+    /// 2026-10-20 audit's rule), so it stays — as text, not as a typed identity.
+    #[test]
+    fn kernel_documents_keep_typed_values_only_in_declared_positions() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let hex = "0123456789abcdef".repeat(4);
+        let mut request = json!({
+            "instructions": format!("use {digest}"),
+            "inputs": {
+                "receipt": [{"artifact_id": digest, "artifact_type": "af/TaskCheckReceipt@1",
+                    "snapshot_id": digest,
+                    "payload": {"snapshot_id": digest, "checks": {"syntax": digest},
+                                "note": digest, "plan_id": "password=violet"}}],
+                "requirements": [{"artifact_id": digest, "artifact_type": "af/Requirements@1",
+                    "payload": {"specification": {"api_token_id": hex, "plan_id": digest},
+                                "snapshot_id": digest}}],
+                "result": [{"artifact_id": digest, "artifact_type": "custom/Result@1",
+                    "payload": {"subject_id": digest}}]},
+            "feedback": [{"artifact_id": digest, "artifact_type": "af/TaskRetryFeedback@1",
+                "payload": {"contract_id": digest, "code": "process_failure"}}],
+            "output_schemas": {"result": {"artifact_id": digest}},
+        });
+        let positions = WorkerRequestPositions::of(&request);
+        let withheld =
+            Redactor::new().kernel_json_where(&mut request, &|pointer| positions.contains(pointer));
+        let receipt = &request["inputs"]["receipt"][0];
+        let requirements = &request["inputs"]["requirements"][0];
+        for kept in [
+            &receipt["artifact_id"],
+            &receipt["snapshot_id"],
+            &receipt["payload"]["snapshot_id"],
+            &receipt["payload"]["checks"]["syntax"],
+            &requirements["artifact_id"],
+            &request["inputs"]["result"][0]["artifact_id"],
+            &request["feedback"][0]["artifact_id"],
+            &request["feedback"][0]["payload"]["contract_id"],
+        ] {
+            assert_eq!(kept, &json!(digest));
+        }
+        // A user-controlled payload is untrusted JSON whatever its members are named: a
+        // credential under an `_id` name and a secret-named member are withheld.
+        for gone in [
+            &receipt["payload"]["plan_id"],
+            &requirements["payload"]["specification"]["api_token_id"],
+        ] {
+            assert_eq!(gone, &json!(WITHHELD));
+        }
+        // A digest outside a declared position is judged as text, and a digest is no
+        // credential: it stays, as text.
+        for text in [
+            &request["instructions"],
+            &receipt["payload"]["note"],
+            &requirements["payload"]["specification"]["plan_id"],
+            &requirements["payload"]["snapshot_id"],
+            &request["inputs"]["result"][0]["payload"]["subject_id"],
+            &request["output_schemas"]["result"]["artifact_id"],
+        ] {
+            assert!(
+                text.as_str().is_some_and(|text| text.contains(&digest)),
+                "{text}"
+            );
+        }
+        assert_eq!(withheld, 2);
+        let mut record = json!({"artifact_refs": [digest], "event_id": "run-1",
+            "usage": {"input_tokens": 12, "estimated_tokens": "42", "api_token": 12},
+            "subject_id": "sk-proj-0123456789abcdefghijklmnop", "diagnostic": digest});
+        Redactor::new().kernel_json_where(&mut record, &record_identity_position);
+        assert_eq!(record["artifact_refs"][0], json!(digest));
+        assert_eq!(record["event_id"], "run-1");
+        assert_eq!(record["usage"]["input_tokens"], 12);
+        assert_eq!(record["usage"]["estimated_tokens"], "42");
+        assert_eq!(record["usage"]["api_token"], WITHHELD);
+        assert_eq!(
+            record["subject_id"], WITHHELD,
+            "an untyped value in a typed position"
+        );
+        assert_eq!(
+            record["diagnostic"],
+            json!(digest),
+            "a digest in text is no credential"
+        );
+    }
 
     #[test]
     fn option_values_under_secret_names_are_withheld() {

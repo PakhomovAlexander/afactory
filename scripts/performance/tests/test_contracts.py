@@ -261,33 +261,36 @@ class Parity(unittest.TestCase):
                     contracts.read_json(json.dumps(doc).encode(), contract)
                 self.assertIn("expected %s" % contracts.CONTRACTS[contract][0],
                               str(caught.exception))
-        self.assertFalse(any(name.endswith(("run-v1.json", "run-v2.json", "run-v3.json",
-                                            "run-v4.json", "run-v5.json", "readiness-v4.json",
-                                            "activation-v2.json",
-                                            "activation-verification-v1.json", "cost-v1.json",
-                                            "shipping-v1.json", "cohort-v1.json",
-                                            "activation-verification-v2.json", "cost-v2.json",
-                                            "shipping-v2.json", "builds-v5.json",
-                                            "cohort-v2.json", "cohort-v3.json",
-                                            "activation-v1.json", "readiness-v3.json",
-                                            "calibration-parameters-v1.json",
-                                            "readiness-v1.json", "readiness-v2.json",
-                                            "builds-v1.json",
-                                            "builds-v2.json", "builds-v3.json",
-                                            "builds-v4.json", "verdict-v1.json",
-                                            "sample-v1.json", "shard-v1.json", "shard-v2.json",
-                                            "shard-v3.json", "cli-v1.json", "cli-v2.json",
-                                            "cli-v3.json", "cli-v4.json",
-                                            "supervisor-request-v2.json",
-                                            "supervisor-request-v3.json",
-                                            "supervisor-result-v3.json",
-                                            "supervisor-result-v4.json",
-                                            "suite-v1.json", "suite-v2.json",
-                                            "golden-v1.json", "probe-request-v1.json",
-                                            "supervisor-request-v1.json",
-                                            "supervisor-result-v1.json",
-                                            "supervisor-result-v2.json"))
-                             for name in os.listdir(SCHEMAS)))
+        # Only the laboratory's own files: another family's schema may share a suffix
+        # (`telemetry-invocation-cost-v1.json` ends in `cost-v1.json`).
+        self.assertFalse(any(name.startswith("performance-")
+                             and name.endswith(("run-v1.json", "run-v2.json", "run-v3.json",
+                                                "run-v4.json", "run-v5.json", "readiness-v4.json",
+                                                "activation-v2.json",
+                                                "activation-verification-v1.json", "cost-v1.json",
+                                                "shipping-v1.json", "cohort-v1.json",
+                                                "activation-verification-v2.json", "cost-v2.json",
+                                                "shipping-v2.json", "builds-v5.json",
+                                                "cohort-v2.json", "cohort-v3.json",
+                                                "activation-v1.json", "readiness-v3.json",
+                                                "calibration-parameters-v1.json",
+                                                "readiness-v1.json", "readiness-v2.json",
+                                                "builds-v1.json",
+                                                "builds-v2.json", "builds-v3.json",
+                                                "builds-v4.json", "verdict-v1.json",
+                                                "sample-v1.json", "shard-v1.json", "shard-v2.json",
+                                                "shard-v3.json", "cli-v1.json", "cli-v2.json",
+                                                "cli-v3.json", "cli-v4.json",
+                                                "supervisor-request-v2.json",
+                                                "supervisor-request-v3.json",
+                                                "supervisor-result-v3.json",
+                                                "supervisor-result-v4.json",
+                                                "suite-v1.json", "suite-v2.json",
+                                                "golden-v1.json", "probe-request-v1.json",
+                                                "supervisor-request-v1.json",
+                                                "supervisor-result-v1.json",
+                                                "supervisor-result-v2.json"))
+                                 for name in os.listdir(SCHEMAS)))
 
     def test_probe_control_messages_are_bounded(self):
         entry = [e for e in self.index if e["contract"] == "probe" and e["valid"]][0]

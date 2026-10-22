@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use review_pipeline::telemetry::{MachineConfig, row};
+use review_pipeline::telemetry::{ConfigText, MachineConfig, row};
 use review_telemetry::record::ConfigRow;
 
 use crate::config;
@@ -108,7 +108,7 @@ fn configuration_under(config: &config::Config, home: Option<&Path>) -> Vec<Conf
 
 /// The digests of `.af/af.toml` and `.af/af.lock` in the repository the command runs in, and
 /// `.af/af.toml` as a text the record names.
-fn policy_files(toplevel: Option<&Path>) -> (Vec<ConfigRow>, Vec<(&'static str, String, u64)>) {
+fn policy_files(toplevel: Option<&Path>) -> (Vec<ConfigRow>, Vec<ConfigText>) {
     let mut rows = Vec::new();
     let mut texts = Vec::new();
     for (key, name) in [
@@ -123,7 +123,14 @@ fn policy_files(toplevel: Option<&Path>) -> (Vec<ConfigRow>, Vec<(&'static str, 
             Ok(bytes) => {
                 let digest = review_telemetry::trace::sha256_digest(&bytes);
                 if name == "af.toml" {
-                    texts.push(("af_toml", digest.clone(), bytes.len() as u64));
+                    // Its bytes are a blob at `content` only (design §7.4).
+                    let content = review_telemetry::content::recording().then(|| bytes.clone());
+                    texts.push(ConfigText {
+                        kind: "af_toml",
+                        digest: digest.clone(),
+                        bytes: bytes.len() as u64,
+                        content,
+                    });
                 }
                 rows.push(row("policy", key, &digest, None));
             }

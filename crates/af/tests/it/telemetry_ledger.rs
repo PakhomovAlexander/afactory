@@ -20,7 +20,7 @@ use review_telemetry::view::{self, Resolved};
 use serde_json::Value;
 
 #[path = "telemetry_ledger/campaign_fixture.rs"]
-mod campaign_fixture;
+pub(crate) mod campaign_fixture;
 #[path = "telemetry_ledger/task_fixture.rs"]
 pub(crate) mod task_fixture;
 

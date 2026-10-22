@@ -223,6 +223,10 @@ unwritable directory, a full segment) is one problem and the run continues.
   af telemetry runs             every run: executions, active, execution and elapsed time,
                                 outcome, charge, failures, coverage, retained history
   af telemetry show RUN         the span tree: start offset, total and self time, status
+  af telemetry turns RUN        one row per model turn: arrival timing, the harness's per-turn
+                                usage, stop reason, text and thinking sizes, tool calls
+  af telemetry tools RUN        one row per tool call: name (when in the invocation's tool
+                                set), arrival timing, outcome, input and output bytes
   af telemetry config RUN       a run's configuration record in one execution: version,
                                 configuration with origins (an environment value is <env>),
                                 plan, bindings, Providers, harness versions, host, AF_*/OTEL_*
@@ -230,6 +234,12 @@ unwritable directory, a full segment) is one problem and the run continues.
   af telemetry tail [RUN]       follow the live segments: every span end and event as written
   af telemetry ledger RUN       committed Store events, Finding and Demand summaries and each
                                 Attempt's charge, in order, with the coverage and history
+  af telemetry context RUN ATTEMPT   at content: the Attempt's composed Worker input (the
+                                prompt bytes and the manifest); --raw prints the prompt alone
+  af telemetry reasoning RUN ATTEMPT at content: the Attempt's thinking blocks and reasoning
+                                summaries, in order
+  af telemetry search TEXT      at content: the text blobs holding TEXT, with span paths and
+                                bounded excerpts; refused below content
   af telemetry gc [--apply]     what the Storage Budget's sweep evicts from the telemetry kind
 
 Recorded: the commands that run a kernel run (af task run, af task start --execute, af review
@@ -238,8 +248,9 @@ af.authority.load, af.plan (one node record per plan node), af.node > af.attempt
 command's af.sweep; every other command records nothing and opens no telemetry directory. From
 the first af.run until the seal one consumer thread is the segment's only writer and every
 record is in it within flush_latency_ms; at the command's end it writes the command's end and
-seals the segment within one 2 s bound, else it is abandoned, publishes nothing, and the segment
-is left for the next reader to recover. A run's executions (one per process that worked on it,
+seals the segment within one bound — 2 s beyond its last progress, each content of a released
+harness stream it publishes renewing it — else it is abandoned, publishes nothing, and the
+segment is left for the next reader to recover. A run's executions (one per process that worked on it,
 numbered by the execution markers, TaskExecutionStarted@1 events of the Task's log, the Store
 holds for the leases before it) can
 overlap: active time is their union, execution time their sum, elapsed time first start to last
@@ -260,7 +271,9 @@ own (af.run.kind = measure, af.measurement.id), its repetitions child spans. At 
 every run an execution works on has its own configuration record, its parts naming the run:
 the configuration and machine sections when the run opens, the plan section when its plan
 resolves (a run refused before that has the first two), and af.config.text naming the
-pipeline, the Task file and .af/af.toml by digest and size. Every child reap of af goes
+pipeline's pipeline.toml, the Task file and .af/af.toml by the SHA-256 of their own bytes and
+their size. A check fingerprint's runtime paths become placeholders only where a value names
+the path or one under it, never a sibling (/tmp/a-extra beside /tmp/a). Every child reap of af goes
 through review-process's one reap lock, so a process's af.rusage.* is never another child's.
 
 At spans and above every event the kernel commits to a Store is mirrored after its commit, on
@@ -277,6 +290,57 @@ Task projection holds it (af.usage.state, ordered by the committed event's seque
 sidecar write its merged row (af.usage.wall, ordered within one execution only); an Attempt's
 figures are its latest charge, run totals are sums of those, and the sidecar series never
 enters them.
+
+At spans and above every harness's streams are tapped as they arrive: the supervisor's drain
+offers each chunk to a bounded queue (observer_queue_bytes) without ever waiting, a full queue
+drops the chunk and counts it, and the consumer frames lines and records validated structure
+only, timed by arrival: a Claude assistant message (stream-json) or a Codex turn is af.turn
+with the harness's own per-turn usage, a Claude message's turn ending as soon as its line is
+read (a further line of the same message is af.turn.continued on that turn, folded into its
+row by turns), a Claude tool_use block or a Codex command or MCP item is af.tool with its
+input and output bytes, and the other lines are events, the Claude result line by its size
+only. Every identifier the harness supplies is af.corr in a live record; every untrusted
+string (text, thinking, tool arguments and results, errors, unparsed lines) is only a size. A
+frame too long to judge is withheld whole; a dropped chunk is af.stream.gap and the stream
+incomplete. Once the process has ended Telemetry takes its own release decision:
+login-challenge material in either stream or in a Codex Attempt's -o final message (read for
+every observed process, whatever its ending), a final message that cannot be read whole, an
+adapter that replaced the streams, or a stream the output cap truncated (a prefix where the
+decision needs the whole), withholds everything pending (af.stream.withheld);
+otherwise af.harness.ids lists each correlation id with its original once it passes the
+credential rules (af.harness.ids.count admitted, the list going on in af.harness.ids.part
+events past one record; an identifier past 4096 per process or 256 bytes has no mapping,
+counted in af.harness.ids.omitted with af.harness.ids.analysis incomplete). Claude is asked
+for --output-format stream-json --verbose at spans and content and for json at off and
+metrics; the adapter reads the result line either way (a JSON object without a type is an
+envelope only under json), and the Store keeps that line and stderr (Codex: its turn and
+error lines and the -o final message), never native text around them, so accounting,
+classification and the Store's bytes are the same at every level. With Claude Code 2.1.305
+and claude-opus-5-5 the stream's thinking blocks carry no text, so Claude reasoning is sizes
+only.
+
+At content, and only there, Telemetry also keeps content as blobs, each redacted whole before
+any truncation and named by one event: the composed Worker input of af.context.compose (the
+prompt bytes, gen_ai.content.input, and the manifest, gen_ai.content.system); once the release
+decision withheld nothing, a harness's assistant text and Codex agent messages
+(gen_ai.content.output), its thinking blocks and reasoning items (af.content.reasoning, only
+with content_reasoning) and its tool arguments and results (af.content.tool_input and
+af.content.tool_output, only with content_tool_io); a check's stdout and stderr
+(af.check.output); every mirrored Store event's payload; an admitted Finding's body
+(af.finding.body); and .af/af.toml, the pipeline's pipeline.toml and the Task file
+(af.config.text). A Worker request keeps identities only where its schema and, in a payload,
+the schema of an artifact type af owns declare one; the Task's requirements and every other
+payload are judged whole. An Attempt's content is bounded by content_attempt_max_bytes and
+content outside any Attempt by content_process_max_bytes, counting what was stored: past
+either, further content is dropped and counted (a dropped occurrence, the seal's dropped, one
+budget problem) and nothing about the Worker changes. The content is the operator's: no
+prompt, Warm Set, Worker Notes or optimization source ever reads it. `af telemetry context
+RUN ATTEMPT [--raw]` prints an Attempt's composed input, `af telemetry reasoning RUN ATTEMPT`
+its thinking and reasoning in order, and `af telemetry search 'text' [--since D] [--run RUN]`
+searches the full-text index content_fts that every af telemetry command keeps at ingest when
+content_index = true (and empties when it is false), reading a bounded number of matches and
+showing an excerpt only of a blob it verified, a missing or corrupt one listed unreadable; below
+content context and reasoning say the content was not captured and search is refused (exit 2).
 
 The [telemetry] table, machine layers only (built-in, system, user, AF_TELEMETRY__<KEY>); a
 repository's .af/af.toml cannot set it, and a value outside its bound refuses the load naming

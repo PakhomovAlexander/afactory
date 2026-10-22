@@ -35,7 +35,12 @@ fn machine() -> MachineConfig {
         harnesses: vec![row("harness", "claude_code.managed_settings", "", None)],
         host: vec![row("host", "host.os", std::env::consts::OS, None)],
         variables: vec![row("variable", "AF_TELEMETRY__LEVEL", "", None)],
-        texts: vec![("af_toml", AF_TOML.into(), 12)],
+        texts: vec![review_pipeline::telemetry::ConfigText {
+            kind: "af_toml",
+            digest: AF_TOML.into(),
+            bytes: 12,
+            content: None,
+        }],
     }
 }
 
@@ -242,6 +247,30 @@ fn telemetry_config_text_identities_at_spans() {
             texts.contains(&(kind, true, true)),
             "{kind} named by digest and size: {texts:?}"
         );
+    }
+    // The texts themselves, never the CAS artifacts that carry them: the SHA-256 of the
+    // pipeline's TOML as its package declares it and of the Task file as read.
+    for (kind, text) in [
+        (
+            "pipeline",
+            crate::telemetry_ledger::task_fixture::PIPELINE_TOML,
+        ),
+        (
+            "task_file",
+            crate::telemetry_ledger::task_fixture::TASK_FILE,
+        ),
+    ] {
+        let named = record
+            .texts
+            .iter()
+            .find(|named| named.kind == kind)
+            .unwrap();
+        assert_eq!(
+            named.digest.as_deref(),
+            Some(review_telemetry::trace::sha256_digest(text.as_bytes()).as_str()),
+            "{kind}"
+        );
+        assert_eq!(named.bytes, Some(text.len() as u64), "{kind}");
     }
     // Nothing but metadata: no blob was written at `spans`.
     assert!(!root.join("v1/blobs").exists() || dir_is_empty(&root.join("v1/blobs")));

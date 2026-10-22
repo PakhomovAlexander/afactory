@@ -476,7 +476,8 @@ fn project_brief_describes_the_exact_bytes_a_port_carries() {
 fn telemetry_help_and_man_pages_describe_the_commands() {
     let namespace = out(&af(&["telemetry", "--help"]));
     for command in [
-        "status ", "reindex ", "runs ", "show ", "config ", "tail ", "ledger ", "gc ",
+        "status ", "reindex ", "runs ", "show ", "turns ", "tools ", "config ", "tail ", "ledger ",
+        "gc ",
     ] {
         assert!(
             namespace
@@ -558,6 +559,65 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
             "af/telemetry-ledger@1",
             ["--store <ID>", "--dir <PATH>"].as_slice(),
         ),
+        // P6 (design §7.3, §10): the turns and tool calls of the harness streams.
+        (
+            "turns",
+            "Usage: af telemetry turns [OPTIONS] <RUN>",
+            "af/telemetry-turns@1",
+            [
+                "--store <ID>",
+                "--attempt <ID>",
+                "--dir <PATH>",
+                "release decision",
+            ]
+            .as_slice(),
+        ),
+        (
+            "tools",
+            "Usage: af telemetry tools [OPTIONS] <RUN>",
+            "af/telemetry-tools@1",
+            ["--store <ID>", "--attempt <ID>", "--dir <PATH>", "tool set"].as_slice(),
+        ),
+        // P7 (design §9, §10): the content level read back.
+        (
+            "context",
+            "Usage: af telemetry context [OPTIONS] <RUN> <ATTEMPT>",
+            "af/telemetry-context@1",
+            [
+                "--store <ID>",
+                "--raw",
+                "--dir <PATH>",
+                "gen_ai.content.input",
+                "not captured",
+            ]
+            .as_slice(),
+        ),
+        (
+            "reasoning",
+            "Usage: af telemetry reasoning [OPTIONS] <RUN> <ATTEMPT>",
+            "af/telemetry-reasoning@1",
+            [
+                "--store <ID>",
+                "--dir <PATH>",
+                "content_reasoning",
+                "release decision",
+            ]
+            .as_slice(),
+        ),
+        (
+            "search",
+            "Usage: af telemetry search [OPTIONS] <TEXT>",
+            "af/telemetry-search@1",
+            [
+                "--since <D>",
+                "--run <RUN>",
+                "--store <ID>",
+                "--dir <PATH>",
+                "content_fts",
+                "content_index = false",
+            ]
+            .as_slice(),
+        ),
     ] {
         for help in [
             af(&["telemetry", command, "--help"]),
@@ -597,6 +657,11 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "af telemetry config",
         "af telemetry tail",
         "af telemetry ledger",
+        "af telemetry turns",
+        "af telemetry tools",
+        "af telemetry context",
+        "af telemetry reasoning",
+        "af telemetry search",
         "af telemetry gc",
         "machine layers only",
     ] {
@@ -614,6 +679,11 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "af-telemetry-config.1",
         "af-telemetry-tail.1",
         "af-telemetry-ledger.1",
+        "af-telemetry-turns.1",
+        "af-telemetry-tools.1",
+        "af-telemetry-context.1",
+        "af-telemetry-reasoning.1",
+        "af-telemetry-search.1",
         "af-telemetry-gc.1",
         "af-telemetry.7",
     ] {

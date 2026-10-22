@@ -167,48 +167,70 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         let mut events = TaskEvents::default();
         let mut failure = None;
         let mut said = WorkerStderr::default();
-        // The `-o` final message, read only for a process that exited 0 with no `error` or
-        // `turn.failed` event; `None` for every other ending.
+        // The `-o` final message as a reply, only for a process that exited 0 with no `error`
+        // or `turn.failed` event; `None` for every other ending.
         let mut reply: Option<Result<Option<Vec<u8>>, String>> = None;
-        let capture = runner.capture_filtered(
+        let mut capture = runner.capture_observed_with_output(
             cas,
             &command,
             input,
             cancellation,
-            |failed, stdout, stderr| {
-                // Parse the bill before privacy filtering removes an authentication envelope.
-                events = TaskEvents::parse(stdout);
-                // The Worker's own last words, bounded and filtered, before the privacy filter
-                // below may replace the stream.
-                said = WorkerStderr::read(stderr, stdout);
-                if !failed && events.error.is_none() {
-                    reply = Some(read_final_message(&output_directory));
+            &review_runner::stream::HarnessStream::codex(),
+            |failed, stdout, stderr, further| {
+                'classify: {
+                    // Parse the bill before privacy filtering removes an authentication envelope.
+                    events = TaskEvents::parse(stdout);
+                    // The Worker's own last words, bounded and filtered, before the privacy filter
+                    // below may replace the stream.
+                    said = WorkerStderr::read(stderr, stdout);
+                    // The final message is harness output too: Telemetry's release decision
+                    // judges the whole file of every observed process before the tap ends,
+                    // whatever the process's ending, and one it cannot read whole withholds the
+                    // process's pending content (design §7.3).
+                    let qualifies = !failed && events.error.is_none();
+                    let read = (qualifies || further.observed())
+                        .then(|| read_final_message(&output_directory));
+                    match &read {
+                        Some(Ok(Some(bytes))) => further.include(bytes),
+                        Some(Err(_)) => further.unjudgeable(),
+                        Some(Ok(None)) | None => {}
+                    }
+                    if qualifies {
+                        reply = read;
+                    }
+                    if matches!(reply, Some(Ok(Some(_)))) {
+                        break 'classify;
+                    }
+                    // No parsable result, whatever the exit status, the framed events or the
+                    // transport outcome: the one place its classification is decided. Framed events
+                    // speak only through their error fields: an agent message that quotes an auth or
+                    // argument error is model output, never a native diagnostic.
+                    let native_stdout = unframed(stdout);
+                    let candidates = [
+                        events
+                            .upstream_failure
+                            .unwrap_or(NativeFailureKind::Unknown),
+                        classify_native_failure(&String::from_utf8_lossy(stderr)),
+                        classify_native_failure(&native_stdout),
+                    ];
+                    let kind = classify_without_result(stderr, &native_stdout, &candidates);
+                    failure = (kind != NativeFailureKind::Unknown).then_some(kind);
+                    // Any recognized auth error makes both streams sensitive, even if an earlier
+                    // error concerned another failure, stdout was not valid JSONL, or an argument
+                    // error took the classification.
+                    kind.redact_capture(
+                        strongest_native_failure(&candidates).is_auth(),
+                        stdout,
+                        stderr,
+                    );
                 }
-                if matches!(reply, Some(Ok(Some(_)))) {
-                    return;
+                // The raw-output rule: the Store keeps the event lines accounting and failure
+                // classification read, whatever came of them above, or the adapter's
+                // whole-capture replacement when it took one; Telemetry has the rest. Native text
+                // outside the framing was classified above, from the complete capture.
+                if !NativeFailureKind::replaced_capture(stdout, stderr) {
+                    *stdout = kept_output(stdout);
                 }
-                // No parsable result, whatever the exit status, the framed events or the
-                // transport outcome: the one place its classification is decided. Framed events
-                // speak only through their error fields: an agent message that quotes an auth or
-                // argument error is model output, never a native diagnostic.
-                let native_stdout = unframed(stdout);
-                let candidates = [
-                    events
-                        .upstream_failure
-                        .unwrap_or(NativeFailureKind::Unknown),
-                    classify_native_failure(&String::from_utf8_lossy(stderr)),
-                    classify_native_failure(&native_stdout),
-                ];
-                let kind = classify_without_result(stderr, &native_stdout, &candidates);
-                failure = (kind != NativeFailureKind::Unknown).then_some(kind);
-                // Any recognized auth error makes both streams sensitive, even if an earlier
-                // error concerned another failure, stdout was not valid JSONL, or an argument
-                // error took the classification.
-                kind.redact_capture(
-                    strongest_native_failure(&candidates).is_auth(),
-                    stdout,
-                    stderr,
-                );
             },
         );
         let mut returned = ModelWorkerReturn {
@@ -223,6 +245,20 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         // exit and the Worker's own last words under the one classification decided above. A
         // transport that failed after the process exited, storing its raw output, admits no
         // message the process printed: the process left a result, so nothing was classified.
+        // The `-o` last-message file is the reply's raw evidence, kept with the lines above.
+        if let Some(Ok(Some(bytes))) = &reply {
+            match cas.put(bytes) {
+                Ok(id) if !returned.raw_artifact_ids.contains(&id) => {
+                    returned.raw_artifact_ids.push(id);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    capture.status = Err(RunnerError::Unavailable(format!(
+                        "storing raw output: {error}"
+                    )));
+                }
+            }
+        }
         let reply = reply.filter(|_| capture.status.as_ref().is_ok_and(|status| status.success()));
         let delivered = reply.is_some();
         returned.message = match reply {
@@ -425,6 +461,24 @@ impl TaskEvents {
         }
         events
     }
+}
+
+/// The raw-output rule for Codex (design §7.3): of an Attempt's JSONL stdout, what the Store
+/// keeps — the `turn.completed`, `turn.failed` and `error` lines the accounting and failure
+/// classification read, each as it was, and nothing else: no other event, and no native text
+/// outside the event framing, which classification reads from the complete in-memory capture
+/// ([`unframed`]).
+pub fn kept_output(stdout: &[u8]) -> Vec<u8> {
+    use review_runner::stream::{lines, message_type};
+    lines(stdout)
+        .filter(|line| {
+            message_type(line).is_some_and(|kind| {
+                matches!(kind.as_str(), "turn.completed" | "turn.failed" | "error")
+            })
+        })
+        .flatten()
+        .copied()
+        .collect()
 }
 
 /// Stdout lines outside the JSONL event framing: native text a failing client wrote around

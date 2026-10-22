@@ -4,6 +4,7 @@ mod blobs;
 mod budget;
 mod config;
 mod consumer;
+mod content;
 mod dirs;
 mod history;
 mod identity;
@@ -12,6 +13,7 @@ mod redaction;
 mod schemas;
 mod segments;
 mod sources;
+mod streams;
 mod subscriber;
 
 use std::path::{Path, PathBuf};

@@ -481,6 +481,11 @@ def corpus_facts(corpus):
         run_id = connection.execute(
             'SELECT run_id FROM runs ORDER BY run_id LIMIT 1 OFFSET ?',
             (facts['runs'] // 2,)).fetchone()[0]
+        # Whether the reads ran with the full-text index: the index has `content_fts` and
+        # it indexed the corpus's text blobs, read from the index, never assumed.
+        has_fts = count("SELECT count(*) FROM sqlite_master WHERE name = 'content_fts'") > 0
+        indexed = (count("SELECT count(*) FROM content_index WHERE state = 'indexed'")
+                   if has_fts else 0)
     finally:
         connection.close()
     name = ('telemetry-corpus-10k' if facts['runs'] == FULL_RUNS
@@ -491,7 +496,7 @@ def corpus_facts(corpus):
             'segment_stored_bytes': sum(path.stat().st_size for path in segments),
             'blob_files': len(blobs),
             'blob_stored_bytes': sum(path.stat().st_size for path in blobs),
-            'content_index': True}, run_id
+            'content_index': has_fts and indexed > 0}, run_id
 
 
 def measure(args):

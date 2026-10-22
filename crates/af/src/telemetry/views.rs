@@ -17,7 +17,7 @@ use crate::storage::{self, human_bytes};
 pub(crate) const GC_SCHEMA: &str = "af/telemetry-gc@1";
 
 /// A `[telemetry]` refusal exits 2; otherwise the directory to read.
-fn root_of(
+pub(super) fn root_of(
     command: &str,
     json: bool,
     dir: Option<PathBuf>,
@@ -26,10 +26,12 @@ fn root_of(
         Ok(settings) => settings,
         Err(refusal) => return Ok(Err(super::refused(command, json, &refusal))),
     };
+    // Every ingest of this command keeps the full-text index as the machine says.
+    review_telemetry::index::set_content_index(settings.content_index);
     Ok(Ok(super::chosen(dir, &settings)?))
 }
 
-fn print_json(value: &impl Serialize) -> Result<(), String> {
+pub(super) fn print_json(value: &impl Serialize) -> Result<(), String> {
     println!(
         "{}",
         serde_json::to_string_pretty(value).map_err(|error| error.to_string())?
@@ -216,11 +218,11 @@ fn render_run(out: &mut String, run: &Run) {
 }
 
 /// A resolved run: its Store, its trace and its kind.
-type Found = (String, String, Option<String>);
+pub(super) type Found = (String, String, Option<String>);
 
 /// The run `RUN` names in `index`, or the exit code with its message on stderr: 1 for an
 /// unknown run, 2 when two Stores share it and `--store` does not say which.
-fn resolve(
+pub(super) fn resolve(
     command: &str,
     index: &review_telemetry::index::Index,
     run: &str,

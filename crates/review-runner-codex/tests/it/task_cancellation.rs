@@ -28,6 +28,12 @@ fn native_cancellation_retains_full_turn_usage_and_reaps_owned_process() {
             )
         },
         output.as_bytes(),
+        // The raw-output rule: the Store keeps the turn lines, never the agent message.
+        output
+            .split_inclusive('\n')
+            .filter(|line| !line.contains("agent_message"))
+            .collect::<String>()
+            .as_bytes(),
         review_core::task::usage::TaskTokenUsageV3 {
             input_tokens: Some((u128::from(u64::MAX) + 7).into()),
             output_tokens: Some(23u128.into()),

@@ -47,12 +47,15 @@ when a record is appended or the deadline passes; there is no timer and no polli
 is therefore in the live segment within `flush_latency_ms` of its creation while a run is open,
 whatever its depth and however silent the Worker. When the command ends it sends the consumer
 one terminal request — the records still pending, the command's end among them, the seal, the
-manifest, the compression and the publication — and waits for it once, at most 2 s, over all of
-it; a consumer that has not finished in time — a write blocked on the volume — is abandoned:
-nothing else seals, compresses, replaces or writes the segment, the command's exit status is its
-own, the lock ends with the process, `af telemetry status` counts the segment `unsealed`, and
-the next reader recovers what was written. The compressed segment and its manifest are staged in
-temporary files, and the 2 s govern the whole publication: the deadline check is the last thing
+manifest, the compression and the publication — and waits for it once, at most 2 s beyond the
+consumer's last progress, over all of it: each content a released harness stream publishes under
+the seal renews the bound, so a release still in progress completes, at most the Attempt's
+allowance of content later; a consumer that makes no progress for 2 s — a write blocked on the
+volume — is abandoned: nothing else seals, compresses, replaces or writes the segment, the
+command's exit status is its own, the lock ends with the process, `af telemetry status` counts
+the segment `unsealed`, and the next reader recovers what was written. The compressed segment
+and its manifest are staged in temporary files, and the same bound governs the whole
+publication: the deadline check is the last thing
 before each step — the manifest's rename, the compressed copy's rename and the unlink of the
 live `.jsonl`, which happens only while the deadline has not passed — with nothing between the
 check and the step, and it runs again when a rename returns; a consumer that finds the deadline
@@ -74,16 +77,17 @@ be.
 Every phase below the run, the supervised processes and the configuration record are recorded
 too ([below](#phases-processes-and-the-configuration-record)), and the Store mirror, the Finding
 and Demand summaries and the accounting snapshots under [The Store mirror and the
-ledger](#the-store-mirror-and-the-ledger); the harness streams and the content blobs arrive with
-later packages of the design.
+ledger](#the-store-mirror-and-the-ledger), and every harness's turns and tool calls under
+[Harness streams](#harness-streams); at `content` the content blobs too, under
+[Content](#content).
 
 ## Phases, processes and the configuration record
 
 Below the run every phase of the design's catalogue is a span of the crate that owns it, each
 with its total and self time in `af telemetry show`; the catalogue, one row per span with its
 kind, parent and attributes, is in [`architecture.md`](architecture.md#telemetry-span-catalogue),
-and a test fails when a source emits a name it does not list. `af.turn`, `af.tool` and `af.sink`
-come later.
+and a test fails when a source emits a name it does not list. `af.turn` and `af.tool` are the
+harness streams' ([below](#harness-streams)); `af.sink` comes later.
 
 | Span | Under | What it carries |
 | --- | --- | --- |
@@ -140,7 +144,10 @@ the digest of the resolved program's bytes, the toolchain snapshot id when one i
 digest of the effective environment — every name and value the check ran with, after the runtime
 paths the check node introduced (the sandbox root, its runtime directory with `HOME`, `TMPDIR`
 and a cold `CARGO_TARGET_DIR`, `RUSTUP_HOME`, the warm cache directories) became placeholders,
-hashed and never retained — and the Snapshot digest. The program resolves as the check's own
+hashed and never retained — and the Snapshot digest. A runtime path becomes its placeholder only
+where a value names it or a path under it (the next character is `/`, a separator between
+values or the value's end): a sibling such as `/tmp/a-extra` beside `/tmp/a` is another path and
+stays as it is. The program resolves as the check's own
 lookup resolves it: a bare name through the effective `PATH`, whose relative entries (and an
 empty one) are the check's working directory's, so `PATH=bin:/usr/bin` digests the Snapshot's
 `bin/probe`, never a file below af's own directory. Two checks declared identically on the same
@@ -187,8 +194,12 @@ So an execution refused while the runtime checks its current plan still has the 
 the credential rules (a secret-named key withholds its value); a row keyed by an identity
 position (`af.policy_rev`, `af.pipeline.digest`, `af.af_toml.digest`, `af.af_lock.digest`) keeps
 a value that is exactly a digest. At every level that records the configuration, `spans`
-included, the record names the texts of the pipeline, the Task file and `.af/af.toml` by the
-event `af.config.text` with their digest and size; only their bytes wait for the content level.
+included, the record names three texts by the event `af.config.text`, each by the SHA-256 of
+its own bytes and their size: the pipeline's `pipeline.toml` as its package declares it (a
+Review Campaign's pipeline file as captured), the Task file as `af task start --file` read it,
+and `.af/af.toml` — never the CAS artifacts that carry them. A text whose bytes are not at hand
+(a Task no Task file made) is named by its kind alone. Their bytes are blobs only at
+[`content`](#content).
 
 ## `af telemetry config`
 
@@ -256,7 +267,7 @@ none of this.
 | `off` | nothing: no directory, no subscriber, no registry entry |
 | `metrics` | command, run, gate, check, node, Attempt, harness and sweep spans with identity and numeric attributes; failures; resource use |
 | `spans` (default) | every span and event, the configuration record, the Store mirror and Finding summaries; sizes and digests of content, never content |
-| `content` | `spans` plus content blobs: Worker inputs, assistant text, reasoning, tool arguments and results, check output |
+| `content` | `spans` plus content blobs: Worker inputs, assistant text, reasoning, tool arguments and results, check output, Store event payloads, Finding bodies, `.af/af.toml` ([Content](#content)) |
 
 `AF_TELEMETRY__LEVEL=content af task run TASK_ID` raises the level for one run. `content` is
 labelled *perturbing* by `af telemetry status`: it keeps blobs of what Workers saw and did.
@@ -423,7 +434,7 @@ directory cannot be read (or `--dir` names none) or its index is of another sche
 A `.jsonl` segment in which an invalid line precedes a valid one is unreadable at once: none of
 it is indexed, and it is listed as unreadable until `reindex` renames it `.corrupt`. A line over
 the 16 KiB record bound is an invalid line, so a sealed segment holding one is refused and
-listed, never indexed. An `index.sqlite` of a schema version other than this release's (`af/telemetry-index@2`) is
+listed, never indexed. An `index.sqlite` of a schema version other than this release's (`af/telemetry-index@3`) is
 refused, never migrated or read around: `status` exits 1 naming the file and both schemas, and
 `af telemetry reindex` replaces it. Only when another command is replacing the index does
 `status` read the segments directly, saying so on stderr; its answer is the same. The index
@@ -650,6 +661,171 @@ prints one `af/telemetry-ledger@1` document
 when the directory cannot be read or the run is unknown; 2 for a wrong command line, a run two
 Stores share without `--store`, or a refused `[telemetry]` key.
 
+## Harness streams
+
+At `spans` and above every Claude and Codex Attempt's streams are tapped as they arrive. The
+supervisor (`review-process`, which links no telemetry) still drains each pipe into the complete
+stream the adapter reads; for every chunk it reads it also makes one **non-blocking offer** of
+`(process, stream, byte offset, bytes, arrival)` to a queue of at most `observer_queue_bytes`.
+The offer takes no lock: the room is reserved by one atomic operation, the chunk goes through a
+channel whose send never blocks, and the consumer thread is woken by an unpark, which never
+blocks and is never lost. A full queue — a stalled or failed consumer — drops the chunk at once
+and counts it; so the drain, what the supervisor collects, its status, its deadline, a held
+stdout (`OutputHeld`) or stderr (`stderr_held`) with its retained bytes, and the accounting are
+the same as without Telemetry. The process's completion never waits on the consumer, which
+finishes the process's chunks afterwards; at the command's end the consumer's bound of the
+consumer section above applies — 2 s beyond its last progress, each content of a released stream
+it publishes renewing it.
+
+The consumer frames each stream into lines incrementally and records, live, **validated
+structure only**: the record's kind, counts, byte sizes, the arrival time of each line (the
+drain's clock at the read), the bound model when the harness reported it as the model that
+answered, stop reasons and item statuses from their closed sets, tool names that are in the
+invocation's own tool set, and **correlation ids** — `af.corr`, the first 16 hex digits of
+SHA-256 over the segment id, `:` and the original — in place of every identifier the harness
+supplies (session, thread, message, request, tool call, item). Every untrusted string — text,
+thinking, tool arguments and results, agent messages, reasoning summaries, error texts,
+unparsed lines and stderr — is only a size in a record; at `content` its bytes wait in a
+per-process buffer bounded by `content_attempt_max_bytes` (overflow drops the oldest and counts
+it), for the content package to write as blobs.
+
+- **Claude** (`stream-json`): `system/init` is the event `af.harness.init` on `af.harness`
+  (`gen_ai.conversation.id`, the tools in the tool set, the MCP server count, a version in a
+  version's grammar); each `assistant` message is an `af.turn` (`gen_ai.operation.name = chat`)
+  from the arrival of the line that began it — the init, or the tool results that went back to
+  the model — to the message's line, which ends the turn as soon as it is read, so `tail` and
+  `turns` show it ended before any later line arrives; the turn carries the harness's per-turn
+  usage (`af.usage.*` as exact decimal strings, `gen_ai.usage.input_tokens` including cache reads
+  and writes as the conventions count it, `af.series = turn`), `gen_ai.response.finish_reasons`,
+  and the number and bytes of its text and thinking blocks. Claude prints a message as one line
+  per content block: a further line of the message that ended the last turn, before the tool
+  results go back, opens no turn but is the event `af.turn.continued` on that ended turn, with
+  the blocks, tool calls and report the line adds, and `af telemetry turns` folds it into the
+  turn's row. Each `tool_use` block is an `af.tool` below the turn its message ended
+  (`gen_ai.operation.name = execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`,
+  `af.tool.input_bytes`) until the `tool_result` that answers it (`af.tool.output_bytes`, its
+  outcome), and the next turn opens when the tool results go back; `system/api_retry` is
+  `af.turn.api_retry` on the open turn; `rate_limit_event`, `permission_denied` and the `result`
+  line are `af.harness.rate_limit`, `af.harness.permission_denied` and `af.harness.result` — the
+  result's text, which repeats the reply the assistant's text blocks carry, only as its size
+  (`af.result.bytes`), never pended as content.
+- **Codex** (`--json`): `thread.started` is `af.harness.init`; a turn is an `af.turn` from
+  `turn.started` to `turn.completed` (its usage) or `turn.failed`; a `command_execution` or
+  `mcp_tool_call` item is an `af.tool` from `item.started` to `item.completed` (its exit code and
+  status); `reasoning`, `agent_message`, `file_change`, `web_search` and plan items are the
+  events `af.item.reasoning`, `af.item.agent_message`, `af.item.file_change`,
+  `af.item.web_search` and `af.item.todo_list` with their sizes and counts; an `error` line is
+  `af.harness.error`. Telemetry adds no `-c` key, and a Codex Attempt records
+  `af.native = unavailable`.
+
+**Frames and gaps.** A frame longer than `content_max_blob_bytes` before its newline is
+discarded whole through the next newline, recording only `af.stream.frame_withheld` with its
+size: a line too long to be judged whole cannot be judged at all, so no prefix of it is parsed,
+redacted or kept. A chunk whose offset is not the one expected — the queue dropped what lay
+between — is `af.stream.gap` with the missing byte range; the partial line is discarded and
+framing resumes after the first newline past the gap, so the two sides of a drop are never
+joined into a line the harness did not write. A stream shorter than what the supervisor's
+drain read in total — past the output cap included, which bounds only what is kept — ends in
+a trailing gap. `af.harness` counts the drops and gaps (`dropped_chunks`,
+`gaps`), and a stream with any of them, or with a withheld frame, is `incomplete` for turn and
+tool analysis.
+
+**The release decision** is Telemetry's own, taken when the process has ended, over its
+complete stdout and stderr and the output the harness left outside them — a Codex Attempt's
+`-o` final-message file, read in full before the tap ends for every observed process, whatever
+its ending and whether or not it is a reply — before any pending byte goes anywhere: when any
+of them carries login-challenge material (a device code beside a challenge URL, in one record
+or several, in one stream or across both, or a code in a stream identifier with its URL only in
+the final message, a successful reply's or a failed process's included), when that file exists
+but cannot be read whole (larger than the reply bound, not a regular file, unreadable), when the
+adapter replaced both streams with its closed diagnostic, when a failed process's stderr
+classifies as an authentication failure, or when the output cap truncated a stream (the
+supervisor kept a prefix of what the observer was offered whole, so the decision cannot read
+it whole), everything pending for the process — content and
+identifiers — is withheld, and `af.harness` records `af.stream.withheld = true` and `af.native.withheld = true`
+(`af telemetry status` counts these Attempts). It changes no accounting, no classification and
+no adapter behaviour. Otherwise the pending content passes the grant replacement and the
+credential rules on its assembled, complete lines — a grant value split across two chunks is
+replaced all the same — and one `af.harness.ids` event per process lists each correlation id
+with its original (`af.harness.ids`, `corr original` pairs), each original having passed the
+credential rules; a list longer than one record's array holds whole (32 pairs, 4 KiB) goes on
+in the `af.harness.ids.part` events that follow it, as many as its `af.harness.ids.parts`
+says, each numbered by `af.harness.ids.part`, so no admitted mapping is cut. The event also
+carries `af.harness.ids.count`, every identifier admitted to the pending buffer, and
+`af.harness.ids.withheld`, those the rules or the decision withheld, the stream's counts and its
+`af.stream.analysis` (`complete` or `incomplete`). A process pends at most 4096 distinct
+identifiers of at most 256 bytes each: one past either bound keeps its `af.corr` in the live
+records but has no mapping, `af.harness.ids.omitted` counts these (each once; past 65,536 of
+them the count is a floor) and `af.harness.ids.analysis` is then `incomplete`, else
+`complete`. Because the `af.harness` span records that
+decision, it ends once the adapter's in-memory filter has read the complete streams, not at the
+process's exit.
+
+**What Claude is asked to print, and what the Store keeps.** At `spans` and `content` a Claude
+Attempt runs `claude -p --output-format stream-json --verbose`; at `off` and `metrics` it runs
+`--output-format json`, because the invocation-cost gate failed on this machine
+([Performance](#performance)). `claude --help` must declare both `--output-format` and
+`--verbose` either way. Under both shapes the adapter's envelope parsing, accounting, refusal
+classification and model-identity check read the `result` line, which is the envelope `json`
+prints; without one, failure classification reads the native text around the messages, from the
+complete capture in memory. Only the `json` invocation's stdout is an envelope without a
+`result` line (one JSON object with no `type`); under `stream-json` such an object is native
+text, never parsed as an envelope, never a reply and never kept. The Store CAS keeps the
+`result` line (or, under `json`, an envelope that frames no message) and stderr, never another
+message or native text, however large. A Codex
+Attempt's Store keeps its `turn.completed`, `turn.failed` and `error` lines, the `-o`
+last-message file and stderr; the native text outside the event framing is classified in memory
+and not kept. When the adapter replaced a failed capture with its closed diagnostic, that
+diagnostic is what the Store keeps. So an Attempt's accounting, classification and raw evidence
+are the same at every level; every other line reaches Telemetry at `spans` and above and nothing
+at all below.
+
+**Claude thinking under `--safe-mode`.** Checked by hand on 2026-10-21 with Claude Code 2.1.305
+and the model af binds, `claude-opus-5-5` at efforts `high` and `xhigh`, one short `-p`
+invocation each with the adapter's flags (`--output-format stream-json --verbose --safe-mode
+--restricted --permission-mode dontAsk --strict-mcp-config --tools Read,Glob,Grep`) and its
+environment: the stream carries `thinking` blocks — one per message that reasoned, beside its
+`text` block — but each holds an empty `thinking` text and only its `signature`. So Claude
+reasoning is sizes only: `af.turn.thinking_*` counts the blocks, their size is 0, and at
+`content` `af telemetry reasoning` has no Claude text to show.
+
+## `af telemetry turns`
+
+```text
+af telemetry turns RUN [--store ID] [--attempt ID] [--json] [--dir PATH]
+```
+
+One row per model turn of the run's harness streams, in start order: its harness process,
+Attempt and node, its ordinal in its stream, its start (unix nanoseconds and the offset from
+the run's first turn or tool call), duration and status (`ok`, `error`, `unset`, or `open` with
+no recorded end), its outcome (`succeeded`, `failed`, `incomplete`), its correlation id, the
+bound model when the harness reported it as the answering model, its stop reasons, the
+harness's per-turn usage (exact decimal strings and its observation; the `turn` series, never
+added into an Attempt's or a run's totals, which are the kernel's), and the number and bytes of
+its text and thinking blocks and its tool calls. Each row's harness says whether its stream can
+be analysed whole — `complete`, `incomplete`, or `open` while the tap has not ended — with the
+observer's `dropped_chunks` and `gaps` and whether its content was withheld. `--attempt ID`
+keeps one Attempt's turns. When two Stores record the run id the command lists both and asks
+for `--store ID` (exit 2). `--json` prints one `af/telemetry-turns@1` document
+([`schemas/telemetry-turns-v1.json`](../schemas/telemetry-turns-v1.json)). Exit codes: 0; 1 when
+the directory cannot be read or the run or Attempt is unknown; 2 for a wrong command line, a run
+two Stores share without `--store`, or a refused `[telemetry]` key.
+
+## `af telemetry tools`
+
+```text
+af telemetry tools RUN [--store ID] [--attempt ID] [--json] [--dir PATH]
+```
+
+One row per tool call of the run's harness streams, in start order: its harness process, Attempt
+and node, the turn that called it, its name when it is in the invocation's own tool set
+(`(unlisted)` otherwise), its correlation id, its start, duration and status, its outcome, the
+bytes of its arguments and of its result, and a command's exit code and an item's status. Each
+row's harness says whether its stream can be analysed whole, as for `turns`. `--attempt ID`
+keeps one Attempt's tool calls. `--json` prints one `af/telemetry-tools@1` document
+([`schemas/telemetry-tools-v1.json`](../schemas/telemetry-tools-v1.json)). Exit codes as for
+`turns`.
+
 ## `af telemetry gc`
 
 ```text
@@ -796,7 +972,9 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
     `reader::list_in`, `read_live_in`, `read_sealed_in`, `recover_in`, `recover_all_in`,
     `manifest_digests_in`; `collect::collect_in`, `collect::roots_in`; `blob::stage_in`,
     `blob::place`, `blob::reader::exists_in`, `blob::reader::present_in`,
-    `blob::reader::read_in`; `layout::lock_in`; and
+    `blob::reader::read_in` (with which `Index::ingest` keeps `content_fts` and
+    `content_view::{context, reasoning, search}` read content, through the index's held `v1/`);
+    `layout::lock_in`; and
     `status`'s `verify_blobs`, `blob_bytes` and `unrecognized`. `status` and `reindex` open
     `v1/` once and hand it to the index, to recovery, to the blob checks and to direct reading
     when `index.lock` is not had in time.
@@ -825,12 +1003,135 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
 - **Versions.** A release that changes a record shape writes `v2/`; this release lists any other
   version's directory as unreadable and never reads it.
 
+## Content
+
+At `[telemetry] level = "content"`, and only there, Telemetry keeps content beside the
+structure every level records, each piece a blob named by one event:
+
+| Content | Event | On | Allowance |
+| --- | --- | --- | --- |
+| The prompt bytes the Worker receives, as the kernel composed them | `gen_ai.content.input` | `af.context.compose` | the Attempt's |
+| The context manifest the prompt was composed by | `gen_ai.content.system` | `af.context.compose` | the Attempt's |
+| A harness's assistant `text` blocks and Codex `agent_message` items | `gen_ai.content.output` | the turn | the Attempt's |
+| Its `thinking` blocks and Codex `reasoning` items, with `content_reasoning = true` | `af.content.reasoning` | the turn | the Attempt's |
+| Its tool arguments and results, with `content_tool_io = true` | `af.content.tool_input`, `af.content.tool_output` | the tool call | the Attempt's |
+| A check's stdout and stderr (`af.stream`) | `af.check.output` | `af.check` | the process's |
+| A mirrored Store event's payload | `af.store.event` | as the mirror records it | the process's |
+| An admitted Finding's body, keyed by `af.finding.id`, whenever it changes | `af.finding.body` | the run | the process's |
+| `.af/af.toml`, the pipeline's `pipeline.toml`, the Task file | `af.config.text` | the run | the process's |
+
+`gen_ai.input.messages`, `gen_ai.output.messages` and `gen_ai.system_instructions` are never
+attributes: content is only ever a blob. A configuration text's blob has the text's own
+SHA-256, the `af.config.text.digest` every level records, as its `source_digest`.
+
+- **Redaction before truncation.** Every piece is redacted whole under the rules of
+  [Credentials](#credentials) — text line by line, JSON as one document — and only then cut to
+  `content_max_blob_bytes`, head and tail; a line or document too long to be judged whole is
+  withheld whole. A JSON document `af` composed itself keeps its typed values where its kind
+  declares them and judges everything else. In the Worker request those are each input and
+  feedback value's `artifact_id` and `snapshot_id`, and inside its payload only the identity
+  positions the schema of an artifact type `af` owns declares (`af/SourceTree@1`,
+  `af/TaskCheckReceipt@1`, `af/TaskRetryFeedback@1`, `af/TaskReviewAssignment@1`,
+  `af/TaskReviewSubject@2`, `af/ReviewHistory@1`, `af/TaskRepairContext@1`,
+  `af/DocumentContext@1`, `af/WorkerNotes@1`); every other payload — the Task's requirements
+  (`af/Requirements@1`, its `specification` included), another Worker's output — is untrusted
+  JSON, whatever its members are named (`api_token_id`) or its values look like. In a Store
+  payload and the manifest the typed positions are the members named `id`, `*_id`, `digest`,
+  `*_digest`, the elements of `*_ids` and `artifact_refs`, and the token counters `tokens` and
+  `*_tokens`. A value there keeps only when it is exactly a kernel identity or a number; the
+  instructions, the output schemas and every other value are untrusted text judged by the
+  credential rules — a credential under an `_id` name or a secret-named member is withheld, and
+  `context --raw` then differs from the prompt there, while a digest, which is no credential,
+  stays as text and never as a typed identity. Each occurrence's `source_digest` and `original_bytes` describe the bytes as
+  they were, so `context` shows that the prompt it prints is the one the Worker received.
+- **Harness content follows the release decision.** A harness's text, thinking and tool
+  content is pended while its process runs and never written live; once the process has ended
+  and Telemetry's own release decision withheld nothing, each piece is judged from its
+  original bytes — the Provider grants replaced, credential lines withheld — and kept, in the
+  order it arrived, on the turn or tool call it came from. When the decision withholds the
+  process's content, none of it is kept. Its error texts, its stderr and its unparsed lines stay
+  sizes. A switched-off kind is never even pended; `af.harness.ids` records the switches the
+  content was kept under (`af.content.reasoning`, `af.content.tool_io`) and how many pieces were
+  kept (`af.content.published`) and dropped (`af.content.dropped`).
+- **Allowances.** An Attempt's content — its composed input and its harness's content — is
+  bounded by `content_attempt_max_bytes`, and content outside any Attempt by
+  `content_process_max_bytes`, counted in retained bytes of the pieces stored: a piece that
+  fits but that publication drops (a sweep holds `gc.lock`, a blob file cannot be staged) is
+  given back to its allowance. A harness's pending content past the
+  Attempt's allowance drops its oldest pieces; at publication, past either allowance every
+  further piece of that scope is dropped. A dropped piece still has its event and an
+  occurrence with `state = dropped` and no object, the seal's `dropped` counts it, and one
+  `budget` problem says which allowance was reached. Nothing about the Worker changes: no
+  process is terminated, nothing is cut from what the Store receives, and the run continues.
+- **On disk.** A blob is compressed alone, with `flate2`'s gzip. On this repository's own
+  sources and documents (558 files, 10.6 MiB), each compressed alone as a blob is, the ratio is
+  3.8:1, and 4.2:1 as the JSON strings of tool results; so an Attempt that fills the default
+  512 MiB allowance keeps about 135 MiB on disk, and the default stays. Model-written text and
+  thinking were not part of that measurement.
+- **Search.** Every `af telemetry` command keeps the FTS5 table `content_fts` over the text
+  blobs the retained occurrences reference at ingest, when `[telemetry] content_index = true`
+  (the default); a blob no occurrence references any more leaves it, and `reindex` rebuilds it
+  identically. With `content_index = false` no full-text index is kept: ingest empties
+  `content_fts` and its bookkeeping table `content_index`, and rebuilds both from the retained
+  blobs once the switch is on again. The index's schema is `af/telemetry-index@3`.
+
+**The content is the operator's and never a Worker's.** Nothing Telemetry keeps is read by any
+code that composes a prompt, a Warm Set, Worker Notes or an optimization source; the
+self-optimizer's sources are unchanged. A Worker's prompt is the same byte for byte whether the
+telemetry directory is empty or full of earlier runs' content. Content is also the operator's to
+protect: it is the run's model inputs, outputs and reasoning, kept on this machine under the
+storage budget, redacted but not anonymized.
+
+## `af telemetry context`
+
+`af telemetry context RUN ATTEMPT [--store ID] [--raw] [--json] [--dir PATH]` prints the
+composed Worker input of one Attempt (`ATTEMPT` is the kernel Attempt id `show` names): its
+`af.context.compose` span with the manifest digest, the rendered size, the estimated tokens and
+the layers; each blob's occurrence, digest, retained and original sizes; then the prompt.
+`--raw` prints only the prompt's retained bytes, exactly. Below `content` it says the content
+was not captured, naming the level the execution recorded at; a dropped piece or a missing blob
+file is reported for its occurrence. `--json` prints `af/telemetry-context@1`
+([`schemas/telemetry-context-v1.json`](../schemas/telemetry-context-v1.json)); `--turn`, the
+request the model saw at one turn, comes with the harnesses' own telemetry. Exit codes: 0; 1
+when the directory cannot be read or the run or Attempt is unknown; 2 for a wrong command
+line, a run two Stores share without `--store`, or a refused `[telemetry]` key.
+
+## `af telemetry reasoning`
+
+`af telemetry reasoning RUN ATTEMPT [--store ID] [--json] [--dir PATH]` prints an Attempt's
+thinking blocks and reasoning summaries in the order they arrived, each with its turn, its
+occurrence and its retained text, after each of the Attempt's harness processes with the level
+it recorded at and its state: `captured`, `not_captured` (below `content`, or
+`content_reasoning = false`), `withheld` (the release decision withheld the process's content)
+or `open` (not released yet). `--json` prints `af/telemetry-reasoning@1`
+([`schemas/telemetry-reasoning-v1.json`](../schemas/telemetry-reasoning-v1.json)). Exit codes as
+for `context`.
+
+## `af telemetry search`
+
+`af telemetry search TEXT [--since D] [--run RUN [--store ID]] [--json] [--dir PATH]` finds the
+retained text blobs holding `TEXT` as one phrase (no query operators) in `content_fts`, at most
+50 blobs and 20 occurrences each, and prints each blob's digest with an excerpt of at most 320
+bytes of its redacted text and its occurrences: the event that names it, its time, its run, its
+Attempt and its span path from `af.command` down. `--since` keeps occurrences of the last `D`
+(`30m`, `12h`, `14d`, `2w`); `--run` keeps one run's. Both filters are part of the query, which
+reads matches in pages of at most 51 and stops once it can say `more`, so a common phrase over
+a large directory costs no more than the rows it shows. An excerpt is shown only once its blob
+was read under `gc.lock` and verified against its digest, as `context` reads it: a blob file
+that is missing or corrupt is listed under `unreadable` with the reader's reason (`content
+unavailable: missing blob`, `… corrupt blob`), shows nothing, and leaves the full-text index, so
+no later search returns its text; one a collection holds is listed and left for the next
+search. It exists only at `content`: below it, or
+with `content_index = false`, it is refused with exit 2 and a message saying why, because
+nothing searchable is kept. `--json` prints `af/telemetry-search@1`
+([`schemas/telemetry-search-v1.json`](../schemas/telemetry-search-v1.json)). Exit codes: 0; 1
+when the directory cannot be read or the run is unknown; 2 for a wrong command line, a refused
+`[telemetry]` key, or a level below `content`.
+
 ## Not yet captured
 
-The harness streams (turns, tool calls, reasoning), content blobs (Store event payloads and
-Finding bodies among them), the harnesses' own OpenTelemetry export, the OTLP sink, and the
-commands `turns`, `tools`, `context`, `reasoning`, the analytics, `search`, `sql` and `export`
-all belong to later packages of the design note.
+The harnesses' own OpenTelemetry export (with `context --turn`), the OTLP sink, and the
+analytics, `sql` and `export` commands belong to later packages of the design note.
 
 ## Performance
 
@@ -940,3 +1241,69 @@ opens whatever the number of occurrences, which a unit test counts. The figures 
 first measurement's, before that change; the fresh figure includes ingesting all 8.6 million
 records into an absent index, and the fresh-ingest and `show` figures are reported as measured,
 not changed here.
+
+**Invocation cost.** Design §12's second gate decides whether a Claude Attempt can ask for
+`stream-json` at every level: the supervisor keeps a process's whole stdout until it ends and
+the adapter filters it only then, so the stream's bytes are paid even at `off`.
+`scripts/telemetry-invocation-cost.py` measures it with the overhead protocol above — the same
+pairs, randomized order, 20 pairs, private homes and the bootstrap interval — on two fixtures of
+[`fixtures/telemetry-bench/`](../fixtures/telemetry-bench/README.md),
+`telemetry-bench-invocation-one` (one Claude Attempt) and `telemetry-bench-invocation-four`
+(four concurrent ones), whose scripted harness answers the same final result under both shapes
+with 1, 16 or 64 MiB of intermediate tool output per Attempt and prints only the result under
+`json`. Each pair is one command of each shape at one level, `off` and `spans`; per run it
+records the command's wall time, its peak RSS (with its reaped children) and, for one Attempt,
+the drain latency taken as the overhead gate takes it (at the drained result's CAS write, the
+same known follow-up), and it stops when a run's accounting (the Task's charge, its Attempts,
+every usage record) differs between the shapes or the levels. The gate passes when at `off`
+every case's median wall difference is at most 2% and its median peak-RSS difference at most
+the stream's bytes plus 16 MiB; a failed gate keeps two shapes, `json` at `off` and `metrics`
+and `stream-json` at `spans` and `content`, which the envelope-parity fixtures
+(`claude_stream_result_envelope_is_the_json_envelope`, `claude_accounting_identical_at_every_level`)
+pin to the same accounting, classification and Store bytes. `--json` prints the
+`af/telemetry-invocation-cost@1` document
+([`schemas/telemetry-invocation-cost-v1.json`](../schemas/telemetry-invocation-cost-v1.json)),
+`--judge` recomputes a recorded one, and `make check` runs its one-pair smoke
+(`telemetry_stream_json_cost_gate`), always `not_judged`.
+
+```sh
+cargo build --release --locked --bin af
+python3 scripts/telemetry-invocation-cost.py --af target/release/af \
+    --report target/telemetry-gate/invocation-cost.json
+```
+
+The measurement that decided it (21 October 2026, the release build of the package that added
+the gate, on the machine of the first measurement above, load average 50 at the start and
+between 20 and 95 throughout; seed 20261021, 20 pairs per case and level; the differences are
+`stream-json` minus `json` per pair):
+
+| Case | Level | Median `json` | Median `stream-json` | Median wall | 95% interval | Median peak RSS | Stream bytes | Verdict |
+| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | --- |
+| one Attempt, 1 MiB | `off` | 1,285 ms | 1,396 ms | +1.76% | [−6.17%, +16.57%] | +0.6 MiB | 1.0 MiB | pass |
+| one Attempt, 1 MiB | `spans` | 1,458 ms | 1,511 ms | +3.71% | [−3.44%, +13.10%] | +2.8 MiB | 1.0 MiB | |
+| one Attempt, 16 MiB | `off` | 1,545 ms | 1,298 ms | −4.91% | [−20.10%, +6.01%] | +17.6 MiB | 16.1 MiB | pass |
+| one Attempt, 16 MiB | `spans` | 1,709 ms | 1,704 ms | +5.88% | [−0.44%, +11.28%] | +35.8 MiB | 16.1 MiB | |
+| one Attempt, 64 MiB | `off` | 1,874 ms | 2,111 ms | +20.34% | [−0.43%, +32.38%] | +66.0 MiB | 64.4 MiB | fail |
+| one Attempt, 64 MiB | `spans` | 1,757 ms | 2,649 ms | +31.27% | [+12.32%, +68.97%] | +127.3 MiB | 64.4 MiB | |
+| four Attempts, 1 MiB | `off` | 3,158 ms | 3,464 ms | +5.88% | [−3.16%, +13.05%] | +0.7 MiB | 4.0 MiB | fail |
+| four Attempts, 1 MiB | `spans` | 3,127 ms | 3,291 ms | +5.91% | [−15.62%, +22.18%] | +5.2 MiB | 4.0 MiB | |
+| four Attempts, 16 MiB | `off` | 2,437 ms | 2,556 ms | +0.04% | [−5.44%, +3.33%] | +68.1 MiB | 64.4 MiB | pass |
+| four Attempts, 16 MiB | `spans` | 2,677 ms | 2,645 ms | +1.02% | [−0.88%, +4.72%] | +131.0 MiB | 64.4 MiB | |
+| four Attempts, 64 MiB | `off` | 2,977 ms | 2,921 ms | −3.50% | [−14.08%, +8.59%] | +261.2 MiB | 257.7 MiB | pass |
+| four Attempts, 64 MiB | `spans` | 3,147 ms | 3,869 ms | +18.20% | [+11.16%, +28.46%] | +508.0 MiB | 257.7 MiB | |
+
+The one-Attempt drain latency differences at `off` were +0.37 ms, +6.40 ms and +25.18 ms for
+1, 16 and 64 MiB, and at `spans` +7.54 ms, +122.11 ms and +479.37 ms.
+
+**The gate failed** — the one-Attempt 64 MiB case's median wall is +20.3% at `off`, and the
+four-Attempt 1 MiB case's +5.9%; every peak-RSS difference is within the stream's bytes plus
+16 MiB — **so this release keeps two invocation shapes**: `json` at `off` and `metrics`,
+`stream-json --verbose` at `spans` and `content`. The figures are from a loaded machine and
+their intervals are wide (the 64 MiB interval reaches down to −0.4%), but the decision needs
+every case within its bound, and a 64 MiB stream that costs a fifth of a command's wall time at
+`off` is not within it. At `spans` the stream also pays Telemetry's own work on the complete
+streams — the tap, and the release decision's scan of both streams for login-challenge
+material — which the overhead gate above bounds for `spans` as a whole. A first, interrupted run
+of this measurement, before the release decision's scan was confined to observed processes,
+read the complete streams at `off` too and measured +17.6% for 16 MiB and +55% for 64 MiB at
+`off` (one Attempt, 20 pairs each); it is superseded by the table above.
