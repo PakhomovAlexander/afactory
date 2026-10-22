@@ -56,16 +56,30 @@ fn telemetry_blob_identity_is_retained_bytes() {
     );
     assert_ne!(plain.digest, homed.digest);
     assert_eq!(plain.source_digest, homed.source_digest);
-    // The same source, bound and rules: the same object, its file reused after a size check.
+    // The same source, bound and rules: the same object; its file, size-checked, is replaced by
+    // the new copy, so its age restarts — an aged file no segment references any more would
+    // otherwise be swept before the new reference is flushed.
     let again = blob::prepare(source.as_bytes(), Media::Text, 1024, &Redactor::new());
     assert_eq!(again, small);
     let temp = tempfile::tempdir().unwrap();
     let layout = Layout::new(temp.path());
     let first = blob::stage(&layout, &small).unwrap();
-    blob::place(&first).unwrap();
+    assert_eq!(blob::place(&first).unwrap(), blob::Placed::Renamed);
+    let aged = SystemTime::now() - 2 * HOUR;
+    std::fs::File::options()
+        .write(true)
+        .open(&first.path)
+        .unwrap()
+        .set_modified(aged)
+        .unwrap();
     let second = blob::stage(&layout, &again).unwrap();
-    blob::place(&second).unwrap();
+    assert_eq!(blob::place(&second).unwrap(), blob::Placed::Reused);
     assert!(!second.temp.exists());
+    let modified = std::fs::metadata(&first.path).unwrap().modified().unwrap();
+    assert!(
+        modified > aged + HOUR,
+        "the file's age restarted: {modified:?}"
+    );
     assert_eq!(
         blob_reader::read(&layout, &small.digest),
         Content::Bytes(small.retained.clone())

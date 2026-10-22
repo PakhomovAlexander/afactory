@@ -366,8 +366,9 @@ other retained bytes and so another identity, never a wrong reuse; the occurrenc
 `source_digest` and `original_bytes` so the two captures can be related, and `truncated` and
 `redaction` describe the occurrence, not the shared object. A blob file is written once per
 digest into a temporary file under `blobs/` and renamed into place; an existing file of that
-digest is reused after its size is checked, and `reindex` verifies every file's digest. Blobs are
-shared across segments and runs: an identical Worker input is stored once.
+digest, its size checked, is replaced by the new copy — the same bytes; the file's age restarts
+with the publication (below) — and `reindex` verifies every file's digest. Blobs are shared across
+segments and runs: an identical Worker input is stored once.
 
 **Publication.** A blob file exists before any reference to it can be read, and a reference is
 published before the file can be collected: the writer takes `gc.lock` shared, non-blocking;
@@ -377,7 +378,11 @@ the lock cannot be taken at once — the sweep holds it exclusively — the blob
 in `dropped`, and the occurrence record says `state = dropped`; execution never waits on
 collection. A crash after the rename and before the flush leaves an unreferenced file, which the
 sweep removes as an orphan once it is an hour old; a crash before the rename leaves a temporary
-file, removed the same way. A reader that reads blob files holds `gc.lock` shared for the read;
+file, removed the same way. A digest published again is renamed over as well, so its file is
+young while the new reference is still buffered — a detached publication's (§7.5), or an attached
+one's past the bounded wait — where an old file reused untouched would be collected as an orphan
+the moment a sweep evicted its earlier referencing segment, before the reference was written. A
+reader that reads blob files holds `gc.lock` shared for the read;
 a reference whose file is nevertheless missing (a hand-deleted file, a copied directory) is
 reported for that occurrence as `content unavailable: missing blob`, counted by `status`, and
 never fails the query. The sweep takes `gc.lock` exclusively, waiting at most 2 s, and skips blob
@@ -391,7 +396,10 @@ and `blob_ref` records are the structural metadata §3.1 permits. Fixtures pause
 the rename and the reference flush, read a reference the moment it is flushed while another
 thread publishes, crash a publisher at each step, then run a sweep and a reindex, and crash a
 writer after its reference flush, age every file past an hour and sweep before any reader has
-opened the directory (`telemetry_unsealed_references_are_roots`). Two sources that redact to
+opened the directory (`telemetry_unsealed_references_are_roots`), and publish detached a digest
+whose aged file no segment references any more while the consumer holds its reference, then
+sweep (`telemetry_republished_blob_outlives_a_sweep_while_its_reference_is_buffered`). Two
+sources that redact to
 identical retained bytes share one object and keep two occurrence records, through reindex and
 export.
 
@@ -693,8 +701,9 @@ events in committed order, and never for a rolled-back transaction. Each event b
 `af.store.event` on the current span with `af.store.event.*` and `artifact_refs`; at `content`
 the payload is a blob, published detached: the committing thread places the file, appends the
 records and signals the consumer, and never waits for its flush (§6), so a consumer busy
-publishing a released harness stream delays no Store append and no lease renewal; the blob is
-a young file the sweep never collects until its reference is flushed. A mirror failure is a
+publishing a released harness stream delays no Store append and no lease renewal; the blob file
+is young — placed, or renamed over an existing file of its digest — so the sweep never collects
+it before its reference is flushed. A mirror failure is a
 `problem`, never a Store error, and marks the run `af.ledger.coverage = incomplete`.
 
 **Accounting snapshot.** Telemetry never re-derives usage, and no single kernel write is the
@@ -1298,6 +1307,7 @@ kernel record under a silent child), `telemetry_executions_of_a_resume`,
 execution removed before reindex and export), `telemetry_history_partial_after_eviction`,
 `telemetry_budget_counts_physical_bytes_once`, `telemetry_eviction_follows_storage_rules`,
 `telemetry_sweep_reclaims_every_class`, `telemetry_unsealed_references_are_roots`,
+`telemetry_republished_blob_outlives_a_sweep_while_its_reference_is_buffered`,
 `telemetry_stalled_consumer_leaves_recoverable_segment`,
 `telemetry_dirs_registry_reaches_every_directory`,
 `telemetry_dirs_overlap_reported_at_inventory`, `telemetry_write_failure_is_fail_open`,

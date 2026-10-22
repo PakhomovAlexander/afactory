@@ -167,3 +167,7 @@
   and resource use still recorded, and the Linux subreaper's reaps of escaped descendants take the same reap lock. At
   `metrics` a recording command's segment header keeps `argv[0]` and the subcommand chain the
   argument parser matched, which `af task run` and the other recording commands now pass in.
+- A blob published again is renamed over its existing file, so the file's age restarts with the
+  publication: a sweep that runs while the new reference is still buffered — a detached Store
+  mirror publication's, or an attached one's past the bounded wait — and evicts the segment that
+  referenced the file before no longer collects it as an orphan before the reference is written.

@@ -404,26 +404,34 @@ pub fn stage_in(directory: Confined, prepared: &Prepared) -> std::io::Result<Sta
 /// How a staged blob came to be in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placed {
-    /// This blob's temporary file was renamed into place.
+    /// This blob's temporary file was renamed into place; no file of the digest was there.
     Renamed,
-    /// A file of the digest with the same size was already there and is reused.
+    /// A file of the digest with the same size was already there: the staged copy — the same
+    /// bytes — was renamed over it, so the file's age restarted, and the digest belongs to
+    /// whichever batch first placed it.
     Reused,
 }
 
-/// Put a staged blob in place: an existing file of the digest with the same size is reused and
-/// the temporary file removed; anything else is replaced by the rename.
+/// Put a staged blob in place by renaming its temporary file over whatever is at the object's
+/// name. A file of the digest with the same size is reported as reused — the digest was already
+/// there, and a batch refused after placement leaves it — but it is replaced all the same, so
+/// the file's age restarts with this publication: the sweep's one-hour protection of a placed
+/// blob then covers a digest published again as it covers one placed first, while the new
+/// reference is still buffered (a detached publication's, or an attached one's past the
+/// protocol's bounded wait). An old file reused untouched would be collected as an orphan the
+/// moment a sweep evicted its earlier referencing segment, before the reference was written.
 pub fn place(staged: &Staged) -> std::io::Result<Placed> {
     // Judged without following a link: a link in a blob's place is replaced, never reused.
-    match staged.directory.identity(&staged.name) {
-        Some(existing) if existing.size == staged.stored_bytes => {
-            staged.directory.unlink(&staged.temp_name)?;
-            Ok(Placed::Reused)
-        }
-        _ => {
-            staged.directory.rename(&staged.temp_name, &staged.name)?;
-            Ok(Placed::Renamed)
-        }
-    }
+    let reused = staged
+        .directory
+        .identity(&staged.name)
+        .is_some_and(|existing| existing.size == staged.stored_bytes);
+    staged.directory.rename(&staged.temp_name, &staged.name)?;
+    Ok(if reused {
+        Placed::Reused
+    } else {
+        Placed::Renamed
+    })
 }
 
 #[cfg(test)]

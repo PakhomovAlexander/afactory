@@ -5,10 +5,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
+use review_telemetry::blob::collect::{collect, roots};
 use review_telemetry::blob::{Document, Media};
 use review_telemetry::content::Scope;
+use review_telemetry::layout::Layout;
 use review_telemetry::level::Level;
-use review_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
+use review_telemetry::record::{Attrs, Record, SealExit, SpanKind, SpanStatus};
 use review_telemetry::segment::reader;
 use review_telemetry::segment::writer::{self, Writer};
 use review_telemetry::trace::Execution;
@@ -1260,4 +1262,141 @@ fn telemetry_detached_content_never_waits_for_the_consumer() {
         .filter(|file| file.path().is_file())
         .count();
     assert!(blobs >= 1, "the blob file is in place");
+}
+
+/// Design §6: a digest published again is renamed over its existing file, so the file is young
+/// while the new reference is still buffered. Here the earlier run's file is two hours old and
+/// the segment that referenced it is gone, as after a sweep's eviction, and the consumer is
+/// held in a write while a detached publication (the Store mirror's) reuses the digest: the
+/// sweep that runs then, the reference not yet flushed, leaves the file where an untouched old
+/// orphan would go, and once the consumer is released the sealed segment references a blob
+/// that is there.
+#[test]
+fn telemetry_republished_blob_outlives_a_sweep_while_its_reference_is_buffered() {
+    const HOUR: Duration = Duration::from_secs(3600);
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    let payload = br#"{"schema":"af/TaskTransition@5","change":{"kind":"lease_renewed"}}"#;
+    let spans = |writer: &Writer| {
+        let command = writer
+            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        let run = writer
+            .span_start(
+                None,
+                Some(&command),
+                "af.run",
+                SpanKind::Internal,
+                Attrs::new(),
+            )
+            .unwrap();
+        writer.run_started();
+        writer.flush();
+        (command, run)
+    };
+    let finish = |writer: &Writer, command: &str, run: &str| {
+        writer.span_end(run, SpanStatus::Ok, Attrs::new(), 1);
+        writer.run_ended();
+        writer.begin_terminal();
+        writer.span_end(command, SpanStatus::Ok, Attrs::new(), 0);
+        writer.finish(SealExit::Ok).unwrap().unwrap()
+    };
+    let digest_of = |sealed: &writer::Sealed| -> String {
+        crate::sealed_records(&sealed.path)
+            .into_iter()
+            .find_map(|record| match record {
+                Record::BlobRef(occurrence) => occurrence.digest,
+                _ => None,
+            })
+            .expect("the mirrored payload's occurrence names its object")
+    };
+    // An earlier run stored the payload. Its segment is then gone — evicted — and its file aged
+    // past the sweep's hour: an orphan the next sweep would collect.
+    let earlier = Writer::new(options(temp.path(), Level::Content)).unwrap();
+    let (command, run) = spans(&earlier);
+    assert!(
+        earlier
+            .content_event(
+                &run,
+                "af.store.event",
+                Attrs::new(),
+                payload,
+                Media::Kernel(Document::Record),
+                &Scope::Process,
+            )
+            .is_some()
+    );
+    let sealed = finish(&earlier, &command, &run);
+    drop(earlier);
+    let digest = digest_of(&sealed);
+    std::fs::remove_file(&sealed.path).unwrap();
+    std::fs::remove_file(&sealed.refs).unwrap();
+    let aged = std::time::SystemTime::now() - 2 * HOUR;
+    std::fs::File::options()
+        .write(true)
+        .open(layout.blob(&digest))
+        .unwrap()
+        .set_modified(aged)
+        .unwrap();
+    assert!(
+        !roots(&layout).unwrap().contains(&digest),
+        "no segment references the file any more"
+    );
+    // A later run's consumer is held in a write when the mirror publishes the same payload
+    // detached: the publication returns, its reference buffered behind the held write.
+    let mut later_options = options(temp.path(), Level::Content);
+    let held = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let (entered, gate) = (held.clone(), release.clone());
+    later_options.write_hook = Some(Arc::new(move |ordinal| {
+        // Every record write after the first holds the consumer thread until released.
+        if writer::phase() == writer::Phase::Records && ordinal > 1 {
+            entered.store(true, Ordering::SeqCst);
+            while !gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        Ok(())
+    }));
+    let later = Writer::new(later_options).unwrap();
+    let (command, run) = spans(&later);
+    later.event(&run, "af.note", Attrs::new());
+    let waiting = Instant::now();
+    while !held.load(Ordering::SeqCst) {
+        assert!(
+            waiting.elapsed() < Duration::from_secs(5),
+            "the consumer is held"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        later
+            .content_event_detached(
+                &run,
+                "af.store.event",
+                Attrs::new(),
+                payload,
+                Media::Kernel(Document::Record),
+                &Scope::Process,
+            )
+            .is_some()
+    );
+    // The sweep runs now, the reference still buffered: the file is young again, and stays.
+    let swept = collect(&layout, HOUR, std::time::SystemTime::now()).unwrap();
+    assert!(swept.skipped.is_none(), "{swept:?}");
+    assert!(
+        swept.removed_blobs.is_empty(),
+        "the republished blob is young again: {swept:?}"
+    );
+    assert!(layout.blob(&digest).is_file());
+    release.store(true, Ordering::SeqCst);
+    let sealed = finish(&later, &command, &run);
+    assert_eq!(digest_of(&sealed), digest, "the same object, referenced");
+    assert!(
+        roots(&layout).unwrap().contains(&digest),
+        "the flushed reference is a root"
+    );
+    let swept = collect(&layout, HOUR, std::time::SystemTime::now() + 2 * HOUR).unwrap();
+    assert!(swept.removed_blobs.is_empty(), "{swept:?}");
+    assert!(layout.blob(&digest).is_file());
 }

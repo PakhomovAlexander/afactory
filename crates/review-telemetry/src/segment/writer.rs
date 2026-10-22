@@ -1841,7 +1841,8 @@ impl Writer {
         }
         // The references are written before gc.lock is released. A consumer that does not
         // write them within the bounded wait, and a detached publication's consumer, which is
-        // not waited for, leave the blob to its one-hour protection.
+        // not waited for, leave the blob to its one-hour protection, which `blob::place`
+        // renewed for a digest whose file was already there.
         if wait {
             self.flush_now();
         }
@@ -2012,9 +2013,10 @@ impl Writer {
     /// payload at `content` (design §7.5). The thread appends the records and signals the
     /// consumer, and never waits for its flush (§6: kernel threads only append to the buffer
     /// and signal it), so a consumer busy publishing a released harness stream delays no Store
-    /// append and no lease renewal. The blob file is placed and its references are appended in
-    /// the protocol's order; they reach the segment within `flush_latency_ms` of the consumer's
-    /// next wake, and until then the file is a young blob the sweep never collects.
+    /// append and no lease renewal. The blob file is placed — renamed over an existing file of
+    /// its digest, so its age restarts — and its references are appended in the protocol's
+    /// order; they reach the segment within `flush_latency_ms` of the consumer's next wake, and
+    /// until then the file is a young blob the sweep never collects.
     pub fn content_event_detached(
         &self,
         span_id: &str,
