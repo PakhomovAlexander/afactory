@@ -358,3 +358,7 @@ future readers need.
   content](0191-keep-guarded-measure-source-paths-stable-by-content.md)
 - [0192 — Admit single downloads and run CLI measurements
   offline](0192-admit-single-downloads-and-run-cli-measurements-offline.md)
+- [0193 — Seed admitted authority fixtures and distribute the full
+  suite](0193-seed-admitted-authority-fixtures-and-distribute-the-full-suite.md)
+- [0194 — Bind calibration to each case's observed shard CPU
+  group](0194-bind-calibration-to-each-cases-observed-shard-cpu-group.md)

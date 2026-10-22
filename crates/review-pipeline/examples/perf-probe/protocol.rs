@@ -242,19 +242,43 @@ pub const CONTRACTS: &[Contract] = &[
         ),
         Seed::Writes,
     ),
-    library(
-        "authority_plan_check",
-        "authority_plan_check_v1",
-        "current_plan_check",
-        &[("package", Domain::Fixture(ENVELOPES_LARGE))],
-        cache("fresh", "application_cold"),
+    seeded(
+        library(
+            "authority_seed",
+            "authority_seed_v1",
+            "authority_seed",
+            &[("package", Domain::Fixture(ENVELOPES_LARGE))],
+            cache("fresh", "application_cold"),
+        ),
+        Seed::Writes,
     ),
-    library(
-        "authority_runtime_new",
-        "authority_runtime_new_v1",
-        "task_runtime_new",
-        &[("package", Domain::Fixture(ENVELOPES_LARGE))],
-        cache("fresh", "application_cold"),
+    seeded(
+        library(
+            "authority_plan_check",
+            "authority_plan_check_v3",
+            "current_plan_check",
+            &[("package", Domain::Fixture(ENVELOPES_LARGE))],
+            cache("fresh", "application_cold"),
+        ),
+        Seed::Reads {
+            case_id: "authority_seed",
+            contract_id: "authority_seed_v1",
+            parameters: &["package"],
+        },
+    ),
+    seeded(
+        library(
+            "authority_runtime_new",
+            "authority_runtime_new_v3",
+            "task_runtime_new",
+            &[("package", Domain::Fixture(ENVELOPES_LARGE))],
+            cache("fresh", "application_cold"),
+        ),
+        Seed::Reads {
+            case_id: "authority_seed",
+            contract_id: "authority_seed_v1",
+            parameters: &["package"],
+        },
     ),
     library(
         "persistence_fs",

@@ -304,9 +304,9 @@ fn the_declared_contracts_are_the_registry_cases() {
         }
     }
     assert_eq!(
-        declared + 5,
+        declared + 6,
         protocol::CONTRACTS.len(),
-        "plus the sentinel, the two CLI seed writers and the two native seed writers"
+        "plus the sentinel, the two CLI seed writers and the three native seed writers"
     );
     // A seeded case's probe reads exactly the seed the registry declares, which its writer
     // contract writes over exactly the declared parameters (ADR-0170).
@@ -356,7 +356,10 @@ fn the_declared_contracts_are_the_registry_cases() {
             (seed, declared) => panic!("{case_id}: probe {seed:?}, registry {declared:?}"),
         }
     }
-    assert_eq!(writers, 2, "source capture and state projection read seeds");
+    assert_eq!(
+        writers, 4,
+        "source capture, state projection and both authority cases read seeds"
+    );
     // The CLI seed writers are the CLI registry's, not timed cases: their identities and exact
     // event counts are what `fixtures/performance/cli.toml` declares (ADR-0169).
     let cli: toml::Value = toml::from_str(
@@ -466,6 +469,17 @@ fn requests_outside_the_declared_contracts_are_refused() {
         &with("contract_id", json!("source_capture_v1")),
         "is not case source_capture's contract",
     );
+    for case in ["authority_plan_check", "authority_runtime_new"] {
+        for old_version in [1, 2] {
+            let mut request = base.clone();
+            request["case_id"] = json!(case);
+            request["contract_id"] = json!(format!("{case}_v{old_version}"));
+            refused(
+                &serde_json::to_vec(&request).unwrap(),
+                &format!("is not case {case}'s contract"),
+            );
+        }
+    }
     refused(&with("extra", json!(1)), "unknown field `extra`");
     refused(&with("schema", json!("af.perf-probe-request/1")), "schema");
     // A seed reader needs its seed; a seed is never given to a contract that reads none, and
@@ -937,6 +951,83 @@ fn independent_processes_share_one_sealed_seed(seed_id: &str) {
 }
 
 #[test]
+fn authority_operations_share_one_sealed_seed_across_fresh_processes() {
+    independent_processes_share_one_sealed_seed("authority_seed__package_issue_255_medium");
+}
+
+#[test]
+fn authority_seed_restoration_rejects_an_unreleased_setup_lease() {
+    let (_owner, scratch) = empty_scratch();
+    // A valid admitted Task is insufficient: build keeps its setup lease instead of releasing
+    // it. Restoration must refuse even if that lease could subsequently expire.
+    let fixture = authority::build(&scratch, None, fixtures::TASK_LEASE_MS).unwrap();
+    drop(fixture);
+    let restored = authority::restore_then(&scratch, None, |_, _, _, _| {
+        panic!("an unreleased seed never reaches the region capture")
+    });
+    let failure = restored.err().unwrap();
+    assert_eq!(failure.kind, protocol::FailureKind::FixtureFailed);
+    assert!(failure.detail.contains("both setup leases released"));
+}
+
+#[test]
+fn seeded_authority_keeps_the_original_task_and_takes_its_lease_after_capture() {
+    let (_seed_owner, seed) = write_seed("authority_seed__package_issue_255_medium");
+    let seed_root = seed.join(protocol::WORK_DIR);
+    let seed_store = review_store::EventStore::open(seed_root.join("events.sqlite")).unwrap();
+    let run = review_store::store::task::task_run_id(authority::TASK_ID).unwrap();
+    let prefix = seed_store.replay(&run).unwrap();
+    assert_eq!(prefix.len(), 6);
+    for region in [
+        cases::AuthorityRegion::CurrentPlanCheck,
+        cases::AuthorityRegion::TaskRuntimeNew,
+    ] {
+        let (_owner, _scratch, copy) = private_copy(&seed);
+        let mut captured_ms = 0;
+        let outcome = cases::authority_sample_from(
+            "issue_255_medium",
+            &copy,
+            region,
+            cases::PRODUCTION_LEASE,
+            Instant::now(),
+            cases::SetupHooks {
+                after_region_capture: Box::new(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    captured_ms = authority::now_ms()?;
+                    Ok(())
+                }),
+                ..cases::SetupHooks::default()
+            },
+            true,
+        );
+        assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+        let store = review_store::EventStore::open(copy.join("events.sqlite")).unwrap();
+        let events = store.replay(&run).unwrap();
+        assert_eq!(events.len(), 7, "the reader only takes its own lease");
+        assert_eq!(
+            serde_json::to_value(&events[..6]).unwrap(),
+            serde_json::to_value(&prefix).unwrap(),
+            "restoration preserves every original event and revision reference"
+        );
+        let (at, change) = transition(&events[6]);
+        assert_eq!(change["kind"], "lease_taken");
+        assert!(
+            at >= captured_ms,
+            "capture and its delay are outside the new lease"
+        );
+        assert_eq!(
+            change["lease_until_unix_ms"].as_u64().unwrap() - at,
+            fixtures::TASK_LEASE_MS
+        );
+        assert_eq!(
+            seed_store.replay(&run).unwrap().len(),
+            6,
+            "the seed never changes"
+        );
+    }
+}
+
+#[test]
 fn cold_and_prewarmed_projections_share_one_sealed_seed_across_processes() {
     independent_processes_share_one_sealed_seed("state_projection_seed__log_events_10000");
 }
@@ -1102,13 +1193,21 @@ fn the_cap_admits_exactly_its_size_and_refuses_one_byte_more() {
 }
 
 fn expires(region: cases::AuthorityRegion, instance: &str) {
-    let (_owner, scratch) = empty_scratch();
+    let (_seed_owner, seed) = write_seed("authority_seed__package_issue_255_medium");
+    let (_owner, _scratch, copy) = private_copy(&seed);
     let lapsed = cases::LeasePolicy {
-        renew_before_region: false,
+        renew_before_region: true,
         wait_for_expiry: true,
     };
-    let outcome =
-        cases::authority_sample("issue_255_medium", &scratch, region, lapsed, Instant::now());
+    let outcome = cases::authority_sample_from(
+        "issue_255_medium",
+        &copy,
+        region,
+        lapsed,
+        Instant::now(),
+        cases::SetupHooks::default(),
+        true,
+    );
     assert!(
         outcome.region_nanos.is_some(),
         "the production check ran and refused"
@@ -1135,7 +1234,7 @@ fn expires(region: cases::AuthorityRegion, instance: &str) {
         .find(|entry| entry["instance_id"] == instance)
         .unwrap();
     let (_rendering, empty) = empty_scratch();
-    let request_json = request(entry, &empty);
+    let request_json = seeded_request(entry, &empty, Some(&copy));
     let admitted = protocol::admit(&serde_json::to_vec(&request_json).unwrap()).unwrap();
     let mut line = serde_json::to_vec(&protocol::message(&admitted, &outcome)).unwrap();
     line.push(b'\n');
@@ -1633,7 +1732,7 @@ fn a_lapsed_setup_lease_fails_the_sample_and_no_later_lease_replaces_it() {
 #[test]
 fn the_region_checks_through_a_cold_authority_that_no_setup_write_used() {
     // The setup writes validate the plan through their own authority, whose validator then
-    // holds it; the region's authority is captured afresh after setup and holds nothing, so
+    // holds it; the region's non-executing host and real validator are fresh and hold nothing, so
     // its first check recompiles the plan. An authority that already checked is refused.
     let (_owner, scratch) = empty_scratch();
     let (_fixture, checked) = authority::build_then(
@@ -1646,7 +1745,7 @@ fn the_region_checks_through_a_cold_authority_that_no_setup_write_used() {
         },
         |store, cas, _, _, region| {
             region
-                .capture(|authority, _| {
+                .with_cold_validator(|authority, _| {
                     assert!(
                         !authority.holds_validated_plan(),
                         "a fresh region authority"

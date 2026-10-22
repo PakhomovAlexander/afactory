@@ -356,6 +356,8 @@ class Coverage(TempDir):
         doc, golden = loaded()
         self.assertEqual(len(golden["entries"]), 23)
         self.assertEqual([entry["instance_id"] for entry in golden["seeds"]], [
+            "authority_seed__package_issue_255_large",
+            "authority_seed__package_issue_255_medium",
             "source_capture_seed__files_10000_tree_source_files_128b",
             "source_capture_seed__files_100_tree_source_files_128b",
             "state_projection_seed__log_events_10000"])
@@ -363,7 +365,11 @@ class Coverage(TempDir):
         # A writer's check covers exactly what its readers' golden entries hold.
         entries = dict((entry["instance_id"], entry) for entry in golden["entries"])
         seeds = dict((entry["instance_id"], entry) for entry in golden["seeds"])
-        for reader, seed in (("state_projection__log_events_10000_projection_prewarmed",
+        for reader, seed in (("authority_plan_check__package_issue_255_large",
+                              "authority_seed__package_issue_255_large"),
+                             ("authority_runtime_new__package_issue_255_medium",
+                              "authority_seed__package_issue_255_medium"),
+                             ("state_projection__log_events_10000_projection_prewarmed",
                               "state_projection_seed__log_events_10000"),
                              ("source_capture__files_100_tree_source_files_128b",
                               "source_capture_seed__files_100_tree_source_files_128b")):

@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-readiness:5",
-  "title": "af.perf-readiness/5",
+  "$id": "urn:af:schema:performance-readiness:6",
+  "title": "af.perf-readiness/6",
   "description": "A readiness calculation over every declared cohort member; tallies and the decision are recomputed from member outcomes, never trusted as written.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-readiness/5"
+      "const": "af.perf-readiness/6"
     },
     "cohort_id": {
       "$ref": "#/$defs/id"
@@ -278,15 +278,23 @@
               }
             ]
           },
-          "cpu_group": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/$defs/id"
+          "cpu_groups": {
+            "type": "object",
+            "minProperties": 0,
+            "maxProperties": 64,
+            "patternProperties": {
+              "^[a-z][a-z0-9_]{0,63}$": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/id"
+                  }
+                ]
               }
-            ]
+            },
+            "additionalProperties": false
           },
           "verdict_sha256": {
             "anyOf": [
@@ -380,7 +388,7 @@
           "status",
           "reasons",
           "provenance",
-          "cpu_group",
+          "cpu_groups",
           "verdict_sha256",
           "cases",
           "qualifies"
@@ -605,7 +613,7 @@
       "type": "boolean"
     },
     "claim": {
-      "const": "9 of 10 power trials is a readiness decision for the demonstrated targets, not proof of 90% population detection power; group tallies are descriptive"
+      "const": "9 of 10 power trials is a readiness decision for the demonstrated targets, not proof of 90% population detection power; group tallies are descriptive and a mixed-host trial appears in each observed critical-case group"
     }
   },
   "required": [

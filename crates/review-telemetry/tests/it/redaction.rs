@@ -18,6 +18,8 @@ const JWT: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlc2lnbmF0dXJl
 const HEX_RUN: &str = "3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b";
 /// A 32-hex trace id: a kernel identity in an identity position, a secret run anywhere else.
 const TRACE_SHAPED: &str = "0123456789abcdef0123456789abcdef";
+/// A numeric secret distinguishable from legitimate positive counters, clocks and hex IDs.
+const SECRET_NUMBER: i64 = -4_242_424_242_424_242_424;
 
 /// Every credential kind of design §8, as text lines.
 fn credential_lines() -> Vec<String> {
@@ -525,6 +527,7 @@ fn telemetry_credential_shaped_attribute_names_are_withheld() {
 /// under an exact counter name is dropped and counted in `af.dropped_fields` before the rule.
 #[test]
 fn telemetry_secret_named_attribute_keys_withhold_values() {
+    let secret_number = SECRET_NUMBER.to_string();
     for level in [Level::Metrics, Level::Spans, Level::Content] {
         let temp = tempfile::tempdir().unwrap();
         let writer =
@@ -533,13 +536,13 @@ fn telemetry_secret_named_attribute_keys_withhold_values() {
             Attrs::new()
                 .text("api_key", "violet")
                 .id("session_token", "violet-id")
-                .int("db_password", 424_242_424_242)
-                .decimal("client_secret", "987654321098765")
+                .int("db_password", SECRET_NUMBER)
+                .decimal("client_secret", "9876543210")
                 .boolean("auth", true)
                 .enumerated("x-auth-mode", "violet")
                 .texts("credentials", vec!["violet".into(), "indigo".into()])
                 .text("api_key_long", "violet ".repeat(400))
-                .decimal("af.usage.input_tokens", "12")
+                .decimal("af.usage.input_tokens", "4242")
                 .text("af.usage.output_tokens", "violet")
                 .id("af.node_id", "n1")
         };
@@ -571,7 +574,7 @@ fn telemetry_secret_named_attribute_keys_withhold_values() {
                 attributes.get("af.usage.output_tokens").is_none(),
                 "{level:?}: {line}"
             );
-            assert_eq!(attributes["af.usage.input_tokens"], "12", "{line}");
+            assert_eq!(attributes["af.usage.input_tokens"], "4242", "{line}");
             assert_eq!(attributes["af.node_id"], "n1", "{line}");
             assert_eq!(attributes["af.redacted"], 8, "{line}");
             assert_eq!(attributes["af.dropped_fields"], 1, "{line}");
@@ -581,7 +584,7 @@ fn telemetry_secret_named_attribute_keys_withhold_values() {
         // The planted numbers have twelve digits or more and are no plausible nanosecond prefix,
         // so no timestamp or digest of the segment contains them by chance.
         let text = String::from_utf8(crate::sealed_bytes(&sealed.path)).unwrap();
-        for planted in ["violet", "indigo", "424242424242", "987654321098765"] {
+        for planted in ["violet", "indigo", secret_number.as_str(), "9876543210"] {
             assert!(!text.contains(planted), "{level:?}: {planted} in {text}");
         }
         // Nothing became a blob: a withheld value is never content.
@@ -744,6 +747,7 @@ fn telemetry_unknown_home_is_reported() {
 #[test]
 fn telemetry_config_rows_withhold_pairs_under_credential_shaped_keys() {
     use review_telemetry::record::ConfigRow;
+    let secret_number = SECRET_NUMBER.to_string();
     let row = |key: &str, value: &str| ConfigRow {
         key: key.into(),
         value: value.into(),
@@ -762,11 +766,23 @@ fn telemetry_config_rows_withhold_pairs_under_credential_shaped_keys() {
         let writer =
             review_telemetry::segment::writer::Writer::new(options(temp.path(), level)).unwrap();
         let span = writer
-            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .span_start(
+                None,
+                None,
+                "af.command",
+                SpanKind::Internal,
+                Attrs::new().decimal("af.usage.input_tokens", "4242"),
+            )
             .unwrap();
         let mut rows: Vec<ConfigRow> = credential_keys
             .iter()
-            .zip(["violet", "4242", "{ table = \"violet\" }", "", "plain"])
+            .zip([
+                "violet",
+                secret_number.as_str(),
+                "{ table = \"violet\" }",
+                "",
+                "plain",
+            ])
             .map(|(key, value)| row(key, value))
             .collect();
         rows.push(row("telemetry.level", "\"spans\""));
@@ -774,6 +790,8 @@ fn telemetry_config_rows_withhold_pairs_under_credential_shaped_keys() {
         writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
         let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
         let lines = sealed_lines(&sealed.path);
+        let start = lines.iter().find(|line| line["t"] == "span_start").unwrap();
+        assert_eq!(start["attributes"]["af.usage.input_tokens"], "4242");
         let configs: Vec<&Value> = lines.iter().filter(|line| line["t"] == "config").collect();
         let rows: Vec<&Value> = configs
             .iter()
@@ -805,7 +823,7 @@ fn telemetry_config_rows_withhold_pairs_under_credential_shaped_keys() {
             for planted in [
                 "sk-proj",
                 "ghp_",
-                "4242",
+                secret_number.as_str(),
                 "hunter2",
                 HEX_RUN,
                 JWT,

@@ -212,7 +212,7 @@ class Authority(History):
                          [item["instance_id"] for item in loaded.instances("quick")])
         self.assertEqual(plan["verdict_policy"]["family_size"], 28)
         self.assertEqual(plan["verdict_policy"]["case_alpha"], "1/560")
-        self.assertEqual(len(plan["shards"]), 2)
+        self.assertEqual(len(plan["shards"]), 16)
         with self.assertRaises(ContractError):
             self.plan(trigger="main_push", scope="full", head=later, cases=["cli_discovery"])
         with self.assertRaises(ContractError):
@@ -592,7 +592,8 @@ class Frozen(History):
             self.assertEqual(case["rank"], stats.critical_rank(case["pairs"], 28,
                                                                stats.Fraction(1, 20)))
         ids = [case["instance_id"] for case in first["cases"]]
-        self.assertEqual([s["instances"] for s in first["shards"]], [ids[0::2], ids[1::2]])
+        self.assertEqual([s["instances"] for s in first["shards"]],
+                         [ids[index::16] for index in range(16)])
 
     def test_the_reader_recomputes_every_frozen_value(self):
         plan = self.pr()

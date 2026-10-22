@@ -1464,7 +1464,7 @@ def calibration_group(calibration, instance_id, cpu_group):
     return None
 
 
-READINESS_SCHEMA = "af.perf-readiness/5"
+READINESS_SCHEMA = "af.perf-readiness/6"
 MEMBER_STATUSES = ("complete", "missing", "interrupted", "failed", "unhealthy", "invalid")
 # Why a member has no evidence: never dispatched, or dispatched and its original attempt's run
 # bundle absent, expired or unreadable. Each is still the member's original, never replaced.
@@ -1518,7 +1518,8 @@ READINESS_MEMBER = Obj(
     Field("member_id", ID), Field("kind", Str(enum=MEMBER_KINDS)),
     Field("status", Str(enum=MEMBER_STATUSES)),
     Field("reasons", Arr(Str(enum=READINESS_REASONS), 0, 16, unique=True)),
-    Field("provenance", Nullable(PROVENANCE)), Field("cpu_group", Nullable(ID)),
+    Field("provenance", Nullable(PROVENANCE)),
+    Field("cpu_groups", Map(ID_PATTERN, Nullable(ID), 0, limits.INSTANCES_MAX)),
     Field("verdict_sha256", Nullable(DIGEST)),
     Field("cases", Map(ID_PATTERN, READINESS_CASE, 0, limits.INSTANCES_MAX)),
     Field("qualifies", Bool()))
@@ -1530,7 +1531,8 @@ REFUSED_EVIDENCE = Obj(
                               "replacement", "later_attempt", "duplicate", "unbound_run"))),
     Field("detail", TEXT))
 READINESS_CLAIM = ("9 of 10 power trials is a readiness decision for the demonstrated targets, "
-                   "not proof of 90% population detection power; group tallies are descriptive")
+                   "not proof of 90% population detection power; group tallies are descriptive "
+                   "and a mixed-host trial appears in each observed critical-case group")
 READINESS = Obj(
     Field("schema", Const(READINESS_SCHEMA)), Field("cohort_id", ID),
     Field("cohort_digest", DIGEST), Field("calibration_digest", DIGEST),
@@ -1587,7 +1589,7 @@ def member_qualifies(cohort, calibration, member):
         return True
     for ident in critical:
         entry = cases.get(ident)
-        group = calibration_group(calibration, ident, member["cpu_group"] or "")
+        group = calibration_group(calibration, ident, member["cpu_groups"].get(ident) or "")
         if entry is None or group is None or group["iterations"] is None:
             return False
         if entry["classification"] != stats.REGRESSION or entry["injection_valid"] is not True:
@@ -1640,10 +1642,14 @@ def compute_readiness(cohort, calibration, members):
         elif kind == "power":
             tallies["power_members"] += 1
             tallies["power_qualifying"] += int(ok)
-            group = member["cpu_group"] or "unobserved"
-            entry = tallies["power_by_group"].setdefault(group, {"members": 0, "qualifying": 0})
-            entry["members"] += 1
-            entry["qualifying"] += int(ok)
+            # A mixed-host trial participates in each observed critical-case group once.
+            # Group tallies overlap; only power_qualifying counts whole trials once.
+            observed = {member["cpu_groups"].get(ident) or "unobserved" for ident in critical}
+            for group in sorted(observed):
+                entry = tallies["power_by_group"].setdefault(
+                    group, {"members": 0, "qualifying": 0})
+                entry["members"] += 1
+                entry["qualifying"] += int(ok)
             for ident in critical:
                 case = member["cases"].get(ident) or {}
                 if complete and case.get("injection_valid") is True:
@@ -1684,6 +1690,10 @@ def validate_readiness(doc, where="readiness.json", cohort=None, calibration=Non
                 at + ".verdict_sha256: exactly a complete member names its verdict")
         require((member["status"] == "complete") == (not member["reasons"]),
                 at + ".reasons: exactly an incomplete member says why")
+        require(member["status"] != "complete"
+                or (set(member["cpu_groups"]) == set(member["cases"])
+                    and all(group is not None for group in member["cpu_groups"].values())),
+                at + ".cpu_groups: a complete member binds every case to its observed group")
         provenance = member["provenance"]
         if provenance is not None:
             lab = "gh%d_a1_primary" % provenance["actions_run_id"]
@@ -1749,9 +1759,19 @@ def validate_readiness(doc, where="readiness.json", cohort=None, calibration=Non
                 provenance["display_title"]).group(1) == doc["cohort_digest"],
                 where + ".members.%s.provenance.display_title: a dispatch of another cohort"
                 % member["member_id"])
+        case_ids = {case["instance_id"] for case in cohort["cases"]}
+        allowed = {group["group_id"] for group in cohort["allowed_cpu_groups"]}
         for member in doc["members"]:
             require(member["kind"] == declared[member["member_id"]]["kind"],
                     where + ".members.%s.kind: not the declared kind" % member["member_id"])
+            require(set(member["cpu_groups"]) <= case_ids
+                    and all(group is None or group in allowed
+                            for group in member["cpu_groups"].values()),
+                    where + ".members.%s.cpu_groups: only declared cases and allowed groups"
+                    % member["member_id"])
+            require(member["status"] != "complete" or set(member["cases"]) == case_ids,
+                    where + ".members.%s.cases: a complete member contains every declared case"
+                    % member["member_id"])
     if cohort is not None and calibration is not None:
         validate_calibration(calibration, cohort=cohort)
         require(doc["calibration_digest"] == canonical_digest(calibration),
@@ -1762,7 +1782,7 @@ def validate_readiness(doc, where="readiness.json", cohort=None, calibration=Non
         for member in doc["members"]:
             level = member_level(declared[member["member_id"]])
             for ident, case in member["cases"].items():
-                group = calibration_group(calibration, ident, member["cpu_group"] or "")
+                group = calibration_group(calibration, ident, member["cpu_groups"].get(ident) or "")
                 expected = None
                 if level not in (None, "preparation") and group is not None \
                         and group["a0"] is not None:

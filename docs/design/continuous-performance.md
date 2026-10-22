@@ -955,3 +955,9 @@ partial-scope plan, an offline build, a measured shard, the verdict, a linked ph
 run, the report, an archive import and materialized history, the exact reproduction and the
 report's links. That is functional local evidence, not a product speed, sensitivity, Linux or
 hosted claim.
+
+Calibration readiness records each case's observed CPU/image group from its paired shard
+(`af.perf-readiness/6`, ADR-0194). Different shards in one hosted trial may use different
+allowed groups. Preparation and dose validation select that case/group's own parameters.
+Whole-trial acceptance is unchanged; descriptive group tallies overlap when a trial uses
+multiple groups. Unknown or unprepared hosts still invalidate the whole trial.
