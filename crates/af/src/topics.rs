@@ -248,8 +248,9 @@ af.authority.load, af.plan (one node record per plan node), af.node > af.attempt
 command's af.sweep; every other command records nothing and opens no telemetry directory. From
 the first af.run until the seal one consumer thread is the segment's only writer and every
 record is in it within flush_latency_ms; at the command's end it writes the command's end and
-seals the segment within one 2 s bound, else it is abandoned, publishes nothing, and the segment
-is left for the next reader to recover. A run's executions (one per process that worked on it,
+seals the segment within one bound — 2 s beyond its last progress, each content of a released
+harness stream it publishes renewing it — else it is abandoned, publishes nothing, and the
+segment is left for the next reader to recover. A run's executions (one per process that worked on it,
 numbered by the execution markers, TaskExecutionStarted@1 events of the Task's log, the Store
 holds for the leases before it) can
 overlap: active time is their union, execution time their sum, elapsed time first start to last

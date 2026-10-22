@@ -1036,8 +1036,10 @@ SHA-256, the `af.config.text.digest` every level records, as its `source_digest`
   payload and the manifest the typed positions are the members named `id`, `*_id`, `digest`,
   `*_digest`, the elements of `*_ids` and `artifact_refs`, and the token counters `tokens` and
   `*_tokens`. A value there keeps only when it is exactly a kernel identity or a number; the
-  instructions, the output schemas and every other value are untrusted text, so a digest an
-  untrusted payload carries is withheld and `context --raw` then differs from the prompt there. Each occurrence's `source_digest` and `original_bytes` describe the bytes as
+  instructions, the output schemas and every other value are untrusted text judged by the
+  credential rules — a credential under an `_id` name or a secret-named member is withheld, and
+  `context --raw` then differs from the prompt there, while a digest, which is no credential,
+  stays as text and never as a typed identity. Each occurrence's `source_digest` and `original_bytes` describe the bytes as
   they were, so `context` shows that the prompt it prints is the one the Worker received.
 - **Harness content follows the release decision.** A harness's text, thinking and tool
   content is pended while its process runs and never written live; once the process has ended

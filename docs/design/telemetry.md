@@ -917,13 +917,16 @@ that review-runner re-exports for its own use:
 
 - A **typed field** the kernel produced and validated — a digest (`sha256:` and 64 hex), a run,
   attempt, node, segment or span id, a numeric counter, a timestamp, an enumerated value — is
-  written as that field and never passes the heuristic, which would otherwise withhold every
-  digest as a 32-hex run.
+  written as that field and never passes the heuristic; a digest, which the heuristic would
+  pass anyway (a `sha256:` digest or a git object id is an identity, never a secret), is typed
+  only where its kind declares the position.
 - Every **untrusted string** — Provider-authored text, tool arguments and results, stderr, a
   free-text attribute, each line of a text blob — passes the existing rules
   (`looks_like_credential`, `WITHHELD_LINE`, the token prefixes, long hex and base64 runs, JWTs,
   secret-looking assignment names), per line for text and per string value for JSON. A
-  digest-looking run inside Provider text is withheld as today; appearance earns no exemption.
+  digest inside Provider text stays, as text — it is no credential — and earns no typed
+  position by its appearance; a long hex or base64 run that is neither a `sha256:` digest nor
+  a git object id is withheld as today.
 - A **JSON document** (the `config` record, a mirrored payload, a Finding body, a tool argument
   or result that is JSON) is redacted recursively and key-aware, never per line, so it stays
   parseable: a member whose name matches the secret-name rule (`key`, `token`, `secret`,
