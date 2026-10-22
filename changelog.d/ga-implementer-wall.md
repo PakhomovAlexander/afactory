@@ -1,3 +1,4 @@
-- `kernel/implementer` 1.6.0 gives an implementer attempt a six-hour wall (was three). Two
-  packages of the GA polish campaign were killed at the three-hour wall under host load with no
-  candidate sealed and no earlier signal; the Task-level wall stays twelve hours.
+- New Worker package `kernel/implementer-long` 1.0.0: `kernel/implementer` with a six-hour attempt wall
+  (the stock package keeps three hours, which the stock Task limits are sized for). The GA polish
+  campaign's `kernel/implementation-ux` 1.1.0 runs its implementer slot on it after two packages
+  were killed at the three-hour wall under host load with nothing sealed.

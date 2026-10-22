@@ -325,7 +325,7 @@
       "worker_output_type": "af/ImplementationReport@1",
       "attempt": {
         "tokens": 1500000,
-        "wall_ms": 21600000
+        "wall_ms": 10800000
       }
     }
   },
