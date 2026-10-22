@@ -122,11 +122,15 @@ what to compare against; for an existing branch change, set `base_rev` to its in
 commit. The plan can show an empty Change Set, but `run` refuses it: make a real candidate change
 before execution. Planning needs no Provider login, Gate execution or model calls.
 
-To execute that plan with the generated Codex Workers, register a Provider at your own terminal
-and supply its bindings explicitly (this step runs the Gate and spends model tokens):
+To execute that plan with the generated Codex Workers, register a Provider and supply its
+bindings explicitly (this step runs the Gate and spends model tokens). Start with `af provider
+detect --apply`: it finds the `claude` and `codex` logins already on the machine and registers
+them, and prints the `setup … --login` line for any directory that still needs a login
+([docs/providers.md](docs/providers.md#detect)):
 
 ```sh
-af provider setup codex-main --kind codex --login  # log in at YOUR terminal, then register
+af provider detect --apply                         # register the logins already on this machine
+af provider setup codex-main --kind codex --login  # or log in at YOUR terminal, then register
 af provider status                 # verify registered and ambient Claude / Codex contexts
 af provider models --resolve 'GPT-6 Sol/high'      # exact model IDs and effort levels, token-free
 af review run --campaign pr-123 --policy-rev "$policy_rev" --base "$base_rev" --uncommitted \
@@ -151,7 +155,10 @@ Login starts from an empty allowlisted environment in an owned auth directory th
 not writable by other users, and one canonical auth context admits only one setup/login at a time.
 `setup` is machine-local and therefore does not dispatch to a repository's older pinned `af`;
 registry publication remains atomic for those older readers. `af provider add` registers an already
-authenticated context without opening a login and applies the same auth-directory safety checks.
+authenticated context without opening a login and applies the same auth-directory safety checks;
+it probes the directory first and refuses one that is not authenticated with exit 6 and the
+`af provider setup <id> --kind <kind> --auth-dir <dir> --login` line, unless `--unverified`, which
+prints `warning: not verified here`.
 If a crash leaves publication fenced, `af provider recover` validates the marker plus the live,
 candidate, and prior hashes before archiving it; it reports which version is live and retains both
 preserved copies. Recovery is machine-local and also bypasses an older project pin.
@@ -165,7 +172,7 @@ doctor` remains the charged end-to-end check. `af provider models` lists each Pr
 model IDs, aliases and effort levels from its harness's own protocol, token-free, and `--resolve`
 prints the configuration to copy; every binding is checked against the same rules before anything
 is charged ([ADR-0148](docs/adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)).
-`status`, `models` and `setup` take `--json` for a stable versioned document; see
+`detect`, `status`, `models` and `setup` take `--json` for a stable versioned document; see
 [docs/providers.md](docs/providers.md). `af review
 plan` resolves policy, Base, candidate, the exact Change Set, the selected route, Gates, budgets,
 and required Provider bindings without Campaign state, external calls, or tokens — the route line

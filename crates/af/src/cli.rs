@@ -31,7 +31,8 @@ Namespaces:
   config     show the effective configuration and where each value came from
   self       optimize the current project, or manage af installations
 
-`af help <topic>` explains config, layers, environment, exit-codes, json, and self. `af` alone \
+`af help <topic>` explains config, layers, environment, exit-codes, json, providers, and self. \
+`af` alone \
 at a terminal opens a read-first browser over this scope's settings, providers and pipelines.";
 
 const AF_AFTER_HELP: &str = "\
@@ -109,16 +110,18 @@ are shorthand for `af review run`.",
         subcommand_required = true,
         arg_required_else_help = true,
         long_about = "Inspect and preflight the configured model providers.\n\n\
-Providers are named in the user configuration (`~/.config/af/providers.toml`); `status` reads \
+Providers are named in the user configuration (`~/.config/af/providers.toml`); `detect` finds \
+the official CLIs and their logins on this machine and registers them with --apply; `status` reads \
 that registry and the machine's harness logins without contacting any model. `models` lists \
 each Provider's model catalog and effort levels, token-free, from the harness's own protocol. \
 `doctor` runs a bounded, charged preflight for the bindings you name.\n\n\
-Results go to stdout (add --json to `status`, `models` and `setup` for versioned documents); \
+Results go to stdout (add --json to `detect`, `status`, `models` and `setup` for versioned \
+documents); \
 progress, warnings and diagnostics go to stderr. Exit codes across this namespace: 0 success, 1 \
 unclassified failure, 2 usage error, 3 human action required, 4 Provider CLI missing or \
 cannot start, 5 registry conflict, 6 authentication failed, 7 optional usage or a model catalog \
 unavailable.",
-        after_long_help = "Examples:\n  af provider status\n  af provider models --resolve 'Fable 5.1/xhigh'\n  af provider setup codex-main --kind codex\n  af provider doctor --provider correctness=claude-code"
+        after_long_help = "Examples:\n  af provider detect --apply\n  af provider status\n  af provider models --resolve 'Fable 5.1/xhigh'\n  af provider setup codex-main --kind codex\n  af provider doctor --provider correctness=claude-code\n\nSee `af help providers` for the registry model and the order of first use."
     )]
     Provider {
         #[command(subcommand)]
@@ -308,10 +311,11 @@ directory.",
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Explain a topic (config, layers, environment, exit-codes, json, self, storage, telemetry) or a command
+    /// Explain a topic (config, layers, environment, exit-codes, json, providers, self, storage, telemetry) or a command
     #[command(
         long_about = "Explain a topic or a command.\n\n\
-Topics: config, layers, environment, exit-codes, json, self, storage, telemetry. Anything else \
+Topics: config, layers, environment, exit-codes, json, providers, self, storage, telemetry. \
+Anything else \
 is treated \
 as a command path, so `af help review run` equals `af review run --help`.",
         after_long_help = "Examples:\n  af help layers\n  af help exit-codes\n  af help review ledger"
@@ -832,6 +836,67 @@ pub(crate) enum ChallengeKindArg {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum ProviderCommand {
+    /// Find the official CLIs and their logins on this machine, and register them with --apply
+    #[command(
+        long_about = "Find the official CLIs and their logins on this machine, and register them \
+with --apply.\n\n\
+Binaries: claude and codex on PATH first, then in ~/.local/bin, ~/.claude/local (claude), \
+/opt/homebrew/bin, /usr/local/bin, ~/.npm-global/bin, ~/.volta/bin and ~/.bun/bin; one found off \
+PATH is reported with the line that adds its directory to PATH for your $SHELL. No shell rc \
+file, `npm prefix` or `nvm` is evaluated. Unsupported harness CLIs on PATH (gemini, cursor-agent, \
+opencode, amp, copilot, aider, qwen, goose) are listed by name and version only.\n\n\
+Auth directories, each with its SOURCE: env (CLAUDE_CONFIG_DIR, CODEX_HOME), default (~/.claude, \
+~/.codex), sibling (~/.claude-*, ~/.config/claude, ~/.config/claude-*, ~/.codex-*, \
+~/.config/codex, ~/.config/codex-*, one level, no recursion), registry (every auth_dir already \
+registered) and explicit (--dir). A directory found twice is listed once. Shell aliases or \
+functions that set CLAUDE_CONFIG_DIR or CODEX_HOME are not read; pass --dir for such a \
+directory.\n\n\
+A Claude directory holds .claude.json, .credentials.json or settings.json; a Codex directory \
+holds auth.json or config.toml. Only those names are examined, never opened. A directory with \
+none is listed `empty` and not probed unless --all, because a CLI asked about it creates files \
+there; one that is a symlink, not owned by you, or writable by others is listed unsafe and not \
+probed. Every other directory gets exactly the token-free login check of `af provider status`. \
+LOGIN shows the plan or method (`Claude Max (claude.ai)`, `ChatGPT`, `API key`, `not logged \
+in`), never an account; --identity adds the account label the CLI reported, only when stdout \
+is a terminal and --json is absent.\n\n\
+Nothing is written without --apply. --apply registers, in table order, every authenticated \
+directory that is not registered yet, through the same locked, atomic publication as `af \
+provider add`, and prints each line it ran; it never logs in, never creates a directory and \
+never touches a directory that is not logged in (it prints that directory's `af provider setup \
+... --login` line). A registry conflict stops it at that row with exit 5; the rows before it \
+stay registered. IDs: the default directory is claude-main or codex-main; a sibling is the kind \
+and its name without the kind prefix (~/.config/claude-work is claude-work, ~/.codex-gridgain is \
+codex-gridgain); the env directory follows the sibling rule when its name is a sibling name, \
+else claude-env or codex-env; --dir follows the sibling rule, and needs one --id per --dir when \
+more than one names the same kind; a taken ID gets -2, -3; *-ambient is never generated.\n\n\
+--json prints one af/provider-detect@1 document. Exit codes: 0 the scan completed, 1 \
+unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible (the rows \
+are still printed), 5 a registry conflict stopped --apply.",
+        after_long_help = "Examples:\n  af provider detect\n  af provider detect --apply\n  af provider detect --json\n  af provider detect --dir /secure/claude-team --kind claude --apply\n  af provider detect --all"
+    )]
+    Detect {
+        /// Also scan this auth directory (repeatable)
+        #[arg(long = "dir", value_name = "PATH", action = ArgAction::Append)]
+        dirs: Vec<PathBuf>,
+        /// The ID to register each --dir under, in --dir order (repeatable)
+        #[arg(long = "id", value_name = "ID", action = ArgAction::Append, requires = "dirs")]
+        ids: Vec<String>,
+        /// Scan one Provider kind only; names the kind of a --dir without a clear marker
+        #[arg(long, value_enum)]
+        kind: Option<ProviderKindArg>,
+        /// Also probe directories that hold no login marker (the CLI may create files there)
+        #[arg(long)]
+        all: bool,
+        /// Register every authenticated, unregistered directory found
+        #[arg(long)]
+        apply: bool,
+        /// Emit the versioned `af/provider-detect@1` document instead of the table
+        #[arg(long)]
+        json: bool,
+        /// Add the account label each CLI reported (terminal only, never with --json)
+        #[arg(long)]
+        identity: bool,
+    },
     /// Show the provider registry and each harness login, without a model call
     #[command(
         long_about = "Show the provider registry and each harness login, without a model call.\n\n\
@@ -844,9 +909,14 @@ A Provider whose official CLI is missing, not executable, or exits non-zero on i
 check is reported as an installation failure, with the CLI's own first error line and the fix \
 it suggests on stderr. One whose help page does not declare every option af passes is reported \
 as incompatible, with its version, the missing options and the upgrade command on stderr.\n\n\
+A context that does not exist or holds no login marker is not probed: its CLI would create \
+files there. Each row that needs a login names one fix, `af provider setup ID --kind KIND \
+--auth-dir DIR --login`; --verbose adds the CLI's own login command. With no registry entry, \
+directories `af provider detect` would list are named on one line, unprobed; with no CLI at \
+all, the install commands are printed.\n\n\
 Exit codes: 0 fine, 4 a Provider CLI cannot start or is incompatible, 7 optional usage \
 unavailable.",
-        after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage"
+        after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage\n  af provider status --verbose"
     )]
     Status {
         /// Emit the versioned `af/provider-status@2` document instead of the table
@@ -855,6 +925,9 @@ unavailable.",
         /// Also probe subscription and quota windows (slower, and may be unavailable)
         #[arg(long)]
         usage: bool,
+        /// Also print the official CLI's own login command for each row without a login
+        #[arg(long)]
+        verbose: bool,
     },
     /// List each Provider's model catalog and effort levels, without a model call
     #[command(
@@ -902,6 +975,8 @@ human-action-required result and the exact command to run. With --login, setup s
 official Provider CLI login only when this process owns an interactive terminal on stdin, \
 stdout and stderr, because the OAuth URL and authorization code that login prints are \
 credentials in transit and must never reach a pipe, chat, an agent transcript, or logs.\n\n\
+--auth-dir names an existing directory; only --login creates a missing one, because a login \
+needs a home.\n\n\
 Exit codes: 0 registered, 3 human action required, 4 Provider CLI missing, cannot start or \
 incompatible, 5 \
 registry conflict, 6 authentication failed. Re-running setup for the same binding is safe.",
@@ -930,8 +1005,13 @@ The registry stores only the Provider kind and auth directory, never credentials
 --auth-dir is omitted, af uses the active CLI directory (CLAUDE_CONFIG_DIR or ~/.claude; \
 CODEX_HOME or ~/.codex). Existing entries and duplicate auth contexts are never overwritten, \
 and no login is ever started.\n\n\
-Exit codes: 0 registered, 5 registry conflict.",
-        after_long_help = "Examples:\n  af provider add codex-main --kind codex\n  af provider add claude-work --kind claude --auth-dir /secure/claude-work"
+The directory is probed first, as `af provider status` probes it, and a context that is not \
+authenticated is refused with exit 6 and the `af provider setup ID --kind KIND --auth-dir DIR \
+--login` line that logs in there. --unverified registers it without the probe and prints \
+`warning: not verified here`.\n\n\
+Exit codes: 0 registered, 4 Provider CLI missing, cannot start or incompatible, 5 registry \
+conflict, 6 not authenticated.",
+        after_long_help = "Examples:\n  af provider add codex-main --kind codex\n  af provider add claude-work --kind claude --auth-dir /secure/claude-work\n  af provider add claude-ci --kind claude --auth-dir /secure/claude-ci --unverified"
     )]
     Add {
         /// Stable ID used by --provider NODE=ID
@@ -942,6 +1022,9 @@ Exit codes: 0 registered, 5 registry conflict.",
         /// Auth directory (defaults to the active CLI directory)
         #[arg(long, value_name = "DIR")]
         auth_dir: Option<PathBuf>,
+        /// Register without asking the Provider CLI whether the directory holds a login
+        #[arg(long)]
+        unverified: bool,
     },
     /// Remove named Providers from the machine-local registry
     #[command(

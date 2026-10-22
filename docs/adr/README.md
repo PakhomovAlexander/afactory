@@ -364,3 +364,5 @@ future readers need.
   group](0194-bind-calibration-to-each-cases-observed-shard-cpu-group.md)
 - [0195 — State the lines a pull request adds per directory, and check
   them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)
+- [0196 — Detect Provider logins, and register them through
+  `add`](0196-detect-provider-logins-and-register-them-through-add.md)

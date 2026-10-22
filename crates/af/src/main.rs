@@ -1958,13 +1958,34 @@ fn exit_interrupted(
 /// `Err` path and exits 1.
 fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
     match command {
-        cli::ProviderCommand::Status { json, usage } => {
+        cli::ProviderCommand::Detect {
+            dirs,
+            ids,
+            kind,
+            all,
+            apply,
+            json,
+            identity,
+        } => providers::detect::run(providers::detect::DetectOptions {
+            dirs,
+            ids,
+            kind: kind.map(|kind| provider_kind(kind).to_string()),
+            all,
+            apply,
+            json,
+            identity,
+        }),
+        cli::ProviderCommand::Status {
+            json,
+            usage,
+            verbose,
+        } => {
             let usage = if usage {
                 providers::UsageProbe::Probe
             } else {
                 providers::UsageProbe::Skip
             };
-            providers::print_status(json, usage)
+            providers::print_status(json, usage, verbose)
         }
         cli::ProviderCommand::Setup {
             id,
@@ -1979,9 +2000,14 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
         cli::ProviderCommand::Models { ids, json, resolve } => {
             providers::models::print_models(&ids, json, resolve.as_deref())
         }
-        cli::ProviderCommand::Add { id, kind, auth_dir } => {
+        cli::ProviderCommand::Add {
+            id,
+            kind,
+            auth_dir,
+            unverified,
+        } => {
             let kind = provider_kind(kind);
-            providers::add(&id, kind, auth_dir.as_deref())
+            providers::add(&id, kind, auth_dir.as_deref(), unverified)
         }
         cli::ProviderCommand::Remove { ids } => providers::remove(&ids),
         cli::ProviderCommand::Auth { command } => match command {

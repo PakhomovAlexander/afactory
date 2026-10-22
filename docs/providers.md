@@ -36,6 +36,117 @@ that terminal would; such a caller is out of this boundary's scope, and a test p
 reaches the login. An agent that must start a login on someone's behalf uses the private host
 protocol below, whose permission and private delivery are explicit capabilities.
 
+## Detect
+
+On a new machine, start here. `af provider detect` finds the official CLIs and every auth
+directory on the machine, asks each directory's CLI whether it holds a login, and prints the one
+command that registers it; `--apply` runs those commands
+([ADR-0196](adr/0196-detect-provider-logins-and-register-them-through-add.md)):
+
+```sh
+af provider detect              # what is here; writes nothing
+af provider detect --apply      # register every logged-in directory not registered yet
+af provider detect --json       # the same scan, as af/provider-detect@1
+```
+
+On a machine whose `CLAUDE_CONFIG_DIR` is `~/.config/claude-personal`, with logins in
+`~/.config/claude-work` and `~/.codex-acme` as well, `af provider detect` prints:
+
+```text
+KIND   AUTH DIR                   SOURCE   LOGIN                  REGISTERED AS    SUGGESTED
+claude ~/.config/claude-personal  env      Claude Max (claude.ai) -                claude-personal
+claude ~/.config/claude-work      sibling  Claude Max (claude.ai) -                claude-work
+codex  ~/.codex-acme              sibling  ChatGPT                -                codex-acme
+
+binaries: claude 2.1.299, codex 0.163.0
+  claude ~/bin/claude
+  codex ~/bin/codex
+
+next, one line per directory:
+  af provider add claude-personal --kind claude --auth-dir ~/.config/claude-personal
+  af provider add claude-work --kind claude --auth-dir ~/.config/claude-work
+  af provider add codex-acme --kind codex --auth-dir ~/.codex-acme
+
+3 logins are not registered: run af provider detect --apply to register them with the IDs above, or
+  copy a line
+shell aliases or functions that set CLAUDE_CONFIG_DIR/CODEX_HOME are not read; pass --dir for such
+  a directory
+```
+
+With a logged-out `~/.claude` beside them, `af provider detect --apply` prints its table, one row
+longer, and then:
+
+```text
+registered: af provider add claude-personal --kind claude --auth-dir ~/.config/claude-personal
+not logged in, so not registered: ~/.claude; run this yourself at a private terminal:
+  af provider setup claude-main --kind claude --auth-dir ~/.claude --login
+registered: af provider add claude-work --kind claude --auth-dir ~/.config/claude-work
+registered: af provider add codex-acme --kind codex --auth-dir ~/.codex-acme
+```
+
+A second `--apply` changes nothing and says `already registered: claude-work
+(~/.config/claude-work)` for each.
+
+What it looks at:
+
+- **Binaries.** `claude` and `codex` on the sanitized `PATH` first, then in `~/.local/bin`,
+  `~/.claude/local` (claude only), `/opt/homebrew/bin`, `/usr/local/bin`, `~/.npm-global/bin`,
+  `~/.volta/bin` and `~/.bun/bin`. One found off `PATH` is reported as `found off PATH: <path>`
+  with the line that adds its directory to `PATH` for your `$SHELL` (`fish_add_path <dir>` for
+  fish, otherwise `export PATH="<dir>:$PATH"`), and is probed through that path. No shell rc file,
+  `npm prefix` or `nvm` is evaluated. `gemini`, `cursor-agent`, `opencode`, `amp`, `copilot`,
+  `aider`, `qwen` and `goose` found on `PATH` are listed by name and version as `not supported by
+  af yet`; none of their directories is scanned.
+- **Auth directories**, each with its SOURCE: `env` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, absolute
+  only), `default` (`~/.claude`, `~/.codex`), `sibling` (`~/.claude-*`, `~/.config/claude`,
+  `~/.config/claude-*`, `~/.codex-*`, `~/.config/codex`, `~/.config/codex-*`: literal names one
+  level deep, no recursion), `registry` (every `auth_dir` already registered) and `explicit`
+  (`--dir PATH`, repeatable). A directory found twice, by its canonical path, is listed once,
+  with the most specific source: explicit, env, default, sibling, registry. A shell alias or
+  function that sets one of the variables is not read: pass `--dir` for such a directory.
+- **Markers, by name only.** A Claude directory holds `.claude.json`, `.credentials.json` or
+  `settings.json`; a Codex directory holds `auth.json` or `config.toml`. af examines those names
+  with `fstatat` below a descriptor opened with `O_NOFOLLOW` and never opens a file under the
+  directory. A directory with none is listed `empty` and not probed, because a CLI asked about a
+  directory creates files there (`codex login status` creates its home on first contact);
+  `--all` probes it anyway. A directory that is a symlink, is not owned by you or is writable by
+  group or others is listed `unsafe (not probed)` with the reason and, for permissions, the
+  `chmod` that fixes it: the same rules `setup` and `add` apply. `--dir` needs `--kind` when the
+  markers do not say which CLI the directory belongs to.
+- **The probe** is `af provider status`'s: the capability check once per binary, then one bounded,
+  token-free login check per directory, at most four at a time, in the probe environment. LOGIN
+  shows the plan or method — `Claude Max (claude.ai)`, `ChatGPT`, `API key`, `not logged in` —
+  never an email or an organization. The Codex plan is not part of that check's answer, so it
+  reads `ChatGPT` and `plan: unknown`. `--identity` adds the account label the CLI reported, under
+  each row, only when stdout is a terminal and `--json` is absent.
+
+`--apply` registers, in table order, every row whose LOGIN is authenticated and REGISTERED AS is
+`-`, through the same locked, atomic publication and safety checks as `af provider add`, and
+prints each line it ran. It never logs in, never creates a directory, and never touches a row
+that is not logged in: it prints that row's `af provider setup … --login` line instead. A
+registry conflict stops it at that row with exit 5; the rows before it stay registered. The
+IDs:
+
+| Directory | ID |
+|---|---|
+| default (`~/.claude`, `~/.codex`) | `claude-main`, `codex-main` |
+| sibling | the kind and the directory name without its kind prefix: `~/.config/claude-work` is `claude-work`, `~/.codex-gridgain` is `codex-gridgain`, `~/.claude-personal` is `claude-personal`, `~/.config/claude` is `claude-config` |
+| env | the sibling rule when its name is a sibling name, else `claude-env`, `codex-env` |
+| explicit | `--id`, in `--dir` order, required when more than one `--dir` names the same kind; else the sibling rule |
+| taken | `-2`, `-3`, …; an `*-ambient` ID is never generated |
+
+With nothing found, the output is the install guidance — `npm install -g
+@anthropic-ai/claude-code` or `curl -fsSL https://claude.ai/install.sh | bash`, `npm install -g
+@openai/codex` or `brew install codex`, the directories searched and `then run: af provider
+detect` — under exit 0. `af provider status` prints the same guidance when no CLI is on `PATH`
+and nothing is registered, and with nothing registered it names what a names-only scan found:
+`found but not registered: ~/.config/claude-work, ~/.codex-acme (not probed) → af provider
+detect`.
+
+Exit codes: 0 the scan completed, 1 unclassified failure, 2 usage error (as one `af/error@1`
+document under `--json`), 4 a found CLI cannot start or is incompatible (the rows are still
+printed), 5 a registry conflict stopped `--apply`. Never 3 and never 6: detect starts no login.
+
 ## Onboarding a Provider
 
 Already authenticated with the official CLI? Then no login is needed and none is started:
@@ -54,8 +165,17 @@ af provider setup codex-main --kind codex --login
 `--login` prints the warning above, hands the terminal to the official CLI, verifies the result,
 and only then writes the registry entry. It cannot be combined with `--json`: JSON is the
 non-interactive automation surface, while login deliberately hands the private terminal to the
-Provider CLI. Re-running any of these is safe. `af provider add` registers an already-authenticated
-context and never offers a login at all.
+Provider CLI. Re-running any of these is safe. `--auth-dir` names an existing directory: only
+`--login` creates a missing one, because a login needs a home; without it setup refuses with
+`auth directory <PATH> does not exist; pass --login to create it, or check the path`. setup's
+lock lives in af's state, `$XDG_STATE_HOME/af/locks/<kind>-<sha256 of the canonical auth
+directory>`, never in the auth directory.
+
+`af provider add` registers an already-authenticated context and never offers a login at all. It
+probes the directory first, as `status` does, and refuses a context that is not authenticated
+with exit 6, a message naming the directory and the `af provider setup <id> --kind <kind>
+--auth-dir <dir> --login` line that logs in there; `--unverified` registers it without the probe
+and prints `warning: not verified here`.
 
 Generic automation should run `setup` **without** `--login` and respect the terminal-only refusal.
 An assistant with an authorized private host integration should own browser-only setup using
@@ -95,8 +215,9 @@ Two cases come up often:
   entries, so there is nothing to remove. One is listed while the directory the Provider CLI uses
   by default (`CLAUDE_CONFIG_DIR` or `~/.claude`; `CODEX_HOME` or `~/.codex`) is not a registered
   Provider's auth directory. Once a Provider of its kind is registered, it is left out when its
-  status is `not authenticated`; with a login, or when the status probe fails (`unavailable`,
-  `installation failed`), it stays listed ([ADR-0141](adr/0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)).
+  status is `not authenticated` or `not probed` (no such directory, or no login marker in it);
+  with a login, or when the status probe fails (`unavailable`, `installation failed`), it stays
+  listed ([ADR-0141](adr/0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)).
   Start `af` with that variable naming a registered directory, or register the default
   directory, and the label goes away.
 
@@ -112,12 +233,17 @@ af provider status --usage         # additionally probe subscription and quota w
 af provider doctor --campaign NAME --provider correctness=codex-main
 ```
 
-`status` is deliberately cheap and says only what it checked. It reports four independent axes:
+`status` is deliberately cheap and says only what it checked. A context that does not exist or
+holds none of its CLI's login markers (see [Detect](#detect)) is not probed at all, because the
+CLI would create files there; its row says `not probed` and why. Each row without a login names
+one fix, `af provider setup <id> --kind <kind> [--auth-dir <dir>] --login`; `--verbose` adds the
+CLI's own login command (`CODEX_HOME=<dir> codex login`) under it. The `--usage` hint is printed
+only when a row is authenticated. It reports four independent axes:
 
 | Axis | Values | Means |
 |---|---|---|
 | `registered` | true / false | in the registry, so selectable by `--provider NODE=ID`; false is an ambient discovery label |
-| `auth` | `authenticated`, `not_authenticated`, `unknown`, `unavailable`, `installation_failed`, `incompatible`, `not_probed` | what the Provider CLI said about this auth directory; `installation_failed` means the CLI cannot start, so it said nothing; `incompatible` means it starts but does not accept af's invocation, so its login was not asked about |
+| `auth` | `authenticated`, `not_authenticated`, `unknown`, `unavailable`, `installation_failed`, `incompatible`, `not_probed` | what the Provider CLI said about this auth directory; `installation_failed` means the CLI cannot start, so it said nothing; `incompatible` means it starts but does not accept af's invocation, so its login was not asked about; `not_probed` means the directory is absent or holds no login marker, so the CLI was not asked |
 | `usability` | `usable_or_untested`, `unusable`, `unknown` | status never claims `usable`: only `af provider doctor` dispatches and can prove it |
 | `usage.state` | `not_requested`, `not_applicable`, `unsupported`, `available`, `unavailable` | the optional plan and quota axis |
 
@@ -376,12 +502,13 @@ discards stdout still shows the operator what happened.
 | 1 | unclassified failure (unsafe auth directory, unreadable registry, an ID `remove` does not find, …) | all |
 | 2 | usage error, from clap | all |
 | 3 | human action required | `setup` |
-| 4 | Provider CLI missing, cannot start, or does not accept af's invocation | `setup`, `status`, `models` |
-| 5 | registry conflict | `setup`, `add` |
-| 6 | authentication failed | `setup` |
+| 4 | Provider CLI missing, cannot start, or does not accept af's invocation | `setup`, `add`, `status`, `models`, `detect` |
+| 5 | registry conflict | `setup`, `add`, `detect --apply` |
+| 6 | authentication failed; for `add`, a context that is not logged in | `setup`, `add` |
 | 7 | optional usage unavailable; a model catalog unavailable | `status --usage`; `models` |
 
-The versioned documents are [`provider-status-v2.json`](../schemas/provider-status-v2.json),
+The versioned documents are [`provider-detect-v1.json`](../schemas/provider-detect-v1.json),
+[`provider-status-v2.json`](../schemas/provider-status-v2.json),
 [`provider-setup-v1.json`](../schemas/provider-setup-v1.json) and
 [`provider-models-v1.json`](../schemas/provider-models-v1.json). They are closed vocabularies; the
 models document carries model IDs, aliases, effort levels and bounded display names only. None
@@ -398,6 +525,8 @@ table keeps the Provider's own window labels.
 | exit 4, `incompatible` | The CLI starts but is too old for af's invocation. Run the upgrade printed on stderr, then rerun `af provider status`. |
 | exit 5, `registry_conflict` | The ID or the auth directory already belongs to another entry. Choose a different ID, or point `--auth-dir` at the context you meant. |
 | exit 6, `authentication_failed` | The Provider CLI answered, and not with a usable login. Repeat the login at a private terminal and confirm with `af provider status`. |
+| exit 6 from `af provider add`, `has no … login` | The directory is not logged in. Run the printed `af provider setup … --login` yourself at a private terminal, or pass `--unverified` to register it anyway. |
+| `not probed` in `status`, `empty (not probed)` in `detect` | The directory is absent or holds no login marker, so af did not hand it to its CLI. Log in there with the printed setup line, or run `af provider detect --all` to ask the CLI anyway. |
 | `model_refused` on the stderr of `af task run` or `af review run`, or in an Attempt diagnostic: `the safety classifier of MODEL (effort E) flagged the request and MODEL refused it` | The bound model's safety classifier flagged the Worker's input and Claude Code, with its automatic fallback turned off, ended the turn with a refusal (`safety_stops` above zero, `stop_reason` `refusal`, or `…'s safeguards flagged this message` in the result of an error result, whatever its `errors` holds). It is not a credential or spelling problem. af charged what the result reported and did not retry, because the same input is flagged again. Change the input or bind another model, then rerun ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)). |
 | `Claude Code switched models, a safety-classifier fallback (model_refused)` or `an unexplained switch (model_switched)` | Claude Code answered with a model the Worker did not bind; the line names the bound model, each model that answered with its output tokens (a model ID outside the printable grammar reads `[not printable]` with its byte length), and `safety_stops` and `num_turns`. The diagnostic in `af task show` starts with it even when the usage was also malformed or listed more than 32 models, and gives those accounting reasons after it; an entry for another model that reports no activity, or only malformed counters, is not a switch. af refused the reply, because it never runs or accepts an unrequested model, and charged what the result reported. af already sets `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, so a client that still switches ignores it: upgrade it with `npm install -g @anthropic-ai/claude-code@latest` and rerun. If the classifier flags the input again, change it or bind another model. |
 | `model_unavailable` after `Claude Code rejected the model`, quoting the model ID | Claude Code answered "There's an issue with the selected model (…). It may not exist or you may not have access to it.": it does not know that model ID or the account cannot use it. The line names the Provider, the nearest exact IDs af knows and `af provider models <id>`. Correct the binding's model ID (Claude IDs use hyphens, such as `claude-fable-5-1`), then check the Provider with `af provider status` (token-free) and `af provider doctor` (charged). |

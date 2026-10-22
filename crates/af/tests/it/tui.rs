@@ -1206,6 +1206,7 @@ fn d_removes_a_registered_provider_through_af_provider_remove() {
     for id in ["codex-main", "codex-work"] {
         let auth = home.join(id);
         std::fs::create_dir(&auth).unwrap();
+        std::fs::write(auth.join("config.toml"), "").unwrap();
         registry.push_str(&format!(
             "\n[[providers]]\nid = \"{id}\"\nkind = \"codex\"\nauth_dir = {:?}\n",
             auth.to_str().unwrap()
@@ -1213,6 +1214,9 @@ fn d_removes_a_registered_provider_through_af_provider_remove() {
     }
     let registry_path = config.join("providers.toml");
     std::fs::write(&registry_path, &registry).unwrap();
+    // The CLI's default context, logged in, so the ambient candidate is probed and listed.
+    std::fs::create_dir(home.join(".codex")).unwrap();
+    std::fs::write(home.join(".codex/config.toml"), "").unwrap();
     let bin = root.join("bin");
     std::fs::create_dir(&bin).unwrap();
     let codex = bin.join("codex");

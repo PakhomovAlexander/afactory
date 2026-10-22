@@ -112,8 +112,12 @@ fi
 exit 64
 "#;
 
+/// The fake CLI and its auth directory, which exists and holds a login marker: setup without
+/// `--login` never creates a directory, and status never probes one without a marker.
 fn logged_out_claude(root: &Path) -> (PathBuf, PathBuf) {
     let auth = root.join("claude-auth");
+    std::fs::create_dir(&auth).unwrap();
+    std::fs::write(auth.join(".claude.json"), "{}").unwrap();
     let bin = fake_provider(root, "claude", LOGGED_OUT_CLAUDE);
     (auth, bin)
 }
@@ -221,7 +225,6 @@ fn setup_refuses_json_with_interactive_login() {
 fn an_authenticated_context_registers_without_a_login() {
     let root = tempfile::tempdir().unwrap();
     let (auth, bin) = logged_out_claude(root.path());
-    std::fs::create_dir(&auth).unwrap();
     std::fs::write(auth.join("logged-in"), "").unwrap();
     let args = claude_setup(&auth, &["--json"]);
 
@@ -258,7 +261,6 @@ fn an_authenticated_context_registers_without_a_login() {
 fn documents_redact_identity_and_provider_output() {
     let root = tempfile::tempdir().unwrap();
     let (auth, bin) = logged_out_claude(root.path());
-    std::fs::create_dir(&auth).unwrap();
     std::fs::write(auth.join("logged-in"), "").unwrap();
     let args = claude_setup(&auth, &["--json"]);
 
@@ -436,6 +438,7 @@ fn status_keeps_authentication_when_optional_usage_is_unavailable() {
     let root = tempfile::tempdir().unwrap();
     let auth = root.path().join("codex-auth");
     std::fs::create_dir(&auth).unwrap();
+    std::fs::write(auth.join("config.toml"), "").unwrap();
     let bin = fake_provider(
         root.path(),
         "codex",

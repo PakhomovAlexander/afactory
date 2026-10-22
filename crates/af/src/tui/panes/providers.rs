@@ -402,7 +402,8 @@ fn inventory_rows(
         rows.push(Row::error("warning", warning));
     }
     if inventory.providers.is_empty() {
-        let none = "No supported provider CLI is installed and no provider registry entries exist";
+        let none = "No supported provider CLI is installed and no provider registry entries exist; \
+                    af provider detect finds and registers the logins on this machine";
         rows.push(Row::plain(none));
         return;
     }

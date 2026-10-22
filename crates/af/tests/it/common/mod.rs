@@ -33,16 +33,25 @@ pub const TARGET: &str = env!("AF_TARGET");
 /// It also raises the provider probes' timeouts to [`LOAD_SAFE_PROBE_TIMEOUT_MS`], and sets
 /// `AF_SELF_OFFLINE`: an eligible command spawns the detached update check whether or not it
 /// has a terminal, and that check would ask the real release source over the network. Tests of
-/// the check use [`Sandbox::command`], whose release source is a directory.
+/// the check use [`Sandbox::command`], whose release source is a directory. And it empties
+/// [`DETECT_SYSTEM_DIRS_SETTING`], so `af provider detect` never finds the developer's own
+/// `/opt/homebrew/bin/claude` or `/usr/local/bin/codex`; a test of those directories names
+/// private ones.
 pub fn af() -> Command {
     let mut command = Command::new(af_binary());
     for (name, value) in private_home_env() {
         command.env(name, value);
     }
     command.env(PROBE_TIMEOUT_SETTING, LOAD_SAFE_PROBE_TIMEOUT_MS);
+    command.env(DETECT_SYSTEM_DIRS_SETTING, "");
     command.env("AF_SELF_OFFLINE", "1");
     command
 }
+
+/// The debug-only setting that replaces the system install directories `af provider detect`
+/// searches (`/opt/homebrew/bin`, `/usr/local/bin`) with a `:`-separated list; a release binary
+/// never reads it (ADR-0196).
+pub const DETECT_SYSTEM_DIRS_SETTING: &str = "AF_TEST_DETECT_SYSTEM_DIRS";
 
 /// The debug-only setting that raises the provider status, subscription, version and usage
 /// probes' timeouts (ADR-0114); a release binary never reads it.

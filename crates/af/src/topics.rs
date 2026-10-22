@@ -11,6 +11,11 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
     ("exit-codes", "What every exit code means", EXIT_CODES),
     ("json", "The --json contract", JSON),
     (
+        "providers",
+        "Provider logins: the registry, detect, setup, add, status and doctor",
+        PROVIDERS,
+    ),
+    (
         "self",
         "Installing, updating, pinning, and removing af",
         SELF_TOPIC,
@@ -130,9 +135,11 @@ const EXIT_CODES: &str = "\
        private interactive terminal and never starts the OAuth exchange itself
   4    Provider CLI missing, cannot start or incompatible — the official `claude` or `codex`
        binary is not on PATH, is not executable, exits non-zero on its own version check, or its
-       help page does not declare every option af passes (`setup`, `status`)
-  5    registry conflict — the ID or the auth context already belongs to another entry
-  6    authentication failed — the Provider CLI answered, and not with a usable login
+       help page does not declare every option af passes (`setup`, `add`, `status`, `detect`)
+  5    registry conflict — the ID or the auth context already belongs to another entry; under
+       `detect --apply` it stops at that row, the rows before it stay registered
+  6    authentication failed — the Provider CLI answered, and not with a usable login; `add`
+       refuses a context that is not logged in with 6 unless --unverified
   7    usage unavailable — `provider status --usage` only: an authenticated Provider's optional
        subscription or quota probe did not answer. Authentication is unaffected
 
@@ -144,12 +151,53 @@ JSON document on stdout — no banner, no trailing text — so `af … --json | 
 Errors under --json are one document on stdout with an `error` field and the same exit code. A
 command that classifies its own outcomes — `af provider status` and `af provider setup` — prints
 its own versioned document instead, carrying that exit code and an af-authored `diagnostic`;
-stderr still gets one diagnostic line, so discarding stdout never hides a refusal.
+stderr still gets one diagnostic line, so discarding stdout never hides a refusal. The Provider
+documents are af/provider-detect@1 (`af provider detect`), af/provider-status@2,
+af/provider-setup@1 and af/provider-models@1; none carries an account, a credential or the
+Provider CLI's own words.
 
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
 change bumps the version rather than reinterpreting an old one. Nothing af prints under --json is
 affected by a TTY, colours, or the update check: its notice goes to stderr, only on a TTY, and
 never under --json.";
+
+const PROVIDERS: &str = "\
+A Provider is a login of an official model CLI, `claude` (Claude Code) or `codex` (Codex CLI),
+held in one auth directory: CLAUDE_CONFIG_DIR or CODEX_HOME for that CLI. The CLI owns the
+credential; af never reads one. The machine-local registry, ~/.config/af/providers.toml, records
+only an ID, a kind and an auth directory per Provider, and a review or Task binds a Worker to a
+Provider by that ID (--provider NODE=ID). The registry belongs to this machine, not to a
+repository, so these commands run in the af you invoke, never through a project's pinned one.
+
+In the order of first use:
+
+  af provider detect            find the CLIs and their auth directories, and say what each
+                                directory's CLI reports about its login; writes nothing
+  af provider detect --apply    register every logged-in directory that is not registered yet,
+                                with the IDs the table showed; never logs in
+  af provider setup ID --kind KIND [--auth-dir DIR] --login
+                                log in to a directory and register it; run it yourself at a
+                                private terminal, never through an agent or a pipe
+  af provider add ID --kind KIND --auth-dir DIR
+                                register one directory that is already logged in; refused with
+                                exit 6 when it is not, unless --unverified
+  af provider status            the registry and one token-free login check per directory
+  af provider doctor ...        the charged end-to-end check of the Providers a review binds
+
+detect looks for each CLI on PATH, then in ~/.local/bin, ~/.claude/local, /opt/homebrew/bin,
+/usr/local/bin, ~/.npm-global/bin, ~/.volta/bin and ~/.bun/bin, and for directories in the CLI
+variables, ~/.claude and ~/.codex, the sibling names ~/.claude-*, ~/.config/claude,
+~/.config/claude-*, ~/.codex-*, ~/.config/codex and ~/.config/codex-*, the registry, and --dir.
+It reads no shell rc file, so a directory a shell alias selects needs --dir. A directory holding
+none of its CLI's marker files (.claude.json, .credentials.json or settings.json; auth.json or
+config.toml) is listed `empty` and not handed to the CLI, which would create files there;
+--all asks anyway. status applies the same rule.
+
+Identity: the table and every document show the plan or method (Claude Max (claude.ai),
+ChatGPT, API key, not logged in), never an email or an organization. `detect --identity` adds
+the account label the CLI reported, only on a terminal and never under --json.
+
+See docs/providers.md, `af help exit-codes` and `af help json`.";
 
 const STORAGE: &str = "\
 af keeps a bounded amount of disk between runs (ADR-0144). One budget covers warm build keys,

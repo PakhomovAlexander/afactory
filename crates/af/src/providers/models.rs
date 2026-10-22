@@ -846,7 +846,8 @@ pub(crate) fn table(catalogs: &[ProviderCatalog], resolve: Option<&ResolveReques
     let mut lines = Vec::new();
     if catalogs.is_empty() {
         lines.push(
-            "No supported provider CLI is installed and no provider registry entries exist"
+            "No supported provider CLI is installed and no provider registry entries exist; af \
+             provider detect finds and registers the logins on this machine"
                 .to_owned(),
         );
         return lines;
