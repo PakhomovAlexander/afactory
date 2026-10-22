@@ -26,10 +26,10 @@
        python3 scripts/pr-lines.py
 
      (`--base REF` for a base other than origin/main) and replace the whole block below, both
-     markers included, with its output: the lines this pull request adds, per directory
-     (ADR-0195). The `PR report` check recomputes the figures from the pull request's commits
-     and refuses a description whose block is missing or differs; after a push that changes
-     them, run it again and replace the block. -->
+     markers included, with its output: the lines this pull request adds, per directory, as a
+     title with the total and a table (ADR-0195). The `PR report` check renders the block again
+     from the pull request's commits and refuses a description whose block is missing or
+     differs; after a push, run it again and replace the block when it changed. -->
 
 <!-- af-pr-lines:v1 -->
 <!-- /af-pr-lines -->

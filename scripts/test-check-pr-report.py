@@ -38,7 +38,7 @@ TYPE6_AUDIT = {
 assert len(TYPE6_AUDIT) == 63, len(TYPE6_AUDIT)
 
 
-LINES = '<!-- af-pr-lines:v1 -->\nLines added: none\n<!-- /af-pr-lines -->\n'
+LINES = '<!-- af-pr-lines:v1 -->\n**Lines added: none**\n<!-- /af-pr-lines -->\n'
 TAIL = '\n## Lines added\n\n' + LINES + '\n## Checklist\n\n- [x] `make check` passes locally.\n'
 
 
@@ -516,20 +516,28 @@ def main():
         if not rendered:
             assert 'no pipeline line' in said and 'no round table' not in said, \
                 f'<{tag}>:\n{said}'
-    # The lines added block (ADR-0195): exactly one, rendered as text, holding one line of the
-    # tool's form; the figures are compared with commits only when some are named (see
-    # scripts/test-pr-lines.py), so these cases judge the shape.
-    def lines_block(line):
-        return '<!-- af-pr-lines:v1 -->\n' + line + '\n<!-- /af-pr-lines -->\n'
+    # The lines added block (ADR-0195): exactly one, rendered as text, holding the title and
+    # the table the tool prints; the block is compared with commits only when some are named
+    # (see scripts/test-pr-lines.py), so these cases judge the shape.
+    def lines_block(*body):
+        return '<!-- af-pr-lines:v1 -->\n' + '\n'.join(body) + '\n<!-- /af-pr-lines -->\n'
 
+    header = ['| Directory | Added | Share |', '|:--|--:|:--|']
+    table = lines_block('**Lines added: 18.9k**', '', *header, '| crates | 12k | ████████████ 64% |',
+                        '| docs | 5.5k | █████▌ 29% |', '| tests | 1.3k | █▎ 7% |')
     lines_passing = {
-        'a lines block with figures': event(description(BLOCK, lines_block(
-            'Lines added: crates/12k docs/1.1k tests/5k Cargo.lock/17'))),
+        'a lines block with a table': event(description(BLOCK, table)),
         'a lines block with a dot directory and a tenth': event(description(BLOCK, lines_block(
-            'Lines added: .github/412 x/9.9k'))),
+            '**Lines added: 10k**', '', *header, '| x | 9.9k | ████████████ 96% |',
+            '| .github | 412 | ▌ 4% |'))),
+        'a lines block with a root file and a sliver': event(description(BLOCK, lines_block(
+            '**Lines added: 7.5k**', '', *header, '| crates | 7.5k | ████████████ 100% |',
+            '| Cargo.lock | 4 | ▏ <1% |'))),
         'the lines block before the report block': event(LINES + '\n' + description(BLOCK, '')),
-        'a comment after the lines line': event(description(BLOCK, lines_block(
-            'Lines added: docs/3 <!-- counted 2026-10-22 -->'))),
+        'a comment after the title': event(description(BLOCK, lines_block(
+            '**Lines added: none** <!-- counted 2026-10-22 -->'))),
+        'the table without a blank line after the title': event(description(BLOCK, lines_block(
+            '**Lines added: 12**', *header, '| docs | 12 | ████████████ 100% |'))),
         'the lines block with CRLF line endings': event(description(BLOCK).replace('\n', '\r\n')),
     }
     for case, payload in lines_passing.items():
@@ -539,33 +547,54 @@ def main():
     lines_failing = {
         'no lines block': (event(description(BLOCK, '')), 'no lines added block'),
         'two lines blocks': (event(description(BLOCK, LINES + LINES)), '2 lines added blocks'),
-        'an empty lines block': (event(description(BLOCK, lines_block(''))), 'holds 0 lines'),
-        "the unfilled template's lines block": (event(TEMPLATE), 'holds 0 lines'),
-        'a lines block of two lines': (event(description(BLOCK, lines_block(
-            'Lines added: docs/3\nLines added: tests/4'))), 'holds 2 lines'),
-        'a lines line of another shape': (event(description(BLOCK, lines_block(
-            'Lines: docs/3'))), 'is not `Lines added: dir/figure'),
-        'an exact figure past 1000': (event(description(BLOCK, lines_block(
-            'Lines added: docs/5000'))), 'is not `Lines added: dir/figure'),
-        'a figure without its directory': (event(description(BLOCK, lines_block(
-            'Lines added: 5k'))), 'is not `Lines added: dir/figure'),
+        'an empty lines block': (event(description(BLOCK, lines_block(''))), 'is empty'),
+        "the unfilled template's lines block": (event(TEMPLATE), 'is empty'),
+        'the one-line shape of the first draft': (event(description(BLOCK, lines_block(
+            'Lines added: docs/3 tests/4'))), 'the first line is not the title'),
+        'a title with an exact figure past 1000': (event(description(BLOCK, lines_block(
+            '**Lines added: 5000**'))), 'the first line is not the title'),
+        'a title without its table': (event(description(BLOCK, lines_block(
+            '**Lines added: 5k**'))), 'the title is not followed by the table'),
+        'none followed by a table': (event(description(BLOCK, lines_block(
+            '**Lines added: none**', '', *header, '| docs | 3 | ▏ 100% |'))),
+            'is the whole block, but more follows'),
+        'a table with another header': (event(description(BLOCK, lines_block(
+            '**Lines added: 3**', '', '| Dir | Lines | Share |', '|:--|--:|:--|',
+            '| docs | 3 | ████████████ 100% |'))), 'is not the table header'),
+        'a row without its share': (event(description(BLOCK, lines_block(
+            '**Lines added: 3**', '', *header, '| docs | 3 |'))), 'not a row of three cells'),
+        'a row with an exact figure past 1000': (event(description(BLOCK, lines_block(
+            '**Lines added: 5k**', '', *header, '| docs | 5000 | ████████████ 100% |'))),
+            'not a row `| directory | figure | bar share |`'),
+        'two rows for one directory': (event(description(BLOCK, lines_block(
+            '**Lines added: 6**', '', *header, '| docs | 3 | ████████████ 50% |',
+            '| docs | 3 | ████████████ 50% |'))), '`docs` has two rows'),
         'a lines block in a backtick fence': (event(description(BLOCK, '```\n' + LINES
                                                                 + '```\n')), 'inside a code block'),
         'a lines block indented four spaces': (event(description(BLOCK, ''.join(
             '    ' + line for line in LINES.splitlines(keepends=True)))), 'inside a code block'),
         'a lines block inside <pre>': (event(description(BLOCK, '<pre>\n' + LINES + '</pre>\n')),
                                        'inside a raw HTML block'),
-        'the lines line inside a comment': (event(description(BLOCK, lines_block(
-            '<!-- Lines added: docs/3 -->'))), 'inside a code block, an HTML block or an HTML comment'),
+        'the title inside a comment': (event(description(BLOCK, lines_block(
+            '<!-- **Lines added: none** -->'))), 'inside a code block, an HTML block or an HTML comment'),
         # A line that opens with a comment is an HTML block to GitHub, whatever follows the
         # comment on it (CommonMark 4.6, type 2).
-        'the lines line after a comment that opens it': (event(description(BLOCK, lines_block(
-            '<!-- counted --> Lines added: docs/3'))), 'inside a code block, an HTML block or an HTML comment'),
+        'the title after a comment that opens its line': (event(description(BLOCK, lines_block(
+            '<!-- counted --> **Lines added: none**'))), 'inside a code block, an HTML block or an HTML comment'),
+        'the table in a fence after the title': (event(description(BLOCK, lines_block(
+            '**Lines added: 12**', '', '```', *header, '| docs | 12 | ████████████ 100% |', '```'))),
+            'part of the lines added block is inside a code block'),
+        'a fenced row after a whole table': (event(description(BLOCK, lines_block(
+            '**Lines added: 12**', '', *header, '| docs | 12 | ████████████ 100% |', '```',
+            '| x | 1 | ▏ 1% |', '```'))), 'part of the lines added block is inside a code block'),
+        'a comment line inside the block': (event(description(BLOCK, lines_block(
+            '**Lines added: none**', '<!-- counted 2026-10-22 -->'))),
+            'part of the lines added block is inside a code block, an HTML block or an HTML comment'),
         'a lines block with its end marker first': (event(description(BLOCK,
-            '<!-- /af-pr-lines -->\nLines added: none\n<!-- af-pr-lines:v1 -->\n')),
+            '<!-- /af-pr-lines -->\n**Lines added: none**\n<!-- af-pr-lines:v1 -->\n')),
             'comes before the begin marker'),
         'a lines block without its end marker': (event(description(BLOCK,
-            '<!-- af-pr-lines:v1 -->\nLines added: none\n')), 'has no end marker'),
+            '<!-- af-pr-lines:v1 -->\n**Lines added: none**\n')), 'has no end marker'),
     }
     for case, (payload, expected) in lines_failing.items():
         code, said = check(payload)
@@ -582,7 +611,7 @@ def main():
     # --no-diff keeps the shape check and says the figures were not compared.
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / 'body.md'
-        path.write_text(description(BLOCK, lines_block('Lines added: docs/3')), encoding='utf-8')
+        path.write_text(description(BLOCK, table), encoding='utf-8')
         result = subprocess.run([sys.executable, '-I', str(SCRIPT), '--body', str(path),
                                  '--no-diff'], capture_output=True, text=True, env={})
         assert result.returncode == 0, result.stdout + result.stderr

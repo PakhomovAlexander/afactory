@@ -11,7 +11,8 @@ is ten thousand lines of crates or ten thousand lines of fixtures, how much of i
 how much is documentation. GitHub shows one total of additions and deletions, which says
 nothing about the shape; `git diff --stat` says it per file, which for a large change is
 hundreds of rows. The owner asked for the figure per directory in every description — `docs/10k
-tests/5k` — and for CI to check it.
+tests/5k` — and for CI to check it; then, reading that one-line form on the first pull requests
+that carried it, for something easier on the eye.
 
 The check has the constraints of ADR-0142: only trusted code may judge a pull request, so the
 checker runs from the base branch under `pull_request_target`; the description is read from the
@@ -50,7 +51,12 @@ commits, which CI can reach: the figures can be recomputed and compared, not onl
 - **Exact counts.** `crates/23147 tests/23286` is precise and unreadable, and every rebase
   changes it. Rejected for a rounded figure — exact below 1000, to a tenth of a thousand below
   10k, to a thousand from there — which the check compares as the tool renders it, so a
-  rebase that moves a large directory by a few lines leaves the block valid.
+  rebase that moves a large directory by a few lines leaves the figure as it was.
+- **One line, `crates/12k docs/10k tests/5k`.** The form first asked for, and built first: nine
+  directories on one line read as a wall, with nothing to say how big the whole is or how the
+  directories compare. Rejected, on the owner's reading, for a title with the total and a table
+  with one row per directory — its figure, and its share as a bar and a percentage — which
+  GitHub renders as a table; the markers, the figures and the check are the same.
 - **Count deletions too, or net lines.** Deletions are the easier half to review, and net lines
   hide a rewrite as a small change. Rejected; additions alone, as asked.
 - **Tolerate a stale block after a push.** The figures then say nothing about what is being
@@ -70,34 +76,41 @@ commits, which CI can reach: the figures can be recomputed and compared, not onl
    a directory named `tests` at any depth counts under `tests`; a file at the repository root
    counts under its own name. A rename adds what changed in the file; a binary file adds
    nothing; a directory with nothing added is left out.
-3. **The line.** One line, `Lines added:` followed by `directory/figure` pairs separated by
-   single spaces, the largest first and ties by name, or `Lines added: none` when nothing was
-   added. A figure is the exact count below 1000; `n.tk` or `nk` to a tenth of a thousand from
-   1000 to below 10,000 (`1k`, `7.9k`, `5k` rather than `5.0k`); `nk` to a thousand from
-   10,000 (`23k`); halves round up.
+3. **The block.** A title with the total, `**Lines added: 18.9k**`, a blank line, and a table
+   with the header `| Directory | Added | Share |`, its separator `|:--|--:|:--|`, and one row
+   per directory, the largest first and ties by name: the directory (a `|` in its name escaped
+   as `\|`), its figure, and its share as a bar followed by a percentage of the total. A figure
+   is the exact count below 1000; `n.tk` or `nk` to a tenth of a thousand from 1000 to below
+   10,000 (`1k`, `7.9k`, `5k` rather than `5.0k`); `nk` to a thousand from 10,000 (`23k`);
+   halves round up. The bar is the row's count against the largest row's, in up to twelve
+   cells drawn in eighth blocks (`▏▎▍▌▋▊▉█`), a sliver at least; the percentage rounds half
+   up and reads `<1%` below a half. `**Lines added: none**` alone when nothing was added.
 4. **The check.** `scripts/check-pr-report.py`, run by the `PR report` workflow from the base
    branch on every opening, edit, push and reopening, requires, beside the report block, exactly
    one lines block that GitHub renders as text (the rules of ADR-0142 on code blocks, raw HTML
-   and comments apply) holding exactly one line of that form; it then counts the pull request's
-   lines itself, from the `base.sha` and `head.sha` of the event, and refuses a block whose
-   figures differ, printing the line to paste. For that the job checks out the base branch with
-   its history and fetches the pull request's commits as objects (`refs/pull/N/head`, then the
-   event's head by hash if the ref has moved on); it checks out nothing of them. The figures
-   are compared as rendered, in any order. Dependabot pull requests and `release/` pull
-   requests of this repository are exempt, as they are from the report. Locally,
+   and comments apply) holding the title and the table of that form; it then counts the pull
+   request's lines itself, from the `base.sha` and `head.sha` of the event, renders the block
+   again and refuses one that differs, printing the block to paste. For that the job checks out
+   the base branch with its history and fetches the pull request's commits as objects
+   (`refs/pull/N/head`, then the event's head by hash if the ref has moved on); it checks out
+   nothing of them. The block is compared as rendered — the total, and each row's directory,
+   figure, bar and share — with the rows in any order. Dependabot pull requests and `release/`
+   pull requests of this repository are exempt, as they are from the report. Locally,
    `python3 scripts/check-pr-report.py --body FILE --diff BASE HEAD` runs the same check; without
    `--diff` it checks the shape alone and says so.
 5. **Tests.** `scripts/test-pr-lines.py` builds a repository with additions, a rename, a
-   deletion, a binary change and a base that moved on, and checks the counts, the rendering,
-   the parse and the comparison through both scripts' real entries; `make check` runs it.
+   deletion, a binary change and a base that moved on, and checks the counts, the figures, the
+   bars and shares, the rendering, the parse and the comparison through both scripts' real
+   entries; `make check` runs it.
 
 ## Consequences
 
 - A reviewer reads the size and the shape of a change before the diff, and the figures are the
-  commits', not the author's estimate: a stale block fails the check with the line to paste.
-- Each push that changes the figures costs the author one `pr-lines.py` run and one description
-  edit, as a new Task costs a report update. A push that moves a rounded figure by less than its
-  unit costs nothing.
+  commits', not the author's estimate: a stale block fails the check with the block to paste.
+- Each push costs the author one `pr-lines.py` run and, when the block changed, one description
+  edit, as a new Task costs a report update. The figures move seldom; the bars and shares,
+  drawn finer, move more often, so the rule is to run the tool after every push and paste when
+  it differs, and the check says exactly what to paste.
 - The `PR report` job fetches the base branch's history and the pull request's commits, a few
   seconds more than the single-commit checkout it used. It still runs only the base's code,
   still reads the description from the event, and still holds no token beyond `contents: read`:

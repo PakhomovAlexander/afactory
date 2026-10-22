@@ -23,9 +23,9 @@ review corpora belong in consuming repositories, not here.
   ([ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md)).
 - The description also states the lines the pull request adds per directory: the block
   between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->` that
-  `python3 scripts/pr-lines.py` prints (`Lines added: crates/12k docs/1.1k tests/5k`); the same
-  check recomputes the figures from the pull request's commits and refuses a description whose
-  block is missing or stale
+  `python3 scripts/pr-lines.py` prints — a title with the total and a table with each
+  directory's figure, bar and share; the same check renders the block again from the pull
+  request's commits and refuses a description whose block is missing or differs
   ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
 - Product rebranding must not rename `review.kernel/*` artifact types, persisted events, or
   established Review Kernel domain terms until a separate accepted migration ADR supersedes this

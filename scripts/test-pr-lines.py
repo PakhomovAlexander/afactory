@@ -61,27 +61,68 @@ class Figures(unittest.TestCase):
                            ('.github/workflows/ci.yml', '.github'), ('docs/tests', 'docs')]:
             self.assertEqual(lines.group(path), name, path)
 
-    def test_the_line_is_largest_first_and_none_when_nothing_was_added(self):
-        self.assertEqual(lines.render({}), 'Lines added: none')
-        self.assertEqual(lines.render({'docs': 10_000, 'tests': 5000, 'crates': 12_345, 'b': 3,
-                                       'a': 3}),
-                         'Lines added: crates/12k docs/10k tests/5k a/3 b/3')
-        self.assertEqual(lines.block({'docs': 12}),
-                         '<!-- af-pr-lines:v1 -->\nLines added: docs/12\n<!-- /af-pr-lines -->\n')
+    def test_a_bar_is_the_count_against_the_largest_in_eighths_and_a_share_a_percent(self):
+        self.assertEqual(lines.bar(12_345, 12_345), '████████████')
+        self.assertEqual(lines.bar(6172, 12_345), '██████')
+        self.assertEqual(lines.bar(1, 12_345), '▏', 'a sliver at least')
+        self.assertEqual(lines.bar(10_000, 12_345), '█████████▊')
+        for n, total, shown in [(1, 3, '33%'), (2, 3, '67%'), (1, 200, '1%'), (1, 201, '<1%'),
+                                (12_345, 12_345, '100%')]:
+            self.assertEqual(lines.share(n, total), shown, (n, total))
 
-    def test_the_line_parses_back_in_any_order_and_refuses_other_shapes(self):
-        self.assertEqual(lines.parse('Lines added: docs/10k tests/5k'),
-                         {'docs': '10k', 'tests': '5k'})
-        self.assertEqual(lines.parse('  Lines added: tests/5k docs/10k  '),
-                         {'docs': '10k', 'tests': '5k'})
-        self.assertEqual(lines.parse('Lines added: none'), {})
-        self.assertEqual(lines.parse('Lines added: .github/412 Cargo.lock/17 x/1.5k'),
-                         {'.github': '412', 'Cargo.lock': '17', 'x': '1.5k'})
-        for bad in ['Lines added:', 'Lines added: docs', 'Lines added: docs/', 'Lines added: /5k',
-                    'Lines added: docs/5kk', 'Lines added: docs/05', 'Lines added: docs/1.25k',
-                    'Lines added: docs/5k docs/6k', 'Lines: docs/5k', 'docs/5k',
-                    'Lines added: docs/5k, tests/1k', 'Lines added: docs/5000']:
-            self.assertIsNone(lines.parse(bad), bad)
+    def test_the_block_is_a_title_and_a_table_largest_first_or_none(self):
+        self.assertEqual(lines.render({}), '**Lines added: none**')
+        self.assertEqual(lines.render({'docs': 10_000, 'tests': 5000, 'crates': 12_345, 'b': 3,
+                                       'a': 3}), '\n'.join([
+            '**Lines added: 27k**',
+            '',
+            '| Directory | Added | Share |',
+            '|:--|--:|:--|',
+            '| crates | 12k | ████████████ 45% |',
+            '| docs | 10k | █████████▊ 37% |',
+            '| tests | 5k | ████▉ 18% |',
+            '| a | 3 | ▏ <1% |',
+            '| b | 3 | ▏ <1% |']))
+        self.assertEqual(lines.block({'docs': 12}), '\n'.join([
+            '<!-- af-pr-lines:v1 -->', '**Lines added: 12**', '', '| Directory | Added | Share |',
+            '|:--|--:|:--|', '| docs | 12 | ████████████ 100% |', '<!-- /af-pr-lines -->', '']))
+        self.assertEqual(lines.render({'a|b': 1}).splitlines()[-1], '| a\\|b | 1 | ████████████ 100% |')
+
+    def test_the_block_parses_back_in_any_row_order_and_refuses_other_shapes(self):
+        body = lines.render({'docs': 10_000, 'tests': 5000, 'crates': 12_345, 'a|b': 3})
+        parsed, problem = lines.parse(body.splitlines())
+        self.assertIsNone(problem)
+        self.assertEqual(parsed, {'total': '27k', 'rows': frozenset([
+            ('crates', '12k', '████████████', '45%'), ('docs', '10k', '█████████▊', '37%'),
+            ('tests', '5k', '████▉', '18%'), ('a|b', '3', '▏', '<1%')])})
+        rows = body.splitlines()
+        shuffled = rows[:4] + rows[4:][::-1]
+        self.assertEqual(lines.parse(shuffled)[0], parsed, 'rows in any order')
+        self.assertEqual(lines.parse(['  ' + line + '  ' for line in rows] + ['', ' '])[0], parsed)
+        self.assertEqual(lines.parse(['**Lines added: none**']), ({'total': 'none', 'rows': frozenset()}, None))
+        head = rows[:4]
+        for bad, why in [
+                ([], 'the block is empty'),
+                (['Lines added: docs/10k tests/5k'], 'the first line is not the title'),
+                (['**Lines added: 27k** (additions)'], 'the first line is not the title'),
+                (['**Lines added: 27000**'], 'the first line is not the title'),
+                (['**Lines added: none**', '| docs | 3 | ▏ 100% |'], 'is the whole block, but more follows'),
+                (['**Lines added: 27k**'], 'the title is not followed by the table'),
+                (['**Lines added: 27k**', '| Directory | Added |', '|:--|--:|', '| docs | 3 | ▏ 100% |'],
+                 'is not the table header'),
+                (['**Lines added: 27k**', '| Directory | Added | Share |', '| docs | 3 | ▏ 100% |',
+                  '| tests | 3 | ▏ 100% |'], 'is not followed by its separator'),
+                (head + ['| docs | 3 |'], 'not a row of three cells'),
+                (head + ['docs | 3 | ▏ 100%'], 'not a row of three cells'),
+                (head + ['| docs | 5000 | ▏ 100% |'], 'not a row `| directory | figure | bar share |`'),
+                (head + ['| docs | 1.25k | ▏ 100% |'], 'not a row `| directory | figure | bar share |`'),
+                (head + ['| docs | 3 | 100% |'], 'not a row `| directory | figure | bar share |`'),
+                (head + ['| docs | 3 | ▏ |'], 'not a row `| directory | figure | bar share |`'),
+                (head + ['| docs | 3 | ▏ 0% |', '| docs | 4 | ▏ 0% |'], '`docs` has two rows'),
+                (head + ['|  | 3 | ▏ 100% |'], 'not a row `| directory | figure | bar share |`')]:
+            parsed, problem = lines.parse(bad)
+            self.assertIsNone(parsed, bad)
+            self.assertIn(why, problem, bad)
 
 
 class Repository(unittest.TestCase):
@@ -146,14 +187,15 @@ class Repository(unittest.TestCase):
     def test_the_tool_prints_the_block_and_json(self):
         done = self.run_tool('--base', 'main', '--head', 'feature')
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(done.stdout, '<!-- af-pr-lines:v1 -->\n'
-                         'Lines added: crates/121 tests/31 docs/3 README.md/2\n'
-                         '<!-- /af-pr-lines -->\n')
+        self.assertEqual(done.stdout, '\n'.join([
+            '<!-- af-pr-lines:v1 -->', '**Lines added: 157**', '', '| Directory | Added | Share |',
+            '|:--|--:|:--|', '| crates | 121 | ████████████ 77% |', '| tests | 31 | ███▏ 20% |',
+            '| docs | 3 | ▎ 2% |', '| README.md | 2 | ▎ 1% |', '<!-- /af-pr-lines -->', '']))
         done = self.run_tool('--base', 'main', '--json')
         self.assertEqual(json.loads(done.stdout), {'README.md': 2, 'crates': 121, 'tests': 31,
                                                    'docs': 3})
         done = self.run_tool('--base', 'main', '--head', 'main')
-        self.assertEqual(done.stdout, '<!-- af-pr-lines:v1 -->\nLines added: none\n'
+        self.assertEqual(done.stdout, '<!-- af-pr-lines:v1 -->\n**Lines added: none**\n'
                          '<!-- /af-pr-lines -->\n')
         done = self.run_tool('--base', 'no-such-ref')
         self.assertEqual(done.returncode, 1)
@@ -176,9 +218,10 @@ class Repository(unittest.TestCase):
 
     def test_the_check_compares_the_figures_with_the_commits(self):
         right = lines.block({'README.md': 2, 'crates': 121, 'tests': 31, 'docs': 3})
-        reordered = right.replace('crates/121 tests/31 docs/3 README.md/2',
-                                  'docs/3 README.md/2 tests/31 crates/121')
-        stale = right.replace('crates/121', 'crates/120')
+        rows = right.splitlines()
+        reordered = '\n'.join(rows[:5] + rows[5:9][::-1] + rows[9:]) + '\n'
+        self.assertNotEqual(reordered, right)
+        stale = right.replace('| crates | 121 |', '| crates | 120 |')
         body = lambda block: ('## What\n\nX.\n\n## af task report\n\n' + REPORT
                               + '\n## Lines added\n\n' + block + '\n')
         code, said = self.check(body(right), '--diff', 'main', 'feature')
@@ -188,7 +231,8 @@ class Repository(unittest.TestCase):
         self.assertEqual(code, 0, said)
         code, said = self.check(body(stale), '--diff', 'main', 'feature')
         self.assertEqual(code, 1, said)
-        self.assertIn('expected `Lines added: crates/121 tests/31 docs/3 README.md/2`', said)
+        self.assertIn('replace it with:\n**Lines added: 157**', said)
+        self.assertIn('| crates | 121 | ████████████ 77% |', said)
         code, said = self.check(body(stale))
         self.assertEqual(code, 0, 'without --diff the shape alone is checked:\n' + said)
         self.assertIn('not compared', said)
@@ -206,7 +250,7 @@ class Repository(unittest.TestCase):
         event['pull_request']['body'] = body(stale)
         code, said = self.check(None, event=event)
         self.assertEqual(code, 1, said)
-        self.assertIn('expected `Lines added: crates/121', said)
+        self.assertIn('replace it with:\n**Lines added: 157**', said)
         event['pull_request']['head']['sha'] = '0' * 40
         code, said = self.check(None, event=event)
         self.assertEqual(code, 1, said)

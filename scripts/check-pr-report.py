@@ -31,11 +31,11 @@ paragraph line above it, which GitHub shows as code.
 
 The description also carries the lines the pull request adds per directory (ADR-0195): exactly
 one block between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->`, rendered as text by the
-same rules, holding exactly one line `Lines added: dir/figure ...` (or `Lines added: none`) as
-`scripts/pr-lines.py` prints it. Given the pull request's commits — the event's `base.sha` and
-`head.sha`, which the workflow fetched, or `--diff BASE HEAD` — the figures are counted again
-and a block that differs is refused, with the line to paste; without them the shape alone is
-checked, and the check says so.
+same rules, holding the title `**Lines added: <figure>**` and the table of directories, figures,
+bars and shares that `scripts/pr-lines.py` prints (or `**Lines added: none**` alone). Given the
+pull request's commits — the event's `base.sha` and `head.sha`, which the workflow fetched, or
+`--diff BASE HEAD` — the block is rendered again and one that differs is refused, with the block
+to paste; without them the shape alone is checked, and the check says so.
 
 The workflow runs this script as the base branch holds it, on `pull_request_target`, so a pull
 request can change neither the check nor the workflow that runs it (ADR-0142).
@@ -625,8 +625,8 @@ def pr_lines():
 
 def lines_problems(body, expected=None):
     """What is wrong with the lines added block of `body`, as messages; an empty list passes.
-    `expected` is the line the pull request's commits give (`pr-lines.render`), or None to
-    check the block's shape alone."""
+    `expected` is the block's body the pull request's commits give (`pr-lines.render`), or None
+    to check the block's shape alone."""
     tool = pr_lines()
     lines = (body or '').splitlines()
     code, raw, spanned, shown = unrendered(lines)
@@ -654,22 +654,24 @@ def lines_problems(body, expected=None):
     if ends[0] < begins[0]:
         return [f'the end marker `{LINES_END}` comes before the begin marker `{LINES_BEGIN}`']
     inside = range(begins[0] + 1, ends[0])
-    content = [shown[n].strip() for n in inside if shown[n].strip()]
+    content = [shown[n] for n in inside if shown[n].strip()]
     hidden = [n for n in inside if lines[n].strip() and not shown[n].strip()]
-    if len(content) != 1:
-        if not content and hidden:
-            return ['the lines added block\'s line is inside a code block, an HTML block or '
-                    'an HTML comment: GitHub does not show it as text. Paste the block as '
-                    'plain text, outside any fence, element or comment']
-        return [f'the lines added block holds {plural(len(content), "line", "lines")}: it holds '
-                f'exactly one, `{tool.LEAD}dir/figure ...` or `{tool.LEAD}{tool.NONE}`']
-    figures = tool.parse(content[0])
-    if figures is None:
-        return [f'the lines added line is not `{tool.LEAD}dir/figure ...` (figures as '
-                f'`412`, `1.5k`, `23k`) or `{tool.LEAD}{tool.NONE}`: `{content[0]}`']
-    if expected is not None and tool.parse(expected) != figures:
-        return ['the lines added figures are not those of this pull request\'s commits: '
-                f'expected `{expected}`']
+    not_shown = ('part of the lines added block is inside a code block, an HTML block or an '
+                 'HTML comment: GitHub does not show it as text. Paste the block as plain text, '
+                 'outside any fence, element or comment')
+    if hidden:
+        return [not_shown]
+    if not content:
+        return ['the lines added block is empty: it holds the title `**Lines added: '
+                '<figure>**` and the table that `scripts/pr-lines.py` prints']
+    parsed, problem = tool.parse(content)
+    if parsed is None:
+        return [f'the lines added block is not what `scripts/pr-lines.py` prints: {problem}']
+    if expected is not None:
+        wanted, _ = tool.parse(expected.splitlines())
+        if wanted != parsed:
+            return ['the lines added block is not that of this pull request\'s commits; '
+                    'replace it with:\n' + expected]
     return []
 
 
