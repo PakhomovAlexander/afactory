@@ -1002,7 +1002,15 @@ fn seeded_authority_keeps_the_original_task_and_takes_its_lease_after_capture() 
         );
         assert!(outcome.result.is_ok(), "{:?}", outcome.result);
         let store = review_store::EventStore::open(copy.join("events.sqlite")).unwrap();
-        let events = store.replay(&run).unwrap();
+        // The log also holds the execution marker (`TaskExecutionStarted@1`) of the lease the
+        // reader took, the second telemetry package's record of a kernel execution; this test
+        // judges the transitions: the seed's six and the reader's one lease.
+        let events: Vec<_> = store
+            .replay(&run)
+            .unwrap()
+            .into_iter()
+            .filter(|event| matches!(event.event_type, review_core::EventType::TaskTransitionV5))
+            .collect();
         assert_eq!(events.len(), 7, "the reader only takes its own lease");
         assert_eq!(
             serde_json::to_value(&events[..6]).unwrap(),
