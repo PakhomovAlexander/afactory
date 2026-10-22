@@ -105,8 +105,9 @@
   whole, a dropped chunk is `af.stream.gap` and makes the stream incomplete, and once the
   process has ended Telemetry takes its own release decision over the complete streams and a
   Codex Attempt's `-o` final message, judged for every observed process whatever its ending —
-  login-challenge material, a final message that cannot be read whole or a replaced capture
-  withholds everything pending (`af.stream.withheld`), a successful reply's included — before
+  login-challenge material, a final message that cannot be read whole, a replaced capture or a
+  stream the output cap truncated withholds everything pending (`af.stream.withheld`), a
+  successful reply's included — before
   `af.harness.ids` lists the originals that pass the credential rules, continued in
   `af.harness.ids.part` events past what one record holds; an identifier past the 4096 a
   process pends or longer than 256 bytes has no mapping and is counted in

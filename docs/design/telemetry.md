@@ -578,8 +578,10 @@ successful capture can carry a device code beside a challenge URL. When the proc
 before any pending byte is published, Telemetry evaluates `carries_auth_material` over the
 complete stdout, the complete stderr and the Attempt's pending native content (§7.6), and
 withholds every pending byte of the Attempt — stream and native — when any of them carries
-login-challenge material, when the adapter replaced the streams (`redact_capture`), or when the
-native failure classification is an authentication one; `af.harness` then records
+login-challenge material, when the adapter replaced the streams (`redact_capture`), when the
+native failure classification is an authentication one, or when the output cap truncated a
+stream — the supervisor keeps a prefix of a stream the observer was offered whole, so the
+decision cannot judge the output it needs whole; `af.harness` then records
 `af.stream.withheld = true` and `af.native.withheld = true`, and `status` counts the withheld
 Attempts. The decision reads what the adapters read and changes no accounting, no
 classification and no adapter behaviour. Otherwise
@@ -590,7 +592,8 @@ arrival time of every line (the drain's clock at the read, not the consumer's). 
 offset is not the one expected marks a **gap**: the consumer discards its partial frame, records
 the event `af.stream.gap` with the missing byte range, skips to the first newline after the gap
 and frames from there, so bytes on either side of a drop are never joined into a record the
-harness did not emit; a drop at the end of a stream is a trailing gap. Dropped chunks and gaps
+harness did not emit; a drop at the end of a stream is a trailing gap, measured against what
+the drain read in total, past the output cap included. Dropped chunks and gaps
 are counted on `af.harness` (`dropped_chunks`, `gaps`), and a stream with any gap is
 `incomplete` for turn and tool analysis. Tests cover a stream smaller than `flush_bytes` whose
 child waits until the test has seen its last structural line in `tail`, a line delayed until
@@ -1415,7 +1418,11 @@ is green:
    `telemetry_frame_over_bound_withheld_whole`, `telemetry_stream_withheld_until_decision`,
    `telemetry_release_decision_covers_success`, `telemetry_harness_ids_never_published_live`
    and `telemetry_native_through_pending_barrier` prove that no prefix of an unjudgeable frame,
-   no harness identifier and no byte of withheld stream or native content is ever published.
+   no harness identifier and no byte of withheld stream or native content is ever published;
+   `telemetry_capped_capture_withholds_its_pending_content` and
+   `telemetry_capped_stream_ends_in_a_trailing_gap_when_its_tail_was_dropped` prove that a
+   capture the output cap truncated withholds its pending content and ends where its drain
+   read.
 6. §3.7: `telemetry_write_failure_is_fail_open` injects telemetry-only failures (a read-only
    telemetry directory, a quota on it, a locked index) and asserts one `problem` and a successful
    run; `insufficient_disk_still_refuses_admission` fills the work volume below `min_free_bytes`

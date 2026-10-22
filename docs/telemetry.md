@@ -724,8 +724,9 @@ size: a line too long to be judged whole cannot be judged at all, so no prefix o
 redacted or kept. A chunk whose offset is not the one expected — the queue dropped what lay
 between — is `af.stream.gap` with the missing byte range; the partial line is discarded and
 framing resumes after the first newline past the gap, so the two sides of a drop are never
-joined into a line the harness did not write. A stream shorter than what the supervisor
-collected ends in a trailing gap. `af.harness` counts the drops and gaps (`dropped_chunks`,
+joined into a line the harness did not write. A stream shorter than what the supervisor's
+drain read in total — past the output cap included, which bounds only what is kept — ends in
+a trailing gap. `af.harness` counts the drops and gaps (`dropped_chunks`,
 `gaps`), and a stream with any of them, or with a withheld frame, is `incomplete` for turn and
 tool analysis.
 
@@ -737,8 +738,10 @@ of them carries login-challenge material (a device code beside a challenge URL, 
 or several, in one stream or across both, or a code in a stream identifier with its URL only in
 the final message, a successful reply's or a failed process's included), when that file exists
 but cannot be read whole (larger than the reply bound, not a regular file, unreadable), when the
-adapter replaced both streams with its closed diagnostic, or when a failed process's stderr
-classifies as an authentication failure, everything pending for the process — content and
+adapter replaced both streams with its closed diagnostic, when a failed process's stderr
+classifies as an authentication failure, or when the output cap truncated a stream (the
+supervisor kept a prefix of what the observer was offered whole, so the decision cannot read
+it whole), everything pending for the process — content and
 identifiers — is withheld, and `af.harness` records `af.stream.withheld = true` and `af.native.withheld = true`
 (`af telemetry status` counts these Attempts). It changes no accounting, no classification and
 no adapter behaviour. Otherwise the pending content passes the grant replacement and the

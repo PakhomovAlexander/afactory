@@ -191,8 +191,9 @@ pub struct Release {
     pub withheld: bool,
     /// No native content is published (package P9 pends it with the streams).
     pub native_withheld: bool,
-    /// The bytes the supervisor collected from each stream, before any redaction: where each
-    /// observed stream ends.
+    /// The bytes each stream carried in total, before any redaction — what the supervisor's
+    /// drain read, of which an output cap may have kept only a prefix: where each observed
+    /// stream ends, so a stream the consumer saw less of ends in a trailing gap.
     pub stdout_bytes: u64,
     pub stderr_bytes: u64,
 }

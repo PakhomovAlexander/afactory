@@ -429,6 +429,25 @@ fn events_named<'a>(records: &'a [Record], name: &str) -> Vec<&'a review_telemet
         .collect()
 }
 
+/// The end attributes of every span named `name`, in the order the spans started.
+fn ended_spans(records: &[Record], name: &str) -> Vec<serde_json::Map<String, Value>> {
+    let ids: Vec<String> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::SpanStart(start) if start.name == name => Some(start.span_id.clone()),
+            _ => None,
+        })
+        .collect();
+    ids.iter()
+        .filter_map(|id| {
+            records.iter().find_map(|record| match record {
+                Record::SpanEnd(end) if &end.span_id == id => Some(end.attributes.clone()),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
 /// Design §7.3: a stream far smaller than `flush_bytes` whose last line comes after the
 /// harness's last turn, its process waiting until `af telemetry tail` has shown that line's
 /// structural record: the record is in the tail while the process still runs, and nothing the
@@ -660,6 +679,217 @@ fn telemetry_stalled_consumer_never_blocks_drain() {
     assert!(shutdown.elapsed() < Duration::from_secs(10));
     assert!(writer.abandoned() || writer.failed());
     drop(release);
+}
+
+/// Design §7.3: a capture the output cap truncated is a prefix of what the observer was
+/// offered, so the release decision cannot judge the process's output whole and withholds its
+/// pending content: login-challenge material past the cap, which the kept prefix does not show,
+/// reaches no record and no blob, while the Attempt fails naming the cap as it does unobserved.
+#[test]
+fn telemetry_capped_capture_withholds_its_pending_content() {
+    let (temp, root, recording, cas) = recording(Level::Content);
+    let padding = json!({"type":"user","message":{"content":[{"type":"tool_result",
+        "tool_use_id":"toolu_01CappedRead","content":"x".repeat(2000)}]}})
+    .to_string();
+    let lines = [
+        json!({"type":"system","subtype":"init","session_id":"s"}).to_string(),
+        json!({"type":"assistant","message":{"id":"msg_01CappedOne","content":[
+            {"type":"tool_use","id":"toolu_01CappedRead","name":"Read","input":{}}]}})
+        .to_string(),
+        padding.clone(),
+        padding.clone(),
+        padding,
+        // Past a 4 KiB cap: a device code, then its challenge URL.
+        json!({"type":"assistant","message":{"id":"msg_01CappedTwo","content":[
+            {"type":"text","text":"Enter the code WXYZ-1234 when asked"}]}})
+        .to_string(),
+        json!({"type":"assistant","message":{"id":"msg_01CappedThree","content":[
+            {"type":"text","text":"open https://claude.ai/oauth/authorize?code=true"}]}})
+        .to_string(),
+        json!({"type":"result","subtype":"success","is_error":false,"result":"done"}).to_string(),
+    ];
+    let stream = lines.join("\n");
+    assert!(
+        stream.find("WXYZ").unwrap() > 4096,
+        "the material lies past the cap"
+    );
+    let script = format!("cat >/dev/null; printf '%s\\n' '{stream}'");
+    let capture = recording.within(|| {
+        ModelRunner::new(temp.path(), Duration::from_secs(120))
+            .with_harness("anthropic", Some("claude-fixture-1".into()))
+            .with_output_cap(4096)
+            .capture_observed(
+                &cas,
+                &sh(&script),
+                vec![],
+                None,
+                &HarnessStream::claude("Read"),
+                |_, _, _| {},
+            )
+    });
+    match capture.status {
+        Err(review_runner::RunnerError::Failed {
+            exit_code,
+            stderr_excerpt,
+        }) => {
+            assert_eq!(exit_code, 0);
+            assert!(
+                stderr_excerpt.contains("stdout was truncated at the 4 KiB output cap"),
+                "{stderr_excerpt}"
+            );
+        }
+        other => panic!("the Attempt fails naming the cap: {other:?}"),
+    }
+    assert_eq!(capture.stdout.len(), 4096, "the Store keeps the prefix");
+    let writer = recording.writer.clone();
+    recording.finish();
+    let sealed = review_telemetry::segment::reader::read_sealed(
+        &writer
+            .layout()
+            .sealed_segment(&writer.segment_id().unwrap()),
+    )
+    .unwrap();
+    let harness = &ended_spans(&sealed, "af.harness")[0];
+    assert_eq!(harness["af.failure.class"], "failed", "{harness:?}");
+    assert_eq!(harness["af.stream.withheld"], true, "{harness:?}");
+    assert_eq!(harness["af.native.withheld"], true);
+    assert_eq!(
+        harness["af.stdout_bytes"], 4096,
+        "the facts are the capture's"
+    );
+    let ids = events_named(&sealed, "af.harness.ids");
+    assert_eq!(ids.len(), 1);
+    assert_eq!(ids[0].attributes["af.stream.withheld"], true);
+    assert!(ids[0].attributes.get("af.harness.ids").is_none());
+    for name in ["gen_ai.content.output", "af.content.tool_output"] {
+        assert!(
+            events_named(&sealed, name).is_empty(),
+            "{name} was published"
+        );
+    }
+    // Nothing of the stream is anywhere under the telemetry directory.
+    let mut found = Vec::new();
+    walk_entries(&root, &mut |path, kind| {
+        if !kind.is_file() {
+            return;
+        }
+        let text = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
+        for words in ["WXYZ", "claude.ai", "msg_01Capped", "toolu_01Capped"] {
+            if text.contains(words) {
+                found.push(format!("{words} in {}", path.display()));
+            }
+        }
+    });
+    assert!(found.is_empty(), "{found:?}");
+}
+
+/// Design §7.3: an observed stream ends where its drain read, not where the output cap kept
+/// it, so a consumer that saw less of a capped stream ends it in a trailing gap and its analysis
+/// is `incomplete`: held on a write until the process has ended, the consumer leaves every
+/// chunk past the queue's bound dropped and, released, records the gap up to the stream's total.
+#[test]
+fn telemetry_capped_stream_ends_in_a_trailing_gap_when_its_tail_was_dropped() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("telemetry");
+    let store = temp.path().join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let hold = Arc::new(AtomicBool::new(false));
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let held = std::sync::Mutex::new(held);
+    let (blocked, blocking) = std::sync::mpsc::channel::<()>();
+    let blocked = std::sync::Mutex::new(blocked);
+    let mut options = WriterOptions::new(&root, Level::Spans);
+    options.flush_latency_ms = 50;
+    options.observer_queue_bytes = 256 * 1024;
+    // Once `hold` is set, every write blocks until released, saying so first: a write held on
+    // the volume while the harness streams.
+    let holding = Arc::clone(&hold);
+    options.write_hook = Some(Arc::new(move |_| {
+        if holding.load(Ordering::Acquire) {
+            let _ = blocked.lock().unwrap().send(());
+            let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(30));
+        }
+        Ok(())
+    }));
+    let run = "task:sha256:".to_string() + &"5".repeat(64);
+    let recording = Recording::with_options(options, &store, &run, 1);
+    let cas = Cas::open(store.join("cas")).unwrap();
+    let line = json!({"type":"user","message":{"content":[{"type":"tool_result",
+        "tool_use_id":"t","content":"x".repeat(4000)}]}})
+    .to_string();
+    let total = 256 * (line.len() + 1) as u64;
+    let go = temp.path().join("go");
+    // 1 MiB of stream lines past a 4 KiB cap, once the consumer is held.
+    let script = format!(
+        "cat >/dev/null; while [ ! -e '{}' ]; do sleep 0.02; done; \
+         i=0; while [ $i -lt 256 ]; do printf '%s\\n' '{line}'; i=$((i+1)); done",
+        go.display()
+    );
+    hold.store(true, Ordering::Release);
+    let capture = recording.within(|| {
+        let runner = ModelRunner::new(temp.path(), Duration::from_secs(120))
+            .with_harness("anthropic", Some("claude-fixture-1".into()))
+            .with_output_cap(4096);
+        let go = &go;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                blocking
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("the consumer is held on a write");
+                std::fs::write(go, b"").unwrap();
+            });
+            runner.capture_observed(
+                &cas,
+                &sh(&script),
+                vec![],
+                None,
+                &HarnessStream::claude("Read"),
+                |_, _, _| {},
+            )
+        })
+    });
+    assert!(
+        matches!(
+            capture.status,
+            Err(review_runner::RunnerError::Failed { .. })
+        ),
+        "{:?}",
+        capture.status
+    );
+    assert_eq!(capture.stdout.len(), 4096);
+    // The process has ended and its decision is taken: release the consumer.
+    hold.store(false, Ordering::Release);
+    drop(release);
+    let writer = recording.writer.clone();
+    recording.finish();
+    let sealed = review_telemetry::segment::reader::read_sealed(
+        &writer
+            .layout()
+            .sealed_segment(&writer.segment_id().unwrap()),
+    )
+    .unwrap();
+    let harness = &ended_spans(&sealed, "af.harness")[0];
+    assert!(
+        harness["dropped_chunks"].as_u64().unwrap() > 0,
+        "the held consumer's queue overflowed: {harness:?}"
+    );
+    assert_eq!(harness["af.stream.withheld"], true);
+    let gaps = events_named(&sealed, "af.stream.gap");
+    assert_eq!(gaps.len(), 1, "one trailing gap: {gaps:?}");
+    let gap = &gaps[0].attributes;
+    assert_eq!(gap["af.stream"], "stdout");
+    let from = gap["af.stream.gap.from"].as_u64().unwrap();
+    assert!(
+        from > 4096 && from < total,
+        "the observer was offered bytes past the cap: {from} of {total}"
+    );
+    assert_eq!(
+        gap["af.stream.gap.to"], total,
+        "the stream ends where its drain read"
+    );
+    let ids = &events_named(&sealed, "af.harness.ids")[0].attributes;
+    assert_eq!(ids["af.stream.gaps"], 1);
+    assert_eq!(ids["af.stream.analysis"], "incomplete");
 }
 
 /// Design §7.3 (P6): a successful Codex Attempt's `-o` final message is harness output that

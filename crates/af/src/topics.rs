@@ -304,8 +304,9 @@ string (text, thinking, tool arguments and results, errors, unparsed lines) is o
 frame too long to judge is withheld whole; a dropped chunk is af.stream.gap and the stream
 incomplete. Once the process has ended Telemetry takes its own release decision:
 login-challenge material in either stream or in a Codex Attempt's -o final message (read for
-every observed process, whatever its ending), a final message that cannot be read whole, or an
-adapter that replaced the streams, withholds everything pending (af.stream.withheld);
+every observed process, whatever its ending), a final message that cannot be read whole, an
+adapter that replaced the streams, or a stream the output cap truncated (a prefix where the
+decision needs the whole), withholds everything pending (af.stream.withheld);
 otherwise af.harness.ids lists each correlation id with its original once it passes the
 credential rules (af.harness.ids.count admitted, the list going on in af.harness.ids.part
 events past one record; an identifier past 4096 per process or 256 bytes has no mapping,
