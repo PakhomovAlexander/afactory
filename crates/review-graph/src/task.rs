@@ -49,6 +49,12 @@ pub struct OperatorSignature {
         deserialize_with = "review_core::task::present_option"
     )]
     pub outcome_port: Option<String>,
+    /// Inputs a Pipeline may leave unbound: the advisory reviewers of the captured review
+    /// policy. A review reduce must still bind every other input, so a missing runtime result
+    /// stays typed incomplete evidence; an advisory reviewer no node binds is simply not part of
+    /// that Pipeline's review.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub unbound_allowed: BTreeSet<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1705,7 +1711,10 @@ impl Compiler<'_> {
                             );
                         }
                         if matches!(operator, TaskOperatorV1::ReviewReduce {})
-                            && !bound.keys().eq(signature.contract.inputs.keys())
+                            && signature.contract.inputs.keys().any(|input| {
+                                !bound.contains_key(input)
+                                    && !signature.unbound_allowed.contains(input)
+                            })
                         {
                             return Err(format!(
                                 "{qualified} must bind every configured reviewer and check; missing runtime results remain typed incomplete evidence"

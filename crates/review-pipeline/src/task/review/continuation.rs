@@ -17,6 +17,7 @@ pub(super) fn signature() -> OperatorSignature {
         ),
     ]);
     OperatorSignature {
+        unbound_allowed: Default::default(),
         retains: BTreeMap::from([("continuation".into(), inputs.keys().cloned().collect())]),
         contract: PipelineContractV1 {
             inputs,

@@ -60,8 +60,8 @@ digest = "sha256:1356e5cfe8f8444f0244b4a74686536d9340aefd8b0d7f289222fe66cbcf9f3
 path = ".af/task-packages/warm/verification-kind"
 
 [packages."kernel/implementer"]
-version = "1.5.0"
-digest = "sha256:cc933a72e607c996e2e159e682e573b2099d6207663df06e239efee3e55e7836"
+version = "1.6.0"
+digest = "sha256:3eeb5f32cc49a1053bfd234db4e305e2513ca70311f3c0854b6a21696ec23355"
 path = ".af/task-packages/kernel/implementer"
 
 [packages."kernel/correctness"]
@@ -184,3 +184,8 @@ distinct_models = false
 [provider_admission]
 tokens = 32768
 wall_ms = 45000
+
+[packages."kernel/verification-ux"]
+version = "1.0.0"
+digest = "sha256:4d34fa8c4991ee208e8444f370e511a89f444a409f6a50954d63e6291626be9d"
+path = ".af/task-packages/kernel/verification-ux"

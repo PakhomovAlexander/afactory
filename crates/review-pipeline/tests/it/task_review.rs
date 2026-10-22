@@ -224,6 +224,7 @@ fn run_case(case: &str) {
         public_result.covers.insert("reviewed".into());
         let result_type = review_core::contract::REVIEWER_RESULT_V2;
         let signature = OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 {
                 inputs: BTreeMap::from([
                     (
