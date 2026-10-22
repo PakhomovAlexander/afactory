@@ -786,7 +786,8 @@ fn telemetry_capped_capture_withholds_its_pending_content() {
 /// Design §7.3: an observed stream ends where its drain read, not where the output cap kept
 /// it, so a consumer that saw less of a capped stream ends it in a trailing gap and its analysis
 /// is `incomplete`: held on a write until the process has ended, the consumer leaves every
-/// chunk past the queue's bound dropped and, released, records the gap up to the stream's total.
+/// chunk the queue had no room for dropped and, released, records one gap per run of them,
+/// the last up to the stream's total when the tail was dropped.
 #[test]
 fn telemetry_capped_stream_ends_in_a_trailing_gap_when_its_tail_was_dropped() {
     let temp = tempfile::tempdir().unwrap();
@@ -874,21 +875,41 @@ fn telemetry_capped_stream_ends_in_a_trailing_gap_when_its_tail_was_dropped() {
         "the held consumer's queue overflowed: {harness:?}"
     );
     assert_eq!(harness["af.stream.withheld"], true);
-    let gaps = events_named(&sealed, "af.stream.gap");
-    assert_eq!(gaps.len(), 1, "one trailing gap: {gaps:?}");
-    let gap = &gaps[0].attributes;
-    assert_eq!(gap["af.stream"], "stdout");
-    let from = gap["af.stream.gap.from"].as_u64().unwrap();
+    // The observer counts the runs of consecutive chunks it dropped, and the consumer records
+    // one gap per run: a run followed by a chunk the queue had room for is a gap at that
+    // chunk's offset, the run that ends the stream a trailing gap to the total the drain read.
+    // Which chunks fit depends on their sizes, so the runs are counted, never assumed: the
+    // first gap begins past the cap (the queue had room for more than that before the first
+    // drop), each lies inside the stream the drain read and after the gap before it, and
+    // the trailing run, when the tail was dropped, has its gap only when the stream ends
+    // where the drain read, not at the kept prefix.
+    let runs = harness["gaps"].as_u64().unwrap();
     assert!(
-        from > 4096 && from < total,
-        "the observer was offered bytes past the cap: {from} of {total}"
+        runs > 0,
+        "the held consumer lost a run of chunks: {harness:?}"
     );
+    let gaps = events_named(&sealed, "af.stream.gap");
     assert_eq!(
-        gap["af.stream.gap.to"], total,
-        "the stream ends where its drain read"
+        gaps.len() as u64,
+        runs,
+        "one gap per run of dropped chunks: {gaps:?}"
     );
+    let mut end = 4096;
+    for gap in &gaps {
+        let gap = &gap.attributes;
+        assert_eq!(gap["af.stream"], "stdout");
+        let from = gap["af.stream.gap.from"].as_u64().unwrap();
+        let to = gap["af.stream.gap.to"].as_u64().unwrap();
+        assert!(
+            from > end && from < to && to <= total,
+            "a gap past the cap and the gap before it, inside the stream the drain read: \
+             {from}..{to} after {end} of {total}"
+        );
+        assert_eq!(gap["af.stream.gap.bytes"], to - from);
+        end = to;
+    }
     let ids = &events_named(&sealed, "af.harness.ids")[0].attributes;
-    assert_eq!(ids["af.stream.gaps"], 1);
+    assert_eq!(ids["af.stream.gaps"], runs);
     assert_eq!(ids["af.stream.analysis"], "incomplete");
 }
 
