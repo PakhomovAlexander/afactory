@@ -17,6 +17,7 @@ allow_targeted_repairs = false
 [review.reviewers]
 bugs = "required"
 correctness = "required"
+uix = "advisory"
 
 [packages."warm/implementer"]
 version = "1.3.0"
@@ -82,6 +83,16 @@ path = ".af/task-packages/kernel/evaluator"
 version = "1.4.0"
 digest = "sha256:3ac542410f555e78428864ac0dfdf20061b42a1e1f023bb6291c2212123aee65"
 path = ".af/task-packages/kernel/uix"
+
+[packages."kernel/ux"]
+version = "1.0.0"
+digest = "sha256:a572ef1a36c634c15b4823ac64c07206946a4f9a0bc91b23595030845a1202c0"
+path = ".af/task-packages/kernel/ux"
+
+[packages."kernel/implementation-ux"]
+version = "1.0.0"
+digest = "sha256:43d3eeeccbf3338b623c2b38b5817b582e50c2820df485fb452ab71a6c4de904"
+path = ".af/task-packages/kernel/implementation-ux"
 
 [packages."kernel/review-light"]
 version = "1.2.0"
