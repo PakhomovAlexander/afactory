@@ -18,6 +18,9 @@ from . import suite as suite_module
 from .values import ContractError, canonical_bytes, require, sha256_bytes
 
 CLI_PATH = "fixtures/performance/cli.toml"
+# Shared by measurements and diagnostic child runs, including their untimed setup and
+# seed writers. The frozen product must not install or check for another release.
+ENVIRONMENT = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "TZ": "UTC", "AF_SELF_OFFLINE": "1"}
 _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 CATALOG = ".af/task-catalog.toml"
 PACKAGES = ".af/task-packages"

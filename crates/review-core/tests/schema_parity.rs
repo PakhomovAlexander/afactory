@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 188] = [
+const SCHEMAS: [&str; 189] = [
     "project-registered-v1.json",
     "project-brief-v1.json",
     "project-survey-pin-v1.json",
@@ -162,6 +162,7 @@ const SCHEMAS: [&str; 188] = [
     "task-collected-v1.json",
     "task-gate-cleanup-v1.json",
     "task-storage-sweep-v2.json",
+    "task-execution-started-v1.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
     "legacy-review-task-policy-v4.json",
@@ -2709,6 +2710,103 @@ fn a_storage_sweep_is_one_closed_transition_referencing_no_artifact() {
             "{why}"
         );
     }
+}
+
+/// ADR-0153 and ADR-0145: the execution marker `af/TaskExecutionStarted@1` is its own event kind
+/// of the Task log, `TaskExecutionStarted@1`, naming its lease and referencing no artifact;
+/// `TaskTransition@5` keeps exactly its shape and carries no `execution_started` change. The
+/// schemas and the typed contracts accept and refuse the same shapes.
+#[test]
+fn an_execution_marker_is_its_own_task_log_event() {
+    use review_core::task::execution_started::{TASK_EXECUTION_STARTED_V1, TaskExecutionStartedV1};
+    let marker = TaskExecutionStartedV1::new("cli-4242", 2, 100);
+    assert_eq!(marker.schema, TASK_EXECUTION_STARTED_V1);
+    marker.validate().unwrap();
+    let value = serde_json::to_value(&marker).unwrap();
+    assert_eq!(
+        value,
+        json!({"schema": "af/TaskExecutionStarted@1", "writer": "cli-4242", "epoch": 2, "now_unix_ms": 100})
+    );
+    assert_valid("task-execution-started-v1.json", &value);
+    review_core::event::validate_event_payload(EventType::TaskExecutionStartedV1, &value).unwrap();
+    let event = RunEvent {
+        event_id: "a".repeat(26),
+        run_id: "task:4242".into(),
+        sequence: 3,
+        event_type: EventType::TaskExecutionStartedV1,
+        occurred_at: "2026-10-20T00:00:00Z".into(),
+        node_id: None,
+        attempt_id: None,
+        causation_id: None,
+        correlation_id: None,
+        artifact_refs: Vec::new(),
+        payload: value.clone(),
+    };
+    let wire = serde_json::to_value(&event).unwrap();
+    assert_eq!(wire["type"], "TaskExecutionStarted@1");
+    assert_valid("run-event-v1.json", &wire);
+    assert_eq!(
+        serde_json::from_value::<RunEvent>(wire.clone()).unwrap(),
+        event
+    );
+    for (why, forged) in [
+        ("schema", {
+            let mut forged = value.clone();
+            forged["schema"] = json!("af/TaskExecutionStarted@2");
+            forged
+        }),
+        ("unknown field", {
+            let mut forged = value.clone();
+            forged["level"] = json!("content");
+            forged
+        }),
+        ("no writer", {
+            let mut forged = value.clone();
+            forged.as_object_mut().unwrap().remove("writer");
+            forged
+        }),
+        ("writer grammar", {
+            let mut forged = value.clone();
+            forged["writer"] = json!("-cli");
+            forged
+        }),
+        ("zero epoch", {
+            let mut forged = value.clone();
+            forged["epoch"] = json!(0);
+            forged
+        }),
+        ("zero time", {
+            let mut forged = value.clone();
+            forged["now_unix_ms"] = json!(0);
+            forged
+        }),
+    ] {
+        assert_invalid("task-execution-started-v1.json", &forged, why);
+        let mut wrapped = wire.clone();
+        wrapped["payload"] = forged.clone();
+        assert_invalid("run-event-v1.json", &wrapped, why);
+        assert!(
+            review_core::event::validate_event_payload(EventType::TaskExecutionStartedV1, &forged)
+                .is_err(),
+            "{why}"
+        );
+    }
+    // `TaskTransition@5` is the shape main accepts: an `execution_started` change fails closed.
+    let transition = json!({
+        "writer": "cli-4242",
+        "epoch": 2,
+        "now_unix_ms": 100,
+        "change": {"kind": "execution_started", "execution": {"schema": "af/TaskExecutionStarted@1"}}
+    });
+    assert_invalid(
+        "task-transition-v5.json",
+        &transition,
+        "no execution_started change",
+    );
+    assert!(
+        review_core::event::validate_event_payload(EventType::TaskTransitionV5, &transition)
+            .is_err()
+    );
 }
 
 /// ADR-0144: a `gate_cleanup` transition carries `af/TaskGateCleanup@1` inline, references no

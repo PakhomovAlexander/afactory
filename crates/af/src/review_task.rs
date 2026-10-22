@@ -468,6 +468,8 @@ fn execute_current(
     use review_pipeline::task::campaign_review::host::CampaignReviewTaskHost;
     use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
     let campaign = &captured.compiler.round().binding().campaign_id;
+    // Recorded on the run's `af.run` span only (ADR-0153).
+    review_pipeline::telemetry::set_campaign(campaign, captured.compiler.round().binding().round);
     let round = captured.compiler.round().authority().round_event_id();
     let closed = store
         .replay(campaign)
@@ -563,11 +565,13 @@ fn execute_current(
                         refs.into_iter().collect(),
                         &result,
                     )?;
-                    shared
-                        .lock()
-                        .expect("Task Store")
-                        .finish_task(cas, lease, &id, &authority)
-                        .map_err(|e| e.to_string())?;
+                    {
+                        let mut store = shared.lock().expect("Task Store");
+                        store
+                            .finish_task(cas, lease, &id, &authority)
+                            .map_err(|e| e.to_string())?;
+                        review_pipeline::telemetry::finished(&store, lease);
+                    }
                     Some(result)
                 } else {
                     None

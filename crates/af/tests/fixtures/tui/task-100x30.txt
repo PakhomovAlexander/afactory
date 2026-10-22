@@ -17,14 +17,14 @@ v hub  (project)            |PLAN  ########  configured  STATE done  started hh:
                             |     0  opened                              ########
                             |     1  plan_proposed                       ########
                             |     2  plan_admitted                       ########
-                            |     3  execution_recorded invocation       ########
-                            |     4  execution_recorded published        ########
-                            |     5  execution_recorded invocation       ########
-                            |     6  execution_recorded reserved         ########
-                            |     7  execution_recorded context_bound    ########
-                            |     8  execution_recorded started          ########
-                            |     9  execution_recorded usage_observed   ########
-                            |    10  execution_recorded settled          ########
-                            |    11  execution_recorded published        ########
-                            |    12  execution_recorded invocation       ########
+                            |     4  execution_recorded invocation       ########
+                            |     5  execution_recorded published        ########
+                            |     6  execution_recorded invocation       ########
+                            |     7  execution_recorded reserved         ########
+                            |     8  execution_recorded context_bound    ########
+                            |     9  execution_recorded started          ########
+                            |    10  execution_recorded usage_observed   ########
+                            |    11  execution_recorded settled          ########
+                            |    12  execution_recorded published        ########
+                            |    13  execution_recorded invocation       ########
 NORMAL  tasks/pagination-cli                j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

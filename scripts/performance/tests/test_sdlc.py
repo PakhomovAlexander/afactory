@@ -71,6 +71,23 @@ class StableCheck(test_planning.History):
         with self.assertRaisesRegex(ContractError, "another plan"):
             self.evaluate()
 
+    def test_single_flat_report_keeps_identity_and_rejects_mixed_layouts(self):
+        named_dir = os.path.dirname(self.path_report)
+        flat = os.path.join(self.reports, "verdict.json")
+        os.rename(self.path_report, flat)
+        os.rmdir(named_dir)
+        self.assertTrue(self.evaluate()[0])
+        self.path_report = flat
+        self.verdict["run_id"] = "foreign_run"
+        self.write_verdict()
+        with self.assertRaisesRegex(ContractError, "another plan"):
+            self.evaluate()
+        self.verdict["run_id"] = self.item["run_id"]
+        self.write_verdict()
+        os.mkdir(named_dir)
+        with self.assertRaisesRegex(ContractError, "mixed flat and named"):
+            self.evaluate()
+
     def test_partial_and_synthetic_passes_cannot_satisfy_enforcement(self):
         for field, value in (("scope", "partial_scope"), ("provenance", "synthetic")):
             with self.subTest(field=field):

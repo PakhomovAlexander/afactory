@@ -2,7 +2,10 @@
 //! evidence of anything.
 //!
 //! It holds `segments`, `runs`, `executions`, `spans` (with `self_ns` computed at ingest),
-//! `events`, `configs`, `nodes`, `findings`, `demands`, `blobs`, `blob_refs` and `problems`.
+//! `events`, `configs`, `nodes`, `findings`, `demands`, `blobs`, `blob_refs` and `problems`, and
+//! the FTS5 table `content_fts` over the text blobs the retained occurrences reference, kept at
+//! ingest when `[telemetry] content_index` is on ([`set_content_index`]), with `content_index`
+//! recording which digests it has read.
 //! Ingest reads every sealed segment the index has not seen and the tail of each `.jsonl`
 //! segment beyond its last ingested byte offset, in one transaction, idempotently by `span_id`,
 //! segment id with `seq`, and digest. Exact counters stay `TEXT` and are aggregated in Rust
@@ -43,7 +46,23 @@ use crate::trace;
 pub const BLOB_CODEC: &str = "gzip";
 
 /// The index's own shape; an index of another is refused and rebuilt by `reindex`.
-pub const INDEX_SCHEMA: &str = "af/telemetry-index@1";
+pub const INDEX_SCHEMA: &str = "af/telemetry-index@3";
+
+/// Whether ingest keeps `content_fts` (`[telemetry] content_index`); on unless the command that
+/// opens the index turned it off.
+static CONTENT_INDEX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Keep `content_fts` at every ingest of this process (`[telemetry] content_index`), or not.
+/// Turned off, ingest empties `content_fts` and `content_index`; turned on again, it rebuilds
+/// them from the retained blobs.
+pub fn set_content_index(enabled: bool) {
+    CONTENT_INDEX.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether ingest keeps `content_fts` in this process.
+pub fn content_index() -> bool {
+    CONTENT_INDEX.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 const SCHEMA_SQL: &str = "
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -109,6 +128,9 @@ CREATE TABLE configs(
     segment_id TEXT NOT NULL,
     seq INTEGER NOT NULL,
     execution_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    run_span_id TEXT NOT NULL,
+    section TEXT NOT NULL,
     part INTEGER NOT NULL,
     parts INTEGER NOT NULL,
     complete INTEGER NOT NULL,
@@ -171,10 +193,15 @@ CREATE TABLE problems(
     reason TEXT NOT NULL,
     PRIMARY KEY(segment_id, seq)
 );
+CREATE TABLE content_index(
+    digest TEXT PRIMARY KEY,
+    state TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE content_fts USING fts5(digest UNINDEXED, body, tokenize = 'unicode61');
 ";
 
 /// The tables, in dump order, each with the columns that order its rows.
-const TABLES: [(&str, &str); 13] = [
+const TABLES: [(&str, &str); 15] = [
     ("segments", "segment_id"),
     ("runs", "trace_id"),
     ("executions", "span_id"),
@@ -187,6 +214,8 @@ const TABLES: [(&str, &str); 13] = [
     ("blobs", "digest"),
     ("blob_refs", "occurrence_id"),
     ("problems", "segment_id, seq"),
+    ("content_index", "digest"),
+    ("content_fts", "digest"),
     ("meta", "key"),
 ];
 
@@ -210,6 +239,8 @@ pub struct Index {
     _lock: Option<Held>,
     /// The `v1/` the connection was opened through, held until after the connection closes.
     versioned: Option<Confined>,
+    /// Whether ingest keeps `content_fts`: the process's [`content_index`] when opened.
+    content_index: bool,
 }
 
 /// What one ingest read.
@@ -471,6 +502,7 @@ impl Index {
             note: None,
             _lock: Some(lock),
             versioned: Some(versioned),
+            content_index: content_index(),
         })
     }
 
@@ -497,11 +529,18 @@ impl Index {
             note: Some(note.to_string()),
             _lock: None,
             versioned,
+            content_index: content_index(),
         })
     }
 
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// Keep `content_fts` at this connection's ingests, or not, whatever the process's
+    /// [`content_index`].
+    pub fn keep_content_index(&mut self, keep: bool) {
+        self.content_index = keep;
     }
 
     pub fn connection(&self) -> &Connection {
@@ -516,7 +555,10 @@ impl Index {
     /// A sealed segment's file is recorded with its identity (device, inode, size and
     /// modification time) and compared with the file under its name on every ingest: a sealed
     /// file replaced or rewritten since is read and validated again, its earlier rows
-    /// forgotten, and on refusal it is listed unreadable, exactly as a rebuild would answer.
+    /// forgotten, and on refusal it is listed unreadable, exactly as a rebuild would answer. A
+    /// segment ingested as sealed whose `.jsonl` the listing selects again (the compressed copy
+    /// beside it is then stale staging) has its rows forgotten and its live prefix ingested from
+    /// offset zero, as a rebuild would.
     pub fn ingest(&mut self) -> Result<(Ingested, Vec<(String, String)>), String> {
         // The segments of the `v1/` the index holds, never looked up by pathname again.
         let directory = match &self.versioned {
@@ -639,7 +681,15 @@ impl Index {
                     continue;
                 }
             };
-            let (offset, position) = if offset > bytes.len() {
+            // A segment ingested as sealed whose live file the listing now selects (a stale
+            // compressed copy beside it): its rows are forgotten and the live prefix ingested
+            // from offset zero, so no view shows a record of the stale copy.
+            let stale_seal =
+                matches!(states.get(segment_id), Some((state, _)) if state == "sealed");
+            if stale_seal {
+                forget(&transaction, segment_id)?;
+            }
+            let (offset, position) = if stale_seal || offset > bytes.len() {
                 (0, None)
             } else {
                 (offset, position)
@@ -690,6 +740,7 @@ impl Index {
             forget(&transaction, segment_id)?;
         }
         self_times(&transaction, &ended)?;
+        index_content(&transaction, self.versioned.as_ref(), self.content_index)?;
         transaction.commit().map_err(sql)?;
         Ok((ingested, refused))
     }
@@ -789,6 +840,11 @@ impl Index {
     /// index holds, never through the saved pathname. `None` when the lock was not had within
     /// two seconds (a sweep holds it): the check is deferred, never answered while files may be
     /// collected.
+    ///
+    /// Presence is resolved per prefix directory, not per occurrence: the distinct digests are
+    /// grouped by their `blobs/<aa>/` prefix, each prefix directory is opened once (without
+    /// following a link) and each object judged in it by `fstatat`, so a corpus of many
+    /// occurrences costs at most one directory open per prefix.
     pub fn missing_blobs(&self) -> Result<Option<Vec<(String, String)>>, String> {
         let mut statement = self
             .connection
@@ -817,16 +873,17 @@ impl Index {
             return Ok(None);
         };
         let blobs = versioned.child_dir("blobs").ok().flatten();
-        let mut present = BTreeMap::new();
+        let digests: BTreeSet<&str> = all.iter().map(|(_, digest)| digest.as_str()).collect();
+        let present: BTreeSet<String> = match &blobs {
+            Some(blobs) => crate::blob::reader::present_in(blobs, digests)
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            None => BTreeSet::new(),
+        };
         Ok(Some(
             all.into_iter()
-                .filter(|(_, digest)| {
-                    !*present.entry(digest.clone()).or_insert_with(|| {
-                        blobs
-                            .as_ref()
-                            .is_some_and(|blobs| crate::blob::reader::exists_in(blobs, digest))
-                    })
-                })
+                .filter(|(_, digest)| !present.contains(digest.as_str()))
                 .collect(),
         ))
     }
@@ -872,6 +929,100 @@ impl Index {
             .optional()
             .map_err(sql)
     }
+}
+
+/// Keep `content_fts` over the retained text blobs: rows of digests no stored occurrence
+/// references any more go; with `content_index` on, every referenced digest not read yet is read
+/// (under `gc.lock` shared, through the held `v1/`) and its text indexed. A blob a collection
+/// holds is read at the next ingest; a missing or corrupt one is recorded `unavailable`, a
+/// non-UTF-8 one `binary`, and neither is indexed. With `content_index` off no full-text index is
+/// kept: both tables are emptied, and rebuilt from the retained blobs once it is on again.
+fn index_content(
+    transaction: &Transaction<'_>,
+    versioned: Option<&Confined>,
+    keep: bool,
+) -> Result<(), String> {
+    const REFERENCED: &str =
+        "SELECT digest FROM blob_refs WHERE state = 'stored' AND digest IS NOT NULL";
+    // An ingest with nothing to change writes nothing, so readers that ingest side by side never
+    // contend for the write lock.
+    if !keep {
+        for table in ["content_fts", "content_index"] {
+            let kept: i64 = transaction
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .map_err(sql)?;
+            if kept > 0 {
+                transaction
+                    .execute(&format!("DELETE FROM {table}"), [])
+                    .map_err(sql)?;
+            }
+        }
+        return Ok(());
+    }
+    for table in ["content_fts", "content_index"] {
+        let stale: i64 = transaction
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE digest NOT IN ({REFERENCED})"),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        if stale > 0 {
+            transaction
+                .execute(
+                    &format!("DELETE FROM {table} WHERE digest NOT IN ({REFERENCED})"),
+                    [],
+                )
+                .map_err(sql)?;
+        }
+    }
+    let Some(versioned) = versioned else {
+        return Ok(());
+    };
+    let unread: Vec<String> = {
+        let mut statement = transaction
+            .prepare(&format!(
+                "SELECT DISTINCT digest FROM ({REFERENCED})
+                 WHERE digest NOT IN (SELECT digest FROM content_index) ORDER BY digest"
+            ))
+            .map_err(sql)?;
+        statement
+            .query_map([], |row| row.get(0))
+            .map_err(sql)?
+            .collect::<Result<_, _>>()
+            .map_err(sql)?
+    };
+    for digest in unread {
+        let state = match crate::blob::reader::read_in(versioned, &digest) {
+            crate::blob::reader::Content::Bytes(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => {
+                    transaction
+                        .execute(
+                            "INSERT INTO content_fts(digest, body) VALUES (?1, ?2)",
+                            params![digest, text],
+                        )
+                        .map_err(sql)?;
+                    "indexed"
+                }
+                Err(_) => "binary",
+            },
+            crate::blob::reader::Content::Unavailable(reason)
+                if reason == crate::blob::reader::COLLECTING =>
+            {
+                continue;
+            }
+            crate::blob::reader::Content::Unavailable(_) => "unavailable",
+        };
+        transaction
+            .execute(
+                "INSERT INTO content_index(digest, state) VALUES (?1, ?2)",
+                params![digest, state],
+            )
+            .map_err(sql)?;
+    }
+    Ok(())
 }
 
 fn rows(statement: &mut rusqlite::Statement<'_>) -> Result<Vec<Vec<String>>, String> {
@@ -1119,13 +1270,16 @@ impl<'a> SegmentIngest<'a> {
                 Record::Config(part) => {
                     transaction
                         .execute(
-                            "INSERT OR IGNORE INTO configs(segment_id, seq, execution_id, part,
-                                 parts, complete, rows)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            "INSERT OR IGNORE INTO configs(segment_id, seq, execution_id, run_id,
+                                 run_span_id, section, part, parts, complete, rows)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                             params![
                                 segment_id,
                                 seq,
                                 part.execution_id,
+                                part.run_id,
+                                part.run_span_id,
+                                part.section,
                                 i64::from(part.part),
                                 i64::from(part.parts),
                                 i64::from(part.complete),
@@ -1327,6 +1481,101 @@ fn self_times(transaction: &Transaction<'_>, ended: &BTreeSet<String>) -> Result
     Ok(())
 }
 
+impl Index {
+    /// Drop every row the segments `segment_ids` contributed, in one transaction, without
+    /// reading any segment: the sweep's step after it evicts them. Returns how many of them the
+    /// index held.
+    pub fn forget_segments(&mut self, segment_ids: &[String]) -> Result<u64, String> {
+        let transaction = self.connection.transaction().map_err(sql)?;
+        let mut held = 0;
+        for segment_id in segment_ids {
+            let known: i64 = transaction
+                .query_row(
+                    "SELECT count(*) FROM segments WHERE segment_id = ?1",
+                    params![segment_id],
+                    |row| row.get(0),
+                )
+                .map_err(sql)?;
+            held += u64::try_from(known).unwrap_or(0);
+            forget(&transaction, segment_id)?;
+        }
+        transaction.commit().map_err(sql)?;
+        Ok(held)
+    }
+
+    /// The database's free pages and page size (`PRAGMA freelist_count`, `page_size`).
+    pub fn free_pages(&self) -> Result<(u64, u64), String> {
+        let pages: i64 = self
+            .connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .map_err(sql)?;
+        let size: i64 = self
+            .connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .map_err(sql)?;
+        Ok((
+            u64::try_from(pages).unwrap_or(0),
+            u64::try_from(size).unwrap_or(0),
+        ))
+    }
+
+    /// `VACUUM` the database, then truncate its write-ahead log. `Err` carries whether SQLite
+    /// failed for lack of space (`SQLITE_FULL`), when the caller replaces the index instead.
+    pub fn vacuum(&self) -> Result<(), (bool, String)> {
+        match self.connection.execute_batch("VACUUM") {
+            Ok(()) => {
+                let _ =
+                    self.connection
+                        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+                Ok(())
+            }
+            Err(error) => {
+                let full = matches!(
+                    &error,
+                    rusqlite::Error::SqliteFailure(failure, _)
+                        if failure.code == rusqlite::ErrorCode::DiskFull
+                );
+                Err((full, sql(error)))
+            }
+        }
+    }
+}
+
+/// Delete the index under `index.lock` held exclusively (within two seconds), leaving none: the
+/// next reader rebuilds it from the segments. `Ok(false)` when the lock was not had — the
+/// deletion is deferred. Every file is removed relative to the held `v1/`.
+pub fn delete_in(layout: &Layout, versioned: &Confined) -> Result<bool, String> {
+    let exclusive = FlockArg::LockExclusiveNonblock;
+    let Some(_intent) = layout::lock_in(
+        versioned,
+        layout::INDEX_INTENT,
+        layout::LOCK_WAIT,
+        exclusive,
+    )
+    .map_err(|error| format!("{}: {error}", layout.index_intent().display()))?
+    else {
+        return Ok(false);
+    };
+    let Some(_lock) = layout::lock_in(versioned, layout::INDEX_LOCK, layout::LOCK_WAIT, exclusive)
+        .map_err(|error| format!("{}: {error}", layout.index_lock().display()))?
+    else {
+        return Ok(false);
+    };
+    for name in index_names(layout) {
+        match versioned.unlink(&name) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("{}: {error}", versioned.join(&name).display())),
+        }
+    }
+    Ok(true)
+}
+
+/// The file names of the database with its WAL and shared-memory files, for the budget.
+pub fn file_names(layout: &Layout) -> Vec<String> {
+    index_names(layout)
+}
+
 /// What replacing the index did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Replaced {
@@ -1383,6 +1632,7 @@ pub fn replace_in(layout: &Layout, versioned: Confined) -> Result<Replaced, Stri
         note: None,
         _lock: Some(lock),
         versioned: Some(versioned),
+        content_index: content_index(),
     };
     let (ingested, refused) = index.ingest()?;
     Ok(Replaced { ingested, refused })
@@ -1404,6 +1654,59 @@ pub fn sum_decimals<'a>(values: impl IntoIterator<Item = &'a str>) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Design §6 and the first measurement of `docs/telemetry.md` § Performance: an unchanged
+    /// `status` resolves the retained blobs' presence with one open per prefix directory, never
+    /// one per stored occurrence: many occurrences of one blob, and a few other blobs, cost one
+    /// open of `blobs/` and one of each prefix, and a missing object is still reported for
+    /// every occurrence of it.
+    #[test]
+    fn missing_blobs_opens_each_prefix_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let layout = Layout::new(directory.path().join("telemetry"));
+        let index = Index::open(&layout).unwrap();
+        let blobs = index
+            .versioned()
+            .unwrap()
+            .create_child_dir("blobs")
+            .unwrap();
+        let digest = |byte: &str| format!("sha256:{}", byte.repeat(32));
+        let stored = [digest("aa"), digest("ab"), digest("cd")];
+        for digest in &stored {
+            let hex = digest.strip_prefix("sha256:").unwrap();
+            let prefix = blobs.create_child_dir(&hex[..2]).unwrap();
+            std::fs::write(prefix.join(&format!("{hex}.gz")), b"x").unwrap();
+        }
+        let gone = digest("ef");
+        let insert = |occurrence: String, digest: &str| {
+            index
+                .connection()
+                .execute(
+                    "INSERT INTO blob_refs(occurrence_id, segment_id, seq, digest, span_id,
+                     event_seq, source_digest, original_bytes, truncated, state, media_type,
+                     redaction) VALUES (?1, 's', 1, ?2, 'x', 1, ?2, 1, 0, 'stored', 'text/plain',
+                     ?3)",
+                    params![occurrence, digest, crate::redact::REDACTION_VERSION],
+                )
+                .unwrap();
+        };
+        for occurrence in 0..2_000 {
+            insert(format!("s:{occurrence}"), &stored[0]);
+        }
+        insert("t:1".into(), &stored[1]);
+        insert("t:2".into(), &stored[2]);
+        insert("u:1".into(), &gone);
+        insert("u:2".into(), &gone);
+        layout::reset_child_dir_opens();
+        let missing = index.missing_blobs().unwrap().unwrap();
+        assert_eq!(
+            missing,
+            [("u:1".to_string(), gone.clone()), ("u:2".to_string(), gone)]
+        );
+        // `blobs/`, then the prefixes `aa`, `ab` and `cd` once each; `ef` is absent, never
+        // opened.
+        assert_eq!(layout::child_dir_opens(), 4);
+    }
 
     #[test]
     fn decimal_sums_are_exact_or_refused() {

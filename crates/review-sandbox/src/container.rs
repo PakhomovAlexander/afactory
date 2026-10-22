@@ -470,15 +470,18 @@ impl ContainerProvider {
     ) -> Result<ContainerExecution, ContainerExecutionError> {
         let mut command = std::process::Command::new(runtime);
         command.args(self.invocation(sandbox_root, program, args, environment, execution_name));
-        let captured = run_supervised_captured_bounded(
-            &mut command,
-            None,
-            timeout,
-            ExitPolicy::PreserveProcessGroup,
-            cancellation,
-            self.output_cap,
-        );
-        let executed = container_execution(captured, timeout);
+        let span = process_span(&command, "container command");
+        let captured = span.in_scope(|| {
+            run_supervised_captured_bounded(
+                &mut command,
+                None,
+                timeout,
+                ExitPolicy::PreserveProcessGroup,
+                cancellation,
+                self.output_cap,
+            )
+        });
+        let executed = container_execution(&span, captured, timeout);
         // Cancellation stops the foreground runtime; the existing bounded rm confirms the
         // daemon no longer owns this writable bind. Never cancel the cleanup itself.
         match executed {
@@ -500,14 +503,21 @@ impl ContainerProvider {
 }
 
 /// A container command's capture as execution evidence. Output past the cap is an execution
-/// failure naming the cap, so the check never passes on a prefix of its output.
+/// failure naming the cap, so the check never passes on a prefix of its output. The command's
+/// span ends after that judgement: a capture rejected for its truncation ends it `failed` with
+/// the cap's reason.
 fn container_execution(
+    span: &tracing::Span,
     captured: SupervisedCapture,
     timeout: Duration,
 ) -> Result<ContainerExecution, std::io::Error> {
-    if captured.status.is_ok()
-        && let Some(reason) = captured.truncation.reason()
-    {
+    let capped = captured
+        .status
+        .is_ok()
+        .then(|| captured.truncation.reason())
+        .flatten();
+    record_capture(span, &captured, capped.as_deref());
+    if let Some(reason) = capped {
         return Err(std::io::Error::other(format!("container command {reason}")));
     }
     captured
@@ -567,7 +577,10 @@ fn run_bounded_evidenced(
     timeout: Duration,
     operation: &str,
 ) -> Result<ContainerExecution, std::io::Error> {
-    run_supervised(&mut command, None, timeout)
+    let span = process_span(&command, operation);
+    let output = span.in_scope(|| run_supervised(&mut command, None, timeout));
+    record_output(&span, &output);
+    output
         .map(|output| ContainerExecution {
             output: std::process::Output {
                 status: output.status,
@@ -586,6 +599,128 @@ fn run_bounded_evidenced(
             ),
             error => std::io::Error::other(format!("{operation}: {error}")),
         })
+}
+
+/// The `af.process` span of one container-runtime process (telemetry design §7.2): the runtime
+/// program only, never its arguments, and what the process was for.
+fn process_span(command: &std::process::Command, operation: &str) -> tracing::Span {
+    if !review_telemetry::process::in_run() {
+        return tracing::Span::none();
+    }
+    let program = Path::new(command.get_program())
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    review_telemetry::process_span!(
+        "af.process",
+        process.command = program.as_deref(),
+        af.process.kind = operation,
+    )
+}
+
+fn resource_use(rusage: review_process::Rusage) -> review_telemetry::process::ResourceUse {
+    review_telemetry::process::ResourceUse {
+        user_ms: rusage.user_ms,
+        system_ms: rusage.system_ms,
+        max_rss_bytes: rusage.max_rss_bytes,
+    }
+}
+
+/// End a container process's span from its capture: `ok` when it exited 0 and the execution
+/// kept it; `capped` is the cap reason when the execution rejected it for its truncation.
+fn record_capture(
+    span: &tracing::Span,
+    captured: &review_process::SupervisedCapture,
+    capped: Option<&str>,
+) {
+    if span.is_disabled() {
+        return;
+    }
+    let mut facts = review_telemetry::process::ProcessFacts {
+        pid: captured.pid,
+        rusage: captured.rusage.map(resource_use),
+        stdout_bytes: Some(captured.stdout.len() as u64),
+        stderr_bytes: Some(captured.stderr.len() as u64),
+        stderr_held: captured.stderr_held,
+        ..Default::default()
+    };
+    if let Ok(status) = &captured.status {
+        facts = facts.with_status(status);
+    }
+    finish_process(
+        span,
+        &facts,
+        captured.status.as_ref().map(|status| *status),
+        capped,
+    );
+}
+
+/// End a container process's span from its bounded run.
+fn record_output(
+    span: &tracing::Span,
+    output: &Result<review_process::SupervisedOutput, SupervisedError>,
+) {
+    if span.is_disabled() {
+        return;
+    }
+    let facts = match output {
+        Ok(output) => review_telemetry::process::ProcessFacts {
+            pid: output.pid,
+            rusage: output.rusage.map(resource_use),
+            stdout_bytes: Some(output.stdout.len() as u64),
+            stderr_bytes: Some(output.stderr.len() as u64),
+            stderr_held: output.stderr_held,
+            ..Default::default()
+        }
+        .with_status(&output.status),
+        Err(SupervisedError::TimedOut {
+            stdout,
+            stderr,
+            pid,
+            rusage,
+        }) => review_telemetry::process::ProcessFacts {
+            pid: *pid,
+            rusage: rusage.map(resource_use),
+            stdout_bytes: Some(stdout.len() as u64),
+            stderr_bytes: Some(stderr.len() as u64),
+            ..Default::default()
+        },
+        Err(_) => review_telemetry::process::ProcessFacts::default(),
+    };
+    finish_process(
+        span,
+        &facts,
+        output.as_ref().map(|output| output.status),
+        None,
+    );
+}
+
+fn finish_process(
+    span: &tracing::Span,
+    facts: &review_telemetry::process::ProcessFacts,
+    status: Result<std::process::ExitStatus, &SupervisedError>,
+    capped: Option<&str>,
+) {
+    let failure = match (status, capped) {
+        (Ok(_), Some(reason)) => Some(("failed", reason.to_string())),
+        (Ok(status), None) if status.success() => None,
+        (Ok(_), None) => Some(("failed", "the runtime exited unsuccessfully".to_string())),
+        (Err(SupervisedError::TimedOut { .. }), _) => {
+            Some(("timed_out", "the runtime exceeded its deadline".to_string()))
+        }
+        (Err(SupervisedError::Cancelled), _) => Some(("refused", "cancelled".to_string())),
+        (Err(SupervisedError::Spawn(_)), _) => Some((
+            "unavailable",
+            "the runtime could not be started".to_string(),
+        )),
+        (Err(error), _) => Some(("failed", error.to_string())),
+    };
+    review_telemetry::process::finish(
+        span,
+        facts,
+        failure
+            .as_ref()
+            .map(|(class, reason)| (*class, reason.as_str())),
+    );
 }
 
 fn which(name: &str) -> Result<PathBuf, ()> {
@@ -1004,6 +1139,75 @@ mod tests {
             .exec_evidenced_controlled(dir.path(), "/bin/true", &[], &[], LOAD_SAFE_WALL, None)
             .unwrap();
         assert_eq!(within.output.stdout.len(), 10000);
+    }
+
+    /// The container command's `af.process` span ends after the cap judgement: a command that
+    /// writes past its cap and exits 0 fails its execution naming the cap, and its span ends
+    /// with `error.type = "failed"` and the cap's reason, the exit and the kept stream sizes
+    /// still those of the capture.
+    #[test]
+    fn container_output_past_the_cap_ends_its_span_failed() {
+        use review_telemetry::level::Level;
+        use review_telemetry::record::SealExit;
+        use review_telemetry::segment::writer::{Writer, WriterOptions};
+        use serde_json::Value;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("runtime");
+        write_runtime(
+            &fake,
+            "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then exit 0; fi\nhead -c 10000 /dev/zero\nexit 0\n",
+        );
+        let reason = "stdout was truncated at the 4 KiB output cap: it wrote 10000 bytes, of \
+                      which only the first 4 KiB were kept";
+        let writer = Writer::new(WriterOptions::new(
+            dir.path().join("telemetry"),
+            Level::Spans,
+        ))
+        .unwrap();
+        let dispatch = tracing::Dispatch::new(
+            review_telemetry::subscriber::TelemetrySubscriber::new(writer.clone()),
+        );
+        tracing::dispatcher::with_default(&dispatch, || {
+            let run = tracing::info_span!("af.run", af.run_id = "run-1");
+            let _run = run.enter();
+            let error = ContainerProvider::with_runtime(&fake)
+                .with_output_cap(4096)
+                .exec_evidenced_controlled(dir.path(), "/bin/true", &[], &[], LOAD_SAFE_WALL, None)
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("container command {reason}")),
+                "{error}"
+            );
+        });
+        writer.flush();
+        let text = std::fs::read_to_string(writer.path().unwrap()).unwrap();
+        writer.finish(SealExit::Ok).unwrap();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let start = lines
+            .iter()
+            .find(|line| {
+                line["t"] == "span_start"
+                    && line["attributes"]["af.process.kind"] == "container command"
+            })
+            .unwrap_or_else(|| panic!("no container command span: {text}"));
+        let end = lines
+            .iter()
+            .find(|line| line["t"] == "span_end" && line["span_id"] == start["span_id"])
+            .unwrap_or_else(|| panic!("no end for {start}"));
+        let attributes = &end["attributes"];
+        assert_eq!(end["status"], "error", "{end}");
+        assert_eq!(attributes["error.type"], "failed", "{end}");
+        assert_eq!(attributes["af.failure.class"], "failed", "{end}");
+        assert_eq!(attributes["af.failure.reason"], reason, "{end}");
+        assert_eq!(attributes["process.exit_code"], 0, "{end}");
+        assert_eq!(attributes["af.stdout_bytes"], 4096, "{end}");
+        assert_eq!(attributes["af.stderr_bytes"], 0, "{end}");
+        assert!(attributes["process.pid"].is_u64(), "{end}");
     }
 
     #[test]

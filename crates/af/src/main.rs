@@ -1265,6 +1265,10 @@ fn main() {
         std::process::exit(1);
     }
     let collects_after = collects_after_run(&command);
+    // A command that runs a kernel run records it (ADR-0153); every other command opens no
+    // telemetry directory.
+    let mut recording =
+        recorded_run(&command).map(|kind| telemetry::begin(kind, telemetry::command_chain(&argv)));
     // Registered best effort (ADR-0158): `af task plan|start` before `--workspace` resolves,
     // every other command once it ran.
     let registers = projects::lazy_target(&command);
@@ -1439,6 +1443,104 @@ fn main() {
             cli::TelemetryCommand::Reindex { json, dir } => {
                 ("af telemetry reindex", telemetry::reindex(json, dir))
             }
+            cli::TelemetryCommand::Runs {
+                since,
+                kind,
+                json,
+                dir,
+            } => ("af telemetry runs", telemetry::runs(json, dir, since, kind)),
+            cli::TelemetryCommand::Show {
+                run,
+                store,
+                attempt,
+                span,
+                depth,
+                json,
+                dir,
+            } => (
+                "af telemetry show",
+                telemetry::show(json, dir, run, store, attempt, span, depth),
+            ),
+            cli::TelemetryCommand::Turns {
+                run,
+                store,
+                attempt,
+                json,
+                dir,
+            } => (
+                "af telemetry turns",
+                telemetry::turns(json, dir, run, store, attempt),
+            ),
+            cli::TelemetryCommand::Tools {
+                run,
+                store,
+                attempt,
+                json,
+                dir,
+            } => (
+                "af telemetry tools",
+                telemetry::tools(json, dir, run, store, attempt),
+            ),
+            cli::TelemetryCommand::Context {
+                run,
+                attempt,
+                store,
+                raw,
+                json,
+                dir,
+            } => (
+                "af telemetry context",
+                telemetry::context(json, raw, dir, run, attempt, store),
+            ),
+            cli::TelemetryCommand::Reasoning {
+                run,
+                attempt,
+                store,
+                json,
+                dir,
+            } => (
+                "af telemetry reasoning",
+                telemetry::reasoning(json, dir, run, attempt, store),
+            ),
+            cli::TelemetryCommand::Search {
+                text,
+                since,
+                run,
+                store,
+                json,
+                dir,
+            } => (
+                "af telemetry search",
+                telemetry::search(json, dir, text, since, run, store),
+            ),
+            cli::TelemetryCommand::Config {
+                run,
+                store,
+                execution,
+                json,
+                dir,
+            } => (
+                "af telemetry config",
+                telemetry::config(json, dir, run, store, execution),
+            ),
+            cli::TelemetryCommand::Tail {
+                run,
+                store,
+                json,
+                dir,
+            } => ("af telemetry tail", telemetry::tail(json, dir, run, store)),
+            cli::TelemetryCommand::Ledger {
+                run,
+                store,
+                json,
+                dir,
+            } => (
+                "af telemetry ledger",
+                telemetry::ledger(json, dir, run, store),
+            ),
+            cli::TelemetryCommand::Gc { apply, json } => {
+                ("af telemetry gc", telemetry::gc(json, apply))
+            }
         },
         cli::Command::Completions { shell } => (
             "af completions",
@@ -1450,6 +1552,12 @@ fn main() {
         cli::Command::Help { words } => ("af help", help_command(&words)),
     };
     if let Some(signal) = interrupt::received() {
+        if let Some(recording) = recording.take() {
+            recording.finish(
+                interrupt::exit_code(signal),
+                review_telemetry::record::SealExit::Signal,
+            );
+        }
         exit_interrupted(&argv, prefix, signal, outcome.err());
     }
     if let Some(lazy) = registers.as_ref().filter(|lazy| !lazy.first) {
@@ -1481,6 +1589,16 @@ fn main() {
             1
         }
     };
+    if let Some(recording) = recording.take() {
+        recording.finish(
+            code,
+            if code == 0 {
+                review_telemetry::record::SealExit::Ok
+            } else {
+                review_telemetry::record::SealExit::Error
+            },
+        );
+    }
     if let Some(sweep) = sandbox_sweep {
         // The command's own work is done; a sweep still removing a large leftover finishes
         // before the process ends, so a stale directory never outlives two Task-running commands.
@@ -1735,6 +1853,28 @@ fn runs_task_work(command: &cli::Command) -> bool {
             cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. }
         ),
         _ => false,
+    }
+}
+
+/// The kind of kernel run a command runs, when it runs one: it records Telemetry (design §6).
+/// Every other command records nothing and opens no telemetry directory.
+fn recorded_run(command: &cli::Command) -> Option<review_pipeline::telemetry::RunKind> {
+    use review_pipeline::telemetry::RunKind;
+    match command {
+        cli::Command::Review(namespace) => {
+            matches!(namespace.command, None | Some(cli::ReviewCommand::Run(_)))
+                .then_some(RunKind::Review)
+        }
+        cli::Command::Provider {
+            command: cli::ProviderCommand::Doctor(_),
+        } => Some(RunKind::Review),
+        cli::Command::Task {
+            command: cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. },
+        } => Some(RunKind::Task),
+        cli::Command::SelfCmd {
+            command: cli::SelfCommand::Optimize { execute: true, .. },
+        } => Some(RunKind::Optimize),
+        _ => None,
     }
 }
 
@@ -2461,7 +2601,7 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     print_scope_authority_warnings(&ledger);
     let finding = ledger
         .finding_view(&options.key)
-        .ok_or_else(|| format!("no finding with key {}", options.key))?;
+        .ok_or_else(|| format!("no finding with key {}", terminal_text(&options.key)))?;
     let run_id = campaign_run_id(&options.campaign);
     let head = current_campaign_head(&store, &cas, &run_id)?;
     let proposals = campaign_proposals(&store, &cas, &run_id)?;

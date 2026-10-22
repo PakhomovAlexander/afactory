@@ -301,7 +301,7 @@ the lock `af self` holds while it changes the default or a pin, so one that beca
 stays.
 
 `af storage` prints what af holds, per kind, against the budget, and the free bytes against
-`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@3` document.
+`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@4` document.
 After every `af task run` and `af review run` the sweep holds af to `max_bytes`, evicting least
 recently used entries; it does not collect by age unless `[storage] auto_gc = true`. `af storage
 prune` previews the sweep with collection; `af storage prune --apply` performs it now. It collects
@@ -318,7 +318,13 @@ collected only after its gate cleanup is done, by the sweep and by `af task gc -
 until then it stays and the next sweep tries again. A Task cancelled or abandoned after its gate
 published is cleaned up the same way once no writer holds its lease. The sweep that ends `af task
 run` records what it removed and what failed on that Task as one `storage_sweep` observation:
-`af task show` prints a `storage sweep:` line and `--json` carries `storage_sweeps`.
+`af task show` prints a `storage sweep:` line and `--json` carries `storage_sweeps` (a telemetry
+segment it removed is counted there among the omitted removals, never listed under another kind).
+Telemetry is the kind `telemetry`: every registered telemetry directory, evicted segment by
+segment under the same rules and past its own `[telemetry] max_bytes`, with every applied sweep
+reclaiming its temporary files, unreferenced blobs and free index pages; `--json` of
+`af storage prune` (`af/storage-prune@4`) carries that part as `telemetry`
+([docs/telemetry.md](telemetry.md)).
 
 Below the free-disk floor af does not start a check, a measurement repetition or a Worker
 Attempt. Every volume af works on counts — the one holding its temporary directory and the one

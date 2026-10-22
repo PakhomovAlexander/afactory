@@ -4,28 +4,45 @@
 //!
 //! A leaf crate: it links nothing in the workspace, and `review-process` never links it
 //! (ADR-0026). The write side — [`record`], [`segment::writer`], [`blob`], [`redact`],
-//! [`level`], [`subscriber`], [`trace`], [`dirs`] — is for every crate that records. The read
-//! side — [`segment::reader`], [`index`] and [`status`] — is linked only by `af telemetry`,
-//! `af storage` and the TUI (clause 1); a source test holds every other crate to that.
+//! [`level`], [`subscriber`], [`trace`], [`dirs`], [`process`], [`stream`], [`content`] — is
+//! for every crate that records. The read side — [`segment::reader`], [`index`], [`status`],
+//! [`view`], [`ledger`], [`accounting`], [`turns`], [`content_view`], [`budget`],
+//! [`blob::reader`] and [`blob::collect`] — is linked only by
+//! `af telemetry`, `af storage` and the TUI (clause 1); a source test holds every other crate
+//! to that.
 //!
 //! [`Telemetry::start`] is the one entry point of a recording process. At `off` it returns a
 //! handle that touches nothing — no directory, no subscriber; at any other level the segment
 //! opens lazily at the first record, after the directory is registered, and a telemetry-only
 //! failure is one problem while the run continues (clause 7).
 
+pub mod accounting;
 pub mod blob;
+pub mod budget;
+pub mod content;
+pub mod content_view;
 pub mod dirs;
 pub mod index;
 pub mod layout;
+pub mod ledger;
 pub mod level;
+pub mod process;
 pub mod record;
 pub mod redact;
 pub mod segment;
 pub mod status;
+pub mod stream;
 pub mod subscriber;
 pub mod trace;
+pub mod turns;
+pub mod view;
 
 use std::path::PathBuf;
+
+/// `tracing`, for [`process_span!`]: a recording crate opens a process span without naming the
+/// substrate's version itself.
+#[doc(hidden)]
+pub use tracing as __tracing;
 
 use crate::dirs::Accounted;
 use crate::level::{Level, Settings};
@@ -48,6 +65,9 @@ pub struct Start {
     pub accounted_unknown: Option<String>,
     pub af_version: String,
     pub af_commit: String,
+    /// Called by the segment's owner before each write (fixtures stall it); `None` in
+    /// production.
+    pub write_hook: Option<segment::writer::WriteHook>,
     /// The subcommand chain the caller's argument parser matched (`["provider", "setup"]` for
     /// `af provider setup alice --kind claude`), passed in by the caller that parsed it: at
     /// `metrics` the header records `argv[0]` and exactly these words. Empty when no chain is
@@ -80,6 +100,7 @@ impl Telemetry {
             .with_settings(&start.settings);
         options.af_version = start.af_version;
         options.af_commit = start.af_commit;
+        options.write_hook = start.write_hook;
         if !start.command.is_empty() {
             options.command = options
                 .argv
@@ -128,6 +149,15 @@ impl Telemetry {
             && let Err(reason) = subscriber::install(writer.clone())
         {
             self.problems.push((ProblemWhat::Write, reason));
+        }
+    }
+
+    /// The shutdown begins (the run spans' ends, the `af.command` end, then the seal): from here
+    /// every write is the consumer thread's and every wait shares one bound — 2 s, renewed by
+    /// each content a released stream publishes under the seal (`Writer::renew_shutdown`).
+    pub fn begin_terminal(&self) {
+        if let Some(writer) = self.writer() {
+            writer.begin_terminal();
         }
     }
 

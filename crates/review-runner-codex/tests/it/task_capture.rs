@@ -50,9 +50,14 @@ fn held_output_retains_reported_overrun_without_admitting_the_message() {
         u128::from(u64::MAX) + 20
     );
     assert_eq!(returned.raw_artifact_ids.len(), 2);
+    // The raw-output rule: the Store keeps the turn line, never the agent message.
+    let kept: String = output
+        .split_inclusive('\n')
+        .filter(|line| !line.contains("agent_message"))
+        .collect();
     assert_eq!(
         cas.get(&returned.raw_artifact_ids[0]).unwrap(),
-        output.as_bytes()
+        kept.as_bytes()
     );
     assert_eq!(
         cas.get(&returned.raw_artifact_ids[1]).unwrap(),

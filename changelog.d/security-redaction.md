@@ -19,7 +19,8 @@
   lower-case words, so `af provider setup alice` records `provider setup`; `argv[0]` alone when
   none is passed in) and no working directory; `-p` and `--pw` values are withheld at `spans`. `sink = "otlp"`,
   `sink_endpoint` and `sink_headers_file` are refused at load as not implemented; `[telemetry]
-  max_bytes` is documented as advisory and `af telemetry status` warns when over it; its `--json`
+  max_bytes` is documented as the cap the storage sweep enforces and `af telemetry status` warns
+  when over it that the next sweep evicts; its `--json`
   paths (and `reindex --json`'s) are `~`-prefixed like the text output; no help or status text names
   an overhead gate; `docs/security/containment-probes.md` records the green `container-probes` job
   and closes live Gate routing. Fixtures outside this package's files changed only where they pinned

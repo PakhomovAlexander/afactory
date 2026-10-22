@@ -300,6 +300,34 @@ impl<'a> ReviewDomainState<'a> {
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         gate_attempt: Option<&str>,
     ) -> Result<Vec<String>, String> {
+        // The Gate is one `af.gate` span, each check an `af.check` below it (telemetry design
+        // §7.1); telemetry only.
+        let span = crate::telemetry::gate();
+        let mut passed = None;
+        let ran = span.in_scope(|| {
+            self.run_gate_checks(node_id, deadline, cancellation, gate_attempt, &mut passed)
+        });
+        crate::telemetry::gate_end(
+            &span,
+            self.checks.len(),
+            match (&ran, passed) {
+                (Err(reason), _) => Err(reason.as_str()),
+                (Ok(_), Some(true)) => Ok("passed"),
+                (Ok(_), _) => Ok("failed"),
+            },
+            "none",
+        );
+        ran
+    }
+
+    fn run_gate_checks(
+        &self,
+        node_id: &str,
+        deadline: Option<std::time::Instant>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        gate_attempt: Option<&str>,
+        passed: &mut Option<bool>,
+    ) -> Result<Vec<String>, String> {
         crate::task::control::check(cancellation)?;
 
         gate_remaining(self.check_timeout, deadline)?;
@@ -327,6 +355,7 @@ impl<'a> ReviewDomainState<'a> {
                 results.push(self.refused_below_floor(node_id, check, &refusal)?);
             }
             let decision = GateDecision::evaluate(&results);
+            *passed = Some(decision.passed());
             let artifact = self
                 .cas
                 .put_json(&serde_json::to_value(&decision).map_err(|e| e.to_string())?)
@@ -727,6 +756,7 @@ impl<'a> ReviewDomainState<'a> {
         }
 
         let decision = GateDecision::evaluate(&results);
+        *passed = Some(decision.passed());
         if decision.passed() {
             // Only a passing Gate dispatches reviewers, so only a passing Gate's build output
             // is worth carrying. The capture records its own refusals; it never changes the

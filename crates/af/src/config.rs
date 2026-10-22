@@ -916,9 +916,7 @@ pub(crate) fn editor_words(
 pub(crate) fn open_in_editor(path: &Path) -> Result<(), String> {
     let editor = std::env::var("EDITOR").ok();
     let (program, args) = editor_words(editor.as_deref(), path)?;
-    let status = std::process::Command::new(&program)
-        .args(&args)
-        .status()
+    let status = review_process::reap::status(std::process::Command::new(&program).args(&args))
         .map_err(|error| format!("running {program}: {error}"))?;
     if !status.success() {
         return Err(format!("{program} exited with {status}"));

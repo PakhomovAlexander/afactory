@@ -426,7 +426,7 @@ fn telemetry_status_refuses_a_foreign_index_schema() {
             "{stderr}"
         );
         assert!(stderr.contains("af/telemetry-index@2"), "{stderr}");
-        assert!(stderr.contains("af/telemetry-index@1"), "{stderr}");
+        assert!(stderr.contains("af/telemetry-index@3"), "{stderr}");
         assert!(stderr.contains("af telemetry reindex"), "{stderr}");
         assert!(!stderr.contains("directly"), "{stderr}");
     }
@@ -552,10 +552,11 @@ fn telemetry_documents_write_home_paths_as_the_text_output_does() {
 }
 
 /// No sink exists in this release: `sink = "otlp"` and the endpoint and headers keys refuse the
-/// load (audit L12); the help says `max_bytes` is advisory, and neither it nor `status` names an
-/// overhead gate (audit L17, I3).
+/// load (audit L12); the help and `status` say the storage sweep evicts sealed segments to meet
+/// `max_bytes` (the Storage Budget enforces it), and neither names an overhead gate (audit L17,
+/// I3).
 #[test]
-fn telemetry_refuses_the_unimplemented_sink_and_says_what_it_does_not_enforce() {
+fn telemetry_refuses_the_unimplemented_sink_and_says_how_the_cap_is_enforced() {
     let machine = Machine::new();
     for (key, value) in [
         ("AF_TELEMETRY__SINK", "otlp"),
@@ -573,7 +574,8 @@ fn telemetry_refuses_the_unimplemented_sink_and_says_what_it_does_not_enforce() 
         assert!(error.contains("not implemented in this release"), "{error}");
     }
     let (help, _) = text(&machine.af(&[], &["help", "telemetry"]));
-    assert!(help.contains("advisory on this release"), "{help}");
+    assert!(help.contains("sealed segments past it"), "{help}");
+    assert!(!help.contains("advisory"), "{help}");
     assert!(!help.contains("overhead gate"), "{help}");
     assert!(!help.contains("push after each run"), "{help}");
     let (stdout, _) = text(&machine.af(
@@ -581,6 +583,10 @@ fn telemetry_refuses_the_unimplemented_sink_and_says_what_it_does_not_enforce() 
         &["telemetry", "status"],
     ));
     assert!(stdout.contains("perturbing"), "{stdout}");
-    assert!(stdout.contains("advisory"), "{stdout}");
+    assert!(
+        stdout.contains("the storage sweep evicts sealed segments to meet it"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("advisory"), "{stdout}");
     assert!(!stdout.contains("overhead gate"), "{stdout}");
 }

@@ -242,6 +242,29 @@ pub(super) fn admit_integration_with_source(
     (compiler, lease)
 }
 
+/// While it lives, every insert of an event of one type into the Store at `directory` aborts,
+/// so the transaction inserting it rolls back whole.
+struct RefusedOnce(rusqlite::Connection);
+
+impl RefusedOnce {
+    fn new(directory: &std::path::Path, event_type: &str) -> Self {
+        let connection = rusqlite::Connection::open(directory.join("events.sqlite")).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER refuse_once BEFORE INSERT ON events WHEN NEW.type = '{event_type}' \
+                 BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END;"
+            ))
+            .unwrap();
+        Self(connection)
+    }
+}
+
+impl Drop for RefusedOnce {
+    fn drop(&mut self) {
+        self.0.execute_batch("DROP TRIGGER refuse_once").unwrap();
+    }
+}
+
 /// One Task named integration-review, Campaign review, stored in cas/ and events.sqlite.
 /// A real Proposal is checked, promoted, handed off and resolved by the next complete Review.
 pub fn run_integration_handoff() -> tempfile::TempDir {
@@ -254,11 +277,23 @@ pub fn run_integration_handoff_with(
     delay: std::time::Duration,
     max_rounds: u32,
 ) -> tempfile::TempDir {
+    run_integration_handoff_observed(delay, max_rounds, None)
+}
+
+/// The same handoff with `observer` told of every commit of every Store connection it opens.
+pub fn run_integration_handoff_observed(
+    delay: std::time::Duration,
+    max_rounds: u32,
+    observer: Option<std::sync::Arc<dyn review_store::store::observer::CommitObserver>>,
+) -> tempfile::TempDir {
     use review_core::task::review_handoff::*;
     use review_store::store::task::review_handoff::capture_task_review_handoff;
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    if let Some(observer) = &observer {
+        store.observe_commits(observer.clone());
+    }
     let definition = definition(&cas, true, false, &dir.path().join("calls"));
     let mut definition: toml::Value = toml::from_str(&definition).unwrap();
     for node in definition["nodes"].as_array_mut().unwrap() {
@@ -314,6 +349,13 @@ pub fn run_integration_handoff_with(
     .unwrap();
     let (report_id, report) = phase_runtime.execute_review_integration(&phase).unwrap();
     assert!(report.complete(), "{report:?}");
+    // Observed, the atomic integration's transaction first rolls back once, as a failed final
+    // insert would leave it, and then commits.
+    if observer.is_some() {
+        let _refused = RefusedOnce::new(dir.path(), "IntegrationCommitted@1");
+        host.finish_recorded_integration(&cas, &phase, &report_id)
+            .unwrap_err();
+    }
     let phase = host
         .finish_recorded_integration(&cas, &phase, &report_id)
         .unwrap();
@@ -474,10 +516,8 @@ pub fn run_integration_handoff_with(
         .unwrap()
         .replay(&review_store::store::task::task_run_id(lease.task_id()).unwrap())
         .unwrap();
-    let appended = shared
-        .lock()
-        .unwrap()
-        .publish_task_review_round(
+    let publish = || {
+        shared.lock().unwrap().publish_task_review_round(
             &cas,
             &lease,
             &permit,
@@ -488,7 +528,13 @@ pub fn run_integration_handoff_with(
                 authority: &next_authority,
             },
         )
-        .unwrap();
+    };
+    // Observed, the Round publication's transaction first rolls back once, then commits.
+    if observer.is_some() {
+        let _refused = RefusedOnce::new(dir.path(), "RoundStarted@1");
+        publish().unwrap_err();
+    }
+    let appended = publish().unwrap();
     assert_eq!(appended[0], *preview.round_event());
     assert_eq!(
         shared
@@ -511,6 +557,9 @@ pub fn run_integration_handoff_with(
     // Task handoff. Its predecessor compiler/host must hydrate historical roots without
     // inventing another Source capture, currentness permit or budget.
     let mut recovered_store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    if let Some(observer) = &observer {
+        recovered_store.observe_commits(observer.clone());
+    }
     let recovered_compiler = CampaignReviewPlanCompiler::reopen(
         &cas,
         CapturedCampaignReviewRound::load_recorded(

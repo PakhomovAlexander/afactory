@@ -261,7 +261,7 @@ class MemberRun(object):
         self.evaluation = None
         self.status = "complete"
         self.reasons = []
-        self.cpu_group = None
+        self.cpu_groups = {}
         # Whether the trusted authority freezes exactly this run's plan again (_replanned).
         self.replanned = False
         if provenance is None:
@@ -846,7 +846,8 @@ def _judge_run(cohort, calibration, run, trials_after):
     if verdict["provenance"] != "measured":
         # Readiness is empirical: synthetic or absent measurements never count.
         run.fail("invalid", "not_measured")
-    groups = set()
+    run.cpu_groups = {}
+    observed = {}
     for entry, evidence in zip(verdict["shards"], run.evaluation.evidence):
         if entry["status"] is None:
             run.fail("interrupted", "shard_missing")
@@ -855,18 +856,25 @@ def _judge_run(cohort, calibration, run, trials_after):
         elif entry["status"] == "failed":
             run.fail("failed", "shard_failed")
         if evidence.doc is not None:
-            groups.add(shard_group(cohort, evidence.doc))
-    if len(groups) == 1 and None not in groups:
-        run.cpu_group = groups.pop()
-    elif groups:
-        run.fail("invalid", "cpu_group_mismatch")
+            group = shard_group(cohort, evidence.doc)
+            observed[evidence.doc["shard"]] = group
+            if group is None:
+                run.fail("invalid", "cpu_group_mismatch")
+    # A wrong plan remains an invalid original, including when it substitutes a case.
+    # Report observations for the declared cases only; an absent case stays unobserved.
+    owners = {case["instance_id"]: case["shard"] for case in plan["cases"]}
+    for case in cohort["cases"]:
+        ident = case["instance_id"]
+        run.cpu_groups[ident] = observed.get(owners.get(ident))
     if any(entry["status"] != "healthy" for entry in verdict["health"]):
         run.fail("unhealthy", "health_unstable")
     if verdict["aggregate"]["coverage"]["missing_records"]:
         run.fail("interrupted", "records_incomplete")
-    if run.cpu_group is not None and record["injection"] and not any(
-            group["cpu_group"] == run.cpu_group for group in record["injection"]["groups"]):
-        run.fail("invalid", "unprepared_cpu_group")
+    if record["injection"]:
+        prepared = {group["cpu_group"] for group in record["injection"]["groups"]}
+        if any(group is not None and group not in prepared
+               for group in observed.values()):
+            run.fail("invalid", "unprepared_cpu_group")
 
 
 def _measured(run, instance_id, side, key):
@@ -909,7 +917,7 @@ def prepare(cohort, runs, tolerances):
             gid = allowed["group_id"]
             baseline, costs = [], []
             for run in runs.values():
-                if run.status != "complete" or run.cpu_group != gid:
+                if run.status != "complete" or run.cpu_groups.get(ident) != gid:
                     continue
                 if run.member["kind"] == "aa":
                     primary = _primary(run, ident)
@@ -1007,7 +1015,7 @@ def recompute_parameters(cohort, calibration, runs):
 
 
 def readiness(cohort, calibration, runs, refused, history):
-    """The af.perf-readiness/4 document of a cohort's recomputed evidence."""
+    """The af.perf-readiness/6 document of a cohort's recomputed evidence."""
     recomputed = recompute_parameters(cohort, calibration, runs)
     _judge_all(cohort, calibration, runs, kinds=contracts.MEMBER_KINDS)
     members = []
@@ -1015,7 +1023,7 @@ def readiness(cohort, calibration, runs, refused, history):
         run = runs[declared["member_id"]]
         entry = {"member_id": declared["member_id"], "kind": declared["kind"],
                  "status": run.status, "reasons": sorted(run.reasons),
-                 "provenance": run.provenance, "cpu_group": run.cpu_group,
+                 "provenance": run.provenance, "cpu_groups": dict(run.cpu_groups),
                  "verdict_sha256": None, "cases": {}, "qualifies": False}
         if run.status == "complete":
             verdict = run.evaluation.verdict
@@ -1026,7 +1034,8 @@ def readiness(cohort, calibration, runs, refused, history):
                 record = {"classification": case["status"], "injected_median_ms": None,
                           "target_ms": None, "injection_valid": None}
                 if level not in (None, "preparation"):
-                    group = contracts.calibration_group(calibration, ident, run.cpu_group)
+                    group = contracts.calibration_group(
+                        calibration, ident, run.cpu_groups.get(ident))
                     target = (contracts.target_ms(group, level)
                               if group is not None and group["a0"] is not None else None)
                     injected = _measured(run, ident, schedule.CANDIDATE, INJECTED_METRIC)
@@ -1078,13 +1087,15 @@ def summary_markdown(doc):
                 contracts.POWER_DETECTIONS_REQUIRED),
              "- Refused evidence: %d dispatch(es) and artifact(s)" % len(
                  doc["refused_evidence"]), "",
-             "| Member | Kind | Status | Group | Counts |", "| --- | --- | --- | --- | --- |"]
+             "| Member | Kind | Status | Observed groups | Counts |",
+             "| --- | --- | --- | --- | --- |"]
     for member in doc["members"]:
+        observed = sorted({group or "unobserved" for group in member["cpu_groups"].values()})
         lines.append("| %s | %s | %s | %s | %s |" % (
             member["member_id"], member["kind"],
             member["status"] if not member["reasons"] else "%s (%s)" % (
                 member["status"], ", ".join(member["reasons"])),
-            member["cpu_group"] or "-", "yes" if member["qualifies"] else "no"))
+            ", ".join(observed) or "-", "yes" if member["qualifies"] else "no"))
     lines += ["", doc["claim"] + ".", ""]
     return "\n".join(lines)
 

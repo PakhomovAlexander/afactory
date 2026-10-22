@@ -28,6 +28,10 @@ reflink-copy = "0.1.30"
 # the effective user a private root must belong to before it is narrowed, `dir` to list a
 # directory through its descriptor (local_fs.rs).
 nix = { version = "0.31.3", default-features = false, features = ["dir", "fs", "user"] }
+# The `af.store.append` and `af.store.read` phase spans (ADR-0153): `tracing` spans the
+# telemetry subscriber records, opened only inside a run; nothing here reads them.
+review-telemetry = { path = "../review-telemetry" }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
 [features]
 # Phase spans of canonicalization, CAS and projection for diagnostic builds only (ADR-0174).

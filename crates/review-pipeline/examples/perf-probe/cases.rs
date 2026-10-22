@@ -9,6 +9,7 @@
 //! of a seed, an application-cold or prewarmed projection as declared, and whatever the OS page
 //! cache holds; nothing here evicts or claims to evict physical caches.
 
+use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::path::Path;
 use std::process::Command;
@@ -17,7 +18,8 @@ use std::time::{Duration, Instant};
 use review_core::task::plan::ExecutionPlanV1;
 use review_core::{ArtifactEnvelope, Producer};
 use review_graph::task::CompiledTask;
-use review_pipeline::task::TaskRuntime;
+use review_pipeline::task::host::CapturedTaskAuthority;
+use review_pipeline::task::{TaskOperatorHost, TaskRuntime};
 use review_source_git::{Capture, Entry, EntryKind, Manifest, Repo};
 use review_store::canonical::blob_content_id;
 use review_store::{Cas, EventStore, StoreError};
@@ -104,19 +106,22 @@ pub fn execute(request: &Request, work: &Path) -> Outcome {
         "source_capture_seed_v1" => source_capture_seed(request, work, started),
         "state_projection_v2" => state_projection(request, work, started),
         "state_projection_seed_v1" => state_projection_seed(work, started),
-        "authority_plan_check_v1" => authority_sample(
+        "authority_seed_v1" => authority_seed(request, work, started),
+        "authority_plan_check_v3" | "authority_runtime_new_v3" => authority_sample_from(
             request.text("package"),
-            work,
-            AuthorityRegion::CurrentPlanCheck,
+            request
+                .seed
+                .as_deref()
+                .expect("an admitted seed reader has its seed"),
+            if request.contract.contract_id == "authority_plan_check_v3" {
+                AuthorityRegion::CurrentPlanCheck
+            } else {
+                AuthorityRegion::TaskRuntimeNew
+            },
             PRODUCTION_LEASE,
             started,
-        ),
-        "authority_runtime_new_v1" => authority_sample(
-            request.text("package"),
-            work,
-            AuthorityRegion::TaskRuntimeNew,
-            PRODUCTION_LEASE,
-            started,
+            SetupHooks::default(),
+            true,
         ),
         "persistence_fs_v1" => persistence(request, work, started),
         "cli_state_fixture_v1" => cli_state_fixture(work, started),
@@ -866,6 +871,59 @@ fn compiled_graph(cas: &Cas, plan: &ExecutionPlanV1) -> Result<CompiledTask, Fai
     .map_err(operation_error)
 }
 
+/// Write one admitted Task through this side's own public writers. Both setup leases are
+/// released while live; the process exits and closes every handle before the driver seals it.
+/// Its original revision deadline is preserved in every copy, never extended by a reader.
+fn authority_seed(request: &Request, work: &Path, started: Instant) -> Outcome {
+    let package = request.text("package");
+    sample(
+        started,
+        || {
+            let Some(Envelope::Package { digits, tens }) =
+                fixtures::envelope_fixture(package).map(|fixture| fixture.envelope)
+            else {
+                return Err(fixture_error("an authority seed needs a package fixture"));
+            };
+            let (fixture, author) = authority::build_then(
+                work,
+                Some(fixtures::padding(digits, tens)),
+                fixtures::TASK_LEASE_MS,
+                authority::Setup {
+                    hand_over: true,
+                    ..authority::Setup::default()
+                },
+                |_, _, _, packages, _| packages[fixtures::AUTHOR_PACKAGE].clone(),
+            )?;
+            Ok((Some(author), fixture))
+        },
+        |fixture| {
+            let state = fixture
+                .store
+                .task_projection(&fixture.cas, authority::TASK_ID)
+                .map_err(operation_error)?
+                .ok_or_else(|| operation_error("the seed Task is unknown"))?;
+            let plan_id = state
+                .plan_id
+                .as_deref()
+                .ok_or_else(|| operation_error("the seed Task has no plan"))?;
+            let (plan, graph) = load_plan_and_graph(&fixture.cas, plan_id)?;
+            authority::semantic_projection(&fixture.cas, &state, &plan, &graph)
+                .map_err(operation_error)
+        },
+        |_, projection| {
+            let projection = projection?;
+            let bytes = projection["packages"][fixtures::AUTHOR_PACKAGE]["envelope_bytes"]
+                .as_u64()
+                .ok_or_else(|| operation_error("the seed lacks its author package"))?;
+            Ok(observed(
+                digest_of(&projection)?,
+                bytes,
+                format!("package={package} seed=admitted_task setup_leases=released"),
+            ))
+        },
+    )
+}
+
 /// Measure the current-plan check or the first `TaskRuntime::new` of the two-node graph whose
 /// author package envelope is the named fixture's exact size. The setup writes' authority is
 /// captured before the first setup lease opens, and each setup write holds a production lease of
@@ -874,6 +932,7 @@ fn compiled_graph(cas: &Cas, plan: &ExecutionPlanV1) -> Result<CompiledTask, Fai
 /// ([`authority::require_cold`]); then a fresh production lease is taken and a fresh Store
 /// connection opened immediately before the region, so the region's lease is whole and its
 /// projection application-cold.
+#[cfg(test)]
 pub fn authority_sample(
     package: &str,
     work: &Path,
@@ -906,6 +965,7 @@ impl Default for SetupHooks<'_> {
 }
 
 /// [`authority_sample`] with test hooks where setup's costs lie.
+#[cfg(test)]
 pub fn authority_sample_with(
     package: &str,
     work: &Path,
@@ -913,6 +973,20 @@ pub fn authority_sample_with(
     lease: LeasePolicy,
     started: Instant,
     hooks: SetupHooks<'_>,
+) -> Outcome {
+    authority_sample_from(package, work, region, lease, started, hooks, false)
+}
+
+/// The seeded reader and the direct writer tests share exactly the same timed operation.
+/// `restore` reads the private seed copy at `work`; it never reuses a setup lease.
+pub fn authority_sample_from(
+    package: &str,
+    work: &Path,
+    region: AuthorityRegion,
+    lease: LeasePolicy,
+    started: Instant,
+    hooks: SetupHooks<'_>,
+    restore: bool,
 ) -> Outcome {
     let setup_span = perf_trace::span(Phase::ProbeSetup);
     let padding = match fixtures::envelope_fixture(package).map(|fixture| fixture.envelope) {
@@ -930,111 +1004,129 @@ pub fn authority_sample_with(
     let store_path = work.join("events.sqlite");
     let cas_path = work.join("cas");
     let after_region_capture = hooks.after_region_capture;
-    let built = authority::build_then(
-        work,
-        Some(padding),
-        fixtures::TASK_LEASE_MS,
-        authority::Setup {
-            hand_over: lease.renew_before_region,
-            after_capture: hooks.after_capture,
-            between_writes: hooks.between_writes,
-            ..authority::Setup::default()
-        },
-        |store, cas, task_lease, packages, inputs| {
-            let author = packages[fixtures::AUTHOR_PACKAGE].clone();
-            match cas.stored_len(&author) {
-                Ok(bytes) if Some(bytes) == declared => {}
-                other => {
-                    return Err((
-                        Some(author),
-                        fixture_error(format!(
-                            "the author package envelope is {other:?} bytes, not {declared:?}"
-                        )),
-                    ));
-                }
+    let measure = |store: &mut EventStore,
+                   cas: &Cas,
+                   task_lease: Option<&review_store::store::task::TaskLease>,
+                   packages: &BTreeMap<String, String>,
+                   inputs: &authority::Region<'_>| {
+        let author = packages[fixtures::AUTHOR_PACKAGE].clone();
+        match cas.stored_len(&author) {
+            Ok(bytes) if Some(bytes) == declared => {}
+            other => {
+                return Err((
+                    Some(author),
+                    fixture_error(format!(
+                        "the author package envelope is {other:?} bytes, not {declared:?}"
+                    )),
+                ));
             }
-            let measured = inputs.capture(|authority, host| {
-                after_region_capture()
-                    .map_err(|error| (Some(author.clone()), fixture_error(error)))?;
-                // The setup writers' leases ended after their writes; the region's own
-                // production lease is taken here, as the last Store write before it.
-                let region_lease = if lease.renew_before_region {
-                    authority::take_fresh_lease(store, cas)
-                        .map_err(|error| (Some(author.clone()), fixture_error(error)))?
-                } else {
-                    task_lease.clone()
-                };
-                if lease.wait_for_expiry {
-                    wait_for_expiry(store, &region_lease);
-                }
-                let task_lease = &region_lease;
-                let fresh = EventStore::open(&store_path)
-                    .map_err(fixture_error)
-                    .and_then(|store| {
-                        Cas::open_existing(&cas_path)
-                            .map_err(fixture_error)
-                            .map(|cas| (store, cas))
-                    })
-                    .and_then(|opened| {
-                        authority::require_cold(authority)
-                            .map_err(fixture_error)
-                            .map(|()| opened)
-                    });
-                let (mut fresh, fresh_cas) =
-                    fresh.map_err(|failure| (Some(author.clone()), failure))?;
-                drop(setup_span);
-                let setup_nanos = started.elapsed().as_nanos();
-                let bracket = control::begin();
-                let region_started = Instant::now();
-                let region_span = perf_trace::span(Phase::ProbeRegion);
-                let (region_nanos, result) = match region {
-                    AuthorityRegion::CurrentPlanCheck => {
-                        let checked = black_box(fresh.check_current_task_plan_for_recording(
+        }
+        let operation = |authority: &CapturedTaskAuthority<'_>, host: &dyn TaskOperatorHost| {
+            after_region_capture().map_err(|error| (Some(author.clone()), fixture_error(error)))?;
+            // The setup writers' leases ended after their writes; the region's own
+            // production lease is taken here, as the last Store write before it.
+            let region_lease = if lease.renew_before_region {
+                authority::take_fresh_lease(store, cas)
+                    .map_err(|error| (Some(author.clone()), fixture_error(error)))?
+            } else {
+                task_lease
+                    .expect("only direct writer tests keep a setup lease")
+                    .clone()
+            };
+            if lease.wait_for_expiry {
+                wait_for_expiry(store, &region_lease);
+            }
+            let task_lease = &region_lease;
+            let fresh = EventStore::open(&store_path)
+                .map_err(fixture_error)
+                .and_then(|store| {
+                    Cas::open_existing(&cas_path)
+                        .map_err(fixture_error)
+                        .map(|cas| (store, cas))
+                })
+                .and_then(|opened| {
+                    authority::require_cold(authority)
+                        .map_err(fixture_error)
+                        .map(|()| opened)
+                });
+            let (mut fresh, fresh_cas) =
+                fresh.map_err(|failure| (Some(author.clone()), failure))?;
+            drop(setup_span);
+            let setup_nanos = started.elapsed().as_nanos();
+            let bracket = control::begin();
+            let region_started = Instant::now();
+            let region_span = perf_trace::span(Phase::ProbeRegion);
+            let (region_nanos, result) = match region {
+                AuthorityRegion::CurrentPlanCheck => {
+                    let checked =
+                        black_box(fresh.check_current_task_plan_for_recording(
                             &fresh_cas, task_lease, authority,
                         ));
-                        review_core::perf_calibration::inject();
-                        let nanos = region_started.elapsed().as_nanos();
-                        drop(region_span);
-                        drop(bracket);
-                        let result = checked.map_err(|error| error.to_string()).and_then(|plan| {
-                            fresh
-                                .task_projection(&fresh_cas, authority::TASK_ID)
-                                .map_err(|error| error.to_string())
-                                .map(|state| (Some(plan), state))
-                        });
-                        (nanos, result)
-                    }
-                    AuthorityRegion::TaskRuntimeNew => {
-                        let constructed = black_box(TaskRuntime::new(
-                            &mut fresh,
-                            &fresh_cas,
-                            task_lease.clone(),
-                            authority,
-                            host,
-                        ));
-                        review_core::perf_calibration::inject();
-                        let nanos = region_started.elapsed().as_nanos();
-                        drop(region_span);
-                        drop(bracket);
-                        // The constructed runtime's own projection names the plan it loaded.
-                        let result = constructed
-                            .and_then(|runtime| runtime.projection())
-                            .map(|state| (None, Some(state)));
-                        (nanos, result)
-                    }
-                };
-                let result = result.map_err(|error| {
-                    classify(&fresh, task_lease, error, FailureKind::OperationFailed)
-                });
-                Ok((author.clone(), setup_nanos, region_nanos, result))
-            });
-            measured.map_err(|error| (Some(author.clone()), fixture_error(error)))?
-        },
-    );
-    let (fixture, author, setup_nanos, region_nanos, result) = match built {
-        Ok((fixture, Ok((author, setup, region, result)))) => {
-            (fixture, author, setup, region, result)
-        }
+                    review_core::perf_calibration::inject();
+                    let nanos = region_started.elapsed().as_nanos();
+                    drop(region_span);
+                    drop(bracket);
+                    let result = checked.map_err(|error| error.to_string()).and_then(|plan| {
+                        fresh
+                            .task_projection(&fresh_cas, authority::TASK_ID)
+                            .map_err(|error| error.to_string())
+                            .map(|state| (Some(plan), state))
+                    });
+                    (nanos, result)
+                }
+                AuthorityRegion::TaskRuntimeNew => {
+                    let constructed = black_box(TaskRuntime::new(
+                        &mut fresh,
+                        &fresh_cas,
+                        task_lease.clone(),
+                        authority,
+                        host,
+                    ));
+                    review_core::perf_calibration::inject();
+                    let nanos = region_started.elapsed().as_nanos();
+                    drop(region_span);
+                    drop(bracket);
+                    // The constructed runtime's own projection names the plan it loaded.
+                    let result = constructed
+                        .and_then(|runtime| runtime.projection())
+                        .map(|state| (None, Some(state)));
+                    (nanos, result)
+                }
+            };
+            let result = result
+                .map_err(|error| classify(&fresh, task_lease, error, FailureKind::OperationFailed));
+            Ok((author.clone(), setup_nanos, region_nanos, result))
+        };
+        let measured = if restore {
+            inputs.with_cold_validator(operation)
+        } else {
+            inputs.capture(operation)
+        };
+        measured.map_err(|error| (Some(author.clone()), fixture_error(error)))?
+    };
+    let built = if restore {
+        authority::restore_then(work, Some(padding), |store, cas, packages, inputs| {
+            measure(store, cas, None, packages, inputs)
+        })
+    } else {
+        authority::build_then(
+            work,
+            Some(padding),
+            fixtures::TASK_LEASE_MS,
+            authority::Setup {
+                hand_over: lease.renew_before_region,
+                after_capture: hooks.after_capture,
+                between_writes: hooks.between_writes,
+                ..authority::Setup::default()
+            },
+            |store, cas, lease, packages, inputs| {
+                measure(store, cas, Some(lease), packages, inputs)
+            },
+        )
+        .map(|(fixture, value)| (fixture.cas, value))
+    };
+    let (cas, author, setup_nanos, region_nanos, result) = match built {
+        Ok((cas, Ok((author, setup, region, result)))) => (cas, author, setup, region, result),
         Ok((_, Err((author, failure)))) => return before_region(started, author, failure),
         Err(failure) => return before_region(started, None, failure),
     };
@@ -1046,13 +1138,13 @@ pub fn authority_sample_with(
             .ok_or_else(|| operation_error("the fixture Task has no plan"))?;
         let (plan, graph) = match plan {
             Some(plan) => {
-                let graph = compiled_graph(&fixture.cas, &plan)?;
+                let graph = compiled_graph(&cas, &plan)?;
                 (plan, graph)
             }
-            None => load_plan_and_graph(&fixture.cas, &plan_id)?,
+            None => load_plan_and_graph(&cas, &plan_id)?,
         };
-        let projection = authority::semantic_projection(&fixture.cas, &state, &plan, &graph)
-            .map_err(operation_error)?;
+        let projection =
+            authority::semantic_projection(&cas, &state, &plan, &graph).map_err(operation_error)?;
         let bytes = projection["packages"][fixtures::AUTHOR_PACKAGE]["envelope_bytes"]
             .as_u64()
             .ok_or_else(|| operation_error("the plan does not depend on the author package"))?;

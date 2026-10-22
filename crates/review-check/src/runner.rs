@@ -188,6 +188,11 @@ pub struct CheckRunner<'a> {
     /// is legitimately long); a pipeline may tighten it.
     timeout: std::time::Duration,
     cancellation: Option<&'a std::sync::atomic::AtomicBool>,
+    /// What the caller declares for the check fingerprint (telemetry only, never recorded in
+    /// the result): without it the fingerprint is `unknown`.
+    fingerprint: Option<crate::fingerprint::FingerprintInputs>,
+    /// The warm cache result the caller observed (`af.check.warm`): `hit`, `miss` or `none`.
+    warm: Option<&'static str>,
     /// The bytes kept of each output stream of a host-local check; a check that writes more
     /// fails, naming the cap.
     output_cap: usize,
@@ -214,8 +219,24 @@ impl<'a> CheckRunner<'a> {
             ],
             timeout: std::time::Duration::from_secs(3600),
             cancellation: None,
+            fingerprint: None,
+            warm: None,
             output_cap: MAX_CAPTURED_STREAM_BYTES,
         }
+    }
+
+    /// Declare what the check fingerprint covers beyond the runner's own knowledge: the
+    /// Snapshot, the toolchain and every runtime path the caller introduced into the
+    /// environment (design §9). Telemetry reads it; the recorded result never does.
+    pub fn with_fingerprint(mut self, inputs: crate::fingerprint::FingerprintInputs) -> Self {
+        self.fingerprint = Some(inputs);
+        self
+    }
+
+    /// The warm cache result of this check (`hit`, `miss` or `none`), for `af.check.warm`.
+    pub fn with_warm_result(mut self, warm: &'static str) -> Self {
+        self.warm = Some(warm);
+        self
     }
 
     /// Keep at most `cap` bytes of each stream of a host-local check instead of
@@ -280,24 +301,82 @@ impl<'a> CheckRunner<'a> {
         self.run_traced(definition).0
     }
 
-    /// [`Self::run`], with how the process ended beside the recorded result. A check whose
-    /// process ran while descendant cleanup fell back to the process-group kill says so in its
-    /// recorded `reason` ([`review_process::descendant_cleanup_fallback`]).
+    /// [`Self::run`], with how the process ended beside the recorded result. The execution is
+    /// one `af.check` process span (design §7.1, §7.2). A check whose process ran while
+    /// descendant cleanup fell back to the process-group kill says so in its recorded `reason`
+    /// ([`review_process::descendant_cleanup_fallback`]).
     pub fn run_traced(&self, definition: &CheckDefinition) -> (CheckResult, CheckEnding) {
-        let (result, ending) = self.run_process(definition);
-        if ending == CheckEnding::NotStarted {
-            return (result, ending);
-        }
-        let fallback = review_process::descendant_cleanup_fallback();
-        (noting_cleanup_fallback(result, fallback), ending)
+        let span = self.span(definition);
+        let mut facts = review_telemetry::process::ProcessFacts::default();
+        let (result, ending, capped) =
+            span.in_scope(|| self.run_process(definition, &span, &mut facts));
+        let result = if ending == CheckEnding::NotStarted {
+            result
+        } else {
+            let fallback = review_process::descendant_cleanup_fallback();
+            noting_cleanup_fallback(result, fallback)
+        };
+        finish_span(&span, &facts, &result, ending, capped);
+        (result, ending)
     }
 
-    fn run_process(&self, definition: &CheckDefinition) -> (CheckResult, CheckEnding) {
+    /// The `af.check` span of one execution, opened only inside a span of a run.
+    fn span(&self, definition: &CheckDefinition) -> tracing::Span {
+        if !review_telemetry::subscriber::in_run() {
+            return tracing::Span::none();
+        }
+        review_telemetry::process_span!(
+            "af.check",
+            process.command = definition.command.program.as_str(),
+            af.check.name = definition.name.as_str(),
+            af.check.fingerprint = tracing::field::Empty,
+            af.check.status = tracing::field::Empty,
+            af.check.warm = self.warm,
+        )
+    }
+
+    /// The check fingerprint of a host-local execution, computed only for a recorded span.
+    fn fingerprint(&self, span: &tracing::Span, definition: &CheckDefinition, argv: &[String]) {
+        if span.is_disabled() {
+            return;
+        }
+        let value = crate::fingerprint::fingerprint(
+            &crate::fingerprint::Execution {
+                program: &definition.command.program,
+                args: argv,
+                timeout: self.timeout,
+                workdir: &self.workdir,
+                environment: &self.local_env,
+            },
+            self.fingerprint.as_ref(),
+        );
+        match review_telemetry::subscriber::Typed::identity(value.as_str()) {
+            Some(digest) if value != crate::fingerprint::UNKNOWN => {
+                span.record("af.check.fingerprint", digest.field());
+            }
+            _ => {
+                span.record("af.check.fingerprint", crate::fingerprint::UNKNOWN);
+            }
+        }
+    }
+
+    /// The recorded result, how the process ended, and whether a stream wrote past its cap (the
+    /// result then fails naming it).
+    fn run_process(
+        &self,
+        definition: &CheckDefinition,
+        span: &tracing::Span,
+        facts: &mut review_telemetry::process::ProcessFacts,
+    ) -> (CheckResult, CheckEnding, bool) {
         let base = base_result(definition);
         let argv = match resolved_args(definition, &base) {
             Ok(argv) => argv,
-            Err(result) => return (*result, CheckEnding::NotStarted),
+            Err(result) => {
+                span.record("af.check.fingerprint", crate::fingerprint::UNKNOWN);
+                return (*result, CheckEnding::NotStarted, false);
+            }
         };
+        self.fingerprint(span, definition, &argv);
 
         let mut cmd = std::process::Command::new(&definition.command.program);
         cmd.args(&argv);
@@ -306,7 +385,7 @@ impl<'a> CheckRunner<'a> {
         for (key, value) in &self.local_env {
             cmd.env(key, value);
         }
-        let (output, stderr_held, truncated) = match self.run_with_deadline(&mut cmd) {
+        let (output, stderr_held, truncated) = match self.run_with_deadline(&mut cmd, facts) {
             RunResult::Completed {
                 output,
                 stderr_held,
@@ -318,6 +397,7 @@ impl<'a> CheckRunner<'a> {
                 stderr,
                 ending,
             } => {
+                record_output(span, &stdout, &stderr);
                 return (
                     CheckResult {
                         reason: Some(reason),
@@ -326,6 +406,7 @@ impl<'a> CheckRunner<'a> {
                         ..base
                     },
                     ending,
+                    false,
                 );
             }
             RunResult::TimedOut => {
@@ -338,6 +419,7 @@ impl<'a> CheckRunner<'a> {
                         ..base
                     },
                     CheckEnding::TimedOut,
+                    false,
                 );
             }
             RunResult::CouldNotStart(error) => {
@@ -350,6 +432,7 @@ impl<'a> CheckRunner<'a> {
                         ..base
                     },
                     CheckEnding::NotStarted,
+                    false,
                 );
             }
         };
@@ -359,7 +442,13 @@ impl<'a> CheckRunner<'a> {
         } else {
             CheckEnding::Signaled
         };
-        (self.finish(base, output, stderr_held, truncated), ending)
+        record_output(span, &output.stdout, &output.stderr);
+        let capped = truncated.is_some();
+        (
+            self.finish(base, output, stderr_held, truncated),
+            ending,
+            capped,
+        )
     }
 
     /// Execute through the normal shared runner and retain the actual AF-observed host interval.
@@ -389,6 +478,36 @@ impl<'a> CheckRunner<'a> {
             std::time::Duration,
         ) -> Result<(std::process::Output, bool), String>,
     {
+        // The provider supervises its own processes and records them; this span records what
+        // the provider returned. Its executor is the provider's, which the runner cannot name,
+        // so the fingerprint is `unknown`.
+        let span = self.span(definition);
+        span.record("af.check.fingerprint", crate::fingerprint::UNKNOWN);
+        let mut facts = review_telemetry::process::ProcessFacts::default();
+        let result = span.in_scope(|| self.run_provided(definition, execute, &mut facts));
+        let ending = if result.status == CheckStatus::NotRun && result.exit_code.is_none() {
+            CheckEnding::NotStarted
+        } else {
+            CheckEnding::Exited
+        };
+        finish_span(&span, &facts, &result, ending, false);
+        result
+    }
+
+    fn run_provided<F>(
+        &self,
+        definition: &CheckDefinition,
+        execute: F,
+        facts: &mut review_telemetry::process::ProcessFacts,
+    ) -> CheckResult
+    where
+        F: FnOnce(
+            &str,
+            &[String],
+            &[(String, String)],
+            std::time::Duration,
+        ) -> Result<(std::process::Output, bool), String>,
+    {
         let base = base_result(definition);
         if self
             .cancellation
@@ -410,7 +529,16 @@ impl<'a> CheckRunner<'a> {
             &self.portable_env,
             self.timeout,
         ) {
-            Ok((output, stderr_held)) => self.finish(base, output, stderr_held, None),
+            Ok((output, stderr_held)) => {
+                *facts = review_telemetry::process::ProcessFacts {
+                    stdout_bytes: Some(output.stdout.len() as u64),
+                    stderr_bytes: Some(output.stderr.len() as u64),
+                    stderr_held,
+                    ..Default::default()
+                }
+                .with_status(&output.status);
+                self.finish(base, output, stderr_held, None)
+            }
             Err(error) => CheckResult {
                 reason: Some(format!("execution provider refused or failed: {error}")),
                 ..base
@@ -607,7 +735,11 @@ impl CheckRunner<'_> {
     /// is over when its leader exits, so background descendants, a `setsid` one included on
     /// Linux, are ended before the tree it ran in is sealed rather than being allowed to hold
     /// evidence pipes open or write after the check.
-    fn run_with_deadline(&self, cmd: &mut std::process::Command) -> RunResult {
+    fn run_with_deadline(
+        &self,
+        cmd: &mut std::process::Command,
+        facts: &mut review_telemetry::process::ProcessFacts,
+    ) -> RunResult {
         let captured = run_supervised_captured_bounded(
             cmd,
             None,
@@ -616,6 +748,17 @@ impl CheckRunner<'_> {
             self.cancellation,
             self.output_cap,
         );
+        *facts = review_telemetry::process::ProcessFacts {
+            pid: captured.pid,
+            rusage: captured.rusage.map(resource_use),
+            stdout_bytes: Some(captured.stdout.len() as u64),
+            stderr_bytes: Some(captured.stderr.len() as u64),
+            stderr_held: captured.stderr_held,
+            ..Default::default()
+        };
+        if let Ok(status) = &captured.status {
+            *facts = std::mem::take(facts).with_status(status);
+        }
         let truncated = captured.truncation.reason();
         if self.cancellation.is_some() {
             return match captured.status {
@@ -657,6 +800,73 @@ impl CheckRunner<'_> {
             Err(error) => RunResult::CouldNotStart(std::io::Error::other(error)),
         }
     }
+}
+
+/// What the supervisor delivered, as Telemetry records it.
+fn resource_use(rusage: review_process::Rusage) -> review_telemetry::process::ResourceUse {
+    review_telemetry::process::ResourceUse {
+        user_ms: rusage.user_ms,
+        system_ms: rusage.system_ms,
+        max_rss_bytes: rusage.max_rss_bytes,
+    }
+}
+
+/// At `content`, the check's stdout and stderr as blobs named by `af.check.output` on its
+/// `af.check` span (design §8), each judged per line and only then bounded, counted against the
+/// process's content allowance; below `content`, nothing beyond the sizes the span records.
+fn record_output(span: &tracing::Span, stdout: &[u8], stderr: &[u8]) {
+    if span.is_disabled() || !review_telemetry::content::recording() {
+        return;
+    }
+    for (stream, bytes) in [("stdout", stdout), ("stderr", stderr)] {
+        if bytes.is_empty() {
+            continue;
+        }
+        review_telemetry::content::on_span_outside_attempts(
+            span,
+            review_telemetry::content::event::CHECK_OUTPUT,
+            review_telemetry::record::Attrs::new().enumerated("af.stream", stream),
+            bytes,
+            review_telemetry::blob::Media::Text,
+        );
+    }
+}
+
+/// End an `af.check` span: the process's facts, `af.check.status`, and on anything but a pass
+/// the kernel's class — `gate_failed` for a failed check, `timed_out`, `refused` for a
+/// cancelled one, `unavailable` for one that never started, `failed` for evidence not
+/// preserved and for output past the cap (`capped`), whatever the exit code — with the
+/// recorded reason.
+fn finish_span(
+    span: &tracing::Span,
+    facts: &review_telemetry::process::ProcessFacts,
+    result: &CheckResult,
+    ending: CheckEnding,
+    capped: bool,
+) {
+    if span.is_disabled() {
+        return;
+    }
+    let status = match result.status {
+        CheckStatus::Passed => "passed",
+        CheckStatus::Failed => "failed",
+        CheckStatus::NotRun => "not_run",
+    };
+    span.record(
+        "af.check.status",
+        review_telemetry::subscriber::Typed::enumerated(status).field(),
+    );
+    let class = match (result.status, ending) {
+        (CheckStatus::Passed, _) => None,
+        (CheckStatus::Failed, _) if capped => Some("failed"),
+        (CheckStatus::Failed, _) => Some("gate_failed"),
+        (CheckStatus::NotRun, CheckEnding::TimedOut) => Some("timed_out"),
+        (CheckStatus::NotRun, CheckEnding::Cancelled) => Some("refused"),
+        (CheckStatus::NotRun, CheckEnding::NotStarted) => Some("unavailable"),
+        (CheckStatus::NotRun, _) => Some("failed"),
+    };
+    let reason = result.reason.as_deref().unwrap_or(status);
+    review_telemetry::process::finish(span, facts, class.map(|class| (class, reason)));
 }
 
 fn describe(error: &ArgError) -> String {

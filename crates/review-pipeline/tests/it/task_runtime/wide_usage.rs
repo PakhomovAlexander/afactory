@@ -184,6 +184,9 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
         );
         let mut wide_receipts = 0;
         for event in f.store.replay(&run).unwrap() {
+            if review_store::store::task::is_execution_started(&event) {
+                continue;
+            }
             let transition: review_core::task::event::TaskTransitionV1 =
                 serde_json::from_value(event.payload).unwrap();
             if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
@@ -313,6 +316,9 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
     assert_eq!(state.execution.unwrap().budget.committed_tokens(), exact);
     let mut settled = 0;
     for event in f.store.replay(&run).unwrap() {
+        if review_store::store::task::is_execution_started(&event) {
+            continue;
+        }
         let transition: review_core::task::event::TaskTransitionV1 =
             serde_json::from_value(event.payload).unwrap();
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =

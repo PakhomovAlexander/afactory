@@ -14,11 +14,13 @@ the operator provides, what each job does, and what has not been demonstrated.
 
 ## What has not been demonstrated
 
-No hosted execution of this workflow has run. The workflow's syntax was checked with actionlint,
-its event and authority decisions with fixture events, and its build-once shard path locally
-with stand-in binaries. None of that shows that a hosted runner provides the scratch filesystem,
-that the build image builds on it, how long a run takes, or that the collector fetches its
-artifacts in time. Those are operational evidence of a real authorized run.
+Hosted partial A/A run [39633877665](https://github.com/PakhomovAlexander/afactory/actions/runs/39633877665)
+built the GNU products and verified the 2-GiB scratch on Ubuntu. It retained all 216 slots,
+including 28 setup failures caused by a detached release update check, and aggregation failed
+on the artifact action's flat single-download layout. These original failures are retained.
+[ADR-0192](adr/0192-admit-single-downloads-and-run-cli-measurements-offline.md) repairs those
+boundaries; a new hosted run must verify the repaired path and collection before calibration.
+Fixture tests alone do not establish hosted readiness, performance or collection before expiry.
 
 No calibration cohort has run either. Its declaration, preparation, injection and readiness
 rules were checked against a synthetic cohort generated at test time
@@ -113,8 +115,8 @@ declared profile; the floor is never lowered.
    rerun of an earlier attempt's plan, verifies and unpacks the build with `ci-unpack`, prepares
    the scratch, checks credentials, runs exactly its shard, and stages its evidence, failed or
    not, as `af-perf-<run>-shard-<i>`.
-4. **aggregate** (always, one per planned run). Downloads every shard artifact into its own
-   directory, imports them with `ci-aggregate`, recomputes the verdict, writes the report and the
+4. **aggregate** (always, one per planned run). Downloads shard artifacts into named directories
+   (one match is flat in download-artifact v8), imports them with `ci-aggregate`, recomputes the verdict, writes the report and the
    job summary from the validated report, and uploads the run bundle as `af-perf-<run>-run`
    with the report and summary as views, and the report directory as `perf-report-<run>`.
 5. **Performance check** (always). Reads the trusted control's enforcement policy and checks the
@@ -245,7 +247,9 @@ Every step below is a reviewed change or a dispatch, and every failure stays in 
    member's original (ADR-0183). The environment must be a GitHub-hosted one.
 
    `--group` names each allowed CPU model and the registry-pinned sample image a hosted runner
-   may report. `--repository` and `--branch` name the only producer of member runs: a
+   may report. Each case uses the group observed by its paired shard; different shards may
+   have different allowed CPU models. Readiness records that binding per case.
+   `--repository` and `--branch` name the only producer of member runs: a
    `workflow_dispatch` of `.github/workflows/performance.yml` on that branch of that repository. The cohort fixes 20 A/A members on days 0-1, the preparation members on day 2,
    and 30 descriptive and 10 power trials on the remaining days. A changed policy or
    environment starts a new named cohort; the old one is kept.

@@ -117,7 +117,7 @@ mod linux {
     use std::time::{Duration, Instant};
 
     use nix::sys::signal::{Signal, kill, killpg};
-    use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+    use nix::sys::wait::{WaitPidFlag, WaitStatus};
     use nix::unistd::Pid;
 
     /// One process as `/proc/<pid>/stat` describes it.
@@ -246,10 +246,12 @@ mod linux {
         }
     }
 
-    /// Reap one killed child of this process, polling until `deadline`.
+    /// Reap one killed child of this process, polling until `deadline`, under the lock every
+    /// reap of this process takes ([`crate::reap::wait_pid`]), so that it never lands inside
+    /// another run's measured reap.
     fn reap(pid: i32, deadline: Instant) {
         loop {
-            match waitpid(Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG)) {
+            match crate::reap::wait_pid(Pid::from_raw(pid), WaitPidFlag::empty()) {
                 Ok(WaitStatus::StillAlive) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(1));
                 }

@@ -106,7 +106,8 @@ under the state root's `telemetry/`. These eight clauses bind every package of t
    object keyed by digest holds only what is intrinsic to the retained bytes. A harness's untrusted content, from its streams
    or its native telemetry, is published only after Telemetry's own whole-capture release
    decision, with kernel-derived correlation ids standing in for the harness's identifiers until
-   then. The rules carry a version, `af-redact/1`, that every blob records.
+   then. The rules carry a version that every blob records: `af-redact/1` at this decision,
+   `af-redact/2` since the security audit's rule change.
 7. **Telemetry fails open for the run and closed for the reader.** A telemetry-only failure (an
    unwritable or overlapping directory, a full segment, a locked index) is recorded once as a
    problem and the run continues; ADR-0144's free-disk floor still refuses work, telemetry or

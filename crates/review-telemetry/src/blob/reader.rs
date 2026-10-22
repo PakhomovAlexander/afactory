@@ -56,6 +56,38 @@ pub fn exists_in(blobs: &Confined, digest: &str) -> bool {
         .is_some_and(|(prefix, name)| prefix.kind(&name) == Some(EntryKind::File))
 }
 
+/// Which of `digests` have their blob file in the opened `blobs/` directory, each judged as
+/// [`exists_in`] judges one, with every prefix directory opened once for all the digests below
+/// it: a reader that checks many retained objects (an unchanged `status` over a large corpus)
+/// pays one directory open per prefix, never one per object or occurrence.
+pub fn present_in<'a>(
+    blobs: &Confined,
+    digests: impl IntoIterator<Item = &'a str>,
+) -> std::collections::BTreeSet<&'a str> {
+    let mut by_prefix: std::collections::BTreeMap<&str, Vec<(&'a str, &'a str)>> =
+        std::collections::BTreeMap::new();
+    for digest in digests {
+        if let Some(hex) = digest
+            .strip_prefix("sha256:")
+            .filter(|hex| hex.len() == 64 && crate::redact::is_lower_hex(hex))
+        {
+            by_prefix.entry(&hex[..2]).or_default().push((digest, hex));
+        }
+    }
+    let mut present = std::collections::BTreeSet::new();
+    for (name, objects) in by_prefix {
+        let Ok(Some(prefix)) = blobs.child_dir(name) else {
+            continue;
+        };
+        for (digest, hex) in objects {
+            if prefix.kind(&format!("{hex}.gz")) == Some(EntryKind::File) {
+                present.insert(digest);
+            }
+        }
+    }
+    present
+}
+
 /// Whether the blob file of `digest` exists beneath the root: the root is opened once, and
 /// everything beneath it judged relative to it ([`exists_in`]).
 pub fn exists(layout: &Layout, digest: &str) -> bool {

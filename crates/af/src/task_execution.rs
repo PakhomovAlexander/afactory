@@ -2276,7 +2276,7 @@ pub(super) fn run(
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
     let lease = store
-        .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)
+        .take_task_lease(&cas, id, &format!("cli-{}", writer_pid()), 15_000)
         .map_err(|e| e.to_string())?;
     let outcome = (|| {
         confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
@@ -2963,6 +2963,21 @@ fn remote_check_records(
 /// 64 bits from the operating system's random source, through the standard library's
 /// per-process hash keys. It is the only entropy a Task's opening transition carries, and it is
 /// journaled there: replay reads it back and never draws it again.
+/// The process id a resuming writer's name records. A fixture that compares two runs' Store
+/// event logs byte for byte under the injected clock (`AF_TEST_CLOCK_FIXED_MS`) names it with
+/// `AF_TEST_WRITER_PID`, the one other thing that tells two runs of one fixture apart.
+/// Production release binaries never read the setting.
+fn writer_pid() -> u32 {
+    #[cfg(debug_assertions)]
+    if let Some(pid) = std::env::var("AF_TEST_WRITER_PID")
+        .ok()
+        .and_then(|value| value.parse().ok())
+    {
+        return pid;
+    }
+    std::process::id()
+}
+
 fn opening_nonce() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     std::collections::hash_map::RandomState::new()
@@ -3312,6 +3327,11 @@ fn inspection(
     let mut runtime_attempt_ids = BTreeSet::new();
     let mut decisions = Vec::new();
     for event in events {
+        // A lease's execution marker is its own event kind, not a `TaskTransition@5`: the
+        // history lists the transitions only.
+        if review_store::store::task::is_execution_started(&event) {
+            continue;
+        }
         let transition =
             review_store::store::task::read_task_transition(&event).map_err(|e| e.to_string())?;
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =

@@ -863,10 +863,24 @@ impl<'a> CapturedTaskHost<'a> {
         let mut feedback_code = None;
         let mut native_failure = None;
         let outputs = (|| {
-            let (context, _) = worker.contract.read_context(cas, attempt.context_id())?;
+            let (context, rendered) = worker.contract.read_context(cas, attempt.context_id())?;
             if context.invocation != *input {
                 return Err("Worker context belongs to another invocation".into());
             }
+            // At `content` Telemetry keeps the prompt bytes and the manifest for the operator;
+            // nothing reads them back into any Worker's input (ADR-0153 clause 2).
+            crate::telemetry::context_compose(
+                attempt.context_id(),
+                context
+                    .manifest
+                    .entries
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect(),
+                context.manifest.rendered_bytes,
+                context.manifest.estimated_tokens,
+                Some((&rendered, &context.manifest)),
+            );
             if matches!(worker.transport, WorkerTransport::Model(_))
                 && context.manifest.estimated_tokens > attempt.reservation().tokens
             {

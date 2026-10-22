@@ -76,6 +76,23 @@ impl EventStore {
                 artifact_refs: vec![],
                 payload,
             };
+            // A lease's execution marker: written by the lease holder, at a time not before
+            // the last recorded, and nothing more.
+            if super::is_execution_started(&event) {
+                let marker = super::read_execution_started(&event)?;
+                if writer.as_ref() != Some(&(marker.writer.clone(), marker.epoch)) {
+                    return Err(conflict(format!(
+                        "Task writer lease is expired or fenced: event {sequence} was written by \
+                         {} epoch {}, not the lease holder",
+                        marker.writer, marker.epoch
+                    )));
+                }
+                if marker.now_unix_ms < clock {
+                    return Err(conflict("Task lease observation clock moved backwards"));
+                }
+                clock = marker.now_unix_ms;
+                continue;
+            }
             let value = read_task_transition(&event)?;
             if sequence == 0 {
                 if !matches!(value.change, TaskChangeV1::Opened { .. }) || value.epoch != 1 {

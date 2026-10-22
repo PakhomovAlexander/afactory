@@ -1,13 +1,19 @@
 //! The telemetry crate's integration fixtures (design §15 P1, §16 items 3, 5 and 7).
 
 mod blobs;
+mod budget;
+mod config;
+mod consumer;
+mod content;
 mod dirs;
+mod history;
 mod identity;
 mod index;
 mod redaction;
 mod schemas;
 mod segments;
 mod sources;
+mod streams;
 mod subscriber;
 
 use std::path::{Path, PathBuf};
@@ -26,6 +32,44 @@ pub fn options(root: &Path, level: Level) -> WriterOptions {
     options.af_commit = "0123456789abcdef".into();
     options.redactor = Redactor::new();
     options
+}
+
+/// The owner of a fixture's configuration parts: the execution `execution_id`, of a run the
+/// fixture does not otherwise name.
+pub fn config_owner(execution_id: &str) -> review_telemetry::segment::writer::ConfigOwner<'_> {
+    review_telemetry::segment::writer::ConfigOwner {
+        execution_id,
+        run_id: "run-1",
+        run_span_id: "0000000000000001",
+    }
+}
+
+/// What the Storage Budget counts of `path` and everything beneath it (ADR-0159 clause 13),
+/// measured here apart from the crate: the allocated bytes of the regular files, a file several
+/// hard links reach once, directories and links nothing; a missing path nothing.
+pub fn allocated(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt as _;
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    let mut linked = std::collections::BTreeSet::new();
+    let mut total = 0;
+    let mut pending = vec![(path.to_path_buf(), metadata)];
+    while let Some((path, metadata)) = pending.pop() {
+        if metadata.is_dir() {
+            for entry in std::fs::read_dir(&path).unwrap().filter_map(Result::ok) {
+                pending.push((
+                    entry.path(),
+                    std::fs::symlink_metadata(entry.path()).unwrap(),
+                ));
+            }
+        } else if metadata.is_file()
+            && (metadata.nlink() == 1 || linked.insert((metadata.dev(), metadata.ino())))
+        {
+            total += metadata.blocks() * 512;
+        }
+    }
+    total
 }
 
 pub fn writer(root: &Path, level: Level) -> Writer {

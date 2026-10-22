@@ -195,6 +195,9 @@ fn owned_review_runs_real_slice_attempts_under_one_task_and_replays_lossless_can
             .unwrap()
             .into_iter()
             .filter_map(|event| {
+                if review_store::store::task::is_execution_started(&event) {
+                    return None;
+                }
                 let transition: review_core::task::event::TaskTransitionV1 =
                     serde_json::from_value(event.payload).unwrap();
                 match transition.change {

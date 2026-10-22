@@ -1,4 +1,5 @@
 use super::*;
+use review_core::task::execution_started::TaskExecutionStartedV1;
 
 #[test]
 fn heartbeat_reads_exact_fresh_writer_and_expiry_without_granting_authority() {
@@ -565,6 +566,127 @@ fn projection_applies_the_same_writers_earlier_time_and_fences_every_other_case(
             apply_unstamped(&f, &finished, &waiting(&lease.writer, lease.epoch, time)).unwrap_err();
         assert!(error.to_string().contains("finished"), "{error}");
     }
+}
+
+/// Telemetry numbers a run's executions by the leases that began kernel execution (design §5):
+/// each leaves one execution marker (`TaskExecutionStarted@1`, its own event of the Task log)
+/// before anything else it does, so a lease that
+/// stops before any Attempt is counted like one that prepared several; a lease that only
+/// planned, or one a housekeeping command took, leaves none. A second runtime of the same lease
+/// records nothing more.
+#[test]
+fn only_leases_that_began_a_kernel_run_are_counted() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let count = |f: &Fixture, epoch: u64| {
+        f.store
+            .task_run_executions_before(&f.cas, "task-1", epoch)
+            .unwrap()
+    };
+    let planning = f.open();
+    f.propose(&planning);
+    f.store.release_task_lease(&f.cas, &planning).unwrap();
+    let housekeeping = f
+        .store
+        .take_task_lease(&f.cas, "task-1", "af-storage-sweep-1", 60_000)
+        .unwrap();
+    f.store.release_task_lease(&f.cas, &housekeeping).unwrap();
+    let stopped = f
+        .store
+        .take_task_lease(&f.cas, "task-1", "writer-3", 60_000)
+        .unwrap();
+    assert_eq!(stopped.epoch(), 3);
+    assert_eq!(
+        count(&f, 3),
+        0,
+        "planning and housekeeping began no kernel run"
+    );
+    // An execution that stops before any Attempt (a refusal, an interrupt) still began one.
+    assert!(
+        f.store
+            .begin_task_execution(&f.cas, &stopped)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        f.store
+            .begin_task_execution(&f.cas, &stopped)
+            .unwrap()
+            .is_none(),
+        "a second runtime of the same lease records nothing more"
+    );
+    f.store.release_task_lease(&f.cas, &stopped).unwrap();
+    assert_eq!(count(&f, 3), 0, "a lease is not before itself");
+    assert_eq!(count(&f, 4), 1, "the stopped execution counts");
+    let run = f
+        .store
+        .take_task_lease(&f.cas, "task-1", "writer-4", 60_000)
+        .unwrap();
+    f.store.begin_task_execution(&f.cas, &run).unwrap();
+    f.store.admit_task_plan(&f.cas, &run, &f.authority).unwrap();
+    f.record_execution_inputs(&run);
+    f.store
+        .reserve_task_attempt(&f.cas, &run, "root.nodes.write", &f.authority)
+        .unwrap();
+    assert_eq!(count(&f, 4), 1);
+    assert_eq!(count(&f, 5), 2, "each execution its own ordinal");
+    // The marker is its own event of the Task log, beside the transitions.
+    let markers: Vec<RunEvent> = f
+        .store
+        .replay(&task_run_id("task-1").unwrap())
+        .unwrap()
+        .into_iter()
+        .filter(crate::store::task::is_execution_started)
+        .collect();
+    assert_eq!(markers.len(), 2);
+    for marker in &markers {
+        assert_eq!(marker.event_type, EventType::TaskExecutionStartedV1);
+        assert!(marker.artifact_refs.is_empty(), "references nothing");
+        crate::store::task::read_execution_started(marker).unwrap();
+    }
+    // The marker is the lease's own: a fenced writer cannot record one.
+    let now = crate::store::task::now().unwrap();
+    let state = f.store.task_projection(&f.cas, "task-1").unwrap().unwrap();
+    let fenced = TaskExecutionStartedV1::new("writer-3", 3, now);
+    assert!(apply_marker(&state, &fenced).is_err());
+    let current = TaskExecutionStartedV1::new("writer-4", 4, now);
+    let error = apply_marker(&state, &current).unwrap_err();
+    assert!(error.to_string().contains("once"), "{error}");
+    // A finished Task refuses it, even from its current lease.
+    let mut finished = state.clone();
+    finished.execution_epochs.clear();
+    assert!(apply_marker(&finished, &current).is_ok());
+    finished.phase = TaskPhaseV1::Finished {
+        result_id: "sha256:finished".into(),
+    };
+    let error = apply_marker(&finished, &current).unwrap_err();
+    assert!(error.to_string().contains("finished"), "{error}");
+}
+
+/// Apply the execution marker `marker` to a copy of `state` as the next event of its log.
+fn apply_marker(
+    state: &TaskProjection,
+    marker: &TaskExecutionStartedV1,
+) -> Result<TaskProjection, StoreError> {
+    let (event_type, payload) =
+        crate::store::task::review_handoff::encode_execution_started(marker)?;
+    let mut next = state.clone();
+    next.apply_execution_started(
+        &RunEvent {
+            event_id: String::new(),
+            run_id: task_run_id(&state.task_id)?,
+            sequence: state.next_sequence,
+            event_type,
+            occurred_at: String::new(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload,
+        },
+        marker,
+    )?;
+    Ok(next)
 }
 
 /// L4 of the 2026-10-20 audit: a Task stopped before it finished — cancelled, or abandoned by a

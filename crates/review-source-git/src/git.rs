@@ -32,6 +32,102 @@ use review_store::Cas;
 
 use crate::manifest::{Manifest, decode_path, encode_path};
 
+/// One git process as its `af.git` span records it.
+struct GitProcess {
+    status: std::process::ExitStatus,
+    pid: Option<u32>,
+    rusage: Option<review_process::Rusage>,
+    stdout_bytes: Option<usize>,
+    stderr_bytes: usize,
+    stderr_held: bool,
+}
+
+impl GitProcess {
+    fn output(output: &review_process::SupervisedOutput) -> Self {
+        Self {
+            status: output.status,
+            pid: output.pid,
+            rusage: output.rusage,
+            stdout_bytes: Some(output.stdout.len()),
+            stderr_bytes: output.stderr.len(),
+            stderr_held: output.stderr_held,
+        }
+    }
+}
+
+/// The `af.git` process span of one git invocation (telemetry design §7.1), named by its
+/// subcommand (`af.git.op`). Opened only inside a recorded span, so a git process outside a run
+/// (or on a thread no span was handed to) records nothing.
+fn git_span(args: &[String]) -> tracing::Span {
+    if !review_telemetry::process::in_run() {
+        return tracing::Span::none();
+    }
+    review_telemetry::process_span!(
+        "af.git",
+        process.command = "git",
+        af.git.op = args.first().map(String::as_str),
+    )
+}
+
+fn rusage(rusage: review_process::Rusage) -> review_telemetry::process::ResourceUse {
+    review_telemetry::process::ResourceUse {
+        user_ms: rusage.user_ms,
+        system_ms: rusage.system_ms,
+        max_rss_bytes: rusage.max_rss_bytes,
+    }
+}
+
+/// End an `af.git` span. A git process that exited is `ok` whatever its code: git answers
+/// questions with its exit code (`rev-parse --verify`, `cat-file -e`), and `process.exit_code`
+/// says which; only a process the supervisor had to end or could not start is an `error`.
+fn record_git(span: &tracing::Span, outcome: Result<GitProcess, &SupervisedError>) {
+    if span.is_disabled() {
+        return;
+    }
+    use review_telemetry::process::{ProcessFacts, finish};
+    match outcome {
+        Ok(process) => finish(
+            span,
+            &ProcessFacts {
+                pid: process.pid,
+                rusage: process.rusage.map(rusage),
+                stdout_bytes: process.stdout_bytes.map(|bytes| bytes as u64),
+                stderr_bytes: Some(process.stderr_bytes as u64),
+                stderr_held: process.stderr_held,
+                ..Default::default()
+            }
+            .with_status(&process.status),
+            None,
+        ),
+        Err(SupervisedError::TimedOut {
+            stdout,
+            stderr,
+            pid,
+            rusage: used,
+        }) => finish(
+            span,
+            &ProcessFacts {
+                pid: *pid,
+                rusage: used.map(rusage),
+                stdout_bytes: Some(stdout.len() as u64),
+                stderr_bytes: Some(stderr.len() as u64),
+                ..Default::default()
+            },
+            Some(("timed_out", "git exceeded its deadline")),
+        ),
+        Err(SupervisedError::Spawn(_)) => finish(
+            span,
+            &ProcessFacts::default(),
+            Some(("unavailable", "git could not be started")),
+        ),
+        Err(error) => finish(
+            span,
+            &ProcessFacts::default(),
+            Some(("failed", &error.to_string())),
+        ),
+    }
+}
+
 pub const DEFAULT_GIT_TIMEOUT_SECONDS: u64 = 300;
 const DEFAULT_GIT_TIMEOUT: Duration = Duration::from_secs(DEFAULT_GIT_TIMEOUT_SECONDS);
 
@@ -417,9 +513,12 @@ impl Repo {
         args: Vec<String>,
         input: Option<Vec<u8>>,
     ) -> Result<Output, GitError> {
-        let output =
+        let span = git_span(&args);
+        let output = span.in_scope(|| {
             run_supervised_with_policy(command, input, self.limit(), ExitPolicy::KillProcessGroup)
-                .map_err(|error| self.supervision_error(args, error))?;
+        });
+        record_git(&span, output.as_ref().map(GitProcess::output));
+        let output = output.map_err(|error| self.supervision_error(args, error))?;
         let mut stderr = output.stderr;
         if output.stderr_held {
             stderr.extend_from_slice(b"\nstderr was still held after 5 seconds\n");
@@ -648,62 +747,81 @@ impl Repo {
             cmd.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", joined);
         }
         let display_args = vec!["fast-import".into(), "--quiet".into(), "--force".into()];
+        let span = git_span(&display_args);
+        let entered = span.enter();
         let output = run_supervised_streaming(
             &mut cmd,
             self.limit(),
             ExitPolicy::KillProcessGroup,
             |input| -> Result<(), GitError> {
-            let mut input = BufWriter::with_capacity(256 * 1024, input);
-            input
+                let mut input = BufWriter::with_capacity(256 * 1024, input);
+                input
                 .write_all(
                     b"feature done\ncommit refs/heads/review-kernel-synthetic\ncommitter Review Kernel <review-kernel@invalid> 0 +0000\ndata 0\ndeleteall\n",
                 )
                 .map_err(GitError::Io)?;
-            for entry in &manifest.entries {
-                let path = decode_path(&entry.path);
-                if path.is_empty()
-                    || path.contains(&0)
-                    || path.split(|byte| *byte == b'/').any(|component| {
-                        component.is_empty() || component == b"." || component == b".."
-                    })
-                {
-                    return Err(GitError::MalformedTreeDiff {
-                        detail: format!("synthetic manifest has invalid path {:?}", entry.path),
-                    });
+                for entry in &manifest.entries {
+                    let path = decode_path(&entry.path);
+                    if path.is_empty()
+                        || path.contains(&0)
+                        || path.split(|byte| *byte == b'/').any(|component| {
+                            component.is_empty() || component == b"." || component == b".."
+                        })
+                    {
+                        return Err(GitError::MalformedTreeDiff {
+                            detail: format!("synthetic manifest has invalid path {:?}", entry.path),
+                        });
+                    }
+                    let mut object = cas
+                        .open_for_verified_read(&entry.content)
+                        .map_err(|error| GitError::Cas(error.to_string()))?;
+                    let stored_len = object.len();
+                    if stored_len != entry.size {
+                        return Err(GitError::MalformedTreeDiff {
+                            detail: format!(
+                                "synthetic manifest size disagrees at {:?}",
+                                entry.path
+                            ),
+                        });
+                    }
+                    writeln!(
+                        input,
+                        "M {} inline {}",
+                        entry.kind.mode(),
+                        quote_fast_import_path(&path)
+                    )
+                    .map_err(GitError::Io)?;
+                    writeln!(input, "data {stored_len}").map_err(GitError::Io)?;
+                    let copied = object
+                        .copy_to_and_verify(&mut input)
+                        .map_err(|error| GitError::Cas(error.to_string()))?;
+                    if copied != stored_len {
+                        return Err(GitError::MalformedTreeDiff {
+                            detail: format!(
+                                "synthetic manifest size disagrees at {:?}",
+                                entry.path
+                            ),
+                        });
+                    }
+                    input.write_all(b"\n").map_err(GitError::Io)?;
                 }
-                let mut object = cas
-                    .open_for_verified_read(&entry.content)
-                    .map_err(|error| GitError::Cas(error.to_string()))?;
-                let stored_len = object.len();
-                if stored_len != entry.size {
-                    return Err(GitError::MalformedTreeDiff {
-                        detail: format!("synthetic manifest size disagrees at {:?}", entry.path),
-                    });
-                }
-                writeln!(
-                    input,
-                    "M {} inline {}",
-                    entry.kind.mode(),
-                    quote_fast_import_path(&path)
-                )
-                .map_err(GitError::Io)?;
-                writeln!(input, "data {stored_len}").map_err(GitError::Io)?;
-                let copied = object
-                    .copy_to_and_verify(&mut input)
-                    .map_err(|error| GitError::Cas(error.to_string()))?;
-                if copied != stored_len {
-                    return Err(GitError::MalformedTreeDiff {
-                        detail: format!("synthetic manifest size disagrees at {:?}", entry.path),
-                    });
-                }
-                input.write_all(b"\n").map_err(GitError::Io)?;
-            }
-            input.write_all(b"done\n").map_err(GitError::Io)?;
-            input.flush().map_err(GitError::Io)?;
-            Ok(())
-        },
-        )
-        .map_err(|error| match error {
+                input.write_all(b"done\n").map_err(GitError::Io)?;
+                input.flush().map_err(GitError::Io)?;
+                Ok(())
+            },
+        );
+        let input_failed =
+            SupervisedError::Stdin(std::io::Error::other("the object stream into git failed"));
+        record_git(
+            &span,
+            match &output {
+                Ok(output) => Ok(GitProcess::output(output)),
+                Err(SupervisedStreamError::Process(error)) => Err(error),
+                Err(SupervisedStreamError::Input(_)) => Err(&input_failed),
+            },
+        );
+        drop(entered);
+        let output = output.map_err(|error| match error {
             SupervisedStreamError::Process(error) => {
                 self.supervision_error(display_args.clone(), error)
             }
@@ -946,15 +1064,30 @@ impl Repo {
         );
         let mut cmd = self.command();
         cmd.args(args);
-        let display_args = args.iter().map(|arg| (*arg).to_string()).collect();
-        run_supervised_duplex(
-            &mut cmd,
-            self.limit(),
-            ExitPolicy::KillProcessGroup,
-            writer,
-            reader,
-        )
-        .map_err(|error| self.supervision_error(display_args, error))
+        let display_args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        let span = git_span(&display_args);
+        let output = span.in_scope(|| {
+            run_supervised_duplex(
+                &mut cmd,
+                self.limit(),
+                ExitPolicy::KillProcessGroup,
+                writer,
+                reader,
+            )
+        });
+        record_git(
+            &span,
+            output.as_ref().map(|output| GitProcess {
+                status: output.status,
+                pid: output.pid,
+                rusage: output.rusage,
+                // The caller streams stdout itself; the supervisor counts none of it.
+                stdout_bytes: None,
+                stderr_bytes: output.stderr.len(),
+                stderr_held: output.stderr_held,
+            }),
+        );
+        output.map_err(|error| self.supervision_error(display_args, error))
     }
 
     /// The repository's own identity, independent of clone path: its sorted root commit set.

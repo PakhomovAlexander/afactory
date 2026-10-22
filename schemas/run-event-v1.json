@@ -32,6 +32,7 @@
       "type": "string",
       "enum": [
         "TaskTransition@5",
+        "TaskExecutionStarted@1",
         "TaskReviewResultSelected@1",
         "CheckCompleted@1",
         "CampaignOpened@1",
@@ -150,6 +151,25 @@
         "properties": {
           "payload": {
             "$ref": "urn:af:schema:task-transition:5"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskExecutionStarted@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:task-execution-started:1"
           }
         }
       }

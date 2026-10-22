@@ -19,6 +19,7 @@ use serde_json::Value;
 use crate::cas::{Cas, CasError};
 
 mod attempt_wall;
+pub mod observer;
 pub mod task;
 
 /// Read a non-negative SQLite integer column as `u64`.
@@ -186,6 +187,9 @@ pub struct EventStore {
     /// current on-disk object is streamed and verified again; this removes repeated JSON/base64
     /// allocations without turning process history into integrity authority.
     validated_change_sets: std::collections::BTreeMap<String, Arc<review_core::ChangeSetV1>>,
+    /// Told of every commit through this connection ([`observer`]); `None` defers to the
+    /// process's observer, if any.
+    commit_observer: Option<Arc<dyn observer::CommitObserver>>,
 }
 
 #[derive(Default)]
@@ -366,7 +370,29 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             validated_change_sets: std::collections::BTreeMap::new(),
+            commit_observer: None,
         })
+    }
+
+    /// The path of this Store's database file, when it has one: its directory is the Store's
+    /// instance, which Telemetry names by its canonical path (design §5). A read; it changes
+    /// nothing.
+    pub fn database_path(&self) -> Option<std::path::PathBuf> {
+        self.conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from)
+    }
+
+    /// The highest committed event sequence of `run_id`, `None` before its first event. A read;
+    /// it changes nothing.
+    pub fn latest_run_sequence(&self, run_id: &str) -> Result<Option<u64>, StoreError> {
+        let latest: Option<i64> = self.conn.query_row(
+            "SELECT MAX(sequence) FROM events WHERE run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        Ok(latest.and_then(|sequence| u64::try_from(sequence).ok()))
     }
 
     /// Open an existing database to read it and change nothing: no file is created, no schema is
@@ -400,6 +426,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             validated_change_sets: std::collections::BTreeMap::new(),
+            commit_observer: None,
         })
     }
 
@@ -424,6 +451,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             validated_change_sets: std::collections::BTreeMap::new(),
+            commit_observer: self.commit_observer.clone(),
         })
     }
 
@@ -470,6 +498,7 @@ impl EventStore {
             conn,
             task_cache: std::cell::RefCell::new(None),
             validated_change_sets: std::collections::BTreeMap::new(),
+            commit_observer: None,
         })
     }
 
@@ -513,9 +542,46 @@ impl EventStore {
         task_permit: Option<&task::WritePermit>,
         review_permit: Option<&task::execution::review::WritePermit>,
     ) -> Result<Vec<RunEvent>, StoreError> {
+        self.append_batch_observed(run_id, cas, events, task_permit, review_permit, None)
+    }
+
+    /// [`Self::append_batch_inner`], telling the commit observer of `applied`, the Task
+    /// projection the one Task transition of `events` leaves, beside the committed events.
+    fn append_batch_observed(
+        &mut self,
+        run_id: &str,
+        cas: &Cas,
+        events: &[NewEvent],
+        task_permit: Option<&task::WritePermit>,
+        review_permit: Option<&task::execution::review::WritePermit>,
+        applied: Option<&task::TaskProjection>,
+    ) -> Result<Vec<RunEvent>, StoreError> {
         if events.is_empty() {
             return Ok(Vec::new());
         }
+        let span = store_span("af.store.append", "append");
+        let appended = span.in_scope(|| {
+            self.append_batch_committed(run_id, cas, events, task_permit, review_permit, applied)
+        });
+        if !span.is_disabled() {
+            let bytes = events
+                .iter()
+                .map(|event| event.payload.to_string().len() as u64)
+                .fold(0_u64, u64::saturating_add);
+            record_store(&span, events.len(), bytes, appended.as_ref().err());
+        }
+        appended
+    }
+
+    fn append_batch_committed(
+        &mut self,
+        run_id: &str,
+        cas: &Cas,
+        events: &[NewEvent],
+        task_permit: Option<&task::WritePermit>,
+        review_permit: Option<&task::execution::review::WritePermit>,
+        applied: Option<&task::TaskProjection>,
+    ) -> Result<Vec<RunEvent>, StoreError> {
         if events.iter().any(|e| {
             matches!(
                 e.event_type,
@@ -527,10 +593,12 @@ impl EventStore {
                 "Task Review selection requires the trusted Task publication entry point".into(),
             ));
         }
-        if events
-            .iter()
-            .any(|e| matches!(e.event_type, EventType::TaskTransitionV5))
-            && task_permit.is_none()
+        if events.iter().any(|e| {
+            matches!(
+                e.event_type,
+                EventType::TaskTransitionV5 | EventType::TaskExecutionStartedV1
+            )
+        }) && task_permit.is_none()
         {
             return Err(StoreError::Conflict(
                 "Task events require the trusted Task entry point".into(),
@@ -588,6 +656,7 @@ impl EventStore {
         }
         let appended = insert_events(&tx, cas, run_id, events, first)?;
         tx.commit()?;
+        self.committed(cas, &appended, applied);
         Ok(appended)
     }
 
@@ -705,7 +774,7 @@ impl EventStore {
         run_id: &str,
         budget: &mut ReplayBudget,
     ) -> Result<Result<Vec<RunEvent>, ReplayCeiling>, StoreError> {
-        match self.replay_bounded(run_id, 0, Some(budget)) {
+        match self.replay_bounded(run_id, 0, Some(budget), &mut 0) {
             Ok(events) => Ok(Ok(events)),
             Err(Bounded::Ceiling(ceiling)) => Ok(Err(ceiling)),
             Err(Bounded::Store(error)) => Err(error),
@@ -719,11 +788,20 @@ impl EventStore {
         run_id: &str,
         first_sequence: u64,
     ) -> Result<Vec<RunEvent>, StoreError> {
-        self.replay_bounded(run_id, first_sequence, None)
-            .map_err(|bounded| match bounded {
-                Bounded::Store(error) => error,
-                Bounded::Ceiling(ceiling) => StoreError::Conflict(ceiling.to_string()),
-            })
+        let span = store_span("af.store.read", "replay");
+        let mut bytes = 0_u64;
+        let replayed = span.in_scope(|| {
+            self.replay_bounded(run_id, first_sequence, None, &mut bytes)
+                .map_err(|bounded| match bounded {
+                    Bounded::Store(error) => error,
+                    Bounded::Ceiling(ceiling) => StoreError::Conflict(ceiling.to_string()),
+                })
+        });
+        if !span.is_disabled() {
+            let events = replayed.as_ref().map_or(0, Vec::len);
+            record_store(&span, events, bytes, replayed.as_ref().err());
+        }
+        replayed
     }
 
     fn replay_bounded(
@@ -731,6 +809,7 @@ impl EventStore {
         run_id: &str,
         first_sequence: u64,
         mut budget: Option<&mut ReplayBudget>,
+        bytes: &mut u64,
     ) -> Result<Vec<RunEvent>, Bounded> {
         let first_sequence_sql = i64::try_from(first_sequence).map_err(|_| {
             StoreError::Conflict("event replay sequence exceeds SQLite range".into())
@@ -778,6 +857,7 @@ impl EventStore {
             // event would rebuild a different state than the run committed, silently — the
             // exact failure the publication ordering exists to prevent, on the read side.
             let (mut event, raw_sequence, refs, payload) = row.map_err(StoreError::from)?;
+            *bytes = bytes.saturating_add(payload.len() as u64);
             if let Some(budget) = budget.as_deref_mut() {
                 budget.charge(refs.len() + payload.len())?;
             }
@@ -866,6 +946,58 @@ impl EventStore {
 
     pub fn is_empty(&self, run_id: &str) -> Result<bool, StoreError> {
         Ok(self.len(run_id)? == 0)
+    }
+}
+
+/// A Store phase span (`af.store.append`, `af.store.read`; telemetry design §7.1), opened only
+/// inside a span of a run, so a Store touched outside one records nothing. Telemetry
+/// only: what the Store commits or returns never depends on it (ADR-0153).
+fn store_span(name: &'static str, op: &'static str) -> tracing::Span {
+    if !review_telemetry::subscriber::in_run() {
+        return tracing::Span::none();
+    }
+    match name {
+        "af.store.append" => tracing::info_span!(
+            "af.store.append",
+            af.store.op = op,
+            af.store.events = tracing::field::Empty,
+            af.store.bytes = tracing::field::Empty,
+            af.outcome = tracing::field::Empty,
+            af.failure.class = tracing::field::Empty,
+            af.failure.reason = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            af.status = tracing::field::Empty,
+        ),
+        _ => tracing::info_span!(
+            "af.store.read",
+            af.store.op = op,
+            af.store.events = tracing::field::Empty,
+            af.store.bytes = tracing::field::Empty,
+            af.outcome = tracing::field::Empty,
+            af.failure.class = tracing::field::Empty,
+            af.failure.reason = tracing::field::Empty,
+            error.type = tracing::field::Empty,
+            af.status = tracing::field::Empty,
+        ),
+    }
+}
+
+/// End a Store phase span: its event count and payload bytes, `ok` or the Store's refusal.
+fn record_store(span: &tracing::Span, events: usize, bytes: u64, error: Option<&StoreError>) {
+    span.record("af.store.events", events as u64);
+    span.record("af.store.bytes", bytes);
+    match error {
+        None => {
+            span.record("af.outcome", "succeeded");
+            span.record("af.status", "ok");
+        }
+        Some(error) => {
+            span.record("af.outcome", "failed");
+            span.record("af.status", "error");
+            span.record("af.failure.class", "refused");
+            span.record("error.type", "refused");
+            span.record("af.failure.reason", error.to_string().as_str());
+        }
     }
 }
 

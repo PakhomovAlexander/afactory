@@ -27,6 +27,12 @@ fn layout() -> Layout {
             state_file: base.join("state/af/self.toml"),
             cache_file: base.join("cache/af/self/latest.toml"),
         },
+        telemetry: TelemetryRoots {
+            registry: base.join("state/af/telemetry-dirs.v1.json"),
+            current: Some(base.join("state/af/telemetry")),
+            max_bytes: Some(4 << 30),
+            state_root: base.join("state/af"),
+        },
     };
     Layout {
         _root: root,
@@ -652,6 +658,8 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         kind: Kind::Task,
         path: PathBuf::from(format!("/state/store-{index}")),
         task_id: Some(format!("task-{index}")),
+        segment_id: None,
+        directory: None,
         bytes: 10,
         rule: Rule::Collection,
         total_after: Some(0),
@@ -671,6 +679,17 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         gate_cleanups: Vec::new(),
         registry_dropped: Vec::new(),
         failures,
+        telemetry: TelemetrySweep {
+            max_bytes: None,
+            total_before: 0,
+            total_after: 0,
+            stop: Stop::Fits,
+            reclaimed: Vec::new(),
+            notes: Vec::new(),
+            registry_dropped: Vec::new(),
+            changed: Vec::new(),
+            problems: Vec::new(),
+        },
     };
     assert!(
         observation(&report(vec![], vec![], true)).is_none(),
@@ -704,6 +723,8 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         kind: Kind::Survey,
         path: PathBuf::from("/state/af/project/ab/cas/objects/cd/ef"),
         task_id: None,
+        segment_id: None,
+        directory: None,
         bytes: 4096,
         rule: Rule::Budget,
         total_after: Some(0),
@@ -780,6 +801,432 @@ fn a_removal_a_dead_process_left_claimed_is_finished_and_reported_by_the_sweep()
     let recorded = observation(&report)
         .unwrap_or_else(|| panic!("a sweep that removed something is recorded: {report:?}"));
     assert_eq!(recorded.removals.len(), 1);
+}
+
+// ------------------------------------------------------------------------------------------
+// The telemetry kind (ADR-0153 clause 8, design §6 "Budget").
+
+/// A sealed telemetry segment in `root`, its files last modified `old` ago; its id.
+fn telemetry_segment(root: &Path, old: Duration) -> String {
+    telemetry_segment_as(root, old, None)
+}
+
+/// [`telemetry_segment`] with the segment id `id` when given.
+fn telemetry_segment_as(root: &Path, old: Duration, id: Option<&str>) -> String {
+    use review_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
+    let mut options = review_telemetry::segment::writer::WriterOptions::new(
+        root,
+        review_telemetry::level::Level::Spans,
+    );
+    options.redactor = review_telemetry::redact::Redactor::new();
+    options.segment_id = id.map(str::to_string);
+    // Sealed `old` ago on the writer's clock: a sealed segment's last use is its seal time.
+    let when = SystemTime::now() - old;
+    let at = when
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    options.clock = Some(std::sync::Arc::new(move || at));
+    let writer = review_telemetry::segment::writer::Writer::new(options).unwrap();
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event(
+        &span,
+        "af.note",
+        Attrs::new().text("filler", "x".repeat(900)),
+    );
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    for path in [&sealed.path, &sealed.refs] {
+        std::fs::File::open(path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+    sealed.segment_id
+}
+
+/// A corrupt segment in `root`, last modified `old` ago; its path.
+fn corrupt_segment(root: &Path, id: &str, bytes: usize, old: Duration) -> PathBuf {
+    let layout = review_telemetry::layout::Layout::new(root);
+    std::fs::create_dir_all(layout.segments()).unwrap();
+    let path = layout.corrupt_segment(id);
+    std::fs::write(&path, vec![b'#'; bytes]).unwrap();
+    std::fs::File::open(&path)
+        .unwrap()
+        .set_modified(SystemTime::now() - old)
+        .unwrap();
+    path
+}
+
+fn telemetry_removals(report: &SweepReport) -> Vec<(String, Rule)> {
+    report
+        .removals
+        .iter()
+        .filter(|removal| removal.kind == Kind::Telemetry)
+        .map(|removal| (removal.segment_id.clone().unwrap(), removal.rule))
+        .collect()
+}
+
+/// ADR-0144's rules, unchanged for telemetry: least recently used first (a corrupt segment
+/// first among equals), never one in use (a live writer's) or used within the last hour, and
+/// by age only when collection is on (`auto_gc`, or an applied prune).
+#[test]
+fn telemetry_eviction_follows_storage_rules() {
+    let layout = layout();
+    let root = layout.roots.telemetry.current.clone().unwrap();
+    let oldest = telemetry_segment(&root, 40 * DAY);
+    let old = telemetry_segment(&root, 30 * DAY);
+    let corrupt = corrupt_segment(&root, "1700000000000-9-0a1b2c3d", 4096, 30 * DAY);
+    let recent = telemetry_segment(&root, Duration::from_secs(30 * 60));
+    // A live writer holds its segment's lock.
+    let live = review_telemetry::segment::writer::Writer::new(
+        review_telemetry::segment::writer::WriterOptions::new(
+            &root,
+            review_telemetry::level::Level::Spans,
+        ),
+    )
+    .unwrap();
+    live.span_start(
+        None,
+        None,
+        "af.command",
+        review_telemetry::record::SpanKind::Internal,
+        review_telemetry::record::Attrs::new(),
+    );
+    live.flush();
+    let live_id = live.segment_id().unwrap();
+    std::fs::File::open(live.path().unwrap())
+        .unwrap()
+        .set_modified(SystemTime::now() - 50 * DAY)
+        .unwrap();
+
+    let stock = inventory(&layout.roots, Detail::Stores);
+    let entry = |id: &str| {
+        stock
+            .entries
+            .iter()
+            .find(|entry| entry.segment_id.as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("{id}: {:?}", stock.entries))
+            .clone()
+    };
+    assert_eq!(
+        entry(&live_id).in_use.as_deref(),
+        Some("a writer holds its lock")
+    );
+    assert_eq!(entry(&live_id).state.as_deref(), Some("live"));
+    assert_eq!(entry(&old).state.as_deref(), Some("sealed"));
+    assert!(entry(&old).in_use.is_none());
+
+    // With room, no collection: nothing goes, however old.
+    let mut room = policy(u64::MAX);
+    room.auto_gc = false;
+    let kept = sweep(&layout.roots, &room, false, true);
+    assert!(telemetry_removals(&kept).is_empty(), "{kept:?}");
+    assert!(
+        review_telemetry::layout::Layout::new(&root)
+            .sealed_segment(&old)
+            .exists()
+    );
+
+    // Over the budget: least recently used first, the corrupt segment before its equal, never
+    // the live one or the one used within the hour.
+    let corrupt_id = "1700000000000-9-0a1b2c3d".to_string();
+    std::fs::File::open(&corrupt)
+        .unwrap()
+        .set_modified(
+            std::fs::metadata(review_telemetry::layout::Layout::new(&root).sealed_segment(&old))
+                .unwrap()
+                .modified()
+                .unwrap(),
+        )
+        .unwrap();
+    let preview = sweep(&layout.roots, &policy(1), false, false);
+    assert_eq!(
+        telemetry_removals(&preview),
+        [
+            (oldest.clone(), Rule::Budget),
+            (corrupt_id.clone(), Rule::Budget),
+            (old.clone(), Rule::Budget),
+        ]
+    );
+    assert_eq!(preview.stop, Stop::NothingEvictable);
+    let applied = sweep(&layout.roots, &policy(1), false, true);
+    assert_eq!(telemetry_removals(&applied), telemetry_removals(&preview));
+    let layout_t = review_telemetry::layout::Layout::new(&root);
+    assert!(!layout_t.sealed_segment(&oldest).exists() && !corrupt.exists());
+    assert!(
+        layout_t.sealed_segment(&recent).exists(),
+        "used within the hour"
+    );
+    assert!(layout_t.live_segment(&live_id).exists(), "in use");
+
+    // By age, only with collection on: an applied prune takes what is idle past keep_days.
+    let aged = telemetry_segment(&root, 20 * DAY);
+    let no_collection = sweep(&layout.roots, &room, false, true);
+    assert!(telemetry_removals(&no_collection).is_empty());
+    let collected = sweep(&layout.roots, &room, true, true);
+    assert_eq!(
+        telemetry_removals(&collected),
+        [(aged.clone(), Rule::Collection)]
+    );
+    assert!(layout_t.sealed_segment(&recent).exists());
+    live.finish(review_telemetry::record::SealExit::Ok).unwrap();
+}
+
+/// Two registered telemetry directories hold a segment of the same id: the copy in the
+/// configured directory is idle past `keep_days`, the other one only two days old. A prune
+/// preview collects the first copy by age and takes it out of its own directory's model only:
+/// the other directory's model keeps its copy, so the telemetry total and the cap evaluation
+/// see it, and the cap evicts it by the budget rule — as the applied prune does. A workspace
+/// older than the second copy keeps the preview over the whole budget after the collection (so
+/// its budget step runs) and is what the whole budget evicts, leaving the copy to the cap.
+#[test]
+fn telemetry_prune_preview_removes_a_segment_from_one_directory_only() {
+    let mut layout = layout();
+    let first = layout.roots.telemetry.current.clone().unwrap();
+    let second = layout.root.join("elsewhere/telemetry");
+    let id = "1700000000000-4242-0a1b2c3d";
+    telemetry_segment_as(&first, 30 * DAY, Some(id));
+    telemetry_segment_as(&second, 2 * DAY, Some(id));
+    review_telemetry::dirs::register(&layout.roots.telemetry.registry, &first, &[]).unwrap();
+    review_telemetry::dirs::register(&layout.roots.telemetry.registry, &second, &[]).unwrap();
+    let canonical = |path: &Path| path.canonicalize().unwrap();
+    let (first, second) = (canonical(&first), canonical(&second));
+    let workspace = workspace(&layout, 'a', 10 * DAY);
+
+    let stock = inventory(&layout.roots, Detail::Stores);
+    let model = |root: &Path| stock.telemetry[root].clone().unwrap();
+    let copy = |root: &Path| {
+        stock
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.directory.as_deref() == Some(root) && entry.segment_id.as_deref() == Some(id)
+            })
+            .unwrap_or_else(|| panic!("{}: {:?}", root.display(), stock.entries))
+            .bytes
+    };
+    let (first_total, second_total) = (model(&first).total, model(&second).total);
+    let (first_copy, second_copy) = (copy(&first), copy(&second));
+    assert!(first_copy > 0 && second_copy > 0);
+    // Telemetry without the collected copy stays one byte over the cap while the second copy is
+    // counted, and fits once it is not: the cap evicts it only if its model still holds it.
+    let rest = first_total - first_copy + second_total;
+    layout.roots.telemetry.max_bytes = Some(rest - 1);
+    // One byte over the whole budget once the collected copy is out of the count, so the
+    // preview's budget step evicts the workspace, least recently used.
+    let mut prune = policy(stock.total() - first_copy - 1);
+    prune.auto_gc = false;
+
+    let preview = sweep(&layout.roots, &prune, true, false);
+    assert!(preview.failures.is_empty(), "{:?}", preview.failures);
+    let removed = |report: &SweepReport| -> Vec<(PathBuf, String, Rule)> {
+        report
+            .removals
+            .iter()
+            .filter(|removal| removal.kind == Kind::Telemetry)
+            .map(|removal| {
+                (
+                    removal.directory.clone().unwrap(),
+                    removal.segment_id.clone().unwrap(),
+                    removal.rule,
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        removed(&preview),
+        [
+            (first.clone(), id.to_string(), Rule::Collection),
+            (second.clone(), id.to_string(), Rule::Budget),
+        ],
+        "{preview:?}"
+    );
+    let bytes: Vec<u64> = preview
+        .removals
+        .iter()
+        .filter(|removal| removal.kind == Kind::Telemetry)
+        .map(|removal| removal.bytes)
+        .collect();
+    assert_eq!(bytes, [first_copy, second_copy]);
+    let others: Vec<(PathBuf, Rule)> = preview
+        .removals
+        .iter()
+        .filter(|removal| removal.kind != Kind::Telemetry)
+        .map(|removal| (removal.path.clone(), removal.rule))
+        .collect();
+    assert_eq!(others, [(workspace.clone(), Rule::Budget)], "{preview:?}");
+    assert_eq!(preview.telemetry.total_before, first_total + second_total);
+    assert_eq!(
+        preview.telemetry.total_after,
+        first_total - first_copy + second_total - second_copy
+    );
+    assert_eq!(preview.telemetry.stop, Stop::Fits);
+    for root in [&first, &second] {
+        assert!(
+            review_telemetry::layout::Layout::new(root)
+                .sealed_segment(id)
+                .exists(),
+            "a preview removes nothing"
+        );
+    }
+
+    let applied = sweep(&layout.roots, &prune, true, true);
+    assert_eq!(removed(&applied), removed(&preview), "{applied:?}");
+}
+
+/// An inventory of only old corrupt segments, orphan temporaries and free index pages is
+/// brought under `[telemetry] max_bytes`: the corrupt segments by eviction, the rest by every
+/// applied sweep's reclamation, all measured as allocated bytes.
+#[test]
+fn telemetry_sweep_reclaims_every_class() {
+    let mut layout = layout();
+    let root = layout.roots.telemetry.current.clone().unwrap();
+    let telemetry = review_telemetry::layout::Layout::new(&root);
+    {
+        let mut index = review_telemetry::index::Index::open(&telemetry).unwrap();
+        index.ingest().unwrap();
+        let connection = index.connection();
+        connection
+            .execute_batch("CREATE TABLE ballast(payload BLOB);")
+            .unwrap();
+        for _ in 0..24 {
+            connection
+                .execute("INSERT INTO ballast VALUES (zeroblob(1048576))", [])
+                .unwrap();
+        }
+        connection.execute_batch("DROP TABLE ballast;").unwrap();
+        let _ = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    }
+    let corrupt = [
+        corrupt_segment(&root, "1700000000000-1-0a1b2c3d", 64 * 1024, 10 * DAY),
+        corrupt_segment(&root, "1700000000000-2-0a1b2c3d", 64 * 1024, 9 * DAY),
+    ];
+    std::fs::write(
+        telemetry.segments().join(".tmp-write-1-0a1b2c3d"),
+        vec![7_u8; 128 * 1024],
+    )
+    .unwrap();
+    std::fs::create_dir_all(telemetry.blobs().join("ab")).unwrap();
+    std::fs::write(
+        telemetry
+            .blobs()
+            .join("ab")
+            .join(format!("{}.gz", "ab".repeat(32))),
+        vec![1_u8; 128 * 1024],
+    )
+    .unwrap();
+    age(&root, 2 * DAY);
+    let cap = 2 * 1024 * 1024;
+    layout.roots.telemetry.max_bytes = Some(cap);
+    let before = review_sandbox::storage::allocated_bytes(&root).unwrap();
+    let mut room = policy(u64::MAX);
+    room.auto_gc = false;
+    let report = sweep(&layout.roots, &room, false, true);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    let evicted: u64 = report
+        .removals
+        .iter()
+        .filter(|removal| removal.kind == Kind::Telemetry)
+        .map(|removal| removal.bytes)
+        .sum();
+    assert_eq!(telemetry_removals(&report).len(), 2, "{report:?}");
+    assert!(corrupt.iter().all(|path| !path.exists()));
+    let [reclaimed] = report.telemetry.reclaimed.as_slice() else {
+        panic!("{report:?}");
+    };
+    assert!(reclaimed.temporary_bytes > 0 && reclaimed.blob_bytes > 0);
+    assert_eq!(reclaimed.index, "vacuumed");
+    let after = review_sandbox::storage::allocated_bytes(&root).unwrap();
+    assert_eq!(
+        before - after,
+        evicted + reclaimed.temporary_bytes + reclaimed.blob_bytes + reclaimed.index_bytes,
+        "{report:?}"
+    );
+    assert_eq!(report.telemetry.total_before, before);
+    assert_eq!(report.telemetry.total_after, after);
+    assert!(after <= cap, "{after} > {cap}");
+}
+
+/// A Store registered inside an existing telemetry directory: the directory is reported
+/// `overlapping`, counted once (the Store by its own entries), and never evicted as telemetry;
+/// a telemetry directory registered inside another is counted by the outer one.
+#[test]
+fn telemetry_dirs_overlap_reported_at_inventory() {
+    let layout = layout();
+    let outer = layout.root.join("elsewhere/telemetry");
+    let old = telemetry_segment(&outer, 30 * DAY);
+    review_telemetry::dirs::register(&layout.roots.telemetry.registry, &outer, &[]).unwrap();
+    let inner = outer.join("nested");
+    telemetry_segment(&inner, 30 * DAY);
+    // Written into the registry by hand, as an edit would: registration itself refuses it.
+    let mut registry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&layout.roots.telemetry.registry).unwrap()).unwrap();
+    registry["dirs"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "path": inner.canonicalize().unwrap(),
+            "first_use_unix_ms": 1,
+            "last_use_unix_ms": 1,
+        }));
+    std::fs::write(
+        &layout.roots.telemetry.registry,
+        serde_json::to_vec_pretty(&registry).unwrap(),
+    )
+    .unwrap();
+    // A Store registered later inside the outer directory.
+    let store = outer.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    EventStore::open(store.join("events.sqlite")).unwrap();
+    Cas::open(store.join("cas")).unwrap();
+    std::fs::write(store.join("filler"), vec![3_u8; CHUNK]).unwrap();
+    register(&layout, &[&store.canonicalize().unwrap()]);
+
+    let stock = inventory(&layout.roots, Detail::Stores);
+    let telemetry: Vec<&Entry> = stock
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == Kind::Telemetry)
+        .collect();
+    assert_eq!(telemetry.len(), 2, "{telemetry:?}");
+    for entry in &telemetry {
+        assert_eq!(entry.state.as_deref(), Some("overlapping"), "{entry:?}");
+        assert!(entry.in_use.is_some());
+        assert!(
+            entry
+                .reason
+                .as_deref()
+                .unwrap()
+                .starts_with("overlapping: ")
+        );
+    }
+    let canonical = |path: &Path| path.canonicalize().unwrap();
+    let outer_entry = telemetry
+        .iter()
+        .find(|entry| entry.path == canonical(&outer))
+        .unwrap();
+    let inner_entry = telemetry
+        .iter()
+        .find(|entry| entry.path == canonical(&inner))
+        .unwrap();
+    assert_eq!(inner_entry.bytes, 0, "the outer directory counts it");
+    let store_bytes = review_sandbox::storage::allocated_bytes(&store).unwrap();
+    assert_eq!(
+        outer_entry.bytes,
+        review_sandbox::storage::allocated_bytes(&outer).unwrap() - store_bytes,
+        "counted once: the Store by its own entry"
+    );
+    // Never evicted as telemetry, however far over the budget.
+    let report = sweep(&layout.roots, &policy(1), true, true);
+    assert!(telemetry_removals(&report).is_empty(), "{report:?}");
+    assert!(
+        review_telemetry::layout::Layout::new(&outer)
+            .sealed_segment(&old)
+            .exists()
+    );
 }
 
 /// `directory` with a `cas` in it, claimed as a removal by a process that has since died left
@@ -1362,12 +1809,12 @@ fn a_failure_at_the_final_rmdir_is_a_partial_removal_with_what_it_freed() {
     std::fs::remove_dir_all(claim).unwrap();
 }
 
-/// The applied document of `report`, `af/storage-prune@3`, validated against its schema.
+/// The applied document of `report`, `af/storage-prune@4`, validated against its schema.
 fn prune_document(report: &SweepReport) -> serde_json::Value {
     let mut document = serde_json::to_value(report).unwrap();
-    document["schema"] = serde_json::json!("af/storage-prune@3");
+    document["schema"] = serde_json::json!("af/storage-prune@4");
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../schemas/storage-prune-v3.json")).unwrap();
+        serde_json::from_str(include_str!("../../../../schemas/storage-prune-v4.json")).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let errors: Vec<String> = validator
         .iter_errors(&document)

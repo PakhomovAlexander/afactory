@@ -207,9 +207,11 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
                 "the 500 ms wall ends the provider: {message}"
             );
             assert_eq!(returned.raw_artifact_ids.len(), 2);
+            // The raw-output rule: the turn line is kept, the agent message's line is not.
+            let kept = output.split_once('\n').unwrap().1;
             assert_eq!(
                 cas.get(&returned.raw_artifact_ids[0]).unwrap(),
-                output.as_bytes()
+                kept.as_bytes()
             );
             assert_eq!(
                 cas.get(&returned.raw_artifact_ids[1]).unwrap(),
@@ -274,9 +276,11 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             &[],
         );
         assert_eq!(returned.usage.as_ref().unwrap().chargeable_tokens.get(), 35);
+        // The raw-output rule: the turn line is kept, the agent message's line is not.
+        let kept = output.split_once('\n').unwrap().1;
         assert_eq!(
             cas.get(&returned.raw_artifact_ids[0]).unwrap(),
-            output.as_bytes()
+            kept.as_bytes()
         );
         assert!(
             returned.usage_observation.is_none(),
@@ -336,9 +340,16 @@ fn multiple_native_turns_retain_exact_components_and_uncached_charge() {
     assert_eq!(usage.cache_write_tokens.unwrap().get(), max + 50);
     assert_eq!(usage.reasoning_tokens.unwrap().get(), max + 40);
     assert_eq!(usage.chargeable_tokens.get(), 2 * max + 40);
+    // The raw-output rule: the Store keeps every turn line the accounting read, the `-o` final
+    // message beside them, and never the agent message's stream line.
+    let kept = output.rsplit_once('\n').unwrap().0.to_string() + "\n";
     assert_eq!(
         cas.get(&returned.raw_artifact_ids[0]).unwrap(),
-        output.as_bytes()
+        kept.as_bytes()
+    );
+    assert_eq!(
+        cas.get(returned.raw_artifact_ids.last().unwrap()).unwrap(),
+        b"OK"
     );
 }
 
@@ -392,9 +403,10 @@ fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
         if outage {
             assert!(returned.raw_artifact_ids.is_empty());
         } else {
+            let kept = output.split_once('\n').unwrap().0.to_string() + "\n";
             assert_eq!(
                 cas.get(&returned.raw_artifact_ids[0]).unwrap(),
-                output.as_bytes()
+                kept.as_bytes()
             );
             assert_eq!(
                 cas.get(&returned.raw_artifact_ids[1]).unwrap(),

@@ -162,6 +162,19 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   workflow refuses a description without exactly one well-formed block; Dependabot and
   `release/` pull requests are exempt. `python3 scripts/check-pr-report.py --body FILE`
   runs the same check locally.
+- The description also states the lines the pull request adds, per directory
+  ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)):
+  run `python3 scripts/pr-lines.py` from the repository on your branch, with its base fetched
+  (`--base REF` for a base other than `origin/main`), and paste its whole output, both markers
+  included, into the template's `Lines added` section: a title with the total and a table with
+  one row per directory — its figure, and its share as a bar and a percentage. It counts
+  `git diff --numstat` additions under the first directory of each path, a file under a `tests`
+  directory as `tests`, a root file under its own name, figures rounded past 1000 (`12k`,
+  `1.1k`, `463`). The `PR report` workflow renders the block again from the pull request's
+  commits and refuses a description whose block is missing or differs, printing the block to
+  paste; after a push, run the command again and paste the block when it changed.
+  `python3 scripts/check-pr-report.py --body FILE --diff origin/main HEAD` runs the same
+  comparison locally.
 - One topic per PR. Split unrelated fixes even when they are small.
 - `make check` passes; say so in the PR template checklist.
 - A user-visible change adds its own note, `changelog.d/<topic>.md` (see

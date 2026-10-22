@@ -33,7 +33,10 @@ through a normal PR and the full comparison.
 3. Set `AF_PERF_GNU_BUILD_IMAGE` and `AF_PERF_MUSL_BUILD_IMAGE` to the verified `NAME@sha256:...`
    references from its artifacts. Never set them to a tag or machine-local image ID.
 4. Dispatch a same-source partial comparison. Confirm the verified 2-GiB Linux scratch, complete
-   shard evidence, report, collection and compatible history group before starting calibration.
+   shard evidence, report, collection and compatible history group. Then dispatch a complete
+   quick bootstrap comparison with no case filter and the registry's pair counts. Confirm every
+   planned record, including all closing sentinels, before starting calibration. A partial pilot
+   proves the transport path but cannot establish that the full suite fits its schedule.
 5. Declare the five-day cohort, commit its members before dispatch, and follow the preparation,
    sealed-parameter, injection and power sequence in the CI runbook. Failed originals count;
    they cannot be replaced with convenient reruns.

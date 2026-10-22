@@ -9,19 +9,25 @@ mod control;
 mod drain;
 pub mod json_stream;
 mod live;
+mod observe;
+pub mod reap;
 mod reaper;
+mod rusage;
 pub mod sample;
 mod spawn;
 
 use capture::{Caps, captured_inner, run_supervised_inner};
 pub use capture::{
     SupervisedCapture, run_supervised_captured, run_supervised_captured_bounded,
-    run_supervised_captured_cancellable, run_supervised_captured_cancellable_with_policy,
+    run_supervised_captured_bounded_observed, run_supervised_captured_cancellable,
+    run_supervised_captured_cancellable_with_policy, run_supervised_captured_observed,
     run_supervised_captured_streaming, run_supervised_captured_with_policy,
 };
 use drain::{collect_after_kill, collect_stderr, drain_async};
 pub use live::{kill_live_process_groups, live_process_groups};
+pub use observe::{ObservedChunk, ObservedOutput, ObservedStream, OutputObserver, observer};
 pub use reaper::{TREE_VARIABLE, descendant_cleanup_fallback};
+pub use rusage::Rusage;
 pub use spawn::spawn;
 
 const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
@@ -105,9 +111,13 @@ pub enum SupervisedError {
     Cancelled,
     Spawn(std::io::Error),
     Wait(std::io::Error),
+    /// The deadline ended the process. It was reaped: its id and resource use travel with
+    /// the bytes it wrote.
     TimedOut {
         stdout: Vec<u8>,
         stderr: Vec<u8>,
+        pid: Option<u32>,
+        rusage: Option<Rusage>,
     },
     Stdin(std::io::Error),
     OutputRead {
@@ -144,6 +154,10 @@ pub struct SupervisedOutput {
     /// A descendant kept stderr open after the leader exited. Stdout remains complete evidence;
     /// callers may surface this flag as a diagnostic without discarding the answer.
     pub stderr_held: bool,
+    /// The leader's process id.
+    pub pid: Option<u32>,
+    /// What the reaped leader used; `None` when the platform delivered nothing ([`Rusage`]).
+    pub rusage: Option<Rusage>,
     /// The streams that wrote more than their cap kept.
     pub truncation: Truncation,
 }
@@ -160,6 +174,10 @@ pub struct SupervisedDuplexOutput<I, R> {
     pub output: R,
     pub stderr: Vec<u8>,
     pub stderr_held: bool,
+    /// The leader's process id.
+    pub pid: Option<u32>,
+    /// What the reaped leader used; `None` when the platform delivered nothing ([`Rusage`]).
+    pub rusage: Option<Rusage>,
     /// Whether stderr wrote more than [`MAX_CAPTURED_STREAM_BYTES`]; stdout is the caller's.
     pub truncation: Truncation,
 }
@@ -205,7 +223,16 @@ pub fn run_supervised_with_policy(
     timeout: Duration,
     exit_policy: ExitPolicy,
 ) -> Result<SupervisedOutput, SupervisedError> {
-    captured_inner(command, input, timeout, exit_policy, None, Caps::PROTOCOL).into_result()
+    captured_inner(
+        command,
+        input,
+        timeout,
+        exit_policy,
+        None,
+        None,
+        Caps::PROTOCOL,
+    )
+    .into_result()
 }
 
 /// Run a bounded process while a caller streams its stdin without first materializing one large
@@ -332,6 +359,8 @@ where
                     return Err(SupervisedError::TimedOut {
                         stdout: Vec::new(),
                         stderr: collect_after_kill(stderr),
+                        pid: None,
+                        rusage: None,
                     });
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -363,14 +392,25 @@ where
             Ok((input, output, stderr, total, stderr_held))
         })();
         // Reaping is the final operation: every kill above ran while the pid was reserved.
-        let status = leader.reap();
-        let (input, output, stderr, total, stderr_held) = outcome?;
+        let (status, rusage) = leader.reap();
+        let pid = Some(leader.pid());
+        let (input, output, stderr, total, stderr_held) = outcome.map_err(|error| match error {
+            SupervisedError::TimedOut { stdout, stderr, .. } => SupervisedError::TimedOut {
+                stdout,
+                stderr,
+                pid,
+                rusage,
+            },
+            error => error,
+        })?;
         Ok(SupervisedDuplexOutput {
             status: status.map_err(SupervisedError::Wait)?,
             input,
             output,
             stderr,
             stderr_held,
+            pid,
+            rusage,
             truncation: Caps::PROTOCOL.truncation(0, total),
         })
     })
@@ -432,6 +472,8 @@ fn wait_exact_cancellable(
                     return Err(SupervisedError::TimedOut {
                         stdout: Vec::new(),
                         stderr: Vec::new(),
+                        pid: None,
+                        rusage: None,
                     });
                 }
             }
@@ -501,13 +543,15 @@ pub fn try_reap_killing_group(
     child: &mut std::process::Child,
     watch: &mut ExitWatch,
 ) -> std::io::Result<Option<ExitStatus>> {
+    // Every reap of this crate is measured under the one lock, so another supervisor's
+    // resource use is never attributed to this child or this child's to another.
     match watch.exited() {
         Some(true) => {
             kill_process_group(watch.pid);
-            child.wait().map(Some)
+            rusage::measured(|| child.wait().map(Some), Option::is_some).0
         }
         Some(false) => Ok(None),
-        None => child.try_wait(),
+        None => rusage::measured(|| child.try_wait(), Option::is_some).0,
     }
 }
 
@@ -609,7 +653,7 @@ enum LeaderState {
     /// Not yet reaped: running, or exited and observed without reaping.
     Unreaped(std::process::Child),
     /// Reaped; the pid may already belong to someone else.
-    Reaped(std::io::Result<ExitStatus>),
+    Reaped(std::io::Result<ExitStatus>, Option<Rusage>),
     /// Taken by [`Leader::reap`].
     Gone,
 }
@@ -664,14 +708,14 @@ impl Leader {
                 };
                 // `try_wait` may reap: unlist first and list again while the child still runs.
                 self.live().release();
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        *state = LeaderState::Reaped(Ok(status));
+                match rusage::measured(|| child.try_wait(), Option::is_some) {
+                    (Ok(Some(status)), rusage) => {
+                        *state = LeaderState::Reaped(Ok(status), rusage);
                         return;
                     }
-                    Ok(None) => *self.live() = live::Registration::new(self.pid),
-                    Err(error) => {
-                        *state = LeaderState::Reaped(Err(error));
+                    (Ok(None), _) => *self.live() = live::Registration::new(self.pid),
+                    (Err(error), _) => {
+                        *state = LeaderState::Reaped(Err(error), None);
                         return;
                     }
                 }
@@ -681,17 +725,35 @@ impl Leader {
         }
     }
 
-    /// Reap the leader and return its exit status; after this no group kill is ever issued for
-    /// its pid. Blocks until the leader has exited, which every caller has already ensured by
-    /// observing the exit or killing the group.
-    pub(crate) fn reap(&self) -> std::io::Result<ExitStatus> {
+    /// Reap the leader and return its exit status with what it used ([`Rusage`]); after this
+    /// no group kill is ever issued for its pid. Blocks until the leader has exited, which every
+    /// caller has already ensured by observing the exit or killing the group.
+    pub(crate) fn reap(&self) -> (std::io::Result<ExitStatus>, Option<Rusage>) {
         let mut state = self.lock();
         // Unlisted before the reap that frees the id, never after it.
         self.live().release();
         match std::mem::replace(&mut *state, LeaderState::Gone) {
-            LeaderState::Unreaped(mut child) => child.wait(),
-            LeaderState::Reaped(status) => status,
-            LeaderState::Gone => Err(std::io::Error::other("process was already reaped")),
+            // Non-blocking reaps under the process-wide measurement lock: a leader that has not
+            // yet exited (a killed one still dying) never holds that lock while it waits, so
+            // it cannot stall another supervisor's reap.
+            LeaderState::Unreaped(mut child) => {
+                let mut delay = Duration::from_millis(1);
+                loop {
+                    match rusage::measured(|| child.try_wait(), Option::is_some) {
+                        (Ok(Some(status)), rusage) => break (Ok(status), rusage),
+                        (Ok(None), _) => {
+                            std::thread::sleep(delay);
+                            delay = (delay * 2).min(Duration::from_millis(20));
+                        }
+                        (Err(error), _) => break (Err(error), None),
+                    }
+                }
+            }
+            LeaderState::Reaped(status, rusage) => (status, rusage),
+            LeaderState::Gone => (
+                Err(std::io::Error::other("process was already reaped")),
+                None,
+            ),
         }
     }
 }

@@ -124,7 +124,7 @@ impl NativeLogin {
         {
             if guarded {
                 drop(stdin);
-                let _ = child.wait();
+                let _ = review_process::reap::wait(&mut child);
             } else {
                 stop_probe(&mut child);
             }
@@ -266,7 +266,7 @@ impl NativeLogin {
                 // EOF reaches the independent guard even after this owner's hard death.
                 // The guard keeps the context lock until native cleanup has completed.
                 self.stdin.take();
-                let _ = self.child.wait();
+                let _ = review_process::reap::wait(&mut self.child);
             } else {
                 stop_probe(&mut self.child);
             }

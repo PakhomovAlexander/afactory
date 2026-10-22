@@ -1,9 +1,11 @@
-//! `af telemetry status` and `af telemetry reindex` (ADR-0153): the reader side of Telemetry,
-//! which only `af telemetry`, `af storage` and the TUI link.
+//! `af telemetry` (ADR-0153): `status`, `reindex`, `runs`, `show`, `config`, `tail`, `ledger`,
+//! `turns`, `tools`, `context`, `reasoning`, `search` and `gc` — the reader side of Telemetry,
+//! which only `af telemetry`, `af storage` and the TUI link — and the recording a command that
+//! runs a kernel run does ([`begin`], [`Recording::finish`]).
 //!
 //! The `[telemetry]` table is read from machine layers only. A refused key exits 2, an
-//! unreadable telemetry directory or a busy index exits 1; neither command ever records
-//! telemetry itself.
+//! unreadable telemetry directory, a busy index or an unknown run exits 1; no `af telemetry`
+//! command ever records telemetry itself.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -16,6 +18,17 @@ use review_telemetry::status::{
 
 use crate::config;
 use crate::storage::{self, human_bytes};
+
+mod config_record;
+mod content;
+mod harness;
+mod recording;
+mod views;
+
+pub(crate) use content::{context, reasoning, search};
+pub(crate) use harness::{tools, turns};
+pub(crate) use recording::{begin, command_chain};
+pub(crate) use views::{config, gc, ledger, runs, show, tail};
 
 /// The machine's `[telemetry]` table, or the refusal naming its key.
 pub(crate) fn settings() -> Result<Settings, String> {
@@ -40,31 +53,12 @@ pub(crate) fn registry() -> Result<PathBuf, String> {
 /// value says why the list is known incomplete: a Store registry that cannot be read (or is of
 /// another version) is never silently omitted, so every overlap check becomes `unknown`.
 pub(crate) fn accounted() -> Result<(Vec<Accounted>, Option<String>), String> {
-    let roots = storage::Roots::current()?;
-    let mut accounted = vec![
-        Accounted::container(config::state_home()?.join("af"), "the state root"),
-        Accounted::new(&roots.tasks, "the Task Store root"),
-        Accounted::new(&roots.campaigns, "the review campaign root"),
-        Accounted::new(&roots.local_reviews, "the local review root"),
-        Accounted::new(&roots.warm, "the warm check cache"),
-        Accounted::new(&roots.workspaces, "the warm Workspaces"),
-        Accounted::new(&roots.installs.versions, "the release installations"),
-    ];
-    let unknown = match storage::registry::read(&roots.registry) {
-        Ok(stores) => {
-            for store in stores {
-                accounted.push(Accounted::new(store.path, "a registered Store"));
-            }
-            None
-        }
-        Err(error) => Some(format!("the Store registry cannot be read: {error}")),
-    };
-    Ok((accounted, unknown))
+    Ok(storage::accounted(&storage::Roots::current()?))
 }
 
 /// A refused `[telemetry]` key: exit 2, one line on stderr, and under `--json` the error
 /// document on stdout.
-fn refused(command: &str, json: bool, refusal: &str) -> i32 {
+pub(super) fn refused(command: &str, json: bool, refusal: &str) -> i32 {
     if json {
         println!(
             "{}",
@@ -91,7 +85,7 @@ fn absolute(path: PathBuf) -> Result<PathBuf, String> {
 
 /// `--dir PATH` must name an existing directory; without it, the configured one is read and
 /// may not exist yet.
-fn chosen(dir: Option<PathBuf>, settings: &Settings) -> Result<PathBuf, String> {
+pub(super) fn chosen(dir: Option<PathBuf>, settings: &Settings) -> Result<PathBuf, String> {
     match dir {
         Some(dir) => {
             let dir = absolute(dir)?;
@@ -104,13 +98,22 @@ fn chosen(dir: Option<PathBuf>, settings: &Settings) -> Result<PathBuf, String> 
     }
 }
 
-/// The warning `status` gives when the directory is over `[telemetry] max_bytes`, which this
-/// release does not enforce.
+/// `path` as the text output writes it: under the home directory, `~/…`, by
+/// [`telemetry_status::home_relative`]; as it is when no home directory is known.
+pub(super) fn home_relative(path: &str) -> String {
+    match config::home() {
+        Ok(home) => telemetry_status::home_relative(path, &home),
+        Err(_) => path.to_string(),
+    }
+}
+
+/// The warning `status` gives when the directory is over `[telemetry] max_bytes`, which the
+/// Storage Budget's next sweep meets by evicting sealed segments (ADR-0144, ADR-0153).
 fn over_max_bytes_warning(status: &Status) -> Option<String> {
     status.over_max_bytes().map(|over| {
         format!(
             "warning: the telemetry directory holds {}, {} over [telemetry] max_bytes ({}); the \
-             cap is advisory on this release and nothing removes telemetry to meet it",
+             next storage sweep evicts sealed segments to meet it",
             human_bytes(status.bytes.total),
             human_bytes(over),
             human_bytes(status.bytes.max_bytes)
@@ -125,6 +128,7 @@ pub(crate) fn status(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
         Ok(settings) => settings,
         Err(refusal) => return Ok(refused(COMMAND, json, &refusal)),
     };
+    review_telemetry::index::set_content_index(settings.content_index);
     let root = chosen(dir, &settings)?;
     let (accounted, accounted_unknown) = accounted()?;
     let (status, note) = telemetry_status::status(&StatusInput {
@@ -177,8 +181,8 @@ fn render_status(status: &Status) -> String {
     );
     let _ = writeln!(
         out,
-        "bytes        {} of a {} advisory cap ([telemetry] max_bytes; nothing removes telemetry \
-         to meet it on this release){}",
+        "bytes        {} of a {} cap ([telemetry] max_bytes; the storage sweep evicts sealed \
+         segments to meet it){}",
         human_bytes(status.bytes.total),
         human_bytes(status.bytes.max_bytes),
         if status.over_max_bytes().is_some() {
@@ -301,6 +305,7 @@ pub(crate) fn reindex(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
         Ok(settings) => settings,
         Err(refusal) => return Ok(refused(COMMAND, json, &refusal)),
     };
+    review_telemetry::index::set_content_index(settings.content_index);
     let root = chosen(dir, &settings)?;
     if !root.is_dir() {
         return Err(format!(
@@ -404,30 +409,38 @@ mod tests {
         .unwrap()
     }
 
-    /// `[telemetry] max_bytes` is advisory on this release: `status` says so on its bytes line
-    /// and warns when the directory is over it (audit L17), and names no overhead gate (I3).
+    /// The Storage Budget enforces `[telemetry] max_bytes`: `status` says so on its bytes line
+    /// and warns when the directory is over it that the next sweep evicts (audit L17), and names
+    /// no overhead gate (I3).
     #[test]
-    fn status_warns_when_over_the_advisory_cap() {
+    fn status_warns_that_the_next_sweep_evicts_when_over_the_cap() {
         let under = status(1 << 20, 256 << 20);
         assert_eq!(over_max_bytes_warning(&under), None);
         let text = render_status(&under);
-        assert!(text.contains("advisory cap"), "{text}");
+        assert!(
+            text.contains("the storage sweep evicts sealed segments"),
+            "{text}"
+        );
+        assert!(!text.contains("advisory"), "{text}");
         assert!(!text.contains("— over"), "{text}");
         assert!(!text.contains("overhead gate"), "{text}");
 
         let over = status(300 << 20, 256 << 20);
         let warning = over_max_bytes_warning(&over).unwrap();
         assert!(warning.contains("over [telemetry] max_bytes"), "{warning}");
-        assert!(warning.contains("advisory on this release"), "{warning}");
+        assert!(
+            warning.contains("the next storage sweep evicts sealed segments to meet it"),
+            "{warning}"
+        );
+        assert!(!warning.contains("advisory"), "{warning}");
         assert!(render_status(&over).contains("— over"));
     }
 
     /// At `metrics` the segment header records exactly the subcommand chain its caller passes
     /// to `Telemetry::start`: this test parses `af provider setup alice --kind claude` with clap
     /// itself and passes `provider setup`, never the positional `alice` a guess from leading
-    /// lower-case words would take; without a chain it records `argv[0]` alone (audit E1). It
-    /// calls `Telemetry::start` directly: no production path of this release starts telemetry,
-    /// so it exercises no CLI start path.
+    /// lower-case words would take; without a chain it records `argv[0]` alone (audit E1). The
+    /// chain is the one [`recording::command_chain`] passes to `begin` for the same `argv`.
     #[test]
     fn the_metrics_header_records_the_subcommand_chain_its_caller_passes() {
         use clap::CommandFactory as _;
@@ -445,6 +458,12 @@ mod tests {
             current = next;
         }
         assert_eq!(chain, ["provider", "setup"]);
+        let argv = ["af", "provider", "setup", "alice", "--kind", "claude"].map(String::from);
+        assert_eq!(
+            recording::command_chain(&argv),
+            chain,
+            "what `begin` is passed"
+        );
         let header = |command: Vec<String>| {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().canonicalize().unwrap();
@@ -462,6 +481,7 @@ mod tests {
                 accounted_unknown: None,
                 af_version: "0.0.0-test".into(),
                 af_commit: "test".into(),
+                write_hook: None,
                 command,
             });
             let writer = telemetry.writer().unwrap();

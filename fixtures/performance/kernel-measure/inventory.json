@@ -2,18 +2,18 @@
  "files": [
   {
    "path": "Cargo.lock",
-   "sha256": "sha256:899b091665d8be3692f3a5d77b6f66cbfc1b4722d11eb8d2cb80a74cf1557881",
-   "size": 62214
+   "sha256": "sha256:a81b233322fe6e6aae3eb43f9eaf72e93090406669dab1f9b9095fb334daf060",
+   "size": 62485
   },
   {
    "path": "Cargo.toml",
-   "sha256": "sha256:60ee4728cc024be02a9e82fb19732be03c30731d602ac96b12b3c7bf1660e74b",
-   "size": 1708
+   "sha256": "sha256:acd8630b870cee430fcfacd9b6a08f389d5c0c961b66f88521fece985a89668c",
+   "size": 2038
   },
   {
    "path": "crates/af/Cargo.toml",
-   "sha256": "sha256:38f933e9940876e5bcd7499da78552086092529e9cc77125efbd3231f105e6f9",
-   "size": 3317
+   "sha256": "sha256:b7a6d8f6467b1ed04fa6f48f8e333f6036a9eb9af2e763084a5693aada532089",
+   "size": 3396
   },
   {
    "path": "crates/af/build.rs",
@@ -27,8 +27,8 @@
   },
   {
    "path": "crates/review-check/Cargo.toml",
-   "sha256": "sha256:3ab5b9974a432165e98c4a268ddce3bf6010ed13c2cc9d5e8e174e9dc20c84f1",
-   "size": 913
+   "sha256": "sha256:c9d4dc1c39b4c5bd948bda9958bf3836bf5b0a84355d4693f7e48b9a0a83e48c",
+   "size": 1060
   },
   {
    "path": "crates/review-config/Cargo.toml",
@@ -62,8 +62,8 @@
   },
   {
    "path": "crates/review-pipeline/Cargo.toml",
-   "sha256": "sha256:a2546201106d1ab3d951a8f1e1df5f64bf787b07feee0cdf11907b3ea60f1f6e",
-   "size": 2310
+   "sha256": "sha256:51c1a029b7723706ef54afd7081b904f96573757e2ccbfe9fd7fbd72091d053c",
+   "size": 2441
   },
   {
    "path": "crates/review-pipeline/build.rs",
@@ -77,13 +77,13 @@
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/authority.rs",
-   "sha256": "sha256:c67e3587006d14437bd352cd88a859bd076e07f959197cb3ad6351c8e96dcd9f",
-   "size": 19624
+   "sha256": "sha256:8ab87a6285040201ff648681bfff11a6c8fcc5a7cc282ac629ccd185f6427f49",
+   "size": 24415
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/cases.rs",
-   "sha256": "sha256:322c5d6cda1844951ced2561517aa5d0fa464ba6399547b055522b1b8f58dbc8",
-   "size": 52829
+   "sha256": "sha256:cb65bb8b2a1370f1570dd462163dc307032028590759939aa4e2ded11b64010c",
+   "size": 56431
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/control.rs",
@@ -97,8 +97,8 @@
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/protocol.rs",
-   "sha256": "sha256:6e73379d63ab0fadd8d2f11d42a0f86c22b5dd9fe214d739b20420d7212292c6",
-   "size": 25386
+   "sha256": "sha256:eaebde34d7de5c9ff52c41525cf1fdc4fec3f79e2bf16fc2ade28d0771cf79c4",
+   "size": 26064
   },
   {
    "path": "crates/review-process/Cargo.toml",
@@ -117,28 +117,28 @@
   },
   {
    "path": "crates/review-runner-claude/Cargo.toml",
-   "sha256": "sha256:ec59e1ff6d1cd0288f85f4cfc65a7d51322ed6b1d0acf5ecf787c314d62febc0",
-   "size": 1425
+   "sha256": "sha256:3639ecf1c97e49d51b3510e5fd0d19896d084d26d248898f29b6b22b84b5ffb5",
+   "size": 1645
   },
   {
    "path": "crates/review-runner-codex/Cargo.toml",
-   "sha256": "sha256:3aaf0deb94ae65fd11195b3d4b0082a709c6bd1064a84c7e612f3a06231ac819",
-   "size": 1151
+   "sha256": "sha256:4ba1dadeada92b690379967a6e93c772e838216916e7bf5fc6d973e45edea638",
+   "size": 1371
   },
   {
    "path": "crates/review-runner/Cargo.toml",
-   "sha256": "sha256:634af9090ef65fb24b63f5a7baf411bace9676ceeee4064ce84f97f5cb9ad311",
-   "size": 929
+   "sha256": "sha256:325ac51d3e12324fea0183b2af4f2e8df67bf01fdb17242732122780820aa0f6",
+   "size": 1008
   },
   {
    "path": "crates/review-sandbox/Cargo.toml",
-   "sha256": "sha256:023bb7eb778f6042f92fd2888a6764ed0bd78a77dbe28fdcd37f42a091d9debb",
-   "size": 1769
+   "sha256": "sha256:47364d67058b066bd4fe2ab36f6e057ca3003cca74acff69e794b531251a083a",
+   "size": 1900
   },
   {
    "path": "crates/review-source-git/Cargo.toml",
-   "sha256": "sha256:d9ae70bcc059059e80c9121fb5b80df49a3aa9a82de8104a0742ecc103cb6028",
-   "size": 1199
+   "sha256": "sha256:1c7f36df3d7d128f08f5b801e0306a98de177f4d191a37514c14f9a83f000eb0",
+   "size": 1330
   },
   {
    "path": "crates/review-source-task/Cargo.toml",
@@ -147,8 +147,8 @@
   },
   {
    "path": "crates/review-store/Cargo.toml",
-   "sha256": "sha256:d44965279f80abbf271fe057bb52ac3dcb87b34476e9bf217a5d5d37eeeae96b",
-   "size": 1505
+   "sha256": "sha256:3425b4ffbdde869de097442e464201ae223309b3b17808df22d1e75a3031ef3d",
+   "size": 1807
   },
   {
    "path": "crates/review-telemetry/Cargo.toml",
@@ -162,8 +162,8 @@
   },
   {
    "path": "fixtures/performance/adapters.toml",
-   "sha256": "sha256:14fc25133c75c0a01f225c2967bcd6b9eafb18403250c69a36f5ac8b833dc774",
-   "size": 1876
+   "sha256": "sha256:13c8cfa2a0cf3d57b992098ebf941112d0f6080f8acb42e7cea73bcaa95bc0d2",
+   "size": 1899
   },
   {
    "path": "fixtures/performance/cli.toml",
@@ -254,6 +254,11 @@
    "path": "fixtures/performance/cli/task-roots/task.json",
    "sha256": "sha256:a8bfd4779b031dfe6995ca41d11ffa3e1a2d0357b47fad66b5d7dacf7bb147bb",
    "size": 391
+  },
+  {
+   "path": "fixtures/performance/cohort-quick-20261023-hosted-v6.json",
+   "sha256": "sha256:62955096a58517dad3544425ead9b18ebe3b85de94b8518d5ce85deb761d5ab7",
+   "size": 17271
   },
   {
    "path": "fixtures/performance/compare/index.json",
@@ -352,8 +357,8 @@
   },
   {
    "path": "fixtures/performance/golden/native.json",
-   "sha256": "sha256:bd4fd50dd1ac1597607fc4200b45fae8535280de1eb6d81fa03863920e2bf18a",
-   "size": 21436
+   "sha256": "sha256:2c4f31bcf6a2db2e01e814ab696c14576707961d59c79a923d4d684bdb38eeb7",
+   "size": 24178
   },
   {
    "path": "fixtures/performance/schema/activation-verification/invalid-dropped-obligations.json",
@@ -1277,23 +1282,23 @@
   },
   {
    "path": "fixtures/performance/schema/readiness/invalid-author-tallies.json",
-   "sha256": "sha256:75e2c67d72d7ac10d768869d7af8f22143540b9f8302c2fe72a5d90e192a6486",
-   "size": 108467
+   "sha256": "sha256:3ff0f5f173b256fa3b92fc016d55f2390b586be7507b0e391d37b3766782de76",
+   "size": 116719
   },
   {
    "path": "fixtures/performance/schema/readiness/invalid-other-members-dispatch.json",
-   "sha256": "sha256:d11f07babca359946812b68932eec7729dba2c17c042a3e7fc8f940a585d7c33",
-   "size": 108468
+   "sha256": "sha256:c1bd7efe8d6030e66bb7d874d10ab3a0cada72fb160b31ba229c2861219912c8",
+   "size": 116720
   },
   {
    "path": "fixtures/performance/schema/readiness/invalid-status.json",
-   "sha256": "sha256:622e8de8f23faa3050f77ea62e2055069201abff3ecce363ba8b60ea8e192b26",
-   "size": 3327
+   "sha256": "sha256:28795ff62567c8424109a426c3fb25b1bf43042d21dcf11da87a5f7b3a84fd5c",
+   "size": 3527
   },
   {
    "path": "fixtures/performance/schema/readiness/valid-ten-of-ten.json",
-   "sha256": "sha256:c67597d36c00c6cf6b7a053a9e81b0260e42eee587ec0f9f1294fd69fc118d51",
-   "size": 108468
+   "sha256": "sha256:ee18c8e7b876cfd24e2864e550db859ed5e22035d3a22f79cb8b1aec15d2fac4",
+   "size": 116720
   },
   {
    "path": "fixtures/performance/schema/release-claim/invalid-attempt-in-identity.json",
@@ -1852,8 +1857,8 @@
   },
   {
    "path": "fixtures/performance/suite.toml",
-   "sha256": "sha256:e7003d10c74d1c1baee7a766e00b38cadb0ab9a8b1514bf72dfea4bfb7252ddb",
-   "size": 32662
+   "sha256": "sha256:875b19423adbfb5b9e29ee4789b708e9e57250a04c37ddbf06c90a69c7b9ec9d",
+   "size": 33907
   },
   {
    "path": "fixtures/performance/synthetic/suite.toml",
@@ -1972,8 +1977,8 @@
   },
   {
    "path": "scripts/performance/perflab/calibration.py",
-   "sha256": "sha256:5cfe6bc833daa0b2e34239bad3a1f31c6f0478a49dffa1ebdd38c9501b34d916",
-   "size": 60797
+   "sha256": "sha256:c60d120d59a4e1eb6415ff7f37924b74367bdb8c8ac0535aa5fcf9d7a262b06e",
+   "size": 61419
   },
   {
    "path": "scripts/performance/perflab/capability.py",
@@ -1982,13 +1987,13 @@
   },
   {
    "path": "scripts/performance/perflab/ci.py",
-   "sha256": "sha256:4a5007c5055e0105aaec1a130173e681aa61ddb447a6174013ddae484dd88248",
-   "size": 35461
+   "sha256": "sha256:8c258954ba4bb7eade03920576667aeacebf3fbb201b4f1963435506c34834da",
+   "size": 36049
   },
   {
    "path": "scripts/performance/perflab/clicases.py",
-   "sha256": "sha256:11f234cdf8c2dfba6f63de34234c27ab31e1cbe25f3d9f0da3822219ef43ae9e",
-   "size": 26964
+   "sha256": "sha256:080f70cc1d3c31933d01361b42a20d773fdf442f694d303e6a3bb288bbc397b1",
+   "size": 27224
   },
   {
    "path": "scripts/performance/perflab/collection.py",
@@ -2002,8 +2007,8 @@
   },
   {
    "path": "scripts/performance/perflab/contracts.py",
-   "sha256": "sha256:c3a91bc1394ffe27fa6ebcea8ff1d5f17e749442628978bd0adec8bcfc8c5726",
-   "size": 269509
+   "sha256": "sha256:6304cfe3687c307cb4c62cb1b18f385535a17efcf0877de100d170c819b891a3",
+   "size": 270967
   },
   {
    "path": "scripts/performance/perflab/costs.py",
@@ -2027,8 +2032,8 @@
   },
   {
    "path": "scripts/performance/perflab/diagnostics.py",
-   "sha256": "sha256:c3f165a1d9cfc115a04f1b8378ff8e34b6f0a869ba06695c1fefe4716174eca4",
-   "size": 132600
+   "sha256": "sha256:1b0a58eb5f5fe97122e65b7a302759214d9940177765a954699fd48e9a825927",
+   "size": 132567
   },
   {
    "path": "scripts/performance/perflab/equivalence.py",
@@ -2107,8 +2112,8 @@
   },
   {
    "path": "scripts/performance/perflab/reference.py",
-   "sha256": "sha256:8e1418c19aed77c399c52fd09548c39494074ad2091fa522e52d65ab1d442f22",
-   "size": 27634
+   "sha256": "sha256:21842d32e4f8639ced07dfae75e381d5ba82c2625063022f0eb61c2223607552",
+   "size": 27655
   },
   {
    "path": "scripts/performance/perflab/release.py",
@@ -2132,8 +2137,8 @@
   },
   {
    "path": "scripts/performance/perflab/runner.py",
-   "sha256": "sha256:db9b6fb897b154e5e9ea0fd766d3e42e5a638c303b1ed83f399e29be96c6fc78",
-   "size": 80535
+   "sha256": "sha256:aef36e68b478ff592e9f3e5ceb3f07b73a957dc42422fe60e4e59f45e252d774",
+   "size": 80676
   },
   {
    "path": "scripts/performance/perflab/schedule.py",
@@ -2157,8 +2162,8 @@
   },
   {
    "path": "scripts/performance/perflab/status.py",
-   "sha256": "sha256:62505824bb217c20764887c74f11942ece4fbf4f9292d0c6a0cdc45172124dfe",
-   "size": 3695
+   "sha256": "sha256:9df7fab1f2c6e8ad2f452ebe3441078e8cc95caec0cdef522971019d9c8cf609",
+   "size": 4151
   },
   {
    "path": "scripts/performance/perflab/suite.py",
@@ -2222,8 +2227,8 @@
   },
   {
    "path": "scripts/performance/tests/calibration_fixtures.py",
-   "sha256": "sha256:6ce75e6775df9cb988a6376a0465130e98147be965f549111d915565ca5938d9",
-   "size": 23934
+   "sha256": "sha256:324737951dc062d3b7d54d446ee18a64c2708c407dd5d97035b5a1e09d4ba332",
+   "size": 24506
   },
   {
    "path": "scripts/performance/tests/compare_fixtures.py",
@@ -2232,8 +2237,8 @@
   },
   {
    "path": "scripts/performance/tests/diagnostic_fixtures.py",
-   "sha256": "sha256:838613bf0ae7fcbfc4bd6297e6d71479c36b925da7170550789f7d3bf6eb309a",
-   "size": 25973
+   "sha256": "sha256:f09b337b62ef0b2b38c39528550b76ab24e6805d43b379c4fbc438fcce3ffcbe",
+   "size": 26107
   },
   {
    "path": "scripts/performance/tests/receipts_fixtures.py",
@@ -2252,8 +2257,8 @@
   },
   {
    "path": "scripts/performance/tests/test_admission.py",
-   "sha256": "sha256:732d03569f7dbed482cc18ec2007defbe8b7023cb9c65c6b2d1d427d2501086c",
-   "size": 21791
+   "sha256": "sha256:7a24f31f3e3aa6891ac93b57d5ecc613a4bd04955a9e501e70e5df0ddcc55cd1",
+   "size": 22025
   },
   {
    "path": "scripts/performance/tests/test_archive.py",
@@ -2262,13 +2267,13 @@
   },
   {
    "path": "scripts/performance/tests/test_builds.py",
-   "sha256": "sha256:fd6c141648d570524f3fd6bdc43689d8538bcf1e123c2f2a29e50383692980d3",
-   "size": 53024
+   "sha256": "sha256:80532af43bba1e883d068a65734dbc166a392f1c94d5ca8e95b123a65ddf3c39",
+   "size": 53446
   },
   {
    "path": "scripts/performance/tests/test_calibration.py",
-   "sha256": "sha256:2d721bcb155601df12707251b166d1aeaff4be3a909b7192b405b793e5e2dcc5",
-   "size": 69245
+   "sha256": "sha256:e26d4aa464058415397e617a1e9bfaae3a5c3dfed14b9a7a44998643560256dc",
+   "size": 75237
   },
   {
    "path": "scripts/performance/tests/test_ci.py",
@@ -2282,13 +2287,13 @@
   },
   {
    "path": "scripts/performance/tests/test_continuous.py",
-   "sha256": "sha256:014d2e9fe67c7e361332d58db939828ab054eb7c200895d5da1f962bf47e2772",
-   "size": 18557
+   "sha256": "sha256:b30e22f10505f284c2e76f9ed8816cf05586736c06c6b2db518b08d2b2b43310",
+   "size": 20213
   },
   {
    "path": "scripts/performance/tests/test_contracts.py",
-   "sha256": "sha256:158f2d13fb7707acfe9f9252a6d17dd2c2d083a413d1695a0eca84cd0c1ea4d2",
-   "size": 16674
+   "sha256": "sha256:bee1c01ba185e927dfb1011d4d63f17490cf3f368e247c5afddb99054aabb2ca",
+   "size": 17083
   },
   {
    "path": "scripts/performance/tests/test_costs.py",
@@ -2297,8 +2302,8 @@
   },
   {
    "path": "scripts/performance/tests/test_diagnostics.py",
-   "sha256": "sha256:e011afb01877d1d9670479631134d8366f1e66837ca8de8dc6e70fc7d1b5bd30",
-   "size": 118016
+   "sha256": "sha256:fa7a46041d0c3914d06930e0a99f18dd7628b1c46c82da7ae4f823e74ecdf999",
+   "size": 118475
   },
   {
    "path": "scripts/performance/tests/test_evidence_tools.py",
@@ -2317,18 +2322,18 @@
   },
   {
    "path": "scripts/performance/tests/test_hostlock.py",
-   "sha256": "sha256:2e00d3d8215f9ca35238060428373dfbd4489ba7d1fae614773187f79a00507b",
-   "size": 9805
+   "sha256": "sha256:d19774cc0ea8cefc6d6122782ba45fc2d920b884c44919d1fe6f0922f535cfa3",
+   "size": 10381
   },
   {
    "path": "scripts/performance/tests/test_kernelguard.py",
-   "sha256": "sha256:54f63016cfaf7e86e33142f446538643c935f12b7b32070f9d8f408a2d607752",
-   "size": 58960
+   "sha256": "sha256:7872c6b44ebf183f4462836c2a673675c9ee5c22ac8ebe5352811383f5811fd1",
+   "size": 59240
   },
   {
    "path": "scripts/performance/tests/test_oracle.py",
-   "sha256": "sha256:d99658155c5ea5b2de3346266d9573879bead74c9907d43c252939e9f4122622",
-   "size": 55036
+   "sha256": "sha256:12706a1a7deeb9984c8963b7143eb98567b2a7e44d21a62fd750a6cbb1a3b0ad",
+   "size": 55456
   },
   {
    "path": "scripts/performance/tests/test_performance_workflow.py",
@@ -2337,8 +2342,8 @@
   },
   {
    "path": "scripts/performance/tests/test_planning.py",
-   "sha256": "sha256:5197a7af23dc209aabd4e829436227ec734e7cab4c4af78c433dcd6265d4c5bd",
-   "size": 48379
+   "sha256": "sha256:d40c89b85ff1489b31f90f6a6abfd7702658580be12522a863a62077cbd1f135",
+   "size": 48422
   },
   {
    "path": "scripts/performance/tests/test_reference.py",
@@ -2372,13 +2377,13 @@
   },
   {
    "path": "scripts/performance/tests/test_runner.py",
-   "sha256": "sha256:55bfc424d59954c4e376c5e5fd4aef82d468e0fd935765118f655891b95ebe05",
-   "size": 107236
+   "sha256": "sha256:b7b60f204ab422ea8219b1c7c0edc43fdd10650a0b1943cee7ce4dd5bde668e6",
+   "size": 107901
   },
   {
    "path": "scripts/performance/tests/test_sdlc.py",
-   "sha256": "sha256:dd445a356c0472b79e83a57c05c51869434b354ccddbab219978599ac4062eed",
-   "size": 8868
+   "sha256": "sha256:aece2fafe0e459bc4e641b9ab3514ebeb5649d0e0846c4fddefcf4855729ad84",
+   "size": 9593
   },
   {
    "path": "scripts/performance/tests/test_stats.py",
@@ -2387,8 +2392,8 @@
   },
   {
    "path": "scripts/performance/tests/test_suite.py",
-   "sha256": "sha256:0b3a92e1ff3778c79e56e479f73ed8959161e36bddedab1b5da66ccb28a16db1",
-   "size": 21002
+   "sha256": "sha256:ae6068b83d2bd78770dfc6509a8f31c488299d49a8a5897f5bc0cacfbb05aac4",
+   "size": 21113
   },
   {
    "path": "scripts/performance/tests/test_supervise.py",
@@ -2416,7 +2421,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:4d7965ccb7aa12d1db006c6019d271bbd84977edab781b12d5a0165b4547ae29",
+ "harness_digest": "sha256:8e2897f065566ba7fd62c915fd4cbb4588c5cefddf0535811c82492d1a73f341",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

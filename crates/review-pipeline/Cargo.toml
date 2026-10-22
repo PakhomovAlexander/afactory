@@ -23,11 +23,13 @@ review-runner = { path = "../review-runner" }
 review-sandbox = { path = "../review-sandbox" }
 review-source-git = { path = "../review-source-git" }
 review-store = { path = "../review-store" }
+review-telemetry = { path = "../review-telemetry" }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 serde = { version = "1.0.228", features = ["derive"] }
 tempfile = "3.27.0"
 toml = "1.1.6"
 toml_edit = "0.25.15"
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
 [features]
 # Diagnostic builds only, both off by default and in every product build (ADR-0174): phase

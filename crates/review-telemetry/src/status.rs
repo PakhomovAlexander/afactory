@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dirs::{self, Registered};
 use crate::index::{self, Index, Mode};
-use crate::layout::{self, Confined, EntryKind, Layout};
+use crate::layout::{self, Confined, EntryKind, Layout, Measurement};
 use crate::level::Level;
 use crate::segment::reader::{self, Recovery};
 use crate::trace::sha256_digest;
@@ -32,8 +32,9 @@ pub const REINDEX_SCHEMA: &str = "af/telemetry-reindex@1";
 #[serde(deny_unknown_fields)]
 pub struct Entry {
     /// `segment` (with its manifest), `blobs`, `index` (with WAL and shared memory),
-    /// `temporary`, `locks` (with the `v1/` and `segments/` directories themselves), and
-    /// `unrecognized`: whatever else lies beneath the root, counted and never read or removed.
+    /// `temporary`, `locks`, and `unrecognized`: whatever else lies beneath the root, counted
+    /// and never read or removed. Each counts the allocated bytes of its regular files,
+    /// directories and links nothing ([`Measurement`]).
     pub kind: String,
     /// The segment id, or the entry's name.
     pub name: String,
@@ -81,7 +82,7 @@ pub const UNRECOGNIZED_NAMES: usize = 16;
 #[serde(deny_unknown_fields)]
 pub struct Bytes {
     pub total: u64,
-    /// `[telemetry] max_bytes`: advisory on this release, which removes nothing to meet it.
+    /// `[telemetry] max_bytes`: the Storage Budget's sweep evicts sealed segments to meet it.
     pub max_bytes: u64,
     pub entries: Vec<Entry>,
 }
@@ -243,8 +244,8 @@ impl Status {
         self
     }
 
-    /// How far the directory is over `[telemetry] max_bytes`, which this release only reports:
-    /// nothing removes telemetry to meet it.
+    /// How far the directory is over `[telemetry] max_bytes`, which the next storage sweep meets
+    /// by evicting sealed segments.
     pub fn over_max_bytes(&self) -> Option<u64> {
         self.bytes
             .total
@@ -408,15 +409,17 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
     };
     status.exists = true;
     root_dir.names().map_err(failed)?;
+    // One measurement for the whole total: a file several hard links reach counts once.
+    let mut measurement = Measurement::default();
     for other in reader::other_versions(&root_dir) {
         status.unreadable.push(Unreadable {
             reason: "written under another telemetry version; never read".into(),
             path: root_dir.join(&other).display().to_string(),
         });
-        status.bytes.total += root_dir.allocated_tree(&other);
+        status.bytes.total += root_dir.measure_tree(&other, &mut measurement);
     }
     let Some(versioned) = root_dir.child_dir(layout::VERSION_DIR).map_err(failed)? else {
-        if let Some(entry) = unrecognized(&root_dir, &layout) {
+        if let Some(entry) = unrecognized(&root_dir, &layout, &mut measurement) {
             status.bytes.total += entry.bytes;
             status.bytes.entries.push(entry);
         }
@@ -429,9 +432,17 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         Some(segments) => reader::list_in(segments)?,
         None => reader::Listing::default(),
     };
-    let in_segments = |name: &str| segments.as_ref().map_or(0, |dir| dir.allocated(name));
-    let in_versioned =
-        |names: &[String]| -> u64 { names.iter().map(|name| versioned.allocated(name)).sum() };
+    let in_segments = |name: &str, measurement: &mut Measurement| {
+        segments
+            .as_ref()
+            .map_or(0, |dir| dir.measure(name, measurement))
+    };
+    let in_versioned = |names: &[String], measurement: &mut Measurement| -> u64 {
+        names
+            .iter()
+            .map(|name| versioned.measure(name, measurement))
+            .sum()
+    };
     let index_names: Vec<String> = layout
         .index_files()
         .iter()
@@ -452,9 +463,9 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         (&listing.corrupt, "corrupt", layout::CORRUPT),
     ] {
         for id in ids {
-            let mut bytes = in_segments(&format!("{id}{file}"));
+            let mut bytes = in_segments(&format!("{id}{file}"), &mut measurement);
             if state == "sealed" {
-                bytes += in_segments(&format!("{id}{}", layout::REFS));
+                bytes += in_segments(&format!("{id}{}", layout::REFS), &mut measurement);
             }
             entries.push(Entry {
                 state: Some(state.into()),
@@ -462,40 +473,45 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
             });
         }
     }
-    // A manifest whose segment is gone is reported with the temporaries it is like.
+    // A manifest whose segment is gone, and the stale staging beside a `.jsonl` (a
+    // publication that never completed), are reported with the temporaries they are like.
     let orphans: u64 = listing
         .refs
         .iter()
         .filter(|id| !listing.sealed.contains(id))
-        .map(|id| in_segments(&format!("{id}{}", layout::REFS)))
+        .map(|id| in_segments(&format!("{id}{}", layout::REFS), &mut measurement))
         .sum::<u64>()
+        + listing
+            .stale
+            .iter()
+            .map(|id| {
+                in_segments(&format!("{id}{}", layout::REFS), &mut measurement)
+                    + in_segments(&format!("{id}{}", layout::SEALED), &mut measurement)
+            })
+            .sum::<u64>()
         + listing
             .temporary
             .iter()
             .filter_map(|path| path.file_name())
-            .map(|name| in_segments(&name.to_string_lossy()))
+            .map(|name| in_segments(&name.to_string_lossy(), &mut measurement))
             .sum::<u64>();
     entries.push(Entry::new(
         "blobs",
         "blobs",
-        blob_bytes(&versioned, &layout),
+        blob_bytes(&versioned, &layout, &mut measurement),
     ));
-    entries.push(Entry::new(
-        "index",
-        "index.sqlite",
-        in_versioned(&index_names),
-    ));
+    // Measured once the ingest below has closed its connection.
+    entries.push(Entry::new("index", "index.sqlite", 0));
     entries.push(Entry::new("temporary", "temporary", orphans));
     let lock_names: Vec<String> = [layout.gc_lock(), layout.index_lock(), layout.index_intent()]
         .iter()
         .filter_map(|path| path.file_name())
         .map(|name| name.to_string_lossy().to_string())
-        .chain(["segments".to_string()])
         .collect();
     entries.push(Entry::new(
         "locks",
         "locks",
-        in_versioned(&lock_names) + root_dir.allocated(layout::VERSION_DIR),
+        in_versioned(&lock_names, &mut measurement),
     ));
     let mut index = Index::open_in(
         &layout,
@@ -553,9 +569,9 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
     drop(index);
     // The index's own size after the ingest.
     if let Some(entry) = entries.iter_mut().find(|entry| entry.kind == "index") {
-        entry.bytes = in_versioned(&index_names);
+        entry.bytes = in_versioned(&index_names, &mut measurement);
     }
-    entries.extend(unrecognized(&root_dir, &layout));
+    entries.extend(unrecognized(&root_dir, &layout, &mut measurement));
     status.bytes.total += entries.iter().map(|entry| entry.bytes).sum::<u64>();
     status.bytes.entries = entries;
     Ok((status, note))
@@ -580,7 +596,8 @@ enum Place {
 enum Known {
     /// Counted by an entry with everything beneath it.
     Tree,
-    /// Its own blocks counted by an entry; what lies beneath it is judged in `Place`.
+    /// Counted by an entry (a directory counts nothing itself); what lies beneath it is judged
+    /// in `Place`.
     Own(Place),
     Unrecognized,
 }
@@ -628,14 +645,14 @@ fn is_blob_file(prefix: [u8; 2], name: &str) -> bool {
         || layout::blob_object_digest(prefix, name).is_some()
 }
 
-/// The `blobs` entry: the `blobs/` directory itself, its prefix directories, the objects and
-/// the temporaries in them; any other path beneath `blobs/` is [`unrecognized`]. Walked
-/// relative to the opened `v1/`, never through a link.
-fn blob_bytes(versioned: &Confined, layout: &Layout) -> u64 {
+/// The `blobs` entry: the objects and the temporaries in the prefix directories of `blobs/`
+/// (the directories themselves count nothing); any other path beneath `blobs/` is
+/// [`unrecognized`]. Walked relative to the opened `v1/`, never through a link.
+fn blob_bytes(versioned: &Confined, layout: &Layout, measurement: &mut Measurement) -> u64 {
     let Ok(Some(blobs)) = versioned.child_dir("blobs") else {
         return 0;
     };
-    let mut bytes = versioned.allocated("blobs");
+    let mut bytes = 0;
     let mut pending = vec![(blobs, Place::Blobs)];
     while let Some((directory, place)) = pending.pop() {
         let Ok(names) = directory.names() else {
@@ -646,9 +663,9 @@ fn blob_bytes(versioned: &Confined, layout: &Layout) -> u64 {
                 continue;
             };
             match known(place, &name, kind, layout) {
-                Known::Tree => bytes += directory.allocated_tree(&name),
+                Known::Tree => bytes += directory.measure_tree(&name, measurement),
                 Known::Own(inner) => {
-                    bytes += directory.allocated(&name);
+                    bytes += directory.measure(&name, measurement);
                     if kind == EntryKind::Directory
                         && let Ok(Some(child)) = directory.child_dir(&name)
                     {
@@ -678,6 +695,7 @@ fn unrecognized_in(
     place: Place,
     layout: &Layout,
     found: &mut Unknown,
+    measurement: &mut Measurement,
 ) {
     let Ok(names) = directory.names() else {
         return;
@@ -692,12 +710,13 @@ fn unrecognized_in(
                 if kind == EntryKind::Directory
                     && let Ok(Some(child)) = directory.child_dir(&name)
                 {
-                    unrecognized_in(&child, &relative.join(&name), inner, layout, found);
+                    let relative = relative.join(&name);
+                    unrecognized_in(&child, &relative, inner, layout, found, measurement);
                 }
             }
             Known::Unrecognized => {
                 found.count += 1;
-                found.bytes += directory.allocated_tree(&name);
+                found.bytes += directory.measure_tree(&name, measurement);
                 found.names.push(relative.join(&name).display().to_string());
             }
         }
@@ -705,11 +724,13 @@ fn unrecognized_in(
 }
 
 /// Every path beneath the root that matches no known kind, counted once with everything
-/// beneath it by allocated bytes, never read and never removed: with it the entries add up to
-/// the physical total of the tree (ADR-0153 clause 8). `None` when there is none.
-fn unrecognized(root: &Confined, layout: &Layout) -> Option<Entry> {
+/// beneath it by the allocated bytes of its regular files, never read and never removed: with
+/// it the entries add up to the physical total of the tree (ADR-0153 clause 8). `None` when
+/// there is none.
+fn unrecognized(root: &Confined, layout: &Layout, measurement: &mut Measurement) -> Option<Entry> {
     let mut found = Unknown::default();
-    unrecognized_in(root, Path::new(""), Place::Root, layout, &mut found);
+    let at = Path::new("");
+    unrecognized_in(root, at, Place::Root, layout, &mut found, measurement);
     if found.count == 0 {
         return None;
     }

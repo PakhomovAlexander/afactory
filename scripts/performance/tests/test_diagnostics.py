@@ -1051,7 +1051,9 @@ class Counters(TempDir):
                                                                   codesign=self.path("none"))
         self.assertEqual((available, reason), (False, "samply_flags_missing"))
         self.assertIn("--save-only", detail)
-        available, reason, _, _ = counters.samply_capability(boss, full, "/bin/ls", env, 10,
+        # The host's /bin/ls may resolve outside the protected path.
+        available, reason, _, _ = counters.samply_capability(boss, full,
+                                                             "/System/af-protected-fixture", env, 10,
                                                              codesign=self.path("none"))
         self.assertEqual((available, reason), (False, "protected_executable"))
         hardened = self.path("codesign")
@@ -1180,8 +1182,11 @@ class ChildRun(ChildRunBase):
                           unknown_with_frame_pointers=2)
         tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
             self.path("inferno")))
+        registry = json.loads(json.dumps(self.registry))
+        registry["capture"].update(max_repetitions=3, minimum_samples=20)
         doc, output = self.profile("linux_gnu_cpu_profile", [SMALL], tools,
-                                   {"setup_seconds": 0.4, "region_seconds": 0.12})
+                                   {"setup_seconds": 0.4, "region_seconds": 0.12},
+                                   duration_ms=20000, registry=registry)
         self.assertEqual(doc["verdict_effect"], "none")
         self.assertEqual(doc["parent_run_id"], "parent_run")
         self.assertEqual(doc["recipe"]["features"], ["perf-control"])
@@ -1195,13 +1200,11 @@ class ChildRun(ChildRunBase):
             self.assertIsNone(item["omission"], item["omission"])
             region = item["region"]
             self.assertTrue(region["observed"])
-            self.assertGreaterEqual(region["repetitions"], 2, "short regions repeat")
-            self.assertIn(region["stopped"], ("duration_reached", "recording_cap"))
-            # It stopped when the probe-measured region or the enabled recording reached the
-            # 300-ms duration, whichever came first.
-            self.assertGreaterEqual(Fraction(region["region_ms"] if region["stopped"]
-                                             == "duration_reached" else region["enabled_ms"]),
-                                    300)
+            # Ask for three repetitions under a cap they cannot reach. Scheduler delays in
+            # the real FIFO handshake must not decide how many fresh executions this tests.
+            self.assertEqual(region["repetitions"], 3)
+            self.assertEqual(region["stopped"], "repetition_cap")
+            self.assertGreaterEqual(Fraction(region["region_ms"]), 300)
             if not region["truncated_at_cap"]:
                 # A region the cap disabled kept running unrecorded; otherwise recording
                 # spanned every region and its handshakes.
@@ -1242,11 +1245,15 @@ class ChildRun(ChildRunBase):
         tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
             self.path("inferno")))
         cold = "state_projection__log_events_10000_projection_application_cold"
+        registry = json.loads(json.dumps(self.registry))
+        registry["capture"].update(max_repetitions=3, minimum_samples=20)
         doc, _ = self.profile("linux_gnu_cpu_profile", [cold], tools,
-                              {"setup_seconds": 0.05, "region_seconds": 0.1})
+                              {"setup_seconds": 0.05, "region_seconds": 0.1},
+                              duration_ms=20000, registry=registry)
         for item in doc["captures"]:
             self.assertIsNone(item["omission"], item["omission"])
-            self.assertGreaterEqual(item["region"]["repetitions"], 3)
+            self.assertEqual(item["region"]["repetitions"], 3)
+            self.assertEqual(item["region"]["stopped"], "repetition_cap")
 
     def test_perf_ends_a_capture_at_the_byte_cap_and_the_partial_capture_is_kept(self):
         perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"),

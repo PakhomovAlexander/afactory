@@ -13,7 +13,7 @@ use std::thread::ThreadId;
 
 use nix::errno::Errno;
 use nix::sys::signal::{self, SigSet, SigmaskHow, Signal};
-use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+use nix::sys::wait::{WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use rustix::termios::{self, OptionalActions, QueueSelector, SpecialCodeIndex, Termios};
 
@@ -218,7 +218,7 @@ impl Host for Session {
             // A fast command may have ended before its group could take the foreground: its
             // group is gone, and what it did is its exit, not a failed hand-off. The browser
             // never gave the foreground away, so nothing is taken back.
-            match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+            match review_process::reap::wait_pid(pid, WaitPidFlag::empty()) {
                 Ok(WaitStatus::Exited(_, code)) => return Ok(Exit::Code(code)),
                 Ok(WaitStatus::Signaled(_, signal, _)) => {
                     return Ok(Exit::Signal(signal as i32));
@@ -328,13 +328,19 @@ fn from_the_background<T>(call: impl FnOnce() -> T) -> Result<T, Errno> {
 
 /// Wait for a handed-off child to end. A child stopped by `<C-z>` is continued: the browser
 /// has no job control, and a stopped command would hold the terminal with nobody to resume it.
+/// It is reaped through `review_process::reap`, polling, as every reap of the workspace is.
 fn wait_for(pid: Pid) -> Result<Exit, String> {
+    let mut attempt = 0;
     loop {
-        match waitpid(pid, Some(WaitPidFlag::WUNTRACED)) {
+        match review_process::reap::wait_pid(pid, WaitPidFlag::WUNTRACED) {
             Ok(WaitStatus::Exited(_, code)) => return Ok(Exit::Code(code)),
             Ok(WaitStatus::Signaled(_, signal, _)) => return Ok(Exit::Signal(signal as i32)),
             Ok(WaitStatus::Stopped(..)) => {
                 let _ = signal::killpg(pid, Signal::SIGCONT);
+            }
+            Ok(WaitStatus::StillAlive) => {
+                std::thread::sleep(review_process::reap::poll_delay(attempt));
+                attempt = attempt.saturating_add(1);
             }
             Ok(_) | Err(Errno::EINTR) => {}
             Err(error) => return Err(format!("waiting for the command: {error}")),

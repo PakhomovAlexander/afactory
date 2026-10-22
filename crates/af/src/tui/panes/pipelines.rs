@@ -719,8 +719,7 @@ pub(crate) fn blobs(root: &Path, objects: &[&str]) -> Result<BTreeMap<String, Ve
     // Written from another thread, so a large answer never blocks on a full request pipe.
     let mut stdin = child.stdin.take().ok_or("git cat-file has no stdin")?;
     let writer = std::thread::spawn(move || stdin.write_all(&requests));
-    let output = child
-        .wait_with_output()
+    let output = review_process::reap::wait_with_output(child)
         .map_err(|error| format!("running git: {error}"))?;
     let written = writer
         .join()
@@ -989,8 +988,7 @@ fn git_command(root: &Path, args: &[&str]) -> Command {
 
 /// The command's stdout, or its stderr trimmed (empty when it said nothing).
 pub(crate) fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = git_command(root, args)
-        .output()
+    let output = review_process::reap::output(&mut git_command(root, args))
         .map_err(|error| format!("running git: {error}"))?;
     if output.status.success() {
         Ok(output.stdout)

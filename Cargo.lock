@@ -46,6 +46,7 @@ dependencies = [
  "tempfile",
  "toml",
  "toml_edit",
+ "tracing",
  "zeroize",
 ]
 
@@ -1398,9 +1399,12 @@ dependencies = [
  "review-core",
  "review-process",
  "review-store",
+ "review-telemetry",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -1472,12 +1476,14 @@ dependencies = [
  "review-sandbox",
  "review-source-git",
  "review-store",
+ "review-telemetry",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "toml",
  "toml_edit",
+ "tracing",
 ]
 
 [[package]]
@@ -1501,6 +1507,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -1514,8 +1521,10 @@ dependencies = [
  "review-runner",
  "review-sandbox",
  "review-store",
+ "review-telemetry",
  "serde_json",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -1527,9 +1536,11 @@ dependencies = [
  "review-runner",
  "review-runner-claude",
  "review-store",
+ "review-telemetry",
  "rustix",
  "serde_json",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -1545,9 +1556,11 @@ dependencies = [
  "review-process",
  "review-source-git",
  "review-store",
+ "review-telemetry",
  "rustix",
  "serde_json",
  "tempfile",
+ "tracing",
  "xattr",
 ]
 
@@ -1563,10 +1576,12 @@ dependencies = [
  "review-parallel",
  "review-process",
  "review-store",
+ "review-telemetry",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tracing",
  "unicode-normalization",
 ]
 
@@ -1592,12 +1607,14 @@ dependencies = [
  "review-attempt",
  "review-core",
  "review-graph",
+ "review-telemetry",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "toml",
+ "tracing",
 ]
 
 [[package]]

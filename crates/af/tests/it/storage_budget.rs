@@ -136,7 +136,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
     let fresh = warm_key(&machine, '3', 600 * 1024, Duration::from_secs(5));
 
     let shown = json(&machine.af(&machine.root, &[], &["storage", "--json"]));
-    schemas::valid(&schemas::validator("storage-v3.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v4.json"), &shown);
     assert_eq!(shown["max_bytes"], 20_u64 << 30);
     assert_eq!(shown["min_free_bytes"], 10_u64 << 30);
     let warm = shown["kinds"]
@@ -157,7 +157,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
     // 1 MiB of budget: the two older keys go, least recently used first; the fresh one stays.
     let budget = [("AF_STORAGE__MAX_BYTES", "1MiB")];
     let preview = json(&machine.af(&machine.root, &budget, &["storage", "prune", "--json"]));
-    schemas::valid(&schemas::validator("storage-prune-v3.json"), &preview);
+    schemas::valid(&schemas::validator("storage-prune-v4.json"), &preview);
     assert_eq!(preview["applied"], false);
     let paths = |document: &Value| -> Vec<String> {
         document["removals"]
@@ -177,7 +177,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
         &budget,
         &["storage", "prune", "--apply", "--json"],
     ));
-    schemas::valid(&schemas::validator("storage-prune-v3.json"), &applied);
+    schemas::valid(&schemas::validator("storage-prune-v4.json"), &applied);
     assert_eq!(applied["applied"], true);
     assert_eq!(paths(&applied), paths(&preview));
     assert_eq!(applied["stop"], "fits");
@@ -355,15 +355,17 @@ fn collection_after_a_run_takes_finished_tasks_only_when_auto_gc_is_on() {
 
 #[test]
 fn below_the_floor_a_worker_attempt_is_refused_before_it_starts_and_charged_nothing() {
+    attempt_refused_below_the_floor(&[]);
+}
+
+/// The floor refuses a Worker Attempt whatever else the machine sets: `env` adds settings
+/// (Telemetry at `content`, for ADR-0153's clause 7).
+pub(crate) fn attempt_refused_below_the_floor(env: &[(&str, &str)]) {
     let machine = Machine::new();
     let (repo, state) = task_gc::fixture(&machine.root);
-    let refused = start(
-        &machine,
-        &repo,
-        &state,
-        "gc-older.json",
-        &[("AF_TEST_FREE_BYTES", "1024")],
-    );
+    let mut settings = vec![("AF_TEST_FREE_BYTES", "1024")];
+    settings.extend_from_slice(env);
+    let refused = start(&machine, &repo, &state, "gc-older.json", &settings);
     let (stdout, stderr) = text(&refused);
     assert_eq!(refused.status.code(), Some(1), "{stdout}\n{stderr}");
     for needle in [
@@ -406,7 +408,7 @@ fn below_the_floor_a_worker_attempt_is_refused_before_it_starts_and_charged_noth
     // With room again the same Task runs on.
     let resumed = machine.af(
         &repo,
-        &[],
+        env,
         &[
             "task",
             "run",
@@ -423,6 +425,12 @@ fn below_the_floor_a_worker_attempt_is_refused_before_it_starts_and_charged_noth
 
 #[test]
 fn below_the_floor_a_check_reports_insufficient_disk_as_its_result() {
+    check_refused_below_the_floor(&[]);
+}
+
+/// The floor refuses a check whatever else the machine sets: `env` adds settings (Telemetry at
+/// `content`, for ADR-0153's clause 7).
+pub(crate) fn check_refused_below_the_floor(env: &[(&str, &str)]) {
     let machine = Machine::new();
     let (repo, state) = task_cli::fixture_named(&machine.root, "pagination");
     // The implementer fills the disk once it has written its candidate: the check after it
@@ -474,13 +482,9 @@ fn below_the_floor_a_check_reports_insufficient_disk_as_its_result() {
     )
     .unwrap();
     let hook = format!("@{}", free.display());
-    let output = start(
-        &machine,
-        &repo,
-        &state,
-        file.to_str().unwrap(),
-        &[("AF_TEST_FREE_BYTES", hook.as_str())],
-    );
+    let mut settings = vec![("AF_TEST_FREE_BYTES", hook.as_str())];
+    settings.extend_from_slice(env);
+    let output = start(&machine, &repo, &state, file.to_str().unwrap(), &settings);
     let (stdout, stderr) = text(&output);
     // The check's own result says why it did not run; whatever the Task does next starts no
     // Worker either.
@@ -536,7 +540,10 @@ if request==PROBE_INPUT:
  result='OK'
 else:
  result=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'reports':[],'benchmark_demands':[],'dispositions':[]}]}})
-envelope={'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}}
+# Under `stream-json` (Telemetry at `spans` and above) Claude prints its envelope as the
+# `result` line; under `json` this fixture prints it without a `type`.
+envelope={'type':'result'} if 'stream-json' in sys.argv else {}
+envelope.update({'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}})
 if request!=PROBE_INPUT:
  envelope['structured_output']=json.loads(result)
 print(json.dumps(envelope))
@@ -962,7 +969,7 @@ fn a_registered_store_keeps_the_users_files_through_prune_and_the_sweep_after_a_
         &budget,
         &["storage", "prune", "--apply", "--json"],
     ));
-    schemas::valid(&schemas::validator("storage-prune-v3.json"), &pruned);
+    schemas::valid(&schemas::validator("storage-prune-v4.json"), &pruned);
     let removal = pruned["removals"]
         .as_array()
         .unwrap()

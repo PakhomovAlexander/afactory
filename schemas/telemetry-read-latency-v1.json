@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-read-latency:1",
+  "title": "af/telemetry-read-latency@1",
+  "description": "`scripts/telemetry-corpus.py measure --json` (design §12, docs/telemetry.md \"Performance\"): the read latencies of `af telemetry` on a corpus the script generated deterministically (`telemetry-corpus-10k` at full scale). `fresh_status` is `af telemetry status` ingesting every segment into an absent index, `unchanged_status` the same command with nothing new, `show` `af telemetry show` of one run; each with its wall time from exec to exit, the command's peak resident memory and the index's size after it. `warm` is measured after every file of the corpus was read once (the median of `samples_ms` when repeated); `cold` after the page cache was dropped, null when this platform did not let the script drop it (`cold.available = false`, with the reason: warm-only). The bounds of design §12 are checked on the warm figures (`within_bound`); `passed` when every one holds. `corpus` counts are rows of the index the fresh ingest built, its byte totals the uncompressed and on-disk sizes of the segments and blobs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "af", "machine", "corpus", "cold", "measurements", "passed"],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-read-latency@1"
+    },
+    "af": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "version"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "machine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch", "cpus", "load1"],
+      "properties": {
+        "os": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        },
+        "cpus": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "load1": {
+          "type": ["number", "null"],
+          "description": "The one-minute load average when the measurement ended."
+        }
+      }
+    },
+    "corpus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dir",
+        "name",
+        "seed",
+        "runs",
+        "executions",
+        "spans",
+        "events",
+        "blobs",
+        "shared_blobs",
+        "blob_occurrences",
+        "blob_bytes",
+        "segments",
+        "segment_bytes",
+        "segment_stored_bytes",
+        "blob_files",
+        "blob_stored_bytes",
+        "content_index"
+      ],
+      "properties": {
+        "dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^telemetry-corpus-[0-9]+k?$",
+          "description": "`telemetry-corpus-10k` for the full 10,000 runs, else `telemetry-corpus-<runs>`."
+        },
+        "seed": {
+          "type": ["integer", "null"],
+          "description": "The seed the generator recorded in the segment headers; null when none was."
+        },
+        "runs": {
+          "$ref": "#/$defs/count"
+        },
+        "executions": {
+          "$ref": "#/$defs/count"
+        },
+        "spans": {
+          "$ref": "#/$defs/count"
+        },
+        "events": {
+          "$ref": "#/$defs/count"
+        },
+        "blobs": {
+          "$ref": "#/$defs/count"
+        },
+        "shared_blobs": {
+          "$ref": "#/$defs/count",
+          "description": "Blobs referenced by more than one segment."
+        },
+        "blob_occurrences": {
+          "$ref": "#/$defs/count"
+        },
+        "blob_bytes": {
+          "$ref": "#/$defs/count",
+          "description": "Retained bytes of every blob, before compression."
+        },
+        "segments": {
+          "$ref": "#/$defs/count",
+          "description": "Sealed segment files."
+        },
+        "segment_bytes": {
+          "$ref": "#/$defs/count",
+          "description": "The segments' JSONL bytes, before compression."
+        },
+        "segment_stored_bytes": {
+          "$ref": "#/$defs/count"
+        },
+        "blob_files": {
+          "$ref": "#/$defs/count"
+        },
+        "blob_stored_bytes": {
+          "$ref": "#/$defs/count"
+        },
+        "content_index": {
+          "type": "boolean",
+          "description": "`[telemetry] content_index` the reads ran under."
+        }
+      }
+    },
+    "cold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available", "method", "reason"],
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "method": {
+          "type": ["string", "null"],
+          "description": "How the page cache was dropped; null when it was not."
+        },
+        "reason": {
+          "type": ["string", "null"],
+          "description": "Why the cold figures are absent; null when they were measured."
+        }
+      }
+    },
+    "measurements": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "command", "bound_ms", "warm", "cold", "within_bound"],
+        "properties": {
+          "name": {
+            "enum": ["fresh_status", "unchanged_status", "show"]
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "bound_ms": {
+            "type": "number",
+            "description": "Design §12: 2000 for `fresh_status`, 200 for `unchanged_status` and `show`."
+          },
+          "warm": {
+            "$ref": "#/$defs/figure"
+          },
+          "cold": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/figure"
+              }
+            ]
+          },
+          "within_bound": {
+            "type": "boolean",
+            "description": "The warm latency is at most `bound_ms`."
+          }
+        }
+      }
+    },
+    "passed": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "figure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["latency_ms", "peak_rss_bytes", "exit_code", "index_bytes", "samples_ms"],
+      "properties": {
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "From exec to exit; the median sample when repeated."
+        },
+        "peak_rss_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exit_code": {
+          "const": 0
+        },
+        "index_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The index with its WAL and shared-memory files after the command."
+        },
+        "samples_ms": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

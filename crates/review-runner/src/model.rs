@@ -32,9 +32,12 @@ use review_core::{
 use review_store::Cas;
 
 use review_process::{
-    ExitPolicy, MAX_CAPTURED_STREAM_BYTES, SupervisedError, run_supervised_captured_bounded,
-    sanitized_path,
+    ExitPolicy, MAX_CAPTURED_STREAM_BYTES, SupervisedError,
+    run_supervised_captured_bounded_observed, sanitized_path,
 };
+
+use crate::native_failure::{NativeFailureKind, classify_native_failure};
+use crate::stream::{HarnessStream, Observation};
 
 /// Why a supervised process yielded no capture, or an input could not be composed. Each is a
 /// typed outcome, never an empty result: a Worker that crashed and a Worker that found nothing
@@ -289,7 +292,34 @@ fn normalize(value: &mut serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{note_cleanup_fallback, parse_proposal_declaration, parse_reviewer_result};
+    use super::{
+        note_cleanup_fallback, parse_proposal_declaration, parse_reviewer_result, stream_totals,
+    };
+
+    /// A stream the output cap truncated ends where its drain read, not where the kept prefix
+    /// ends: the tap's gap protocol compares the observed total (design §7.3).
+    #[test]
+    fn stream_totals_are_what_the_drains_read() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut output = review_process::SupervisedCapture {
+            status: Ok(std::process::ExitStatus::from_raw(0)),
+            stdout: vec![b'x'; 4096],
+            stderr: b"err\n".to_vec(),
+            stderr_held: false,
+            pid: None,
+            rusage: None,
+            truncation: review_process::Truncation {
+                stdout: None,
+                stderr: None,
+                cap: 4096,
+            },
+        };
+        assert_eq!(stream_totals(&output), (4096, 4));
+        output.truncation.stdout = Some(10_000);
+        assert_eq!(stream_totals(&output), (10_000, 4));
+        output.truncation.stderr = Some(5_000);
+        assert_eq!(stream_totals(&output), (10_000, 5_000));
+    }
 
     /// V4 of the security close-out: an Attempt that ran while af could not become a child
     /// subreaper records, in its stored stderr, that descendant cleanup fell back to the
@@ -1211,6 +1241,8 @@ pub struct ModelRunner {
     redactions: Vec<String>,
     environment: Vec<Grant>,
     exit_policy: ExitPolicy,
+    /// What the `af.harness` span names: the GenAI provider and the bound model.
+    harness: Option<(&'static str, Option<String>)>,
     output_cap: usize,
 }
 
@@ -1223,8 +1255,17 @@ impl ModelRunner {
             redactions: Vec::new(),
             environment: Vec::new(),
             exit_policy: ExitPolicy::PreserveProcessGroup,
+            harness: None,
             output_cap: MAX_CAPTURED_STREAM_BYTES,
         }
+    }
+
+    /// Name the harness on its `af.harness` span (design §7.1): the GenAI provider
+    /// (`gen_ai.provider.name`, `anthropic` or `openai`) and the model the binding requested.
+    /// Telemetry only: nothing about the process changes.
+    pub fn with_harness(mut self, provider: &'static str, model: Option<String>) -> Self {
+        self.harness = Some((provider, model));
+        self
     }
 
     /// Keep at most `cap` bytes of each stream instead of
@@ -1311,6 +1352,102 @@ impl ModelRunner {
             &mut capture.stdout,
             &mut capture.stderr,
         );
+        self.store_raw(cas, &mut capture);
+        capture
+    }
+
+    /// [`Self::capture_filtered`] for a harness whose streams Telemetry taps (design §7.3): at
+    /// `spans` and above the supervisor's drains offer every chunk to Telemetry's bounded
+    /// observer as it is read, so its turns and tool calls are recorded live, timed by arrival.
+    /// The offer never blocks and a full queue drops the chunk, so the process, its streams,
+    /// its status, deadline and accounting, the filter and what the CAS keeps are the same as
+    /// [`Self::capture_filtered`]'s, at every level. Once the process has ended and before any
+    /// pending byte of it is published, Telemetry takes its own release decision over the
+    /// complete streams ([`review_telemetry::stream::Release`]): the streams are withheld when
+    /// either carries login-challenge material, when the filter replaced both (the adapter's
+    /// whole-capture privacy filter), when a failed process's stderr classifies as an
+    /// authentication failure, or when the output cap truncated a stream, so that the decision
+    /// holds a prefix where it needs the whole; `af.harness` records `af.stream.withheld`, and
+    /// with the observer's `dropped_chunks` and `gaps` it ends once the filter has read the
+    /// streams.
+    pub fn capture_observed(
+        &self,
+        cas: &Cas,
+        command: &Command,
+        input: Vec<u8>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        stream: &HarnessStream,
+        filter: impl FnOnce(bool, &mut Vec<u8>, &mut Vec<u8>),
+    ) -> SettledCapture {
+        self.capture_observed_with_output(
+            cas,
+            command,
+            input,
+            cancellation,
+            stream,
+            |failed, stdout, stderr, _| filter(failed, stdout, stderr),
+        )
+    }
+
+    /// [`Self::capture_observed`] for a harness that also leaves output outside its streams,
+    /// read by the filter once the process has ended (Codex's `-o` final-message file): every
+    /// byte the filter hands to [`FurtherOutput::include`] is part of Telemetry's release
+    /// decision, so login-challenge material there withholds the process's pending content as
+    /// it would in a stream, and so does a further output the filter could not read whole
+    /// ([`FurtherOutput::unjudgeable`]). The decision is taken before the harness tap ends;
+    /// nothing about the process, the filter, classification or accounting changes.
+    pub fn capture_observed_with_output(
+        &self,
+        cas: &Cas,
+        command: &Command,
+        input: Vec<u8>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        stream: &HarnessStream,
+        filter: impl FnOnce(bool, &mut Vec<u8>, &mut Vec<u8>, &mut FurtherOutput),
+    ) -> SettledCapture {
+        let (mut capture, harness) = self.supervise(command, input, cancellation, Some(stream));
+        let failed = !capture.status.as_ref().is_ok_and(|status| status.success());
+        // What the decision reads, over the complete streams, before the filter changes them;
+        // read only for a process Telemetry observed, so nothing is paid for it below `spans`.
+        // A stream the output cap truncated is not complete: the record says so, below.
+        let observed = harness.as_ref().is_some_and(HarnessRecord::observed);
+        let withheld_before = observed
+            && (review_telemetry::redact::carries_auth_material(&capture.stdout)
+                || review_telemetry::redact::carries_auth_material(&capture.stderr)
+                || failed
+                    && classify_native_failure(&String::from_utf8_lossy(&capture.stderr))
+                        .is_auth());
+        let mut further = FurtherOutput {
+            observed,
+            auth: false,
+            unjudged: false,
+        };
+        filter(
+            failed,
+            &mut capture.stdout,
+            &mut capture.stderr,
+            &mut further,
+        );
+        if let Some(harness) = harness {
+            let replaced = NativeFailureKind::replaced_capture(&capture.stdout, &capture.stderr);
+            // The supervisor keeps a prefix of a stream the output cap truncated while the
+            // observer was offered it whole: the decision cannot judge the process's output, so
+            // its pending content is withheld, as for a further output not read whole.
+            let truncated = harness.truncated();
+            harness.finish(Some(Released {
+                withheld: withheld_before
+                    || further.auth
+                    || further.unjudged
+                    || replaced
+                    || truncated,
+            }));
+        }
+        self.store_raw(cas, &mut capture);
+        capture
+    }
+
+    /// Store the redacted streams in the CAS, in order; a storage failure refuses the output.
+    fn store_raw(&self, cas: &Cas, capture: &mut SettledCapture) {
         for bytes in [&capture.stdout, &capture.stderr] {
             if bytes.is_empty() {
                 continue;
@@ -1324,7 +1461,6 @@ impl ModelRunner {
                 }
             }
         }
-        capture
     }
 
     fn capture_process(
@@ -1333,6 +1469,23 @@ impl ModelRunner {
         input: Vec<u8>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> SettledCapture {
+        let (capture, harness) = self.supervise(command, input, cancellation, None);
+        if let Some(harness) = harness {
+            harness.finish(None);
+        }
+        capture
+    }
+
+    /// Run the process under its `af.harness` span, observed for Telemetry when `stream` names
+    /// its harness and Telemetry records streams; the span is returned open with what the
+    /// supervisor delivered, for the caller to end.
+    fn supervise(
+        &self,
+        command: &Command,
+        input: Vec<u8>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        stream: Option<&HarnessStream>,
+    ) -> (SettledCapture, Option<HarnessRecord>) {
         let mut capture = SettledCapture {
             started: false,
             status: Err(RunnerError::Refused("unresolved command".into())),
@@ -1347,7 +1500,7 @@ impl ModelRunner {
             Ok(argv) => argv,
             Err(error) => {
                 capture.status = Err(error);
-                return capture;
+                return (capture, None);
             }
         };
 
@@ -1364,13 +1517,68 @@ impl ModelRunner {
         for grant in &self.grants {
             cmd.env(&grant.name, &grant.value);
         }
-        let output = run_supervised_captured_bounded(
-            &mut cmd,
-            Some(input),
-            self.timeout,
-            self.exit_policy,
-            cancellation,
-            self.output_cap,
+        // The harness process is the Attempt's `af.harness` span (design §7.1, §7.2): the
+        // program only, never its arguments; its stream-derived children are the tap's.
+        let (provider, model) = self
+            .harness
+            .as_ref()
+            .map_or((None, None), |(provider, model)| {
+                (Some(*provider), model.as_deref())
+            });
+        let span = if !review_telemetry::subscriber::in_run() {
+            tracing::Span::none()
+        } else {
+            review_telemetry::process_span!(
+                "af.harness",
+                process.command = command.program.as_str(),
+                gen_ai.operation.name =
+                    review_telemetry::subscriber::Typed::enumerated("invoke_agent").field(),
+                gen_ai.provider.name = provider,
+                gen_ai.request.model = model,
+                af.native = review_telemetry::subscriber::Typed::enumerated("unavailable").field(),
+                dropped_chunks = tracing::field::Empty,
+                gaps = tracing::field::Empty,
+                af.stream.withheld = tracing::field::Empty,
+                af.native.withheld = tracing::field::Empty,
+            )
+        };
+        let observation = stream.and_then(|stream| {
+            Observation::start(
+                &span,
+                stream,
+                provider.unwrap_or("unknown"),
+                model.map(str::to_string),
+                self.grants
+                    .iter()
+                    .map(|grant| (grant.name.clone(), grant.value.clone()))
+                    .collect(),
+            )
+        });
+        let output = span.in_scope(|| {
+            run_supervised_captured_bounded_observed(
+                &mut cmd,
+                Some(input),
+                self.timeout,
+                self.exit_policy,
+                cancellation,
+                observation.as_ref().map(Observation::observer),
+                self.output_cap,
+            )
+        });
+        if let Some(observation) = &observation {
+            observation.close();
+        }
+        // Output past the cap is not evidence the kernel can keep whole: whatever the exit
+        // status said, the Attempt failed (M2), and its span ends failed with the cap's reason.
+        let capped = match (&output.status, output.truncation.reason()) {
+            (Ok(status), Some(reason)) => Some((status.code().unwrap_or(-1), reason)),
+            _ => None,
+        };
+        let harness = HarnessRecord::new(
+            span,
+            &output,
+            observation,
+            capped.as_ref().map(|(_, reason)| reason.as_str()),
         );
         capture.stdout = redact(output.stdout, &self.redactions);
         capture.stderr = redact(output.stderr, &self.redactions);
@@ -1386,14 +1594,13 @@ impl ModelRunner {
                 review_process::descendant_cleanup_fallback(),
             );
         }
-        // Output past the cap is not evidence the kernel can keep whole: whatever the exit
-        // status said, the Attempt failed (M2). The kept prefix is still stored for usage.
-        if let (Ok(status), Some(reason)) = (&output.status, output.truncation.reason()) {
+        // The kept prefix of a capped capture is still stored for usage.
+        if let Some((exit_code, reason)) = capped {
             capture.status = Err(RunnerError::Failed {
-                exit_code: status.code().unwrap_or(-1),
+                exit_code,
                 stderr_excerpt: reason,
             });
-            return capture;
+            return (capture, Some(harness));
         }
         capture.status = output.status.map_err(|error| match error {
             SupervisedError::TimedOut { .. } => RunnerError::TimedOut {
@@ -1407,8 +1614,180 @@ impl ModelRunner {
                 stderr_excerpt: error.to_string(),
             },
         });
-        capture
+        (capture, Some(harness))
     }
+}
+
+/// Harness output outside the streams that Telemetry's release decision reads
+/// ([`ModelRunner::capture_observed_with_output`]).
+pub struct FurtherOutput {
+    /// Whether Telemetry observed the process: nothing is read for one it did not.
+    observed: bool,
+    /// Whether any included output carries login-challenge material.
+    auth: bool,
+    /// Whether a further output could not be read whole, so the decision cannot judge it.
+    unjudged: bool,
+}
+
+impl FurtherOutput {
+    /// Whether Telemetry observed the process, so its release decision reads further output.
+    pub fn observed(&self) -> bool {
+        self.observed
+    }
+
+    /// Include the complete `bytes` of one further output in the release decision.
+    pub fn include(&mut self, bytes: &[u8]) {
+        self.auth =
+            self.auth || self.observed && review_telemetry::redact::carries_auth_material(bytes);
+    }
+
+    /// A further output that exists but could not be read whole (too large, unreadable, not a
+    /// regular file): what it holds cannot be judged, so the process's pending content is
+    /// withheld as it is for login-challenge material (design §7.3).
+    pub fn unjudgeable(&mut self) {
+        self.unjudged = self.unjudged || self.observed;
+    }
+}
+
+/// What Telemetry's release decision came to, for the `af.harness` span.
+struct Released {
+    withheld: bool,
+}
+
+/// An `af.harness` span still open, with what the supervisor delivered, and the observation
+/// of its streams when there is one.
+struct HarnessRecord {
+    span: tracing::Span,
+    facts: review_telemetry::process::ProcessFacts,
+    failure: Option<(&'static str, String)>,
+    /// The observation, with the bytes each stream carried in total ([`stream_totals`]).
+    observation: Option<(Observation, u64, u64)>,
+    /// Whether the output cap truncated a stream: the capture is a prefix of what the observer
+    /// was offered.
+    truncated: bool,
+}
+
+impl HarnessRecord {
+    fn new(
+        span: tracing::Span,
+        output: &review_process::SupervisedCapture,
+        observation: Option<Observation>,
+        capped: Option<&str>,
+    ) -> Self {
+        let (facts, failure) = harness_facts(output, capped);
+        let (stdout_bytes, stderr_bytes) = stream_totals(output);
+        let observation = observation.map(|observation| (observation, stdout_bytes, stderr_bytes));
+        Self {
+            span,
+            facts,
+            failure,
+            observation,
+            truncated: output.truncation.is_truncated(),
+        }
+    }
+
+    /// Whether Telemetry observed the process's streams.
+    fn observed(&self) -> bool {
+        self.observation.is_some()
+    }
+
+    /// Whether the output cap truncated a stream, so the release decision holds a prefix where
+    /// it needs the whole.
+    fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// End the span: the process's facts, and for an observed process the observer's drops and
+    /// gaps and the release decision, which is handed to the consumer for the tap.
+    fn finish(self, released: Option<Released>) {
+        if let Some((observation, stdout_bytes, stderr_bytes)) = &self.observation {
+            let withheld = released.as_ref().is_some_and(|released| released.withheld);
+            let observer = observation.observer();
+            if !self.span.is_disabled() {
+                self.span
+                    .record("dropped_chunks", observer.dropped_chunks());
+                self.span.record("gaps", observer.gaps());
+                self.span.record("af.stream.withheld", withheld);
+                self.span.record("af.native.withheld", withheld);
+            }
+            observation.release(review_telemetry::stream::Release {
+                withheld,
+                native_withheld: withheld,
+                stdout_bytes: *stdout_bytes,
+                stderr_bytes: *stderr_bytes,
+            });
+        }
+        review_telemetry::process::finish(
+            &self.span,
+            &self.facts,
+            self.failure
+                .as_ref()
+                .map(|(class, reason)| (*class, reason.as_str())),
+        );
+    }
+}
+
+/// The bytes each stream carried in total, where the observed stream ends for the tap's gap
+/// protocol: what the supervisor kept, or, for a stream the output cap truncated, what its
+/// drain read in all, every byte of which the observer was offered.
+fn stream_totals(output: &review_process::SupervisedCapture) -> (u64, u64) {
+    (
+        output
+            .truncation
+            .stdout
+            .unwrap_or(output.stdout.len() as u64),
+        output
+            .truncation
+            .stderr
+            .unwrap_or(output.stderr.len() as u64),
+    )
+}
+
+/// What the `af.harness` span records of what the supervisor returned: the process, its resource
+/// use and stream sizes, and on anything but a clean exit the kernel's class. `capped` is the cap
+/// reason when the Attempt rejected the capture for its truncation: the span ends `failed`
+/// with it, whatever the exit status said.
+fn harness_facts(
+    output: &review_process::SupervisedCapture,
+    capped: Option<&str>,
+) -> (
+    review_telemetry::process::ProcessFacts,
+    Option<(&'static str, String)>,
+) {
+    let mut facts = review_telemetry::process::ProcessFacts {
+        pid: output.pid,
+        rusage: output
+            .rusage
+            .map(|rusage| review_telemetry::process::ResourceUse {
+                user_ms: rusage.user_ms,
+                system_ms: rusage.system_ms,
+                max_rss_bytes: rusage.max_rss_bytes,
+            }),
+        stdout_bytes: Some(output.stdout.len() as u64),
+        stderr_bytes: Some(output.stderr.len() as u64),
+        stderr_held: output.stderr_held,
+        ..Default::default()
+    };
+    if let Ok(status) = &output.status {
+        facts = facts.with_status(status);
+    }
+    let failure = match (&output.status, capped) {
+        (Ok(_), Some(reason)) => Some(("failed", reason.to_string())),
+        (Ok(status), None) if status.success() => None,
+        (Ok(_), None) => Some(("failed", "the harness exited unsuccessfully".to_string())),
+        (Err(SupervisedError::TimedOut { .. }), _) => {
+            Some(("timed_out", "the harness exceeded its deadline".to_string()))
+        }
+        (Err(SupervisedError::Cancelled), _) => {
+            Some(("refused", "the Attempt was cancelled".to_string()))
+        }
+        (Err(SupervisedError::Spawn(_)), _) => Some((
+            "unavailable",
+            "the harness could not be started".to_string(),
+        )),
+        (Err(error), _) => Some(("failed", error.to_string())),
+    };
+    (facts, failure)
 }
 
 /// Record in an Attempt's stored stderr, as a held pipe is, that its descendant cleanup fell back

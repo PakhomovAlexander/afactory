@@ -3,7 +3,8 @@
 //! with no usage report at capacity, ADR-0143), two
 //! Tasks of one Store (one of them later collected, and reported alone), and two Tasks under two
 //! pipelines, one whose review round recorded a major and a minor finding. Every `--json` document validates against
-//! `schemas/task-report-v1.json`, every Markdown block passes `scripts/check-pr-report.py`, and
+//! `schemas/task-report-v1.json`, every Markdown block passes `scripts/check-pr-report.py` (beside
+//! the lines added block a description also carries, ADR-0195), and
 //! neither carries a Provider label, a path or an account the Store or the machine holds.
 
 use nix::sys::signal::Signal;
@@ -57,11 +58,17 @@ fn document(repo: &Path, state: &Path, ids: &[&str]) -> Value {
     value
 }
 
-/// `scripts/check-pr-report.py --body` over `body`: its exit status and what it printed.
+/// `scripts/check-pr-report.py --body` over a description that holds `body` and a lines added
+/// block (ADR-0195: the check requires both, and the report block is the one under test here):
+/// its exit status and what it printed.
 fn check_pr_report(body: &str) -> (bool, String) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("body.md");
-    std::fs::write(&path, body).unwrap();
+    std::fs::write(
+        &path,
+        format!("{body}\n<!-- af-pr-lines:v1 -->\n**Lines added: none**\n<!-- /af-pr-lines -->\n"),
+    )
+    .unwrap();
     let output = Command::new("python3")
         .arg("-I")
         .arg(workspace().join("scripts/check-pr-report.py"))
@@ -942,20 +949,31 @@ fn writer_leases(store: &EventStore) -> Vec<(u64, u64, u64, bool, bool)> {
     let run_id = review_store::store::task::task_run_id(task_interrupt::TASK).unwrap();
     let mut epochs: Vec<(u64, u64, u64, bool, bool)> = Vec::new();
     for event in store.replay(&run_id).unwrap() {
-        let transition = review_store::store::task::read_task_transition(&event).unwrap();
-        let time = transition.now_unix_ms;
-        let index = match epochs.iter().position(|e| e.0 == transition.epoch) {
+        // A lease's execution marker is an event of its epoch that neither refreshes nor
+        // records an execution.
+        let (epoch, time, change) = if review_store::store::task::is_execution_started(&event) {
+            let marker = review_store::store::task::read_execution_started(&event).unwrap();
+            (marker.epoch, marker.now_unix_ms, None)
+        } else {
+            let transition = review_store::store::task::read_task_transition(&event).unwrap();
+            (
+                transition.epoch,
+                transition.now_unix_ms,
+                Some(transition.change),
+            )
+        };
+        let index = match epochs.iter().position(|e| e.0 == epoch) {
             Some(index) => index,
             None => {
-                epochs.push((transition.epoch, time, time, false, false));
+                epochs.push((epoch, time, time, false, false));
                 epochs.len() - 1
             }
         };
         let epoch = &mut epochs[index];
         epoch.1 = epoch.1.min(time);
         epoch.2 = epoch.2.max(time);
-        epoch.3 |= matches!(transition.change, TaskChangeV1::SourceRefreshed { .. });
-        epoch.4 |= matches!(transition.change, TaskChangeV1::ExecutionRecorded { .. });
+        epoch.3 |= matches!(change, Some(TaskChangeV1::SourceRefreshed { .. }));
+        epoch.4 |= matches!(change, Some(TaskChangeV1::ExecutionRecorded { .. }));
     }
     epochs
 }
@@ -1555,6 +1573,9 @@ fn recorded_findings(state: &Path, task_id: &str) -> (u64, [u64; 3]) {
     let run_id = review_store::store::task::task_run_id(task_id).unwrap();
     let mut rounds = Vec::new();
     for event in store.replay(&run_id).unwrap() {
+        if review_store::store::task::is_execution_started(&event) {
+            continue;
+        }
         let transition = review_store::store::task::read_task_transition(&event).unwrap();
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
             transition.change
