@@ -3,7 +3,8 @@
 //! with no usage report at capacity, ADR-0143), two
 //! Tasks of one Store (one of them later collected, and reported alone), and two Tasks under two
 //! pipelines, one whose review round recorded a major and a minor finding. Every `--json` document validates against
-//! `schemas/task-report-v1.json`, every Markdown block passes `scripts/check-pr-report.py`, and
+//! `schemas/task-report-v1.json`, every Markdown block passes `scripts/check-pr-report.py` (beside
+//! the lines added block a description also carries, ADR-0195), and
 //! neither carries a Provider label, a path or an account the Store or the machine holds.
 
 use nix::sys::signal::Signal;
@@ -57,11 +58,17 @@ fn document(repo: &Path, state: &Path, ids: &[&str]) -> Value {
     value
 }
 
-/// `scripts/check-pr-report.py --body` over `body`: its exit status and what it printed.
+/// `scripts/check-pr-report.py --body` over a description that holds `body` and a lines added
+/// block (ADR-0195: the check requires both, and the report block is the one under test here):
+/// its exit status and what it printed.
 fn check_pr_report(body: &str) -> (bool, String) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("body.md");
-    std::fs::write(&path, body).unwrap();
+    std::fs::write(
+        &path,
+        format!("{body}\n<!-- af-pr-lines:v1 -->\n**Lines added: none**\n<!-- /af-pr-lines -->\n"),
+    )
+    .unwrap();
     let output = Command::new("python3")
         .arg("-I")
         .arg(workspace().join("scripts/check-pr-report.py"))
