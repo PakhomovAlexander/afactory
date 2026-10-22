@@ -55,9 +55,14 @@ class Seeds(TempDir):
     def seed(self, name="seed", files=3):
         root = self.path(name)
         os.makedirs(os.path.join(root, "probe-work", "nested"))
+        for directory in (root, os.path.join(root, "probe-work"),
+                          os.path.join(root, "probe-work", "nested")):
+            os.chmod(directory, 0o755)
         for index in range(files):
-            with open(os.path.join(root, "probe-work", "nested", "f%d" % index), "wb") as out:
+            file = os.path.join(root, "probe-work", "nested", "f%d" % index)
+            with open(file, "wb") as out:
                 out.write(b"entry %d\n" % index)
+            os.chmod(file, 0o644)
         tool = os.path.join(root, "probe-work", "tool")
         with open(tool, "wb") as out:
             out.write(b"#!/bin/sh\n")
