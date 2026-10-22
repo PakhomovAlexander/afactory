@@ -184,3 +184,8 @@ distinct_models = false
 [provider_admission]
 tokens = 32768
 wall_ms = 45000
+
+[packages."kernel/verification-ux"]
+version = "1.0.0"
+digest = "sha256:4d34fa8c4991ee208e8444f370e511a89f444a409f6a50954d63e6291626be9d"
+path = ".af/task-packages/kernel/verification-ux"

@@ -351,6 +351,7 @@ impl Fixture {
         let mut output = pipeline.contract.outputs["document"].clone();
         output.covers.clear();
         let signature = OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 {
                 inputs: BTreeMap::from([(
                     "input".into(),
