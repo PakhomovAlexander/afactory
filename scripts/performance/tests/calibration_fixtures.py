@@ -181,6 +181,7 @@ class Lab(object):
 
     def run(self, member_id, day=None, minute=0, attempt=1, actions_run=None, dose=None,
             values=None, cpu=CPU, health_shift=False, omit_shard=None, oracle_failure=None,
+            baseline_ms=None, loop_cost_ns=None,
             calibration_doc="sealed", plan_edit=None, jobs_edit=None, **dispatch):
         """Dispatch and execute one member synthetically and leave its artifacts and attempt
         1's job records (`jobs_edit` may change them); the Actions run ID."""
@@ -208,27 +209,32 @@ class Lab(object):
             with open(os.path.join(directory, "%d.json" % actions_run), "w") as stream:
                 json.dump({"total_count": len(jobs), "jobs": jobs}, stream)
         injection = plan["cohort"]["injection"]
-        counts = None
-        if injection is not None:
-            counts = [group for group in injection["groups"] if group["cpu_model"] == cpu]
-            counts = counts[0]["iterations"] if counts else None
+        cpus = {shard["index"]: cpu[shard["index"]] if isinstance(cpu, dict) else cpu
+                for shard in plan["shards"]}
+        owners = {case["instance_id"]: case["shard"] for case in plan["cases"]}
+        hosts = {index: dict(synthetic.SYNTHETIC_HOST, cpu_model={"value": model})
+                 for index, model in cpus.items()}
 
         def injected_ms(slot):
+            model = cpus[owners[slot["instance_id"]]]
+            groups = injection["groups"] if injection is not None else []
+            counts = next((group["iterations"] for group in groups
+                           if group["cpu_model"] == model), None)
             if slot["side"] != schedule.CANDIDATE or counts is None:
                 return Fraction(0)
             if dose is not None:
                 return dose(slot)
-            return counts[slot["instance_id"]] * COST_NS / 1000000
+            cost = (loop_cost_ns or {}).get(model, COST_NS)
+            return counts[slot["instance_id"]] * cost / 1000000
 
         def value(slot, case):
             if values is not None:
                 return values(slot, case)
-            return A0_MS + injected_ms(slot)
-
-        observed = dict(synthetic.SYNTHETIC_HOST, cpu_model={"value": cpu})
+            model = cpus[owners[slot["instance_id"]]]
+            return (baseline_ms or {}).get(model, A0_MS) + injected_ms(slot)
 
         def edit(record):
-            record["host_id"] = contracts.host_id(observed)
+            record["host_id"] = contracts.host_id(hosts[record["shard"]])
             if injection is not None and record["instance_id"] != plan["health"]["workload"]:
                 slot = {"side": record["side"], "instance_id": record["instance_id"]}
                 record["metrics"][calibration.INJECTED_METRIC] = {
@@ -255,8 +261,8 @@ class Lab(object):
             root = os.path.join(run_dir, "shards", str(shard["index"]))
 
             def host(doc):
-                doc["host"] = observed
-                doc["host_id"] = contracts.host_id(observed)
+                doc["host"] = hosts[shard["index"]]
+                doc["host_id"] = contracts.host_id(doc["host"])
             synthetic.reseal_shard(root, host)
         created = stamp(member["day"] if day is None else day, minute, 20)
         self._stage(run_dir, run_id, actions_run, created, "run_bundle", None)
@@ -457,6 +463,6 @@ def member_record(member, status="complete", cases=None, group="hosted_x86", rea
     complete = status == "complete"
     return {"member_id": member["member_id"], "kind": member["kind"], "status": status,
             "reasons": reasons, "provenance": provenance,
-            "cpu_group": group if complete else None,
+            "cpu_groups": {ident: group for ident in cases or {}} if complete else {},
             "verdict_sha256": synthetic.label_digest("verdict") if complete else None,
             "cases": (cases or {}) if complete else {}, "qualifies": False}

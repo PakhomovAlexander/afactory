@@ -240,13 +240,14 @@ class Parity(unittest.TestCase):
         # executions counted per retained run with every execution failure and the observed
         # cache, shipping/3 one target per product identity and environment group with its
         # distribution, and activation-verification/3 a fetched bridge run's producer
-        # (ADR-0185); nothing reads an earlier version.
+        # (ADR-0185); readiness/6 binds each case to its observed shard CPU group
+        # (ADR-0194); nothing reads an earlier version.
         changed = ("run", "builds", "verdict", "sample", "shard", "supervisor-request",
                    "supervisor-result", "probe-request", "golden", "cohort",
                    "calibration-parameters", "readiness", "activation-verification", "cost",
                    "shipping")
         self.assertEqual([contracts.schema_version(name) for name in changed],
-                         [6, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 5, 3, 3, 3])
+                         [6, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3])
         self.assertEqual(contracts.schema_version("activation"), 3)
         self.assertEqual((contracts.schema_version("cli"), contracts.schema_version("suite")),
                          (5, 3))
