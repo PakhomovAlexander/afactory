@@ -49,7 +49,9 @@ pub(crate) fn install() -> Result<(), String> {
         .spawn(|| {
             let set = signals();
             loop {
-                let Ok(signal) = set.wait() else { continue };
+                let Ok(signal) = SigSet::wait(&set) else {
+                    continue;
+                };
                 receive(signal);
             }
         })

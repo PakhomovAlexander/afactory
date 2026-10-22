@@ -1437,11 +1437,19 @@ fn the_release_measure_script_reports_its_target_directory_and_binary_bytes() {
 /// the Measurement records a typed `insufficient_disk` failure, and no Worker starts after it.
 #[test]
 fn below_the_floor_a_measurement_fails_with_insufficient_disk_without_running_its_command() {
+    measurement_refused_below_the_floor(&[]);
+}
+
+/// The floor refuses a measurement repetition whatever else the machine sets: `env` adds
+/// settings (Telemetry at `content`, for ADR-0153's clause 7).
+pub(crate) fn measurement_refused_below_the_floor(env: &[(&str, &str)]) {
     let fixture = fixture(&[]);
     let file = task_file(&fixture, "full-disk", json!({"size.txt": "80\n"}));
+    let mut settings = vec![("AF_TEST_FREE_BYTES", "0")];
+    settings.extend_from_slice(env);
     let (code, stdout, stderr) = af_with(
         &fixture,
-        &[("AF_TEST_FREE_BYTES", "0")],
+        &settings,
         &[
             "task",
             "start",

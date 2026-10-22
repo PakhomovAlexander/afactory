@@ -644,8 +644,8 @@ pub fn is_identity(value: &str) -> bool {
 }
 
 /// The fixed lengths of the lowercase-hex ids the kernel and this crate produce: span ids and
-/// `af.corr` (16), trace ids (32), Store ids and bare SHA-256 digests (64).
-pub const KERNEL_HEX_LENGTHS: [usize; 3] = [16, 32, 64];
+/// `af.corr` (16), Store event ids (26), trace ids (32), Store ids and bare SHA-256 digests (64).
+pub const KERNEL_HEX_LENGTHS: [usize; 4] = [16, 26, 32, 64];
 
 /// Whether `value` is exactly one of the kernel's identity grammars, the only values the typed
 /// identity exemption keeps:

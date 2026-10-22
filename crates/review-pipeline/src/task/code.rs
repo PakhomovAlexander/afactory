@@ -150,6 +150,72 @@ struct MachineRustToolchain {
     max_copy_bytes: u64,
 }
 
+/// End `af.remote_check`: the gate pull request every outcome names, and the phase's outcome.
+fn remote_check_end(span: &tracing::Span, ran: &Result<Vec<RemoteCheckOutcome>, String>) {
+    if span.is_disabled() {
+        return;
+    }
+    if let Some(number) = ran.iter().flatten().find_map(|outcome| {
+        outcome
+            .evidence
+            .pull_request
+            .as_ref()
+            .map(|pull| pull.number)
+    }) {
+        span.record("af.remote_check.pull_request", number);
+    }
+    review_telemetry::process::outcome(
+        span,
+        ran.as_ref().err().map(|reason| ("failed", reason.as_str())),
+    );
+}
+
+/// What a check node's `af.gate` span records once its checks ran: how many, its decision, and
+/// whether any check ran warm (telemetry only; nothing reads it back).
+#[derive(Debug, Default)]
+pub(super) struct GateObservation {
+    pub(super) checks: usize,
+    pub(super) decision: &'static str,
+    warm_hit: bool,
+    warm_declared: bool,
+}
+
+impl GateObservation {
+    pub(super) fn observe(&mut self, warm: &'static str) {
+        self.warm_hit |= warm == "hit";
+        self.warm_declared |= warm != "none";
+    }
+
+    pub(super) fn warm(&self) -> &'static str {
+        match (self.warm_declared, self.warm_hit) {
+            (false, _) => "none",
+            (true, true) => "hit",
+            (true, false) => "miss",
+        }
+    }
+}
+
+/// The runtime paths a check node introduced into a check's environment, each with the
+/// placeholder the check fingerprint puts in its place: the check's runtime directory (its
+/// `HOME`, temporary directory, cold `CARGO_TARGET_DIR` and private toolchain), the kernel's
+/// `RUSTUP_HOME`, and every warm directory and Cache Snapshot the warm layer bound.
+pub(super) fn runtime_paths(
+    runtime: &Path,
+    rustup: Option<&super::warm_check::RustupHome>,
+    prepared: Option<&super::warm_check::PreparedCheck>,
+) -> Vec<(String, PathBuf)> {
+    let mut paths = vec![("runtime".to_string(), runtime.to_path_buf())];
+    if let Some(path) = rustup.and_then(|rustup| rustup.path.as_ref()) {
+        paths.push(("rustup_home".into(), PathBuf::from(path)));
+    }
+    for (key, value) in prepared.iter().flat_map(|prepared| &prepared.environment) {
+        if Path::new(value).is_absolute() {
+            paths.push((format!("warm:{key}"), PathBuf::from(value)));
+        }
+    }
+    paths
+}
+
 fn native_host_matches(host: &str) -> bool {
     let architecture = std::env::consts::ARCH;
     match std::env::consts::OS {
@@ -356,13 +422,17 @@ fn verify_private_toolchain(root: &Path, request: &RustToolchainRequest) -> Resu
     }
     let mut command = std::process::Command::new(root.join("bin/rustc"));
     command.arg("--version").arg("--verbose").env_clear();
-    let output = review_process::run_supervised_with_policy(
-        &mut command,
-        None,
-        Duration::from_secs(10),
-        review_process::ExitPolicy::KillProcessGroup,
-    )
-    .map_err(|e| format!("probing private rustc: {e}"))?;
+    let span = crate::telemetry::process("rustc", "toolchain_probe");
+    let output = span.in_scope(|| {
+        review_process::run_supervised_with_policy(
+            &mut command,
+            None,
+            Duration::from_secs(10),
+            review_process::ExitPolicy::KillProcessGroup,
+        )
+    });
+    crate::telemetry::process_output(&span, &output);
+    let output = output.map_err(|e| format!("probing private rustc: {e}"))?;
     let stdout = std::str::from_utf8(&output.stdout).map_err(|e| e.to_string())?;
     if !output.status.success()
         || !stdout
@@ -1041,6 +1111,7 @@ impl CodeTaskDomain {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn checks(
         &self,
         cas: &Cas,
@@ -1049,6 +1120,7 @@ impl CodeTaskDomain {
         local: &BTreeSet<String>,
         remote_names: &BTreeSet<String>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
+        observed: &mut GateObservation,
     ) -> Result<(ArtifactInputV1, Vec<String>), String> {
         let source = input.inputs.get("source").ok_or("Check needs source")?;
         let (snapshot_id, snapshot, manifest) = source_snapshot(cas, source)?;
@@ -1202,15 +1274,22 @@ impl CodeTaskDomain {
                 remaining.min(attempt.reservation().deadline_unix_ms.saturating_sub(now));
             runner = runner.with_timeout(Duration::from_millis(remaining));
             let mut prepared = match session.as_mut() {
-                Some(session) if remaining > 0 => Some(session.prepare(
-                    cas,
-                    runner.local_environment(),
-                    sandbox.root(),
-                    runtime.path(),
-                    native_digest.as_deref(),
-                    cancellation,
-                    Duration::from_millis(remaining),
-                )?),
+                Some(session) if remaining > 0 => {
+                    let restore = crate::telemetry::warm("af.warm.restore");
+                    let prepared = restore.in_scope(|| {
+                        session.prepare(
+                            cas,
+                            runner.local_environment(),
+                            sandbox.root(),
+                            runtime.path(),
+                            native_digest.as_deref(),
+                            cancellation,
+                            Duration::from_millis(remaining),
+                        )
+                    });
+                    super::warm_check::record_restore(&restore, &prepared);
+                    Some(prepared?)
+                }
                 // The deadline ran out before this check could prepare: it keeps its name and
                 // one observation per declared kind.
                 Some(session) => Some(PreparedCheck {
@@ -1282,6 +1361,28 @@ impl CodeTaskDomain {
                         runner.with_env(key.clone(), value.clone())
                     }),
             };
+            // What the check fingerprint covers beyond the runner's own knowledge (telemetry
+            // design §9): the Snapshot, the toolchain when one is declared for this check, and
+            // every runtime path this node introduced into the environment.
+            let warm = super::warm_check::warm_result(session.is_some(), prepared.as_ref());
+            observed.observe(warm);
+            let runner =
+                runner
+                    .with_warm_result(warm)
+                    .with_fingerprint(review_check::FingerprintInputs {
+                        snapshot_id: snapshot_id.clone(),
+                        toolchain: self
+                            .policy
+                            .rust_toolchain
+                            .as_ref()
+                            .filter(|request| request.checks.contains(name))
+                            .map(|_| native_digest.clone()),
+                        runtime_paths: runtime_paths(
+                            runtime.path(),
+                            rustup.as_ref(),
+                            prepared.as_ref(),
+                        ),
+                    });
             // Preparation (the sandbox, a private toolchain copy, a Cache Snapshot) spent disk:
             // the floor is read again right before the check would start (ADR-0144).
             let refusal = prepared
@@ -1384,8 +1485,12 @@ impl CodeTaskDomain {
                     // Every kind below the key goes, held by this check or left by another; the
                     // key stays locked until the last one is removed.
                     let excess = exceeded.is_some();
-                    let evicted =
-                        session.finish(prepared.key_lock, prepared.directories, exceeded)?;
+                    let save = crate::telemetry::warm("af.warm.save");
+                    let saved = save.in_scope(|| {
+                        session.finish(prepared.key_lock, prepared.directories, exceeded)
+                    });
+                    super::warm_check::record_save(&save, &observations, &saved);
+                    let evicted = saved?;
                     if let Some(reason) = fails {
                         // Above the hard bound or suspect once the check ended, however fast it
                         // was and whether or not anything was left to remove — a check that
@@ -1554,23 +1659,31 @@ AF_TOOLCHAIN_SNAPSHOT ",
                     .policy
                     .check_process_wall_ms
                     .map_or(remaining, |limit| limit.min(remaining));
-                github_pr::run(
-                    &RemotePhase {
-                        cas,
-                        task_id: attempt.task_id(),
-                        owner,
-                        candidate_id: &snapshot_id,
-                        candidate: &manifest,
-                        source_id: &source_id,
-                        source: &source_manifest,
-                        target,
-                        mapping: self.remote.mapping.as_deref(),
-                        checks: &requests,
-                        deadline: started + Duration::from_millis(limit),
-                        cancellation,
-                    },
-                    &self.remote.github_pr,
-                )?
+                let span = crate::telemetry::remote_check(
+                    &format!("af-gate/{}/head", attempt.task_id()),
+                    requests.len(),
+                );
+                let ran = span.in_scope(|| {
+                    github_pr::run(
+                        &RemotePhase {
+                            cas,
+                            task_id: attempt.task_id(),
+                            owner,
+                            candidate_id: &snapshot_id,
+                            candidate: &manifest,
+                            source_id: &source_id,
+                            source: &source_manifest,
+                            target,
+                            mapping: self.remote.mapping.as_deref(),
+                            checks: &requests,
+                            deadline: started + Duration::from_millis(limit),
+                            cancellation,
+                        },
+                        &self.remote.github_pr,
+                    )
+                });
+                remote_check_end(&span, &ran);
+                ran?
             } else {
                 let base = super::remote_check::EvidenceBase {
                     github: &target.github,
@@ -1677,6 +1790,12 @@ AF_TOOLCHAIN_SNAPSHOT ",
             checks,
         };
         receipt.outcome = self.check_outcome(cas, &receipt)?;
+        observed.checks = receipt.checks.len();
+        observed.decision = match receipt.outcome {
+            ReceiptOutcomeV1::Passed => "passed",
+            ReceiptOutcomeV1::Failed => "failed",
+            ReceiptOutcomeV1::Inconclusive => "inconclusive",
+        };
         let refs = receipt
             .checks
             .values()
@@ -2205,14 +2324,30 @@ impl TaskOperatorHost for CodeTaskDomain {
                 checks,
                 remote_checks,
             } => {
-                let (receipt, evidence_ids) = self.checks(
-                    cas,
-                    input,
-                    attempt.ok_or("Check has no started Attempt")?,
-                    checks,
-                    remote_checks,
-                    cancellation,
-                )?;
+                // The node's checks are one `af.gate`, each check an `af.check` below it.
+                let gate = crate::telemetry::gate();
+                let mut observed = GateObservation::default();
+                let checked = gate.in_scope(|| {
+                    self.checks(
+                        cas,
+                        input,
+                        attempt.ok_or("Check has no started Attempt")?,
+                        checks,
+                        remote_checks,
+                        cancellation,
+                        &mut observed,
+                    )
+                });
+                crate::telemetry::gate_end(
+                    &gate,
+                    observed.checks,
+                    match &checked {
+                        Ok(_) => Ok(observed.decision),
+                        Err(reason) => Err(reason.as_str()),
+                    },
+                    observed.warm(),
+                );
+                let (receipt, evidence_ids) = checked?;
                 raw_artifact_ids.extend(evidence_ids);
                 Ok(BTreeMap::from([("result".into(), receipt)]))
             }

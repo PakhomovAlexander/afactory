@@ -182,6 +182,9 @@ fn recorded_rounds(
     let mut seen = BTreeSet::new();
     let mut rounds = Vec::new();
     for event in store.replay(run_id).map_err(|e| e.to_string())? {
+        if review_store::store::task::is_execution_started(&event) {
+            continue;
+        }
         let transition =
             review_store::store::task::read_task_transition(&event).map_err(|e| e.to_string())?;
         let Change::ExecutionRecorded { record_id } = &transition.change else {
@@ -506,6 +509,13 @@ fn event_times(
     use review_core::task::event::TaskChangeV1 as Change;
     let mut events = Vec::new();
     for event in store.replay(run_id).map_err(|e| e.to_string())? {
+        // A lease's execution marker is an event of its epoch like any other.
+        if review_store::store::task::is_execution_started(&event) {
+            let marker = review_store::store::task::read_execution_started(&event)
+                .map_err(|e| e.to_string())?;
+            events.push((marker.epoch, marker.now_unix_ms, Mark::Other));
+            continue;
+        }
         let transition =
             review_store::store::task::read_task_transition(&event).map_err(|e| e.to_string())?;
         let mark = match &transition.change {

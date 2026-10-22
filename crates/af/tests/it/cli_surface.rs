@@ -469,13 +469,15 @@ fn project_brief_describes_the_exact_bytes_a_port_carries() {
     assert!(dir.path().join("af-project-brief.1").is_file());
 }
 
-/// `af telemetry`, its two commands and `af help telemetry` say what they print, what they never
+/// `af telemetry`, its commands and `af help telemetry` say what they print, what they never
 /// do, their options and their exit codes, in `--help`, in `af help` and in the man pages
 /// (ADR-0153, ADR-0146).
 #[test]
 fn telemetry_help_and_man_pages_describe_the_commands() {
     let namespace = out(&af(&["telemetry", "--help"]));
-    for command in ["status ", "reindex "] {
+    for command in [
+        "status ", "reindex ", "runs ", "show ", "config ", "tail ", "ledger ", "gc ",
+    ] {
         assert!(
             namespace
                 .lines()
@@ -509,6 +511,75 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
             }
         }
     }
+    // The readers of P2 and P3 (design §10): what they print, what they never do, their
+    // documents.
+    for (command, usage, schema, options) in [
+        (
+            "runs",
+            "Usage: af telemetry runs [OPTIONS]",
+            "af/telemetry-runs@1",
+            ["--since <D>", "--kind <K>", "--dir <PATH>"].as_slice(),
+        ),
+        (
+            "show",
+            "Usage: af telemetry show [OPTIONS] <RUN>",
+            "af/telemetry-show@1",
+            [
+                "--store <ID>",
+                "--attempt <ID>",
+                "--span <ID>",
+                "--depth <N>",
+                "--dir <PATH>",
+            ]
+            .as_slice(),
+        ),
+        (
+            "config",
+            "Usage: af telemetry config [OPTIONS] <RUN>",
+            "af/TelemetryConfig@2",
+            ["--store <ID>", "--execution <ID>", "--dir <PATH>", "<env>"].as_slice(),
+        ),
+        (
+            "tail",
+            "Usage: af telemetry tail [OPTIONS] [RUN]",
+            "af/telemetry-tail@1",
+            ["--store <ID>", "--dir <PATH>"].as_slice(),
+        ),
+        (
+            "gc",
+            "Usage: af telemetry gc [OPTIONS]",
+            "af/telemetry-gc@1",
+            ["--apply"].as_slice(),
+        ),
+        // P4 (design §7.5, §10): the ledger view.
+        (
+            "ledger",
+            "Usage: af telemetry ledger [OPTIONS] <RUN>",
+            "af/telemetry-ledger@1",
+            ["--store <ID>", "--dir <PATH>"].as_slice(),
+        ),
+    ] {
+        for help in [
+            af(&["telemetry", command, "--help"]),
+            af(&["help", "telemetry", command]),
+        ] {
+            assert!(help.status.success(), "{}", err(&help));
+            let text = out(&help).split_whitespace().collect::<Vec<_>>().join(" ");
+            for needle in [
+                usage,
+                "--json",
+                schema,
+                "Never:",
+                "Exit codes: 0 success, 1",
+            ]
+            .into_iter()
+            .chain(options.iter().copied())
+            {
+                assert!(text.contains(needle), "`{needle}` missing:\n{text}");
+            }
+            assert!(text.contains(&format!("af telemetry {command}")), "{text}");
+        }
+    }
     let topic = af(&["help", "telemetry"]);
     assert!(topic.status.success());
     let text = out(&topic);
@@ -521,6 +592,12 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "sink_timeout_ms = 5000",
         "af telemetry status",
         "af telemetry reindex",
+        "af telemetry runs",
+        "af telemetry show",
+        "af telemetry config",
+        "af telemetry tail",
+        "af telemetry ledger",
+        "af telemetry gc",
         "machine layers only",
     ] {
         assert!(text.contains(needle), "`{needle}` missing:\n{text}");
@@ -532,6 +609,12 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
         "af-telemetry.1",
         "af-telemetry-status.1",
         "af-telemetry-reindex.1",
+        "af-telemetry-runs.1",
+        "af-telemetry-show.1",
+        "af-telemetry-config.1",
+        "af-telemetry-tail.1",
+        "af-telemetry-ledger.1",
+        "af-telemetry-gc.1",
         "af-telemetry.7",
     ] {
         assert!(dir.path().join(page).is_file(), "{page} missing");

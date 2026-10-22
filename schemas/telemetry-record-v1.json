@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:telemetry-record:1",
   "title": "af/Telemetry*@1 segment records",
-  "description": "One line of a telemetry segment under `v1/segments/` (design \u00a75, ADR-0153): `seq` (1 for the header, one more per appended record; a derived segment keeps it with gaps), `t` (the record kind) and `schema` (its versioned type). One encoded record is at most 16 KiB; attributes are at most 64, keys 128 bytes, strings 1 KiB, arrays 32 elements and 4 KiB. Timestamps are unix nanoseconds as decimal strings; exact counters are canonical decimal strings. A record of another schema version is refused by the reader, never migrated (ADR-0145).",
+  "description": "One line of a telemetry segment under `v1/segments/` (design §5, ADR-0153): `seq` (1 for the header, one more per appended record; a derived segment keeps it with gaps), `t` (the record kind) and `schema` (its versioned type). One encoded record is at most 16 KiB; attributes are at most 64, keys 128 bytes, strings 1 KiB, arrays 32 elements and 4 KiB. Timestamps are unix nanoseconds as decimal strings; exact counters are canonical decimal strings. A record of another schema version is refused by the reader, never migrated (ADR-0145).",
   "oneOf": [
     {
       "type": "object",
@@ -379,6 +379,9 @@
         "t",
         "schema",
         "execution_id",
+        "run_id",
+        "run_span_id",
+        "section",
         "part",
         "parts",
         "complete",
@@ -393,11 +396,26 @@
           "const": "config"
         },
         "schema": {
-          "const": "af/TelemetryConfig@1"
+          "const": "af/TelemetryConfig@2"
         },
         "execution_id": {
           "type": "string",
           "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_span_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "section": {
+          "enum": [
+            "configuration",
+            "plan",
+            "machine"
+          ]
         },
         "part": {
           "type": "integer",
@@ -520,6 +538,8 @@
         "t",
         "schema",
         "span_id",
+        "log",
+        "sequence",
         "key",
         "severity",
         "effective_severity",
@@ -544,11 +564,19 @@
           "const": "finding"
         },
         "schema": {
-          "const": "af/TelemetryFinding@1"
+          "const": "af/TelemetryFinding@2"
         },
         "span_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{16}$"
+        },
+        "log": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
         },
         "key": {
           "type": "string",
@@ -629,6 +657,8 @@
         "t",
         "schema",
         "span_id",
+        "log",
+        "sequence",
         "demand_id",
         "kind",
         "required",
@@ -645,11 +675,19 @@
           "const": "demand"
         },
         "schema": {
-          "const": "af/TelemetryDemand@1"
+          "const": "af/TelemetryDemand@2"
         },
         "span_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{16}$"
+        },
+        "log": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
         },
         "demand_id": {
           "type": "string",

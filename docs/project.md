@@ -52,7 +52,7 @@ through a temporary file and a rename, as it writes `stores.toml`.
 
 The Store registry (`$XDG_STATE_HOME/af/stores.toml`) records every Project Store with the kind
 `project`, so `af storage` counts it as a `project_store` entry
-([schema](../schemas/storage-v3.json)). A registry that can hold that kind is `version = 2`; a
+([schema](../schemas/storage-v4.json)). A registry that can hold that kind is `version = 2`; a
 version-1 file an earlier release wrote is refused with the way out: delete
 `$XDG_STATE_HOME/af/stores.toml`. Stores register again as commands use them, and the Stores
 under af's default roots were never in it. A Project Store is never evicted: it indexes the
@@ -813,7 +813,7 @@ the trigger after a run. The tombstone a collected Survey leaves is described un
 
 Every Survey is an entry of kind `survey` of the machine budget: `af storage` lists it with its
 record's CAS bytes, its path the CAS object, and its cutoff as its last use, and `--json` prints
-`af/storage@3` ([schema](../schemas/storage-v3.json)). `af project refresh` collects nothing,
+`af/storage@4` ([schema](../schemas/storage-v4.json)). `af project refresh` collects nothing,
 however often it runs. Surveys go only in the Storage Budget's own passes
 ([ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md)):
 
@@ -848,7 +848,7 @@ before. `af project survey` exits 1 when the newest Survey was collected, saying
 `previous_survey_id` is a name: a collected predecessor keeps nothing alive.
 
 A sweep plans once, over one inventory snapshot, and `af storage prune` without `--apply` prints
-that plan in `af/storage-prune@3` ([schema](../schemas/storage-prune-v3.json)): every entry it
+that plan in `af/storage-prune@4` ([schema](../schemas/storage-prune-v4.json)): every entry it
 removes, in order, with the bytes it frees, its rule (`recovery`, then `collection` and
 `keep_surveys`, then `budget`) and af's total after it, and under `left` every file or Survey it
 leaves with its reason. `--apply` runs that same plan entry by entry and never chooses again: each

@@ -45,7 +45,7 @@
 //! once; a campaign nested deeper than the removal walk is left `too_deep`; and an event whose
 //! cutoff its record disproves is never the Survey's last use, the Survey refused and kept.
 //! `?` is one byte of the canonical encoded spelling in the Surveyor's `exclude`, and the
-//! superseded `af/storage@2`, `af/storage-prune@1` and `af/storage-prune@2` are refused.
+//! superseded `af/storage@2`, `af/storage@3` and `af/storage-prune@1` to `@3` are refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -281,10 +281,10 @@ fn refresh(machine: &Machine, repo: &Path, cutoff: &str, complete: bool) -> Stri
     machine.recorded().last().unwrap().clone()
 }
 
-/// The `survey` entries of `af storage --json`, by path, validated against `af/storage@3`.
+/// The `survey` entries of `af storage --json`, by path, validated against `af/storage@4`.
 fn survey_entries(machine: &Machine, repo: &Path) -> (Value, BTreeMap<String, Value>) {
     let shown = machine.json(repo, &[], &["storage", "--json"]);
-    schemas::valid(&schemas::validator("storage-v3.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v4.json"), &shown);
     let entries = shown["entries"]
         .as_array()
         .unwrap()
@@ -295,24 +295,24 @@ fn survey_entries(machine: &Machine, repo: &Path) -> (Value, BTreeMap<String, Va
     (shown, entries)
 }
 
-/// `af storage prune --apply --json` under `env`, validated against `af/storage-prune@3`. Unless
+/// `af storage prune --apply --json` under `env`, validated against `af/storage-prune@4`. Unless
 /// a debug hook makes an entry of the applied sweep fail, the preview just before it is the same
 /// plan: every removal, with its bytes and the total after it, and every entry left agree.
 fn prune(machine: &Machine, repo: &Path, env: &[(&str, &str)]) -> Value {
     let hooked = env.iter().any(|(name, _)| name.starts_with("AF_TEST_"));
     let preview = (!hooked).then(|| preview(machine, repo, env));
     let pruned = machine.json(repo, env, &["storage", "prune", "--apply", "--json"]);
-    schemas::valid(&schemas::validator("storage-prune-v3.json"), &pruned);
+    schemas::valid(&schemas::validator("storage-prune-v4.json"), &pruned);
     if let Some(preview) = preview {
         assert_agree(&preview, &pruned);
     }
     pruned
 }
 
-/// `af storage prune --json` under `env`, validated against `af/storage-prune@3`.
+/// `af storage prune --json` under `env`, validated against `af/storage-prune@4`.
 fn preview(machine: &Machine, repo: &Path, env: &[(&str, &str)]) -> Value {
     let preview = machine.json(repo, env, &["storage", "prune", "--json"]);
-    schemas::valid(&schemas::validator("storage-prune-v3.json"), &preview);
+    schemas::valid(&schemas::validator("storage-prune-v4.json"), &preview);
     assert_eq!(preview["applied"], false);
     preview
 }
@@ -467,7 +467,7 @@ fn an_explicit_collection_beyond_keep_surveys_tombstones_and_frees_the_bytes() {
     // A preview names what would go and removes nothing.
     let keep = [("AF_STORAGE__KEEP_SURVEYS", "2")];
     let preview = machine.json(&repo, &keep, &["storage", "prune", "--json"]);
-    schemas::valid(&schemas::validator("storage-prune-v3.json"), &preview);
+    schemas::valid(&schemas::validator("storage-prune-v4.json"), &preview);
     assert_eq!(removed(&preview, "keep_surveys").len(), 3, "{preview}");
     assert!(machine.collected().is_empty());
 
@@ -1410,7 +1410,7 @@ fn the_preview_lists_held_surveys_as_held_and_agrees_with_the_sweep() {
     };
     let preview_json = |machine: &Machine| {
         let preview = machine.json(&repo, &keep, &["storage", "prune", "--json"]);
-        schemas::valid(&schemas::validator("storage-prune-v3.json"), &preview);
+        schemas::valid(&schemas::validator("storage-prune-v4.json"), &preview);
         preview
     };
 
@@ -1547,21 +1547,28 @@ fn a_question_mark_is_one_byte_in_the_surveyors_exclude() {
 }
 
 /// ADR-0145 clause 2: the documents Survey collection changed are `af/storage@3` and
-/// `af/storage-prune@3` (`@2` added the kind `survey`, `@3` the `unknown` total); their
+/// `af/storage-prune@3` (`@2` added the kind `survey`, `@3` the `unknown` total), and
+/// Telemetry's kind (ADR-0153) made them `af/storage@4` and `af/storage-prune@4`; their
 /// superseded versions are refused and no schema of them ships.
 #[test]
 fn superseded_storage_documents_are_refused() {
     let machine = Machine::new();
     let repo = repository(&machine, "");
     let mut shown = machine.json(&repo, &[], &["storage", "--json"]);
-    let current = schemas::validator("storage-v3.json");
+    let current = schemas::validator("storage-v4.json");
     assert!(current.is_valid(&shown));
-    shown["schema"] = serde_json::json!("af/storage@2");
-    assert!(!current.is_valid(&shown));
+    for superseded in ["af/storage@2", "af/storage@3"] {
+        shown["schema"] = serde_json::json!(superseded);
+        assert!(!current.is_valid(&shown), "{superseded}");
+    }
     let mut pruned = machine.json(&repo, &[], &["storage", "prune", "--json"]);
-    let current = schemas::validator("storage-prune-v3.json");
+    let current = schemas::validator("storage-prune-v4.json");
     assert!(current.is_valid(&pruned));
-    for superseded in ["af/storage-prune@1", "af/storage-prune@2"] {
+    for superseded in [
+        "af/storage-prune@1",
+        "af/storage-prune@2",
+        "af/storage-prune@3",
+    ] {
         pruned["schema"] = serde_json::json!(superseded);
         assert!(!current.is_valid(&pruned), "{superseded}");
     }
@@ -1572,8 +1579,10 @@ fn superseded_storage_documents_are_refused() {
     for superseded in [
         "storage-v1.json",
         "storage-v2.json",
+        "storage-v3.json",
         "storage-prune-v1.json",
         "storage-prune-v2.json",
+        "storage-prune-v3.json",
     ] {
         assert!(!schemas.join(superseded).exists(), "{superseded}");
     }
@@ -2887,7 +2896,7 @@ fn af_storage_counts_an_abandoned_claim_as_the_preview_does() {
     );
     let claim_bytes = dead_claim(&claim, 96 * 1024);
     let shown = machine.json(&directory, &[], &["storage", "--json"]);
-    schemas::valid(&schemas::validator("storage-v3.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v4.json"), &shown);
     let entries = shown["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 1, "{shown}");
     assert_eq!(entries[0]["kind"], "claim");
@@ -3091,7 +3100,7 @@ fn a_pending_entry_stays_while_its_changed_object_is_present_and_goes_once_it_is
 /// The `reason` of every problem `af storage --json` reports under `env`, by path.
 fn storage_problems(machine: &Machine, repo: &Path, env: &[(&str, &str)]) -> Vec<(String, String)> {
     let shown = machine.json(repo, env, &["storage", "--json"]);
-    schemas::valid(&schemas::validator("storage-v3.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v4.json"), &shown);
     shown["problems"]
         .as_array()
         .unwrap()
@@ -3201,7 +3210,7 @@ fn project_stores_beyond_the_store_discovery_ceiling_are_reported_and_their_surv
 
     let env = [("AF_TEST_SURVEY_DISCOVERY_STORES", "1")];
     let shown = machine.json(&first, &env, &["storage", "--json"]);
-    schemas::valid(&schemas::validator("storage-v3.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v4.json"), &shown);
     let problems: Vec<&Value> = shown["problems"]
         .as_array()
         .unwrap()

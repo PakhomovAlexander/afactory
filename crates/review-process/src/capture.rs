@@ -1,7 +1,7 @@
 use crate::control::{ReceiveError, cancelled, receive};
 use crate::drain::{Drain, Drained, collect_after_kill_until, collect_cancellable, drain_async};
 use crate::{
-    ExitPolicy, Leader, MAX_CAPTURED_STREAM_BYTES, SupervisedError, SupervisedOutput,
+    ExitPolicy, Leader, MAX_CAPTURED_STREAM_BYTES, Rusage, SupervisedError, SupervisedOutput,
     SupervisedStreamError, Truncation, stdin_writer_wait, wait_exact_cancellable,
 };
 use std::io::Write;
@@ -10,11 +10,18 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 /// Process outcome and bytes are independent: failed transport cannot erase reported usage.
+/// The process id and resource use survive every outcome a process was started for — a timed
+/// out, killed or cancelled one included.
 pub struct SupervisedCapture {
     pub status: Result<ExitStatus, SupervisedError>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub stderr_held: bool,
+    /// The leader's process id; `None` when nothing was started.
+    pub pid: Option<u32>,
+    /// What the reaped leader used; `None` when nothing was started or the platform delivered
+    /// nothing ([`Rusage`]).
+    pub rusage: Option<Rusage>,
     /// The streams that wrote more than their cap, with what each wrote in total. A truncated
     /// stream is a prefix: the caller decides what that means, and must not read it as whole.
     pub truncation: Truncation,
@@ -28,11 +35,15 @@ impl SupervisedCapture {
                 stdout: self.stdout,
                 stderr: self.stderr,
                 stderr_held: self.stderr_held,
+                pid: self.pid,
+                rusage: self.rusage,
                 truncation: self.truncation,
             }),
             Err(SupervisedError::TimedOut { .. }) => Err(SupervisedError::TimedOut {
                 stdout: self.stdout,
                 stderr: self.stderr,
+                pid: self.pid,
+                rusage: self.rusage,
             }),
             Err(error) => Err(error),
         }
@@ -213,6 +224,8 @@ pub(crate) struct StreamCapture<E> {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     stderr_held: bool,
+    pid: Option<u32>,
+    rusage: Option<Rusage>,
     truncation: Truncation,
 }
 
@@ -226,6 +239,8 @@ impl StreamCapture<std::io::Error> {
             stdout: self.stdout,
             stderr: self.stderr,
             stderr_held: self.stderr_held,
+            pid: self.pid,
+            rusage: self.rusage,
             truncation: self.truncation,
         }
     }
@@ -238,6 +253,8 @@ impl<E> StreamCapture<E> {
             stdout: vec![],
             stderr: vec![],
             stderr_held: false,
+            pid: None,
+            rusage: None,
             truncation: Truncation::default(),
         }
     }
@@ -249,12 +266,16 @@ impl<E> StreamCapture<E> {
                 stdout: self.stdout,
                 stderr: self.stderr,
                 stderr_held: self.stderr_held,
+                pid: self.pid,
+                rusage: self.rusage,
                 truncation: self.truncation,
             }),
             Err(SupervisedStreamError::Process(SupervisedError::TimedOut { .. })) => {
                 Err(SupervisedStreamError::Process(SupervisedError::TimedOut {
                     stdout: self.stdout,
                     stderr: self.stderr,
+                    pid: self.pid,
+                    rusage: self.rusage,
                 }))
             }
             Err(error) => Err(error),
@@ -275,13 +296,15 @@ fn failed<E>(
     leader.kill_group();
     let stdout = collect_after_kill_until(stdout, deadline);
     let stderr = collect_after_kill_until(stderr, deadline);
-    let _ = leader.reap();
+    let (_, rusage) = leader.reap();
     StreamCapture {
         status: Err(error),
         truncation: caps.truncation(stdout.total, stderr.total),
         stdout: stdout.bytes,
         stderr: stderr.bytes,
         stderr_held: false,
+        pid: Some(leader.pid()),
+        rusage,
     }
 }
 
@@ -289,6 +312,8 @@ fn completed<E>(
     status: ExitStatus,
     stdout: Drained,
     stderr: Drained,
+    pid: u32,
+    rusage: Option<Rusage>,
     caps: Caps,
 ) -> StreamCapture<E> {
     let stderr_held = matches!(stderr.status, Ok(true));
@@ -303,6 +328,8 @@ fn completed<E>(
         stdout: stdout.bytes,
         stderr: stderr.bytes,
         stderr_held,
+        pid: Some(pid),
+        rusage,
         truncation,
     }
 }
@@ -402,6 +429,8 @@ where
                     Some(SupervisedStreamError::Process(SupervisedError::TimedOut {
                         stdout: vec![],
                         stderr: vec![],
+                        pid: None,
+                        rusage: None,
                     }))
                 }
                 Err(ReceiveError::Disconnected) => {
@@ -430,13 +459,15 @@ where
         }
         // Reaping is the final operation: every kill above ran while the pid was reserved.
         let mut capture = match leader.reap() {
-            Ok(status) => completed(status, stdout, stderr, caps),
-            Err(error) => StreamCapture {
+            (Ok(status), rusage) => completed(status, stdout, stderr, leader.pid(), rusage, caps),
+            (Err(error), rusage) => StreamCapture {
                 status: Err(SupervisedStreamError::Process(SupervisedError::Wait(error))),
                 truncation: caps.truncation(stdout.total, stderr.total),
                 stdout: stdout.bytes,
                 stderr: stderr.bytes,
                 stderr_held: false,
+                pid: Some(leader.pid()),
+                rusage,
             },
         };
         if capture.status.is_ok() && cancelled_now {
@@ -451,10 +482,7 @@ mod tests {
     use super::*;
 
     fn status() -> ExitStatus {
-        std::process::Command::new("/bin/sh")
-            .args(["-c", "exit 0"])
-            .status()
-            .unwrap()
+        crate::reap::status(std::process::Command::new("/bin/sh").args(["-c", "exit 0"])).unwrap()
     }
 
     #[test]
@@ -474,6 +502,8 @@ mod tests {
                     source: std::io::Error::other("read failed"),
                 }),
             },
+            1,
+            None,
             Caps::both(MAX_CAPTURED_STREAM_BYTES),
         );
         assert!(matches!(

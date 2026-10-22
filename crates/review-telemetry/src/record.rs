@@ -53,10 +53,10 @@ pub mod schema {
     pub const SEGMENT: &str = "af/TelemetrySegment@1";
     pub const SPAN: &str = "af/TelemetrySpan@1";
     pub const EVENT: &str = "af/TelemetryEvent@1";
-    pub const CONFIG: &str = "af/TelemetryConfig@1";
+    pub const CONFIG: &str = "af/TelemetryConfig@2";
     pub const NODE: &str = "af/TelemetryNode@1";
-    pub const FINDING: &str = "af/TelemetryFinding@1";
-    pub const DEMAND: &str = "af/TelemetryDemand@1";
+    pub const FINDING: &str = "af/TelemetryFinding@2";
+    pub const DEMAND: &str = "af/TelemetryDemand@2";
     pub const BLOB: &str = "af/TelemetryBlob@1";
     pub const BLOB_REF: &str = "af/TelemetryBlobRef@1";
     pub const PROBLEM: &str = "af/TelemetryProblem@1";
@@ -213,15 +213,36 @@ pub struct ConfigRow {
     pub origin: Option<String>,
 }
 
-/// `config`, `af/TelemetryConfig@1`: one part of an execution's configuration snapshot.
+/// The sections of a run's configuration record, in the record's fixed order: what the
+/// command read when the run opened (`af --version --json`, the effective configuration, the
+/// digests of `.af/af.toml` and `.af/af.lock`), what the plan resolved to (the policy
+/// revision, the pipeline and its nodes, the Task, the bindings), and the machine the command
+/// read when the run opened (the Provider registry, the harness versions, the host, the
+/// variable names). The first and the last are written when the run's `af.run` opens; the
+/// plan section when the plan resolves, so a run refused before that has no plan section.
+pub const CONFIG_SECTIONS: [&str; 3] = ["configuration", "plan", "machine"];
+
+/// `config`, `af/TelemetryConfig@2`: one part of one section of a run's configuration record.
+/// A part names the run that owns it — its run id and its `af.run` span — besides the
+/// execution (segment) that wrote it, because one execution may work on several runs (a
+/// measurement run inside a Task Attempt has a record of its own).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigPart {
     pub seq: u64,
     pub schema: String,
     pub execution_id: String,
+    /// The kernel run id of the run the record is of.
+    pub run_id: String,
+    /// The `span_id` of that run's `af.run` span in this execution.
+    pub run_span_id: String,
+    /// One of [`CONFIG_SECTIONS`].
+    pub section: String,
+    /// The part's ordinal within its section, from 1.
     pub part: u32,
+    /// The section's part count.
     pub parts: u32,
+    /// Whether this is the section's last part.
     pub complete: bool,
     pub rows: Vec<ConfigRow>,
     /// How many values of this part's rows the redaction withheld.
@@ -249,7 +270,10 @@ pub struct Node {
     pub expected_nodes: u32,
 }
 
-/// `finding`, `af/TelemetryFinding@1`: the bounded summary of an admitted Finding (§7.5).
+/// `finding`, `af/TelemetryFinding@2`: the bounded summary of an admitted Finding (§7.5),
+/// written for every admitted Report of it and every change of a summarized field, carrying
+/// the Store log and the committed sequence of the event that caused it, by which a reader
+/// orders it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
@@ -257,6 +281,10 @@ pub struct Finding {
     pub schema: String,
     /// The run span the summary belongs to.
     pub span_id: String,
+    /// The Store log (its kernel run id) of the committed event that caused the summary.
+    pub log: String,
+    /// That event's committed sequence in its log.
+    pub sequence: u64,
     pub key: String,
     pub severity: String,
     pub effective_severity: String,
@@ -273,13 +301,19 @@ pub struct Finding {
     pub epoch: Option<u64>,
 }
 
-/// `demand`, `af/TelemetryDemand@1`: the bounded summary of a Demand, keyed by its id (§7.5).
+/// `demand`, `af/TelemetryDemand@2`: the bounded summary of a Demand, keyed by its id (§7.5):
+/// its own Subject with the Snapshot bound to that Subject, and the Store log and committed
+/// sequence of the event that caused the summary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Demand {
     pub seq: u64,
     pub schema: String,
     pub span_id: String,
+    /// The Store log (its kernel run id) of the committed event that caused the summary.
+    pub log: String,
+    /// That event's committed sequence in its log.
+    pub sequence: u64,
     pub demand_id: String,
     pub kind: String,
     pub required: bool,
@@ -690,6 +724,11 @@ pub enum Attr {
     Bool(bool),
     /// Untrusted texts, each judged whole.
     Texts(Vec<String>),
+    /// Kernel identities (a mirrored Store event's artifact references): each element is kept
+    /// as given only in an identity position and when it is exactly a kernel identity, and
+    /// judged as untrusted text otherwise; the array is bounded like [`Attr::Texts`] and never
+    /// offered for a blob.
+    Ids(Vec<String>),
 }
 
 /// Attributes in the writer's order: the bound drops from the end.
@@ -736,6 +775,10 @@ impl Attrs {
 
     pub fn texts(self, key: &str, values: Vec<String>) -> Self {
         self.push(key, Attr::Texts(values))
+    }
+
+    pub fn ids(self, key: &str, values: Vec<String>) -> Self {
+        self.push(key, Attr::Ids(values))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -834,6 +877,13 @@ fn bound_texts(
     {
         return Value::String(format!("{OCCURRENCE_PREFIX}{occurrence}"));
     }
+    cut_array(redacted, counters)
+}
+
+/// Cut an array of already judged strings at the array bounds: each element at
+/// [`MAX_STRING_BYTES`], the array at [`MAX_ARRAY_ELEMENTS`] and [`MAX_ARRAY_BYTES`], a trailing
+/// marker element where it was cut, counted once in `af.truncated_fields`.
+fn cut_array(redacted: Vec<String>, counters: &mut Counters) -> Value {
     let mut kept = Vec::new();
     let mut bytes = 0;
     let mut cut_any = false;
@@ -864,6 +914,26 @@ fn bound_texts(
     Value::Array(kept.into_iter().map(Value::String).collect())
 }
 
+/// Bound one identity array: each element a kernel identity in its identity position or judged
+/// whole, then cut at the array bounds.
+fn bound_ids(key: &str, ids: Vec<String>, redactor: &Redactor, counters: &mut Counters) -> Value {
+    let position = is_identity_position(key);
+    let judged = ids
+        .into_iter()
+        .map(|id| {
+            if position && redact::is_kernel_identity(&id) {
+                return id;
+            }
+            let (value, withheld) = redactor.value(&id);
+            if withheld {
+                counters.redacted += 1;
+            }
+            value
+        })
+        .collect();
+    cut_array(judged, counters)
+}
+
 /// A value over its bound, offered for a blob at `content`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Oversized<'a> {
@@ -882,7 +952,7 @@ pub enum Oversized<'a> {
 /// identity. This set is closed: a value earns the identity exemption only here, and only when
 /// it is exactly a kernel identity ([`redact::is_kernel_identity`]); every other string is
 /// judged as untrusted text.
-pub const IDENTITY_POSITIONS: [&str; 29] = [
+pub const IDENTITY_POSITIONS: [&str; 45] = [
     "af.store_id",
     "af.run_id",
     "af.task_id",
@@ -893,15 +963,30 @@ pub const IDENTITY_POSITIONS: [&str; 29] = [
     "af.measurement.id",
     "af.store.event.id",
     "af.store.event.causation_id",
+    "af.store.event.payload_digest",
+    "artifact_refs",
+    "af.finding.id",
+    "af.demand.id",
+    "af.evidence.id",
     "af.context.manifest",
     "af.pipeline.digest",
+    "af.policy_rev",
     "af.plan_digest",
     "af.snapshot_id",
     "af.artifact_id",
+    "af.snapshot",
+    "af.check.fingerprint",
+    "af.warm.key",
+    "af.af_toml.digest",
+    "af.af_lock.digest",
+    "af.config.text.digest",
     "trace_id",
     "span_id",
     "parent_span_id",
     "execution_id",
+    "run_id",
+    "run_span_id",
+    "log",
     "plan_digest",
     "node_id",
     "depends_on",
@@ -909,6 +994,7 @@ pub const IDENTITY_POSITIONS: [&str; 29] = [
     "subject_id",
     "snapshot_id",
     "report_artifact_id",
+    "finding_key",
     "digest",
     "source_digest",
     "occurrence_id",
@@ -1078,6 +1164,7 @@ pub fn bound_attributes(
             },
             Attr::Bool(value) => Value::Bool(value),
             Attr::Texts(values) => bound_texts(&key, &values, redactor, &mut counters, oversized),
+            Attr::Ids(ids) => bound_ids(&key, ids, redactor, &mut counters),
         };
         out.insert(key, value);
     }
@@ -1177,6 +1264,47 @@ mod tests {
         assert!(!attributes.contains_key("af.usage.output_tokens"));
         assert_eq!(counters.redacted, 1);
         assert_eq!(counters.dropped, 1);
+    }
+
+    #[test]
+    fn identity_arrays_keep_kernel_identities_only_in_their_position() {
+        let digest = format!("sha256:{}", "ab".repeat(32));
+        let trace = "4bf92f3577b34da6a3ce929d0e0e4736".to_string();
+        let ids = vec![
+            digest.clone(),
+            "sk-proj-violet".into(),
+            "fixture/raw-1".into(),
+            trace.clone(),
+        ];
+        let (attributes, counters) = bound_attributes(
+            Attrs::new()
+                .ids("artifact_refs", ids.clone())
+                .ids("af.note", vec![trace.clone(), digest.clone()]),
+            &Redactor::new(),
+            &mut |_, _| None,
+        );
+        assert_eq!(
+            attributes["artifact_refs"],
+            serde_json::json!([digest, redact::WITHHELD, "fixture/raw-1", trace])
+        );
+        // Outside an identity position an identity is judged like any text: a 32-hex trace id
+        // is a long hex run mixing letters and digits, withheld; a digest is not a secret (M7).
+        assert_eq!(
+            attributes["af.note"],
+            serde_json::json!([redact::WITHHELD, digest])
+        );
+        assert_eq!(counters.redacted, 2);
+        // Bounded like any array: at most 32 elements, the marker last.
+        let many = (0..40).map(|_| digest.clone()).collect();
+        let (attributes, counters) = bound_attributes(
+            Attrs::new().ids("artifact_refs", many),
+            &Redactor::new(),
+            &mut |_, _| None,
+        );
+        let kept = attributes["artifact_refs"].as_array().unwrap();
+        assert!(kept.len() <= MAX_ARRAY_ELEMENTS);
+        assert_eq!(kept.last().unwrap(), ELLIPSIS);
+        assert_eq!(counters.truncated, 1);
     }
 
     #[test]

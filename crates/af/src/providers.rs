@@ -387,6 +387,47 @@ pub(crate) fn registered_claude_config_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
+/// A name and the value it is recorded with.
+pub(crate) type NamedValue = (String, String);
+
+/// The Provider registry entries for the telemetry configuration record (design §7.4): each
+/// entry's name and kind, its auth directory only as the grant placeholder it stands for
+/// (`grant=<grant:CLAUDE_CONFIG_DIR>`, `none` without one), and where it came from; the harness versions this process's preflight probed. `Err` when the
+/// registry cannot be read, which the record says rather than omitting the section.
+pub(crate) fn telemetry_registry() -> (Result<Vec<NamedValue>, String>, Vec<NamedValue>) {
+    let (specs, _, warning) = load_specs();
+    let entries = match warning {
+        Some(warning) => Err(warning),
+        None => Ok(specs
+            .iter()
+            .map(|spec| {
+                let grant = match spec.kind {
+                    ProviderKind::Claude => "<grant:CLAUDE_CONFIG_DIR>",
+                    ProviderKind::Codex => "<grant:CODEX_HOME>",
+                };
+                (
+                    spec.id.clone(),
+                    format!(
+                        "kind={} grant={} declared={}",
+                        spec.kind.name(),
+                        if spec.auth_dir.is_some() {
+                            grant
+                        } else {
+                            "none"
+                        },
+                        if spec.registry_declared {
+                            "registry"
+                        } else {
+                            "implicit"
+                        }
+                    ),
+                )
+            })
+            .collect()),
+    };
+    (entries, installation::probed_versions())
+}
+
 /// Where the Provider registry is read from, when it can be named at all.
 pub(crate) fn registry_location() -> Option<PathBuf> {
     registry_path().ok().flatten()
@@ -1807,8 +1848,7 @@ fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
             command.env("CODEX_HOME", auth_dir);
         }
     }
-    let status = command
-        .status()
+    let status = review_process::reap::status(&mut command)
         .map_err(|error| format!("cannot start {} login: {error}", spec.kind.name()))?;
     if !status.success() {
         return Err(format!(
@@ -4107,7 +4147,13 @@ fn probe_claude_weekly_limits(
         terminate_probe_group(process_group);
     }
     let _ = child.kill();
-    let _ = child.wait();
+    // Reaped by polling under the workspace's reap lock (`review_process::reap`), never by a
+    // blocking wait of its own.
+    let mut attempt = 0;
+    while let Ok(None) = review_process::reap::locked(|| child.try_wait()) {
+        std::thread::sleep(review_process::reap::poll_delay(attempt));
+        attempt = attempt.saturating_add(1);
+    }
     drop(pair.master);
     drop(receiver);
     drop(recycle_sender);
@@ -5223,7 +5269,7 @@ fn drain_probe_streams(
 fn stop_probe(child: &mut Child) {
     terminate_probe_group(child.id());
     let _ = child.kill();
-    let _ = child.wait();
+    let _ = review_process::reap::wait(child);
 }
 
 fn terminate_probe_group(process_group: u32) {

@@ -15,7 +15,10 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         host: &'host dyn TaskOperatorHost,
         phase: &RegisteredTaskReviewIntegration,
     ) -> Result<Self, String> {
+        let telemetry = Self::begin_execution(&store, cas, &lease)?;
+        let load = telemetry.authority_load();
         let (plan, projection) = {
+            let _loading = load.enter();
             let locked = store.lock().expect("Task Store");
             let plan = locked
                 .check_task_review_integration_current(cas, &lease, phase, authority, false)
@@ -35,6 +38,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             plan,
             projection,
             Some(phase.clone()),
+            (telemetry, load),
         )
     }
 

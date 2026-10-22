@@ -364,6 +364,9 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     let interrupted_attempt = 'observe: loop {
         for event in store.replay_from(&run_id, next_sequence).unwrap() {
             next_sequence = event.sequence + 1;
+            if review_store::store::task::is_execution_started(&event) {
+                continue;
+            }
             let transition: review_core::task::event::TaskTransitionV1 =
                 serde_json::from_value(event.payload).unwrap();
             if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =

@@ -265,28 +265,29 @@ repository's `.af/af.toml` cannot change it. See `af help storage`.",
         after_long_help = "Examples:\n  af storage\n  af storage --json | jq .total_bytes\n  af storage prune\n  af storage prune --apply\n  AF_STORAGE__MAX_BYTES=10GiB af storage prune --apply"
     )]
     Storage {
-        /// Machine-readable af/storage@3
+        /// Machine-readable af/storage@4
         #[arg(long)]
         json: bool,
         #[command(subcommand)]
         command: Option<StorageCommand>,
     },
-    /// Show what Telemetry recorded on this machine, and rebuild its index
+    /// Show what Telemetry recorded on this machine: its runs, span trees, live tail and ledger
     #[command(
         subcommand_required = true,
         arg_required_else_help = true,
-        long_about = "Show what Telemetry recorded on this machine, and rebuild its index.\n\n\
+        long_about = "Show what Telemetry recorded on this machine: its runs, span trees, live tail and ledger.\n\n\
 Telemetry records what af does while it works — spans, events and, at `content`, redacted \
 content blobs — in its own store under the state root's `telemetry/`, never in a Task or \
 Campaign Store. The kernel never reads it: identity, replay, the Ledger, budgets, admission and \
 every Worker input are the same whether it is on, off or deleted (ADR-0153). `[telemetry] \
 level` is `off`, `metrics`, `spans` (the default) or `content`, set from machine layers only; \
 see `af help telemetry`.\n\n\
-`status` reads; `reindex` recovers crashed writers' segments and rebuilds the index. Neither \
-records telemetry, contacts a network or reads a Store. Exit codes: 0 success, 1 the telemetry \
-directory cannot be read or the index is in use, 2 a wrong command line or a refused \
-`[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry status\n  af telemetry status --json | jq .segments\n  af telemetry reindex\n  af telemetry status --dir ./copied-telemetry\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID"
+`status`, `runs`, `show`, `config`, `tail` and `ledger` read; `reindex` recovers crashed writers' segments and \
+rebuilds the index; `gc --apply` evicts telemetry under the Storage Budget's rules. None records \
+telemetry, contacts a network or reads a Store. Exit codes: 0 success, 1 the telemetry \
+directory cannot be read, the index is in use or a run is unknown, 2 a wrong command line or a \
+refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry status\n  af telemetry runs --since 7d\n  af telemetry show RUN_ID\n  af telemetry config RUN_ID\n  af telemetry tail\n  af telemetry ledger RUN_ID\n  af telemetry gc\n  af telemetry status --json | jq .segments\n  af telemetry reindex\n  af telemetry status --dir ./copied-telemetry\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID"
     )]
     Telemetry {
         #[command(subcommand)]
@@ -1773,7 +1774,7 @@ Finished Tasks go through the Store's own collection, so each keeps its tombston
         /// Remove what the preview names (default: preview only)
         #[arg(long)]
         apply: bool,
-        /// Machine-readable af/storage-prune@3
+        /// Machine-readable af/storage-prune@4
         #[arg(long)]
         json: bool,
     },
@@ -1784,12 +1785,13 @@ pub(crate) enum TelemetryCommand {
     /// The level, the directory, its bytes, segments, runs, the index and every problem
     #[command(
         long_about = "The level, the directory, its bytes, segments, runs, the index and every problem.\n\n\
-Prints the configured `[telemetry] level`; the telemetry directory and its allocated bytes, in \
-total against `[telemetry] max_bytes` (advisory on this release: a warning on stderr when over \
-it, and nothing removes telemetry to meet it) and per entry (each segment with its manifest, the blobs, \
+Prints the configured `[telemetry] level`; the telemetry directory and its bytes (the \
+allocated bytes of its regular files, a hard-linked file once, directories and links nothing), in \
+total against `[telemetry] max_bytes` and per entry (each segment with its manifest, the blobs, \
 the index with its WAL and shared memory, temporary files, locks, and `unrecognized`: every \
 other path beneath the directory, a symbolic link included, counted once, named up to 16, never \
-read, followed or removed, so the total is every allocated byte beneath it), each sealed segment \
+read, followed or removed, so the total is every file's allocated bytes beneath it), each sealed \
+segment \
 with its \
 seal's `exit` and its capture (`complete`, or why not: `recovered, drops unknown`); the segments \
 by state — `live` (a writer holds its lock), `unsealed` (nobody does: a crashed writer's, \
@@ -1843,6 +1845,245 @@ refused `[telemetry]` key.",
         /// Rebuild this telemetry directory's index instead of the configured one
         #[arg(long, value_name = "PATH", help_heading = "Selector")]
         dir: Option<PathBuf>,
+    },
+    /// Every run recorded: executions, active, execution and elapsed time, outcome, charge
+    #[command(
+        long_about = "Every run recorded: executions, active, execution and elapsed time, outcome, charge.\n\n\
+One row per kernel run within its Store (a Task run, a review run, a self-optimizer run, a \
+measurement): its Store (`af.store_id`), run id, kind, Task or Campaign, its retained \
+executions (one per process that worked on it) and first start; its **active** time (the union \
+of the executions' intervals, an overlap counted once), **execution** time (their sum, \
+`af.execution.duration_sum`) and **elapsed** time (first start to last end, idle gaps \
+included), an interval without a recorded end ending at its segment's last record and marked \
+open; the latest execution's own outcome (none while its `af.run` has not ended); the \
+Attempts' exact usage counters and charge as the kernel accounted \
+them; failures; coverage (`complete` when every retained segment was sealed by its writer with \
+nothing dropped); and the retained history: `prefix:k` when executions 1 to k are retained with \
+their seals and no ordinal between them is missing, `partial` with the missing ordinals \
+otherwise. A run's history is never called complete: every total says `retained executions \
+1–k` or `partial`, and names the open executions (a live or unsealed segment, or an `af.run` \
+with no recorded end) beside the sealed ones: `retained executions 1–1, open: 2`; \
+`totals_cover` lists every execution the totals cover, each open one marked.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or its index is of another \
+schema version, 2 a wrong command line or a refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry runs\n  af telemetry runs --since 7d --kind task\n  af telemetry runs --json | jq '.runs[] | {run_id, active_us, history}'\n  af telemetry runs --dir ./copied-telemetry --json"
+    )]
+    Runs {
+        /// Only runs active at or after this long ago (30m, 12h, 14d, 2w)
+        #[arg(long, value_name = "D", help_heading = "Selector")]
+        since: Option<String>,
+        /// Only runs of this kind
+        #[arg(long, value_name = "K", value_parser = ["task", "review", "optimize", "measure"], help_heading = "Selector")]
+        kind: Option<String>,
+        /// Machine-readable af/telemetry-runs@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// One run's span tree: start offset, total and self time, status and key attributes
+    #[command(
+        long_about = "One run's span tree: start offset, total and self time, status and key attributes.\n\n\
+RUN is the kernel run id `af telemetry runs` lists. The tree runs from each execution's \
+`af.command` through `af.run` to `af.authority.load`, `af.plan`, every `af.node` and its \
+`af.attempt` spans, and the command's `af.sweep`; each span with its start offset from the \
+run's first record, total and self time (total less its ended children's union), status (`ok`, \
+`error`, `unset`, or `open` when it has no recorded end) and key attributes. `--attempt ID` \
+keeps that Attempt's subtree with its ancestors, `--depth N` stops N levels below the root, and \
+`--span ID` prints one span with every attribute and its events. The run's retained executions \
+and history head the tree, its open executions listed beside the sealed ones. When two Stores record the same run id it lists both and asks for \
+`--store ID`.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or the run, Attempt or span is \
+unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
+`[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry show RUN_ID\n  af telemetry show RUN_ID --depth 2\n  af telemetry show RUN_ID --attempt ATTEMPT_ID\n  af telemetry show RUN_ID --span SPAN_ID --json\n  af telemetry show RUN_ID --store STORE_ID"
+    )]
+    Show {
+        /// The kernel run id
+        #[arg(value_name = "RUN")]
+        run: String,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// Only this Attempt's subtree, with its ancestors
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        attempt: Option<String>,
+        /// Only this span, with every attribute and its events
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        span: Option<String>,
+        /// Only spans at most this many levels below the root
+        #[arg(long, value_name = "N", help_heading = "Selector")]
+        depth: Option<u64>,
+        /// Machine-readable af/telemetry-show@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// One run's configuration record in one execution: version, configuration with origins, plan, bindings, Providers, host
+    #[command(
+        long_about = "One run's configuration record in one execution: version, configuration with origins, plan, bindings, Providers, host.\n\n\
+RUN is the kernel run id `af telemetry runs` lists. The record (`af/TelemetryConfig@2`) is \
+written at `spans` and above for each run an execution works on — a measurement run inside a \
+Task Attempt has its own — as `config` parts that each name the run (its run id and its \
+`af.run` span), in three sections of one fixed order. When the run opens: `configuration` \
+(`af --version --json`; the effective configuration, one row per key with its layer, its file \
+(home-relative) and line, and its value — a value whose origin is the environment is `<env>`, \
+never the value; the digests of `.af/af.toml` and `.af/af.lock`) and `machine` (the Provider \
+registry entries by name and kind, grant paths as placeholders; the harness versions the \
+preflight probed and the Claude Code managed-settings digests; the host; the names, never the \
+values, of the `AF_*` and `OTEL_*` variables present). When the plan resolves: `plan` (the \
+policy revision, the pipeline's name, digest and nodes, the Task's id, kind and pipeline, the \
+execution bindings — node, Worker, Provider, model, effort). It assembles the run's parts and \
+says, per section, `complete`, `incomplete` (a part is missing) or `unknown` (none was \
+recorded: a run refused before its plan resolved has no plan section), the record `incomplete` \
+unless every section is complete. The latest execution by default (the greatest committed \
+ordinal), `--execution ID` for another. The texts the record names (the pipeline, the Task \
+file, `.af/af.toml`) are listed with their digest and size. When two Stores record the same run \
+id it lists both and asks for `--store ID`.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or execution is \
+unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
+`[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry config RUN_ID\n  af telemetry config RUN_ID --execution EXECUTION_ID\n  af telemetry config RUN_ID --json | jq '.rows[] | select(.layer == \"environment\")'"
+    )]
+    Config {
+        /// The kernel run id
+        #[arg(value_name = "RUN")]
+        run: String,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// This execution (`af.execution_id`) instead of the latest
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        execution: Option<String>,
+        /// Machine-readable af/TelemetryConfig@2
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// Follow the live segments and print every span end and event as it is written
+    #[command(
+        long_about = "Follow the live segments and print every span end and event as it is written.\n\n\
+Like `tail -f`: every live segment (or, with RUN, those that carry that run) is read from its \
+start and followed; each span end (with its duration and status) and each event is printed as \
+the writer writes it, within `[telemetry] flush_latency_ms` of its creation while a run is open. \
+It exits when every followed segment is sealed — its sealed file published and readable, not \
+merely its seal line written — or recovered; with no live segment it waits for one. With RUN, \
+a run whose every execution was sealed before tail started is printed from its sealed files and \
+tail exits at once. A segment \
+no writer holds any more (a crashed writer's, or one whose publication was abandoned) is \
+recovered as any reader able to lock it would, then read sealed. A followed segment gone \
+without a sealed file or a recovery of tail's own (renamed `.corrupt` by another reader's \
+recovery) is never a seal: tail names it and fails. With `--json` each line is one \
+`af/telemetry-tail@1` object. With RUN the run is looked up first, within `--store` when given, \
+and followed in one Store for its whole lifetime: the one `--store` names, else the one that \
+records it at the start. When two Stores record the run id, at the start or once a second one \
+starts it or seals a segment of it, it asks for `--store ID` before printing anything of the \
+second.\n\n\
+Never: reads a Store, records telemetry, removes a segment, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory or a followed segment cannot be read (a \
+segment with interior corruption, or one gone without a seal, included), a `.corrupt` segment \
+held RUN (or exists while RUN cannot be found: tail names it), or RUN is unknown (never said \
+while a segment is unreadable: tail then names that segment), 2 a wrong command line, a run \
+two Stores share without `--store`, or a refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry tail\n  af telemetry tail RUN_ID\n  af telemetry tail RUN_ID --json | jq -c 'select(.record == \"span_end\")'"
+    )]
+    Tail {
+        /// Only this kernel run's records
+        #[arg(value_name = "RUN")]
+        run: Option<String>,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// One af/telemetry-tail@1 object per line
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Follow this telemetry directory instead of the configured one
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// One run's committed Store events, Finding and Demand summaries and accounting, in order
+    #[command(
+        long_about = "One run's committed Store events, Finding and Demand summaries and accounting, in order.\n\n\
+RUN is the kernel run id `af telemetry runs` lists. Telemetry mirrors every event the kernel \
+commits to a Store after its commit (`af.store.event`: type, sequence, id, causation, artifact \
+references, and the payload's digest and size), records a Finding summary for every Report \
+admitted into the Ledger and whenever a summarized field changes (its status, severity, \
+Report artifact, ...), with the admitting Worker's bound model when the kernel recorded it, and \
+a Demand summary keyed by the Demand id, naming the Demand's own Subject and that Subject's \
+Snapshot, with its lifecycle (opened, evidence satisfied with the Evidence id — an admitted \
+reuse that satisfies a stale Demand again included —, stale, waived); every summary and \
+lifecycle step carries the committed sequence of the event that caused it. This prints them \
+from the telemetry directory alone, each Store log in its committed sequence (never in the \
+order they were recorded; at one sequence: the event, then Finding summaries, dispositions, \
+satisfactions, Demand summaries and other Demand steps), the latest summary being the one of \
+the greatest sequence. \
+Beside them, each Attempt's charge: the kernel's accounting after its last committed \
+accounting transition (`af.usage.state` with the highest `af.usage.sequence`), and, never \
+merged with it, the latest sidecar observation of each execution that wrote one, the order \
+across executions `unknown`; the run's totals are sums of the Attempts' charges. Coverage is \
+`complete` only when every committed event of every Store log mirrored, from its first \
+sequence to the last mirrored, and every summary reached Telemetry with nothing dropped, every \
+retained execution sealed and none missing or open; otherwise `incomplete` with every reason. \
+The history marker says which executions everything covers. When two Stores record the same \
+run id it lists both and asks for `--store ID`.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or the run is unknown, 2 a \
+wrong command line, a run two Stores share without `--store`, or a refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry ledger RUN_ID\n  af telemetry ledger RUN_ID --json | jq '.findings[] | {key, status}'\n  af telemetry ledger RUN_ID --json | jq .accounting.totals\n  af telemetry ledger RUN_ID --dir ./copied-telemetry"
+    )]
+    Ledger {
+        /// The kernel run id
+        #[arg(value_name = "RUN")]
+        run: String,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// Machine-readable af/telemetry-ledger@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// What the Storage Budget's sweep would evict from the telemetry kind; --apply evicts it
+    #[command(
+        long_about = "What the Storage Budget's sweep would evict from the telemetry kind; --apply evicts it.\n\n\
+Every registered telemetry directory, whatever the current level or `dir`, is listed as \
+`af storage` lists the kind `telemetry`: one entry per sealed or corrupt segment whose bytes are \
+what its eviction frees (the segment, its manifest and the blobs no other segment references), \
+live and unsealed segments in use, another telemetry version's directory, each directory's \
+`shared` remainder (the index, locks, shared blobs, temporaries), and a directory overlapping \
+other accounted state reported `overlapping`, counted once and never evicted. The step is \
+ADR-0144's: least recently used first (corrupt first among equals) while af is over \
+`[storage] max_bytes` or telemetry over `[telemetry] max_bytes`, by age past `[storage] \
+keep_days` too, never an entry in use or used within the last hour. With `--apply` it evicts — \
+each entry checked again just before it is unlinked, and one that changed since the inventory \
+(replaced, locked, used within the hour) left in place and listed under `changed` — then removes temporary files older than an hour, blobs no remaining segment references (under \
+`gc.lock`, skipped when a reader holds it past 2 s) and the index's free pages (`VACUUM`, or the \
+index deleted for the next reader to rebuild when there is no room), measured as the allocated \
+bytes of the files removed; registered directories that no longer exist are dropped from the registry. Without \
+`--apply` nothing is removed.\n\n\
+Never: removes anything of another kind, reads a span, records telemetry, or contacts a \
+network.\n\n\
+Exit codes: 0 success, 1 the storage or telemetry configuration cannot be read, 2 a wrong \
+command line or a refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry gc\n  af telemetry gc --apply\n  af telemetry gc --json | jq '.removals'"
+    )]
+    Gc {
+        /// Evict and reclaim; without it, only say what would be removed
+        #[arg(long)]
+        apply: bool,
+        /// Machine-readable af/telemetry-gc@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
 }
 

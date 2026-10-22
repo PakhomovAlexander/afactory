@@ -1211,6 +1211,8 @@ pub struct ModelRunner {
     redactions: Vec<String>,
     environment: Vec<Grant>,
     exit_policy: ExitPolicy,
+    /// What the `af.harness` span names: the GenAI provider and the bound model.
+    harness: Option<(&'static str, Option<String>)>,
     output_cap: usize,
 }
 
@@ -1223,8 +1225,17 @@ impl ModelRunner {
             redactions: Vec::new(),
             environment: Vec::new(),
             exit_policy: ExitPolicy::PreserveProcessGroup,
+            harness: None,
             output_cap: MAX_CAPTURED_STREAM_BYTES,
         }
+    }
+
+    /// Name the harness on its `af.harness` span (design §7.1): the GenAI provider
+    /// (`gen_ai.provider.name`, `anthropic` or `openai`) and the model the binding requested.
+    /// Telemetry only: nothing about the process changes.
+    pub fn with_harness(mut self, provider: &'static str, model: Option<String>) -> Self {
+        self.harness = Some((provider, model));
+        self
     }
 
     /// Keep at most `cap` bytes of each stream instead of
@@ -1364,13 +1375,47 @@ impl ModelRunner {
         for grant in &self.grants {
             cmd.env(&grant.name, &grant.value);
         }
-        let output = run_supervised_captured_bounded(
-            &mut cmd,
-            Some(input),
-            self.timeout,
-            self.exit_policy,
-            cancellation,
-            self.output_cap,
+        // The harness process is the Attempt's `af.harness` span (design §7.1, §7.2): the
+        // program only, never its arguments; its stream-derived children are P6's.
+        let (provider, model) = self
+            .harness
+            .as_ref()
+            .map_or((None, None), |(provider, model)| {
+                (Some(*provider), model.as_deref())
+            });
+        let span = if !review_telemetry::subscriber::in_run() {
+            tracing::Span::none()
+        } else {
+            review_telemetry::process_span!(
+                "af.harness",
+                process.command = command.program.as_str(),
+                gen_ai.operation.name =
+                    review_telemetry::subscriber::Typed::enumerated("invoke_agent").field(),
+                gen_ai.provider.name = provider,
+                gen_ai.request.model = model,
+                af.native = review_telemetry::subscriber::Typed::enumerated("unavailable").field(),
+            )
+        };
+        let output = span.in_scope(|| {
+            run_supervised_captured_bounded(
+                &mut cmd,
+                Some(input),
+                self.timeout,
+                self.exit_policy,
+                cancellation,
+                self.output_cap,
+            )
+        });
+        // Output past the cap is not evidence the kernel can keep whole: whatever the exit
+        // status said, the Attempt failed (M2), and its span ends failed with the cap's reason.
+        let capped = match (&output.status, output.truncation.reason()) {
+            (Ok(status), Some(reason)) => Some((status.code().unwrap_or(-1), reason)),
+            _ => None,
+        };
+        record_harness(
+            &span,
+            &output,
+            capped.as_ref().map(|(_, reason)| reason.as_str()),
         );
         capture.stdout = redact(output.stdout, &self.redactions);
         capture.stderr = redact(output.stderr, &self.redactions);
@@ -1386,11 +1431,10 @@ impl ModelRunner {
                 review_process::descendant_cleanup_fallback(),
             );
         }
-        // Output past the cap is not evidence the kernel can keep whole: whatever the exit
-        // status said, the Attempt failed (M2). The kept prefix is still stored for usage.
-        if let (Ok(status), Some(reason)) = (&output.status, output.truncation.reason()) {
+        // The kept prefix of a capped capture is still stored for usage.
+        if let Some((exit_code, reason)) = capped {
             capture.status = Err(RunnerError::Failed {
-                exit_code: status.code().unwrap_or(-1),
+                exit_code,
                 stderr_excerpt: reason,
             });
             return capture;
@@ -1409,6 +1453,60 @@ impl ModelRunner {
         });
         capture
     }
+}
+
+/// End the `af.harness` span with what the supervisor returned: the process, its resource use
+/// and stream sizes, and on anything but a clean exit the kernel's class. `capped` is the cap
+/// reason when the Attempt rejected the capture for its truncation: the span ends `failed`
+/// with it, whatever the exit status said.
+fn record_harness(
+    span: &tracing::Span,
+    output: &review_process::SupervisedCapture,
+    capped: Option<&str>,
+) {
+    if span.is_disabled() {
+        return;
+    }
+    let mut facts = review_telemetry::process::ProcessFacts {
+        pid: output.pid,
+        rusage: output
+            .rusage
+            .map(|rusage| review_telemetry::process::ResourceUse {
+                user_ms: rusage.user_ms,
+                system_ms: rusage.system_ms,
+                max_rss_bytes: rusage.max_rss_bytes,
+            }),
+        stdout_bytes: Some(output.stdout.len() as u64),
+        stderr_bytes: Some(output.stderr.len() as u64),
+        stderr_held: output.stderr_held,
+        ..Default::default()
+    };
+    if let Ok(status) = &output.status {
+        facts = facts.with_status(status);
+    }
+    let failure = match (&output.status, capped) {
+        (Ok(_), Some(reason)) => Some(("failed", reason.to_string())),
+        (Ok(status), None) if status.success() => None,
+        (Ok(_), None) => Some(("failed", "the harness exited unsuccessfully".to_string())),
+        (Err(SupervisedError::TimedOut { .. }), _) => {
+            Some(("timed_out", "the harness exceeded its deadline".to_string()))
+        }
+        (Err(SupervisedError::Cancelled), _) => {
+            Some(("refused", "the Attempt was cancelled".to_string()))
+        }
+        (Err(SupervisedError::Spawn(_)), _) => Some((
+            "unavailable",
+            "the harness could not be started".to_string(),
+        )),
+        (Err(error), _) => Some(("failed", error.to_string())),
+    };
+    review_telemetry::process::finish(
+        span,
+        &facts,
+        failure
+            .as_ref()
+            .map(|(class, reason)| (*class, reason.as_str())),
+    );
 }
 
 /// Record in an Attempt's stored stderr, as a held pipe is, that its descendant cleanup fell back

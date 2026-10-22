@@ -635,13 +635,9 @@ fn curl_get(url: &str, out: &Path, api: bool) -> Result<Option<u16>, String> {
     if api {
         command.args(["-H", "Accept: application/vnd.github+json"]);
     }
-    let output = match command
-        .arg("-o")
-        .arg(out)
-        .arg(url)
-        .stdin(Stdio::null())
-        .output()
-    {
+    let output = match review_process::reap::output(
+        command.arg("-o").arg(out).arg(url).stdin(Stdio::null()),
+    ) {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("running curl: {error}")),
@@ -700,14 +696,12 @@ impl std::fmt::Display for GhError {
 
 /// `gh` with `args`: its output, judged by the caller from this very call.
 fn gh(args: &[&OsStr]) -> Result<std::process::Output, GhError> {
-    Command::new("gh")
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| match error.kind() {
+    review_process::reap::output(Command::new("gh").args(args).stdin(Stdio::null())).map_err(
+        |error| match error.kind() {
             std::io::ErrorKind::NotFound => GhError::Missing,
             _ => GhError::Failed(format!("running gh: {error}")),
-        })
+        },
+    )
 }
 
 fn gh_tags(repo: &str, include_rc: bool) -> Result<Vec<String>, String> {
@@ -1081,13 +1075,14 @@ fn install(
     };
     let unpack = tmp.path().join("unpack");
     std::fs::create_dir_all(&unpack).map_err(|error| error.to_string())?;
-    let status = Command::new("tar")
-        .arg("-xzf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&unpack)
-        .status()
-        .map_err(|error| format!("running tar: {error}"))?;
+    let status = review_process::reap::status(
+        Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&unpack),
+    )
+    .map_err(|error| format!("running tar: {error}"))?;
     if !status.success() {
         return Err(InstallError::Other(format!(
             "tar could not extract {asset}"
@@ -1104,11 +1099,12 @@ fn install(
         std::fs::set_permissions(&extracted, std::fs::Permissions::from_mode(0o755))
             .map_err(|error| error.to_string())?;
     }
-    let reported = Command::new(&extracted)
-        .arg("--version")
-        .env(OFFLINE_ENV, "1")
-        .output()
-        .map_err(|error| format!("running the downloaded af: {error}"))?;
+    let reported = review_process::reap::output(
+        Command::new(&extracted)
+            .arg("--version")
+            .env(OFFLINE_ENV, "1"),
+    )
+    .map_err(|error| format!("running the downloaded af: {error}"))?;
     let reported = String::from_utf8_lossy(&reported.stdout).trim().to_string();
     if reported != format!("af {version}") {
         return Err(InstallError::Other(format!(
@@ -2890,23 +2886,37 @@ struct VersionView {
     receipt: Option<PathBuf>,
 }
 
-pub(crate) fn print_version(json: bool) -> Result<(), String> {
-    if !json {
-        println!("af {VERSION}");
-        return Ok(());
-    }
+fn version_view() -> VersionView {
     let receipt = paths().ok().and_then(|paths| {
         running_receipt(&paths)
             .map(|receipt| version_dir(&paths, &receipt.version).join("receipt.toml"))
     });
-    let view = VersionView {
+    VersionView {
         version: VERSION,
         commit: COMMIT,
         target: TARGET,
         release_key: release_key_source(),
         dispatched_from: std::env::var(DISPATCHED_ENV).ok(),
         receipt,
-    };
+    }
+}
+
+/// What `af --version --json` prints, for the telemetry configuration record; the dispatcher
+/// variable's value is an environment value and never leaves here (`<env>` stands for it).
+pub(crate) fn version_document() -> serde_json::Value {
+    let mut view = version_view();
+    if view.dispatched_from.is_some() {
+        view.dispatched_from = Some("<env>".into());
+    }
+    serde_json::to_value(view).unwrap_or(serde_json::Value::Null)
+}
+
+pub(crate) fn print_version(json: bool) -> Result<(), String> {
+    if !json {
+        println!("af {VERSION}");
+        return Ok(());
+    }
+    let view = version_view();
     let mut stdout = std::io::stdout().lock();
     serde_json::to_writer_pretty(&mut stdout, &view).map_err(|error| error.to_string())?;
     writeln!(stdout).map_err(|error| error.to_string())

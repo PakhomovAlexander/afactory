@@ -1249,6 +1249,9 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
                     .replay(&task_run_id(self.lease.task_id()).unwrap())
                     .unwrap();
                 let started = events.iter().any(|event| {
+                    if review_store::store::task::is_execution_started(event) {
+                        return false;
+                    }
                     let transition: TaskTransitionV1 = serde_json::from_value(event.payload.clone()).unwrap();
                     let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
                         return false;
@@ -1705,4 +1708,108 @@ fn failed_command_and_schema_refusal_exhaust_bounded_attempts_without_publishing
         assert!(!execution.outputs.contains_key("root.nodes.write"));
         assert!(execution.pending_attempts().is_empty());
     }
+}
+
+/// ADR-0153 (design §3, §5): the Store never learns the telemetry level. The same Task run once
+/// with nothing recording (`off`) and once with Telemetry recording at `content` commits the
+/// same event sequence, the lease's one execution marker (`TaskExecutionStarted@1`, its own event
+/// of the Task log) first among its kernel records, before any Attempt is reserved; the
+/// recording run did open its `af.run` span.
+#[test]
+fn telemetry_execution_marker_is_identical_at_off_and_content() {
+    fn run() -> Vec<(String, String, u64, String)> {
+        let mut f = Fixture::new(SUCCESS);
+        let host = CapturedTaskHost::capture_with_models(
+            &f.cas,
+            &f.compiler,
+            &f.task,
+            &f.plan,
+            f.graph.clone(),
+            &EmptyTaskEnvironment,
+            &DocumentDomain,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
+        let lease = f
+            .store
+            .open_task(&f.cas, &f.revision_id, "test-writer", 60_000)
+            .unwrap();
+        f.store
+            .propose_task_plan(&f.cas, &lease, &f.plan_id, &authority)
+            .unwrap();
+        f.store.admit_task_plan(&f.cas, &lease, &authority).unwrap();
+        let runtime =
+            TaskRuntime::new(&mut f.store, &f.cas, lease.clone(), &authority, &host).unwrap();
+        assert!(runtime.execute().unwrap().complete());
+        drop(runtime);
+        let run_id = review_store::store::task::task_run_id(lease.task_id()).unwrap();
+        f.store
+            .replay(&run_id)
+            .unwrap()
+            .into_iter()
+            .map(|event| {
+                let payload = &event.payload;
+                (
+                    event.event_type.as_str().to_string(),
+                    payload["change"]["kind"].as_str().unwrap_or("").to_string(),
+                    payload["epoch"].as_u64().unwrap_or(0),
+                    payload["writer"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect()
+    }
+    let off = run();
+    let temp = tempfile::tempdir().unwrap();
+    let writer = review_telemetry::segment::writer::Writer::new(
+        review_telemetry::segment::writer::WriterOptions::new(
+            temp.path(),
+            review_telemetry::level::Level::Content,
+        ),
+    )
+    .unwrap();
+    let dispatch = tracing::Dispatch::new(review_telemetry::subscriber::TelemetrySubscriber::new(
+        writer.clone(),
+    ));
+    let content = tracing::dispatcher::with_default(&dispatch, run);
+    assert_eq!(off, content, "the same event sequence at off and content");
+    let types: Vec<&str> = content
+        .iter()
+        .map(|(event_type, _, _, _)| event_type.as_str())
+        .collect();
+    let kinds: Vec<&str> = content
+        .iter()
+        .map(|(_, kind, _, _)| kind.as_str())
+        .collect();
+    let marker = types
+        .iter()
+        .position(|event_type| *event_type == "TaskExecutionStarted@1")
+        .expect("the lease's marker");
+    assert_eq!(
+        types
+            .iter()
+            .filter(|event_type| **event_type == "TaskExecutionStarted@1")
+            .count(),
+        1
+    );
+    assert_eq!(content[marker].2, content[0].2, "the lease's own epoch");
+    assert_eq!(content[marker].3, "test-writer", "the lease's own writer");
+    assert!(
+        !kinds.contains(&"execution_started"),
+        "no TaskTransition@5 carries it"
+    );
+    let first_record = kinds
+        .iter()
+        .position(|kind| *kind == "execution_recorded")
+        .unwrap();
+    assert!(marker < first_record, "{kinds:?}");
+    writer.flush();
+    let text = std::fs::read_to_string(writer.path().unwrap()).unwrap();
+    assert!(
+        text.lines().any(|line| line.contains(r#""name":"af.run""#)),
+        "the recording run opened af.run"
+    );
+    writer
+        .finish(review_telemetry::record::SealExit::Ok)
+        .unwrap();
 }

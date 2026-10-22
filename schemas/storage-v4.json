@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:storage:3",
-  "title": "af/storage@3",
-  "description": "`af storage --json` (ADR-0144): every entry af keeps between runs on this machine, per kind and one by one, against the `[storage]` budget and the free-disk floor. An entry is the unit the budget evicts whole; its bytes are the allocated bytes of the regular files it holds, directories and links counting nothing, so they are the same on every file system (a finished Task's are the bytes only it reaches). `in_use` says why an entry is never evicted now; `reason` why a Store cannot be read by this release. The kind `project_store` is a Project Store (ADR-0158), counted and never evicted, since it indexes its Project's Workspaces. Version 3 adds the kind `survey` (ADR-0159 clause 13): one Survey's record in its Project Store's CAS, its `path` the CAS object, last used at the Survey's cutoff, collected behind a `SurveyCollected@1` tombstone; the Project Store's own bytes no longer hold its Surveys'. The kind `claim` is a removal a dead process left claimed under `.af-removing-<pid>-…`, every one inventory found, its `state` `abandoned` and its measured bytes: one no other entry measured as part of its own is counted in `kinds` and `total_bytes` as the sweep's plan counts it, and one inside an entry measured whole (a Project Store) is listed with `counted_in`, that entry, whose bytes hold its own, so its bytes are counted once; so the listed claims are the claims the sweep's plan recovers, and `af storage` and `af storage prune` agree on what the directory holds; one its walk could not measure holds no bytes and is in use. A Survey whose `state` is `pending` is the object a pending-publication entry (`af/survey-pending@1`) describes at an unrecorded Survey's CAS name, in use until recovery reclaims it.",
+  "$id": "urn:af:schema:storage:4",
+  "title": "af/storage@4",
+  "description": "`af storage --json` (ADR-0144, ADR-0153): every entry af keeps between runs on this machine, per kind and one by one, against the `[storage]` budget and the free-disk floor. An entry is the unit the budget evicts whole; its bytes are the allocated bytes of the regular files it holds, directories and links counting nothing, so they are the same on every file system (a finished Task's are the bytes only it reaches; a telemetry segment's are what its eviction frees: the segment, its manifest and the blobs no other segment references). `in_use` says why an entry is never evicted now; `reason` why a Store cannot be read by this release, or what an `overlapping` telemetry directory overlaps. The kind `project_store` is a Project Store (ADR-0158), counted and never evicted, since it indexes its Project's Workspaces. Version 3 adds the kind `survey` (ADR-0159 clause 13): one Survey's record in its Project Store's CAS, its `path` the CAS object, last used at the Survey's cutoff, collected behind a `SurveyCollected@1` tombstone; the Project Store's own bytes no longer hold its Surveys'. The kind `claim` is a removal a dead process left claimed under `.af-removing-<pid>-…`, every one inventory found, its `state` `abandoned` and its measured bytes: one no other entry measured as part of its own is counted in `kinds` and `total_bytes` as the sweep's plan counts it, and one inside an entry measured whole (a Project Store) is listed with `counted_in`, that entry, whose bytes hold its own, so its bytes are counted once; so the listed claims are the claims the sweep's plan recovers, and `af storage` and `af storage prune` agree on what the directory holds; one its walk could not measure holds no bytes and is in use. A Survey whose `state` is `pending` is the object a pending-publication entry (`af/survey-pending@1`) describes at an unrecorded Survey's CAS name, in use until recovery reclaims it. The kind `telemetry` covers every registered telemetry directory, counted once as the regular files beneath it, the way every kind is counted: one entry per segment (`live`, `unsealed`, `sealed`, `corrupt`) or other version's directory (`unreadable`), and the directory's `shared` remainder; a directory overlapping other accounted state is one `overlapping` entry, counted once by the containing entry and never evicted as telemetry. Version 4 adds the kind `telemetry` (ADR-0153) to version 3.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/storage@3"
+      "const": "af/storage@4"
     },
     "max_bytes": {
       "$ref": "#/$defs/bytes"
@@ -107,11 +107,26 @@
             "type": "string",
             "minLength": 1
           },
+          "directory": {
+            "type": "string",
+            "minLength": 1
+          },
+          "segment_id": {
+            "type": "string",
+            "minLength": 1
+          },
           "state": {
-            "description": "`abandoned` for a `claim`; `pending` for a `survey` whose `SurveyRecorded@1` never committed.",
+            "description": "`abandoned` for a `claim`; `pending` for a `survey` whose `SurveyRecorded@1` never committed; for a `telemetry` entry `live`, `unsealed`, `sealed`, `corrupt`, `unreadable`, `shared` or `overlapping`.",
             "enum": [
               "abandoned",
-              "pending"
+              "pending",
+              "live",
+              "unsealed",
+              "sealed",
+              "corrupt",
+              "unreadable",
+              "shared",
+              "overlapping"
             ]
           },
           "counted_in": {
@@ -140,9 +155,33 @@
               }
             },
             "else": {
-              "properties": {
-                "state": {
-                  "const": "pending"
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "telemetry"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "live",
+                      "unsealed",
+                      "sealed",
+                      "corrupt",
+                      "unreadable",
+                      "shared",
+                      "overlapping"
+                    ]
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "state": {
+                    "const": "pending"
+                  }
                 }
               }
             }
@@ -233,6 +272,7 @@
         "survey",
         "unreadable_store",
         "version",
+        "telemetry",
         "claim"
       ]
     }

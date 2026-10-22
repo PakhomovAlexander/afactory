@@ -564,6 +564,152 @@ fn final_permitted_successor_round_captures_no_integration() {
     fixture::run_integration_handoff_with(std::time::Duration::ZERO, 2);
 }
 
+/// Told of each commit, it checks the commit is already visible, then hands it to the
+/// Telemetry mirror.
+struct Visible {
+    mirror: review_pipeline::telemetry::StoreMirror,
+    invisible: std::sync::Mutex<Vec<(String, u64)>>,
+    /// The event types of each commit it was told of.
+    told: std::sync::Mutex<Vec<Vec<String>>>,
+}
+
+impl review_store::store::observer::CommitObserver for Visible {
+    fn committed(&self, commit: &review_store::store::observer::Commit<'_>) {
+        self.told.lock().unwrap().push(
+            commit
+                .events
+                .iter()
+                .map(|event| event.event_type.as_str().to_string())
+                .collect(),
+        );
+        for event in commit.events {
+            if commit.store.len(&event.run_id).unwrap_or(0) <= event.sequence {
+                self.invisible
+                    .lock()
+                    .unwrap()
+                    .push((event.run_id.clone(), event.sequence));
+            }
+        }
+        self.mirror.committed(commit);
+    }
+
+    fn wall_recorded(&self, commit: &review_store::store::observer::WallCommit<'_>) {
+        self.mirror.wall_recorded(commit);
+    }
+}
+
+/// Design §7.5: every event the kernel commits is mirrored once, after its commit, in committed
+/// order, whichever path inserted it — ordinary Task transitions, a Round publication (the
+/// successor Round, published with the Task's handoff) and an atomic integration — over a whole
+/// captured Review with its Integration and successor Round; the publication's and the
+/// integration's transactions each roll back once first, and neither rollback is mirrored.
+#[test]
+fn telemetry_mirror_covers_every_commit_path() {
+    use review_telemetry::level::Level;
+    use review_telemetry::segment::writer::{Writer, WriterOptions};
+    let temp = tempfile::tempdir().unwrap();
+    let writer = Writer::new(WriterOptions::new(temp.path(), Level::Spans)).unwrap();
+    let dispatch = tracing::Dispatch::new(review_telemetry::subscriber::TelemetrySubscriber::new(
+        writer.clone(),
+    ));
+    let observer = std::sync::Arc::new(Visible {
+        mirror: review_pipeline::telemetry::StoreMirror::with_writer(writer.clone()),
+        invisible: std::sync::Mutex::new(Vec::new()),
+        told: std::sync::Mutex::new(Vec::new()),
+    });
+    let dir = tracing::dispatcher::with_default(&dispatch, || {
+        let command = tracing::info_span!("af.command");
+        let _entered = command.enter();
+        fixture::run_integration_handoff_observed(
+            std::time::Duration::ZERO,
+            3,
+            Some(observer.clone()),
+        )
+    });
+    assert!(observer.invisible.lock().unwrap().is_empty());
+    let told = |kind: &str| -> usize {
+        observer
+            .told
+            .lock()
+            .unwrap()
+            .iter()
+            .flatten()
+            .filter(|told| *told == kind)
+            .count()
+    };
+    writer.flush();
+    let text = std::fs::read_to_string(writer.path().unwrap()).unwrap();
+    let records: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(
+        !records.iter().any(|record| record["t"] == "problem"),
+        "{text}"
+    );
+    let mut mirrored: BTreeMap<String, Vec<(u64, String, String)>> = BTreeMap::new();
+    for record in &records {
+        if record["t"] != "event" || record["name"] != "af.store.event" {
+            continue;
+        }
+        let attributes = &record["attributes"];
+        mirrored
+            .entry(attributes["af.run_id"].as_str().unwrap().to_string())
+            .or_default()
+            .push((
+                attributes["af.store.event.sequence"].as_u64().unwrap(),
+                attributes["af.store.event.type"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                attributes["af.store.event.id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            ));
+    }
+    let store = EventStore::open_read_only(dir.path().join("events.sqlite")).unwrap();
+    let mut types: BTreeMap<&str, usize> = BTreeMap::new();
+    for run in store.run_ids().unwrap() {
+        let committed: Vec<(u64, String, String)> = store
+            .replay(&run)
+            .unwrap()
+            .into_iter()
+            .map(|event| {
+                *types.entry(event.event_type.as_str()).or_default() += 1;
+                (
+                    event.sequence,
+                    event.event_type.as_str().to_string(),
+                    event.event_id,
+                )
+            })
+            .collect();
+        assert_eq!(
+            mirrored.remove(&run).unwrap_or_default(),
+            committed,
+            "every committed event of {run}, once each, in committed order"
+        );
+    }
+    assert!(
+        mirrored.is_empty(),
+        "nothing that was not committed: {mirrored:?}"
+    );
+    for kind in [
+        "TaskTransition@5",
+        "TaskExecutionStarted@1",
+        "RoundStarted@1",
+        "FindingReported@1",
+        "IntegrationCommitted@1",
+    ] {
+        assert!(types.contains_key(kind), "{kind}: {types:?}");
+        // Told of each commit only: never of the transaction that rolled back first.
+        assert_eq!(told(kind), types[kind], "{kind}");
+    }
+    writer
+        .finish(review_telemetry::record::SealExit::Ok)
+        .unwrap();
+}
+
 fn reject_forged_attestation(
     cas: &Cas,
     path: &std::path::Path,

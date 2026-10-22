@@ -150,7 +150,9 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                 )));
             }
         };
-        let mut runner = ModelRunner::new(workdir, timeout).with_env("HOME", home);
+        let mut runner = ModelRunner::new(workdir, timeout)
+            .with_env("HOME", home)
+            .with_harness("openai", self.model_settings().map(|(model, _)| model));
         if access.has_shell() {
             // A shell child must not outlive the Attempt that started it.
             runner = runner.killing_process_group_on_exit();

@@ -224,7 +224,8 @@ fn telemetry_segment_limit_bounds_every_record_kind() {
             writer.span_end(span, SpanStatus::Ok, Attrs::new(), 1);
         }
         writer.config(
-            "exec",
+            &crate::config_owner("exec"),
+            "configuration",
             vec![ConfigRow {
                 key: format!("telemetry.key{round}"),
                 value: "v".into(),
@@ -247,6 +248,8 @@ fn telemetry_segment_limit_bounds_every_record_kind() {
             seq: 0,
             schema: String::new(),
             span_id: command.clone(),
+            log: "campaign-1".into(),
+            sequence: 3,
             key: format!("finding-{round}"),
             severity: "major".into(),
             effective_severity: "major".into(),
@@ -266,6 +269,8 @@ fn telemetry_segment_limit_bounds_every_record_kind() {
             seq: 0,
             schema: String::new(),
             span_id: command.clone(),
+            log: "campaign-1".into(),
+            sequence: 3,
             demand_id: format!("demand-{round}"),
             kind: "evidence".into(),
             required: true,
@@ -1030,4 +1035,183 @@ fn telemetry_changed_sealed_segment_is_revalidated() {
     let again = status_of(root);
     assert_eq!(again.unreadable, refused.unreadable);
     assert_eq!(again.segments, refused.segments);
+}
+
+/// Design §6: the publication's last step removes the live `.jsonl`, so a `.jsonl` beside a
+/// `.jsonl.gz` (and `.refs`) of the same id is the unsealed segment and those files are stale
+/// staging. Every view — the listing, `status`, the index, `runs` and `show` — and the storage
+/// inventory say unsealed and read nothing sealed; recovery replaces the stale files.
+#[test]
+fn telemetry_live_segment_beside_a_stale_seal_is_unsealed() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    let writer = writer(temp.path(), Level::Spans);
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let id = writer.segment_id().unwrap();
+    let execution = review_telemetry::trace::Execution {
+        store_id: "d".repeat(64),
+        run_id: "task:stale".into(),
+        execution_id: id.clone(),
+        ordinal: 1,
+        store_sequence_at_start: 0,
+    };
+    let run = writer
+        .span_start(
+            Some(&execution.trace_id()),
+            Some(&command),
+            "af.run",
+            SpanKind::Internal,
+            execution.attributes().enumerated("af.run.kind", "task"),
+        )
+        .unwrap();
+    writer.span_end(
+        &run,
+        SpanStatus::Ok,
+        Attrs::new().text("af.outcome", "finished"),
+        1,
+    );
+    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    // The publication renamed both files into place and stopped before the unlink: the live
+    // file, ending with the writer's seal, is still beside them.
+    std::fs::write(layout.live_segment(&id), crate::sealed_bytes(&sealed.path)).unwrap();
+    assert!(sealed.path.exists() && sealed.refs.exists());
+
+    let listing = reader::list(&layout).unwrap();
+    assert_eq!(listing.unsealed, [id.clone()]);
+    assert!(
+        listing.sealed.is_empty() && listing.refs.is_empty(),
+        "{listing:?}"
+    );
+    assert_eq!(listing.stale, [id.clone()]);
+
+    let status = status_of(temp.path());
+    assert_eq!((status.segments.unsealed, status.segments.sealed), (1, 0));
+    let entry = entry_of(&status, &id);
+    assert_eq!(entry.state.as_deref(), Some("unsealed"));
+    assert_eq!(entry.exit, None, "an unsealed segment shows no exit");
+
+    // The index ingests the `.jsonl`'s prefix, never the stale `.jsonl.gz`.
+    let segments = &dump(&layout)["segments"];
+    let [row] = segments.as_slice() else {
+        panic!("{segments:?}");
+    };
+    assert_eq!(row[0], format!("'{id}'"));
+    assert_ne!(row[1], "'sealed'", "nothing sealed is read: {row:?}");
+
+    let (index, read, unreadable) = review_telemetry::view::open(temp.path()).unwrap();
+    let runs = review_telemetry::view::runs(
+        &index,
+        temp.path(),
+        read.clone(),
+        unreadable.clone(),
+        None,
+        None,
+    )
+    .unwrap();
+    let [listed] = runs.runs.as_slice() else {
+        panic!("{runs:?}");
+    };
+    assert_eq!(listed.executions.list[0].segment, "unsealed");
+    assert!(listed.open, "an unsealed execution is open");
+    assert!(listed.executions.sealed.is_empty());
+    let shown = review_telemetry::view::show(
+        &index,
+        temp.path(),
+        read,
+        unreadable,
+        (
+            &listed.store_id,
+            &listed.run_id,
+            &listed.trace_id,
+            listed.kind.clone(),
+        ),
+        &review_telemetry::view::ShowSelection::default(),
+    )
+    .unwrap();
+    assert_eq!(shown.run.executions.open.len(), 1);
+    assert_eq!(shown.run.executions.open[0].segment, "unsealed");
+    drop(index);
+
+    let directory = review_telemetry::budget::Directory::measure(temp.path(), false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        directory.segments[&id].state,
+        review_telemetry::budget::State::Unsealed
+    );
+    let entries = directory.entries();
+    let inventoried = entries
+        .iter()
+        .find(|entry| entry.segment_id.as_deref() == Some(id.as_str()))
+        .unwrap();
+    assert_eq!(inventoried.state, "unsealed");
+    assert!(inventoried.in_use.is_some() && inventoried.found.is_none());
+    assert!(directory.target(&id).is_none(), "never evicted as sealed");
+
+    // Recovery takes the `.jsonl` and replaces the stale files.
+    assert!(matches!(
+        reader::recover(&layout, &id).unwrap(),
+        Recovery::Recovered { .. }
+    ));
+    assert!(!layout.live_segment(&id).exists());
+    let Some(Record::Seal(seal)) = sealed_records(&layout.sealed_segment(&id)).pop() else {
+        panic!("no seal");
+    };
+    assert_eq!(seal.exit, SealExit::Recovered);
+
+    // A live file recovery rejects never leaves the stale seal readable: the same-id
+    // `.jsonl.gz` and `.refs` go before the `.jsonl` is removed (empty) or renamed `.corrupt`
+    // (an invalid line before a valid one), so no listing takes them as sealed afterwards.
+    let sealed_beside = |live: &dyn Fn(&[u8]) -> Vec<u8>| {
+        let writer = crate::writer(temp.path(), Level::Spans);
+        let span = writer
+            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let id = sealed.segment_id.clone();
+        std::fs::write(
+            layout.live_segment(&id),
+            live(&crate::sealed_bytes(&sealed.path)),
+        )
+        .unwrap();
+        assert!(sealed.path.exists() && sealed.refs.exists());
+        assert_eq!(reader::list(&layout).unwrap().stale, [id.clone()]);
+        id
+    };
+    let empty = sealed_beside(&|_| Vec::new());
+    assert_eq!(reader::recover(&layout, &empty).unwrap(), Recovery::Empty);
+    let corrupt = sealed_beside(&|bytes| {
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        format!("{}\nnot a record\n{}\n", lines[0], lines[1]).into_bytes()
+    });
+    assert_eq!(
+        reader::recover(&layout, &corrupt).unwrap(),
+        Recovery::Corrupt {
+            segment_id: corrupt.clone()
+        }
+    );
+    assert!(layout.corrupt_segment(&corrupt).exists());
+    for rejected in [&empty, &corrupt] {
+        assert!(!layout.live_segment(rejected).exists(), "{rejected}");
+        assert!(
+            !layout.sealed_segment(rejected).exists(),
+            "{rejected}: the stale seal is gone"
+        );
+        assert!(
+            !layout.refs(rejected).exists(),
+            "{rejected}: the stale manifest is gone"
+        );
+    }
+    let listing = reader::list(&layout).unwrap();
+    assert_eq!(listing.sealed, [id.clone()], "{listing:?}");
+    assert_eq!(listing.refs, [id.clone()], "{listing:?}");
+    assert_eq!(listing.corrupt, [corrupt.clone()], "{listing:?}");
+    assert!(listing.stale.is_empty(), "{listing:?}");
+    let status = status_of(temp.path());
+    assert_eq!((status.segments.sealed, status.segments.unsealed), (1, 0));
 }

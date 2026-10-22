@@ -16,6 +16,8 @@ mod heartbeat;
 mod provider_admission;
 #[path = "campaign_loop/provider_currentness.rs"]
 mod provider_currentness;
+#[path = "campaign_loop/telemetry_ledger.rs"]
+mod telemetry_ledger;
 
 fn git(repo: &Path, home: &Path, args: &[&str]) {
     let out = Command::new("git")

@@ -43,7 +43,7 @@ use crate::trace;
 pub const BLOB_CODEC: &str = "gzip";
 
 /// The index's own shape; an index of another is refused and rebuilt by `reindex`.
-pub const INDEX_SCHEMA: &str = "af/telemetry-index@1";
+pub const INDEX_SCHEMA: &str = "af/telemetry-index@2";
 
 const SCHEMA_SQL: &str = "
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -109,6 +109,9 @@ CREATE TABLE configs(
     segment_id TEXT NOT NULL,
     seq INTEGER NOT NULL,
     execution_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    run_span_id TEXT NOT NULL,
+    section TEXT NOT NULL,
     part INTEGER NOT NULL,
     parts INTEGER NOT NULL,
     complete INTEGER NOT NULL,
@@ -516,7 +519,10 @@ impl Index {
     /// A sealed segment's file is recorded with its identity (device, inode, size and
     /// modification time) and compared with the file under its name on every ingest: a sealed
     /// file replaced or rewritten since is read and validated again, its earlier rows
-    /// forgotten, and on refusal it is listed unreadable, exactly as a rebuild would answer.
+    /// forgotten, and on refusal it is listed unreadable, exactly as a rebuild would answer. A
+    /// segment ingested as sealed whose `.jsonl` the listing selects again (the compressed copy
+    /// beside it is then stale staging) has its rows forgotten and its live prefix ingested from
+    /// offset zero, as a rebuild would.
     pub fn ingest(&mut self) -> Result<(Ingested, Vec<(String, String)>), String> {
         // The segments of the `v1/` the index holds, never looked up by pathname again.
         let directory = match &self.versioned {
@@ -639,7 +645,15 @@ impl Index {
                     continue;
                 }
             };
-            let (offset, position) = if offset > bytes.len() {
+            // A segment ingested as sealed whose live file the listing now selects (a stale
+            // compressed copy beside it): its rows are forgotten and the live prefix ingested
+            // from offset zero, so no view shows a record of the stale copy.
+            let stale_seal =
+                matches!(states.get(segment_id), Some((state, _)) if state == "sealed");
+            if stale_seal {
+                forget(&transaction, segment_id)?;
+            }
+            let (offset, position) = if stale_seal || offset > bytes.len() {
                 (0, None)
             } else {
                 (offset, position)
@@ -789,6 +803,11 @@ impl Index {
     /// index holds, never through the saved pathname. `None` when the lock was not had within
     /// two seconds (a sweep holds it): the check is deferred, never answered while files may be
     /// collected.
+    ///
+    /// Presence is resolved per prefix directory, not per occurrence: the distinct digests are
+    /// grouped by their `blobs/<aa>/` prefix, each prefix directory is opened once (without
+    /// following a link) and each object judged in it by `fstatat`, so a corpus of many
+    /// occurrences costs at most one directory open per prefix.
     pub fn missing_blobs(&self) -> Result<Option<Vec<(String, String)>>, String> {
         let mut statement = self
             .connection
@@ -817,16 +836,17 @@ impl Index {
             return Ok(None);
         };
         let blobs = versioned.child_dir("blobs").ok().flatten();
-        let mut present = BTreeMap::new();
+        let digests: BTreeSet<&str> = all.iter().map(|(_, digest)| digest.as_str()).collect();
+        let present: BTreeSet<String> = match &blobs {
+            Some(blobs) => crate::blob::reader::present_in(blobs, digests)
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            None => BTreeSet::new(),
+        };
         Ok(Some(
             all.into_iter()
-                .filter(|(_, digest)| {
-                    !*present.entry(digest.clone()).or_insert_with(|| {
-                        blobs
-                            .as_ref()
-                            .is_some_and(|blobs| crate::blob::reader::exists_in(blobs, digest))
-                    })
-                })
+                .filter(|(_, digest)| !present.contains(digest.as_str()))
                 .collect(),
         ))
     }
@@ -1119,13 +1139,16 @@ impl<'a> SegmentIngest<'a> {
                 Record::Config(part) => {
                     transaction
                         .execute(
-                            "INSERT OR IGNORE INTO configs(segment_id, seq, execution_id, part,
-                                 parts, complete, rows)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            "INSERT OR IGNORE INTO configs(segment_id, seq, execution_id, run_id,
+                                 run_span_id, section, part, parts, complete, rows)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                             params![
                                 segment_id,
                                 seq,
                                 part.execution_id,
+                                part.run_id,
+                                part.run_span_id,
+                                part.section,
                                 i64::from(part.part),
                                 i64::from(part.parts),
                                 i64::from(part.complete),
@@ -1327,6 +1350,101 @@ fn self_times(transaction: &Transaction<'_>, ended: &BTreeSet<String>) -> Result
     Ok(())
 }
 
+impl Index {
+    /// Drop every row the segments `segment_ids` contributed, in one transaction, without
+    /// reading any segment: the sweep's step after it evicts them. Returns how many of them the
+    /// index held.
+    pub fn forget_segments(&mut self, segment_ids: &[String]) -> Result<u64, String> {
+        let transaction = self.connection.transaction().map_err(sql)?;
+        let mut held = 0;
+        for segment_id in segment_ids {
+            let known: i64 = transaction
+                .query_row(
+                    "SELECT count(*) FROM segments WHERE segment_id = ?1",
+                    params![segment_id],
+                    |row| row.get(0),
+                )
+                .map_err(sql)?;
+            held += u64::try_from(known).unwrap_or(0);
+            forget(&transaction, segment_id)?;
+        }
+        transaction.commit().map_err(sql)?;
+        Ok(held)
+    }
+
+    /// The database's free pages and page size (`PRAGMA freelist_count`, `page_size`).
+    pub fn free_pages(&self) -> Result<(u64, u64), String> {
+        let pages: i64 = self
+            .connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .map_err(sql)?;
+        let size: i64 = self
+            .connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .map_err(sql)?;
+        Ok((
+            u64::try_from(pages).unwrap_or(0),
+            u64::try_from(size).unwrap_or(0),
+        ))
+    }
+
+    /// `VACUUM` the database, then truncate its write-ahead log. `Err` carries whether SQLite
+    /// failed for lack of space (`SQLITE_FULL`), when the caller replaces the index instead.
+    pub fn vacuum(&self) -> Result<(), (bool, String)> {
+        match self.connection.execute_batch("VACUUM") {
+            Ok(()) => {
+                let _ =
+                    self.connection
+                        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+                Ok(())
+            }
+            Err(error) => {
+                let full = matches!(
+                    &error,
+                    rusqlite::Error::SqliteFailure(failure, _)
+                        if failure.code == rusqlite::ErrorCode::DiskFull
+                );
+                Err((full, sql(error)))
+            }
+        }
+    }
+}
+
+/// Delete the index under `index.lock` held exclusively (within two seconds), leaving none: the
+/// next reader rebuilds it from the segments. `Ok(false)` when the lock was not had — the
+/// deletion is deferred. Every file is removed relative to the held `v1/`.
+pub fn delete_in(layout: &Layout, versioned: &Confined) -> Result<bool, String> {
+    let exclusive = FlockArg::LockExclusiveNonblock;
+    let Some(_intent) = layout::lock_in(
+        versioned,
+        layout::INDEX_INTENT,
+        layout::LOCK_WAIT,
+        exclusive,
+    )
+    .map_err(|error| format!("{}: {error}", layout.index_intent().display()))?
+    else {
+        return Ok(false);
+    };
+    let Some(_lock) = layout::lock_in(versioned, layout::INDEX_LOCK, layout::LOCK_WAIT, exclusive)
+        .map_err(|error| format!("{}: {error}", layout.index_lock().display()))?
+    else {
+        return Ok(false);
+    };
+    for name in index_names(layout) {
+        match versioned.unlink(&name) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("{}: {error}", versioned.join(&name).display())),
+        }
+    }
+    Ok(true)
+}
+
+/// The file names of the database with its WAL and shared-memory files, for the budget.
+pub fn file_names(layout: &Layout) -> Vec<String> {
+    index_names(layout)
+}
+
 /// What replacing the index did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Replaced {
@@ -1404,6 +1522,59 @@ pub fn sum_decimals<'a>(values: impl IntoIterator<Item = &'a str>) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Design §6 and the first measurement of `docs/telemetry.md` § Performance: an unchanged
+    /// `status` resolves the retained blobs' presence with one open per prefix directory, never
+    /// one per stored occurrence: many occurrences of one blob, and a few other blobs, cost one
+    /// open of `blobs/` and one of each prefix, and a missing object is still reported for
+    /// every occurrence of it.
+    #[test]
+    fn missing_blobs_opens_each_prefix_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let layout = Layout::new(directory.path().join("telemetry"));
+        let index = Index::open(&layout).unwrap();
+        let blobs = index
+            .versioned()
+            .unwrap()
+            .create_child_dir("blobs")
+            .unwrap();
+        let digest = |byte: &str| format!("sha256:{}", byte.repeat(32));
+        let stored = [digest("aa"), digest("ab"), digest("cd")];
+        for digest in &stored {
+            let hex = digest.strip_prefix("sha256:").unwrap();
+            let prefix = blobs.create_child_dir(&hex[..2]).unwrap();
+            std::fs::write(prefix.join(&format!("{hex}.gz")), b"x").unwrap();
+        }
+        let gone = digest("ef");
+        let insert = |occurrence: String, digest: &str| {
+            index
+                .connection()
+                .execute(
+                    "INSERT INTO blob_refs(occurrence_id, segment_id, seq, digest, span_id,
+                     event_seq, source_digest, original_bytes, truncated, state, media_type,
+                     redaction) VALUES (?1, 's', 1, ?2, 'x', 1, ?2, 1, 0, 'stored', 'text/plain',
+                     'af-redact/1')",
+                    params![occurrence, digest],
+                )
+                .unwrap();
+        };
+        for occurrence in 0..2_000 {
+            insert(format!("s:{occurrence}"), &stored[0]);
+        }
+        insert("t:1".into(), &stored[1]);
+        insert("t:2".into(), &stored[2]);
+        insert("u:1".into(), &gone);
+        insert("u:2".into(), &gone);
+        layout::reset_child_dir_opens();
+        let missing = index.missing_blobs().unwrap().unwrap();
+        assert_eq!(
+            missing,
+            [("u:1".to_string(), gone.clone()), ("u:2".to_string(), gone)]
+        );
+        // `blobs/`, then the prefixes `aa`, `ab` and `cd` once each; `ef` is absent, never
+        // opened.
+        assert_eq!(layout::child_dir_opens(), 4);
+    }
 
     #[test]
     fn decimal_sums_are_exact_or_refused() {

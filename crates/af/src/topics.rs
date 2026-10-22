@@ -220,6 +220,63 @@ unwritable directory, a full segment) is one problem and the run continues.
 
   af telemetry status           level, directory, bytes, segments, runs, index, problems
   af telemetry reindex          recover crashed writers' segments and rebuild the index
+  af telemetry runs             every run: executions, active, execution and elapsed time,
+                                outcome, charge, failures, coverage, retained history
+  af telemetry show RUN         the span tree: start offset, total and self time, status
+  af telemetry config RUN       a run's configuration record in one execution: version,
+                                configuration with origins (an environment value is <env>),
+                                plan, bindings, Providers, harness versions, host, AF_*/OTEL_*
+                                names; each section complete, incomplete or unknown
+  af telemetry tail [RUN]       follow the live segments: every span end and event as written
+  af telemetry ledger RUN       committed Store events, Finding and Demand summaries and each
+                                Attempt's charge, in order, with the coverage and history
+  af telemetry gc [--apply]     what the Storage Budget's sweep evicts from the telemetry kind
+
+Recorded: the commands that run a kernel run (af task run, af task start --execute, af review
+run, af provider doctor, af self optimize --execute) record af.command > af.run >
+af.authority.load, af.plan (one node record per plan node), af.node > af.attempt, and the
+command's af.sweep; every other command records nothing and opens no telemetry directory. From
+the first af.run until the seal one consumer thread is the segment's only writer and every
+record is in it within flush_latency_ms; at the command's end it writes the command's end and
+seals the segment within one 2 s bound, else it is abandoned, publishes nothing, and the segment
+is left for the next reader to recover. A run's executions (one per process that worked on it,
+numbered by the execution markers, TaskExecutionStarted@1 events of the Task's log, the Store
+holds for the leases before it) can
+overlap: active time is their union, execution time their sum, elapsed time first start to last
+end. Its history is
+`prefix:k` or `partial`, never complete, and its open executions are named beside the sealed
+ones (retained executions 1–1, open: 2).
+
+Below the run every phase is a span of the crate that owns it (the catalogue is in
+docs/architecture.md): af.admission, af.context.compose, af.harness, af.output.parse and
+af.usage.account under an Attempt; af.gate and its af.check spans, af.warm.restore and
+af.warm.save under a check node; af.snapshot.capture, af.cas.materialize, af.store.append,
+af.store.read, af.git, af.remote_check and af.process wherever the run does them. Every process
+span carries process.pid, process.command (the program only), its exit, its stream sizes and
+af.rusage.user_ms, af.rusage.system_ms and af.rusage.max_rss_bytes, each absent when the
+platform did not deliver it. An af.check carries af.check.status and af.check.fingerprint, the
+comparability key af/check-fingerprint@1 (or `unknown`). A kernel measurement is a run of its
+own (af.run.kind = measure, af.measurement.id), its repetitions child spans. At spans and above
+every run an execution works on has its own configuration record, its parts naming the run:
+the configuration and machine sections when the run opens, the plan section when its plan
+resolves (a run refused before that has the first two), and af.config.text naming the
+pipeline, the Task file and .af/af.toml by digest and size. Every child reap of af goes
+through review-process's one reap lock, so a process's af.rusage.* is never another child's.
+
+At spans and above every event the kernel commits to a Store is mirrored after its commit, on
+any path (an append, a Task transition, a Round publication, an integration), as af.store.event
+with its type, sequence, id, causation, artifact references and the payload's digest and size;
+a Finding summary is recorded for every Report admitted into the Ledger and whenever a
+summarized field changes, with the admitting Worker's bound model when the kernel recorded it,
+and a Demand summary keyed by its Demand id, with its own Subject and that Subject's Snapshot,
+and its lifecycle (an admitted Evidence reuse that satisfies a stale Demand again is a
+satisfaction); `af telemetry ledger` orders every Store log by its committed sequence. A mirror
+failure is one problem, never a Store error, and makes the run's coverage incomplete. At
+metrics and above every committed accounting transition records the Attempt's charge as the
+Task projection holds it (af.usage.state, ordered by the committed event's sequence) and every
+sidecar write its merged row (af.usage.wall, ordered within one execution only); an Attempt's
+figures are its latest charge, run totals are sums of those, and the sidecar series never
+enters them.
 
 The [telemetry] table, machine layers only (built-in, system, user, AF_TELEMETRY__<KEY>); a
 repository's .af/af.toml cannot set it, and a value outside its bound refuses the load naming
@@ -230,8 +287,8 @@ the key:
   dir = \"\"                             default $XDG_STATE_HOME/af/telemetry; an absolute path
                                        that neither contains nor lies inside a Store, a cache
                                        or another telemetry directory
-  max_bytes = \"4GiB\"                   256MiB to [storage] max_bytes; advisory on this release:
-                                       status warns when over, nothing removes telemetry
+  max_bytes = \"4GiB\"                   256MiB to [storage] max_bytes; the storage sweep evicts
+                                       sealed segments past it, status warns when over
   flush_bytes = \"64KiB\"                4KiB to 16MiB: the buffer written in one write
   flush_latency_ms = 1000              50 to 10000: the longest a record waits while a run is open
   observer_queue_bytes = \"4MiB\"        256KiB to 64MiB: the stream queue; full, it drops chunks
@@ -266,8 +323,19 @@ followed or removed. It rechecks each registered directory's overlap: none, over
 unknown when the Store registry cannot be read (named among the problems; the exit code is
 unchanged).
 
+Every registered telemetry directory is the kind `telemetry` in `af storage`, whatever the
+current level or dir: one entry per segment, whose bytes are what its eviction frees, and the
+directory's shared remainder (index, locks, shared blobs, temporaries). A sealed segment's last
+use is its seal time. The sweep evicts sealed and corrupt segments least recently used first
+past [telemetry] max_bytes or the whole budget, never one in use or used within the hour, each
+whole or not at all — any of its files (its manifest included) changed since the inventory
+leaves it in place, reported as changed — and reclaims temporary files, unreferenced blobs and
+free index pages. A directory overlapping other accounted state is `overlapping`: counted once,
+never evicted as telemetry.
+
 There is no telemetry keep_days: collection by age is [storage] keep_days under [storage]
-auto_gc or an applied prune. See docs/telemetry.md.";
+auto_gc or an applied prune (af storage prune --apply, af telemetry gc --apply). See
+docs/telemetry.md.";
 
 const SELF_TOPIC: &str = "\
 Layout

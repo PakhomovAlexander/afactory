@@ -101,23 +101,40 @@ impl CodeTaskDomain {
                 required: true,
                 remote: None,
             };
+            // The measurement is a run of its own (telemetry design §7.7): `af.run` with
+            // `af.run.kind = measure`, its repetitions child spans. Nothing of it reaches the
+            // Measurement the Store records.
+            let measured = crate::telemetry::measurement(attempt.task_id(), attempt.id(), name);
+            let _measuring = measured.enter();
             let mut runs = Vec::new();
             let mut failure = None;
             let mut toolchain_id = None;
             for repetition in 1..=definition.repetitions {
                 super::super::control::check(cancellation)?;
-                let outcome = self.repeat(
-                    cas,
-                    &manifest,
-                    attempt,
-                    definition,
-                    &check,
-                    session.as_mut(),
-                    rustup.as_ref(),
-                    &mut toolchain_id,
-                    cancellation,
-                )?;
-                match outcome {
+                let span = crate::telemetry::repetition(repetition);
+                let outcome = span.in_scope(|| {
+                    self.repeat(
+                        cas,
+                        &manifest,
+                        &snapshot_id,
+                        attempt,
+                        definition,
+                        &check,
+                        session.as_mut(),
+                        rustup.as_ref(),
+                        &mut toolchain_id,
+                        cancellation,
+                    )
+                });
+                crate::telemetry::repetition_end(
+                    &span,
+                    match &outcome {
+                        Ok(Repetition::Completed(_)) => None,
+                        Ok(Repetition::Failed(_, _, detail)) => Some(detail.as_str()),
+                        Err(error) => Some(error.as_str()),
+                    },
+                );
+                match outcome? {
                     Repetition::Completed(run) => runs.push(run),
                     Repetition::Failed(run, reason, detail) => {
                         runs.push(run);
@@ -135,6 +152,7 @@ impl CodeTaskDomain {
                 None => summarize(&definition.declared(), &runs)?,
                 Some(_) => BTreeMap::new(),
             };
+            let failed = failure.is_some();
             let measurement = MeasurementV1 {
                 plan_id: input.plan_id.clone(),
                 policy_id: self.policy_id.clone(),
@@ -173,6 +191,7 @@ impl CodeTaskDomain {
                 )
                 .map_err(|e| e.to_string())?
                 .0;
+            crate::telemetry::measurement_end(&measured, &id, failed);
             outputs.insert(
                 name.clone(),
                 ArtifactInputV1 {
@@ -193,6 +212,7 @@ impl CodeTaskDomain {
         &self,
         cas: &Cas,
         manifest: &review_source_git::Manifest,
+        snapshot_id: &str,
         attempt: &PreparedTaskAttempt,
         definition: &MeasureDefinitionV1,
         check: &CheckDefinition,
@@ -400,6 +420,16 @@ impl CodeTaskDomain {
                 runtime.path().join("target").display().to_string(),
             ),
         };
+        let runner = runner
+            .with_warm_result(super::super::warm_check::warm_result(
+                session.is_some(),
+                prepared.as_ref(),
+            ))
+            .with_fingerprint(review_check::FingerprintInputs {
+                snapshot_id: snapshot_id.to_string(),
+                toolchain: None,
+                runtime_paths: super::runtime_paths(runtime.path(), rustup, prepared.as_ref()),
+            });
         let (execution, exceeded) =
             match (session, prepared.as_ref().and_then(|p| p.key_lock.as_ref())) {
                 (Some(session), Some(key)) => session.run_monitored(

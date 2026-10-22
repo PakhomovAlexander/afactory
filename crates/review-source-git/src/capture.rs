@@ -215,6 +215,58 @@ impl Snapshot {
     }
 }
 
+/// The `af.snapshot.capture` span of one capture (telemetry design §7.1), opened only inside a
+/// recorded span.
+fn snapshot_span(capture: &'static str) -> tracing::Span {
+    if !review_telemetry::process::in_run() {
+        return tracing::Span::none();
+    }
+    tracing::info_span!(
+        "af.snapshot.capture",
+        af.snapshot.kind = review_telemetry::subscriber::Typed::enumerated(capture).field(),
+        af.snapshot = tracing::field::Empty,
+        af.snapshot.files = tracing::field::Empty,
+        af.snapshot.bytes = tracing::field::Empty,
+        af.outcome = tracing::field::Empty,
+        af.failure.class = tracing::field::Empty,
+        af.failure.reason = tracing::field::Empty,
+        error.type = tracing::field::Empty,
+        af.status = tracing::field::Empty,
+    )
+}
+
+/// The captured Snapshot's digest, file count and bytes, or the failure.
+fn record_snapshot(span: &tracing::Span, captured: &Result<Snapshot, CaptureError>) {
+    if span.is_disabled() {
+        return;
+    }
+    match captured {
+        Ok(snapshot) => {
+            record_manifest(span, &snapshot.content_digest, &snapshot.manifest);
+            review_telemetry::process::outcome(span, None);
+        }
+        Err(error) => {
+            review_telemetry::process::outcome(span, Some(("failed", &error.to_string())))
+        }
+    }
+}
+
+/// `af.snapshot`, `af.snapshot.files` and `af.snapshot.bytes` of a captured Manifest.
+pub fn record_manifest(span: &tracing::Span, digest: &str, manifest: &Manifest) {
+    if let Some(digest) = review_telemetry::subscriber::Typed::identity(digest) {
+        span.record("af.snapshot", digest.field());
+    }
+    span.record("af.snapshot.files", manifest.entries.len() as u64);
+    span.record(
+        "af.snapshot.bytes",
+        manifest
+            .entries
+            .iter()
+            .map(|entry| entry.size)
+            .fold(0_u64, u64::saturating_add),
+    );
+}
+
 /// A seam for proving the read boundary works.
 ///
 /// Real captures ([`Capture::dirty`]) observe nothing. A test implements this to mutate the
@@ -251,6 +303,13 @@ impl<'a> Capture<'a> {
 
     /// Capture a committed tree. Objects are immutable, so this needs no read boundary.
     pub fn committed(&self, rev: &str) -> Result<Snapshot, CaptureError> {
+        let span = snapshot_span("committed");
+        let captured = span.in_scope(|| self.committed_inner(rev));
+        record_snapshot(&span, &captured);
+        captured
+    }
+
+    fn committed_inner(&self, rev: &str) -> Result<Snapshot, CaptureError> {
         let commit = self.repo.rev_parse(rev)?;
         let tree_id = self.repo.resolve_tree(&commit)?;
         let listing = self
@@ -386,6 +445,13 @@ impl<'a> Capture<'a> {
     }
 
     pub fn dirty_observed(&self, observer: &dyn CaptureObserver) -> Result<Snapshot, CaptureError> {
+        let span = snapshot_span("worktree");
+        let captured = span.in_scope(|| self.dirty_inner(observer));
+        record_snapshot(&span, &captured);
+        captured
+    }
+
+    fn dirty_inner(&self, observer: &dyn CaptureObserver) -> Result<Snapshot, CaptureError> {
         let gitlinks = self.repo.indexed_gitlinks()?;
         if !gitlinks.is_empty() {
             return Err(CaptureError::UnsupportedSubmodules { paths: gitlinks });

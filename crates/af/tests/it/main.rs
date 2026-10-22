@@ -12,6 +12,8 @@ mod provider_cli;
 mod review_memo;
 #[path = "support/schemas.rs"]
 mod schemas;
+#[path = "support/sockets.rs"]
+mod sockets;
 #[path = "support/task_cli.rs"]
 mod task_cli;
 
@@ -69,5 +71,10 @@ mod task_selection;
 mod task_starters;
 mod task_warm_checks;
 mod telemetry;
+mod telemetry_bench;
+mod telemetry_config;
+mod telemetry_ledger;
+mod telemetry_phases;
+mod telemetry_runs;
 mod tui;
 mod undeclared_af_paths;

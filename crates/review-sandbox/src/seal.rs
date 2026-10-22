@@ -80,6 +80,46 @@ impl SealedSandbox {
         cas: &Cas,
         keep: impl Fn(&str) -> bool,
     ) -> Result<Manifest, std::io::Error> {
+        let span = if review_telemetry::process::in_run() {
+            tracing::info_span!(
+                "af.snapshot.capture",
+                af.snapshot.kind = review_telemetry::subscriber::Typed::enumerated("sealed").field(),
+                af.snapshot = tracing::field::Empty,
+                af.snapshot.files = tracing::field::Empty,
+                af.snapshot.bytes = tracing::field::Empty,
+                af.outcome = tracing::field::Empty,
+                af.failure.class = tracing::field::Empty,
+                af.failure.reason = tracing::field::Empty,
+                error.type = tracing::field::Empty,
+                af.status = tracing::field::Empty,
+            )
+        } else {
+            tracing::Span::none()
+        };
+        let captured = span.in_scope(|| self.capture_sealed(cas, keep));
+        if !span.is_disabled() {
+            match &captured {
+                Ok(manifest) => {
+                    review_source_git::capture::record_manifest(
+                        &span,
+                        &manifest.content_digest(),
+                        manifest,
+                    );
+                    review_telemetry::process::outcome(&span, None);
+                }
+                Err(error) => {
+                    review_telemetry::process::outcome(&span, Some(("failed", &error.to_string())))
+                }
+            }
+        }
+        captured
+    }
+
+    fn capture_sealed(
+        &self,
+        cas: &Cas,
+        keep: impl Fn(&str) -> bool,
+    ) -> Result<Manifest, std::io::Error> {
         let mut entries = Vec::with_capacity(self.final_manifest.entries.len());
         let mut buffer = vec![0_u8; 64 * 1024];
         for expected in &self.final_manifest.entries {

@@ -131,16 +131,41 @@ impl Tools<'_> {
         cwd: &Path,
         environment: &[(&str, &OsStr)],
     ) -> Result<Vec<u8>, ToolError> {
+        self.run_capped(
+            program,
+            args,
+            input,
+            local,
+            cwd,
+            environment,
+            review_process::MAX_CAPTURED_STREAM_BYTES,
+        )
+    }
+
+    /// [`Self::run`] keeping at most `cap` bytes of each stream; a test lowers it.
+    #[allow(clippy::too_many_arguments)]
+    fn run_capped<S: AsRef<OsStr>>(
+        &self,
+        program: &'static str,
+        args: &[S],
+        input: Option<Vec<u8>>,
+        local: bool,
+        cwd: &Path,
+        environment: &[(&str, &OsStr)],
+        cap: usize,
+    ) -> Result<Vec<u8>, ToolError> {
         let (mut command, timeout) = self.command(program, args, local, cwd, environment)?;
+        let span = tool_span(program, args);
+        let _running = span.enter();
         let captured = review_process::run_supervised_captured_bounded(
             &mut command,
             input,
             timeout,
             ExitPolicy::KillProcessGroup,
             self.cancellation,
-            review_process::MAX_CAPTURED_STREAM_BYTES,
+            cap,
         );
-        self.settle(program, captured)
+        self.settle(program, &span, captured)
     }
 
     /// [`Self::run`] with stdin streamed by `writer`, so a large input is never one buffer.
@@ -157,6 +182,8 @@ impl Tools<'_> {
         F: FnOnce(&mut dyn Write) -> std::io::Result<()> + Send,
     {
         let (mut command, timeout) = self.command(program, args, local, cwd, &[])?;
+        let span = tool_span(program, args);
+        let _running = span.enter();
         let captured = review_process::run_supervised_captured_streaming(
             &mut command,
             timeout,
@@ -164,7 +191,7 @@ impl Tools<'_> {
             self.cancellation,
             writer,
         );
-        self.settle(program, captured)
+        self.settle(program, &span, captured)
     }
 
     fn command<S: AsRef<OsStr>>(
@@ -201,15 +228,22 @@ impl Tools<'_> {
         Ok((command, timeout))
     }
 
+    /// Judge a call's capture and end its span: the span ends after the cap judgement, so a
+    /// capture rejected for its truncation ends it `failed` with the cap's reason.
     fn settle(
         &self,
         program: &'static str,
+        span: &tracing::Span,
         captured: SupervisedCapture,
     ) -> Result<Vec<u8>, ToolError> {
         // A prefix of an answer is not the answer: past the cap, the call failed (M2).
-        if captured.status.is_ok()
-            && let Some(reason) = captured.truncation.reason()
-        {
+        let capped = captured
+            .status
+            .is_ok()
+            .then(|| captured.truncation.reason())
+            .flatten();
+        crate::telemetry::process_capture(span, &captured, capped.as_deref());
+        if let Some(reason) = capped {
             return Err(ToolError::Failed(
                 self.redactor
                     .diagnostic(format!("`{program}` {reason}").as_bytes()),
@@ -234,6 +268,20 @@ impl Tools<'_> {
                 self.redactor.diagnostic(error.to_string().as_bytes()),
             )),
         }
+    }
+}
+
+/// The span of one call: a git process is an `af.git` span like every other; `gh` is an
+/// `af.process`.
+fn tool_span<S: AsRef<OsStr>>(program: &'static str, args: &[S]) -> tracing::Span {
+    if program == "git" {
+        crate::telemetry::git(
+            args.first()
+                .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+                .as_deref(),
+        )
+    } else {
+        crate::telemetry::process(program, "remote_check")
     }
 }
 
@@ -1067,5 +1115,80 @@ mod tests {
         let mut out = Vec::new();
         quote_path(b"a \"b\"\\c\nd\xff", &mut out);
         assert_eq!(out, b"\"a \\\"b\\\"\\\\c\\nd\\377\"");
+    }
+
+    /// A gate call that writes past its cap and exits 0 fails naming the cap, and its process
+    /// span ends after that judgement: `error.type = "failed"` with the cap's reason, the exit
+    /// and the kept stream sizes still those of the capture.
+    #[test]
+    fn a_gate_call_past_the_cap_ends_its_span_failed() {
+        use review_telemetry::level::Level;
+        use review_telemetry::record::SealExit;
+        use review_telemetry::segment::writer::{Writer, WriterOptions};
+        use serde_json::Value;
+        let temp = tempfile::tempdir().unwrap();
+        let reason = "stdout was truncated at the 4 KiB output cap: it wrote 10000 bytes, of \
+                      which only the first 4 KiB were kept";
+        let redactor = Redactor::default();
+        let tools = Tools {
+            path: Some(OsStr::new("/usr/bin:/bin")),
+            deadline: Instant::now() + Duration::from_secs(120),
+            cancellation: None,
+            redactor: &redactor,
+        };
+        let writer = Writer::new(WriterOptions::new(
+            temp.path().join("telemetry"),
+            Level::Spans,
+        ))
+        .unwrap();
+        let dispatch = tracing::Dispatch::new(
+            review_telemetry::subscriber::TelemetrySubscriber::new(writer.clone()),
+        );
+        tracing::dispatcher::with_default(&dispatch, || {
+            let run = tracing::info_span!("af.run", af.run_id = "run-1");
+            let _run = run.enter();
+            let error = tools
+                .run_capped(
+                    "sh",
+                    &["-c", "head -c 10000 /dev/zero; exit 0"],
+                    None,
+                    true,
+                    temp.path(),
+                    &[],
+                    4096,
+                )
+                .unwrap_err();
+            match error {
+                ToolError::Failed(Some(diagnostic)) => {
+                    assert!(diagnostic.contains(reason), "{diagnostic}")
+                }
+                other => panic!("the call must fail naming the cap: {other:?}"),
+            }
+        });
+        writer.flush();
+        let text = std::fs::read_to_string(writer.path().unwrap()).unwrap();
+        writer.finish(SealExit::Ok).unwrap();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let start = lines
+            .iter()
+            .find(|line| line["t"] == "span_start" && line["name"] == "af.process")
+            .unwrap_or_else(|| panic!("no gate call span: {text}"));
+        assert_eq!(start["attributes"]["af.process.kind"], "remote_check");
+        let end = lines
+            .iter()
+            .find(|line| line["t"] == "span_end" && line["span_id"] == start["span_id"])
+            .unwrap_or_else(|| panic!("no end for {start}"));
+        let attributes = &end["attributes"];
+        assert_eq!(end["status"], "error", "{end}");
+        assert_eq!(attributes["error.type"], "failed", "{end}");
+        assert_eq!(attributes["af.failure.class"], "failed", "{end}");
+        assert_eq!(attributes["af.failure.reason"], reason, "{end}");
+        assert_eq!(attributes["process.exit_code"], 0, "{end}");
+        assert_eq!(attributes["af.stdout_bytes"], 4096, "{end}");
+        assert_eq!(attributes["af.stderr_bytes"], 0, "{end}");
+        assert!(attributes["process.pid"].is_u64(), "{end}");
     }
 }

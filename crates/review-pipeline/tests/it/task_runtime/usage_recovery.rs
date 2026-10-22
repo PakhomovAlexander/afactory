@@ -276,6 +276,9 @@ fn recovery_case(fail_at: usize, incomplete: bool, wait_past_leases: impl FnOnce
         .unwrap()
         .into_iter()
         .filter_map(|event| {
+            if review_store::store::task::is_execution_started(&event) {
+                return None;
+            }
             let transition: review_core::task::event::TaskTransitionV1 =
                 serde_json::from_value(event.payload).unwrap();
             let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
@@ -329,6 +332,9 @@ fn state_observations(
 ) -> Vec<review_core::task::usage::TaskUsageObservationV1> {
     let mut values = vec![];
     for event in store.replay(run).unwrap() {
+        if review_store::store::task::is_execution_started(&event) {
+            continue;
+        }
         let transition = review_store::store::task::read_task_transition(&event).unwrap();
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
             transition.change

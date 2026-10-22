@@ -22,9 +22,14 @@
 //! snapshot's bytes before what left the disk is taken out, and a deletion that stopped part
 //! way leaves the total `unknown` when what it left cannot be measured.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::{Entry, FAILED, HOUR_MS, Kind, Removal, Rule, Stop, SweepReport};
+use review_telemetry::budget;
+
+use super::{
+    Entry, Evicted, FAILED, HOUR_MS, Kind, Removal, Rule, Stop, SweepReport, TelemetryChanged,
+};
 use crate::projects::survey::collect::{self, Judged, LeftReason};
 
 /// How the applied sweep removes one planned entry.
@@ -36,6 +41,8 @@ pub(crate) enum Job {
     Evict(Box<Entry>),
     /// A Survey's tombstone and deletion, or the deletion an interruption left.
     Survey(collect::Job),
+    /// A telemetry segment, evicted through its directory's model (ADR-0153 clause 8).
+    Telemetry(Box<Entry>),
 }
 
 /// What running one planned entry did, or why it did not, and what it freed before it stopped.
@@ -52,6 +59,9 @@ pub(crate) struct Ran {
     /// immediately before anything was unlinked; `None` where nothing measured it (a Survey's
     /// file, a Task's collection), whose freed bytes are then all the total loses.
     pub(crate) started: Option<u64>,
+    /// A telemetry entry found changed when its eviction checked it again: left in place whole
+    /// and reported under `telemetry.changed`, never as removed (ADR-0144).
+    pub(crate) changed: Option<Box<TelemetryChanged>>,
     /// What the removal left in place: a Store outside af's state that was not proven af's, or
     /// held what is not af's, keeps its directory and everything that is not af's (ADR-0144).
     pub(crate) left: Vec<PathBuf>,
@@ -64,6 +74,7 @@ impl Ran {
             freed,
             unreadable: None,
             started: None,
+            changed: None,
             left: Vec::new(),
         }
     }
@@ -136,6 +147,21 @@ pub(crate) struct Inputs<'a> {
     pub(crate) keep_surveys: usize,
     pub(crate) idle_ms: u64,
     pub(crate) now: u64,
+    pub(crate) telemetry: Telemetry,
+}
+
+/// The telemetry kind's part of a plan (ADR-0153 clause 8, design §6 "Budget").
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Telemetry {
+    /// Every telemetry directory's model by its canonical root, an overlapping one's `None`: a
+    /// segment's step frees what it alone holds in it now, its blobs going with the last segment
+    /// that names them, and is taken out of the model of the directory it was taken from only.
+    pub(crate) models: BTreeMap<PathBuf, Option<budget::Directory>>,
+    /// `[telemetry] max_bytes`; past it telemetry is evicted least recently used first, as past
+    /// the whole budget.
+    pub(crate) max_bytes: Option<u64>,
+    /// `af telemetry gc`: nothing but telemetry is planned.
+    pub(crate) only: bool,
 }
 
 /// One file or Survey the plan leaves.
@@ -159,6 +185,9 @@ pub(crate) struct Plan {
     /// The model's total after the last step.
     pub(crate) total_after: u64,
     pub(crate) stop: Stop,
+    /// The telemetry kind's total after the last step, and why its own cap's step stopped.
+    pub(crate) telemetry_total_after: u64,
+    pub(crate) telemetry_stop: Stop,
 }
 
 /// Which entry of the model a step takes, by kind, path and Task.
@@ -204,6 +233,15 @@ impl Model {
         }
     }
 
+    /// Take a telemetry segment out of the model: its entry gone, and what its eviction frees
+    /// now out of the total, which its entry's bytes need not be once another segment sharing
+    /// its blobs went first.
+    fn take_telemetry(&mut self, path: &Path, freed: u64) {
+        self.entries
+            .retain(|entry| !(entry.kind == Kind::Telemetry && entry.path == path));
+        self.total = self.total.saturating_sub(freed);
+    }
+
     /// The bytes and the identity of the Survey entry at `object`, as the snapshot measured
     /// them; nothing when the snapshot holds none.
     fn survey(&self, object: &Path) -> (u64, Option<review_sandbox::Identity>) {
@@ -228,6 +266,35 @@ impl Plan {
         self.steps.push(Planned { removal, job });
     }
 
+    /// Plan the eviction of the telemetry entry `entry` by `rule`: what it frees now, from its
+    /// directory's model, which it leaves. `None` when it cannot be planned, a failure said.
+    fn push_telemetry(
+        &mut self,
+        model: &mut Model,
+        telemetry: &mut Telemetry,
+        entry: &Entry,
+        rule: Rule,
+    ) -> Option<u64> {
+        match super::evict_telemetry(&mut telemetry.models, entry, false) {
+            Ok(Evicted::Freed(freed)) => {
+                model.take_telemetry(&entry.path, freed);
+                let mut removal = super::removal(entry, freed, rule);
+                removal.total_after = Some(model.total);
+                self.steps.push(Planned {
+                    removal,
+                    job: Job::Telemetry(Box::new(entry.clone())),
+                });
+                Some(freed)
+            }
+            // A preview checks nothing on disk, so it finds nothing changed.
+            Ok(Evicted::Changed(_)) => None,
+            Err(error) => {
+                self.failures.push(error);
+                None
+            }
+        }
+    }
+
     fn held(&mut self, object: PathBuf, bytes: u64, reason: &str) {
         self.left.push(Left {
             kind: Kind::Survey,
@@ -246,6 +313,8 @@ fn removal(kind: Kind, path: PathBuf, task_id: Option<String>, bytes: u64, rule:
         kind,
         path,
         task_id,
+        segment_id: None,
+        directory: None,
         bytes,
         rule,
         total_after: None,
@@ -312,9 +381,13 @@ fn unmeasurable(entry: &Entry, why: &str) -> Left {
 /// Plan one sweep over one snapshot: first what interruptions left (`recovery`), the claims of
 /// dead processes and then the deletions in Project Stores; then, when `collection`, the
 /// finished Tasks the Stores' rules take, the campaigns beyond `keep_campaigns` and the
-/// unreadable Stores idle at least `idle_ms` (`collection`) and the Surveys of each Project
-/// beyond `keep_surveys` (`keep_surveys`); then, while the model holds more than `max_bytes`,
-/// the least recently used entry not in use and not used within the hour (`budget`). `judge`
+/// unreadable Stores idle at least `idle_ms` (`collection`), the Surveys of each Project
+/// beyond `keep_surveys` (`keep_surveys`) and the telemetry segments idle at least `idle_ms`
+/// (`collection`); then, while the model holds more than `max_bytes`, the least recently used
+/// entry not in use and not used within the hour, a corrupt telemetry segment first among equals
+/// (`budget`), and telemetry past its own `[telemetry] max_bytes` under the same rules. A
+/// telemetry segment frees what it alone holds in its directory's model now, so a blob two
+/// segments share goes with the second; `af telemetry gc` plans telemetry alone. `judge`
 /// reads a Survey the plan picks against the identity the snapshot measured; nothing else is
 /// read. The Surveys of a Store whose lock is held are left `held`, a record over the ceiling
 /// `oversize`, and what a Store's look found foreign or unreadably named is left as it was found;
@@ -324,6 +397,7 @@ fn unmeasurable(entry: &Entry, why: &str) -> Left {
 pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
     let claims = std::mem::take(&mut inputs.claims);
     let mut entries = std::mem::take(&mut inputs.entries);
+    let mut telemetry = std::mem::take(&mut inputs.telemetry);
     // A claim inside an entry measured whole is in that entry's bytes already: counted once.
     let held_by: Vec<Option<(Kind, PathBuf)>> = claims
         .iter()
@@ -345,6 +419,8 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
         registrations: std::mem::take(&mut inputs.registrations),
         total_after: 0,
         stop: Stop::Fits,
+        telemetry_total_after: 0,
+        telemetry_stop: Stop::Fits,
     };
     plan.left.extend(
         model
@@ -427,7 +503,11 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
         }
     }
     if inputs.collection {
-        collect_into(&mut plan, &mut model, &inputs, judge);
+        // `af telemetry gc` collects nothing but telemetry.
+        if !telemetry.only {
+            collect_into(&mut plan, &mut model, &inputs, judge);
+        }
+        collect_telemetry(&mut plan, &mut model, &mut telemetry, &inputs);
     }
     if model.total > inputs.max_bytes {
         let mut candidates: Vec<Entry> = model
@@ -437,20 +517,20 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
                 !matches!(
                     entry.kind,
                     Kind::TaskStore | Kind::ProjectStore | Kind::Claim
-                ) && entry.in_use.is_none()
+                ) && (!telemetry.only || entry.kind == Kind::Telemetry)
+                    && entry.in_use.is_none()
                     && entry.last_use_unix_ms.saturating_add(HOUR_MS) <= inputs.now
             })
             .cloned()
             .collect();
-        candidates.sort_by(|a, b| {
-            a.last_use_unix_ms
-                .cmp(&b.last_use_unix_ms)
-                .then_with(|| a.path.cmp(&b.path))
-                .then_with(|| a.task_id.cmp(&b.task_id))
-        });
+        candidates.sort_by(super::least_recently_used);
         for entry in candidates {
             if model.total <= inputs.max_bytes {
                 break;
+            }
+            if entry.kind == Kind::Telemetry {
+                plan.push_telemetry(&mut model, &mut telemetry, &entry, Rule::Budget);
+                continue;
             }
             let key = Some((entry.kind, entry.path.as_path(), entry.task_id.as_deref()));
             if entry.kind != Kind::Survey {
@@ -528,6 +608,34 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
             }
         }
     }
+    // Telemetry past its own cap, under the same rules.
+    let mut held = super::models_total(&telemetry.models, &model.entries);
+    if let Some(cap) = telemetry.max_bytes {
+        let mut more: Vec<Entry> = model
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.kind == Kind::Telemetry
+                    && entry.in_use.is_none()
+                    && entry.last_use_unix_ms.saturating_add(HOUR_MS) <= inputs.now
+            })
+            .cloned()
+            .collect();
+        more.sort_by(super::least_recently_used);
+        let mut more = more.into_iter();
+        while held > cap {
+            let Some(entry) = more.next() else {
+                plan.telemetry_stop = Stop::NothingEvictable;
+                break;
+            };
+            if let Some(freed) =
+                plan.push_telemetry(&mut model, &mut telemetry, &entry, Rule::Budget)
+            {
+                held = held.saturating_sub(freed);
+            }
+        }
+    }
+    plan.telemetry_total_after = held;
     plan.total_after = model.total;
     plan.stop = stop(model.total, inputs.max_bytes);
     plan
@@ -641,6 +749,32 @@ fn collect_into(plan: &mut Plan, model: &mut Model, inputs: &Inputs<'_>, judge: 
     }
 }
 
+/// The telemetry part of collection (ADR-0153 clause 8): every segment (and other version's
+/// directory) idle at least `idle_ms`, never one in use or used within the hour, least recently
+/// used first.
+fn collect_telemetry(
+    plan: &mut Plan,
+    model: &mut Model,
+    telemetry: &mut Telemetry,
+    inputs: &Inputs<'_>,
+) {
+    let mut idle: Vec<Entry> = model
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == Kind::Telemetry
+                && entry.in_use.is_none()
+                && entry.last_use_unix_ms.saturating_add(HOUR_MS) <= inputs.now
+                && entry.last_use_unix_ms.saturating_add(inputs.idle_ms) <= inputs.now
+        })
+        .cloned()
+        .collect();
+    idle.sort_by(super::least_recently_used);
+    for entry in idle {
+        plan.push_telemetry(model, telemetry, &entry, Rule::Collection);
+    }
+}
+
 /// Run `plan` entry by entry with `execute`, never planning again, into `report`, whose
 /// `total_before` already holds the snapshot's total. Each entry reports what it actually freed
 /// and the total after it; one that failed, of any kind, is a failure and stays in its place
@@ -669,6 +803,11 @@ pub(crate) fn run(
         // What the snapshot counted for the entry.
         let counted = planned.removal.bytes;
         match execute(&planned) {
+            // Found changed when checked again: left in place whole, never removed.
+            Ok(Ran {
+                changed: Some(changed),
+                ..
+            }) => report.telemetry.changed.push(*changed),
             Ok(ran) => {
                 total = total.map(|total| match ran.started {
                     Some(started) => total
@@ -738,10 +877,13 @@ mod tests {
             last_use_unix_ms: NOW - days_idle * DAY,
             in_use: None,
             reason: None,
+            directory: None,
+            segment_id: None,
+            state: None,
             identity: None,
+            found: None,
             too_deep: false,
             unmeasurable: None,
-            state: None,
         }
     }
 
@@ -758,6 +900,17 @@ mod tests {
             gate_cleanups: Vec::new(),
             registry_dropped: Vec::new(),
             failures: Vec::new(),
+            telemetry: super::super::TelemetrySweep {
+                max_bytes: None,
+                total_before: 0,
+                total_after: 0,
+                stop: Stop::Fits,
+                reclaimed: Vec::new(),
+                notes: Vec::new(),
+                registry_dropped: Vec::new(),
+                changed: Vec::new(),
+                problems: Vec::new(),
+            },
         }
     }
 
@@ -819,6 +972,7 @@ mod tests {
             keep_surveys: 50,
             idle_ms: 14 * DAY,
             now: NOW,
+            telemetry: Telemetry::default(),
         };
         let mut judge = |_: &Path,
                          _: &collect::Live,
@@ -910,6 +1064,7 @@ mod tests {
                 keep_surveys: 50,
                 idle_ms: 14 * DAY,
                 now: NOW,
+                telemetry: Telemetry::default(),
             },
             &mut |_, _, inventoried| {
                 assert_eq!(inventoried, Some(identity(9)), "the snapshot's identity");
@@ -1011,6 +1166,7 @@ mod tests {
                 keep_surveys: 0,
                 idle_ms: 0,
                 now: NOW,
+                telemetry: Telemetry::default(),
             },
             &mut |_, _, _| unreachable!("a held Store's Surveys are not read"),
         );
@@ -1078,6 +1234,7 @@ mod tests {
             keep_surveys: 50,
             idle_ms: 14 * DAY,
             now: NOW,
+            telemetry: Telemetry::default(),
         };
         let plan = make(inputs(), &mut |_, _, _| unreachable!("no Survey is picked"));
         assert_eq!(plan.total_before, 94, "the claim is counted");
@@ -1155,6 +1312,8 @@ mod tests {
             registrations: Vec::new(),
             total_after: 120,
             stop: Stop::Fits,
+            telemetry_total_after: 0,
+            telemetry_stop: Stop::Fits,
         };
         let mut applied = report(150, true);
         applied.total_before = plan.total_before;
@@ -1243,6 +1402,7 @@ mod tests {
                 keep_surveys: 50,
                 idle_ms: 14 * DAY,
                 now: NOW,
+                telemetry: Telemetry::default(),
             },
             &mut |_, _, _| unreachable!("no Survey is picked"),
         );
@@ -1316,6 +1476,7 @@ mod tests {
                 keep_surveys: 50,
                 idle_ms: 0,
                 now: NOW,
+                telemetry: Telemetry::default(),
             },
             &mut |_, _, _| unreachable!("no Survey is picked"),
         );
@@ -1383,6 +1544,7 @@ mod tests {
                 keep_surveys: 50,
                 idle_ms: 0,
                 now: NOW,
+                telemetry: Telemetry::default(),
             },
             &mut |_, _, _| unreachable!("no Survey is picked"),
         );
@@ -1428,6 +1590,8 @@ mod tests {
             registrations: Vec::new(),
             total_after: 40,
             stop: Stop::Fits,
+            telemetry_total_after: 0,
+            telemetry_stop: Stop::Fits,
         };
         let mut applied = report(u64::MAX, true);
         applied.total_before = plan.total_before;
@@ -1475,6 +1639,8 @@ mod tests {
             registrations: Vec::new(),
             total_after: 10 * MIB,
             stop: Stop::Fits,
+            telemetry_total_after: 0,
+            telemetry_stop: Stop::Fits,
         }
     }
 
@@ -1499,6 +1665,7 @@ mod tests {
                     freed: 20 * MIB,
                     unreadable: None,
                     started: Some(20 * MIB),
+                    changed: None,
                     left: Vec::new(),
                 })
             }
