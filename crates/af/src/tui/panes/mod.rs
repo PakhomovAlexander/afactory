@@ -9,6 +9,7 @@ use super::paint::{Paint, Span, Tone};
 use super::scope::Scope;
 use super::tree::Item;
 
+pub(crate) mod campaigns;
 pub(crate) mod pipelines;
 pub(crate) mod providers;
 pub(crate) mod settings;

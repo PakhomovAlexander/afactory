@@ -889,6 +889,7 @@ fn opening_a_task_rebuilds_its_bar_row_from_the_same_read() {
             dir: state.clone(),
             shown: "state".into(),
             repo: None,
+            origin: Origin::Scope,
         }],
         ..TasksPane::default()
     };
@@ -1100,18 +1101,24 @@ fn a_collected_task_leaves_the_store_readable_and_is_not_opened() {
 
 #[test]
 fn r_prefills_the_run_of_the_shown_plan_and_d_only_a_verified_tasks_delivery() {
-    let run = prefill(Key::Char('r'), "t-1", Some("sha256:ab"), State::Failed);
+    let run = prefill(
+        Key::Char('r'),
+        "t-1",
+        Some("sha256:ab"),
+        State::Failed,
+        None,
+    );
     assert_eq!(
         run,
         Some(Ok("task run t-1 --confirm-plan sha256:ab".to_owned()))
     );
-    let run = prefill(Key::Char('r'), "t-1", None, State::Done);
+    let run = prefill(Key::Char('r'), "t-1", None, State::Done, None);
     assert_eq!(
         run,
         Some(Err("Task t-1 records no plan to confirm".to_owned()))
     );
     // The confirmation is left to type: the line ends at `--confirm `.
-    let deliver = prefill(Key::Char('D'), "t-1", Some("sha256:ab"), State::Done);
+    let deliver = prefill(Key::Char('D'), "t-1", Some("sha256:ab"), State::Done, None);
     let expected = "task deliver t-1 --branch af/t-1 --worktree ../t-1 --confirm ";
     assert_eq!(deliver, Some(Ok(expected.to_owned())));
     for (state, why) in [
@@ -1119,18 +1126,38 @@ fn r_prefills_the_run_of_the_shown_plan_and_d_only_a_verified_tasks_delivery() {
         (State::Awaiting, "is awaiting approval"),
         (State::Failed, "finished without satisfying its acceptance"),
     ] {
-        let refused = prefill(Key::Char('D'), "t-1", Some("sha256:ab"), state);
+        let refused = prefill(Key::Char('D'), "t-1", Some("sha256:ab"), state, None);
         let expected = format!("only a verified Task can be delivered: t-1 {why}");
         assert_eq!(refused, Some(Err(expected)));
     }
     // A Task id the shell would split is quoted, so the line parses back to the same words.
-    let quoted = prefill(Key::Char('D'), "a b", None, State::Done)
+    let quoted = prefill(Key::Char('D'), "a b", None, State::Done, None)
         .unwrap()
         .unwrap();
     let words = shell_words::split(&quoted).unwrap();
     assert_eq!(words[2], "a b");
     assert_eq!(words[4], "af/a b");
-    assert_eq!(prefill(Key::Char('x'), "t-1", None, State::Done), None);
+    assert_eq!(
+        prefill(Key::Char('x'), "t-1", None, State::Done, None),
+        None
+    );
+    // A Store a command reaches only by naming it is named after the Task id.
+    let store = Path::new("/elsewhere/my state");
+    let run = prefill(
+        Key::Char('r'),
+        "t-1",
+        Some("sha256:ab"),
+        State::Failed,
+        Some(store),
+    );
+    let expected = "task run t-1 --state '/elsewhere/my state' --confirm-plan sha256:ab";
+    assert_eq!(run, Some(Ok(expected.to_owned())));
+    let deliver = prefill(Key::Char('D'), "t-1", None, State::Done, Some(store));
+    let words = shell_words::split(&deliver.unwrap().unwrap()).unwrap();
+    assert_eq!(
+        words[..5],
+        ["task", "deliver", "t-1", "--state", "/elsewhere/my state"]
+    );
 }
 
 #[test]
@@ -1144,6 +1171,7 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
         dir: PathBuf::from(format!("/home/me/.local/state/af/task/local/{name}")),
         shown: format!("~/.local/state/af/task/local/{name}"),
         repo: Some(name.to_owned()),
+        origin: Origin::Repository,
         release:
             matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
                 .then(|| {
@@ -1214,6 +1242,7 @@ fn a_long_state_path_keeps_every_row_within_the_pane() {
         dir: PathBuf::from(format!("{root}/{name}")),
         shown: format!("{root}/{name}"),
         repo: Some(name.to_owned()),
+        origin: Origin::Repository,
         release:
             matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
                 .then(|| {

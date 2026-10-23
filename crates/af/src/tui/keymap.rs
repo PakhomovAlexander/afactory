@@ -158,7 +158,6 @@ pub(crate) enum Action {
     FoldOpenAll,
     FoldCloseAll,
     SearchForward,
-    SearchBackward,
     SearchNext,
     SearchPrevious,
     FocusNext,
@@ -173,6 +172,9 @@ pub(crate) enum Action {
     Quit,
     Command,
     Cancel,
+    /// `?`: the help overlay, which names the panes, the keys and the `:` line. Backward search
+    /// is `/` then `N`.
+    Help,
     /// A key the table does not bind; the opened pane may use it as a pane-local verb.
     Pane(Key),
 }
@@ -227,7 +229,7 @@ impl KeyMap {
             Key::Ctrl('f') | Key::PageDown => Action::PageDown,
             Key::Ctrl('b') | Key::PageUp => Action::PageUp,
             Key::Char('/') => Action::SearchForward,
-            Key::Char('?') => Action::SearchBackward,
+            Key::Char('?') => Action::Help,
             Key::Char('n') => Action::SearchNext,
             Key::Char('N') => Action::SearchPrevious,
             Key::Tab | Key::BackTab => Action::FocusNext,
@@ -346,7 +348,7 @@ mod tests {
             (Key::Ctrl('f'), Action::PageDown),
             (Key::Ctrl('b'), Action::PageUp),
             (Key::Char('/'), Action::SearchForward),
-            (Key::Char('?'), Action::SearchBackward),
+            (Key::Char('?'), Action::Help),
             (Key::Char('n'), Action::SearchNext),
             (Key::Char('N'), Action::SearchPrevious),
             (Key::Tab, Action::FocusNext),

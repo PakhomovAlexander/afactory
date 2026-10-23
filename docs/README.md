@@ -6,6 +6,10 @@ Where to look, by question. The [README](../README.md) covers installing, the qu
 
 ## Start here
 
+`af` with no arguments at a terminal opens a read-first browser over this place's settings,
+Providers, Workers, pipelines, Tasks and review Campaigns; `?` there lists its keys and `:` runs
+any af command ([design](design/tui.md)).
+
 1. [The README Quickstart](../README.md#quickstart) — install, connect a Provider, onboard a
    repository and review a change, four steps with one command each; `af doctor` checks each.
 2. `af help concepts` — Task, Worker, Attempt, Snapshot, Round, Campaign, Store, Provider, Gate,

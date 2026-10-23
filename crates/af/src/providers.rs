@@ -411,6 +411,37 @@ pub(crate) fn setup_hint(kind: &str, ids: &BTreeSet<String>) -> String {
     format!("set up {kind}: af provider setup {id} --kind {kind} --login")
 }
 
+/// The variable that points a kind's CLI at its directory, and the directory it uses without it.
+pub(crate) fn ambient_selector(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "claude" => ("CLAUDE_CONFIG_DIR", "~/.claude"),
+        _ => ("CODEX_HOME", "~/.codex"),
+    }
+}
+
+/// How an ambient candidate of `kind` came to be listed and how to make it go, as the browser
+/// shows it under the candidate's row: found through the variable that points the CLI at its
+/// directory when `selector_set`, else in the CLI's default directory; `af provider add`
+/// registers it, and unsetting the variable stops the listing (ADR-0141).
+pub(crate) fn ambient_explanation(
+    kind: &str,
+    selector_set: bool,
+    ids: &BTreeSet<String>,
+) -> Vec<String> {
+    let (selector, default) = ambient_selector(kind);
+    let id = available_provider_id(kind, ids);
+    let mut lines = vec![if selector_set {
+        format!("ambient ({selector}): found through {selector}, not in the registry")
+    } else {
+        format!("ambient ({default}): the {kind} CLI's default directory, not in the registry")
+    }];
+    lines.push(format!("  register it: af provider add {id} --kind {kind}"));
+    if selector_set {
+        lines.push(format!("  or stop listing it: unset {selector}"));
+    }
+    lines
+}
+
 /// The config directories of every Claude Provider the registry declares: where af's Claude
 /// Workers wrote their history (ADR-0144).
 pub(crate) fn registered_claude_config_dirs() -> Vec<PathBuf> {

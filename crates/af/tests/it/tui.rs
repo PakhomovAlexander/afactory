@@ -1328,11 +1328,12 @@ fn d_removes_a_registered_provider_through_af_provider_remove() {
     let discovered = |screen: &Screen| listed(screen, "codex-main") && listed(screen, "codex-work");
     browser.wait_for("the registered providers", discovered);
 
-    // The ambient candidate is listed, and has no registry entry behind it.
+    // The ambient candidate is listed, and has no registry entry behind it: `d` says how to
+    // register it instead, under the first free id.
     browser.keys(b"/codex-ambient\r");
     browser.keys(b"d");
-    let refusal =
-        "codex-ambient is discovered, not registered: there is no registry entry to remove";
+    let refusal = "codex-ambient: no registry entry to remove; af provider add codex-main-2 \
+                   --kind codex adds it";
     browser.wait_for("the refusal", |screen| {
         screen.lines()[ROWS - 1].ends_with(refusal)
     });
@@ -1443,4 +1444,168 @@ fn the_browser_runs_nothing_a_hostile_git_config_names() {
         "checkout-configured code ran: {}",
         std::fs::read_to_string(&marker).unwrap_or_default()
     );
+}
+
+/// A repository whose committed review pipeline has one command reviewer, token-free: it reports
+/// one major Finding on every Round.
+fn reviewed_repository(root: &Path) -> PathBuf {
+    let repo = root.join("reviewed");
+    std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
+    std::fs::write(repo.join("source.txt"), "fn main() { loop {} }\n").unwrap();
+    let finding = r#"{"findings":[{"severity":"major","file":"source.txt","line":1,"title":"Unbounded loop","body":"spins","fix":"bound it","confidence":0.9,"rule_id":"test.rules/loop-safety@1","occurrence_key":"main-loop"}],"benchmark_demands":[],"dispositions":[]}"#;
+    let pipeline = format!(
+        r#"version = 2
+[subject]
+kind = "whole-tree"
+[[checks]]
+name = "noop"
+program = "/bin/sh"
+args = [{{ value = "-c" }}, {{ value = "true" }}]
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+inputs = [{{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}, {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+gated_by = "gate"
+runner = {{ program = "/bin/sh", args = [{{ value = "-c" }}, {{ value = '''cat >/dev/null; printf '%s' '{finding}' ''' }}] }}
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = [{{ name = "reviewer", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+outputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
+outputs = [
+  {{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+  {{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}
+]
+[[edges]]
+from = {{ node = "gate", port = "decision" }}
+to = {{ node = "reviewer", port = "gate" }}
+[[edges]]
+from = {{ node = "generation", port = "findings" }}
+to = {{ node = "reviewer", port = "prior_findings" }}
+[[edges]]
+from = {{ node = "reviewer", port = "result" }}
+to = {{ node = "gather", port = "reviewer" }}
+[[edges]]
+from = {{ node = "gather", port = "reports" }}
+to = {{ node = "ledger", port = "reports" }}
+[convergence]
+clean_rounds = 1
+max_rounds = 1
+gate = "major"
+"#
+    );
+    std::fs::write(repo.join(".af/pipelines/review.toml"), &pipeline).unwrap();
+    std::fs::write(
+        repo.join(".af/af.toml"),
+        "version=1\n[project]\nname='reviewed'\nmin_af='0.6'\n[defaults]\npipeline='review'\n",
+    )
+    .unwrap();
+    let mut lock = review_config::lock::Lockfile::empty();
+    lock.pipelines.insert(
+        "review".into(),
+        review_config::lock::Pin {
+            version: "1.0.0".into(),
+            digest: review_store::canonical::blob_content_id(pipeline.as_bytes()),
+        },
+    );
+    std::fs::write(repo.join(".af/af.lock"), lock.to_toml()).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.name", "Fixture"]);
+    git(&repo, &["config", "user.email", "fixture@example.invalid"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "review authority"]);
+    repo
+}
+
+/// What a plain `af review run` recorded, on a real pseudo-terminal: campaigns/ lists the
+/// Campaign it keeps for the repository, with its Round, its reviewer's chip, its verdict and
+/// its spend, and the Campaign's pane shows its Ledger by reviewer and the commands that apply.
+#[test]
+fn the_campaigns_pane_shows_the_campaign_af_review_run_recorded() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = reviewed_repository(&root);
+    let ran = af(&repo, &home, &["review", "run", "--policy-rev", "HEAD"]);
+    let stderr = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(
+        ran.status.code(),
+        Some(3),
+        "a major Finding fails: {stderr}"
+    );
+    let mut browser = Browser::launch(&repo, &home);
+    browser.wait_for("the bar", |screen| shows(screen, "  v campaigns/"));
+    // ]] five times reaches campaigns/.
+    browser.keys(b"]]]]]]]]]]");
+    browser.keys(b"\r");
+    let main = |screen: &Screen| -> Vec<String> {
+        let lines = screen.lines();
+        let main = lines
+            .iter()
+            .map(|line| line.get(BAR_INNER + 1..).unwrap_or(""));
+        main.map(str::to_owned).collect()
+    };
+    let listed = |screen: &Screen| main(screen).iter().any(|row| row.starts_with("  local "));
+    let screen = browser.wait_for("the Campaign's row", listed);
+    let rows = main(&screen);
+    let at = rows
+        .iter()
+        .position(|row| row.starts_with("  local "))
+        .unwrap();
+    let text = screen.text();
+    assert!(
+        rows[at].ends_with("round 1.1  fail  fail (exhausted)"),
+        "{text}"
+    );
+    let spend: Vec<&str> = rows[at + 1].split_whitespace().collect();
+    assert_eq!(spend[0], "spend", "{text}");
+    assert!(spend[1].parse::<u128>().is_ok(), "{text}");
+    assert_eq!(rows[at + 2].trim(), "nodes  reviewer", "{text}");
+    let bar = bar_rows(&screen);
+    assert!(
+        bar.iter()
+            .any(|row| row.starts_with("      local") && row.ends_with("fail")),
+        "{text}"
+    );
+    // The Campaign: its reviewer's Attempt, its Ledger by reviewer, and the commands.
+    browser.keys(b"j");
+    browser.keys(b"\r");
+    let opened = |screen: &Screen| main(screen).iter().any(|row| row.starts_with("COMMANDS"));
+    let screen = browser.wait_for("the Campaign's pane", opened);
+    let rows = main(&screen);
+    let text = screen.text();
+    assert!(rows[0].starts_with("CAMPAIGN  local  c-"), "{text}");
+    assert_eq!(
+        rows[1], "STATE fail  round 1 epoch 1  verdict fail (exhausted)",
+        "{text}"
+    );
+    let node = rows
+        .iter()
+        .find(|row| row.starts_with("  selected  reviewer"));
+    assert!(node.is_some(), "{text}");
+    assert!(rows.contains(&"  reviewer  1 finding".to_owned()), "{text}");
+    let finding = rows.iter().find(|row| row.contains("major   open"));
+    assert!(
+        finding.is_some_and(|row| row.contains("source.txt:1  Unbounded loop")),
+        "{text}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.starts_with("  :review report --campaign local --state ")),
+        "{text}"
+    );
+    browser.keys(b"q");
+    assert_eq!(browser.exit_code(), 0);
 }

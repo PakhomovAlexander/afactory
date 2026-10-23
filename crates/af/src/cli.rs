@@ -78,7 +78,8 @@ Start here (`af help start` explains each step):
 Task, Worker, Attempt, Snapshot, Provider and the other words are explained in \
 `af help concepts`; `af help` lists every topic (config, layers, environment, exit-codes, json, \
 providers, task-states, task-file, agents, self, storage, telemetry). `af` alone at a terminal \
-opens a browser over this scope's settings, Providers, pipelines and Tasks.";
+opens a read-first browser over this scope's settings, Providers, Workers, pipelines, Tasks and \
+review Campaigns: `?` there lists its keys, and `:` runs any af command.";
 
 const AF_AFTER_HELP: &str = "\
 Exit codes (`af help exit-codes`):

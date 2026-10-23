@@ -1749,7 +1749,7 @@ fn completion_comes_from_the_clap_definition() {
     };
     // The browser's verbs, then every top-level command.
     press(&mut app, &mut host, b":\t");
-    let mut all = vec!["cd", "e", "help", "q", "scope"]
+    let mut all = vec!["cd", "e", "help", "q", "scope", "state"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
@@ -1814,8 +1814,8 @@ fn the_providers_pane_prefills_remove_for_a_registered_provider() {
 
     // An ambient candidate is discovered, not registered: no line is offered, from the bar or
     // from its opened pane.
-    let ambient = "codex-ambient is discovered, not registered: there is no registry entry to \
-                   remove";
+    let ambient = "codex-ambient: no registry entry to remove; af provider add codex-main \
+                   --kind codex adds it";
     press(&mut app, &mut host, b"\tj");
     assert_eq!(app.breadcrumb(), "providers/codex-ambient");
     for keys in [&b"d"[..], b"\r\td"] {
@@ -1980,7 +1980,9 @@ fn bare_help_opens_with_the_worker_and_the_tagline() {
     );
     assert_eq!(text[5], " ###########");
     assert_eq!(text[6], "");
-    assert!(text[7].starts_with("KEYS"), "{}", text[7]);
+    // Then what `?` shows: the panes and the `:` line, and the keys.
+    assert!(text[7].starts_with("HELP"), "{}", text[7]);
+    assert!(text.iter().any(|row| row.starts_with("KEYS")));
     assert!(
         text[..7].iter().all(|row| row.len() <= 52),
         "the banner fits the pane at 80 columns"
@@ -2064,4 +2066,497 @@ fn a_repository_without_af_shows_its_project_layer_absent_with_af_onboard() {
         .find(|text| text.starts_with("project "))
         .unwrap();
     assert!(!project.contains("af onboard"), "{project}");
+}
+
+// ----------------------------------------------------------------------------------------
+// Campaigns, every Task Store, help and the ambient row (package P12)
+
+/// The fixture's XDG state root, which the scope reads.
+fn state_root(root: &Path) -> PathBuf {
+    root.join("state")
+}
+
+/// `stores.toml` under the scope's state root, recording `entries` as `(path, kind)`.
+fn register(root: &Path, entries: &[(&Path, &str)]) {
+    let mut text = String::from("version = 2\n");
+    for (path, kind) in entries {
+        text.push_str(&format!(
+            "\n[[store]]\npath = {:?}\nkind = \"{kind}\"\nfirst_use_unix_ms = 1\nlast_use_unix_ms = 1\n",
+            path.display().to_string()
+        ));
+    }
+    let registry = crate::storage::registry::location(&state_root(root));
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(registry, text).unwrap();
+}
+
+/// Three Campaign Stores, one per source the pane reads: `pr-42` with an open Round under the
+/// default root, the `local` Store a plain `af review run` keeps for a repository, and
+/// `audit`, made with `--state DIR` and recorded in the Store registry. Returns that Store.
+fn campaign_stores(root: &Path) -> PathBuf {
+    let review = state_root(root).join("af/review");
+    let opaque = crate::campaign_id("pr-42");
+    crate::option_tests::write_campaign_rounds(
+        &review.join("campaigns").join(opaque),
+        "pr-42",
+        &[(1, 1)],
+    );
+    crate::option_tests::write_campaign_opening(&review.join("local/0123456789abcdef"), "local");
+    let audit = root.join("elsewhere/audit");
+    crate::option_tests::write_campaign_rounds(&audit, "audit", &[(1, 1)]);
+    register(root, &[(&audit, "review")]);
+    audit
+}
+
+/// A frame with the times a Store's last write gives masked.
+fn without_write_times(frame: &str) -> String {
+    let mut text = String::new();
+    for line in frame.lines() {
+        let words: Vec<&str> = line.split(' ').collect();
+        let mut kept = Vec::new();
+        let mut index = 0;
+        while index < words.len() {
+            let (word, next) = (words[index], words.get(index + 1).copied());
+            let date = word.len() == 10 && word.as_bytes()[4] == b'-' && word.as_bytes()[7] == b'-';
+            if date && next.is_some_and(|next| next.len() == 6 && next.ends_with('Z')) {
+                kept.push("<date> <time>");
+                index += 2;
+                continue;
+            }
+            kept.push(word);
+            index += 1;
+        }
+        text.push_str(&kept.join(" "));
+        text.push('\n');
+    }
+    text
+}
+
+fn main_texts(app: &App) -> Vec<String> {
+    app.main_rows().iter().map(Row::text).collect()
+}
+
+#[test]
+fn the_campaigns_pane_lists_every_campaign_store_and_opens_one() {
+    const CAMPAIGNS: &str = include_str!("../../tests/fixtures/tui/campaigns-100x30.txt");
+    let (_temp, root) = temp_root();
+    let audit = campaign_stores(&root);
+    let review_before = files_of(&state_root(&root).join("af/review"));
+    let audit_before = files_of(&audit);
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]]]\r");
+    assert_eq!(app.breadcrumb(), "campaigns/");
+    assert_eq!(app.opened, Opened::Folder(Tab::Campaigns));
+    let frame = app.frame(100, 30).text();
+    assert_eq!(without_write_times(&frame), CAMPAIGNS, "{frame}");
+    // The row: name, Round, state chip, verdict, spend and last write, then its nodes.
+    let rows = main_texts(&app);
+    let row = rows
+        .iter()
+        .position(|row| row.starts_with("  pr-42 "))
+        .unwrap();
+    assert_eq!(
+        rows[row].trim_end(),
+        "  pr-42                 round 1.1  open  -"
+    );
+    assert!(
+        rows[row + 1].starts_with("      spend - tok  wall -  last write 20"),
+        "{}",
+        rows[row + 1]
+    );
+    let frame = app.frame(100, 30);
+    assert_eq!(
+        paints_of(&frame, " open ")[0],
+        Paint::Chip(paint::Tone::Active)
+    );
+    // Each Store's path heads its Campaigns.
+    for heading in [
+        "~/state/af/review/campaigns",
+        "~/state/af/review/local",
+        "~/elsewhere/audit",
+    ] {
+        assert!(
+            rows.iter().any(|row| row == heading),
+            "{heading}: {rows:#?}"
+        );
+    }
+
+    // The registered Campaign: its pane, and the commands that name its Store.
+    press(&mut app, &mut host, b"G\r");
+    assert_eq!(app.breadcrumb(), "campaigns/audit");
+    let rows = main_texts(&app);
+    let opaque = &crate::campaign_id("audit")[..10];
+    assert_eq!(rows[0], format!("CAMPAIGN  audit  {opaque}"));
+    assert_eq!(rows[1], "STATE open  round 1 epoch 1  verdict -");
+    assert!(
+        rows[2].starts_with("SPEND  - tok  wall -  last write "),
+        "{}",
+        rows[2]
+    );
+    assert_eq!(rows[3], "STORE  ~/elsewhere/audit");
+    for row in [
+        "NODES  (af review report)",
+        "  no reviewer Attempt recorded yet",
+        "LEDGER  round 1  (af review ledger)",
+        "  verdict not recorded",
+        "  0 findings: 0 open, 0 pending, 0 fixed, 0 rejected, 0 wontfix, 0 contested",
+    ] {
+        assert!(rows.iter().any(|shown| shown == row), "{row}: {rows:#?}");
+    }
+    let store = shell_words::quote(&audit.display().to_string()).into_owned();
+    let selector = format!("--campaign audit --state {store}");
+    let commands = [
+        format!("review report {selector}"),
+        format!("review ledger {selector} --long"),
+        format!("review run {selector} --restart-round"),
+    ];
+    for command in &commands {
+        let at = rows.iter().position(|row| *row == format!("  :{command}"));
+        let at = at.unwrap_or_else(|| panic!("no {command}: {rows:#?}"));
+        // Enter puts it on the `:` line, unsubmitted.
+        let effect = app.panes.campaigns.key(Key::Enter, at).unwrap();
+        assert_eq!(effect, Some(Effect::Prefill(command.clone())));
+    }
+    assert!(
+        rows.iter()
+            .any(|row| row.starts_with(&format!("  :review show {selector} KEY"))),
+        "{rows:#?}"
+    );
+    // `y` copies the name a command takes.
+    press(&mut app, &mut host, b"y");
+    assert_eq!(host.sent, b"\x1b]52;c;YXVkaXQ=\x07");
+
+    // The default root's Campaign is named by its label alone; a new one offers no restart.
+    press(&mut app, &mut host, b"gg]]]]]]]]]]j\r");
+    assert_eq!(app.breadcrumb(), "campaigns/pr-42");
+    let rows = main_texts(&app);
+    assert!(
+        rows.contains(&"  :review report --campaign pr-42".to_owned()),
+        "{rows:#?}"
+    );
+    press(&mut app, &mut host, b"gg]]]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "campaigns/local");
+    let rows = main_texts(&app);
+    let local = state_root(&root).join("af/review/local/0123456789abcdef");
+    let report = format!(
+        "  :review report --campaign local --state {}",
+        local.display()
+    );
+    assert!(rows.contains(&report), "{rows:#?}");
+    assert!(
+        !rows.iter().any(|row| row.contains("--restart-round")),
+        "{rows:#?}"
+    );
+    // Nothing was written: the browser never mutates a Store.
+    let stores = [
+        (review_before, state_root(&root).join("af/review")),
+        (audit_before, audit.clone()),
+    ];
+    for (before, dir) in stores {
+        let after = files_of(&dir);
+        let changed: Vec<_> = after.iter().filter(|file| !before.contains(file)).collect();
+        let gone: Vec<_> = before.iter().filter(|file| !after.contains(file)).collect();
+        assert!(
+            changed.is_empty() && gone.is_empty(),
+            "changed {changed:#?} gone {gone:#?}"
+        );
+    }
+}
+
+/// Every file below `dir` that records a Store's content, with its length and modification
+/// time. SQLite's `-shm` and `-wal` files are left out: every reader of a log in WAL mode makes
+/// them, `af review campaigns` as well, and they hold no record.
+fn files_of(dir: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        let metadata = entry.metadata().unwrap();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with("-shm") || name.ends_with("-wal") {
+            continue;
+        }
+        if metadata.is_dir() {
+            files.extend(files_of(&entry.path()));
+        } else {
+            files.push((entry.path(), metadata.len(), metadata.modified().unwrap()));
+        }
+    }
+    files.sort();
+    files
+}
+
+#[test]
+fn an_open_round_is_read_again_about_once_a_second_while_the_campaigns_pane_shows() {
+    let (_temp, root) = temp_root();
+    campaign_stores(&root);
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]]]\r");
+    let second = Duration::from_millis(1_100);
+    std::thread::sleep(second);
+    app.poll();
+    assert_eq!(app.panes.campaigns.reads(), 1, "an open Round is live");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !app.panes.campaigns.poll() {
+        assert!(Instant::now() < deadline, "the live read never finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        main_texts(&app)
+            .iter()
+            .any(|row| row.starts_with("  pr-42 "))
+    );
+    // Another pane shows: nothing is read.
+    press(&mut app, &mut host, b"gg]]\r");
+    std::thread::sleep(second);
+    app.poll();
+    assert_eq!(app.panes.campaigns.reads(), 1);
+}
+
+/// A Campaign Store this release cannot replay: its opening's payload is another release's
+/// shape, and its writer marker names `release`, or none when `None`.
+fn foreign_campaign(dir: &Path, release: Option<&str>, label: &str) {
+    std::fs::create_dir_all(dir.join("cas/objects")).unwrap();
+    let path = dir.join("events.sqlite");
+    drop(review_store::EventStore::open(&path).unwrap());
+    let run_id = crate::campaign_run_id(label);
+    // The event's id is the one the Store derives, so replay reaches its type and payload.
+    let event_id = {
+        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut hasher, b"review.kernel/event-id/v1\0");
+        sha2::Digest::update(&mut hasher, run_id.as_bytes());
+        sha2::Digest::update(&mut hasher, b"\0");
+        sha2::Digest::update(&mut hasher, b"0");
+        review_core::hex::encode(&sha2::Digest::finalize(hasher))[..26].to_string()
+    };
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("DELETE FROM store_writers;").unwrap();
+    conn.execute(
+        "INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs,
+                             payload)
+         VALUES (?1, 0, ?2, 'CampaignOpened@1', '1970-01-01T00:00:00Z', '[]', '{\"opened\":true}')",
+        [run_id.as_str(), event_id.as_str()],
+    )
+    .unwrap();
+    if let Some(release) = release {
+        conn.execute(
+            "INSERT INTO store_writers (af_version, record) VALUES (?1, '{}')",
+            [release],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn campaign_stores_other_releases_wrote_are_one_row_never_one_error_each() {
+    let (_temp, root) = temp_root();
+    let review = state_root(&root).join("af/review");
+    crate::option_tests::write_campaign_rounds(
+        &review.join("campaigns").join(crate::campaign_id("pr-42")),
+        "pr-42",
+        &[(1, 1)],
+    );
+    foreign_campaign(&review.join("campaigns/old-pr"), Some("99.1.0"), "old-pr");
+    foreign_campaign(&review.join("local/feedfacefeedface"), None, "local");
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]]]\r");
+    let rows = main_texts(&app);
+    let summary = "2 Stores written by other releases: af 99.1.0 (1), an older af release with \
+                   no version marker (1); run them with AF_VERSION=99.1.0 af review campaigns";
+    let joined = rows.join(" ");
+    assert!(joined.contains(summary), "{rows:#?}");
+    assert!(
+        !rows.iter().any(|row| row.starts_with("error")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.starts_with("  pr-42 ")),
+        "{rows:#?}"
+    );
+    let bar: Vec<String> = app
+        .tree
+        .rows()
+        .iter()
+        .map(|row| row.label.clone())
+        .collect();
+    assert_eq!(
+        bar.iter()
+            .filter(|label| label.starts_with('!'))
+            .collect::<Vec<_>>(),
+        ["! 2 old Stores"],
+        "{bar:#?}"
+    );
+}
+
+#[test]
+fn the_tasks_pane_lists_every_registered_store_and_a_state_dir_for_the_session() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let registered = root.join("elsewhere/registered");
+    let session = root.join("elsewhere/session");
+    copy_store(&state, &registered);
+    copy_store(&state, &session);
+    register(&root, &[(&registered, "task")]);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]\r");
+    let rows = main_texts(&app);
+    let own = rows
+        .iter()
+        .position(|row| row.starts_with("~/state/af/task/local/"));
+    let theirs = rows
+        .iter()
+        .position(|row| row == "~/elsewhere/registered  (--state, in stores.toml)");
+    assert!(own.is_some() && theirs.is_some(), "{rows:#?}");
+    // Both Stores list their Tasks, each under its own path.
+    let listed = |from: usize| {
+        rows[from..]
+            .iter()
+            .take_while(|row| !row.is_empty())
+            .filter(|row| row.trim_start().starts_with("pagination-"))
+            .count()
+    };
+    assert_eq!((listed(own.unwrap()), listed(theirs.unwrap())), (2, 2));
+    let bar: Vec<String> = app.tree.rows().iter().map(|row| row.text()).collect();
+    assert!(
+        bar.iter().any(|row| row == "    v ..here/registered/ (2)"),
+        "{bar:#?}"
+    );
+    // `r` on a registered Store's Task names its Store.
+    let id = format!("{}/pagination-cli", "~/elsewhere/registered");
+    assert!(app.tree.select(NodeKind::Item(Tab::Tasks), &id));
+    press(&mut app, &mut host, b"r");
+    assert!(
+        app.prompt.text.starts_with(&format!(
+            "task run pagination-cli --state {} --confirm-plan sha256:",
+            registered.display()
+        )),
+        "{}",
+        app.prompt.text
+    );
+    press(&mut app, &mut host, b"\x1b");
+
+    // `:state DIR` lists another Store for the session, and only once.
+    press(&mut app, &mut host, b":state ~/elsewhere/session\r");
+    assert!(
+        status_line(&mut app).contains("tasks/ lists ~/elsewhere/session for this session"),
+        "{}",
+        status_line(&mut app)
+    );
+    let rows = main_texts(&app);
+    assert!(
+        rows.contains(&"~/elsewhere/session  (:state, this session)".to_owned()),
+        "{rows:#?}"
+    );
+    press(&mut app, &mut host, b":state ~/elsewhere/session\r");
+    assert!(status_line(&mut app).contains("tasks/ already lists ~/elsewhere/session"));
+    press(&mut app, &mut host, b":state ~/nowhere\r");
+    let line = status_line(&mut app);
+    assert!(line.contains("nowhere: not a directory"), "{line}");
+    assert_eq!(app.status_paint(), Paint::Alert);
+    // Nothing registered it.
+    let registry =
+        crate::storage::registry::read(&crate::storage::registry::location(&state_root(&root)))
+            .unwrap();
+    assert_eq!(registry.len(), 1);
+}
+
+fn copy_store(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_store(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn question_mark_opens_the_help_overlay_and_the_idle_status_line_says_so() {
+    const HELP: &str = include_str!("../../tests/fixtures/tui/help-100x30.txt");
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"?");
+    assert_eq!(app.frame(100, 30).text(), HELP);
+    let text = main_texts(&app).join("\n");
+    for named in [
+        "providers/",
+        "workers/",
+        "pipelines/",
+        "tasks/",
+        "campaigns/",
+        ": <af command>",
+    ] {
+        assert!(text.contains(named), "{named}");
+    }
+    // `?` again, `q` or `Esc` closes it.
+    press(&mut app, &mut host, b"?");
+    assert!(app.help.is_none());
+    press(&mut app, &mut host, b"?q");
+    assert!(app.help.is_none() && !app.quit);
+
+    // Idle, the status line takes turns between the legend and the hint.
+    assert!(status_line(&mut app).ends_with(BAR_LEGEND));
+    app.idle_since = Some(Instant::now() - Duration::from_secs(5));
+    assert!(
+        status_line(&mut app).ends_with(IDLE_HINT),
+        "{}",
+        status_line(&mut app)
+    );
+    app.idle_since = Some(Instant::now() - Duration::from_secs(9));
+    assert!(status_line(&mut app).ends_with(BAR_LEGEND));
+    app.idle_since = Some(Instant::now() - Duration::from_secs(1));
+    assert!(status_line(&mut app).ends_with(BAR_LEGEND));
+}
+
+#[test]
+fn an_ambient_provider_row_says_how_it_got_there_and_how_to_make_it_go() {
+    const AMBIENT: &str = include_str!("../../tests/fixtures/tui/providers-ambient-100x30.txt");
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let scope = hub_scope(&root, &repo);
+    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe)
+        .with_selectors(&["CODEX_HOME"]);
+    let mut app = App::new(scope, Some(repo.clone()), Panes::new(providers));
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]\r");
+    assert_eq!(app.frame(100, 30).text(), AMBIENT);
+    let rows = main_texts(&app);
+    let lines = [
+        "ambient (CODEX_HOME): found through CODEX_HOME, not in the registry",
+        "  register it: af provider add codex-main --kind codex",
+        "  or stop listing it: unset CODEX_HOME",
+    ];
+    let at = rows.iter().position(|row| row == lines[0]).unwrap();
+    assert_eq!(rows[at..at + 3], lines);
+    // `d` on it says the same on the status line.
+    press(&mut app, &mut host, b"jjd");
+    let line = status_line(&mut app);
+    assert!(
+        line.ends_with("af provider add codex-main --kind codex adds it"),
+        "{line}"
+    );
+    // Without the variable, the CLI's default directory is where it came from.
+    let scope = hub_scope(&root, &repo);
+    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let mut app = App::new(scope, Some(repo), Panes::new(providers));
+    press(&mut app, &mut host, b"]]\r");
+    let rows = main_texts(&app);
+    let at = rows
+        .iter()
+        .position(|row| {
+            row == "ambient (~/.codex): the codex CLI's default directory, not in the registry"
+        })
+        .unwrap();
+    assert_eq!(
+        rows[at + 1],
+        "  register it: af provider add codex-main --kind codex"
+    );
+    assert!(!rows[at + 2].contains("unset"), "{}", rows[at + 2]);
 }
