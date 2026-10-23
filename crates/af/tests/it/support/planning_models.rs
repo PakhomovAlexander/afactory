@@ -28,11 +28,13 @@ impl Providers {
     }
 
     pub fn configure(&self, command: &mut Command) {
+        let host_path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
+        let path = std::env::join_paths(
+            std::iter::once(self.root.join("bin")).chain(std::env::split_paths(&host_path)),
+        )
+        .unwrap();
         command
-            .env(
-                "PATH",
-                format!("{}:/usr/bin:/bin", self.root.join("bin").display()),
-            )
+            .env("PATH", path)
             .env("USER", "fixture")
             .env("CODEX_HOME", self.root.join("codex"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
