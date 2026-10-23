@@ -368,6 +368,8 @@ future readers need.
   candidate](0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
 - [0197 — Detect Provider logins, and register them through
   `add`](0197-detect-provider-logins-and-register-them-through-add.md)
+- [0198 — Key warm check layers by content, lock them, split the build deadline, and seal without
+  generated files](0198-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)
 - [0199 — Recover an Attempt from a transient Provider failure and a reply that does not
   parse](0199-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)
 - [0200 — Recover a lost or interrupted Attempt without charging its

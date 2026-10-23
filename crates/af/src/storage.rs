@@ -2456,7 +2456,28 @@ fn evict(
                     };
                     match key.identity() {
                         Ok(locked) if locked == measured => {
-                            Ok((key.remove_key().map_err(failed)?, None, Vec::new()))
+                            let bytes = key.remove_key().map_err(failed)?;
+                            // The cause a check that finds this key gone reports (ADR-0198).
+                            let record = review_core::task::check_layer::WarmEvictionV1 {
+                                schema: review_core::task::check_layer::WARM_EVICTION_V1.into(),
+                                by: review_core::task::check_layer::WarmEvictorV1::StorageSweep,
+                                at_unix_ms: now_unix_ms(),
+                                bytes,
+                            };
+                            if let Err(detail) = serde_json::to_vec(&record)
+                                .map_err(|error| error.to_string())
+                                .and_then(|bytes| {
+                                    review_sandbox::record_key_eviction(
+                                        &roots.warm,
+                                        project,
+                                        toolchain,
+                                        &bytes,
+                                    )
+                                })
+                            {
+                                eprintln!("af storage: warning: {detail}");
+                            }
+                            Ok((bytes, None, Vec::new()))
                         }
                         Ok(_) => Err(failed(
                             "another directory holds its name since it was measured; left in \

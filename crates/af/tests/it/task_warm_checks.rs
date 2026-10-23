@@ -600,6 +600,16 @@ fn a_warm_check_runs_on_sources_stamped_after_the_build_it_reuses() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         std::thread::sleep(std::time::Duration::from_secs(3));
+        // A holder that builds another Snapshot first removes the key's sources record, as the
+        // kernel does (ADR-0198): the waiting check then finds no record and stamps every
+        // source group after what the holder built.
+        let key = target.parent().unwrap();
+        let sources = key.parent().unwrap().join(format!(
+            "{}.sources",
+            key.file_name().unwrap().to_str().unwrap()
+        ));
+        assert!(sources.exists(), "the first check recorded what it built");
+        std::fs::remove_file(sources).unwrap();
         std::fs::write(target.join("built"), b"x").unwrap();
         drop(lock);
     });
@@ -2129,4 +2139,287 @@ fn a_check_gets_four_private_directories_that_are_gone_after_it() {
         !runtime.exists(),
         "the runtime directory outlived its check"
     );
+}
+
+/// A check that reports its build step after a second, then runs its "tests" for a second and
+/// a half, and leaves one build product (ADR-0198).
+const PHASED: &str = "import json, os, time\n\
+time.sleep(1.2)\n\
+step = {'schema': 'af.check-report/1', 'record': 'step', 'label': 'test-build', 'stage': 'build', 'exit_code': 0, 'command': ['true']}\n\
+open(os.environ['AF_CHECK_REPORT'], 'a').write(json.dumps(step) + '\\n')\n\
+time.sleep(1.5)\n\
+target = os.environ['CARGO_TARGET_DIR']\n\
+os.makedirs(target, exist_ok=True)\n\
+open(os.path.join(target, 'built'), 'w').write('x')\n";
+
+/// A check that, during its build, has its layer evicted the way the Storage Budget evicts an
+/// idle key: the key directory removed and the sweep's eviction record left beside it. It then
+/// fails, as a build that lost its directory does.
+const EVICTED: &str = "import json, os, shutil, time\n\
+key = os.path.dirname(os.environ['CARGO_TARGET_DIR'])\n\
+shutil.rmtree(key)\n\
+record = {'schema': 'af.warm-eviction/1', 'by': 'storage_sweep', 'at_unix_ms': int(time.time() * 1000), 'bytes': 0}\n\
+open(key + '.evicted', 'w').write(json.dumps(record))\n\
+time.sleep(6)\n\
+raise SystemExit(1)\n";
+
+fn show_checks(fixture: &Fixture, task_id: &str) -> (String, Value) {
+    let args = |json: bool| {
+        let mut args = vec![
+            "task",
+            "show",
+            task_id,
+            "--checks",
+            "--state",
+            fixture.state.to_str().unwrap(),
+        ];
+        if json {
+            args.push("--json");
+        }
+        args.into_iter().map(String::from).collect::<Vec<_>>()
+    };
+    let text = {
+        let args = args(false);
+        let (_, stdout, _) = af(
+            fixture,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        stdout
+    };
+    let args = args(true);
+    let (_, stdout, stderr) = af(
+        fixture,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let document: Value =
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|_| panic!("{stderr}"));
+    schemas::valid(&schemas::validator("task-checks-v2.json"), &document);
+    (text, document)
+}
+
+/// Digits replaced, so a snapshot of `af task show --checks` holds still across runs.
+fn without_digits(text: &str) -> String {
+    let mut out = String::new();
+    let mut digits = false;
+    for c in text.chars() {
+        if c.is_ascii_hexdigit() && c.is_ascii_digit() {
+            if !digits {
+                out.push('N');
+            }
+            digits = true;
+        } else {
+            digits = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// ADR-0198, items 3 and 6: a warm check with a declared build deadline records its layer and
+/// both phases beside its receipt; `af task show --checks` prints them, and the same content
+/// the second time starts warm with every source group fresh.
+#[test]
+fn a_warm_check_records_its_layer_and_both_phases_and_show_checks_prints_them() {
+    let fixture = fixture(code_policy(
+        PHASED,
+        60_000,
+        false,
+        Some("build_cache = [\"cargo_target\"]\nbuild_wall_ms = 60000"),
+    ));
+    start(&fixture, "phased-one", 0);
+    let (text, document) = show_checks(&fixture, "phased-one");
+    let check = &document["receipt"]["checks"][0];
+    assert_eq!(check["status"], "passed", "{text}");
+    let layer = &check["layer"];
+    assert_eq!(layer["lock"], "held");
+    assert_eq!(layer["start"], "cold");
+    assert_eq!(
+        layer["sources"],
+        serde_json::json!({"stale": 1, "fresh": 0})
+    );
+    assert!(layer["key"].as_str().unwrap().contains('/'));
+    let phases = &layer["phases"];
+    assert_eq!(phases["build_wall_ms"], 60_000);
+    assert_eq!(phases["check_wall_ms"], 60_000);
+    let build = phases["build_ms"].as_u64().unwrap();
+    let tests = phases["tests_ms"].as_u64().unwrap();
+    assert!(build >= 1_200, "the build step came after 1.2 s: {phases}");
+    assert_eq!(build + tests, phases["elapsed_ms"].as_u64().unwrap());
+    assert!(phases.get("deadline").is_none());
+    let lines: Vec<String> = text
+        .lines()
+        .filter(|line| line.starts_with("  layer ") || line.starts_with("  phases: "))
+        .map(without_digits)
+        .collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(
+        lines[0].ends_with(": cold at start, held at once; source groups N stale, N fresh"),
+        "{text}"
+    );
+    assert_eq!(
+        lines[1], "  phases: build N ms of N ms, tests N ms of N ms",
+        "{text}"
+    );
+
+    start(&fixture, "phased-two", 0);
+    let (_, document) = show_checks(&fixture, "phased-two");
+    let layer = &document["receipt"]["checks"][0]["layer"];
+    assert_eq!(
+        layer["start"], "warm",
+        "the second check reused the first one's build"
+    );
+    assert_eq!(
+        layer["sources"],
+        serde_json::json!({"stale": 0, "fresh": 1}),
+        "the same content keeps the build"
+    );
+}
+
+/// ADR-0198, item 3: a layer evicted under a running build is named as the cause, with its
+/// phase, its evictor and its time, in the result's reason and in the layer record.
+#[test]
+fn a_layer_evicted_during_the_build_names_the_sweep_as_the_cause() {
+    let fixture = fixture(code_policy(
+        EVICTED,
+        60_000,
+        false,
+        Some("build_cache = [\"cargo_target\"]\nbuild_wall_ms = 60000"),
+    ));
+    let outcome = start(&fixture, "evicted", 5);
+    let cas = cas(&fixture);
+    let result = check_result(&cas, &outcome);
+    let reason = result["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("layer evicted during build by storage sweep at "),
+        "{reason}"
+    );
+    let (text, document) = show_checks(&fixture, "evicted");
+    let evicted = &document["receipt"]["checks"][0]["layer"]["evicted"];
+    assert_eq!(evicted["phase"], "build");
+    assert_eq!(evicted["by"], "storage_sweep");
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("  layer evicted during build by storage sweep at ")),
+        "{text}"
+    );
+}
+
+/// The check of an offline policy: npm reads only its cache, every proxy names a closed port,
+/// and an attempt to reach the registry fails at once (ADR-0198, item 4).
+const OFFLINE: &str = "import os, urllib.request\n\
+assert os.environ['npm_config_offline'] == 'true'\n\
+for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):\n    assert os.environ[name] == 'http://127.0.0.1:9', name\n\
+cache = os.environ['npm_config_cache']\n\
+assert os.path.isdir(os.path.join(cache, '_cacache')), cache\n\
+os.makedirs(os.path.join(cache, '_npx', 'tree', 'node_modules', '.bin'), exist_ok=True)\n\
+link = os.path.join(cache, '_npx', 'tree', 'node_modules', '.bin', 'tool')\n\
+if not os.path.islink(link):\n    os.symlink('../tool/cli.js', link)\n\
+try:\n    urllib.request.urlopen('http://registry.npmjs.org/', timeout=10)\n    raise SystemExit('the network was reachable')\n\
+except OSError:\n    pass\n";
+
+/// ADR-0198, item 4: an offline check runs with `HTTP_PROXY` on a dead port and passes on a
+/// pinned package its npm cache holds; the cache is filled once, by `npm exec` with the
+/// network, and a cached tarball whose bytes differ from the pin is refused before the check.
+#[test]
+fn an_offline_check_passes_with_a_dead_proxy_on_a_pinned_package_filled_once() {
+    use sha2::Digest;
+    let tarball = b"markdownlint-cli2 0.22.1 tarball bytes".as_slice();
+    let sha256: String = sha2::Sha256::digest(tarball)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let policy = code_policy(
+        OFFLINE,
+        60_000,
+        false,
+        Some("build_cache = [\"cargo_target\", \"npm_cache\"]"),
+    )
+    .replacen("required = true\n", "required = true\noffline = true\n", 1)
+        + &format!(
+            "\n[[checks.pagination.npm_packages]]\nspec = \"markdownlint-cli2@0.22.1\"\n\
+             sha256 = \"{sha256}\"\n"
+        );
+    let fixture = fixture(policy);
+    // What npm would fetch: the pinned tarball, filed as npm's cache files it.
+    let seed = fixture.root.join("npm-seed");
+    review_pipeline::task::warm_check::offline::cache_tarball(
+        &seed,
+        &review_check_pin("markdownlint-cli2@0.22.1", &sha256),
+        tarball,
+    )
+    .unwrap();
+    let calls = fixture.root.join("npm-calls");
+    let npm = fixture.bin.join("npm");
+    std::fs::write(
+        &npm,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\n[ \"$1\" = exec ] || exit 2\n\
+             [ -z \"$npm_config_offline\" ] || exit 3\n\
+             cp -R '{}/.' \"$npm_config_cache/\"\n",
+            calls.display(),
+            seed.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let first = start(&fixture, "offline-one", 0);
+    let cas = cas(&fixture);
+    assert_eq!(check_receipt(&cas, &first)["outcome"], "passed");
+    let filled = std::fs::read_to_string(&calls).unwrap();
+    assert_eq!(
+        filled.lines().collect::<Vec<_>>(),
+        ["exec --yes --ignore-scripts --package=markdownlint-cli2@0.22.1 -- true"],
+        "filled once"
+    );
+    let cache = warm_directories_of(&fixture, "npm_cache").pop().unwrap();
+    assert!(cache.join("_cacache").is_dir(), "the layer holds the cache");
+    assert!(
+        !cache.join("_npx").exists(),
+        "npm's install tree, with its links, is removed"
+    );
+
+    let second = start(&fixture, "offline-two", 0);
+    assert_eq!(check_receipt(&cas, &second)["outcome"], "passed");
+    assert_eq!(
+        std::fs::read_to_string(&calls).unwrap().lines().count(),
+        1,
+        "a filled cache never needs the network again"
+    );
+
+    // Other bytes under the pinned tarball's name: refused before the check runs.
+    for entry in walk(&cache.join("_cacache/content-v2")) {
+        std::fs::write(entry, b"other bytes").unwrap();
+    }
+    let third = start(&fixture, "offline-tampered", 5);
+    let result = check_result(&cas, &third);
+    assert_eq!(result["status"], "not_run");
+    let reason = result["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("markdownlint-cli2@0.22.1") && reason.contains("pins"),
+        "{reason}"
+    );
+}
+
+fn review_check_pin(spec: &str, sha256: &str) -> review_pipeline::task::warm_check::NpmPin {
+    review_pipeline::task::warm_check::NpmPin {
+        spec: spec.into(),
+        sha256: sha256.into(),
+    }
+}
+
+/// Every regular file below `root`.
+fn walk(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap().flatten() {
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(entry.path());
+            } else {
+                files.push(entry.path());
+            }
+        }
+    }
+    files
 }

@@ -36,6 +36,7 @@ pub mod container;
 #[cfg(unix)]
 pub mod removal;
 pub mod seal;
+pub mod seal_ignore;
 pub mod stale;
 pub mod storage;
 pub mod task_build_cache;
@@ -62,6 +63,7 @@ pub use removal::{
     remove_tree_measured_at,
 };
 pub use seal::{MutationSet, SealedSandbox};
+pub use seal_ignore::{DEFAULT_SEAL_IGNORE, IgnoreRules, SEAL_IGNORE_FILE};
 pub use stale::{
     SweepReport, attempt_directory, is_af_directory_name, remove_tree_nofollow, sandbox_root,
     set_sandbox_root, sweep_stale_sandboxes, sweep_stale_sandboxes_in, sweep_stale_tree_digests,
@@ -69,8 +71,9 @@ pub use stale::{
 };
 pub use task_build_cache::{
     Ensured, KEY_LOCK, TaskBuildCacheKeyLock, TaskBuildCacheLock, Uninspectable, WARM_KINDS,
-    WarmDirectory, default_task_build_cache_root, directory_bytes, is_size_record,
-    lock_task_build_cache, lock_task_build_cache_key, recorded_key_size,
+    WarmDirectory, clone_warm_kind, default_task_build_cache_root, directory_bytes, is_size_record,
+    lock_task_build_cache, lock_task_build_cache_key, lock_task_build_cache_key_waiting,
+    read_key_eviction, read_key_holder, record_key_eviction, recorded_key_size,
 };
 pub use workspace::{
     RecordedPreparation, WORKSPACE_LOCK, WorkspaceError, WorkspaceInUse, WorkspacePreparation,
@@ -491,6 +494,28 @@ impl Sandbox {
         refresh_source_mtimes(&self.root, &self.baseline, after, cancellation, budget)
     }
 
+    /// [`Self::refresh_source_mtimes`], except that a file for which `kept` names a time gets
+    /// exactly that time back (ADR-0198): the stamp a warm layer's sources record holds for a
+    /// group whose content it built. Every other regular file gets one current stamp, newer
+    /// than `after`, which the result returns for the record.
+    pub fn refresh_source_mtimes_keyed(
+        &self,
+        after: Option<std::time::SystemTime>,
+        kept: &dyn Fn(&str) -> Option<std::time::SystemTime>,
+        cancellation: Option<&AtomicBool>,
+        budget: Duration,
+    ) -> std::io::Result<Refreshed> {
+        refresh_source_mtimes_observed(
+            &self.root,
+            &self.baseline,
+            after,
+            kept,
+            cancellation,
+            budget,
+            &mut |_| {},
+        )
+    }
+
     fn apply_read_only(&self) -> std::io::Result<()> {
         apply_tree_read_only(&self.root)
     }
@@ -593,6 +618,15 @@ impl Sandbox {
     }
 }
 
+/// What [`Sandbox::refresh_source_mtimes_keyed`] did: how many regular files it stamped now,
+/// how many it gave back a kept time, and the one current stamp it used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Refreshed {
+    pub stamped: usize,
+    pub kept: usize,
+    pub stamp: std::time::SystemTime,
+}
+
 fn refresh_source_mtimes(
     root: &Path,
     manifest: &Manifest,
@@ -600,17 +634,27 @@ fn refresh_source_mtimes(
     cancellation: Option<&AtomicBool>,
     budget: Duration,
 ) -> std::io::Result<usize> {
-    refresh_source_mtimes_observed(root, manifest, after, cancellation, budget, &mut |_| {})
+    refresh_source_mtimes_observed(
+        root,
+        manifest,
+        after,
+        &|_| None,
+        cancellation,
+        budget,
+        &mut |_| {},
+    )
+    .map(|refreshed| refreshed.stamped)
 }
 
 fn refresh_source_mtimes_observed(
     root: &Path,
     manifest: &Manifest,
     after: Option<std::time::SystemTime>,
+    kept: &dyn Fn(&str) -> Option<std::time::SystemTime>,
     cancellation: Option<&AtomicBool>,
     budget: Duration,
     stamped: &mut dyn FnMut(&Path),
-) -> std::io::Result<usize> {
+) -> std::io::Result<Refreshed> {
     use nix::fcntl::{OFlag, open, openat};
     use nix::sys::stat::Mode as FileMode;
     use std::fs::{File, FileTimes};
@@ -628,6 +672,7 @@ fn refresh_source_mtimes_observed(
         let times = FileTimes::new().set_modified(modified);
         let mut latest = modified;
         let mut touched = 0;
+        let mut restored = 0;
         for entry in &manifest.entries {
             check_refresh_budget(cancellation, started, budget)?;
             if !matches!(entry.kind, EntryKind::File | EntryKind::Executable) {
@@ -650,6 +695,13 @@ fn refresh_source_mtimes_observed(
                 ));
             }
             check_refresh_budget(cancellation, started, budget)?;
+            if let Some(time) = kept(&entry.path) {
+                // A group whose content the layer built gets that build's stamp back: older
+                // than the artifacts built from it, so Cargo keeps them, and never newer than now.
+                file.set_times(FileTimes::new().set_modified(time))?;
+                restored += 1;
+                continue;
+            }
             file.set_times(times)?;
             let stored = file.metadata()?.modified()?;
             if after.is_some_and(|after| stored <= after) {
@@ -667,7 +719,11 @@ fn refresh_source_mtimes_observed(
             pause_refresh(cancellation, started, budget)?;
         }
         check_refresh_budget(cancellation, started, budget)?;
-        return Ok(touched);
+        return Ok(Refreshed {
+            stamped: touched,
+            kept: restored,
+            stamp: modified,
+        });
     }
 }
 
@@ -813,6 +869,7 @@ mod source_mtime_tests {
                 temporary.path(),
                 &manifest,
                 None,
+                &|_| None,
                 Some(&cancelled),
                 Duration::from_secs(60),
                 &mut |_| {

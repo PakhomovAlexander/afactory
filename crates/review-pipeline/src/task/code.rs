@@ -52,11 +52,15 @@ use super::source::{
     invocation_producer, seal_candidate, source_input, source_snapshot, validate_seal,
 };
 use super::warm_check::{
-    CacheSourceResolver, CodeWarmPolicy, DEADLINE_EXHAUSTED, Excess, PreparedCheck, RustupHome,
-    ToolchainDeclaration, WARM_CACHE_BOUND_EXCEEDED, WARM_CACHE_SUSPECT, WarmCheckHost,
-    WarmSession,
+    CacheSourceResolver, CodeWarmPolicy, DEADLINE_EXHAUSTED, Excess, LayerFacts, PhaseDeadlines,
+    PhaseRecord, PreparedCheck, RustupHome, ToolchainDeclaration, WARM_CACHE_BOUND_EXCEEDED,
+    WARM_CACHE_SUSPECT, WarmBuildCacheKind, WarmCheckHost, WarmSession,
 };
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
+use review_core::task::check_layer::{
+    TASK_CHECK_LAYER_V1, TaskCheckLayerRunV1, TaskCheckLayerV1, TaskLayerEvictionV1,
+    TaskLayerEvictorV1, TaskLayerPhaseV1, TaskLayerPhasesV1, TaskLayerStartV1,
+};
 
 mod measure;
 
@@ -558,6 +562,33 @@ impl CodeTaskPolicy {
                     .validate()
                     .map_err(|error| format!("Code policy check {name}: {error}"))?;
             }
+            if !check.npm_packages.is_empty() && !check.offline {
+                return Err(format!(
+                    "Code policy check {name} pins npm_packages without offline = true: only an \
+                     offline check installs from the verified cache"
+                ));
+            }
+            if check.npm_packages.len() > 16 {
+                return Err(format!(
+                    "Code policy check {name} pins more than 16 npm_packages"
+                ));
+            }
+            for pin in &check.npm_packages {
+                pin.validate()
+                    .map_err(|error| format!("Code policy check {name}: {error}"))?;
+            }
+            if check.offline
+                && !self.warm.as_ref().is_some_and(|warm| {
+                    warm.build_cache
+                        .contains(&super::warm_check::WarmBuildCacheKind::NpmCache)
+                })
+            {
+                return Err(format!(
+                    "Code policy check {name} declares offline = true, which needs [warm] \
+                     build_cache to declare npm_cache: the offline check reads its packages from \
+                     that cache"
+                ));
+            }
         }
         if let Some(warm) = &self.warm {
             if self.require_container {
@@ -602,6 +633,18 @@ impl CodeTaskPolicy {
         }
         Ok(())
     }
+    /// The wall of one check Attempt: `check_wall_ms`, plus `[warm] build_wall_ms` when the
+    /// policy declares one, whose checks get their build phase on top of the tests' deadline
+    /// (ADR-0198).
+    pub fn check_attempt_wall_ms(&self) -> u64 {
+        self.check_wall_ms.saturating_add(
+            self.warm
+                .as_ref()
+                .and_then(super::warm_check::CodeWarmPolicy::build_wall_ms)
+                .unwrap_or(0),
+        )
+    }
+
     pub fn isolation(&self) -> Policy {
         if self.require_container {
             Policy::safe()
@@ -709,7 +752,7 @@ pub fn code_signatures(
         BTreeMap::new(),
         Some(OperatorAttemptCost {
             tokens: 0,
-            wall_ms: policy.check_wall_ms,
+            wall_ms: policy.check_attempt_wall_ms(),
         }),
         Some("result".into()),
     );
@@ -987,7 +1030,7 @@ impl CodeTaskDomain {
 
     /// How long a check waits for another holder of its warm directory before it runs cold.
     pub fn with_task_build_cache_lock_wait(mut self, wait: Duration) -> Self {
-        self.warm.lock_wait = wait;
+        self.warm.lock_wait = Some(wait);
         self
     }
 
@@ -1241,6 +1284,17 @@ impl CodeTaskDomain {
         // What each local check that started was observed doing: the host's load around it and
         // its own account through `$AF_CHECK_REPORT` (`af/TaskCheckReport@1`).
         let mut check_runs = BTreeMap::new();
+        // Under [warm], what each started check found of its layer (`af/TaskCheckLayer@1`).
+        let mut layer_runs = BTreeMap::new();
+        // Under [warm] every check has a build phase and then its tests, each with a deadline.
+        let deadlines = self.policy.warm.as_ref().map(|warm| PhaseDeadlines {
+            build: warm.build_wall_ms().map(Duration::from_millis),
+            tests: Duration::from_millis(
+                self.policy
+                    .check_process_wall_ms
+                    .unwrap_or(self.policy.check_wall_ms),
+            ),
+        });
         // Local checks first, in name order; a remote check never executes candidate code on
         // this machine.
         for name in local {
@@ -1304,10 +1358,15 @@ impl CodeTaskDomain {
                 .map_err(|e| e.to_string())?
                 .as_millis() as u64;
             let remaining = attempt.reservation().deadline_unix_ms.saturating_sub(now);
-            let remaining = self
-                .policy
-                .check_process_wall_ms
-                .map_or(remaining, |limit| limit.min(remaining));
+            // A warm check with a build deadline has it on top of its tests' (ADR-0198).
+            let per_check = match deadlines {
+                Some(PhaseDeadlines {
+                    build: Some(build),
+                    tests,
+                }) => Some((build + tests).as_millis() as u64),
+                _ => self.policy.check_process_wall_ms,
+            };
+            let remaining = per_check.map_or(remaining, |limit| limit.min(remaining));
             // The check may account for itself here: the steps it ran, its tests, its flakes.
             let report_path = runtime.path().join("check-report.jsonl");
             let runner = runtime.environment().into_iter().fold(
@@ -1383,8 +1442,10 @@ impl CodeTaskDomain {
                     key_lock: None,
                     environment: Vec::new(),
                     directories: Vec::new(),
+                    clones: Vec::new(),
                     observations: session.skipped(cas, DEADLINE_EXHAUSTED)?,
                     refusal: None,
+                    layer: LayerFacts::unresolved(),
                 }),
                 None => None,
             };
@@ -1418,6 +1479,45 @@ impl CodeTaskDomain {
                 Err(error) if error.kind() == std::io::ErrorKind::TimedOut => true,
                 Err(error) => return Err(format!("refresh check source mtimes: {error}")),
             };
+            // An offline check (ADR-0198) runs only on verified pinned packages: its npm cache
+            // is filled once, with the network, when a pin is absent, then it runs without it.
+            let mut offline_refusal = None;
+            if definition.offline
+                && !refresh_timed_out
+                && prepared.as_ref().is_some_and(|p| p.refusal.is_none())
+            {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| e.to_string())?
+                    .as_millis() as u64;
+                let budget =
+                    remaining.min(attempt.reservation().deadline_unix_ms.saturating_sub(now));
+                let cache = prepared
+                    .iter()
+                    .flat_map(|p| &p.environment)
+                    .rev()
+                    .find(|(key, _)| key == WarmBuildCacheKind::NpmCache.variable())
+                    .map_or_else(
+                        || runtime.path().join("npm-cache"),
+                        |(_, value)| PathBuf::from(value),
+                    );
+                let mut environment = runner.local_environment().to_vec();
+                environment.extend(prepared.iter().flat_map(|p| p.environment.clone()));
+                match review_check::offline::prepare_offline(
+                    &definition.npm_packages,
+                    &cache,
+                    &environment,
+                    sandbox.root(),
+                    Duration::from_millis(budget),
+                ) {
+                    Ok(_) => {
+                        for (key, value) in review_check::offline::offline_environment() {
+                            runner = runner.with_env(key, value);
+                        }
+                    }
+                    Err(refusal) => offline_refusal = Some(refusal),
+                }
+            }
             // Preparation — the toolchain probe, the lock wait, a Cache Snapshot copy — spent
             // Attempt time. The check runs against what is left now, not what was left before.
             let prepared_at = SystemTime::now()
@@ -1475,6 +1575,7 @@ impl CodeTaskDomain {
             let refusal = prepared
                 .as_ref()
                 .and_then(|p| p.refusal.clone())
+                .or(offline_refusal)
                 .or_else(|| {
                     (remaining > 0)
                         .then(crate::storage::ensure_free_disk)
@@ -1482,6 +1583,10 @@ impl CodeTaskDomain {
                 });
             let started = remaining > 0 && refusal.is_none();
             let mut exceeded: Option<Excess> = None;
+            let mut phases: Option<PhaseRecord> = None;
+            let layer_before = prepared
+                .as_ref()
+                .map(|prepared| (prepared.layer.clone(), prepared.started_warm()));
             let host_start = started.then(|| {
                 (
                     review_process::host::load_average_1m(),
@@ -1489,26 +1594,27 @@ impl CodeTaskDomain {
                 )
             });
             let (mut result, timing) = if started {
-                let execution = match (
-                    session.as_ref(),
-                    prepared.as_ref().and_then(|p| {
-                        p.key_lock
-                            .as_ref()
-                            .map(|key| (key, p.directories.as_slice()))
-                    }),
-                ) {
-                    // Whenever the key is held — even when every declared kind is superseded and
-                    // nothing is bound — the check runs monitored, so the key is measured during
-                    // and after it and judged before the check is accepted.
-                    (Some(session), Some((key, directories))) => {
-                        let (execution, over) = session.run_monitored(
+                let execution = match (session.as_ref(), deadlines) {
+                    // Every warm check runs monitored: its phases against their deadlines, and,
+                    // whenever the key is held — even when every declared kind is superseded and
+                    // nothing is bound — the key, measured during and after it and judged before
+                    // the check is accepted.
+                    (Some(session), Some(deadlines)) => {
+                        let held = prepared.as_ref().and_then(|p| {
+                            p.key_lock
+                                .as_ref()
+                                .map(|key| (key, p.directories.as_slice()))
+                        });
+                        let (execution, over, record) = session.run_monitored(
                             runner,
                             definition,
-                            key,
-                            directories,
+                            held,
+                            &report_path,
+                            deadlines,
                             cancellation,
                         );
                         exceeded = over;
+                        phases = Some(record);
                         execution
                     }
                     _ => runner.run_observed(definition),
@@ -1546,6 +1652,19 @@ impl CodeTaskDomain {
                     None,
                 )
             };
+            if let (Some(record), Some(deadlines)) = (&phases, deadlines)
+                && let Some(reason) = record.deadline_reason(deadlines)
+            {
+                result.status = CheckStatus::NotRun;
+                result.exit_code = None;
+                result.reason = Some(reason);
+            }
+            // Evicted after the check by the kernel itself: the bound or suspicion, with the
+            // time the eviction happened.
+            let evicted_after = exceeded.as_ref().map(|excess| match excess {
+                Excess::Suspect(_) => TaskLayerEvictorV1::Suspect,
+                Excess::Evict(_) | Excess::Bound(_) => TaskLayerEvictorV1::Bound,
+            });
             let mut observations = Vec::new();
             if let (Some(session), Some(prepared)) = (session.as_ref(), prepared.take()) {
                 observations = prepared.observations;
@@ -1625,6 +1744,57 @@ impl CodeTaskDomain {
                         }
                     }
                 }
+            }
+            let evicted_during = phases.as_ref().and_then(|record| record.evicted.clone());
+            if let Some(eviction) = &evicted_during
+                && result.status != CheckStatus::Passed
+            {
+                // The layer went under the check: that is the cause, ahead of what followed
+                // from it (a cold rebuild past the deadline, a key gone from its name).
+                let sentence = eviction.sentence(&super::warm_check::utc_time(eviction.at_unix_ms));
+                result.reason = Some(match result.reason.take() {
+                    Some(then) => format!("{sentence}; then: {then}"),
+                    None => sentence,
+                });
+            }
+            if started
+                && let (Some(record), Some(deadlines), Some((facts, warm_start))) =
+                    (&phases, deadlines, layer_before)
+            {
+                let elapsed_ms = timing.map_or(0, |(_, elapsed)| elapsed);
+                let build_ms = record
+                    .build_end
+                    .map(|end| (end.as_millis() as u64).min(elapsed_ms));
+                layer_runs.insert(
+                    name.clone(),
+                    TaskCheckLayerRunV1 {
+                        key: facts.key,
+                        lock: facts.lock,
+                        waited_ms: facts.waited_ms,
+                        holder: facts.holder,
+                        start: if warm_start {
+                            TaskLayerStartV1::Warm
+                        } else {
+                            TaskLayerStartV1::Cold
+                        },
+                        sources: facts.sources,
+                        phases: TaskLayerPhasesV1 {
+                            build_wall_ms: deadlines.build.map(|build| build.as_millis() as u64),
+                            check_wall_ms: deadlines.tests.as_millis() as u64,
+                            build_ms,
+                            tests_ms: build_ms.map(|build| elapsed_ms - build),
+                            elapsed_ms,
+                            deadline: record.deadline,
+                        },
+                        evicted: evicted_during.or_else(|| {
+                            evicted_after.map(|by| TaskLayerEvictionV1 {
+                                phase: TaskLayerPhaseV1::After,
+                                by,
+                                at_unix_ms: super::warm_check::unix_ms(),
+                            })
+                        }),
+                    },
+                );
             }
             if let Some(evidence) = toolchain_evidence {
                 let mut diagnostic = match &result.stderr {
@@ -1925,6 +2095,24 @@ AF_TOOLCHAIN_SNAPSHOT ",
                     vec![id.clone()],
                     Some(snapshot_id.clone()),
                     serde_json::to_value(report).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?
+                .0,
+            );
+        }
+        if !layer_runs.is_empty() {
+            let layer = TaskCheckLayerV1 {
+                receipt_id: id.clone(),
+                checks: layer_runs,
+            };
+            layer.validate()?;
+            evidence_ids.push(
+                cas.put_artifact(
+                    TASK_CHECK_LAYER_V1,
+                    invocation_producer(cas, input, Some(attempt))?,
+                    vec![id.clone()],
+                    Some(snapshot_id.clone()),
+                    serde_json::to_value(layer).map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| e.to_string())?
                 .0,

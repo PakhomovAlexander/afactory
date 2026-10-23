@@ -23,7 +23,7 @@ use review_store::store::task::execution::TaskAttemptAccounting;
 use review_store::store::task::gate_retry::GateRetry;
 
 /// The schema of `af task show ID --checks --json`.
-pub(crate) const TASK_CHECKS_V1: &str = "af/task-checks@1";
+pub(crate) const TASK_CHECKS_V2: &str = "af/task-checks@2";
 
 /// How many lines of a check's stderr `af task show --checks` prints.
 const STDERR_TAIL_LINES: usize = 40;
@@ -88,6 +88,9 @@ pub(crate) struct CheckView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stderr_id: Option<String>,
     pub(crate) stderr_tail: Vec<String>,
+    /// The check's warm layer, as `af/TaskCheckLayer@1` recorded it (ADR-0198).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) layer: Option<review_core::task::check_layer::TaskCheckLayerRunV1>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -722,9 +725,12 @@ fn last_checks(cas: &Cas, state: &TaskProjection) -> Result<Option<ChecksView>, 
     let attempt = execution.attempt_accounting().into_iter().find(|attempt| {
         matches!(&attempt.result, Some(TaskAttemptResultV1::Succeeded { output_id: id }) if *id == output_id)
     });
+    let layers = check_layers(cas, &receipt_id, attempt.as_ref());
     let mut checks = Vec::new();
     for (name, result_id) in &receipt.checks {
-        checks.push(check_view(cas, name, result_id, attempt.as_ref())?);
+        let mut view = check_view(cas, name, result_id, attempt.as_ref())?;
+        view.layer = layers.get(name).cloned();
+        checks.push(view);
     }
     Ok(Some(ChecksView {
         node,
@@ -736,6 +742,93 @@ fn last_checks(cas: &Cas, state: &TaskProjection) -> Result<Option<ChecksView>, 
             .to_owned(),
         checks,
     }))
+}
+
+/// The `af/TaskCheckLayer@1` entries of a receipt, by check, from the Attempt that recorded
+/// it. A record that does not decode or validate is skipped, as it was never admitted.
+fn check_layers(
+    cas: &Cas,
+    receipt_id: &str,
+    attempt: Option<&TaskAttemptAccounting>,
+) -> BTreeMap<String, review_core::task::check_layer::TaskCheckLayerRunV1> {
+    use review_core::task::check_layer::{TASK_CHECK_LAYER_V1, TaskCheckLayerV1};
+    attempt
+        .iter()
+        .flat_map(|attempt| attempt.raw_artifact_ids.iter())
+        .filter_map(|id| cas.get_optional_artifact(id).ok().flatten())
+        .filter(|artifact| artifact.artifact_type == TASK_CHECK_LAYER_V1)
+        .filter_map(|artifact| serde_json::from_value::<TaskCheckLayerV1>(artifact.payload).ok())
+        .filter(|layer| layer.receipt_id == receipt_id && layer.validate().is_ok())
+        .flat_map(|layer| layer.checks)
+        .collect()
+}
+
+/// The lines `af task show --checks` prints under a check for its warm layer.
+fn layer_lines(layer: &review_core::task::check_layer::TaskCheckLayerRunV1) -> Vec<String> {
+    use review_core::task::check_layer::{TaskLayerLockV1, TaskLayerStartV1};
+    let key = layer.key.as_deref().map_or_else(
+        || "no key".to_owned(),
+        |key| match key.split_once('/') {
+            Some((project, toolchain)) => format!("{}/{}", &project[..12], &toolchain[..12]),
+            None => key.to_owned(),
+        },
+    );
+    let start = match layer.start {
+        TaskLayerStartV1::Warm => "warm",
+        TaskLayerStartV1::Cold => "cold",
+    };
+    let holder = layer.holder.as_ref().map_or_else(String::new, |holder| {
+        format!(
+            " for af task run {} on {}",
+            holder.pid,
+            preview::text(&holder.host)
+        )
+    });
+    let lock = match layer.lock {
+        TaskLayerLockV1::Held => "held at once".to_owned(),
+        TaskLayerLockV1::Waited => format!("waited {} s{holder}", layer.waited_ms / 1000),
+        TaskLayerLockV1::Cloned => format!("busy{holder}, built in a private copy"),
+        TaskLayerLockV1::Busy => format!("busy{holder} for the whole wait, built cold"),
+        TaskLayerLockV1::Unavailable => "unavailable, built cold".to_owned(),
+        TaskLayerLockV1::Unresolved => "toolchain unresolved, built cold".to_owned(),
+    };
+    let phases = &layer.phases;
+    let mut lines = vec![
+        format!(
+            "  layer {key}: {start} at start, {lock}; source groups {} stale, {} fresh",
+            layer.sources.stale, layer.sources.fresh
+        ),
+        match (phases.build_ms, phases.tests_ms, phases.build_wall_ms) {
+            (Some(build), Some(tests), Some(build_wall)) => format!(
+                "  phases: build {build} ms of {build_wall} ms, tests {tests} ms of {} ms",
+                phases.check_wall_ms
+            ),
+            (Some(build), Some(tests), None) => format!(
+                "  phases: build {build} ms, tests {tests} ms, together of {} ms (no \
+                 [warm] build_wall_ms)",
+                phases.check_wall_ms
+            ),
+            (_, _, Some(build_wall)) => format!(
+                "  phases: no build step reported, {} ms in one (build {build_wall} ms + tests \
+                 {} ms)",
+                phases.elapsed_ms, phases.check_wall_ms
+            ),
+            (_, _, None) => format!(
+                "  phases: no build step reported, {} ms of {} ms",
+                phases.elapsed_ms, phases.check_wall_ms
+            ),
+        },
+    ];
+    if let Some(phase) = phases.deadline {
+        lines.push(format!("  ended by the {} deadline", phase.as_str()));
+    }
+    if let Some(evicted) = &layer.evicted {
+        lines.push(format!(
+            "  {}",
+            evicted.sentence(&local_time(evicted.at_unix_ms))
+        ));
+    }
+    lines
 }
 
 fn check_view(
@@ -784,6 +877,7 @@ fn check_view(
         stdout_id,
         stderr_id,
         stderr_tail,
+        layer: None,
     })
 }
 
@@ -1030,10 +1124,10 @@ pub(crate) fn tests_list(names: &[String], max: usize) -> String {
     }
 }
 
-/// The `af/task-checks@1` document of `af task show ID --checks --json`.
+/// The `af/task-checks@2` document of `af task show ID --checks --json`.
 pub(crate) fn checks_document(task_id: &str, view: &TaskView) -> serde_json::Value {
     json!({
-        "schema": TASK_CHECKS_V1,
+        "schema": TASK_CHECKS_V2,
         "task_id": task_id,
         "state": view.state,
         "gate": view.gate,
@@ -1070,6 +1164,9 @@ pub(crate) fn checks_lines(task_id: &str, view: &TaskView) -> Vec<String> {
         lines.push(head);
         if let Some(reason) = &check.reason {
             lines.push(format!("  reason: {reason}"));
+        }
+        if let Some(layer) = &check.layer {
+            lines.extend(layer_lines(layer));
         }
         if let Some(step) = &check.stopped_step {
             lines.push(format!(
@@ -1210,6 +1307,7 @@ mod tests {
             stdout_id: None,
             stderr_id: None,
             stderr_tail: vec![],
+            layer: None,
         }
     }
 
@@ -1220,6 +1318,99 @@ mod tests {
             outcome: "failed".into(),
             checks,
         }
+    }
+
+    /// `af task show --checks` under a warm layer (ADR-0198): the key, how the check came by
+    /// it, warm or cold, the source groups, both phases against their deadlines, the deadline
+    /// that ended it and an eviction with its cause.
+    #[test]
+    fn the_checks_text_names_the_layer_its_lock_its_phases_and_its_eviction() {
+        use review_core::task::check_layer::*;
+        let key = format!("{}/{}", "a".repeat(64), "b".repeat(64));
+        let mut kernel = check("not_run", &[], &[], None);
+        kernel.exit_code = None;
+        kernel.reason = Some("layer evicted during build by storage sweep at 12:00:00 Z".into());
+        kernel.layer = Some(TaskCheckLayerRunV1 {
+            key: Some(key.clone()),
+            lock: TaskLayerLockV1::Waited,
+            waited_ms: 61_400,
+            holder: Some(TaskLayerHolderV1 {
+                pid: 4242,
+                host: "claw-3".into(),
+                since_unix_ms: 1,
+            }),
+            start: TaskLayerStartV1::Warm,
+            sources: TaskLayerSourcesV1 {
+                stale: 2,
+                fresh: 15,
+            },
+            phases: TaskLayerPhasesV1 {
+                build_wall_ms: Some(2_400_000),
+                check_wall_ms: 3_600_000,
+                build_ms: Some(812_000),
+                tests_ms: Some(3_600_000),
+                elapsed_ms: 4_412_000,
+                deadline: Some(TaskLayerPhaseV1::Tests),
+            },
+            evicted: None,
+        });
+        let mut lint = check("passed", &[], &[], None);
+        lint.name = "markdownlint".into();
+        lint.exit_code = Some(0);
+        lint.layer = Some(TaskCheckLayerRunV1 {
+            key: Some(key),
+            lock: TaskLayerLockV1::Held,
+            waited_ms: 3,
+            holder: None,
+            start: TaskLayerStartV1::Cold,
+            sources: TaskLayerSourcesV1 {
+                stale: 17,
+                fresh: 0,
+            },
+            phases: TaskLayerPhasesV1 {
+                build_wall_ms: Some(2_400_000),
+                check_wall_ms: 3_600_000,
+                build_ms: None,
+                tests_ms: None,
+                elapsed_ms: 9_000,
+                deadline: None,
+            },
+            evicted: None,
+        });
+        let state = TaskStateV1::new(TaskStatePhaseV1::Finished);
+        let task = TaskView {
+            state,
+            gate: None,
+            checks: Some(view(vec![kernel, lint])),
+            failures: vec![],
+        };
+        let lines = checks_lines("t", &task);
+        assert_eq!(
+            lines[2..9],
+            [
+                "check kernel: not_run in 10 ms, cold (no warm cache)",
+                "  reason: layer evicted during build by storage sweep at 12:00:00 Z",
+                "  layer aaaaaaaaaaaa/bbbbbbbbbbbb: warm at start, waited 61 s for af task run \
+                 4242 on claw-3; source groups 2 stale, 15 fresh",
+                "  phases: build 812000 ms of 2400000 ms, tests 3600000 ms of 3600000 ms",
+                "  ended by the tests deadline",
+                "check markdownlint: passed (exit 0) in 10 ms, cold (no warm cache)",
+                "  layer aaaaaaaaaaaa/bbbbbbbbbbbb: cold at start, held at once; source groups \
+                 17 stale, 0 fresh",
+            ]
+        );
+        assert_eq!(
+            lines[9],
+            "  phases: no build step reported, 9000 ms in one (build 2400000 ms + tests 3600000 ms)"
+        );
+        let document = checks_document("t", &task);
+        assert_eq!(document["schema"], "af/task-checks@2");
+        assert_eq!(document["receipt"]["checks"][0]["layer"]["lock"], "waited");
+        assert_eq!(
+            document["receipt"]["checks"][0]["layer"]["phases"]["deadline"],
+            "tests"
+        );
+        assert!(document["receipt"]["checks"][1]["layer"]["phases"]["build_ms"].is_null());
     }
 
     #[test]

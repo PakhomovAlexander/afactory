@@ -1,5 +1,5 @@
 //! The one Task state every rendering prints (`schemas/task-state-v1.json`) and the documents
-//! that carry it: `af/task-list@3` with its `af/task-list-entry@3`, `af/task-checks@1`,
+//! that carry it: `af/task-list@3` with its `af/task-list-entry@3`, `af/task-checks@2`,
 //! `af/task-collected-inspection@2` and the `state` of `af/task-inspection@13`. The Rust
 //! validator and the schema accept exactly the same states, and the previous versions fail
 //! closed.
@@ -161,7 +161,7 @@ fn a_list_document_carries_each_task_s_state_and_gate() {
 #[test]
 fn the_checks_document_names_each_check_s_failing_tests_and_stderr_tail() {
     let document = json!({
-        "schema": "af/task-checks@1",
+        "schema": "af/task-checks@2",
         "task_id": "pagination-cli",
         "state": {"phase":"finished","outcome":"gate_failed","cause":"check_failed",
             "next_action":"af task run pagination-cli --retry-gate"},
@@ -174,17 +174,38 @@ fn the_checks_document_names_each_check_s_failing_tests_and_stderr_tail() {
             "stdout_id":id('5'),"stderr_id":id('6'),
             "stderr_tail":["        FAIL [   0.004s] af::it alpha::one"]}]}
     });
-    assert_valid("task-checks-v1.json", &document);
+    assert_valid("task-checks-v2.json", &document);
+    // Under a warm layer each started check carries its `af/TaskCheckLayer@1` entry.
+    let mut layered = document.clone();
+    layered["receipt"]["checks"][0]["layer"] = json!({
+        "key": format!("{}/{}", "a".repeat(64), "b".repeat(64)),
+        "lock": "waited", "waited_ms": 61000,
+        "holder": {"pid": 4242, "host": "claw-3", "since_unix_ms": 1},
+        "start": "warm", "sources": {"stale": 2, "fresh": 15},
+        "phases": {"build_wall_ms": 2400000, "check_wall_ms": 3600000, "build_ms": 812000,
+            "tests_ms": 1530000, "elapsed_ms": 2342000},
+        "evicted": {"phase": "build", "by": "storage_sweep", "at_unix_ms": 5}
+    });
+    assert_valid("task-checks-v2.json", &layered);
+    layered["receipt"]["checks"][0]["layer"]["lock"] = json!("held");
+    assert_invalid(
+        "task-checks-v2.json",
+        &layered,
+        "a holder of a layer held at once",
+    );
+    let mut old = document.clone();
+    old["schema"] = json!("af/task-checks@1");
+    assert_invalid("task-checks-v2.json", &old, "the previous checks version");
     let mut empty = document.clone();
     empty["receipt"] = Value::Null;
     empty["gate"] = Value::Null;
-    assert_valid("task-checks-v1.json", &empty);
+    assert_valid("task-checks-v2.json", &empty);
     let mut long = document.clone();
     long["receipt"]["checks"][0]["stderr_tail"] = json!(vec!["x"; 41]);
-    assert_invalid("task-checks-v1.json", &long, "more than 40 stderr lines");
+    assert_invalid("task-checks-v2.json", &long, "more than 40 stderr lines");
     let mut step = document;
     step["receipt"]["checks"][0]["stopped_step"]["step"] = json!("a b");
-    assert_invalid("task-checks-v1.json", &step, "a step label with a space");
+    assert_invalid("task-checks-v2.json", &step, "a step label with a space");
 }
 
 #[test]

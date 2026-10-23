@@ -189,6 +189,12 @@ pub const LAYOUT: &[Entry] = &[
         "standing rules every Task Worker reads first",
     ),
     file(
+        "seal-ignore",
+        Writer::Human,
+        Versioning::Versioned,
+        "what sealing leaves out of a candidate",
+    ),
+    file(
         "optimization-policy.json",
         Writer::Human,
         Versioning::Versioned,

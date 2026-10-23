@@ -100,6 +100,8 @@ impl CodeTaskDomain {
                 command: definition.command.clone(),
                 required: true,
                 remote: None,
+                offline: false,
+                npm_packages: Vec::new(),
             };
             // The measurement is a run of its own (telemetry design §7.7): `af.run` with
             // `af.run.kind = measure`, its repetitions child spans. Nothing of it reaches the
@@ -432,13 +434,22 @@ impl CodeTaskDomain {
             });
         let (execution, exceeded) =
             match (session, prepared.as_ref().and_then(|p| p.key_lock.as_ref())) {
-                (Some(session), Some(key)) => session.run_monitored(
-                    runner,
-                    check,
-                    key,
-                    &prepared.as_ref().expect("prepared").directories,
-                    cancellation,
-                ),
+                // A repetition has one wall, its own; it reports no build phase (it is given no
+                // `$AF_CHECK_REPORT`), so the phase deadlines never act on it.
+                (Some(session), Some(key)) => {
+                    let (execution, exceeded, _) = session.run_monitored(
+                        runner,
+                        check,
+                        Some((key, &prepared.as_ref().expect("prepared").directories)),
+                        &runtime.path().join("no-check-report"),
+                        super::super::warm_check::PhaseDeadlines {
+                            build: None,
+                            tests: Duration::from_millis(timeout_ms),
+                        },
+                        cancellation,
+                    );
+                    (execution, exceeded)
+                }
                 _ => (runner.run_observed(check), None),
             };
         if let (Some(session), Some(prepared)) = (session, prepared) {
