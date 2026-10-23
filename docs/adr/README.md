@@ -366,3 +366,5 @@ future readers need.
   them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)
 - [0196 — Skip pull request measurements only for an explicit `no-perf`
   label](0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)
+- [0197 — Validate on one latest stable Python](0197-validate-on-one-latest-stable-python.md)
+- [0198 — Opt this repository into distinct-model Worker independence](0198-opt-this-repository-into-distinct-model-worker-independence.md)

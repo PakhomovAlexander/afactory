@@ -1,6 +1,7 @@
 # ADR-0162: Freeze performance plans and judge them by exact paired verdicts
 
-**Status:** accepted (2026-10-19); amended 2026-10-19
+**Status:** accepted (2026-10-19); Python CI matrix policy superseded upon acceptance of
+[ADR-0197](0197-validate-on-one-latest-stable-python.md); amended 2026-10-19
 ([p1 repair](#amendment-2026-10-19-p1-repair)), which makes `compare` enforce what decision 5
 already required and makes the Python compatibility legs gate a required check. Package p1 of
 the accepted [continuous performance laboratory](../design/continuous-performance.md) design;
