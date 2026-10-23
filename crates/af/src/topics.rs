@@ -34,6 +34,11 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
         TASK_STATES,
     ),
     (
+        "agents",
+        "Driving af from an agent: plan, run, findings, diff, materialize, deliver, report",
+        AGENTS,
+    ),
+    (
         "self",
         "Installing, updating, pinning, and removing af",
         SELF_TOPIC,
@@ -152,11 +157,18 @@ fn task_exit_codes() -> String {
         "\nWhere such a code's result goes to stdout alone (under --json, `af task explain`, \
          `af task run` of a Task that already finished), stderr ends with `Task ID: \
          phase/outcome/cause; next: COMMAND`, so a non-zero exit always says why there.\n\
-         \n`af task show`, `af task list` and `af task report` exit 0 once they read the Store: \
-         the state they print is data, not their outcome.",
+         \n`af task wait` ends with the same code once the Task settles (4 for a Task that was \
+         cancelled or waits for a person), and with 124 when its --timeout passes first.\n\
+         \n`af task show`, `af task list`, `af task report`, `af task status` and `af task \
+         findings` exit 0 once they read the Store: the state they print is data, not their \
+         outcome.",
     );
     out
 }
+
+/// `af help agents` is `docs/agents.md`, byte for byte: the page and the binary cannot say
+/// different things (ADR-0202).
+const AGENTS: &str = include_str!("../../../docs/agents.md");
 
 /// What the same table says about a captured Snapshot, and the one knob over it.
 const UNDECLARED: &str = "\
@@ -290,6 +302,7 @@ const ENVIRONMENT: &str = "  AF_<TABLE>__<KEY>       override one configuration 
   AF_PROVIDERS_FILE       absolute path of the provider registry (default: ~/.config/af/providers.toml)
   AF_CACHE_POLICY_FILE    absolute path of machine-local cache policy (default: ~/.config/af/caches.toml)
   AF_DISPATCHED_FROM      set by af when it execs a pinned version; never set it yourself
+  AF_TASK_RUN_DETACHED    set by `af task run --detach` on the run it starts; never set it yourself
   XDG_CONFIG_HOME         config          (~/.config)
   XDG_STATE_HOME          state           (~/.local/state)
   XDG_DATA_HOME           installed versions, receipts, man pages (~/.local/share)
@@ -352,6 +365,12 @@ The Task documents, each named by its `schema`:
   af task show --checks --json         af/task-checks@1
   af task list --json                  af/task-list@3, one af/task-list-entry@3 per Task
   af task report --json                af/task-report@2
+  af task findings --json              af/task-findings@1
+  af task diff --json                  af/task-diff@1
+  af task materialize --json           af/task-materialized@1
+  af task status --json, wait --json   af/task-status@1
+  af task run --detach --json          af/task-detached@1
+  af task cancel --json                af/task-cancelled@1
   af task plan --json, refused         af/task-selection@2; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
@@ -386,7 +405,12 @@ again on the same candidate, `af task show ID --checks` after one it cannot, `af
 resume, `af task plan --file TASK_FILE --fit` after a budget or deadline ran out (TASK_FILE with a
 new `task_id` once the Task ran), `af provider status` or `af provider setup ID --login` after a
 Provider failure. `af task show ID --checks` prints the gate's last check receipt: each check's
-failing and flaky tests and the end of its stderr.";
+failing and flaky tests and the end of its stderr.
+
+`af task status ID` prints the state in one line without waiting, with the node that runs and the
+tokens so far; `af task wait ID` blocks until the Task settles and exits with its outcome's code.
+A run `af task cancel ID` stopped is `abandoned/cancelled/host_cancelled`, and `af task show`
+names who cancelled it. `af help agents` walks the whole loop.";
 
 const PROVIDERS: &str = "\
 A Provider is a login of an official model CLI, `claude` (Claude Code) or `codex` (Codex CLI),

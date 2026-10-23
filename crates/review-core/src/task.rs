@@ -3,6 +3,7 @@
 //! Validation here establishes shape and local invariants. Compilation establishes graph
 //! compatibility; the Store establishes identity, authority and legal transitions.
 
+pub mod agent_loop;
 pub mod campaign_review;
 pub mod check_report;
 pub mod collection;

@@ -18,6 +18,9 @@ pub(super) struct CommonDelivery {
     heartbeat: Option<std::thread::JoinHandle<Result<(), String>>>,
     optimization_adoption: Option<OptimizationAdoptionContext>,
     prepared_delivery_record_id: Option<String>,
+    /// The `af/TaskDeliveryProof@1` every record of a verification Task's delivery references
+    /// (ADR-0202).
+    proof_id: Option<String>,
 }
 
 struct OptimizationAdoptionContext {
@@ -130,7 +133,13 @@ impl CommonDelivery {
             heartbeat: Some(heartbeat),
             optimization_adoption,
             prepared_delivery_record_id,
+            proof_id: None,
         })
+    }
+
+    /// Reference `proof_id` from every delivery record this delivery appends.
+    pub(super) fn with_proof(&mut self, proof_id: Option<String>) {
+        self.proof_id = proof_id;
     }
 }
 
@@ -245,6 +254,7 @@ impl CommonDelivery {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         refs.extend(adoption_id);
+        refs.extend(self.proof_id.clone());
         let id = cas
             .put_artifact(
                 TASK_DELIVERY_RECORD_V1,
@@ -344,7 +354,161 @@ fn bound_source_refusal(bound: &review_source_git::task::TaskSourceBoundFromV1) 
     format!("{head}, so {remedy}")
 }
 
-pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets, String> {
+/// The one exception to exact source ancestry (ADR-0202): a verified Task of kind
+/// `verification` that bound its `source` from another Task's recorded candidate and left it
+/// unchanged proves that candidate. Its delivery places the candidate on the candidate Task's
+/// own committed source, exactly as that Task's delivery would, and every record names both
+/// Tasks through an `af/TaskDeliveryProof@1`. `None` for any other Task; a refusal that names
+/// what is missing for a verification Task whose proof does not hold.
+#[allow(clippy::too_many_arguments)]
+fn verified_candidate(
+    state: &Path,
+    cas: &Cas,
+    task: &TaskProjection,
+    result_id: &str,
+    source_snapshot_id: &str,
+    derived_snapshot_id: &str,
+    source: &review_source_git::task::TaskSnapshot,
+    derived: &review_source_git::task::TaskSnapshot,
+    derived_manifest: &Manifest,
+) -> Result<Option<DeliveryAssets>, String> {
+    if task.revision.kind != "verification" {
+        return Ok(None);
+    }
+    let id = &task.task_id;
+    let materialize = format!(
+        "`af task materialize {id} --into DIR` writes its Snapshot into a worktree you choose"
+    );
+    if derived.content_digest != source.content_digest {
+        return Err(format!(
+            "Task {id} is a verification Task that changed the tree it verified, so it proves no \
+             candidate and its Snapshot has no ancestry to deliver; {materialize}"
+        ));
+    }
+    let origin = review_source_git::task::read_origin(cas, &source.origin_id)?;
+    let Some(bound) = bound_source(cas, task, &origin)? else {
+        return Ok(None);
+    };
+    let Some(reference) = bound.task.clone() else {
+        return Err(format!(
+            "Task {id} verified artifact {}, not a Task's candidate, so there is no Task whose \
+             source it can be delivered on; {materialize}",
+            bound.artifact_id
+        ));
+    };
+    let candidate_id = &reference.task_id;
+    let candidate = projection(state, cas, candidate_id)?.ok_or_else(|| {
+        format!(
+            "Task {id} verified the candidate of Task {candidate_id}, which this Store no longer \
+             holds (collected?), so its source cannot be checked; {materialize}"
+        )
+    })?;
+    let TaskPhaseV1::Finished {
+        result_id: candidate_result,
+    } = &candidate.phase
+    else {
+        return Err(format!(
+            "Task {candidate_id}, whose candidate Task {id} verified, has no finished result now"
+        ));
+    };
+    let candidate_result_value: TaskResultV1 = {
+        let envelope = cas
+            .get_artifact(candidate_result)
+            .map_err(|e| e.to_string())?;
+        if envelope.artifact_type != TASK_RESULT_V1 {
+            return Err("Invalid Task result identity".into());
+        }
+        serde_json::from_value(envelope.payload).map_err(|e| e.to_string())?
+    };
+    let recorded = candidate_result_value
+        .outputs
+        .get(&reference.port)
+        .and_then(|port| port.snapshot_id.clone());
+    if *candidate_result != reference.result_id || recorded.as_ref() != Some(&bound.snapshot_id) {
+        return Err(format!(
+            "Task {candidate_id}'s result changed since Task {id} verified its candidate; verify \
+             the current candidate in a new verification Task"
+        ));
+    }
+    let candidate_source_id = candidate
+        .revision
+        .inputs
+        .get("source")
+        .and_then(|port| port.snapshot_id.clone())
+        .ok_or_else(|| format!("Task {candidate_id} has no source Snapshot"))?;
+    let (candidate_source, candidate_source_manifest) =
+        review_source_git::task::read_snapshot(cas, &candidate_source_id)?;
+    let (candidate_snapshot, _) = review_source_git::task::read_snapshot(cas, &bound.snapshot_id)?;
+    if candidate_source.parent_snapshot_id.is_some()
+        || candidate_snapshot.origin_id != candidate_source.origin_id
+        || !review_source_git::task::descends_from(cas, &bound.snapshot_id, &candidate_source_id)?
+        || candidate_snapshot.content_digest != source.content_digest
+    {
+        return Err(format!(
+            "the candidate Task {id} verified does not descend exactly from Task \
+             {candidate_id}'s source, so it has no commit to be delivered on; {materialize}"
+        ));
+    }
+    let candidate_origin = review_source_git::task::read_origin(cas, &candidate_source.origin_id)?;
+    if candidate_origin.content_digest() != candidate_source.content_digest {
+        return Err("Unsupported Task source origin".into());
+    }
+    let repository_id = candidate_origin.repository_id().to_owned();
+    let Some(source_revision) = candidate_origin.source_revision().map(str::to_owned) else {
+        return Err(format!(
+            "Task {candidate_id}, whose candidate Task {id} verified, was planned from a tree \
+             with no commit, so there is nothing to deliver it on; commit that tree and plan \
+             from the commit"
+        ));
+    };
+    if repository_id.trim().is_empty() {
+        return Err("Task origin has no repository".into());
+    }
+    let proof = TaskDeliveryProofV1 {
+        verification_task_id: id.clone(),
+        verification_result_id: result_id.to_owned(),
+        candidate_task_id: candidate_id.clone(),
+        candidate_result_id: candidate_result.clone(),
+        candidate_snapshot_id: bound.snapshot_id.clone(),
+        candidate_source_snapshot_id: candidate_source_id.clone(),
+    };
+    proof.validate()?;
+    let proof_id = cas
+        .put_artifact(
+            TASK_DELIVERY_PROOF_V1,
+            review_core::Producer::KernelOperation {
+                run_id: review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?,
+                node_id: None,
+                operation_id: "local-delivery@1".into(),
+            },
+            proof.references().into_iter().map(str::to_owned).collect(),
+            None,
+            serde_json::to_value(&proof).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?
+        .0;
+    let receipt = |snapshot: &review_source_git::task::TaskSnapshot| SnapshotReceipt {
+        content_digest: snapshot.content_digest.clone(),
+        manifest_artifact_id: snapshot.manifest_id.clone(),
+        repository_id: repository_id.clone(),
+        source_revision: source_revision.clone(),
+    };
+    Ok(Some(DeliveryAssets {
+        source_snapshot_id: source_snapshot_id.to_owned(),
+        derived_snapshot_id: derived_snapshot_id.to_owned(),
+        source: receipt(&candidate_source),
+        derived: receipt(derived),
+        source_manifest: candidate_source_manifest,
+        derived_manifest: derived_manifest.clone(),
+        proof: Some((proof_id, proof)),
+    }))
+}
+
+pub(super) fn assets(
+    state: &Path,
+    cas: &Cas,
+    task: &TaskProjection,
+) -> Result<DeliveryAssets, String> {
     // A report Task writes no source: its report is its only exit, whatever its acceptance
     // (ADR-0133). Said before anything else is read, so no prepared record or Git mutation
     // can follow.
@@ -367,7 +531,12 @@ pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets,
     let result: TaskResultV1 =
         serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
     if result.acceptance != TaskAcceptanceV1::Satisfied {
-        return Err("only a verified Task can be delivered".into());
+        let id = &task.task_id;
+        return Err(format!(
+            "only a verified Task can be delivered, and Task {id} did not verify; to look at or \
+             commit its candidate anyway, `af task materialize {id} --into DIR \
+             --allow-unverified` writes it into a worktree you choose"
+        ));
     }
     review_store::store::task::validate_optimization_delivery(cas, task, &result)
         .map_err(|error| error.to_string())?;
@@ -390,7 +559,25 @@ pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets,
         || derived.origin_id != source.origin_id
         || !review_source_git::task::descends_from(cas, &derived_snapshot_id, &source_snapshot_id)?
     {
-        return Err("Task delivery requires exact source ancestry".into());
+        if let Some(assets) = verified_candidate(
+            state,
+            cas,
+            task,
+            result_id,
+            &source_snapshot_id,
+            &derived_snapshot_id,
+            &source,
+            &derived,
+            &derived_manifest,
+        )? {
+            return Ok(assets);
+        }
+        let id = &task.task_id;
+        return Err(format!(
+            "Task delivery requires exact source ancestry, and Task {id}'s Snapshot does not \
+             descend from its source; `af task materialize {id} --into DIR` writes it into a \
+             worktree you choose"
+        ));
     }
     // Either recorded generation reads here. Generation two describes a re-rooted source and
     // deliberately carries no `source_revision`, so the existing rule "delivery requires a
@@ -427,6 +614,7 @@ pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets,
         derived: convert(derived),
         source_manifest,
         derived_manifest,
+        proof: None,
     })
 }
 

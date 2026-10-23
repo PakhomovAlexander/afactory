@@ -54,6 +54,7 @@ mod storage_budget;
 mod storage_roots;
 mod store_release;
 mod task_acceptance;
+mod task_agent_loop;
 mod task_catalog;
 mod task_cli_fixture;
 mod task_delivery;

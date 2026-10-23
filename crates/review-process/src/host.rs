@@ -22,6 +22,26 @@ pub fn load_average_1m() -> Option<f64> {
     first_load(&text)
 }
 
+/// This host's name, as `hostname` prints it: Linux's `/proc/sys/kernel/hostname`, `/bin/hostname`
+/// elsewhere; `None` when neither answers. What a record of a process names so a reader on
+/// another machine knows the process is not theirs to signal.
+pub fn host_name() -> Option<String> {
+    let text = if cfg!(target_os = "linux") {
+        std::fs::read_to_string("/proc/sys/kernel/hostname").ok()?
+    } else {
+        let mut command = std::process::Command::new("/bin/hostname");
+        command.env_clear();
+        let output = crate::run_supervised(&mut command, None, Duration::from_secs(5)).ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8(output.stdout).ok()?
+    };
+    let name = text.trim();
+    (!name.is_empty() && name.len() <= 255 && !name.chars().any(char::is_control))
+        .then(|| name.to_owned())
+}
+
 /// The first number of `/proc/loadavg` (`0.52 0.58 0.59 1/389 12345`) or of `vm.loadavg`
 /// (`{ 0.52 0.58 0.59 }`).
 fn first_load(text: &str) -> Option<f64> {
@@ -49,6 +69,13 @@ mod tests {
         assert!(available_cpus() >= 1);
         let load = load_average_1m().expect("macOS and Linux report a load average");
         assert!(load >= 0.0 && load.is_finite());
+    }
+
+    #[test]
+    fn the_host_has_a_name() {
+        let name = host_name().expect("macOS and Linux name the host");
+        assert!(!name.is_empty() && !name.contains('\n'), "{name:?}");
+        assert_eq!(host_name(), Some(name), "the same name twice");
     }
 
     #[test]

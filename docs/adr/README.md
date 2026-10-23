@@ -370,3 +370,5 @@ future readers need.
   `add`](0197-detect-provider-logins-and-register-them-through-add.md)
 - [0201 — Make the first run say what to do
   next](0201-make-the-first-run-say-what-to-do-next.md)
+- [0202 — Give the agent loop its verbs, and deliver a verified
+  verification](0202-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)

@@ -100,7 +100,8 @@ fn entry(
         _ => None,
     };
     // The same state `af task show` prints, from the same derivation.
-    let view = state::view(cas, &state, result.as_ref(), clock()?)?;
+    let cancelled = runs::cancelled_epoch(Some(state_dir), &state);
+    let view = state::view(cas, &state, result.as_ref(), clock()?, cancelled)?;
     let mut plans = Plans::default();
     let (pipeline, planned_review) = match &state.plan_id {
         Some(plan_id) => {
@@ -177,7 +178,7 @@ fn entry(
 /// `af/TaskReviewRound@1` an execution record published, read from the Task log rather than from
 /// the current execution outputs, so a round published before `af task refresh` or a review
 /// handoff cleared those outputs still counts. A round published twice counts once.
-fn recorded_rounds(
+pub(super) fn recorded_rounds(
     cas: &Cas,
     store: &EventStore,
     run_id: &str,

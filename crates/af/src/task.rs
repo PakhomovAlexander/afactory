@@ -198,6 +198,9 @@ struct DeliveryAssets {
     derived_snapshot_id: String,
     derived: SnapshotReceipt,
     derived_manifest: Manifest,
+    /// A verification Task's proof of the other Task's candidate it delivers, and its
+    /// artifact ID (ADR-0202).
+    proof: Option<(String, review_core::task::delivery::TaskDeliveryProofV1)>,
 }
 
 const DELIVERY_GIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -395,8 +398,10 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     let task = delivery_common::projection(&state, &cas, &options.task_id)?
         .ok_or_else(|| super::task_execution::task_not_found(&state, &options.task_id))?;
     let events = delivery_common::events(&task);
-    let assets = delivery_common::assets(&cas, &task)?;
+    let assets = delivery_common::assets(&state, &cas, &task)?;
     let mut store = delivery_common::CommonDelivery::open(&state, &task)?;
+    store.with_proof(assets.proof.as_ref().map(|(id, _)| id.clone()));
+    let proof = assets.proof.as_ref().map(|(_, proof)| proof.clone());
     // What the declared layout says about the Snapshot this delivery would place in a worktree.
     // A pure function of the recorded manifest, so it is the same answer the plan gave. Nothing
     // is removed either way: `warn` records the group in the receipt, `refuse` stops here —
@@ -442,7 +447,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     if let Some(receipt) = latest_delivery_receipt(&cas, &events, "TaskDelivered@1")? {
         ensure_same_delivery(&prepared, &receipt)?;
         verify_sealed_delivery_identity(&git, &git_home, &prepared)?;
-        print_delivery(&options, &receipt)?;
+        print_delivery(&options, &receipt, proof.as_ref())?;
         return Ok(());
     }
 
@@ -457,7 +462,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
                 )?;
                 let receipt = delivered_receipt(&existing, ignored_paths, undeclared);
                 append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
-                print_delivery(&options, &receipt)?;
+                print_delivery(&options, &receipt, proof.as_ref())?;
                 return Ok(());
             }
             Err(verification) => match rollback_owned_delivery(
@@ -508,7 +513,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         Ok(ignored_paths) => {
             let receipt = delivered_receipt(&prepared, ignored_paths, undeclared);
             append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
-            print_delivery(&options, &receipt)
+            print_delivery(&options, &receipt, proof.as_ref())
         }
         Err(reason) => match rollback_owned_delivery(
             &git,
@@ -1015,7 +1020,12 @@ pub(super) fn show(options: InspectOptions, checks: bool) -> Result<(), String> 
 
 /// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@2` document, over
 /// the named Tasks of one Store. Read-only; nothing is printed unless every Task is found.
-pub(super) fn report(options: InspectOptions, task_ids: &[String]) -> Result<(), String> {
+pub(super) fn report(
+    options: InspectOptions,
+    task_ids: &[String],
+    pr_body: bool,
+    template: Option<&Path>,
+) -> Result<(), String> {
     for task_id in task_ids {
         validate_task_id(task_id).map_err(|error| format!("`{task_id}`: {error}"))?;
     }
@@ -1028,6 +1038,12 @@ pub(super) fn report(options: InspectOptions, task_ids: &[String]) -> Result<(),
         println!(
             "{}",
             serde_json::to_string(&report).map_err(|error| error.to_string())?
+        );
+    } else if pr_body {
+        let block = super::task_execution::task_report::markdown(&report);
+        print!(
+            "{}",
+            super::task_execution::pr_body::render(&repository, template, &block)?
         );
     } else {
         print!("{}", super::task_execution::task_report::markdown(&report));
@@ -1707,7 +1723,11 @@ fn append_delivery_receipt(
     store.append(cas, &receipt.task_id, event_type, &artifact)
 }
 
-fn print_delivery(options: &DeliveryOptions, receipt: &DeliveryReceipt) -> Result<(), String> {
+fn print_delivery(
+    options: &DeliveryOptions,
+    receipt: &DeliveryReceipt,
+    proof: Option<&review_core::task::delivery::TaskDeliveryProofV1>,
+) -> Result<(), String> {
     if options.json {
         println!(
             "{}",
@@ -1718,6 +1738,12 @@ fn print_delivery(options: &DeliveryOptions, receipt: &DeliveryReceipt) -> Resul
             "task     {}\ndelivery {}\nbranch   {}\nworktree {}\nremote   none",
             receipt.task_id, receipt.delivery_id, receipt.target.branch, receipt.target.worktree,
         );
+        if let Some(proof) = proof {
+            println!(
+                "proof    Task {} verified Task {}'s candidate {}",
+                proof.verification_task_id, proof.candidate_task_id, proof.candidate_snapshot_id
+            );
+        }
         for path in &receipt.ignored_paths {
             println!("ignored  {path}");
         }

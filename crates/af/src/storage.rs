@@ -2111,12 +2111,16 @@ fn collect_tasks(
     for task_id in cleared {
         let result = match &applied {
             Err(error) => Err(failed(error.clone())),
-            Ok(done) if done.tombstoned.contains(&task_id) => Ok(done
-                .plan
-                .tasks
-                .iter()
-                .find(|task| task.task_id == task_id)
-                .map_or(0, |task| task.footprint.exclusive_bytes)),
+            Ok(done) if done.tombstoned.contains(&task_id) => {
+                // A collected Task's run records and logs go with it (ADR-0202).
+                crate::task_execution::runs::forget(state, &task_id);
+                Ok(done
+                    .plan
+                    .tasks
+                    .iter()
+                    .find(|task| task.task_id == task_id)
+                    .map_or(0, |task| task.footprint.exclusive_bytes))
+            }
             Ok(_) => Err(failed(format!(
                 "Task `{task_id}` is protected now, so it is kept"
             ))),

@@ -1262,7 +1262,20 @@ fn main() {
         selfmgmt::after_command(&argv);
         std::process::exit(code);
     };
-    // Still the only thread: every thread started from here inherits the blocked signals.
+    // Still the only thread: every thread started from here inherits the blocked signals. A run
+    // `af task run --detach` started outlives the terminal that started it (ADR-0202).
+    if std::env::var_os(task_execution::runs::DETACHED_ENV).is_some()
+        && matches!(
+            &command,
+            cli::Command::Task {
+                command: cli::TaskCommand::Run { .. }
+            }
+        )
+        && let Err(error) = interrupt::ignore_hangup()
+    {
+        eprintln!("af: {}", terminal_lines(&error.to_string()));
+        std::process::exit(1);
+    }
     if needs_interrupt_handling(&command)
         && let Err(error) = interrupt::install()
     {
@@ -1773,10 +1786,18 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         ),
         cli::TaskCommand::Run {
             task_id,
+            detach: true,
+            inspect,
+            ..
+        } => task_execution::runs::detach(&task_id, &inspect),
+        cli::TaskCommand::Run {
+            task_id,
             confirm_plan,
             execute,
             retry_gate,
             verbose: _,
+            detach: false,
+            quiet,
             inspect,
         } => task_execution::run(
             &task_id,
@@ -1786,6 +1807,53 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             confirm_plan.as_deref(),
             execute,
             retry_gate,
+            quiet,
+        ),
+        cli::TaskCommand::Wait {
+            task_id,
+            timeout,
+            inspect,
+        } => task_execution::runs::wait(&task_id, timeout, &inspect),
+        cli::TaskCommand::Status { task_id, inspect } => {
+            task_execution::runs::status(&task_id, &inspect)
+        }
+        cli::TaskCommand::Cancel { task_id, inspect } => {
+            task_execution::runs::cancel(&task_id, &inspect)
+        }
+        cli::TaskCommand::Findings {
+            task_id,
+            round,
+            inspect,
+        } => task_execution::findings::print(&task_id, round, &inspect),
+        cli::TaskCommand::Materialize {
+            task_id,
+            snapshot,
+            into,
+            allow_unverified,
+            force,
+            inspect,
+        } => task_execution::candidate::materialize(
+            &task_id,
+            snapshot.as_deref(),
+            &into,
+            allow_unverified,
+            force,
+            &inspect,
+        ),
+        cli::TaskCommand::Diff {
+            task_id,
+            snapshot,
+            base,
+            stat,
+            name_only,
+            inspect,
+        } => task_execution::candidate::diff(
+            &task_id,
+            snapshot.as_deref(),
+            base.as_deref(),
+            stat,
+            name_only,
+            &inspect,
         ),
         cli::TaskCommand::Output {
             task_id,
@@ -1885,11 +1953,14 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         } => task::inspect_from_cli(Some(task_id), inspect.repo, inspect.state, inspect.json)
             .and_then(|options| task::show(options, checks))
             .map(|()| 0),
-        cli::TaskCommand::Report { task_ids, inspect } => {
-            task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
-                .and_then(|options| task::report(options, &task_ids))
-                .map(|()| 0)
-        }
+        cli::TaskCommand::Report {
+            task_ids,
+            pr_body,
+            template,
+            inspect,
+        } => task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
+            .and_then(|options| task::report(options, &task_ids, pr_body, template.as_deref()))
+            .map(|()| 0),
     }
 }
 
@@ -1902,9 +1973,11 @@ fn runs_task_work(command: &cli::Command) -> bool {
             matches!(namespace.command, None | Some(cli::ReviewCommand::Run(_)))
         }
         cli::Command::Provider { command } => matches!(command, cli::ProviderCommand::Doctor(_)),
+        // `af task run --detach` only starts the run that does the work, in the background.
         cli::Command::Task { command } => matches!(
             command,
-            cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. }
+            cli::TaskCommand::Start { execute: true, .. }
+                | cli::TaskCommand::Run { detach: false, .. }
         ),
         cli::Command::SelfCmd { command } => {
             matches!(command, cli::SelfCommand::Optimize { execute: true, .. })
@@ -1938,7 +2011,9 @@ fn recorded_run(command: &cli::Command) -> Option<review_pipeline::telemetry::Ru
             command: cli::ProviderCommand::Doctor(_),
         } => Some(RunKind::Review),
         cli::Command::Task {
-            command: cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. },
+            command:
+                cli::TaskCommand::Start { execute: true, .. }
+                | cli::TaskCommand::Run { detach: false, .. },
         } => Some(RunKind::Task),
         cli::Command::SelfCmd {
             command: cli::SelfCommand::Optimize { execute: true, .. },
@@ -1956,7 +2031,8 @@ fn collects_after_run(command: &cli::Command) -> bool {
         }
         cli::Command::Task { command } => matches!(
             command,
-            cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. }
+            cli::TaskCommand::Start { execute: true, .. }
+                | cli::TaskCommand::Run { detach: false, .. }
         ),
         _ => false,
     }

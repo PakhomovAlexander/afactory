@@ -142,6 +142,17 @@ impl TaskProjection {
         self.lease_until
     }
 
+    /// The writer of the Task's last lease, `cli-<pid>` for `af task run`: held while
+    /// [`Self::lease_until_unix_ms`] is ahead of now, released or expired otherwise.
+    pub fn lease_writer(&self) -> &str {
+        &self.writer
+    }
+
+    /// The epoch of the Task's last lease: one more for every lease a writer took.
+    pub fn lease_epoch(&self) -> u64 {
+        self.epoch
+    }
+
     /// The wall the Task has once it runs: its revision's deadline less the time it was opened.
     /// The revision records an absolute deadline from planning; the clock starts at the first
     /// plan admission, so a Task that waited between plan and run keeps its whole wall.

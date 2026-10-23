@@ -40,3 +40,42 @@ impl TaskDeliveryRecordV1 {
         ]
     }
 }
+
+pub const TASK_DELIVERY_PROOF_V1: &str = "af/TaskDeliveryProof@1";
+
+/// Why a verification Task's delivery places another Task's candidate (ADR-0202): the
+/// verification Task, of kind `verification`, verified read-only a Snapshot it bound from the
+/// candidate Task's recorded output, and delivery places that candidate on the candidate Task's
+/// committed source. Every delivery record of such a delivery references this proof, so the
+/// record names both Tasks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskDeliveryProofV1 {
+    pub verification_task_id: String,
+    pub verification_result_id: String,
+    pub candidate_task_id: String,
+    pub candidate_result_id: String,
+    pub candidate_snapshot_id: String,
+    pub candidate_source_snapshot_id: String,
+}
+
+impl TaskDeliveryProofV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        super::require(
+            super::is_name(&self.verification_task_id)
+                && super::is_name(&self.candidate_task_id)
+                && self.verification_task_id != self.candidate_task_id
+                && self.references().into_iter().all(crate::is_digest),
+            "A delivery proof names two distinct Tasks, their exact results and the candidate's \
+             Snapshot and source",
+        )
+    }
+    pub fn references(&self) -> [&str; 4] {
+        [
+            &self.verification_result_id,
+            &self.candidate_result_id,
+            &self.candidate_snapshot_id,
+            &self.candidate_source_snapshot_id,
+        ]
+    }
+}

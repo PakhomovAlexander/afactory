@@ -70,6 +70,10 @@ pub(crate) fn gc(
                 stop_after_tombstones(),
             )
             .map_err(|e| e.to_string())?;
+        // A collected Task's run records and logs go with it (ADR-0202).
+        for task_id in &outcome.tombstoned {
+            super::runs::forget(&state, task_id);
+        }
         (outcome.plan.clone(), Some(outcome))
     } else {
         let store =
