@@ -6,6 +6,10 @@ Where to look, by question. The [README](../README.md) covers installing, the qu
 
 ## Start here
 
+`af` with no arguments at a terminal opens a read-first browser over this place's settings,
+Providers, Workers, pipelines, Tasks and review Campaigns; `?` there lists its keys and `:` runs
+any af command ([design](design/tui.md)).
+
 1. [`../CONTEXT.md`](../CONTEXT.md) — the vocabulary. Everything else assumes it.
 2. [`architecture.md`](architecture.md) — the boundaries and the tests that enforce them.
 3. [`adr/README.md`](adr/README.md) — why each boundary is where it is.

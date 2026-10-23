@@ -8,7 +8,7 @@ v hub  (project)            |layer      file                                 sta
       review                |local      .af/af.local.toml                    absent
       fixture/implementation|
   v tasks/                  |version = 1                               project .af/af.toml:1
-                            |[defaults]
+  v campaigns/              |[defaults]
                             |pipeline = "review"                       project .af/af.toml:8
                             |[project]
                             |min_af = "0.9"                            project .af/af.toml:5

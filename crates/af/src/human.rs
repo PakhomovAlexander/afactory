@@ -153,9 +153,29 @@ pub(crate) fn local_time(unix_ms: u64) -> String {
     )
 }
 
+/// A moment in UTC to the minute, `2026-10-23 06:12Z`: the browser's times are UTC, so a
+/// screen reads the same on every machine.
+pub(crate) fn utc_time(unix_ms: u64) -> String {
+    let seconds = i64::try_from(unix_ms / 1_000).unwrap_or(i64::MAX / 2);
+    let (year, month, day) = civil(seconds.div_euclid(86_400));
+    let of_day = seconds.rem_euclid(86_400);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}Z",
+        of_day / 3_600,
+        of_day % 3_600 / 60
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utc_times_read_to_the_minute() {
+        assert_eq!(utc_time(0), "1970-01-01 00:00Z");
+        // 2026-10-23 06:12:59 UTC.
+        assert_eq!(utc_time(1_792_735_979_000), "2026-10-23 06:12Z");
+    }
 
     #[test]
     fn durations_read_in_their_two_largest_units() {

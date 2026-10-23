@@ -91,6 +91,32 @@ impl TaskAccountingReport {
     }
 }
 
+/// A Task that charged `tokens` and recorded no Attempt, as a listing's fixture.
+#[cfg(test)]
+pub(super) fn charged(task_id: &str, tokens: u128) -> TaskAccountingView {
+    TaskAccountingView {
+        task_id: task_id.to_owned(),
+        through_sequence: 0,
+        chargeable_tokens: tokens.into(),
+        reserved_tokens: 0.into(),
+        attempts_started: 0.into(),
+        provider_attempts_started: 0.into(),
+        business_attempts_started: 0.into(),
+        other_attempts_started: 0.into(),
+        wall_ms: None,
+        attempts: Vec::new(),
+    }
+}
+
+/// What the Tasks charged in total: each Task's own cumulative charge, never a report snapshot
+/// (ADR-0078); `None` without a Task.
+pub(super) fn chargeable_tokens(tasks: &[TaskAccountingView]) -> Option<u128> {
+    tasks
+        .iter()
+        .map(|task| task.chargeable_tokens.get())
+        .reduce(u128::saturating_add)
+}
+
 pub(super) fn summary(tasks: &[TaskAccountingView]) -> String {
     tasks
         .iter()

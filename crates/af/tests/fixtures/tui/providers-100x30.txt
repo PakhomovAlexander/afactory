@@ -8,7 +8,7 @@ v hub  (project)            |
       review                |note   weekly limit read from the local /usage screen
       fixture/implementation|
   v tasks/                  |
-                            |
+  v campaigns/              |
                             |
                             |
                             |

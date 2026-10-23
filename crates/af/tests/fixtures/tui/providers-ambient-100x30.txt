@@ -1,0 +1,30 @@
+~/hub                       |PROVIDERS  (af provider status)
+v hub  (project)            |
+  v providers/              |ID                       KIND     STATUS              AUTH
+      claude-main           |claude-main              claude   authenticated       oauth
+      codex-ambient         |limit  [####......]  5h window: 41% used, 59% left, reset unavailable
+  v workers/                |limit  [#######...]  weekly: 68% used, 32% left, reset unavailable
+  v pipelines/              |note   weekly limit read from the local /usage screen
+      review                |codex-ambient            codex    not authenticated   -
+      fixture/implementation|note   run `codex login` in this context
+  v tasks/                  |ambient (CODEX_HOME): found through CODEX_HOME, not in the registry
+  v campaigns/              |  register it: af provider add codex-main --kind codex
+                            |  or stop listing it: unset CODEX_HOME
+                            |set up codex: af provider setup codex-main --kind codex --login
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
+NORMAL  providers/                          j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

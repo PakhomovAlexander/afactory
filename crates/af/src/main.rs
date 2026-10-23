@@ -2958,6 +2958,52 @@ struct CampaignView {
     /// Newest write to the event store, as Unix milliseconds; what `gc` ages by.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_activity_unix_ms: Option<u64>,
+    /// The newest Round started, as (Round, epoch), and whether no Run Report has closed it yet:
+    /// the text table's ROUND and STATE, and the browser's. The document is unchanged.
+    #[serde(skip)]
+    latest_round: Option<(u32, u32)>,
+    #[serde(skip)]
+    round_open: bool,
+}
+
+impl CampaignView {
+    /// `new` before its first Round, `open` while its newest Round has no Run Report, `closed`
+    /// once one closed it.
+    fn state_word(&self) -> &'static str {
+        match (self.latest_round, self.round_open) {
+            (None, _) => "new",
+            (Some(_), true) => "open",
+            (Some(_), false) => "closed",
+        }
+    }
+
+    /// The Round as the table prints it: `2`, or `2.3` for its third epoch; `-` before one.
+    fn round_label(&self) -> String {
+        match self.latest_round {
+            None => "-".to_owned(),
+            Some((round, 1)) => round.to_string(),
+            Some((round, epoch)) => format!("{round}.{epoch}"),
+        }
+    }
+
+    /// What its Tasks charged in total, exactly as `af review report` counts each Task; `None`
+    /// when no Task has run for it.
+    fn chargeable_tokens(&self) -> Option<u128> {
+        report_tasks::chargeable_tokens(&self.task_accounting)
+    }
+
+    /// The selector a command names it by: `--campaign LABEL`, and `--state DIR` unless its
+    /// Store is the default one for that label under the default root.
+    fn selector(&self, state: &Path, default_root: Option<&Path>) -> Vec<String> {
+        let mut words = vec!["--campaign".to_owned(), self.label.clone()];
+        let default = default_root.is_some_and(|root| state.parent() == Some(root))
+            && self.state_dir == self.id;
+        if !default {
+            words.push("--state".to_owned());
+            words.push(state.display().to_string());
+        }
+        words
+    }
 }
 
 /// Bytes under a state directory, following no symlinks. A directory that cannot be read counts
@@ -3025,7 +3071,7 @@ fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
             "{}",
             serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
         ),
-        CampaignsFormat::Text => print_campaigns_text(&view),
+        CampaignsFormat::Text => print_campaigns_text(&view, &root),
     }
     Ok(())
 }
@@ -3270,6 +3316,7 @@ fn read_campaign_view(
 
     let events = store.replay(run_id).map_err(|error| error.to_string())?;
     let mut last_subject_id = None;
+    let mut latest_round = None;
     for event in events
         .iter()
         .filter(|event| event.event_type == EventType::RoundStartedV1)
@@ -3283,6 +3330,7 @@ fn read_campaign_view(
             ));
         }
         last_subject_id = Some(started.subject_id);
+        latest_round = Some((started.round, started.epoch));
     }
     let round_authority = report_round_authority(&events)?;
     let reports = events
@@ -3290,6 +3338,11 @@ fn read_campaign_view(
         .filter(|event| event.event_type.is_run_report())
         .collect::<Vec<_>>();
     let rounds = report_rounds(&reports, &round_authority)?;
+    let round_open = latest_round.is_some_and(|(round, epoch)| {
+        !rounds
+            .iter()
+            .any(|closed| closed.round == Some(round) && closed.epoch == Some(epoch))
+    });
     let last = rounds.last();
     let task_accounting = report_tasks::read(store, &cas, run_id, &events)?;
     let wall_ms = task_accounting.wall_ms();
@@ -3319,86 +3372,157 @@ fn read_campaign_view(
             .unwrap_or_default(),
         state_bytes: with_sizes.then(|| directory_bytes(state)),
         last_activity_unix_ms: newest_store_write_unix_ms(state),
+        latest_round,
+        round_open,
     })
 }
 
-fn print_campaigns_text(view: &CampaignListView) {
-    println!("Campaigns: {}", view.campaigns.len());
-    for campaign in &view.campaigns {
-        println!(
-            "{} ({})",
-            terminal_text(&campaign.label),
-            terminal_text(&campaign.id)
+/// One Campaign Store directory read on its own, whatever its name: the Store a plain `af review
+/// run` keeps under `review/local/`, or one `--state DIR` made, which the Store registry records.
+/// The browser lists it with the entry `af review campaigns` would print for it. Nothing is
+/// written, and a symlinked event log is refused as the enumeration refuses it.
+fn read_campaign_dir(state: &Path) -> Result<CampaignView, String> {
+    let database = state.join("events.sqlite");
+    let metadata = std::fs::symlink_metadata(&database)
+        .map_err(|error| format!("reading {}: {error}", database.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(
+            "events.sqlite is not a real regular file beneath the Campaign state directory"
+                .to_string(),
         );
-        println!(
-            "  authority: snapshot {}; manifest {}",
-            terminal_text(&campaign.authority_snapshot_id),
-            terminal_text(&campaign.campaign_manifest_id)
-        );
-        println!(
-            "  subject: {}{}",
-            campaign.subject_kind,
-            campaign
-                .base_snapshot_id
-                .as_deref()
-                .map(|base| format!("; base {}", terminal_text(base)))
-                .unwrap_or_default()
-        );
-        println!(
-            "  last subject: {}",
-            terminal_text(campaign.last_subject_id.as_deref().unwrap_or("not started"))
-        );
-        match last_closed_summary(
-            campaign.last_closed_round,
-            campaign.last_closed_epoch,
-            campaign.verdict.as_deref(),
-        ) {
-            Some(summary) => println!("  last closed: {}", terminal_text(&summary)),
-            None => println!("  last closed: none"),
-        }
-        println!(
-            "  state: {}{}{}",
-            terminal_text(&campaign.state_dir),
-            campaign
-                .state_bytes
-                .map(|bytes| format!(", {}", human_bytes(bytes)))
-                .unwrap_or_default(),
-            campaign
-                .last_activity_unix_ms
-                .map(|at| format!("; last activity {}", age_label(at)))
-                .unwrap_or_default()
-        );
-        if let Some(wall) = campaign.wall_ms {
-            println!("  wall: {}", human_duration(wall));
-        }
-        for summary in report_tasks::summary(&campaign.task_accounting).lines() {
-            println!("  {}", terminal_text(summary));
-        }
-        if let Some(findings) = &campaign.findings {
-            println!("  findings: {}", findings_summary_line(findings));
-        }
-        println!("  history:");
-        if campaign.rounds.is_empty() {
-            println!("    none");
-        }
-        for round in &campaign.rounds {
-            println!(
-                "    run {}: round {} epoch {}; {}; {}",
-                round.run,
-                optional_number(round.round),
-                optional_number(round.epoch),
-                terminal_text(&round.verdict),
-                round.tokens_label()
-            );
-        }
     }
-    println!("Problems: {}", view.problems.len());
+    let store = EventStore::open_read_only(&database).map_err(|error| error.to_string())?;
+    let run_ids = store
+        .run_ids()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|run_id| run_id.starts_with("campaign-"))
+        .collect::<Vec<_>>();
+    let [run_id] = run_ids.as_slice() else {
+        return Err(format!(
+            "state contains {} campaign runs; a Campaign state directory must contain exactly one",
+            run_ids.len()
+        ));
+    };
+    let label = run_id
+        .strip_prefix("campaign-")
+        .unwrap_or(run_id)
+        .to_string();
+    validate_campaign_component(&label)?;
+    let id = campaign_id(&label);
+    read_campaign_view(state, run_id, label, id, &store, false)
+}
+
+/// The `af review report --json` document of the Campaign `label` in the Store at `state`, for
+/// the browser: read as `af review report` reads it, but silent, since a warning printed on
+/// stderr would land on the browser's screen.
+fn browse_report(state: &Path, label: &str) -> Result<serde_json::Value, String> {
+    let store = open_campaign_store_read_only(state, label)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
+    let view = read_report_view_quietly(&store, &cas, label, false)?;
+    serde_json::to_value(&view).map_err(|error| error.to_string())
+}
+
+fn print_campaigns_text(view: &CampaignListView, root: &Path) {
+    let local = |unix_ms: u64| {
+        let time = human::local_time(unix_ms);
+        // The year is left out: the table is 100 columns, and an old Campaign's date says it.
+        time.get(5..).unwrap_or(&time).to_owned()
+    };
+    print!("{}", campaigns_text(view, root, &local));
+}
+
+/// The columns of `af review campaigns`, in order, and their widths; 100 columns with the two
+/// spaces between each.
+const CAMPAIGN_COLUMNS: [(&str, usize); 7] = [
+    ("CAMPAIGN", 20),
+    ("ROUND", 5),
+    ("STATE", 6),
+    ("VERDICT", 22),
+    ("TOKENS", 9),
+    ("WALL", 10),
+    ("UPDATED", 16),
+];
+
+/// `text` in at most `width` characters, a cut marked with `~`.
+fn clip_cell(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}~")
+}
+
+/// `af review campaigns` as text: a table of one row per Campaign (its label, newest Round,
+/// state, verdict, what its Tasks charged and the wall-clock of its Rounds, and when its Store
+/// was last written), in 100 columns, then the problems. `time` prints a Unix time.
+fn campaigns_text(view: &CampaignListView, root: &Path, time: &dyn Fn(u64) -> String) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    if view.campaigns.is_empty() {
+        let readable = if view.problems.is_empty() {
+            ""
+        } else {
+            "readable "
+        };
+        let _ = writeln!(
+            text,
+            "No {readable}Campaigns under {}; af review run --campaign NAME starts one",
+            terminal_text(&root.display().to_string())
+        );
+    } else {
+        let row = |cells: [String; 7]| {
+            let mut line = String::new();
+            for (index, (cell, (_, width))) in cells.iter().zip(CAMPAIGN_COLUMNS).enumerate() {
+                if index > 0 {
+                    line.push_str("  ");
+                }
+                let cell = clip_cell(cell, width);
+                // The token count is a number: it lines up on the right.
+                if index == 4 {
+                    let _ = write!(line, "{cell:>width$}");
+                } else {
+                    let _ = write!(line, "{cell:<width$}");
+                }
+            }
+            line.trim_end().to_owned()
+        };
+        let _ = writeln!(
+            text,
+            "{}",
+            row(CAMPAIGN_COLUMNS.map(|(name, _)| name.into()))
+        );
+        for campaign in &view.campaigns {
+            let line = row([
+                terminal_text(&campaign.label),
+                campaign.round_label(),
+                campaign.state_word().to_owned(),
+                terminal_text(campaign.verdict.as_deref().unwrap_or("-")),
+                campaign
+                    .chargeable_tokens()
+                    .map_or("-".to_owned(), |tokens| tokens.to_string()),
+                campaign.wall_ms.map_or("-".to_owned(), human_duration),
+                campaign.last_activity_unix_ms.map_or("-".to_owned(), time),
+            ]);
+            let _ = writeln!(text, "{line}");
+        }
+        let _ = writeln!(
+            text,
+            "Details: af review report --campaign NAME; af review ledger --campaign NAME"
+        );
+    }
+    if !view.problems.is_empty() {
+        let _ = writeln!(text, "Problems: {}", view.problems.len());
+    }
     for problem in view
         .problems
         .iter()
         .filter(|problem| problem.release.is_none())
     {
-        println!(
+        // A problem is a sentence with its fix: it keeps its line, so a command in it copies
+        // whole.
+        let _ = writeln!(
+            text,
             "  {}: {}",
             terminal_text(&problem.directory),
             terminal_text(&problem.reason)
@@ -3410,8 +3534,9 @@ fn print_campaigns_text(view: &CampaignListView) {
             .filter_map(|problem| problem.release.as_ref()),
         "af review campaigns",
     ) {
-        println!("  {}", terminal_text(&row));
+        let _ = writeln!(text, "  {}", terminal_text(&row));
     }
+    text
 }
 
 #[derive(serde::Serialize)]
@@ -3621,11 +3746,24 @@ fn read_report_view(
     cas: &Cas,
     campaign: &str,
 ) -> Result<ReviewReportView, String> {
+    read_report_view_quietly(store, cas, campaign, true)
+}
+
+/// The report document; `warn` prints the Ledger's Scope authority warnings on stderr, as every
+/// command does and the browser does not.
+fn read_report_view_quietly(
+    store: &EventStore,
+    cas: &Cas,
+    campaign: &str,
+    warn: bool,
+) -> Result<ReviewReportView, String> {
     let run_id = campaign_run_id(campaign);
     let ledger = LedgerProjection::rebuild(store, cas, &run_id)
         .map_err(|e| e.to_string())?
         .into_ledger();
-    print_scope_authority_warnings(&ledger);
+    if warn {
+        print_scope_authority_warnings(&ledger);
+    }
     let events = store.replay(&run_id).map_err(|e| e.to_string())?;
     let reports: Vec<_> = events
         .iter()
@@ -3978,20 +4116,6 @@ fn transition_label(kind: review_store::ledger::TransitionKind) -> String {
 
 fn optional_number(number: Option<u32>) -> String {
     number.map_or_else(|| "-".to_string(), |number| number.to_string())
-}
-
-fn last_closed_summary(
-    round: Option<u32>,
-    epoch: Option<u32>,
-    verdict: Option<&str>,
-) -> Option<String> {
-    verdict.map(|verdict| {
-        format!(
-            "round {} epoch {}; {verdict}",
-            optional_number(round),
-            optional_number(epoch)
-        )
-    })
 }
 
 fn one_line(value: &str) -> String {
@@ -4769,8 +4893,10 @@ mod option_tests {
     }
 
     use super::{
-        CampaignMode, Options, campaign_id, campaign_labels_beneath, campaign_state_beneath,
-        default_campaigns_root, enumerate_campaigns, latest_round_evidence, validate_campaign_name,
+        CampaignListView, CampaignMode, CampaignProblemView, Options, browse_report, campaign_id,
+        campaign_labels_beneath, campaign_state_beneath, campaigns_text, default_campaigns_root,
+        enumerate_campaigns, latest_round_evidence, read_campaign_dir, report_tasks,
+        validate_campaign_name,
     };
 
     fn event(
@@ -4796,7 +4922,10 @@ mod option_tests {
         }
     }
 
-    fn campaign_manifest(cas: &review_store::Cas, ledger_node: &str) -> (String, String, String) {
+    pub(crate) fn campaign_manifest(
+        cas: &review_store::Cas,
+        ledger_node: &str,
+    ) -> (String, String, String) {
         let pipeline = format!(
             "version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"{ledger_node}\"\nkind = \"ledger\"\noutputs = [{{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }}]\n"
         );
@@ -4840,7 +4969,48 @@ mod option_tests {
         (manifest_id, findings, demands)
     }
 
-    fn write_campaign_opening(state: &std::path::Path, label: &str) {
+    /// A Campaign Store at `state` holding the opening of Campaign `label` and, for each
+    /// `(round, epoch)` of `rounds`, a Round started and never closed: what the browser's
+    /// Campaigns pane lists as an open Round.
+    pub(crate) fn write_campaign_rounds(
+        state: &std::path::Path,
+        label: &str,
+        rounds: &[(u32, u32)],
+    ) {
+        write_campaign_opening(state, label);
+        let cas = review_store::Cas::open(state.join("cas")).unwrap();
+        let (manifest_id, findings, demands) = campaign_manifest(&cas, "ledger");
+        let subject = cas.put(b"subject").unwrap();
+        let mut store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+        for (round, epoch) in rounds {
+            let started = review_core::RoundStartedPayloadV1 {
+                round: *round,
+                epoch: *epoch,
+                campaign_manifest_id: manifest_id.clone(),
+                subject_id: subject.clone(),
+                prior_finding_set_id: findings.clone(),
+                prior_demand_set_id: demands.clone(),
+            };
+            store
+                .append(
+                    &super::campaign_run_id(label),
+                    &cas,
+                    review_store::NewEvent::new(
+                        review_core::EventType::RoundStartedV1,
+                        serde_json::to_value(started).unwrap(),
+                    )
+                    .referencing(vec![
+                        manifest_id.clone(),
+                        subject.clone(),
+                        findings.clone(),
+                        demands.clone(),
+                    ]),
+                )
+                .unwrap();
+        }
+    }
+
+    pub(crate) fn write_campaign_opening(state: &std::path::Path, label: &str) {
         std::fs::create_dir_all(state).unwrap();
         let cas = review_store::Cas::open(state.join("cas")).unwrap();
         let (manifest_id, _, _) = campaign_manifest(&cas, "ledger");
@@ -4862,6 +5032,139 @@ mod option_tests {
                 .referencing(vec![manifest.authority_snapshot_id, manifest_id]),
             )
             .unwrap();
+    }
+
+    /// `af review campaigns` prints one scannable row per Campaign in 100 columns: its label,
+    /// newest Round, state, verdict, spend and last write; the problems follow, those another
+    /// release wrote as one row. The `--format json` document keeps its fields as they were.
+    #[test]
+    fn campaigns_text_is_a_table_of_one_row_per_campaign_in_100_columns() {
+        const TABLE: &str = include_str!("../tests/fixtures/review/campaigns-100.txt");
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path())
+            .unwrap()
+            .join("campaigns");
+        let long = "a-label-longer-than-its-column";
+        write_campaign_rounds(&root.join(campaign_id("pr-42")), "pr-42", &[(1, 1)]);
+        write_campaign_rounds(&root.join(campaign_id(long)), long, &[(1, 1)]);
+        write_campaign_opening(&root.join(campaign_id("fresh")), "fresh");
+        let mut campaigns = enumerate_campaigns(&root, false).unwrap().campaigns;
+        let labels: Vec<&str> = campaigns.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, [long, "fresh", "pr-42"]);
+        assert_eq!(
+            campaigns
+                .iter()
+                .map(|c| (c.state_word(), c.round_label()))
+                .collect::<Vec<_>>(),
+            [
+                ("open", "1".into()),
+                ("new", "-".into()),
+                ("open", "1".into())
+            ]
+        );
+        // What a fixture Store cannot record without running reviewers: a closed Round's
+        // verdict, the Tasks' charge, the wall-clock and a fixed last write.
+        for (index, campaign) in campaigns.iter_mut().enumerate() {
+            campaign.last_activity_unix_ms = Some(1_792_735_979_000 + index as u64 * 60_000);
+        }
+        campaigns[0].verdict = Some("incomplete (2 missing nodes)".into());
+        campaigns[0].latest_round = Some((2, 3));
+        campaigns[0].round_open = false;
+        campaigns[0].task_accounting = vec![report_tasks::charged("review", 1_234_567)];
+        campaigns[0].wall_ms = Some(185_000);
+        campaigns[2].verdict = Some("fail (not_converged)".into());
+        campaigns[2].round_open = false;
+        campaigns[2].task_accounting = vec![
+            report_tasks::charged("review", 40_000),
+            report_tasks::charged("review-2", 2_345),
+        ];
+        campaigns[2].wall_ms = Some(4_250);
+        let problems = vec![
+            CampaignProblemView {
+                directory: "broken".into(),
+                reason: "events.sqlite is not a real regular file beneath the Campaign state \
+                         directory"
+                    .into(),
+                release: None,
+            },
+            CampaignProblemView {
+                directory: "old-pr".into(),
+                reason: "Store old-pr was written by af 99.1.0".into(),
+                release: Some(review_core::store_writer::StoreProvenance::OtherReleases(
+                    vec!["99.1.0".into()],
+                )),
+            },
+        ];
+        let view = CampaignListView {
+            schema: "af/review-campaigns@1",
+            campaigns,
+            problems,
+        };
+        let utc = |unix_ms: u64| crate::human::utc_time(unix_ms)[5..].to_owned();
+        let text = campaigns_text(&view, &root, &utc);
+        assert_eq!(text, TABLE);
+        let table = text
+            .lines()
+            .take_while(|line| !line.starts_with("Problems:"));
+        assert!(table.clone().all(|line| line.len() <= 100), "{text}");
+        assert_eq!(
+            table.count(),
+            5,
+            "a header, a row per Campaign, the details line"
+        );
+        // The document is what it was: the table's columns are not new fields of it.
+        let document = serde_json::to_value(&view).unwrap();
+        let first = document["campaigns"][0].as_object().unwrap();
+        for absent in ["latest_round", "round_open", "task_accounting", "state"] {
+            assert!(!first.contains_key(absent), "{absent}");
+        }
+        assert_eq!(document["problems"].as_array().unwrap().len(), 2);
+        // Nothing listed: one line that says where, and how to start one.
+        let empty = CampaignListView {
+            schema: "af/review-campaigns@1",
+            campaigns: Vec::new(),
+            problems: Vec::new(),
+        };
+        let text = campaigns_text(&empty, &root, &utc);
+        assert_eq!(
+            text,
+            format!(
+                "No Campaigns under {}; af review run --campaign NAME starts one\n",
+                root.display()
+            )
+        );
+    }
+
+    /// A Campaign Store read on its own, whatever its directory is called: the Store of a plain
+    /// `af review run` under `review/local/`, or a registered `--state DIR`.
+    #[test]
+    fn a_campaign_store_is_read_whatever_its_directory_is_called() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("review/local/0123456789abcdef");
+        write_campaign_rounds(&state, "local", &[(1, 1)]);
+        let view = read_campaign_dir(&state).unwrap();
+        assert_eq!((view.label.as_str(), view.state_word()), ("local", "open"));
+        assert_eq!(view.latest_round, Some((1, 1)));
+        // Its commands name the Store: the default root does not resolve it by its label.
+        let selector = view.selector(&state, Some(&temp.path().join("campaigns")));
+        assert_eq!(
+            selector,
+            [
+                "--campaign",
+                "local",
+                "--state",
+                &state.display().to_string()
+            ]
+        );
+        // The report document the browser reads, without a word on stderr.
+        let report = browse_report(&state, "local").unwrap();
+        assert_eq!(report["schema"], "af/review-report@4");
+        assert_eq!(report["campaign"], "local");
+        // A directory without a Store is no Campaign.
+        let Err(error) = read_campaign_dir(&temp.path().join("review")) else {
+            panic!("a directory without a Store was read as a Campaign");
+        };
+        assert!(error.contains("events.sqlite"), "{error}");
     }
 
     #[test]

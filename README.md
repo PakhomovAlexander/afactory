@@ -191,7 +191,7 @@ convergence window and is for when a human explicitly asks for deep convergence 
 under the XDG review-state root and grows with every Subject materialized:
 
 ```sh
-af review campaigns                            # every Campaign, its verdicts and Round history
+af review campaigns                            # one row per Campaign: Round, state, verdict, spend
 af review gc --older-than 14 --keep 5          # preview: what would go, and how much
 af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directories
 ```

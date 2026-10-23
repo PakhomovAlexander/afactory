@@ -76,8 +76,9 @@ Namespaces:
   self       optimize the current project, or manage af installations
 
 `af help <topic>` explains config, layers, environment, exit-codes, json, providers, task-states, \
-and self. `af` alone \
-at a terminal opens a read-first browser over this scope's settings, providers and pipelines.";
+and self. `af` with no arguments at a terminal opens a read-first browser over this scope's \
+settings, Providers, Workers, pipelines, Tasks and review Campaigns: `?` there lists its keys, \
+and `:` runs any af command.";
 
 const AF_AFTER_HELP: &str = "\
 Exit codes:

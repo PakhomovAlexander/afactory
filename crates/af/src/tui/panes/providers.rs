@@ -122,6 +122,9 @@ pub(crate) struct ProvidersPane {
     /// `m` unfolds every Provider's `models` section in the list.
     models_open: bool,
     shared: SharedCatalogs,
+    /// The variables pointing a Provider CLI at its directory (`CLAUDE_CONFIG_DIR`,
+    /// `CODEX_HOME`) the browser's environment sets: an ambient row says it came through one.
+    selectors: BTreeSet<&'static str>,
 }
 
 impl ProvidersPane {
@@ -138,7 +141,20 @@ impl ProvidersPane {
             catalogs: Vec::new(),
             models_open: false,
             shared: SharedCatalogs::default(),
+            selectors: ["claude", "codex"]
+                .into_iter()
+                .map(|kind| providers::ambient_selector(kind).0)
+                .filter(|name| std::env::var_os(name).is_some())
+                .collect(),
         }
+    }
+
+    /// The pane as if the browser's environment set exactly `selectors`.
+    #[cfg(test)]
+    pub(crate) fn with_selectors(mut self, selectors: &[&'static str]) -> ProvidersPane {
+        self.selectors = selectors.iter().copied().collect();
+        self.rebuild();
+        self
     }
 
     /// Share the catalogs this pane reads with the Workers pane.
@@ -161,6 +177,8 @@ impl ProvidersPane {
         pane.inventory = Some(inventory);
         pane.usage = usage;
         pane.discover = false;
+        // A render never depends on the environment of the process painting it.
+        pane.selectors.clear();
         pane.rebuild();
         pane
     }
@@ -175,9 +193,16 @@ impl ProvidersPane {
             providers.find(|provider| provider.id == id)
         });
         match listed {
-            Some(provider) if providers::is_ambient_candidate(provider) => Err(format!(
-                "{id} is discovered, not registered: there is no registry entry to remove"
-            )),
+            // Nothing to remove: the line says how it is registered instead, in the status
+            // line's width; its rows also say how it got there and how to make it go.
+            Some(provider) if providers::is_ambient_candidate(provider) => {
+                let kind = &provider.kind;
+                let add = providers::available_provider_id(kind, &self.ids());
+                Err(format!(
+                    "{id}: no registry entry to remove; af provider add {add} --kind {kind} \
+                     adds it"
+                ))
+            }
             Some(_) => Ok(format!("provider remove {}", shell_words::quote(id))),
             None => Err(format!("{id} is not a listed Provider")),
         }
@@ -216,6 +241,15 @@ impl ProvidersPane {
         self.rebuild();
     }
 
+    /// Every Provider id the inventory lists.
+    fn ids(&self) -> BTreeSet<String> {
+        let providers = self
+            .inventory
+            .iter()
+            .flat_map(|inventory| &inventory.providers);
+        providers.map(|provider| provider.id.clone()).collect()
+    }
+
     fn rebuild(&mut self) {
         let title = match &self.selected {
             Some(id) => format!("PROVIDERS  {id}"),
@@ -228,6 +262,7 @@ impl ProvidersPane {
                 let models = Models {
                     catalogs: &self.catalogs,
                     open: self.models_open,
+                    selectors: &self.selectors,
                 };
                 inventory_rows(inventory, selected, self.usage, &models, &mut rows);
             }
@@ -387,6 +422,8 @@ impl Pane for ProvidersPane {
 struct Models<'a> {
     catalogs: &'a [ProviderCatalog],
     open: bool,
+    /// The selector variables the environment sets, which an ambient row names.
+    selectors: &'a BTreeSet<&'static str>,
 }
 
 /// The `af provider status` table for the selected provider, or for all of them, then each
@@ -414,7 +451,7 @@ fn inventory_rows(
     rows.push(Row::painted(providers::status_table_header(), Paint::Title));
     for provider in &inventory.providers {
         if selected.is_none_or(|id| id == provider.id) {
-            provider_rows(provider, selected.is_some(), &ids, rows);
+            provider_rows(provider, selected.is_some(), &ids, models.selectors, rows);
             let catalog = models.catalogs.iter().find(|c| c.id == provider.id);
             if let Some(catalog) = catalog {
                 model_rows(catalog, selected.is_some() || models.open, rows);
@@ -432,6 +469,7 @@ fn provider_rows(
     provider: &ProviderStatus,
     alone: bool,
     ids: &BTreeSet<String>,
+    selectors: &BTreeSet<&'static str>,
     rows: &mut Vec<Row>,
 ) {
     let ambient = providers::is_ambient_candidate(provider);
@@ -449,6 +487,12 @@ fn provider_rows(
         rows.push(Row::painted(format!("note   {}", provider.detail), paint));
     }
     if ambient {
+        // How it got here and how to make it go, then how to log it in.
+        let (selector, _) = providers::ambient_selector(&provider.kind);
+        let set = selectors.contains(selector);
+        for line in providers::ambient_explanation(&provider.kind, set, ids) {
+            rows.push(Row::painted(line, Paint::Muted));
+        }
         let hint = providers::setup_hint(&provider.kind, ids);
         rows.push(Row::painted(hint, Paint::Muted));
     }
