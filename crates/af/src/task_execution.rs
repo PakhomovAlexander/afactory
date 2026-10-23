@@ -3356,7 +3356,7 @@ fn show_lines(
     lines.extend(check_cache_lines(value));
     lines.extend(check_report_lines(cas, state));
     lines.extend(remote_check_lines(value));
-    lines.extend(storage_sweep_line(value));
+    lines.extend(storage_sweep_line(value).filter(|_| crate::storage::shows_recorded_sweeps()));
     lines.extend(measurement_lines(cas, state)?);
     lines.extend(report_lines(cas, result)?);
     for retry in &state.gate_retries {

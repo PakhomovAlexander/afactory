@@ -1561,9 +1561,8 @@ pub(crate) fn measurement_refused_below_the_floor(env: &[(&str, &str)]) {
     let failure = baseline.failure.as_ref().unwrap();
     assert_eq!(failure.reason.as_str(), "insufficient_disk");
     assert!(
-        failure
-            .detail
-            .starts_with("insufficient_disk: 0 B (0 bytes) free on the volume of "),
+        failure.detail.starts_with("insufficient_disk: ")
+            && failure.detail.contains(": 0 B (0 bytes) free, floor "),
         "{}",
         failure.detail
     );

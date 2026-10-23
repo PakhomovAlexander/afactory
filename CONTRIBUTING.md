@@ -5,6 +5,18 @@ Thanks for helping. This file is the short version of how changes land; `AGENTS.
 holds every design decision. Read the ADR that covers the area you are touching before you
 change it.
 
+## First: check this machine
+
+```sh
+make prereqs
+```
+
+It prints one line per prerequisite, `ok` with what it found or `missing` with the command that
+installs it: python3, git 2.30 or later, the toolchain `rust-toolchain.toml` pins (through
+rustup), cargo-nextest, a C compiler (`cc`), npx (for `markdownlint-cli2`), minisign, and 30 GiB
+free on the volume `target/` builds on. It installs and changes nothing,
+and exits 0 when everything is present, 1 otherwise (`scripts/prereqs.py`, issue #161).
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain (`1.88.0`, with `clippy` and `rustfmt`); `rustup`

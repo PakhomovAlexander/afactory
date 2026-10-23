@@ -343,6 +343,75 @@ fn task_run_help_describes_the_retry_of_a_failed_gate() {
     assert!(err(&both).contains("cannot be used with"), "{}", err(&both));
 }
 
+/// `af self status --refresh` and the bounded, offline-aware `af self update --check` say what
+/// they do in `--help` and in `af help self …` (findings S1, S2, E7).
+#[test]
+fn self_status_and_update_help_describe_the_release_check() {
+    for help in [
+        af(&["self", "status", "--help"]),
+        af(&["help", "self", "status"]),
+    ] {
+        assert!(help.status.success(), "{}", err(&help));
+        let flat = out(&help).split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "--refresh",
+            "Run the release check now, before printing, instead of scheduling it when due",
+            "last attempt <time> failed: <reason>",
+            "af self update --rc",
+            "status schedules the detached check",
+            "af/self-status@1",
+        ] {
+            assert!(flat.contains(needle), "`{needle}` missing:\n{flat}");
+        }
+    }
+    for help in [
+        af(&["self", "update", "--help"]),
+        af(&["help", "self", "update"]),
+    ] {
+        assert!(help.status.success(), "{}", err(&help));
+        let flat = out(&help).split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "exit 10 when a newer release exists, 0 when none does, 1 with the reason",
+            "before any `gh auth login` hint",
+            "AF_SELF_OFFLINE=1 it asks nothing, prints `offline: check skipped` and exits 0",
+            "5 s to connect and 30 s to list releases",
+        ] {
+            assert!(flat.contains(needle), "`{needle}` missing:\n{flat}");
+        }
+    }
+}
+
+/// `af task run --verbose` and `af task start --execute --verbose` print every line of the
+/// storage sweep; without it a Task command prints one summary line (finding C14).
+#[test]
+fn task_run_and_start_help_describe_verbose_sweeps() {
+    for (words, needle) in [
+        (
+            &["task", "run", "--help"][..],
+            "Print every line of the storage sweep that ends the run, not only its one summary \
+             line (`storage: freed 1.2 GiB (2 warm keys)`)",
+        ),
+        (
+            &["help", "task", "run"][..],
+            "Print every line of the storage sweep that ends the run",
+        ),
+        (
+            &["task", "start", "--help"][..],
+            "With --execute: print every line of the storage sweep that ends the run, not only \
+             its one summary line",
+        ),
+    ] {
+        let help = af(words);
+        assert!(help.status.success(), "{}", err(&help));
+        let flat = out(&help).split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("--verbose"), "{flat}");
+        assert!(flat.contains(needle), "`{needle}` missing:\n{flat}");
+    }
+    let preview = af(&["task", "start", "--file", "t.json", "--verbose"]);
+    assert_eq!(preview.status.code(), Some(2), "{}", err(&preview));
+    assert!(err(&preview).contains("--execute"), "{}", err(&preview));
+}
+
 /// `af provider models` says what it reads, what the list proves, its options and its exit codes,
 /// in `--help`, in `af help provider models` and in its man page (ADR-0148).
 #[test]
@@ -905,6 +974,67 @@ fn the_configuration_ladder_merges_in_order_and_names_origins() {
     assert!(
         layers.ends_with(&["directory", "project", "local"]),
         "{layers:?}"
+    );
+}
+
+/// `[task] rust_toolchain_policy` comes from the configuration ladder, a project's `.af/af.toml`
+/// over the user's, and `AF_TASK_RUST_TOOLCHAIN_POLICY_FILE` over both; `af config show
+/// --origin` names where it came from (finding C1).
+#[test]
+fn the_rust_toolchain_policy_shows_where_it_came_from() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let config = root.path().join("config");
+    write(
+        &config.join("af/config.toml"),
+        "[task]\nrust_toolchain_policy = \"~/.config/af/rust-toolchain.toml\"\n",
+    );
+    let project = root.path().join("proj");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let show = |env: &[(&str, &str)]| {
+        let mut command = crate::common::af();
+        command
+            .args(["config", "show", "--origin", "--repo"])
+            .arg(&project)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &config)
+            .env_remove("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE");
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{}", err(&output));
+        out(&output)
+            .lines()
+            .find(|line| line.starts_with("task.rust_toolchain_policy = "))
+            .unwrap_or_else(|| panic!("missing in\n{}", out(&output)))
+            .to_string()
+    };
+    let user = show(&[]);
+    assert!(
+        user.contains("\"~/.config/af/rust-toolchain.toml\"") && user.contains("# user "),
+        "{user}"
+    );
+    write(
+        &project.join(".af/af.toml"),
+        "[task]\nrust_toolchain_policy = \"/operator/project-toolchain.toml\"\n",
+    );
+    let from_project = show(&[]);
+    assert!(
+        from_project.contains("/operator/project-toolchain.toml")
+            && from_project.contains("# project ")
+            && from_project.contains(".af/af.toml:2"),
+        "{from_project}"
+    );
+    let variable = show(&[(
+        "AF_TASK_RUST_TOOLCHAIN_POLICY_FILE",
+        "/operator/variable.toml",
+    )]);
+    assert!(
+        variable.contains("/operator/variable.toml")
+            && variable.contains("# environment AF_TASK_RUST_TOOLCHAIN_POLICY_FILE"),
+        "{variable}"
     );
 }
 

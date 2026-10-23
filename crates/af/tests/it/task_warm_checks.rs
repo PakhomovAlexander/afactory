@@ -239,6 +239,7 @@ fn af_with(fixture: &Fixture, extra: &[(&str, &Path)], args: &[&str]) -> (i32, S
         .env_remove("CARGO_HOME")
         .env_remove("RUSTUP_HOME")
         .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE")
         .envs(extra.iter().copied())
         .args(args)
         .output()
@@ -2037,6 +2038,42 @@ fn a_native_toolchain_check_keeps_one_warm_key_across_tasks() {
     assert_ne!(third[0]["toolchain_id"], cold[0]["toolchain_id"]);
     assert_eq!(third[0]["bytes_available"], 0, "a new key starts cold");
     assert_eq!(warm_directories(&fixture).len(), 2);
+}
+
+/// Finding C1: `[task] rust_toolchain_policy` in the user's configuration selects the native
+/// toolchain mapping with no variable exported: the gate resolves the mapped toolchain, and the
+/// variable naming the same mapping selects the same warm key, so its check is warm.
+#[test]
+fn a_configured_toolchain_policy_resolves_the_native_toolchain_without_the_variable() {
+    let fixture = fixture(format!(
+        "{}{NATIVE}",
+        code_policy(
+            BUILD,
+            60_000,
+            false,
+            Some("build_cache = [\"cargo_target\"]")
+        )
+    ));
+    let mapping = native_toolchain(&fixture, "first");
+    let config = fixture.home.join(".config/af/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "[task]\nrust_toolchain_policy = \"{}\"\n",
+            mapping.display()
+        ),
+    )
+    .unwrap();
+    let configured = start(&fixture, "configured-one", 0);
+    let cold = observations(&configured);
+    assert!(cold[0]["toolchain_id"].is_string(), "{cold:?}");
+    assert_eq!(cold[0]["bytes_available"], 0);
+    let extra = [("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE", mapping.as_path())];
+    let variable = start_with(&fixture, &extra, "variable-two", 0);
+    let warm = observations(&variable);
+    assert_eq!(warm[0]["toolchain_id"], cold[0]["toolchain_id"], "one key");
+    assert_eq!(warm[0]["bytes_available"], 4096, "the second check is warm");
 }
 
 /// A check that reports the four directories af gave it, and whether each was empty and

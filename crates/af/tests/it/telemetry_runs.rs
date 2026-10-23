@@ -2106,7 +2106,13 @@ fn telemetry_commands_match_their_goldens() {
     ));
     crate::schemas::valid(&crate::schemas::validator("telemetry-show-v1.json"), &one);
     golden("show-span.json", &normalized(&one, &machine.root, false));
-    let gc = json(&machine.af(at, &[], &["telemetry", "gc", "--json"]));
+    // The free bytes pinned below 100 GiB: `[storage] max_bytes = "auto"` is then 20 GiB on
+    // every host.
+    let gc = json(&machine.af(
+        at,
+        &[("AF_TEST_FREE_BYTES", "53687091200")],
+        &["telemetry", "gc", "--json"],
+    ));
     crate::schemas::valid(&crate::schemas::validator("telemetry-gc-v1.json"), &gc);
     golden("gc.json", &normalized(&gc, &machine.root, true));
 

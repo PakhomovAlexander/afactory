@@ -1247,6 +1247,9 @@ pub(crate) struct Look {
     pub(crate) left: Vec<Left>,
     /// What cannot be judged, with why: a failure of the sweep.
     pub(crate) refused: Vec<(PathBuf, String)>,
+    /// The labels of its delivered Workspaces still registered, each the ID of the Task
+    /// `af task deliver` made it from: a Task the budget never takes (finding I9).
+    pub(crate) delivered: BTreeSet<String>,
 }
 
 /// What a file under `cas/removing` is, as stated without following it.
@@ -1553,6 +1556,14 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
     let collected: BTreeSet<String> = order.iter().cloned().collect();
     let mut look = Look {
         held: lock_available(store).err(),
+        delivered: log
+            .workspaces
+            .values()
+            .filter(|workspace| {
+                workspace.origin == review_core::project::WorkspaceOriginV1::Delivered
+            })
+            .map(|workspace| workspace.label.clone())
+            .collect(),
         ..Look::default()
     };
     let cas = open_cas(store);

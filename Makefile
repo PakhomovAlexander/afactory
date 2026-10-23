@@ -1,4 +1,10 @@
-.PHONY: release-check preflight-check check fmt lint test test-repeat release review-kernel-container-probes
+.PHONY: prereqs release-check preflight-check check fmt lint test test-repeat release review-kernel-container-probes
+
+# What this machine needs before `make check`, one line per tool with the command that installs
+# a missing one (issue #161): python3, git 2.30+, the rustup toolchain rust-toolchain.toml pins,
+# cargo-nextest, cc, npx, minisign and 30 GiB free where target/ builds. It changes nothing.
+prereqs:
+	@python3 -I scripts/prereqs.py
 
 # nextest is the gate (ADR-0124): one process per test, scheduled across every test binary.
 # `TEST_RUNNER=cargo` keeps the sequential libtest path for comparison. TEST_THREADS bounds
@@ -89,6 +95,7 @@ release-check:
 # the staged policy and any installed guarded measure (ADR-0185); they never run a benchmark.
 preflight-check:
 	$(CI_STEP) --stage preflight task-preflight python3 scripts/test-task-preflight.py
+	$(CI_STEP) --stage preflight prereqs python3 scripts/test-prereqs.py
 	$(CI_STEP) --stage preflight nextest-gate python3 scripts/test-nextest-gate.py
 	$(CI_STEP) --stage preflight test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) --stage preflight provider-auth-host python3 scripts/test-provider-auth-host.py

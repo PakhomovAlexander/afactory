@@ -359,6 +359,15 @@ impl ReviewTaskDomain {
         self
     }
 
+    /// Keep the warm build directories of the checks this domain runs below `root`, when the
+    /// machine moved them from `$XDG_CACHE_HOME/af/task-build-cache`.
+    pub fn with_task_build_cache_root(mut self, root: Option<std::path::PathBuf>) -> Self {
+        if let Some(root) = root {
+            self.code = self.code.with_task_build_cache_root(root);
+        }
+        self
+    }
+
     /// Machine-local Remote Check configuration (ADR-0140) for the checks this domain runs.
     pub fn with_remote_checks(mut self, remote: super::remote_check::RemoteCheckHost) -> Self {
         self.code = self.code.with_remote_checks(remote);

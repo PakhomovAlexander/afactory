@@ -135,7 +135,9 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
     let newer = warm_key(&machine, '2', 600 * 1024, 2 * DAY);
     let fresh = warm_key(&machine, '3', 600 * 1024, Duration::from_secs(5));
 
-    let shown = json(&machine.af(&machine.root, &[], &["storage", "--json"]));
+    // 50 GiB free: `max_bytes = "auto"` is 20 GiB on every host.
+    let modest = [("AF_TEST_FREE_BYTES", "53687091200")];
+    let shown = json(&machine.af(&machine.root, &modest, &["storage", "--json"]));
     schemas::valid(&schemas::validator("storage-v4.json"), &shown);
     assert_eq!(shown["max_bytes"], 20_u64 << 30);
     assert_eq!(shown["min_free_bytes"], 10_u64 << 30);
@@ -147,7 +149,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
         .unwrap();
     assert_eq!(warm["entries"], 3);
     assert!(warm["bytes"].as_u64().unwrap() >= 3 * 600 * 1024, "{warm}");
-    let listed = machine.af(&machine.root, &[], &["storage"]);
+    let listed = machine.af(&machine.root, &modest, &["storage"]);
     let (stdout, _) = text(&listed);
     assert!(listed.status.success());
     assert!(stdout.contains("warm keys"), "{stdout}");
@@ -231,8 +233,12 @@ fn a_repository_storage_table_changes_nothing_and_is_reported_as_ignored() {
         stdout.contains("# ignored: [storage] in ") && stdout.contains("machine-only table"),
         "{stdout}"
     );
-    assert!(stdout.contains("max_bytes = \"20GiB\""), "{stdout}");
-    let storage = json(&machine.af(&repo, &[], &["storage", "--json"]));
+    assert!(stdout.contains("max_bytes = \"auto\""), "{stdout}");
+    let storage = json(&machine.af(
+        &repo,
+        &[("AF_TEST_FREE_BYTES", "53687091200")],
+        &["storage", "--json"],
+    ));
     assert_eq!(storage["max_bytes"], 20_u64 << 30);
     // The machine's own layers do change it.
     let storage = json(&machine.af(
@@ -302,10 +308,14 @@ fn collection_after_a_run_takes_finished_tasks_only_when_auto_gc_is_on() {
     let newer = start(&machine, &repo, &state, "gc-newer.json", &eager);
     let (stdout, stderr) = text(&newer);
     assert!(newer.status.success(), "{stdout}\n{stderr}");
+    // One summary line names the class it freed, never the sweep's every line.
     assert!(
-        stderr.contains("af storage: removed task") && stderr.contains("Task gc-older"),
+        stderr
+            .lines()
+            .any(|line| line.starts_with("storage: freed ") && line.ends_with("(1 finished Task)")),
         "{stderr}"
     );
+    assert!(!stderr.contains("af storage: removed"), "{stderr}");
     let list = listed(&machine, &repo, &state);
     assert!(collected(&list, "gc-older"), "{list}");
     assert!(!collected(&list, "gc-newer"), "{list}");
@@ -369,8 +379,9 @@ pub(crate) fn attempt_refused_below_the_floor(env: &[(&str, &str)]) {
     let (stdout, stderr) = text(&refused);
     assert_eq!(refused.status.code(), Some(1), "{stdout}\n{stderr}");
     for needle in [
-        "insufficient_disk: 1.0 KiB (1024 bytes) free",
-        "free-disk floor of 10.0 GiB",
+        "insufficient_disk: ",
+        ": 1.0 KiB (1024 bytes) free, floor 10.0 GiB (10737418240 bytes); the sandbox root is ",
+        "set TMPDIR or [storage] sandbox_root to a volume with room",
         "`af storage`",
         "AF_STORAGE__MIN_FREE_BYTES",
     ] {
@@ -494,9 +505,10 @@ pub(crate) fn check_refused_below_the_floor(env: &[(&str, &str)]) {
         if let Ok(result) = serde_json::from_slice::<Value>(&bytes)
             && result["name"] == "pagination"
             && result["status"] == "not_run"
-            && result["reason"]
-                .as_str()
-                .is_some_and(|reason| reason.starts_with("insufficient_disk: 0 B (0 bytes) free"))
+            && result["reason"].as_str().is_some_and(|reason| {
+                reason.starts_with("insufficient_disk: ")
+                    && reason.contains(": 0 B (0 bytes) free, floor ")
+            })
         {
             found = true;
         }
@@ -997,7 +1009,7 @@ fn a_registered_store_keeps_the_users_files_through_prune_and_the_sweep_after_a_
     let refused = machine.af(
         &machine.root,
         &budget,
-        &["task", "run", "no-such-task", "--execute"],
+        &["task", "run", "no-such-task", "--execute", "--verbose"],
     );
     let (_, stderr) = text(&refused);
     assert!(!refused.status.success());
@@ -1081,8 +1093,9 @@ fn a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its
     unseal(&campaigns);
     let (stdout, stderr) = text(&run);
     assert!(run.status.success(), "{stdout}\n{stderr}");
+    // One summary line says so; `--verbose` would say it line by line.
     assert!(
-        stderr.contains("what af holds after this sweep is unknown"),
+        stderr.contains("; what af holds now is unknown; see `af storage`"),
         "{stderr}"
     );
     assert!(!stderr.contains("was not recorded on Task"), "{stderr}");
@@ -1150,4 +1163,195 @@ fn a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its
     assert!(line.contains(", 1 removal failed; "), "{line}");
     assert!(line.contains(" → unknown of a "), "{line}");
     assert!(line.ends_with("what it left cannot be measured"), "{line}");
+}
+
+/// Finding K18: `[storage] max_bytes = "auto"`, the default, holds one warm key on a roomy host:
+/// 20 GiB, or 40 GiB when the cache volume has more than 100 GiB free; `af storage` says which
+/// and why.
+#[test]
+fn the_default_budget_fits_one_warm_key_on_a_roomy_host() {
+    let machine = Machine::new();
+    for (free, budget, why) in [
+        (
+            "53687091200",
+            20_u64 << 30,
+            "50.0 GiB free on the cache volume; 40.0 GiB above",
+        ),
+        (
+            "214748364800",
+            40_u64 << 30,
+            "200.0 GiB free on the cache volume, more than",
+        ),
+    ] {
+        let env = [("AF_TEST_FREE_BYTES", free)];
+        let shown = json(&machine.af(&machine.root, &env, &["storage", "--json"]));
+        assert_eq!(shown["max_bytes"], budget, "{free}");
+        let listed = machine.af(&machine.root, &env, &["storage"]);
+        let (stdout, stderr) = text(&listed);
+        assert!(listed.status.success(), "{stderr}");
+        assert!(
+            stdout.contains("[storage] max_bytes = \"auto\": ") && stdout.contains(why),
+            "{stdout}"
+        );
+    }
+    // A machine layer's byte count is the budget whatever the host.
+    let set = json(&machine.af(
+        &machine.root,
+        &[
+            ("AF_TEST_FREE_BYTES", "214748364800"),
+            ("AF_STORAGE__MAX_BYTES", "\"30GiB\""),
+        ],
+        &["storage", "--json"],
+    ));
+    assert_eq!(set["max_bytes"], 30_u64 << 30);
+}
+
+/// Findings C14 and K18: under budget pressure a Task command prints one summary line naming
+/// the class it freed and never the sweep's own lines; `--verbose` prints those. A warm key the
+/// budget is too small for is said once, with the budget that fits; the newest key of a project
+/// checked in the last 7 days stays.
+#[test]
+fn a_task_command_under_pressure_prints_one_summary_line() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let idle = warm_key(&machine, '6', 600 * 1024, 30 * DAY);
+    let mut project = idle.parent().unwrap().to_path_buf();
+    project.set_file_name("b".repeat(64));
+    let active = project.join("7".repeat(64));
+    std::fs::create_dir_all(active.join("cargo_target")).unwrap();
+    std::fs::write(active.join("cargo_target/blob"), vec![7_u8; 600 * 1024]).unwrap();
+    std::fs::write(active.join("warm.lock"), b"").unwrap();
+    age(&active, 2 * DAY);
+    let pressure = [("AF_STORAGE__MAX_BYTES", "1KiB")];
+    let run = start(&machine, &repo, &state, "gc-older.json", &pressure);
+    let (stdout, stderr) = text(&run);
+    assert!(run.status.success(), "{stdout}\n{stderr}");
+    let summaries: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("storage: freed "))
+        .collect();
+    let [summary] = summaries.as_slice() else {
+        panic!("one summary line: {stderr}");
+    };
+    assert!(summary.contains("(1 warm key)"), "{summary}");
+    assert!(
+        summary.contains("nothing more may go now; see `af storage`"),
+        "{summary}"
+    );
+    assert!(
+        !stderr.contains("af storage: ") && !stderr.contains("storage sweep:"),
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("storage: warning: warm key "))
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert!(!idle.exists(), "a project idle for 30 days loses its key");
+    assert!(active.exists(), "the newest key of an active project stays");
+    // The Task just finished is no record the budget takes.
+    let listed = json(&machine.af(
+        &repo,
+        &[],
+        &["task", "list", "--state", state.to_str().unwrap(), "--json"],
+    ));
+    assert!(
+        listed["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|task| task.get("collected").is_none()),
+        "{listed}"
+    );
+
+    // `--verbose`: the sweep's lines, as `af storage prune` prints them.
+    let again = warm_key(&machine, '8', 600 * 1024, 30 * DAY);
+    let verbose = machine.af(
+        &repo,
+        &pressure,
+        &[
+            "task",
+            "run",
+            "gc-older",
+            "--execute",
+            "--verbose",
+            "--state",
+            state.to_str().unwrap(),
+        ],
+    );
+    let (stdout, stderr) = text(&verbose);
+    assert!(
+        stderr.contains(&format!("af storage: removed warm_key {}", again.display())),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("storage: freed "), "{stderr}");
+    // The Task's recorded sweep is shown by a `--verbose` run and by `af task show`, never by a
+    // plain run's output.
+    assert!(stdout.contains("storage sweep: "), "{stdout}");
+    let plain = machine.af(
+        &repo,
+        &pressure,
+        &[
+            "task",
+            "run",
+            "gc-older",
+            "--execute",
+            "--state",
+            state.to_str().unwrap(),
+        ],
+    );
+    let (stdout, stderr) = text(&plain);
+    assert!(!stdout.contains("storage sweep: "), "{stdout}");
+    assert!(!stderr.contains("af storage: "), "{stderr}");
+    let shown = machine.af(
+        &repo,
+        &[],
+        &[
+            "task",
+            "show",
+            "gc-older",
+            "--state",
+            state.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        text(&shown).0.contains("storage sweep: "),
+        "{}",
+        text(&shown).0
+    );
+}
+
+/// Findings I17 and T18: the floor measures the sandbox root af actually uses, `[storage]
+/// sandbox_root` when set, and the refusal names that volume, both numbers and how to move it.
+#[test]
+fn the_floor_names_the_configured_sandbox_root() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let sandboxes = machine.root.join("sandboxes");
+    let refused = start(
+        &machine,
+        &repo,
+        &state,
+        "gc-older.json",
+        &[
+            ("AF_TEST_FREE_BYTES", "2040109465"),
+            ("AF_STORAGE__SANDBOX_ROOT", sandboxes.to_str().unwrap()),
+        ],
+    );
+    let (stdout, stderr) = text(&refused);
+    assert_eq!(refused.status.code(), Some(1), "{stdout}\n{stderr}");
+    for needle in [
+        "insufficient_disk: ",
+        ": 1.9 GiB (2040109465 bytes) free, floor 10.0 GiB (10737418240 bytes); ",
+        &format!(
+            "the sandbox root is {}; set TMPDIR or [storage] sandbox_root to a volume with room",
+            sandboxes.display()
+        ),
+    ] {
+        assert!(stderr.contains(needle), "{needle}: {stderr}");
+    }
+    assert!(sandboxes.is_dir(), "the configured root is made");
 }

@@ -255,7 +255,8 @@ or activates a release older than 0.8.0 (the oldest supported release).",
     #[command(
         args_conflicts_with_subcommands = true,
         long_about = "Show what af keeps on this machine against its storage budget, and reclaim it.\n\n\
-af keeps at most `[storage] max_bytes` (20 GiB by default) between runs: warm build keys, warm \
+af keeps at most `[storage] max_bytes` (\"auto\" by default: 20 GiB, or 40 GiB on a host whose cache \
+volume has more than 100 GiB free) between runs: warm build keys, warm \
 Workspaces, review campaign Stores, Task Stores (in the state root and registered elsewhere), \
 Project Stores (counted, never evicted), each Survey a Project Store holds (collected one at a time behind a tombstone, never the newest complete one) and installed versions. `af storage` prints, per kind, the entries, their bytes and their oldest and \
 newest use; the Stores this release cannot read, with the reason; the total against the budget; \
@@ -1168,6 +1169,10 @@ pub(crate) enum TaskCommand {
         /// Explicitly execute immediately instead of stopping at the captured plan preview
         #[arg(long)]
         execute: bool,
+        /// With --execute: print every line of the storage sweep that ends the run, not only its
+        /// one summary line
+        #[arg(long, requires = "execute")]
+        verbose: bool,
         /// Capture local Worker tuning for this Task
         #[arg(long, value_name = "FILE")]
         bindings: Option<PathBuf>,
@@ -1322,6 +1327,10 @@ pub(crate) enum TaskCommand {
         /// Task's last failure was not a gate
         #[arg(long, conflicts_with = "confirm_plan")]
         retry_gate: bool,
+        /// Print every line of the storage sweep that ends the run, not only its one summary
+        /// line (`storage: freed 1.2 GiB (2 warm keys)`)
+        #[arg(long)]
+        verbose: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
@@ -2395,9 +2404,23 @@ pub(crate) enum SelfCommand {
         #[arg(long)]
         json: bool,
     },
-    /// What is installed, the default, its receipt, and the pin that applies here
+    /// What is installed, the default, its receipt, the pin that applies here, and the last release check
+    #[command(
+        long_about = "What is installed, the default, its receipt, the pin that applies here, and the last release check.\n\n\
+The `last check:` line says when a release check last answered and the newest releases it found; \
+when the last attempt failed it adds `last attempt <time> failed: <reason>`. A pre-release user \
+sees the newest stable release and the newest pre-release apart, with `af self update --rc` when \
+a newer pre-release exists. A check that has held its lock for over an hour is reported with the \
+command that clears it. When a check is due, status schedules the detached check as every other \
+command does; `--refresh` runs it now instead, before printing (never offline: AF_SELF_OFFLINE=1 \
+skips it).",
+        after_long_help = "Examples:\n  af self status\n  af self status --refresh\n  af self status --json | jq .last_error"
+    )]
     Status {
-        /// One JSON document on stdout
+        /// Run the release check now, before printing, instead of scheduling it when due
+        #[arg(long)]
+        refresh: bool,
+        /// One JSON document on stdout (af/self-status@1)
         #[arg(long)]
         json: bool,
     },
@@ -2407,6 +2430,11 @@ pub(crate) enum SelfCommand {
 machine's target, verifies it against the release's SHA256SUMS (signed with the release key; \
 the signature is required), installs it beside the other versions, and retargets the default \
 symlink atomically. The previous version stays installed for `af self rollback`.\n\n\
+`--check` only asks: exit 10 when a newer release exists, 0 when none does, 1 with the reason \
+when the release source cannot be asked (the anonymous route's HTTP status or curl error comes \
+before any `gh auth login` hint). With AF_SELF_OFFLINE=1 it asks nothing, prints `offline: check \
+skipped` and exits 0. A pre-release af also hears of a newer pre-release, which `--rc` installs. \
+Every network call is bounded: 5 s to connect and 30 s to list releases.\n\n\
 Never: changes what a pinned project runs, activates a release older than 0.8.0, or stores a \
 token.",
         after_long_help = "Examples:\n  af self update --check        exit 10 when a newer release exists\n  af self update\n  af self update --version 0.9.0"
