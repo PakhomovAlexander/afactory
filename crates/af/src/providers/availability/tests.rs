@@ -201,18 +201,16 @@ fn malformed_unsafe_and_unknown_state_fail_closed_without_replacement() {
 
 #[test]
 fn published_state_fixture_round_trips_the_closed_rust_shape() {
-    let bytes = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/provider-disables/v1/state.json"
-    ));
-    let state = State::parse(bytes).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let bytes = fs::read(root.join("fixtures/provider-disables/v1/state.json")).unwrap();
+    let state = State::parse(&bytes).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(serde_json::to_value(&state).unwrap(), value);
-    let schema: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../schemas/provider-disables-v1.json"
-    )))
-    .unwrap();
+    let schema: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("schemas/provider-disables-v1.json")).unwrap())
+            .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     assert!(validator.is_valid(&value));
     let mut long_id = value.clone();

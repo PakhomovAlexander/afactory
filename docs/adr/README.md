@@ -367,3 +367,5 @@ future readers need.
 - [0196 — Disable Providers until a machine-local expiry](0196-disable-providers-until-a-machine-local-expiry.md)
 - [0197 — Preserve the Provider ID domain and clear orphaned
   disables](0197-preserve-provider-id-domain-and-clear-orphaned-disables.md)
+- [0198 — Admit explicit ninety-minute checks and isolate Command catalog
+  fixtures](0198-admit-explicit-ninety-minute-checks-and-isolate-command-catalog-fixtures.md)

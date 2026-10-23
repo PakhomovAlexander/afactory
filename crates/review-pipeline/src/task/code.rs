@@ -454,7 +454,7 @@ impl CodeTaskPolicy {
             || self.checks.len() > 32
             || self.check_wall_ms == 0
             || self.check_wall_ms
-                > self.check_process_wall_ms.map_or(3_600_000, |per_check| {
+                > self.check_process_wall_ms.map_or(5_400_000, |per_check| {
                     per_check
                         .saturating_mul(self.checks.len() as u64)
                         .max(3_600_000)
@@ -2539,5 +2539,34 @@ impl TaskDomain for CodeTaskDomain {
             return Err("Task result changed its receipt-derived acceptance".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admitted_check_wall_is_reserved_exactly_by_generic_and_named_operators() {
+        let mut policy: CodeTaskPolicy = serde_json::from_value(json!({
+            "schema": "af.code-task-policy/1",
+            "checks": {"kernel": {"name": "kernel", "required": true,
+                "command": {"program": "true", "args": []}}},
+            "check_wall_ms": 3_600_000,
+            "require_container": false
+        }))
+        .unwrap();
+        let id = format!("sha256:{}", "a".repeat(64));
+        for wall in [3_600_000, 5_400_000] {
+            policy.check_wall_ms = wall;
+            let signatures = code_signatures(&id, &policy).unwrap();
+            for name in ["operator/check", "operator/check/kernel"] {
+                let attempt = signatures[name].attempt.as_ref().unwrap();
+                assert_eq!(attempt.wall_ms, wall);
+                assert_eq!(attempt.tokens, 0);
+            }
+        }
+        policy.check_wall_ms = 5_400_001;
+        assert!(code_signatures(&id, &policy).is_err());
     }
 }
