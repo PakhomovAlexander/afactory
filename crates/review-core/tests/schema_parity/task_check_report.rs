@@ -279,3 +279,81 @@ fn a_gate_retry_event_names_its_lease_result_and_failed_gates() {
         );
     }
 }
+
+/// `af task show --json` (`af/task-inspection@12`) carries a gate's evidence under `gate`
+/// beside its summary: each check node's latest check report, as recorded, and every gate
+/// retry of the Task's log (here a retry whose writer was lost before its check finished).
+/// Both are optional, never empty, and hold only those two shapes.
+#[test]
+fn an_inspection_carries_its_gate_s_check_reports_and_retries() {
+    let report = serde_json::to_value(report()).unwrap();
+    let retry = serde_json::to_value(retry()).unwrap();
+    let value = json!({
+        "schema":"af/task-inspection@12", "task_id":"pagination-cli", "revision_id":digest('1'),
+        "phase":{"kind":"running"},
+        "state":{"phase":"abandoned","outcome":"cancelled","cause":"writer_lost",
+            "next_action":"af task run pagination-cli"},
+        "clock":{"wall_ms":60000,"started_unix_ms":5,"deadline_unix_ms":60005},
+        "plan_id":digest('3'), "chargeable_tokens":"0", "attempts":3,
+        "gate":{"status":"failed","failed_tests":["af::it task_heavy::x"],
+            "flaky":["af::it task_starters::heavy_y"],
+            "check_reports":[{"node":"root.nodes.gate","artifact_id":digest('4'),
+                "record":report}],
+            "retries":[retry]},
+        "history":[], "execution_records":[], "run_reports":[]
+    });
+    assert_valid("task-inspection-v12.json", &value);
+    let mut summary_only = value.clone();
+    let gate = summary_only["gate"].as_object_mut().unwrap();
+    gate.remove("check_reports");
+    gate.remove("retries");
+    assert_valid("task-inspection-v12.json", &summary_only);
+    for (pointer, replacement, why) in [
+        ("/gate/check_reports", json!([]), "an empty report list"),
+        ("/gate/retries", json!([]), "an empty retry list"),
+        (
+            "/gate/check_reports/0/artifact_id",
+            json!("report"),
+            "a report that is no digest",
+        ),
+        (
+            "/gate/check_reports/0/record/checks/kernel/host/load_1m_start",
+            json!("22.4"),
+            "a load without two decimals",
+        ),
+        (
+            "/gate/retries/0/schema",
+            json!("af/TaskGateRetried@2"),
+            "a retry of another schema",
+        ),
+        (
+            "/gate/retries/0/gates",
+            json!([]),
+            "a retry that names no gate",
+        ),
+        (
+            "/gate/status",
+            json!("flaky"),
+            "a gate status outside the three",
+        ),
+    ] {
+        let mut changed = value.clone();
+        *changed.pointer_mut(pointer).unwrap() = replacement;
+        assert_invalid("task-inspection-v12.json", &changed, why);
+    }
+    for field in ["node", "record"] {
+        let mut changed = value.clone();
+        changed["gate"]["check_reports"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert_invalid("task-inspection-v12.json", &changed, field);
+    }
+    let mut extra = value;
+    extra["gate"]["receipts"] = json!([]);
+    assert_invalid(
+        "task-inspection-v12.json",
+        &extra,
+        "a gate field the inspection does not declare",
+    );
+}

@@ -1554,6 +1554,7 @@ fn main() {
         cli::Command::Help { words } => ("af help", help_command(&words)),
     };
     if let Some(signal) = interrupt::received() {
+        task_execution::print_last_lines();
         if let Some(recording) = recording.take() {
             recording.finish(
                 interrupt::exit_code(signal),
@@ -1609,6 +1610,9 @@ fn main() {
     drop(dispatched);
     perf_trace::finish();
     selfmgmt::after_command(&argv);
+    // The run log's last line, the Task's state and next command, after everything the
+    // command's housekeeping printed: a script reads it as stderr's last line.
+    task_execution::print_last_lines();
     if code != 0 {
         std::process::exit(code);
     }

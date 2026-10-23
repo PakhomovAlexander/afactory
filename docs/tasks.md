@@ -190,10 +190,11 @@ the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where 
 Every state that ended names the one command to run next: the last line of `af task show` and
 `af task run` (`next: af task run ID --retry-gate`), `none` when there is none, and
 `state.next_action` under `--json`. It is `af task findings ID` after reviewer findings,
-`af task run ID --retry-gate` after a failed check, `af task show ID --checks` when a check did not
-reach its tests, `af task run ID` to resume a cancelled run, `af task plan --file TASK_FILE --fit`
-after a budget or deadline ran out (with a new `task_id` once the Task ran), and `af provider
-status` or `af provider setup ID --login` after a Provider failure. `af task show` prints, per
+`af task run ID --retry-gate` after a failed gate that the kernel can run again on the same
+candidate ([Retry a failed gate](#retry-a-failed-gate)), whatever its cause, `af task show ID
+--checks` after one it cannot, `af task run ID` to resume a cancelled run, `af task plan --file
+TASK_FILE --fit` after a budget or deadline ran out (with a new `task_id` once the Task ran), and
+`af provider status` or `af provider setup ID --login` after a Provider failure. `af task show` prints, per
 failed node, its cause, the first line of its error and the artifact IDs of its whole diagnostic
 and stderr; a node that only lacks the receipt of a branch that failed comes after that branch.
 A command that exits with an outcome's code while its result goes to stdout, such as `af task
@@ -264,7 +265,9 @@ confirmed: nothing is re-planned or re-admitted, no Provider is probed and no ne
 When the check passes, the Task continues into its review or evaluation as if it had passed the
 first time; when it fails again, it ends at the gate again. `task show` adds `gate retried: NODE
 ran again on the same candidate`, and the Task's accounting keeps the failed check Attempt beside
-the new one. The retry gives the check node one Attempt more than its plan did, so the Task's own
+the new one. `af task show ID --json` carries the same facts under `gate`: `check_reports`, each
+check node's latest `af/TaskCheckReport@1`, and `retries`, every `TaskGateRetried@1`; `af task
+report` counts each `--retry-gate` as a run of the Task, and an `af task refresh` as none. The retry gives the check node one Attempt more than its plan did, so the Task's own
 Attempt, token and wall limits, and its Pipeline's, must still hold it. It is refused, with the
 reason and nothing recorded, for a Task that was verified, delivered, has not finished, or whose
 last failure was not the gate's (its checks passed, or a reviewer or evaluator ran after them),

@@ -232,11 +232,24 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     fixture.fail_preflight(true);
     let (code, stdout, stderr) = fixture.start();
     assert_eq!(
-        code, 3,
-        "a failed gate is changes_requested\n{stderr}\n{stdout}"
+        code, 5,
+        "a failed gate is gate_failed (`af help exit-codes`)\n{stderr}\n{stdout}"
     );
     let (code, shown, stderr) = fixture.af(&["task", "show", "gate-retry"]);
     assert_eq!(code, 0, "{stderr}\n{shown}");
+    assert_eq!(
+        shown.lines().next(),
+        Some("Task gate-retry: finished/gate_failed/check_failed"),
+        "{shown}"
+    );
+    assert_eq!(
+        shown
+            .lines()
+            .filter(|line| line.starts_with("next:"))
+            .count(),
+        1,
+        "one next command: {shown}"
+    );
     assert!(
         shown.lines().any(|line| line
             == "check pagination: stopped at preflight step performance-kernel-harness \
@@ -255,7 +268,33 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
         "{shown}"
     );
     let before = fixture.show_json("gate-retry");
+    crate::schemas::valid(
+        &crate::schemas::validator("task-inspection-v12.json"),
+        &before,
+    );
     assert_eq!(before["result"]["domain_conclusion"], "changes_requested");
+    assert_eq!(
+        before["state"]["next_action"],
+        "af task run gate-retry --retry-gate"
+    );
+    // The JSON carries the facts the text prints under `gate`: the check report, by stage and
+    // with its fix, and the host it ran on.
+    let [shown_report] = before["gate"]["check_reports"]
+        .as_array()
+        .unwrap()
+        .as_slice()
+    else {
+        panic!("one check report: {before:#}");
+    };
+    assert_eq!(shown_report["node"], "root.nodes.check");
+    let step = &shown_report["record"]["checks"]["pagination"]["steps"][0];
+    assert_eq!(step["stage"], "preflight");
+    assert_eq!(step["label"], "performance-kernel-harness");
+    assert_eq!(
+        step["fix"],
+        "python3 -I scripts/performance/cli.py harness-digest --write"
+    );
+    assert!(before["gate"].get("retries").is_none(), "{before:#}");
     let attempts_before = before["attempts"].as_u64().unwrap();
     assert_eq!(attempts_before, 2, "the implementer and the failed check");
     // Present only when an Attempt's usage is unknown, a lease lost under load among them.
@@ -266,6 +305,10 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     let [failed] = reports.as_slice() else {
         panic!("one check report: {reports:?}");
     };
+    assert_eq!(
+        &shown_report["record"], failed,
+        "the recorded report, as recorded"
+    );
     let schema = crate::schemas::validator("task-check-report-v1.json");
     crate::schemas::valid(&schema, failed);
     let run = &failed["checks"]["pagination"];
@@ -305,7 +348,26 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     );
     assert!(!stdout.contains("--retry-gate"), "{stdout}");
     let after = fixture.show_json("gate-retry");
+    crate::schemas::valid(
+        &crate::schemas::validator("task-inspection-v12.json"),
+        &after,
+    );
     assert_eq!(after["result"]["domain_conclusion"], "verified");
+    // The retry history and the passing gate's own report, under `gate`.
+    let [retry] = after["gate"]["retries"].as_array().unwrap().as_slice() else {
+        panic!("one gate retry: {after:#}");
+    };
+    assert_eq!(retry["schema"], "af/TaskGateRetried@1");
+    assert_eq!(retry["gates"][0]["node"], "root.nodes.check");
+    assert_eq!(
+        after["gate"]["check_reports"][0]["record"]["checks"]["pagination"]["tests"]["flaky"][0]["name"],
+        "af::it task_heavy::loaded"
+    );
+    // `af task report` counts the retry as a run of the Task: the start and the retry.
+    let (code, reported, stderr) = fixture.af(&["task", "report", "gate-retry", "--json"]);
+    assert_eq!(code, 0, "{stderr}\n{reported}");
+    let reported: Value = serde_json::from_str(reported.trim()).unwrap();
+    assert_eq!(reported["tasks"][0]["runs"], 2, "{reported:#}");
     assert_eq!(after["result"]["acceptance"], "satisfied");
     assert_eq!(after["plan_id"], before["plan_id"], "no new plan");
     assert_eq!(after["task_id"], "gate-retry", "no new Task");
@@ -396,7 +458,7 @@ fn a_retried_gate_continues_into_the_review_it_skipped() {
     let fixture = gate(directory.path(), "embedded-review", "review-retry", true);
     fixture.fail_preflight(true);
     let (code, stdout, stderr) = fixture.start();
-    assert_eq!(code, 3, "{stderr}\n{stdout}");
+    assert_eq!(code, 5, "a failed gate is gate_failed\n{stderr}\n{stdout}");
     let before = fixture.show_json("review-retry");
     assert!(before.get("unknown_usage_attempts").is_none(), "{before}");
     assert_eq!(
