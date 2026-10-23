@@ -30,10 +30,11 @@ pub const TARGET: &str = env!("AF_TARGET");
 /// it starts `RUSTUP_HOME` and `CARGO_HOME`. A test that sets any of these names itself
 /// afterwards wins, since the last `env` of a name counts.
 ///
-/// It also raises the provider probes' timeouts to [`LOAD_SAFE_PROBE_TIMEOUT_MS`], and sets
-/// `AF_SELF_OFFLINE`: an eligible command spawns the detached update check whether or not it
-/// has a terminal, and that check would ask the real release source over the network. Tests of
-/// the check use [`Sandbox::command`], whose release source is a directory. And it empties
+/// It also raises the provider probes' timeouts to [`LOAD_SAFE_PROBE_TIMEOUT_MS`], shortens the
+/// in-Attempt retry's first wait to [`TEST_RETRY_BASE_MS`], and sets `AF_SELF_OFFLINE`: an
+/// eligible command spawns the detached update check whether or not it has a terminal, and that
+/// check would ask the real release source over the network. Tests of the check use
+/// [`Sandbox::command`], whose release source is a directory. And it empties
 /// [`DETECT_SYSTEM_DIRS_SETTING`], so `af provider detect` never finds the developer's own
 /// `/opt/homebrew/bin/claude` or `/usr/local/bin/codex`; a test of those directories names
 /// private ones.
@@ -44,6 +45,7 @@ pub fn af() -> Command {
     }
     command.env(PROBE_TIMEOUT_SETTING, LOAD_SAFE_PROBE_TIMEOUT_MS);
     command.env(DETECT_SYSTEM_DIRS_SETTING, "");
+    command.env(RETRY_BASE_SETTING, TEST_RETRY_BASE_MS);
     command.env("AF_SELF_OFFLINE", "1");
     command
 }
@@ -52,6 +54,15 @@ pub fn af() -> Command {
 /// searches (`/opt/homebrew/bin`, `/usr/local/bin`) with a `:`-separated list; a release binary
 /// never reads it (ADR-0197).
 pub const DETECT_SYSTEM_DIRS_SETTING: &str = "AF_TEST_DETECT_SYSTEM_DIRS";
+
+/// The debug-only setting of the first wait before an Attempt calls its Provider again after a
+/// transient failure (ADR-0199); a release binary always waits its production 60 s.
+pub const RETRY_BASE_SETTING: &str = "AF_TEST_PROVIDER_RETRY_BASE_MS";
+
+/// Ten milliseconds in place of the production minute: a fake Provider's transient failure is
+/// retried as in production, without a test waiting minutes for it. A test whose subject is the
+/// wait sets its own.
+pub const TEST_RETRY_BASE_MS: &str = "10";
 
 /// The debug-only setting that raises the provider status, subscription, version and usage
 /// probes' timeouts (ADR-0114); a release binary never reads it.

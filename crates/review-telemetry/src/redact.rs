@@ -224,7 +224,52 @@ pub fn carries_auth_material(bytes: &[u8]) -> bool {
         .filter(|character| !character.is_ascii_whitespace())
         .map(|character| character.to_ascii_lowercase())
         .collect();
+    let text = without_documentation_hosts(&text);
     AUTH_MARKERS.iter().any(|marker| text.contains(marker))
+}
+
+/// The documentation hosts of the two Providers. A refusal or an error that links its own
+/// documentation carries no credential for that link (ADR-0199): the host alone is never a
+/// reason to withhold the capture. The same host on a login, OAuth, device or key path still is.
+const DOCUMENTATION_HOSTS: [&str; 4] = [
+    "platform.claude.com",
+    "docs.claude.com",
+    "docs.anthropic.com",
+    "platform.openai.com",
+];
+
+/// The paths of a documentation host that are login or credential pages, not documentation.
+const CREDENTIAL_PATHS: [&str; 7] = [
+    "/login",
+    "/oauth",
+    "/authorize",
+    "/device",
+    "/settings/keys",
+    "/api-keys",
+    "/account/api-keys",
+];
+
+/// `text` with every documentation host that does not lead a credential path masked, so that a
+/// marker such as `claude.com` no longer matches inside it. Every other marker still applies to
+/// the whole text, a `?code=` in a documentation URL among them.
+fn without_documentation_hosts(text: &str) -> std::borrow::Cow<'_, str> {
+    if !DOCUMENTATION_HOSTS.iter().any(|host| text.contains(host)) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut masked = text.to_owned();
+    for host in DOCUMENTATION_HOSTS {
+        let mut from = 0;
+        while let Some(at) = masked[from..].find(host).map(|at| at + from) {
+            let after = &masked[at + host.len()..];
+            if CREDENTIAL_PATHS.iter().any(|path| after.starts_with(path)) {
+                from = at + host.len();
+                continue;
+            }
+            masked.replace_range(at..at + host.len(), "documentation-host");
+            from = at + "documentation-host".len();
+        }
+    }
+    std::borrow::Cow::Owned(masked)
 }
 
 /// Whether one line of Provider text looks like credential material, so that none of it may be
@@ -1151,7 +1196,7 @@ impl WorkerRequestPositions {
 /// its schema under `schemas/` types as identities (digests, and the retry feedback's Attempt
 /// id); `*` is any member of a map or element of an array. Admission validated each payload
 /// against that schema before the request was composed; a position not listed here is judged.
-pub const KERNEL_PAYLOAD_IDENTITIES: [(&str, &[&str]); 9] = [
+pub const KERNEL_PAYLOAD_IDENTITIES: [(&str, &[&str]); 11] = [
     // source-tree-v1.json
     ("af/SourceTree@1", &["snapshot_id"]),
     // task-check-receipt-v1.json
@@ -1164,6 +1209,10 @@ pub const KERNEL_PAYLOAD_IDENTITIES: [(&str, &[&str]); 9] = [
         "af/TaskRetryFeedback@1",
         &["attempt_id", "contract_id", "compiler/proposal_id"],
     ),
+    // worker-reply-reask-v1.json (ADR-0199)
+    ("af/WorkerReplyReask@1", &["raw_reply_id"]),
+    // report-draft-validation-v1.json (ADR-0199): no identity position
+    ("af/ReportDraftValidation@1", &[]),
     // task-review-assignment-v1.json
     (
         "af/TaskReviewAssignment@1",

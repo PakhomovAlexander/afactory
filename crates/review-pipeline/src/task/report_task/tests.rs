@@ -960,3 +960,182 @@ fn a_pipeline_that_binds_no_sources_seals_and_checks_against_the_empty_set() {
         assert!(refused.contains("receives no sources"), "{refused}");
     }
 }
+
+/// The fixture domain with a report author node `root.nodes.author`, and that author's
+/// invocation against a one-file Snapshot.
+fn author_invocation(cas: &Cas) -> (ReportTaskDomain, TaskInvocationV1) {
+    let mut domain = domain(cas);
+    domain.graph.nodes.insert(
+        "root.nodes.author".into(),
+        review_graph::task::CompiledNode {
+            operator: CompiledOperator::Primitive {
+                operator: TaskOperatorV1::Worker {
+                    slot: "root.slots.author".into(),
+                },
+                signature: "worker/fixture/analyst".into(),
+            },
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::from([
+                    ("requirements".into(), port("af/Requirements@1", false)),
+                    ("source".into(), port(SOURCE_TREE_V1, false)),
+                ]),
+                outputs: BTreeMap::from([("draft".into(), same_source(DOCUMENT_DRAFT_V2, false))]),
+            },
+            inputs: BTreeMap::new(),
+            conditions: vec![],
+        },
+    );
+    let tree = manifest(
+        cas,
+        &[("src/lib.rs", EntryKind::File, b"fn a() {}\nfn b() {}\n")],
+    );
+    let (_, source) = snapshot(cas, &tree);
+    let (requirements, _) = cas
+        .put_artifact(
+            "af/Requirements@1",
+            kernel(),
+            vec![],
+            None,
+            json!({"text": "Explain where the time goes."}),
+        )
+        .unwrap();
+    let input = TaskInvocationV1 {
+        plan_id: cas.put(b"report plan").unwrap(),
+        node: "root.nodes.author".into(),
+        inputs: BTreeMap::from([
+            ("source".into(), source),
+            (
+                "requirements".into(),
+                one(requirements, "af/Requirements@1", None),
+            ),
+        ]),
+    };
+    (domain, input)
+}
+
+fn reply(drafts: Vec<serde_json::Value>) -> review_runner::task::WorkerReply {
+    review_runner::task::WorkerReply {
+        schema: "af.worker-reply/1".into(),
+        outputs: BTreeMap::from([("draft".into(), drafts)]),
+    }
+}
+
+/// ADR-0199, issue #167: an author's draft is validated for shape before it is sealed — exactly
+/// one draft, a draft its version admits, every required section by its exact heading — each
+/// check failing once here with the line that says what to change; a draft that passes them all
+/// is admitted. Size and citations stay the report check's, after sealing (ADR-0133).
+#[test]
+fn a_draft_is_validated_for_shape_before_sealing_and_each_check_fails_alone() {
+    let (_directory, cas) = store();
+    let (domain, input) = author_invocation(&cas);
+    // This author has no captured sources, so its draft cites none.
+    let mut good = serde_json::to_value(draft(&[cite("src/lib.rs", Some(2))])).unwrap();
+    good["citations"] = json!([]);
+    let passed = domain
+        .validate_draft_reply(&cas, &input, &reply(vec![good.clone()]))
+        .unwrap();
+    assert_eq!(passed.outcome, ReceiptOutcomeV1::Passed, "{passed:?}");
+    assert!(passed.failures.is_empty());
+    assert_eq!(passed.policy.required_sections, policy().required_sections);
+
+    let mut unnamed = good.clone();
+    unnamed["citations"] = json!(["not a name!"]);
+    let mut untitled = good.clone();
+    untitled["sections"] = json!([{"heading": "Summary", "body": "b"}]);
+    for (case, drafts, check, words) in [
+        (
+            "two drafts",
+            vec![good.clone(), good.clone()],
+            "one_draft",
+            "return exactly one draft on the `draft` port; the reply carried 2",
+        ),
+        ("no draft", vec![], "one_draft", "the reply carried 0"),
+        (
+            "an unnamed citation",
+            vec![unnamed],
+            "sets",
+            "the draft is not a valid af/DocumentDraft@2: ",
+        ),
+        (
+            "a missing section",
+            vec![untitled],
+            "required_sections",
+            "add a section headed exactly `Findings`; the draft's headings are `Summary`",
+        ),
+    ] {
+        let validation = domain
+            .validate_draft_reply(&cas, &input, &reply(drafts))
+            .unwrap();
+        assert_eq!(validation.outcome, ReceiptOutcomeV1::Failed, "{case}");
+        assert_eq!(
+            validation.checks[check],
+            ReceiptOutcomeV1::Failed,
+            "{case}: {validation:?}"
+        );
+        assert!(
+            validation
+                .failures
+                .iter()
+                .any(|failure| failure.contains(words)),
+            "{case}: {:?}",
+            validation.failures
+        );
+        validation.validate().unwrap();
+    }
+}
+
+/// A refused draft is refused before sealing with its validation kept as a typed receipt, which
+/// the author's retry feedback carries; the author's context states the policy verbatim.
+#[test]
+fn a_refused_draft_keeps_its_validation_receipt_and_the_author_reads_the_policy() {
+    use super::super::host::TaskDomain;
+    let (_directory, cas) = store();
+    let (domain, input) = author_invocation(&cas);
+    let mut good = serde_json::to_value(draft(&[cite("src/lib.rs", None)])).unwrap();
+    good["citations"] = json!([]);
+    let mut untitled = good.clone();
+    untitled["sections"] = json!([{"heading": "Summary", "body": "b"}]);
+    let refusal = domain
+        .check_worker_reply(&cas, &input, &reply(vec![untitled]))
+        .unwrap_err();
+    let receipt = refusal.receipt_id.clone().unwrap();
+    assert_eq!(
+        refusal.message,
+        format!(
+            "Report draft refused before sealing: add a section headed exactly `Findings`; the \
+             draft's headings are `Summary`; validation receipt: {receipt}"
+        )
+    );
+    let artifact = cas.get_artifact(&receipt).unwrap();
+    assert_eq!(artifact.artifact_type, REPORT_DRAFT_VALIDATION_V1);
+    let validation: ReportDraftValidationV1 = serde_json::from_value(artifact.payload).unwrap();
+    validation.validate().unwrap();
+    assert_eq!(
+        validation.checks["required_sections"],
+        ReceiptOutcomeV1::Failed
+    );
+    assert!(
+        domain
+            .check_worker_reply(&cas, &input, &reply(vec![good]))
+            .is_ok()
+    );
+
+    let instructions = domain.worker_instructions(&cas, &input).unwrap().unwrap();
+    for part in [
+        "## Report policy",
+        "\"max_document_bytes\": 65536",
+        "\"required_sections\": [\n    \"Findings\"\n  ]",
+        "\"require_repository_citations\": true",
+        "Give every heading in `required_sections` its own section",
+        "the report check after sealing judges it",
+        "Cite at least one repository location.",
+    ] {
+        assert!(instructions.contains(part), "{part}: {instructions}");
+    }
+    // Only the author writes against the policy; a kernel operation reads no instructions.
+    let seal = TaskInvocationV1 {
+        node: "root.nodes.seal".into(),
+        ..input
+    };
+    assert_eq!(domain.worker_instructions(&cas, &seal).unwrap(), None);
+}

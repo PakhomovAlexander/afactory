@@ -230,6 +230,7 @@ impl WorkerModelAdapter for Recording {
     ) -> ModelWorkerReturn {
         self.reached.store(true, Ordering::SeqCst);
         ModelWorkerReturn {
+            notes: Default::default(),
             message: Ok(b"{}".to_vec()),
             usage: None,
             usage_observation: None,
@@ -247,6 +248,7 @@ fn wrapper(
     resolve: fn(&str) -> Option<PathBuf>,
 ) -> CurrentTaskProviderAdapter {
     // Fixed grants: a gate may run these tests without USER in its environment.
+    let binary = BinaryStamp::of(&program);
     let identity = TaskProviderIdentity {
         home: spec.auth_dir.clone().map(Into::into),
         user: Some("fixture".into()),
@@ -254,6 +256,10 @@ fn wrapper(
         program,
         principal_id: "sha256:".to_string() + &"0".repeat(64),
         auth_method: "claude.ai".into(),
+        org: None,
+        cli_version: None,
+        binary,
+        probe_wall: None,
         probe_path: sanitized_path(),
     };
     let native = Recording {
@@ -353,11 +359,16 @@ fn the_installed_client_replaces_a_removed_executable_and_a_present_one_is_kept(
 const BROKEN_INSTALL: &str = "printf '%s\\n' 'Error: Missing optional dependency @openai/codex-darwin-arm64. Reinstall Codex: npm install -g @openai/codex@latest' >&2\nexit 1";
 
 fn identity(spec: ProviderSpec, program: PathBuf) -> TaskProviderIdentity {
+    let binary = BinaryStamp::of(&program);
     TaskProviderIdentity {
         spec,
         program,
         principal_id: "sha256:".to_string() + &"0".repeat(64),
         auth_method: "chatgpt".into(),
+        org: None,
+        cli_version: None,
+        binary,
+        probe_wall: None,
         probe_path: std::ffi::OsString::from("/usr/bin:/bin"),
         home: std::env::var_os("HOME"),
         user: std::env::var_os("USER"),
@@ -432,9 +443,14 @@ exit 64"#;
             Instant::now() + Duration::from_secs(30),
             &AtomicBool::new(false),
         );
+        // Another account is an account change; no login is an identity no longer current.
         assert!(
-            matches!(checked, Err(Recheck::NotCurrent)),
-            "an answering {} CLI was diagnosed as uninstalled",
+            matches!(
+                (kind, &checked),
+                (ProviderKind::Codex, Err(Recheck::Changed("account")))
+                    | (ProviderKind::Claude, Err(Recheck::NotCurrent))
+            ),
+            "an answering {} CLI was diagnosed as uninstalled or silent",
             kind.name()
         );
     }
@@ -558,4 +574,192 @@ exit 64"#,
         "{refusal}"
     );
     assert!(!refusal.contains("login"), "{refusal}");
+}
+
+/// A Claude identity captured for `developer@example.test` at CLI version 2.1.299, whose probes
+/// are bounded to `probe_wall` each.
+fn claude_identity(
+    spec: ProviderSpec,
+    program: PathBuf,
+    probe_wall: Duration,
+) -> TaskProviderIdentity {
+    let mut identity = identity(spec, program);
+    identity.principal_id = claude_principal(&serde_json::json!({
+        "loggedIn": true, "apiProvider": "firstParty", "authMethod": "claude.ai",
+        "email": "developer@example.test"
+    }))
+    .unwrap();
+    identity.auth_method = "claude.ai".into();
+    identity.cli_version = Some("2.1.299 (Claude Code)".into());
+    identity.probe_wall = Some(probe_wall);
+    identity
+}
+
+/// The `auth status --json` answer of `email` logged in by `method`.
+fn status_answer(email: &str, method: &str) -> String {
+    format!(
+        "if [ \"$1\" = auth ]; then printf '%s\\n' '{{\"loggedIn\":true,\"apiProvider\":\"firstParty\",\"authMethod\":\"{method}\",\"email\":\"{email}\"}}'; exit 0; fi"
+    )
+}
+
+/// ADR-0199, issue #289: an identity probe that times out proves nothing, so the recheck sends it
+/// again, three probes in all within the Attempt's wall, and then fails as the environment's
+/// failure — never as an account change.
+#[test]
+fn an_identity_probe_that_times_out_is_sent_again_and_then_fails_as_the_environment() {
+    let directory = tempfile::tempdir().unwrap();
+    let (program, spec) = fixture(
+        ProviderKind::Claude,
+        directory.path(),
+        "if [ \"$1\" = auth ]; then sleep 30 & wait; fi\nexit 64",
+    );
+    let identity = claude_identity(spec, program, Duration::from_millis(300));
+    let started = Instant::now();
+    let refused = identity
+        .recheck_account(Instant::now() + LOAD_SAFE_WALL, &AtomicBool::new(false))
+        .err()
+        .expect("a silent probe is refused");
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "probes were not bounded"
+    );
+    let Recheck::Unverified { silences, events } = &refused else {
+        panic!("silence was taken for another refusal");
+    };
+    assert_eq!(silences, &[ProbeSilenceV1::TimedOut; 3]);
+    assert_eq!(
+        events,
+        &[2, 3].map(|probe| ProviderEventV1::IdentityReprobed {
+            cause: ProbeSilenceV1::TimedOut,
+            probe,
+        })
+    );
+    let diagnostic = refused.diagnostic(ProviderKind::Claude, identity.probe_wall);
+    assert!(
+        diagnostic.starts_with("identity recheck: probe timed out 3× (up to 1 s each)"),
+        "{diagnostic}"
+    );
+    for part in [
+        "the account was not verified as changed",
+        "(environment)",
+        "run the Task again with `af task run`",
+    ] {
+        assert!(diagnostic.contains(part), "{part}: {diagnostic}");
+    }
+    assert!(!diagnostic.contains("differs"), "{diagnostic}");
+}
+
+/// A probe that answers a line af cannot read proves nothing either: re-probed, then the
+/// environment's failure.
+#[test]
+fn an_identity_probe_that_answers_malformed_is_sent_again_and_then_fails_as_the_environment() {
+    let directory = tempfile::tempdir().unwrap();
+    let (program, spec) = fixture(
+        ProviderKind::Claude,
+        directory.path(),
+        "if [ \"$1\" = auth ]; then echo 'Loading…'; exit 0; fi\nexit 64",
+    );
+    let identity = claude_identity(spec, program, Duration::from_secs(20));
+    let refused = identity
+        .recheck_account(Instant::now() + LOAD_SAFE_WALL, &AtomicBool::new(false))
+        .err()
+        .expect("a malformed answer is refused");
+    let Recheck::Unverified { silences, .. } = &refused else {
+        panic!("a malformed answer was taken for another refusal");
+    };
+    assert_eq!(silences, &[ProbeSilenceV1::Malformed; 3]);
+    let diagnostic = refused.diagnostic(ProviderKind::Claude, identity.probe_wall);
+    assert!(
+        diagnostic.starts_with(
+            "identity recheck: probe answered malformed 3×; the account was not verified as \
+             changed"
+        ),
+        "{diagnostic}"
+    );
+}
+
+/// A real account change still fails the recheck, named as one, with the command that re-plans.
+#[test]
+fn another_account_still_fails_the_recheck_as_an_account_change() {
+    let directory = tempfile::tempdir().unwrap();
+    let body = format!(
+        "{}\nexit 64",
+        status_answer("other@example.test", "claude.ai")
+    );
+    let (program, spec) = fixture(ProviderKind::Claude, directory.path(), &body);
+    let identity = claude_identity(spec, program, Duration::from_secs(20));
+    let refused = identity
+        .recheck_account(Instant::now() + LOAD_SAFE_WALL, &AtomicBool::new(false))
+        .err()
+        .expect("another account is refused");
+    assert!(matches!(refused, Recheck::Changed("account")));
+    assert_eq!(
+        refused.diagnostic(ProviderKind::Claude, None),
+        "identity recheck: the Claude account differs from the one captured at plan: run \
+         `af task plan` again"
+    );
+}
+
+/// ADR-0199, the auto-update rule: a CLI that updated itself — a new version, the same account,
+/// its method spelled `oauth` where the capture spelled `claude.ai` — passes the recheck. The
+/// update is one Provider event, and the capture follows the new version, so it is recorded once.
+#[test]
+fn a_cli_update_with_the_same_account_passes_and_the_capture_follows_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let body = format!(
+        "[ \"$1\" = --version ] && {{ echo '2.1.300 (Claude Code)'; exit 0; }}\n{}\nexit 64",
+        status_answer("developer@example.test", "oauth")
+    );
+    let (program, spec) = fixture(ProviderKind::Claude, directory.path(), &body);
+    let mut identity = claude_identity(spec, program, Duration::from_secs(20));
+    // The capture read another executable file: the launcher was repointed since.
+    identity.binary = None;
+    let rechecked = identity
+        .recheck_account(Instant::now() + LOAD_SAFE_WALL, &AtomicBool::new(false))
+        .unwrap_or_else(|_| panic!("an update alone was refused"));
+    assert_eq!(
+        rechecked.events,
+        [ProviderEventV1::IdentityRefreshed {
+            provider: "fixture".into(),
+            previous_version: "2.1.299 (Claude Code)".into(),
+            current_version: "2.1.300 (Claude Code)".into(),
+        }]
+    );
+    let reached = std::sync::Arc::new(AtomicBool::new(false));
+    let adapter = CurrentTaskProviderAdapter {
+        model: "claude-fixture-1".into(),
+        effort: "high".into(),
+        resolve: resolve_program,
+        current: Mutex::new((
+            identity.clone(),
+            Arc::new(Recording {
+                reached: reached.clone(),
+            }),
+        )),
+    };
+    adapter.follow(&identity, &rechecked);
+    let followed = adapter.current.lock().unwrap().0.clone();
+    assert_eq!(
+        followed.cli_version.as_deref(),
+        Some("2.1.300 (Claude Code)")
+    );
+    // Rechecked again with the capture it follows, the update is not reported twice.
+    let again = followed
+        .recheck_account(Instant::now() + LOAD_SAFE_WALL, &AtomicBool::new(false))
+        .unwrap_or_else(|_| panic!("the followed capture was refused"));
+    assert!(again.events.is_empty());
+    // Capture starts no `--version` process, so the first update names no earlier version.
+    let mut fresh = identity.clone();
+    fresh.cli_version = None;
+    let rechecked = fresh
+        .recheck_account(Instant::now() + LOAD_SAFE_WALL, &AtomicBool::new(false))
+        .unwrap_or_else(|_| panic!("an update alone was refused"));
+    assert_eq!(
+        rechecked.events,
+        [ProviderEventV1::IdentityRefreshed {
+            provider: "fixture".into(),
+            previous_version: "unknown".into(),
+            current_version: "2.1.300 (Claude Code)".into(),
+        }]
+    );
 }

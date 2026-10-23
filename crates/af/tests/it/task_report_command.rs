@@ -715,18 +715,20 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     );
 }
 
-/// ADR-0143 after `af task gc --apply`: the author's first Codex call fails at capacity with no
-/// usage report and its retry succeeds, so the Task completes with one Attempt whose usage is
-/// unknown. Collected, its tombstone keeps that count, and `af task list`, `af task show` and
-/// `af task report` still show `(+1 unknown)` beside the tokens, never a bare charge; the
-/// report block still passes the pull request check.
+/// ADR-0143 after `af task gc --apply`: the author's first Codex Attempt fails at capacity with
+/// no usage report — its first call and the three it retries within the Attempt (ADR-0199) — and
+/// the next Attempt succeeds, so the Task completes with one Attempt whose usage is unknown.
+/// Collected, its tombstone keeps that count, and `af task list`, `af task show` and `af task
+/// report` still show `(+1 unknown)` beside the tokens, never a bare charge; the report block
+/// still passes the pull request check.
 #[test]
 fn a_collected_task_keeps_its_unknown_usage_count() {
     let (f, done) = failed_provider_task_with(
         |_| None,
         concat!(
             " kind='author'; r=json.loads(request)\n",
-            " if not os.path.exists(home+'/capacity'): open(home+'/capacity','w').close();",
+            " c=home+'/capacity'; n=int(open(c).read()) if os.path.exists(c) else 0\n",
+            " if n<4: open(c,'w').write(str(n+1));",
             " print(json.dumps({'type':'turn.failed','error':{'message':",
             "'Selected model is at capacity. Please try a different model.'}})); sys.exit(1)\n",
         ),

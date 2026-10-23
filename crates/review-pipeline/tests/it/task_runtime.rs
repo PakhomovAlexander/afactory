@@ -31,6 +31,8 @@ mod output_admission;
 mod publication;
 #[path = "task_runtime/reservation.rs"]
 mod reservation;
+#[path = "task_runtime/resilience.rs"]
+mod resilience;
 #[path = "task_runtime/retry.rs"]
 mod retry;
 #[path = "task_runtime/unknown_usage.rs"]
@@ -96,6 +98,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             }))
             .unwrap();
             ModelWorkerReturn {
+                notes: Default::default(),
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&reply).unwrap()],
                 message: Ok(reply),
@@ -1365,6 +1368,7 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
                 (serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":"Checked document"}]}})).unwrap(),11)
             };
             ModelWorkerReturn {
+                notes: Default::default(),
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: Ok(bytes),
@@ -1514,29 +1518,50 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
                 review_runner::task::WORKER_REPLY_FORMAT
             );
             assert!(request.get("task").is_none());
-            let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+            // Call 0 does not parse; call 1 is its re-ask in the same Attempt and does not parse
+            // either; call 2 is the next Attempt, with typed retry feedback only (ADR-0199).
+            let call = self.0.fetch_add(1, Ordering::SeqCst);
             assert_eq!(
                 request["feedback"].as_array().unwrap().len(),
-                usize::from(!first)
+                usize::from(call > 0)
             );
-            if !first {
-                assert_eq!(
-                    request["feedback"][0]["payload"]["code"],
-                    "invalid_output_contract"
-                );
-                assert!(!String::from_utf8_lossy(&bytes).contains("malformed response"));
+            match call {
+                0 => {}
+                1 => {
+                    let reask = &request["feedback"][0];
+                    assert_eq!(reask["artifact_type"], "af/WorkerReplyReask@1");
+                    assert!(
+                        reask["payload"]["error"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("Invalid typed Worker reply: "),
+                        "{reask}"
+                    );
+                    assert_eq!(reask["payload"]["excerpt"], "malformed response");
+                }
+                _ => {
+                    assert_eq!(
+                        request["feedback"][0]["payload"]["code"],
+                        "invalid_output_contract"
+                    );
+                    assert!(!String::from_utf8_lossy(&bytes).contains("malformed response"));
+                }
             }
-            let message = if first {
+            let message = if call < 2 {
                 b"malformed response".to_vec()
             } else {
                 serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":"A checked migration guide"}]}})).unwrap()
             };
             ModelWorkerReturn {
+                notes: Default::default(),
                 usage_observation: None,
-                raw_artifact_ids: vec![cas.put(&message).unwrap()],
+                raw_artifact_ids: vec![
+                    cas.put(format!("native capture {call}").as_bytes())
+                        .unwrap(),
+                ],
                 message: Ok(message),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(
-                    if first { 20 } else { 30 },
+                    if call < 2 { 20 } else { 30 },
                 )),
                 native_failure: None,
             }
@@ -1593,8 +1618,9 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
     assert!(runtime.execute().unwrap().complete());
     let execution = runtime.projection().unwrap().execution.unwrap();
     assert_eq!(execution.budget.begun_attempts(), 2);
-    assert_eq!(execution.budget.committed_tokens(), 50);
-    assert_eq!(model.0.load(Ordering::SeqCst), 2);
+    // The re-ask spent the first Attempt's budget: 20 + 20, then 30 for the second Attempt.
+    assert_eq!(execution.budget.committed_tokens(), 70);
+    assert_eq!(model.0.load(Ordering::SeqCst), 3);
     assert!(execution.pending_attempts().is_empty());
     drop(runtime);
     let wall = f
@@ -1606,7 +1632,7 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
         wall.iter()
             .map(|a| a.usage.as_ref().unwrap().chargeable_tokens.get())
             .sum::<u128>(),
-        50
+        70
     );
 }
 

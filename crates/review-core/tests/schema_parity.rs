@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 213] = [
+const SCHEMAS: [&str; 216] = [
     "task-findings-v1.json",
     "task-materialized-v1.json",
     "task-diff-v1.json",
@@ -143,6 +143,7 @@ const SCHEMAS: [&str; 213] = [
     "document-draft-v2.json",
     "report-sources-v1.json",
     "report-check-receipt-v1.json",
+    "report-draft-validation-v1.json",
     "report-evaluation-v1.json",
     "report-verification-v1.json",
     "catalog-contract-fixtures-v1.json",
@@ -180,6 +181,7 @@ const SCHEMAS: [&str; 213] = [
     "task-worker-reply-v1.json",
     "task-worker-request-v1.json",
     "task-retry-feedback-v1.json",
+    "worker-reply-reask-v1.json",
     "artifact-envelope-v1.json",
     "task-contracts-v1.json",
     "task-transition-v5.json",
@@ -187,6 +189,7 @@ const SCHEMAS: [&str; 213] = [
     "task-gate-cleanup-v1.json",
     "task-storage-sweep-v2.json",
     "task-execution-started-v1.json",
+    "task-provider-event-v1.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
     "legacy-review-task-policy-v4.json",
@@ -4545,3 +4548,192 @@ mod project_brief;
 mod project_collection;
 #[path = "schema_parity/store_writer.rs"]
 mod store_writer;
+
+/// ADR-0199 and ADR-0145: `af/TaskProviderEvent@1` is its own event kind of the Task log,
+/// `TaskProviderEvent@1`, naming its lease, Attempt and node and referencing no artifact. Every
+/// event kind it carries is accepted by the schema and the typed contract alike, and the same
+/// forgeries are refused by both.
+#[test]
+fn a_provider_event_is_its_own_task_log_event() {
+    use review_core::task::provider_event::*;
+    let digest = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+    let events = [
+        ProviderEventV1::RetryWait {
+            class: TransientClassV1::Capacity,
+            retry: 2,
+            max_retries: 3,
+            wait_ms: 120_000,
+            retry_after: false,
+        },
+        ProviderEventV1::ReplyReasked {
+            raw_reply_id: digest('a'),
+            reask_id: digest('b'),
+        },
+        ProviderEventV1::IdentityReprobed {
+            cause: ProbeSilenceV1::TimedOut,
+            probe: 2,
+        },
+        ProviderEventV1::IdentityRefreshed {
+            provider: "claude-main".into(),
+            previous_version: "2.1.299 (Claude Code)".into(),
+            current_version: "2.1.300 (Claude Code)".into(),
+        },
+        ProviderEventV1::AdmissionReprobed {
+            category: Some("cyber".into()),
+        },
+        ProviderEventV1::AdmissionReprobed { category: None },
+    ];
+    for kind in events {
+        let event = TaskProviderEventV1::new(
+            "cli-4242",
+            2,
+            100,
+            "01jd8m4qz9k7v3n2p6r8t0w200",
+            "root.nodes.review.nodes.bugs",
+            kind,
+        );
+        event.validate().unwrap();
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["schema"], TASK_PROVIDER_EVENT_V1);
+        assert_valid("task-provider-event-v1.json", &value);
+        review_core::event::validate_event_payload(EventType::TaskProviderEventV1, &value).unwrap();
+        let wire = serde_json::to_value(RunEvent {
+            event_id: "a".repeat(26),
+            run_id: "task:4242".into(),
+            sequence: 3,
+            event_type: EventType::TaskProviderEventV1,
+            occurred_at: "2026-10-22T00:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: value.clone(),
+        })
+        .unwrap();
+        assert_eq!(wire["type"], "TaskProviderEvent@1");
+        assert_valid("run-event-v1.json", &wire);
+    }
+    let base = serde_json::to_value(TaskProviderEventV1::new(
+        "cli-4242",
+        2,
+        100,
+        "01jd8m4qz9k7v3n2p6r8t0w200",
+        "root.nodes.review",
+        ProviderEventV1::RetryWait {
+            class: TransientClassV1::Network,
+            retry: 1,
+            max_retries: 3,
+            wait_ms: 60_000,
+            retry_after: false,
+        },
+    ))
+    .unwrap();
+    for (why, pointer, forged) in [
+        ("schema", "/schema", json!("af/TaskProviderEvent@2")),
+        ("zero epoch", "/epoch", json!(0)),
+        ("attempt", "/attempt_id", json!("short")),
+        ("node", "/node", json!("root..review")),
+        ("class", "/event/class", json!("quota")),
+        ("retry zero", "/event/retry", json!(0)),
+        ("retry above three", "/event/retry", json!(4)),
+        ("zero wait", "/event/wait_ms", json!(0)),
+        ("unknown kind", "/event/kind", json!("gave_up")),
+    ] {
+        let mut value = base.clone();
+        *value.pointer_mut(pointer).unwrap() = forged;
+        assert_invalid("task-provider-event-v1.json", &value, why);
+        assert!(
+            review_core::event::validate_event_payload(EventType::TaskProviderEventV1, &value)
+                .is_err(),
+            "{why}"
+        );
+    }
+    let mut extra = base.clone();
+    extra["event"]["note"] = json!("free text");
+    assert_invalid("task-provider-event-v1.json", &extra, "unknown field");
+    assert!(
+        review_core::event::validate_event_payload(EventType::TaskProviderEventV1, &extra).is_err()
+    );
+}
+
+/// ADR-0199: the re-ask a model Worker receives for a typed reply that did not parse, and the
+/// draft validation a report author's retry feedback carries, are versioned closed shapes: the
+/// schemas and the typed contracts accept and refuse the same values.
+#[test]
+fn a_reply_reask_and_a_draft_validation_are_closed_versioned_shapes() {
+    use review_core::task::feedback::{WORKER_REPLY_REASK_V1, WorkerReplyReaskV1};
+    use review_core::task::pipeline::ReceiptOutcomeV1;
+    use review_core::task::report_task::*;
+    let reask = WorkerReplyReaskV1 {
+        schema: WORKER_REPLY_REASK_V1.into(),
+        instruction: "Return the reply once more.".into(),
+        error: "Invalid typed Worker reply: expected `,` or `]` at line 1 column 1042".into(),
+        line: Some(1),
+        column: Some(1042),
+        excerpt: "...\"title\":\"x\" \"body\"...".into(),
+        raw_reply_id: format!("sha256:{}", "a".repeat(64)),
+    };
+    reask.validate().unwrap();
+    let value = serde_json::to_value(&reask).unwrap();
+    assert_valid("worker-reply-reask-v1.json", &value);
+    for (why, pointer, forged) in [
+        ("schema", "/schema", json!("af/WorkerReplyReask@2")),
+        ("blank error", "/error", json!("  ")),
+        ("line zero", "/line", json!(0)),
+        ("digest", "/raw_reply_id", json!("sha256:short")),
+        ("long excerpt", "/excerpt", json!("x".repeat(513))),
+    ] {
+        let mut invalid = value.clone();
+        *invalid.pointer_mut(pointer).unwrap() = forged;
+        assert_invalid("worker-reply-reask-v1.json", &invalid, why);
+        let typed: Result<WorkerReplyReaskV1, _> = serde_json::from_value(invalid);
+        assert!(
+            typed.is_err() || typed.unwrap().validate().is_err(),
+            "{why}"
+        );
+    }
+
+    let validation = ReportDraftValidationV1 {
+        schema: REPORT_DRAFT_VALIDATION_V1.into(),
+        policy: ReportDraftPolicyV1 {
+            max_document_bytes: 65536,
+            required_sections: ["Findings".to_string()].into(),
+            require_citations: false,
+            require_repository_citations: true,
+        },
+        checks: [
+            ("one_draft".to_string(), ReceiptOutcomeV1::Passed),
+            ("required_sections".to_string(), ReceiptOutcomeV1::Failed),
+        ]
+        .into(),
+        failures: vec!["add a section headed exactly `Findings`".into()],
+        outcome: ReceiptOutcomeV1::Failed,
+    };
+    validation.validate().unwrap();
+    let value = serde_json::to_value(&validation).unwrap();
+    assert_valid("report-draft-validation-v1.json", &value);
+    for (why, pointer, forged) in [
+        ("schema", "/schema", json!("af/ReportDraftValidation@2")),
+        ("no sections", "/policy/required_sections", json!([])),
+        ("size bound", "/policy/max_document_bytes", json!(0)),
+        ("outcome", "/outcome", json!("inconclusive")),
+        ("check name", "/checks", json!({"-bad": "passed"})),
+    ] {
+        let mut invalid = value.clone();
+        *invalid.pointer_mut(pointer).unwrap() = forged;
+        assert_invalid("report-draft-validation-v1.json", &invalid, why);
+        let typed: Result<ReportDraftValidationV1, _> = serde_json::from_value(invalid);
+        assert!(
+            typed.is_err() || typed.unwrap().validate().is_err(),
+            "{why}"
+        );
+    }
+    // A failed check without its failure line contradicts itself in Rust; the outcome must follow.
+    let mut silent = validation.clone();
+    silent.failures.clear();
+    assert!(silent.validate().is_err());
+    let mut passed = validation;
+    passed.outcome = ReceiptOutcomeV1::Passed;
+    assert!(passed.validate().is_err());
+}

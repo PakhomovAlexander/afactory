@@ -829,6 +829,7 @@ impl TaskOperatorHost for DocumentTaskDomain {
             _ => Err("Document Worker requires its captured host".into()),
         })();
         TaskWorkOutput {
+            notes: Default::default(),
             usage_observation: None,
             usage: None,
             outputs,

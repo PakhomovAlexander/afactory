@@ -409,3 +409,62 @@ fn planning_uses_the_persisted_artifact_type_contract() {
         ));
     }
 }
+
+/// ADR-0199: the nodes that run first — a Task's Provider admissions — resolve before any other
+/// node starts, even one that sorts before them and depends on nothing; when one of them fails,
+/// no other node runs at all. Without them the plan order decides, as it always did.
+#[test]
+fn first_nodes_resolve_before_any_other_and_a_failed_one_starts_nothing_else() {
+    let pipeline = Pipeline::default()
+        .node(Node::new("a-check", NodeKind::Task).emitting_contracts(ports(&["result"])))
+        .node(
+            Node::new("b-review", NodeKind::Task)
+                .accepting_contracts(ports(&["admission"]))
+                .emitting_contracts(ports(&["result"])),
+        )
+        .node(Node::new("z-admit", NodeKind::Task).emitting_contracts(ports(&["result"])))
+        .edge(
+            Port::new("z-admit", "result"),
+            Port::new("b-review", "admission"),
+        );
+    let plan = pipeline.plan().unwrap();
+    let first = std::collections::BTreeSet::from(["z-admit".to_string()]);
+
+    let recorder = Recorder::new();
+    Scheduler::new(&plan, 1).run(&recorder);
+    assert_eq!(
+        recorder.log()[0],
+        "a-check()",
+        "plan order alone runs the check first"
+    );
+
+    let recorder = Recorder::new();
+    let report = Scheduler::new(&plan, 4)
+        .with_first(first.clone())
+        .unwrap()
+        .run(&recorder);
+    assert!(report.complete());
+    assert_eq!(recorder.log()[0], "z-admit()");
+
+    let recorder = Recorder::failing("z-admit");
+    let report = Scheduler::new(&plan, 4)
+        .with_first(first)
+        .unwrap()
+        .run(&recorder);
+    assert_eq!(recorder.log(), ["z-admit()"], "nothing else started");
+    for node in ["a-check", "b-review"] {
+        assert_eq!(
+            report.outcome(node),
+            Some(&NodeOutcome::Suppressed {
+                reason: SuppressionReason::UpstreamMissing
+            }),
+            "{node}"
+        );
+    }
+    // A node that runs first depends on nothing.
+    assert!(
+        Scheduler::new(&plan, 1)
+            .with_first(std::collections::BTreeSet::from(["b-review".to_string()]))
+            .is_err()
+    );
+}

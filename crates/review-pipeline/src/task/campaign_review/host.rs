@@ -838,6 +838,7 @@ impl TaskOperatorHost for CampaignReviewTaskHost<'_, '_> {
             self.execute_reviewer(cas, input, attempt, cancellation)
         } else {
             TaskWorkOutput {
+                notes: Default::default(),
                 usage_observation: None,
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 outputs: self.execute_operation(cas, input, attempt, cancellation),

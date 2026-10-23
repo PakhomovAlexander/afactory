@@ -557,6 +557,29 @@
         }
       }
     },
+    "provider_events": {
+      "description": "What started Attempts did about their Provider without failing, in log order (ADR-0199): each `TaskProviderEvent@1` event of the Task's log with its sequence. Absent when there is none.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "record"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "record": {
+            "$ref": "urn:af:schema:task-provider-event:1"
+          }
+        }
+      }
+    },
     "run_reports": {
       "type": "array",
       "items": {

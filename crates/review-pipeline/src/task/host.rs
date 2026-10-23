@@ -252,6 +252,29 @@ pub trait TaskDomain: TaskOperatorHost {
     ) -> Result<TaskResultV1, String> {
         Err("This Task domain has no installed final-result assembler".into())
     }
+    /// What the domain adds to a Worker's captured package instructions for this invocation:
+    /// the policy the Worker's reply is judged against, verbatim (ADR-0199). It is part of the
+    /// rendered context, so the context check renders it the same way.
+    fn worker_instructions(
+        &self,
+        _cas: &Cas,
+        _input: &TaskInvocationV1,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    /// The domain's shape check of a Worker's admitted reply, before its outputs are recorded
+    /// (ADR-0199). A refusal fails the Attempt with typed retry feedback that carries the
+    /// refusal's receipt, so a retried Attempt reads exactly what to change.
+    fn check_worker_reply(
+        &self,
+        _cas: &Cas,
+        _input: &TaskInvocationV1,
+        _reply: &review_runner::task::WorkerReply,
+    ) -> Result<(), WorkerReplyRefusal> {
+        Ok(())
+    }
+
     /// Recheck the admitted context against the exact persisted reservation it was bound to.
     fn validate_context(
         &self,
@@ -277,6 +300,14 @@ pub trait TaskDomain: TaskOperatorHost {
         task: &TaskRevisionV1,
         result: &TaskResultV1,
     ) -> Result<(), String>;
+}
+
+/// A domain's refusal of a Worker reply's shape: what to tell the Worker, and the typed receipt
+/// the retry feedback carries to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerReplyRefusal {
+    pub message: String,
+    pub receipt_id: Option<String>,
 }
 
 /// Supplied by the trusted host's developer session. Worker identity and serialized decision
@@ -820,6 +851,20 @@ impl<'a> CapturedTaskHost<'a> {
         })
     }
 
+    /// A Worker's captured package instructions, followed by what its domain adds for this
+    /// invocation. Context preparation and the context check both render through here.
+    fn instructions(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        worker: &CapturedWorker<'_>,
+    ) -> Result<String, String> {
+        Ok(match self.domain.worker_instructions(cas, input)? {
+            Some(added) => format!("{}{added}", worker.instructions),
+            None => worker.instructions.clone(),
+        })
+    }
+
     fn worker_feedback(
         &self,
         cas: &Cas,
@@ -827,6 +872,7 @@ impl<'a> CapturedTaskHost<'a> {
         attempt: &PreparedTaskAttempt,
         worker: &CapturedWorker<'_>,
         code: review_core::task::feedback::TaskFeedbackCodeV1,
+        evidence: Option<&str>,
     ) -> Result<String, String> {
         use review_core::task::feedback::*;
         let (context, _) = worker.contract.read_context(cas, attempt.context_id())?;
@@ -847,7 +893,11 @@ impl<'a> CapturedTaskHost<'a> {
                 node_id: input.node.clone(),
                 attempt_id: attempt.id().into(),
             },
-            vec![attempt.context_id().into(), worker.contract.id().into()],
+            [attempt.context_id(), worker.contract.id()]
+                .into_iter()
+                .chain(evidence)
+                .map(str::to_owned)
+                .collect(),
             None,
             serde_json::to_value(feedback).map_err(|e| e.to_string())?,
         )
@@ -870,6 +920,8 @@ impl<'a> CapturedTaskHost<'a> {
         let mut usage_observation = None;
         let mut feedback_code = None;
         let mut native_failure = None;
+        let mut notes = review_runner::task::CallNotes::default();
+        let mut rejection_receipt = None;
         let outputs = (|| {
             let (context, rendered) = worker.contract.read_context(cas, attempt.context_id())?;
             if context.invocation != *input {
@@ -962,6 +1014,7 @@ impl<'a> CapturedTaskHost<'a> {
                     // The adapter's tools follow the same captured effects as the sandbox mode.
                     super::source::worker_access(&worker.signature),
                     cancellation,
+                    attempt.reservation().tokens,
                 ),
             };
             raw_artifact_ids = result.raw_artifact_ids;
@@ -973,7 +1026,15 @@ impl<'a> CapturedTaskHost<'a> {
             token_usage = result.usage;
             usage_observation = result.usage_observation;
             native_failure = result.native_failure;
+            notes = result.notes;
             let reply = result.reply?;
+            // The domain's shape check before anything is recorded: a refusal is retry feedback
+            // with its receipt, never only a diagnostic (ADR-0199).
+            if let Err(refusal) = self.domain.check_worker_reply(cas, input, &reply) {
+                feedback_code = Some(TaskFeedbackCodeV1::OutputAdmissionRejected);
+                rejection_receipt = refusal.receipt_id;
+                return Err(refusal.message);
+            }
             let producer = Producer::Attempt {
                 run_id: self.run_id.clone(),
                 node_id: input.node.clone(),
@@ -1093,12 +1154,14 @@ impl<'a> CapturedTaskHost<'a> {
                 attempt,
                 worker,
                 feedback_code.unwrap_or(TaskFeedbackCodeV1::OutputAdmissionRejected),
+                rejection_receipt.as_deref(),
             )
             .ok()
         } else {
             None
         };
         TaskWorkOutput {
+            notes,
             usage_observation,
             usage: token_usage,
             outputs,
@@ -1123,11 +1186,12 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         attempt: &ReservedTaskAttempt,
     ) -> Result<String, String> {
         let context_id = match self.resolved_worker(cas, definition)? {
-            Some(worker) => {
-                worker
-                    .contract
-                    .prepare(cas, input, attempt.feedback_ids(), &worker.instructions)
-            }
+            Some(worker) => worker.contract.prepare(
+                cas,
+                input,
+                attempt.feedback_ids(),
+                &self.instructions(cas, input, &worker)?,
+            ),
             None => self.domain.prepare_context(cas, input, definition, attempt),
         }?;
         let previous = self
@@ -1164,6 +1228,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
                 self.worker_execute(cas, input, attempt, &worker, cancellation)
             }
             (Some(_), None) => TaskWorkOutput {
+                notes: Default::default(),
                 usage_observation: None,
                 usage: None,
                 outputs: Err("Worker has no durably started Attempt".into()),
@@ -1248,6 +1313,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
                     attempt,
                     worker,
                     review_core::task::feedback::TaskFeedbackCodeV1::OutputAdmissionRejected,
+                    None,
                 )
                 .map(Some),
             None => self.domain.output_rejection_feedback(cas, input, attempt),
@@ -1347,6 +1413,21 @@ impl TaskDomain for CapturedTaskHost<'_> {
     ) -> Result<(), String> {
         self.domain.validate_retry(cas, task, plan, input, previous)
     }
+    fn worker_instructions(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+    ) -> Result<Option<String>, String> {
+        self.domain.worker_instructions(cas, input)
+    }
+    fn check_worker_reply(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        reply: &review_runner::task::WorkerReply,
+    ) -> Result<(), WorkerReplyRefusal> {
+        self.domain.check_worker_reply(cas, input, reply)
+    }
     fn validate_context(
         &self,
         cas: &Cas,
@@ -1382,10 +1463,12 @@ impl TaskDomain for CapturedTaskHost<'_> {
                     "Rendered model context exceeds its admitted Attempt token reservation".into(),
                 );
             }
-            if worker
-                .contract
-                .prepare(cas, input, feedback, &worker.instructions)?
-                != context_id
+            if worker.contract.prepare(
+                cas,
+                input,
+                feedback,
+                &self.instructions(cas, input, worker)?,
+            )? != context_id
             {
                 return Err(
                     "Task context changed captured inputs, instructions, contracts or feedback"

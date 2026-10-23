@@ -17,6 +17,7 @@ pub mod planning;
 pub mod provider;
 mod provider_admissions;
 pub mod remote_check;
+mod retry;
 pub use provider_admissions::TaskProviderAdmissionReport;
 mod report;
 pub mod report_task;
@@ -67,6 +68,9 @@ pub struct TaskWorkOutput {
     /// The Provider refused this exact input: the bound model's safety classifier flagged it.
     /// The same input is flagged again, so a failed Attempt with it is not retried (ADR-0147).
     pub refused_input: bool,
+    /// Whether the failure was transient, and what the Attempt did about its Provider, for the
+    /// runtime to retry within the Attempt and to record (ADR-0199).
+    pub notes: review_runner::task::CallNotes,
 }
 
 pub trait TaskOperatorHost: Sync {
@@ -381,6 +385,103 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
 
     /// The one dispatch entry for every Task node: a cancelled or unresolvable node is
     /// refused before the host runs, charging nothing.
+    /// One Attempt's work: the host's call, called again after a transient Provider failure
+    /// within the Attempt's own wall and reservation (ADR-0199). Each wait is recorded as a
+    /// `TaskProviderEvent@1` before it begins, so `af task show` names it while it lasts; it is
+    /// cut short by cancellation, and it never extends a deadline or resets the reservation.
+    fn execute_attempt(
+        &self,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+    ) -> TaskWorkOutput {
+        let call = || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.execute_host(input, attempt)
+            }))
+            .unwrap_or_else(|_| TaskWorkOutput {
+                notes: Default::default(),
+                usage_observation: None,
+                usage: None,
+                outputs: Err("Task operator panicked".into()),
+                charged_tokens: None,
+                raw_artifact_ids: vec![],
+                usage_id: None,
+                feedback_id: None,
+                unknown_usage_cause: None,
+                refused_input: false,
+            })
+        };
+        let mut result = call();
+        let Some(attempt) = attempt else {
+            return result;
+        };
+        self.record_provider_events(input, attempt, &mut result);
+        let mut retries = retry::Retries::default();
+        while let Some(transient) = result.notes.transient.filter(|_| result.outputs.is_err()) {
+            let wait = match retries.next_wait(transient, &result, attempt) {
+                Ok(wait) => wait,
+                Err(why) => {
+                    retries.stopped(why);
+                    break;
+                }
+            };
+            let recorded = self
+                .store
+                .lock()
+                .expect("Task Store")
+                .record_task_provider_event(
+                    self.cas,
+                    &self.lease,
+                    attempt.id(),
+                    &input.node,
+                    retries.event(transient, wait),
+                );
+            if let Err(error) = recorded {
+                retries.stopped(format!("its wait could not be recorded: {error}"));
+                break;
+            }
+            if !retry::sleep(wait, self.cancellation) {
+                retries.waited(transient, wait);
+                retries.stopped("the Task was interrupted while it waited".into());
+                break;
+            }
+            retries.waited(transient, wait);
+            let mut next = call();
+            self.record_provider_events(input, attempt, &mut next);
+            result = retry::merge(result, next);
+        }
+        retries.annotate(&mut result);
+        result
+    }
+
+    /// Record what the host's call did about its Provider, as typed events of the Task's log.
+    /// A record that cannot be written is the Attempt's failure, never a silent loss.
+    fn record_provider_events(
+        &self,
+        input: &TaskInvocationV1,
+        attempt: &PreparedTaskAttempt,
+        result: &mut TaskWorkOutput,
+    ) {
+        for event in std::mem::take(&mut result.notes.events) {
+            let recorded = self
+                .store
+                .lock()
+                .expect("Task Store")
+                .record_task_provider_event(
+                    self.cas,
+                    &self.lease,
+                    attempt.id(),
+                    &input.node,
+                    event,
+                );
+            if let Err(error) = recorded {
+                result.outputs = Err(format!(
+                    "The Attempt's Provider event could not be recorded: {error}"
+                ));
+            }
+        }
+    }
+
     fn execute_host(
         &self,
         input: &TaskInvocationV1,
@@ -837,20 +938,7 @@ impl TaskRuntime<'_, '_> {
             }
             let started = SystemTime::now();
             let timer = Instant::now();
-            let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.execute_host(input, attempt.as_ref())
-            }))
-            .unwrap_or_else(|_| TaskWorkOutput {
-                usage_observation: None,
-                usage: None,
-                outputs: Err("Task operator panicked".into()),
-                charged_tokens: None,
-                raw_artifact_ids: vec![],
-                usage_id: None,
-                feedback_id: None,
-                unknown_usage_cause: None,
-                refused_input: false,
-            });
+            let mut result = self.execute_attempt(input, attempt.as_ref());
             let refused_input = result.refused_input;
             // The kernel's accounting of the Attempt's usage, one `af.usage.account` span.
             let usage_span = if attempt.is_some() {

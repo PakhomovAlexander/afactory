@@ -282,3 +282,64 @@ mod tests {
         assert!(blank.validate().is_err());
     }
 }
+
+pub const REPORT_DRAFT_VALIDATION_V1: &str = "af/ReportDraftValidation@1";
+
+/// The report policy a report author writes against, verbatim, as its context and its draft
+/// validation state it (ADR-0199).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportDraftPolicyV1 {
+    pub max_document_bytes: u64,
+    pub required_sections: std::collections::BTreeSet<String>,
+    pub require_citations: bool,
+    pub require_repository_citations: bool,
+}
+
+/// What the kernel found when it validated a report author's draft for shape before sealing it
+/// (ADR-0199): one result per check — `one_draft`, `sets`, `required_sections` — the policy it
+/// judged against, and one line per failure
+/// in the author's own terms. A failed validation refuses the reply and travels with the retry
+/// feedback, so the author's next Attempt reads exactly what to change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportDraftValidationV1 {
+    /// Always [`REPORT_DRAFT_VALIDATION_V1`].
+    pub schema: String,
+    pub policy: ReportDraftPolicyV1,
+    pub checks: BTreeMap<String, ReceiptOutcomeV1>,
+    pub failures: Vec<String>,
+    pub outcome: ReceiptOutcomeV1,
+}
+
+impl ReportDraftValidationV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        let failed = self
+            .checks
+            .values()
+            .any(|outcome| *outcome != ReceiptOutcomeV1::Passed);
+        require(
+            self.schema == REPORT_DRAFT_VALIDATION_V1
+                && (1..=1_048_576).contains(&self.policy.max_document_bytes)
+                && !self.policy.required_sections.is_empty()
+                && self.policy.required_sections.len() <= 32
+                && !self.checks.is_empty()
+                && self.checks.len() <= 16
+                && self.checks.keys().all(|name| is_name(name))
+                && self.failures.len() <= 16
+                && self
+                    .failures
+                    .iter()
+                    .all(|failure| !failure.trim().is_empty() && failure.chars().count() <= 1024)
+                && failed != self.failures.is_empty()
+                && self.outcome
+                    == if failed {
+                        ReceiptOutcomeV1::Failed
+                    } else {
+                        ReceiptOutcomeV1::Passed
+                    },
+            "A report draft validation needs bounded named checks, one failure line per failed \
+             check and the outcome they imply",
+        )
+    }
+}

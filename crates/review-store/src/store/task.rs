@@ -37,7 +37,8 @@ pub mod review_integration;
 mod review_round;
 pub mod review_round_publication;
 pub use review_handoff::{
-    is_beside_transitions, is_execution_started, read_execution_started, read_task_transition,
+    is_beside_transitions, is_execution_started, is_provider_event, is_transition,
+    read_execution_started, read_provider_event, read_task_transition,
 };
 mod source;
 
@@ -431,6 +432,10 @@ pub struct TaskProjection {
     /// Policy time of the Task's first plan admission, when its wall clock started; never reset
     /// by a refresh, a re-admission or a resume.
     clock_started_unix_ms: Option<u64>,
+    /// What started Attempts did about their Provider without failing, in log order: retry
+    /// waits, re-asks, identity re-probes and refreshes, alternate admission probes
+    /// (`TaskProviderEvent@1`, ADR-0199).
+    pub provider_events: Vec<task::provider_event::TaskProviderEventV1>,
 }
 
 /// The light optimizer's final DAG node can only know trial accounting. After every Attempt has
@@ -997,6 +1002,54 @@ impl TaskProjection {
         if !self.execution_epochs.insert(marker.epoch) {
             return Err(conflict("A lease begins its execution once"));
         }
+        self.last_time = time;
+        self.next_sequence = event.sequence + 1;
+        Ok(())
+    }
+
+    /// Apply what a started Attempt did about its Provider (`TaskProviderEvent@1`, ADR-0199):
+    /// the next event of the log, by the current lease, at a time not before the last recorded,
+    /// for an Attempt of that node that has started and not settled. It changes no charge,
+    /// reservation, deadline or result.
+    fn apply_provider_event(
+        &mut self,
+        event: &RunEvent,
+        value: &task::provider_event::TaskProviderEventV1,
+    ) -> Result<(), StoreError> {
+        if event.sequence != self.next_sequence {
+            return Err(conflict("Task event sequence has a gap or duplicate"));
+        }
+        if !event.artifact_refs.is_empty() {
+            return Err(conflict("A Provider event references no artifact"));
+        }
+        let time = self.lease_time(&value.writer, value.epoch, value.now_unix_ms);
+        if time < self.last_time || matches!(self.phase, TaskPhaseV1::Finished { .. }) {
+            return Err(conflict(
+                "Task is finished or its policy clock moved backwards",
+            ));
+        }
+        self.check_lease_of(&value.writer, value.epoch, value.now_unix_ms)?;
+        let running = self
+            .execution
+            .as_ref()
+            .and_then(|execution| {
+                execution
+                    .attempt_accounting()
+                    .into_iter()
+                    .find(|attempt| attempt.attempt_id == value.attempt_id)
+            })
+            .is_some_and(|attempt| {
+                attempt.started
+                    && attempt.settled_unix_ms.is_none()
+                    && !attempt.released
+                    && attempt.reservation.node == value.node
+            });
+        if !running {
+            return Err(conflict(
+                "A Provider event names a started, unsettled Attempt of its node",
+            ));
+        }
+        self.provider_events.push(value.clone());
         self.last_time = time;
         self.next_sequence = event.sequence + 1;
         Ok(())
@@ -1674,6 +1727,14 @@ impl EventStore {
                     .apply_gate_retried(cas, &event, &retry)?;
                 continue;
             }
+            if event.event_type == EventType::TaskProviderEventV1 {
+                let value = read_provider_event(&event)?;
+                state
+                    .as_mut()
+                    .ok_or_else(|| conflict("Task Provider event precedes genesis"))?
+                    .apply_provider_event(&event, &value)?;
+                continue;
+            }
             if !matches!(event.event_type, EventType::TaskTransitionV5) {
                 return Err(conflict("Task log contains a foreign event"));
             }
@@ -1742,6 +1803,7 @@ impl EventStore {
                     gate_retries: Vec::new(),
                     opened_unix_ms: transition.now_unix_ms,
                     clock_started_unix_ms: None,
+                    provider_events: Vec::new(),
                 });
             } else {
                 return Err(conflict("Task transition precedes genesis"));
@@ -2004,6 +2066,65 @@ impl EventStore {
             .pop()
             .ok_or_else(|| conflict("Task execution marker appended no event"))
             .map(Some)
+    }
+
+    /// Record what the started Attempt `attempt_id` of `node` did about its Provider
+    /// (`TaskProviderEvent@1`, ADR-0199): its own event of the Task's log, by `lease`, stamped at
+    /// the lease's time. It grants nothing; it is refused for an Attempt that has not started, has
+    /// settled or belongs to another node, and on a finished Task.
+    pub fn record_task_provider_event(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        attempt_id: &str,
+        node: &str,
+        event: task::provider_event::ProviderEventV1,
+    ) -> Result<RunEvent, StoreError> {
+        let mut state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        // Stamped before it is persisted, so the log stays monotonic and replays unchanged.
+        let value = task::provider_event::TaskProviderEventV1::new(
+            &lease.writer,
+            lease.epoch,
+            state.lease_time(&lease.writer, lease.epoch, now()?),
+            attempt_id,
+            node,
+            event,
+        );
+        let (event_type, payload) = review_handoff::encode_provider_event(&value)?;
+        let run_id = task_run_id(&lease.task_id)?;
+        let first = state.next_sequence;
+        let event = NewEvent::new(event_type, payload.clone());
+        state.apply_provider_event(
+            &RunEvent {
+                run_id: run_id.clone(),
+                event_id: super::derive_event_id(&run_id, first as i64),
+                sequence: first,
+                event_type,
+                occurred_at: event.occurred_at.clone(),
+                node_id: None,
+                attempt_id: None,
+                causation_id: None,
+                correlation_id: None,
+                artifact_refs: Vec::new(),
+                payload: payload.clone(),
+            },
+            &value,
+        )?;
+        let permit = WritePermit {
+            run_id: run_id.clone(),
+            first,
+            payloads: vec![payload],
+            event_type,
+            valid_until: None,
+            review_round: None,
+            review_prefix: None,
+            bound_tasks: Vec::new(),
+        };
+        self.append_batch_observed(&run_id, cas, &[event], Some(&permit), None, Some(&state))?
+            .pop()
+            .ok_or_else(|| conflict("Task Provider event appended no event"))
     }
 
     pub fn take_task_lease(

@@ -23,12 +23,16 @@ pub enum NativeFailureKind {
     /// error says its safeguards flagged the message. The same input is flagged again, so the
     /// Attempt is never retried automatically.
     ModelRefused,
+    /// The machine the Provider runs on failed af, not the model or the login: its CLI cannot
+    /// start or serve its protocol, or its identity probe proved nothing within the Attempt's
+    /// wall (ADR-0199).
+    Environment,
     Unknown,
 }
 
 impl NativeFailureKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::AuthMissing,
         Self::AuthRevoked,
         Self::AuthExpired,
@@ -41,6 +45,7 @@ impl NativeFailureKind {
         Self::Network,
         Self::UnsupportedInvocation,
         Self::ModelRefused,
+        Self::Environment,
         Self::Unknown,
     ];
 
@@ -88,6 +93,9 @@ impl NativeFailureKind {
             Self::ModelRefused => {
                 "the bound model's safety classifier flagged the request (model_refused)"
             }
+            Self::Environment => {
+                "the Provider's environment failed, not the model or the login (environment)"
+            }
             Self::Unknown => "Provider returned an unclassified failure (unknown)",
         }
     }
@@ -107,6 +115,7 @@ impl NativeFailureKind {
             Self::Network => "network",
             Self::UnsupportedInvocation => "unsupported_invocation",
             Self::ModelRefused => "model_refused",
+            Self::Environment => "environment",
             Self::Unknown => "unknown",
         }
     }
@@ -136,7 +145,21 @@ impl NativeFailureKind {
             // absent report is known about usage. A classifier refusal normally reports its
             // usage and is charged it; when it does not, nothing better is known either
             // (ADR-0147).
-            Self::UnsupportedInvocation | Self::ModelRefused | Self::Unknown => Cause::Unreported,
+            Self::UnsupportedInvocation
+            | Self::ModelRefused
+            | Self::Environment
+            | Self::Unknown => Cause::Unreported,
+        }
+    }
+
+    /// The transient class of this failure, when the same input may get past it after a wait
+    /// (ADR-0199): a network failure or a model at capacity. Quota, authentication, a refused
+    /// invocation and a classifier refusal recur, and are never retried in the Attempt.
+    pub fn transient(self) -> Option<TransientClass> {
+        match self {
+            Self::Network => Some(TransientClass::Network),
+            Self::Capacity => Some(TransientClass::Capacity),
+            _ => None,
         }
     }
 
@@ -159,6 +182,63 @@ impl NativeFailureKind {
             stderr.clear();
         }
     }
+}
+
+/// A Provider failure class the same input may get past after a wait (ADR-0199).
+pub use review_core::task::provider_event::TransientClassV1 as TransientClass;
+
+/// A transient failure of one native call, and the wait the Provider asked for, if it named one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transient {
+    pub class: TransientClass,
+    pub retry_after: Option<std::time::Duration>,
+}
+
+impl Transient {
+    pub fn new(class: TransientClass) -> Self {
+        Self {
+            class,
+            retry_after: None,
+        }
+    }
+
+    /// This failure with the wait `text` names (`Retry-After: 30`, `retry after 30 seconds`,
+    /// `try again in 2 minutes`), when it names one.
+    pub fn with_retry_after_in(mut self, text: &str) -> Self {
+        self.retry_after = retry_after(text);
+        self
+    }
+}
+
+/// The wait a native failure text asks for, in seconds or minutes: `Retry-After: 30`,
+/// `retry-after 30`, `retry after 30 seconds`, `try again in 30s`, `try again in 2 minutes`. A
+/// value above one hour is not a wait af honours: None.
+pub fn retry_after(text: &str) -> Option<std::time::Duration> {
+    let lower = text.to_ascii_lowercase();
+    for marker in ["retry-after", "retry after", "try again in"] {
+        let mut rest = lower.as_str();
+        while let Some(at) = rest.find(marker) {
+            rest = &rest[at + marker.len()..];
+            let tail = rest.trim_start_matches([':', ' ', '"', '=']);
+            let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+            let Ok(amount) = digits.parse::<u64>() else {
+                continue;
+            };
+            let unit = tail[digits.len()..].trim_start();
+            let seconds =
+                if unit.starts_with("min") || unit.starts_with('m') && !unit.starts_with("ms") {
+                    amount.saturating_mul(60)
+                } else if unit.starts_with("ms") {
+                    amount / 1000
+                } else {
+                    amount
+                };
+            if (1..=3600).contains(&seconds) {
+                return Some(std::time::Duration::from_secs(seconds));
+            }
+        }
+    }
+    None
 }
 
 /// Whether native output carries credential or login-challenge material, so that no part of it
@@ -339,6 +419,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_network_and_capacity_failures_are_transient_and_a_named_wait_is_read() {
+        for kind in NativeFailureKind::ALL {
+            assert_eq!(
+                kind.transient().is_some(),
+                matches!(
+                    kind,
+                    NativeFailureKind::Network | NativeFailureKind::Capacity
+                ),
+                "{kind:?}"
+            );
+        }
+        for (text, seconds) in [
+            ("HTTP 529 overloaded; Retry-After: 30", Some(30)),
+            ("retry-after 45", Some(45)),
+            ("at capacity, retry after 20 seconds", Some(20)),
+            (
+                "Selected model is at capacity. Try again in 2 minutes.",
+                Some(120),
+            ),
+            ("try again in 1500ms", Some(1)),
+            ("try again later", None),
+            ("Retry-After: 0", None),
+            ("Retry-After: 86400", None),
+        ] {
+            assert_eq!(
+                retry_after(text).map(|wait| wait.as_secs()),
+                seconds,
+                "{text}"
+            );
+        }
+        let transient =
+            Transient::new(TransientClass::Capacity).with_retry_after_in("Retry-After: 9");
+        assert_eq!(
+            transient.retry_after,
+            Some(std::time::Duration::from_secs(9))
+        );
+    }
+
+    #[test]
     fn every_whole_capture_replacement_is_recognized_and_nothing_else() {
         for kind in NativeFailureKind::ALL {
             let mut stdout = b"device code ABCD-EFGH at https://claude.ai/oauth/authorize".to_vec();
@@ -446,6 +565,36 @@ mod tests {
             kind.redact_auth_capture(&mut stdout, &mut stderr);
             assert_eq!(stdout, kind.diagnostic().as_bytes());
             assert!(stderr.is_empty());
+        }
+    }
+
+    /// ADR-0199: a refusal that links the Provider's own documentation is kept as it was; the
+    /// documentation hosts are never a reason to replace the capture. Their login and key pages
+    /// still are, and so is a code in any URL.
+    #[test]
+    fn provider_documentation_urls_are_never_a_reason_to_redact() {
+        for text in [
+            "API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). See https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/handle-streaming-refusals",
+            "see https://docs.claude.com/en/docs/claude-code/troubleshooting for help",
+            "see https://docs.anthropic.com/en/api/errors",
+            "429: see https://platform.openai.com/docs/guides/error-codes/api-errors",
+            "HTTPS://PLATFORM.CLAUDE.COM/DOCS/EN/ABOUT-CLAUDE/MODELS",
+        ] {
+            for kind in [NativeFailureKind::ModelRefused, NativeFailureKind::Unknown] {
+                let mut stdout = text.as_bytes().to_vec();
+                let mut stderr = b"stderr kept".to_vec();
+                kind.redact_capture(false, &mut stdout, &mut stderr);
+                assert_eq!(stdout, text.as_bytes(), "{text}");
+                assert_eq!(stderr, b"stderr kept", "{text}");
+            }
+        }
+        for private in [
+            "https://platform.claude.com/login FIXTURE_CODE",
+            "https://platform.claude.com/oauth/authorize?client=x",
+            "https://platform.claude.com/docs/en/start?code=FIXTURE_CODE",
+            "https://claude.ai/docs FIXTURE",
+        ] {
+            assert!(carries_auth_material(private.as_bytes()), "{private}");
         }
     }
 

@@ -9,6 +9,8 @@
 use super::compatibility::protocol_incompatibility;
 use super::*;
 use review_core::task::plan::WorkerExecutionV1;
+use review_core::task::provider_event::{ProbeSilenceV1, ProviderEventV1};
+use review_runner::native_failure::NativeFailureKind;
 use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerModelAdapter};
 use review_runner_claude::models as rules;
 use std::sync::Arc;
@@ -19,9 +21,69 @@ pub struct TaskProviderIdentity {
     program: PathBuf,
     principal_id: String,
     auth_method: String,
+    /// A digest of the organization the account answered for, when the CLI names one.
+    org: Option<String>,
+    /// The CLI's own `--version` line, once a recheck read it, and the executable file the
+    /// capture follows: an update that repoints the launcher is read then, and never mistaken
+    /// for an account change.
+    cli_version: Option<String>,
+    binary: Option<BinaryStamp>,
+    /// The most one identity probe of a recheck may take; None gives each probe its own
+    /// timeout. Every probe is bounded by the Attempt's wall either way.
+    probe_wall: Option<Duration>,
     probe_path: std::ffi::OsString,
     home: Option<std::ffi::OsString>,
     user: Option<std::ffi::OsString>,
+}
+
+/// Which file an executable path resolves to, and when it last changed.
+#[derive(Clone, PartialEq, Eq)]
+struct BinaryStamp {
+    target: PathBuf,
+    inode: u64,
+    modified: i64,
+}
+
+impl BinaryStamp {
+    fn of(program: &Path) -> Option<Self> {
+        let target = std::fs::canonicalize(program).ok()?;
+        let metadata = std::fs::metadata(&target).ok()?;
+        Some(Self {
+            target,
+            inode: metadata.ino(),
+            modified: metadata.mtime(),
+        })
+    }
+}
+
+/// The CLI's `--version` line, when it answers one before `deadline`.
+fn cli_version(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    deadline: Option<Instant>,
+) -> Option<String> {
+    match installation::version_check(program, spec, probe_path, cancelled, deadline) {
+        installation::VersionCheck::Reported(line) => line
+            .map(|line| {
+                line.chars()
+                    .filter(|c| c.is_ascii_graphic() || *c == ' ')
+                    .take(128)
+                    .collect::<String>()
+            })
+            .filter(|line| !line.trim().is_empty()),
+        _ => None,
+    }
+}
+
+/// The authentication method class a Claude or Codex login answers with. Claude Code spells one
+/// subscription login `claude.ai` or `oauth` across releases; both are the same method.
+fn method_class(method: &str) -> &str {
+    match method {
+        "claude.ai" | "oauth" => "oauth",
+        other => other,
+    }
 }
 impl TaskProviderIdentity {
     /// The token-free static rules of a Model binding on Provider `provider` of kind `kind`, from
@@ -64,24 +126,31 @@ impl TaskProviderIdentity {
         let cancelled = AtomicBool::new(false);
         check_invocation(&program, &spec, &probe_path, &cancelled, None)
             .map_err(|refusal| admission_refusal(&refusal))?;
-        let (principal_id, auth_method) = observe_identity(
-            &program,
-            &spec,
-            &probe_path,
-            &cancelled,
-            None,
-        )
-        .map_err(|failure| {
-            match cli_cannot_serve(&program, &spec, &probe_path, &cancelled, None, &failure) {
+        let observed = observe_identity(&program, &spec, &probe_path, &cancelled, None).map_err(
+            |failure| match cli_cannot_serve(
+                &program,
+                &spec,
+                &probe_path,
+                &cancelled,
+                None,
+                &failure,
+            ) {
                 Some(refusal) => admission_refusal(&refusal),
                 None => failure.message,
-            }
-        })?;
+            },
+        )?;
+        // Which file the executable is, without starting it again: its version is read only
+        // once that file changes, so capture spends no process on a CLI that never updates.
+        let binary = BinaryStamp::of(&program);
         Ok(Self {
             spec,
             program,
-            principal_id,
-            auth_method,
+            principal_id: observed.principal,
+            auth_method: observed.auth_method,
+            org: observed.org,
+            cli_version: None,
+            binary,
+            probe_wall: None,
             probe_path,
             home: std::env::var_os("HOME"),
             user: std::env::var_os("USER"),
@@ -186,8 +255,15 @@ impl TaskProviderIdentity {
 
     /// The executable is the one this identity names: every invocation runs that absolute path,
     /// so it must still be there. What `PATH` resolves to now is not compared. A native client
-    /// that updates itself repoints its launcher at a new version file (ADR-0126).
-    fn check_current(&self, deadline: Instant, cancelled: &AtomicBool) -> Result<(), Recheck> {
+    /// that updates itself repoints its launcher at a new version file (ADR-0126): the version it
+    /// reports then is read again, and an update alone is recorded, never refused (ADR-0199).
+    /// What the recheck did about the Provider without refusing is returned as Task events, with
+    /// the executable and CLI version the capture follows from then on.
+    fn check_current(
+        &self,
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> Result<Rechecked, Recheck> {
         check_task_probe_control(Some(deadline), cancelled).map_err(|_| Recheck::NotCurrent)?;
         let current = configured_spec(&self.spec.id).map_err(|_| Recheck::NotCurrent)?;
         if current.kind != self.spec.kind
@@ -200,13 +276,70 @@ impl TaskProviderIdentity {
         {
             return Err(Recheck::NotCurrent);
         }
-        self.recheck_identity(deadline, cancelled)
+        self.recheck_account(deadline, cancelled)
     }
 
-    /// The token-free account recheck, telling a CLI that cannot start apart from an account
-    /// that changed or could not be proven.
+    /// The account recheck of [`Self::check_current`]: up to [`IDENTITY_PROBES`] probes within
+    /// the Attempt's wall, then the CLI version the capture follows.
+    fn recheck_account(
+        &self,
+        deadline: Instant,
+        cancelled: &AtomicBool,
+    ) -> Result<Rechecked, Recheck> {
+        let mut rechecked = Rechecked::default();
+        // A probe that proves nothing either way is sent again within the Attempt's wall:
+        // silence on a busy host is never an account change (ADR-0199).
+        let mut silences = Vec::new();
+        loop {
+            let probe_deadline = self
+                .probe_wall
+                .map_or(deadline, |wall| deadline.min(Instant::now() + wall));
+            match self.recheck_identity(probe_deadline, cancelled) {
+                Ok(()) => break,
+                Err(Recheck::Silent(cause)) => {
+                    silences.push(cause);
+                    let probe = silences.len() as u32 + 1;
+                    if probe > IDENTITY_PROBES
+                        || check_task_probe_control(Some(deadline), cancelled).is_err()
+                    {
+                        return Err(Recheck::Unverified {
+                            silences,
+                            events: rechecked.events,
+                        });
+                    }
+                    rechecked
+                        .events
+                        .push(ProviderEventV1::IdentityReprobed { cause, probe });
+                }
+                Err(other) => return Err(other),
+            }
+        }
+        let stamp = BinaryStamp::of(&self.program);
+        if stamp != self.binary {
+            let version = cli_version(
+                &self.program,
+                &self.spec,
+                &self.probe_path,
+                cancelled,
+                Some(deadline),
+            );
+            if let Some(version) = version.filter(|v| self.cli_version.as_ref() != Some(v)) {
+                rechecked.events.push(ProviderEventV1::IdentityRefreshed {
+                    provider: self.spec.id.clone(),
+                    previous_version: self.cli_version.clone().unwrap_or_else(|| "unknown".into()),
+                    current_version: version.clone(),
+                });
+                rechecked.cli_version = Some(version);
+            }
+            rechecked.binary = Some(stamp);
+        }
+        Ok(rechecked)
+    }
+
+    /// The token-free account recheck, telling a CLI that cannot start, an account that changed
+    /// and a probe that proved nothing apart.
     fn recheck_identity(&self, deadline: Instant, cancelled: &AtomicBool) -> Result<(), Recheck> {
-        let (principal, auth_method) = observe_identity(
+        let observed = observe_identity(
             &self.program,
             &self.spec,
             &self.probe_path,
@@ -223,29 +356,124 @@ impl TaskProviderIdentity {
                 &failure,
             ) {
                 Some(refusal) => Recheck::CliCannotServe(refusal),
-                None => Recheck::NotCurrent,
+                None => match failure.silence {
+                    Some(cause) => Recheck::Silent(cause),
+                    None => Recheck::NotCurrent,
+                },
             }
         })?;
         check_task_probe_control(Some(deadline), cancelled).map_err(|_| Recheck::NotCurrent)?;
-        if principal != self.principal_id || auth_method != self.auth_method {
-            return Err(Recheck::NotCurrent);
+        if observed.principal != self.principal_id {
+            return Err(Recheck::Changed("account"));
+        }
+        if method_class(&observed.auth_method) != method_class(&self.auth_method) {
+            return Err(Recheck::Changed("authentication method"));
+        }
+        if observed.org.is_some() && self.org.is_some() && observed.org != self.org {
+            return Err(Recheck::Changed("organization"));
         }
         Ok(())
     }
 }
 
+/// How many identity probes one recheck sends before it gives up proving the account.
+const IDENTITY_PROBES: u32 = 3;
+
+/// What a passed recheck observed beyond the account: the events it did about the Provider, and
+/// the executable and CLI version the capture follows from now on.
+#[derive(Default)]
+struct Rechecked {
+    events: Vec<ProviderEventV1>,
+    binary: Option<Option<BinaryStamp>>,
+    cli_version: Option<String>,
+}
+
 /// Why the recheck before a private send refused it.
 enum Recheck {
-    /// The captured Provider identity is no longer current or could not be verified.
+    /// The local authority the identity was captured under changed: the registry entry, the
+    /// executable, `PATH`, `HOME` or `USER`.
     NotCurrent,
+    /// The account answered, and it is another account, method or organization.
+    Changed(&'static str),
+    /// One probe proved nothing either way.
+    Silent(ProbeSilenceV1),
+    /// Every probe proved nothing: an environment failure, not an account change. `events` are
+    /// the re-probes sent before giving up.
+    Unverified {
+        silences: Vec<ProbeSilenceV1>,
+        events: Vec<ProviderEventV1>,
+    },
     /// The Provider's CLI cannot start, or its app-server no longer answers `initialize`: an
     /// environment failure, not the model's or the login's.
     CliCannotServe(CliRefusal),
 }
 
+/// The 1-minute load average, where the platform reports it.
+fn host_load() -> Option<f64> {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+impl Recheck {
+    /// The Attempt diagnostic of a refused recheck, naming its cause and what to do. `probe_wall`
+    /// is the identity's own bound on one probe, when it has one.
+    fn diagnostic(&self, kind: ProviderKind, probe_wall: Option<Duration>) -> String {
+        let client = match kind {
+            ProviderKind::Claude => "Claude",
+            ProviderKind::Codex => "Codex",
+        };
+        match self {
+            Recheck::NotCurrent => concat!(
+                "Captured Task Provider identity is no longer current: its registry entry, ",
+                "executable, PATH, HOME or USER changed since the plan; run `af task plan` again"
+            )
+            .into(),
+            Recheck::Changed(what) => format!(
+                "identity recheck: the {client} {what} differs from the one captured at plan: run \
+                 `af task plan` again"
+            ),
+            Recheck::Silent(cause) => format!(
+                "identity recheck: the probe {}; the account was not verified as changed",
+                cause.as_str()
+            ),
+            Recheck::Unverified { silences, .. } => {
+                let causes: BTreeSet<&str> = silences.iter().map(|cause| cause.as_str()).collect();
+                let cause = causes.into_iter().collect::<Vec<_>>().join(" or ");
+                let each = probe_wall.unwrap_or_else(|| {
+                    probe_timeout(match kind {
+                        ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
+                        ProviderKind::Codex => PROBE_TIMEOUT,
+                    })
+                });
+                let each = if silences.contains(&ProbeSilenceV1::TimedOut) {
+                    format!(" (up to {} s each)", each.as_secs().max(1))
+                } else {
+                    String::new()
+                };
+                let load = host_load()
+                    .map(|load| format!(" on a host with load {load:.0}"))
+                    .unwrap_or_default();
+                format!(
+                    "identity recheck: probe {cause} {}×{each}{load}; the account was not \
+                     verified as changed: {}; run the Task again with `af task run`",
+                    silences.len(),
+                    NativeFailureKind::Environment.diagnostic()
+                )
+            }
+            Recheck::CliCannotServe(refusal) => environment_failure(refusal),
+        }
+    }
+}
+
 /// Why an account identity probe proved nothing.
 struct IdentityFailure {
     message: String,
+    /// The probe proved nothing either way: it timed out, or answered a line af cannot read.
+    silence: Option<ProbeSilenceV1>,
     /// The CLI gave no answer af recognizes, and af did not give up waiting for one: it may not
     /// start at all. A CLI that answered — logged out, another account — never is.
     cli_silent: bool,
@@ -259,10 +487,43 @@ impl IdentityFailure {
     fn answered(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            silence: None,
             cli_silent: false,
             protocol_unanswered: false,
         }
     }
+
+    /// An answer af cannot read: it proves nothing about the account.
+    fn malformed(message: impl Into<String>) -> Self {
+        Self {
+            silence: Some(ProbeSilenceV1::Malformed),
+            ..Self::answered(message)
+        }
+    }
+}
+
+/// What one identity probe observed.
+struct Observation {
+    principal: String,
+    auth_method: String,
+    org: Option<String>,
+}
+
+/// A digest of an organization identity, so neither it nor its name is kept.
+fn org_digest(kind: &str, org: Option<&str>) -> Option<String> {
+    let org = org?.trim();
+    if org.is_empty() {
+        return None;
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"af/provider-org/v1\0");
+    digest.update(kind.as_bytes());
+    digest.update([0]);
+    digest.update(org.as_bytes());
+    Some(format!(
+        "sha256:{}",
+        review_core::hex::encode(&digest.finalize())
+    ))
 }
 
 /// Why a silent identity probe's CLI cannot serve af: an installation failure when its own
@@ -316,7 +577,14 @@ fn probe_identity(
     cancelled: &AtomicBool,
     deadline: Option<Instant>,
 ) -> Result<(String, String), String> {
-    observe_identity(program, spec, probe_path, cancelled, deadline).map_err(|f| f.message)
+    observe_identity(program, spec, probe_path, cancelled, deadline)
+        .map(|observed| (observed.principal, observed.auth_method))
+        .map_err(|f| f.message)
+}
+
+/// Whether a probe error says it ran out of its own time, not that it was cancelled.
+fn probe_timed_out(message: &str) -> bool {
+    message.contains("timed out")
 }
 
 fn observe_identity(
@@ -325,28 +593,35 @@ fn observe_identity(
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
     deadline: Option<Instant>,
-) -> Result<(String, String), IdentityFailure> {
+) -> Result<Observation, IdentityFailure> {
     match spec.kind {
         ProviderKind::Claude => {
             let output = run_probe_before(program, spec, probe_path, cancelled, deadline).map_err(
                 |message| IdentityFailure {
                     cli_silent: !probe_gave_up(&message),
+                    silence: probe_timed_out(&message).then_some(ProbeSilenceV1::TimedOut),
                     message,
                     protocol_unanswered: false,
                 },
             )?;
             if !output.status.success() {
+                let answered = status_answered(spec.kind, &output.stdout);
                 return Err(IdentityFailure {
                     message: "Claude account identity probe failed".into(),
-                    cli_silent: !status_answered(spec.kind, &output.stdout),
+                    cli_silent: !answered,
+                    silence: (!answered).then_some(ProbeSilenceV1::Malformed),
                     protocol_unanswered: false,
                 });
             }
             let status: serde_json::Value = serde_json::from_str(&output.stdout).map_err(|_| {
-                IdentityFailure::answered("Claude account identity response is invalid")
+                IdentityFailure::malformed("Claude account identity response is invalid")
             })?;
             let principal = claude_principal(&status).map_err(IdentityFailure::answered)?;
-            Ok((principal, status["authMethod"].as_str().unwrap().into()))
+            Ok(Observation {
+                principal,
+                auth_method: status["authMethod"].as_str().unwrap().into(),
+                org: org_digest("claude", status["orgId"].as_str()),
+            })
         }
         ProviderKind::Codex => {
             let mut observed = AppServerProbe::default();
@@ -364,11 +639,20 @@ fn observe_identity(
                 // recognizes either.
                 cli_silent: observed.lacks_protocol
                     || !observed.answered && !probe_gave_up(&message),
+                silence: if probe_timed_out(&message) {
+                    Some(ProbeSilenceV1::TimedOut)
+                } else {
+                    observed.lacks_protocol.then_some(ProbeSilenceV1::Malformed)
+                },
                 protocol_unanswered: observed.lacks_protocol,
                 message,
             })?;
             let principal = codex_principal(&response).map_err(IdentityFailure::answered)?;
-            Ok((principal, "chatgpt".into()))
+            Ok(Observation {
+                principal,
+                auth_method: "chatgpt".into(),
+                org: None,
+            })
         }
     }
 }
@@ -410,6 +694,31 @@ impl CurrentTaskProviderAdapter {
         Ok(current.clone())
     }
 
+    /// The kind of the Provider this adapter runs for.
+    fn native_kind(&self) -> ProviderKind {
+        self.current
+            .lock()
+            .expect("Task Provider adapter")
+            .0
+            .spec
+            .kind
+    }
+
+    /// After a passed recheck the capture follows the executable and CLI version it observed:
+    /// an update is recorded once, not again before every later send.
+    fn follow(&self, identity: &TaskProviderIdentity, rechecked: &Rechecked) {
+        let mut current = self.current.lock().expect("Task Provider adapter");
+        if current.0.program != identity.program {
+            return;
+        }
+        if let Some(binary) = &rechecked.binary {
+            current.0.binary = binary.clone();
+        }
+        if let Some(version) = &rechecked.cli_version {
+            current.0.cli_version = Some(version.clone());
+        }
+    }
+
     fn native(&self) -> Arc<dyn WorkerModelAdapter> {
         self.current
             .lock()
@@ -442,18 +751,14 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
         let refuse = |reason: &str| ModelWorkerReturn {
+            notes: Default::default(),
             message: Err(reason.into()),
             usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
             usage_observation: None,
             raw_artifact_ids: vec![],
             native_failure: None,
         };
-        let refused = || {
-            refuse(concat!(
-                "Captured Task Provider identity is no longer current or could not be verified ",
-                "before invocation"
-            ))
-        };
+        let refused = || refuse(&Recheck::NotCurrent.diagnostic(self.native_kind(), None));
         let Some(deadline) = Instant::now().checked_add(timeout) else {
             return refused();
         };
@@ -472,18 +777,31 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             // evidence. A CLI that cannot start is named as the environment failure it is, so
             // neither retries nor reports blame the model or the login; its diagnostic is never
             // retry feedback.
-            match identity.check_current(deadline, cancelled) {
-                Ok(()) => {}
+            let rechecked = match identity.check_current(deadline, cancelled) {
+                Ok(rechecked) => rechecked,
                 Err(_) if !is_executable(&identity.program) => continue,
-                Err(Recheck::CliCannotServe(refusal)) => {
-                    return refuse(&environment_failure(&refusal));
+                Err(recheck) => {
+                    let mut returned =
+                        refuse(&recheck.diagnostic(identity.spec.kind, identity.probe_wall));
+                    // A CLI that cannot serve and a probe that proved nothing are the host's
+                    // failure, never an account change (ADR-0199).
+                    if matches!(
+                        recheck,
+                        Recheck::CliCannotServe(_) | Recheck::Unverified { .. }
+                    ) {
+                        returned.native_failure = Some(NativeFailureKind::Environment);
+                    }
+                    if let Recheck::Unverified { events, .. } = recheck {
+                        returned.notes.events = events;
+                    }
+                    return returned;
                 }
-                Err(Recheck::NotCurrent) => return refused(),
-            }
+            };
+            self.follow(&identity, &rechecked);
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return refused();
             };
-            match native.invoke_started(
+            let mut returned = match native.invoke_started(
                 cas,
                 workdir,
                 input.clone(),
@@ -492,10 +810,14 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
                 cancellation,
                 environment,
             ) {
-                Ok(returned) => return returned,
+                Ok(returned) => returned,
                 Err(Unstarted(_)) if !is_executable(&identity.program) => continue,
-                Err(Unstarted(returned)) => return *returned,
-            }
+                Err(Unstarted(returned)) => *returned,
+            };
+            let mut events = rechecked.events;
+            events.append(&mut returned.notes.events);
+            returned.notes.events = events;
+            return returned;
         }
         refused()
     }
@@ -594,6 +916,10 @@ mod tests {
             program: PathBuf::from("/nonexistent/claude"),
             principal_id: "sha256:".to_string() + &"0".repeat(64),
             auth_method: "claude.ai".into(),
+            org: None,
+            cli_version: None,
+            binary: None,
+            probe_wall: None,
             probe_path: std::ffi::OsString::from("/usr/bin:/bin"),
             home: None,
             user: None,

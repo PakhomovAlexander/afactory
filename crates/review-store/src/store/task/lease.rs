@@ -76,12 +76,16 @@ impl EventStore {
                 artifact_refs: vec![],
                 payload,
             };
-            // A lease's execution marker or a gate retry: written by the lease holder, at a
-            // time not before the last recorded, and nothing more.
+            // A lease's execution marker, a gate retry, or what one of its Attempts did about
+            // its Provider: written by the lease holder, at a time not before the last
+            // recorded, and nothing more.
             if super::is_beside_transitions(&event) {
                 let (by, epoch, at) = if super::is_execution_started(&event) {
                     let marker = super::read_execution_started(&event)?;
                     (marker.writer, marker.epoch, marker.now_unix_ms)
+                } else if super::is_provider_event(&event) {
+                    let value = super::read_provider_event(&event)?;
+                    (value.writer, value.epoch, value.now_unix_ms)
                 } else {
                     let retry = super::gate_retry::read_gate_retried(&event)?;
                     (retry.writer, retry.epoch, retry.now_unix_ms)

@@ -15,7 +15,8 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use review_runner::task::provider::PROBE_INPUT;
+use review_runner::native_failure::NativeFailureKind;
+use review_runner::task::provider::{PROBE_INPUT, PROBE_INPUT_ALTERNATE};
 
 pub struct ProviderTaskDomain<'a> {
     pub graph: &'a CompiledTask,
@@ -112,6 +113,7 @@ impl ProviderTaskDomain<'_> {
             Ok(value) => value,
             Err(error) => {
                 return TaskWorkOutput {
+                    notes: Default::default(),
                     usage_observation: None,
                     usage: None,
                     outputs: Err(error),
@@ -124,7 +126,8 @@ impl ProviderTaskDomain<'_> {
                 };
             }
         };
-        let returned = model.adapter.invoke(
+        let started = std::time::Instant::now();
+        let mut returned = model.adapter.invoke(
             cas,
             directory.path(),
             PROBE_INPUT.to_vec(),
@@ -133,10 +136,30 @@ impl ProviderTaskDomain<'_> {
             cancellation,
             &[],
         );
+        // The classifier refused the probe itself: that says nothing about the account, so the
+        // alternate wording is sent once in the same Attempt, its usage added to the first's
+        // (ADR-0199). A second refusal fails the admission with both refusals named.
+        if returned.native_failure == Some(NativeFailureKind::ModelRefused)
+            && returned.usage_observation.is_none()
+            && let Some(remaining) = timeout
+                .checked_sub(started.elapsed())
+                .filter(|left| *left >= Duration::from_millis(100))
+            && !cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
+            returned = self.reprobe(
+                cas,
+                model,
+                directory.path(),
+                remaining,
+                cancellation,
+                returned,
+            );
+        }
         let charged_tokens = returned
             .usage
             .as_ref()
             .map(|usage| usage.chargeable_tokens.get());
+        let notes = std::mem::take(&mut returned.notes);
         let outputs = (|| {
             let message = returned.message?;
             if message.len() > 64
@@ -176,6 +199,7 @@ impl ProviderTaskDomain<'_> {
             )]))
         })();
         TaskWorkOutput {
+            notes,
             usage_observation: returned.usage_observation,
             usage: returned.usage,
             outputs,
@@ -192,6 +216,80 @@ impl ProviderTaskDomain<'_> {
         }
     }
 }
+impl ProviderTaskDomain<'_> {
+    /// The alternate admission probe after the first was refused, as one return of the Attempt:
+    /// both calls' usage and raw evidence, the alternate's outcome, and the event naming the
+    /// refusal category the first call's stream reported.
+    fn reprobe(
+        &self,
+        cas: &Cas,
+        model: &TaskModelBinding<'_>,
+        directory: &std::path::Path,
+        remaining: Duration,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        first: review_runner::task::ModelWorkerReturn,
+    ) -> review_runner::task::ModelWorkerReturn {
+        let second = model.adapter.invoke(
+            cas,
+            directory,
+            PROBE_INPUT_ALTERNATE.to_vec(),
+            remaining,
+            review_runner::task::WorkerAccess::ReadOnly,
+            cancellation,
+            &[],
+        );
+        let mut raw = first.raw_artifact_ids;
+        // The exact alternate text is the Attempt's evidence beside its native captures.
+        if let Ok(id) = cas.put(PROBE_INPUT_ALTERNATE)
+            && !raw.contains(&id)
+        {
+            raw.push(id);
+        }
+        for id in second.raw_artifact_ids {
+            if !raw.contains(&id) {
+                raw.push(id);
+            }
+        }
+        let usage = review_runner::task::merge_usage(
+            first.usage,
+            second
+                .usage
+                .or_else(|| second.usage_observation.as_ref()?.reported_usage.clone()),
+        );
+        let usage_observation = second.usage_observation.map(|observation| {
+            review_core::task::usage::TaskUsageObservationV1 {
+                reported_usage: usage.clone(),
+                charge_complete: observation.charge_complete,
+            }
+        });
+        let mut notes = first.notes;
+        notes.events.push(
+            review_core::task::provider_event::ProviderEventV1::AdmissionReprobed {
+                category: notes.refusal_category.clone().filter(|category| {
+                    !category.is_empty()
+                        && category.len() <= 128
+                        && category.chars().all(|c| c.is_ascii_graphic() || c == ' ')
+                }),
+            },
+        );
+        let notes = notes.then(second.notes);
+        let first_error = first.message.err().unwrap_or_default();
+        let message = second.message.map_err(|error| {
+            format!(
+                "{first_error}; the alternate admission probe was sent once and failed too: {error}"
+            )
+        });
+        review_runner::task::ModelWorkerReturn {
+            usage_observation,
+            message,
+            usage,
+            raw_artifact_ids: raw,
+            native_failure: second.native_failure,
+            notes,
+        }
+    }
+}
+
 impl TaskOperatorHost for ProviderTaskDomain<'_> {
     fn prepare_experiment(
         &self,
@@ -351,6 +449,21 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         task: &review_core::task::TaskRevisionV1,
     ) -> Result<(), String> {
         self.inner.admit_checks(cas, task)
+    }
+    fn worker_instructions(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+    ) -> Result<Option<String>, String> {
+        self.inner.worker_instructions(cas, input)
+    }
+    fn check_worker_reply(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        reply: &review_runner::task::WorkerReply,
+    ) -> Result<(), super::host::WorkerReplyRefusal> {
+        self.inner.check_worker_reply(cas, input, reply)
     }
     fn validate_experiment_preparation(
         &self,

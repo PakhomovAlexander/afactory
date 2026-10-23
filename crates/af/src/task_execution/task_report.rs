@@ -568,6 +568,12 @@ fn event_times(
             events.push((retry.epoch, retry.now_unix_ms, Mark::Work));
             continue;
         }
+        if review_store::store::task::is_provider_event(&event) {
+            let value = review_store::store::task::read_provider_event(&event)
+                .map_err(|e| e.to_string())?;
+            events.push((value.epoch, value.now_unix_ms, Mark::Other));
+            continue;
+        }
         let transition =
             review_store::store::task::read_task_transition(&event).map_err(|e| e.to_string())?;
         let mark = match &transition.change {

@@ -770,8 +770,17 @@ impl CompiledTask {
             .iter()
             .map(|(scope, call)| (scope.clone(), call.max_parallel as usize))
             .collect();
+        // Every Provider admission is decided before any other node starts, so a gate or an
+        // implementer never runs for a Task whose reviewer or evaluator will be refused.
+        let admissions = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| matches!(node.operator, CompiledOperator::ProviderAdmission { .. }))
+            .map(|(id, _)| id.clone())
+            .collect();
         Ok(crate::Scheduler::new(&plan, self.max_parallel as usize)
             .with_scope_limits(limits)?
+            .with_first(admissions)?
             .run(dispatch))
     }
 

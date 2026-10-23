@@ -23,7 +23,7 @@ pub(super) fn explain_plan(
         .map_err(|e| e.to_string())?;
     let mut recorded_event_ids = Vec::new();
     for event in &events {
-        // A lease's execution marker and a gate retry name no plan.
+        // A lease's execution marker, a gate retry and a Provider event name no plan.
         if review_store::store::task::is_beside_transitions(event) {
             continue;
         }

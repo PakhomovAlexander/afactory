@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::{ContextManifest, RunnerError};
 pub mod provider;
+pub mod reply_schema;
 pub mod usage;
 
 pub const TASK_CONTEXT_V1: &str = "af/TaskContext@1";
@@ -314,6 +315,20 @@ impl WorkerContract {
                 serde_json::to_vec(&value).map_err(|e| e.to_string())?.len(),
             );
             feedback_values.push(value);
+            // The typed receipt an admitted feedback names, such as a draft validation, is the
+            // retry's guidance too: rendered from the feedback's own references (ADR-0199).
+            for evidence in feedback_evidence(cas, id)? {
+                manifest.record(
+                    "feedback",
+                    "admitted retry feedback evidence",
+                    Some(evidence.artifact_id.clone()),
+                    Some(evidence.artifact_type.clone()),
+                    serde_json::to_vec(&evidence)
+                        .map_err(|e| e.to_string())?
+                        .len(),
+                );
+                feedback_values.push(evidence);
+            }
         }
         let schemas_len = serde_json::to_vec(&self.output_schemas)
             .map_err(|e| e.to_string())?
@@ -400,6 +415,32 @@ impl WorkerContract {
     }
 }
 
+/// The artifact types a retry feedback may carry to its Worker beside itself: typed receipts of
+/// why the previous reply was refused, never a diagnostic or a transcript.
+const FEEDBACK_EVIDENCE_TYPES: [&str; 1] =
+    [review_core::task::report_task::REPORT_DRAFT_VALIDATION_V1];
+
+/// The typed receipts an admitted retry feedback references, in reference order.
+fn feedback_evidence(cas: &Cas, id: &str) -> Result<Vec<WorkerValue>, String> {
+    let envelope = cas.get_artifact(id).map_err(|e| e.to_string())?;
+    if envelope.artifact_type != review_core::task::feedback::TASK_RETRY_FEEDBACK_V1 {
+        return Ok(Vec::new());
+    }
+    let mut values = Vec::new();
+    for reference in &envelope.input_artifacts {
+        // A contract blob is no envelope, and a context is no receipt: neither is evidence.
+        let referenced = cas
+            .get_optional_artifact(reference)
+            .map_err(|e| e.to_string())?;
+        if referenced.is_some_and(|referenced| {
+            FEEDBACK_EVIDENCE_TYPES.contains(&referenced.artifact_type.as_str())
+        }) {
+            values.push(worker_value(cas, reference)?);
+        }
+    }
+    Ok(values)
+}
+
 fn worker_value(cas: &Cas, id: &str) -> Result<WorkerValue, String> {
     let bytes = cas
         .get_bounded(id, MAX_WORKER_BYTES as u64)
@@ -420,6 +461,31 @@ fn worker_value(cas: &Cas, id: &str) -> Result<WorkerValue, String> {
     })
 }
 
+/// What one native call learned beyond its reply: whether its failure was transient, so the
+/// kernel may call again within the same Attempt, and the facts it did about its Provider that
+/// the kernel records as typed Task events (ADR-0199). Neither changes the Attempt's charge.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallNotes {
+    /// The call failed for a reason the same input may get past after a wait.
+    pub transient: Option<crate::native_failure::Transient>,
+    /// What the call did about its Provider without failing, in order.
+    pub events: Vec<review_core::task::provider_event::ProviderEventV1>,
+    /// The policy category of a safety-classifier refusal, when the native stream named one
+    /// (`stop_details.category`).
+    pub refusal_category: Option<String>,
+}
+
+impl CallNotes {
+    /// The notes of a call that followed `self` in the same Attempt: its events after these,
+    /// and only its own transient failure.
+    pub fn then(mut self, later: CallNotes) -> CallNotes {
+        self.events.extend(later.events);
+        self.transient = later.transient;
+        self.refusal_category = later.refusal_category.or(self.refusal_category);
+        self
+    }
+}
+
 /// Usage and raw evidence survive both nonzero process exits and output-schema refusal.
 pub struct WorkerReturn {
     pub usage_observation: Option<review_core::task::usage::TaskUsageObservationV1>,
@@ -429,6 +495,7 @@ pub struct WorkerReturn {
     pub feedback_code: Option<TaskFeedbackCodeV1>,
     /// The classified native failure the call ended with, if it failed natively.
     pub native_failure: Option<crate::native_failure::NativeFailureKind>,
+    pub notes: CallNotes,
 }
 
 /// Provider framing is separate from the Worker's business contract. A model adapter returns
@@ -445,6 +512,7 @@ pub struct ModelWorkerReturn {
     /// native call failed. It names the cause of unknown usage (ADR-0143); the raw Provider
     /// message never travels with it.
     pub native_failure: Option<crate::native_failure::NativeFailureKind>,
+    pub notes: CallNotes,
 }
 
 /// The return of a native program that could not be started at all. It received no input and
@@ -545,6 +613,7 @@ impl ModelWorkerReturn {
             usage: None,
             raw_artifact_ids: vec![],
             native_failure: None,
+            notes: CallNotes::default(),
         }
     }
 }
@@ -552,6 +621,12 @@ impl ModelWorkerReturn {
 /// Validates the captured context and the returned output around one model call. This path
 /// gives model Workers no sandbox-local environment; a Review Task reviewer is dispatched
 /// through the Campaign Review host instead, which forwards its Build Cache location.
+///
+/// A reply that does not parse is read once more tolerantly — the first balanced JSON object of
+/// a reply that carries prose around it — and, failing that, the same Worker is asked once more
+/// within the same Attempt: its deadline, its `reserved_tokens` and its cancellation, with the
+/// parse error and the offending excerpt as one more feedback value (ADR-0199). Both replies are
+/// kept as raw evidence and named in the diagnostic.
 #[allow(clippy::too_many_arguments)]
 pub fn invoke_model(
     cas: &Cas,
@@ -562,11 +637,13 @@ pub fn invoke_model(
     timeout: Duration,
     access: WorkerAccess,
     cancellation: Option<&AtomicBool>,
+    reserved_tokens: u64,
 ) -> WorkerReturn {
     let bytes = match contract.read_context(cas, context_id) {
         Ok((_, bytes)) => bytes,
         Err(error) => {
             return WorkerReturn {
+                notes: Default::default(),
                 usage_observation: None,
                 reply: Err(error),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
@@ -576,26 +653,21 @@ pub fn invoke_model(
             };
         }
     };
-    let returned = adapter.invoke(cas, workdir, bytes, timeout, access, cancellation, &[]);
-    let (reply, feedback_code) = match returned.message {
-        Ok(bytes) => {
-            let reply = contract.validate_reply(&bytes);
-            let code = reply
-                .is_err()
-                .then_some(TaskFeedbackCodeV1::InvalidOutputContract);
-            (reply, code)
-        }
-        Err(error) => (Err(error), Some(TaskFeedbackCodeV1::ProviderFailure)),
-    };
-    WorkerReturn {
-        usage_observation: returned.usage_observation,
-        reply,
-        usage: returned.usage,
-        raw_artifact_ids: returned.raw_artifact_ids,
-        feedback_code,
-        native_failure: returned.native_failure,
-    }
+    reask::invoke(
+        cas,
+        workdir,
+        adapter,
+        contract,
+        bytes,
+        timeout,
+        access,
+        cancellation,
+        reserved_tokens,
+    )
 }
+
+mod reask;
+pub use reask::{extract_object, merge_usage};
 
 mod command;
 pub use command::{invoke_command, invoke_command_bytes};
@@ -746,5 +818,96 @@ mod request_tests {
         // The payload sum is not the request: wrappers, protocol fields and escaping add bytes.
         let sum = instructions.len() + serde_json::to_vec(&request.inputs).unwrap().len();
         assert!(rendered.len() > sum);
+    }
+
+    /// ADR-0199: an admitted retry feedback that names a draft validation receipt carries it to
+    /// the retried Worker beside itself; a reference of any other type does not travel.
+    #[test]
+    fn a_feedbacks_typed_receipt_is_rendered_beside_it() {
+        use review_core::task::feedback::*;
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let contract = WorkerContract::capture(
+            &cas,
+            serde_json::json!({"type": "object"}),
+            BTreeMap::from([("draft".to_string(), serde_json::json!({"type": "object"}))]),
+        )
+        .unwrap();
+        let producer = Producer::KernelOperation {
+            run_id: "feedback-fixture".into(),
+            node_id: None,
+            operation_id: "fixture@1".into(),
+        };
+        let receipt = serde_json::json!({"schema": "af/ReportDraftValidation@1", "fixture": true});
+        let (receipt_id, _) = cas
+            .put_artifact(
+                review_core::task::report_task::REPORT_DRAFT_VALIDATION_V1,
+                producer.clone(),
+                vec![],
+                None,
+                receipt.clone(),
+            )
+            .unwrap();
+        let (other_id, _) = cas
+            .put_artifact(
+                "af/Other@1",
+                producer.clone(),
+                vec![],
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap();
+        let feedback = TaskRetryFeedbackV1 {
+            attempt_id: "a".repeat(26),
+            contract_id: contract.id().into(),
+            code: TaskFeedbackCodeV1::OutputAdmissionRejected,
+            compiler: None,
+        };
+        let (feedback_id, _) = cas
+            .put_artifact(
+                TASK_RETRY_FEEDBACK_V1,
+                producer,
+                vec![contract.id().into(), other_id, receipt_id.clone()],
+                None,
+                serde_json::to_value(&feedback).unwrap(),
+            )
+            .unwrap();
+        let invocation = TaskInvocationV1 {
+            plan_id: cas.put(b"captured plan").unwrap(),
+            node: "root.author".into(),
+            inputs: BTreeMap::new(),
+        };
+        let context = contract
+            .prepare(&cas, &invocation, &[feedback_id.clone()], "Write it.")
+            .unwrap();
+        let (context, rendered) = contract.read_context(&cas, &context).unwrap();
+        let request: WorkerRequest = serde_json::from_slice(&rendered).unwrap();
+        let carried: Vec<_> = request
+            .feedback
+            .iter()
+            .map(|value| (value.artifact_id.clone(), value.artifact_type.clone()))
+            .collect();
+        assert_eq!(
+            carried,
+            [
+                (feedback_id.clone(), TASK_RETRY_FEEDBACK_V1.to_string()),
+                (
+                    receipt_id.clone(),
+                    review_core::task::report_task::REPORT_DRAFT_VALIDATION_V1.to_string()
+                ),
+            ]
+        );
+        assert_eq!(request.feedback[1].payload, receipt);
+        assert_eq!(context.feedback_ids, [feedback_id]);
+        assert!(
+            context
+                .manifest
+                .entries
+                .iter()
+                .any(
+                    |entry| entry.artifact_id.as_deref() == Some(receipt_id.as_str())
+                        && entry.required_by == "admitted retry feedback evidence"
+                )
+        );
     }
 }

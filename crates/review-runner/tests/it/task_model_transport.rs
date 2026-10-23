@@ -115,10 +115,24 @@ impl WorkerModelAdapter for NativeModel<'_> {
         );
         assert!(std::ptr::eq(cas, &self.fixture.cas));
         assert_eq!(workdir, self.fixture.directory.path());
-        assert_eq!(input, self.fixture.input);
-        assert_eq!(timeout, TIMEOUT);
+        // The exact captured context, or once its re-ask: that request with one more feedback
+        // value naming why the reply did not parse (ADR-0199).
+        if input != self.fixture.input {
+            let request: serde_json::Value = serde_json::from_slice(&input).unwrap();
+            let mut original: serde_json::Value =
+                serde_json::from_slice(&self.fixture.input).unwrap();
+            let reask = request["feedback"].as_array().unwrap().last().unwrap();
+            assert_eq!(reask["artifact_type"], "af/WorkerReplyReask@1");
+            original["feedback"]
+                .as_array_mut()
+                .unwrap()
+                .push(reask.clone());
+            assert_eq!(request, original);
+        }
+        assert!(timeout <= TIMEOUT);
         assert_eq!(access, WorkerAccess::ExecuteChecks);
         ModelWorkerReturn {
+            notes: Default::default(),
             usage_observation: None,
             message: if self.failed {
                 Err("reported Provider failure".into())
@@ -149,6 +163,7 @@ fn native_transport_forwards_exact_invocation_and_retains_success_or_failed_evid
                 TIMEOUT,
                 WorkerAccess::ExecuteChecks,
                 cancellation,
+                u64::MAX,
             );
             assert_eq!(result.reply.is_err(), failed);
             assert_eq!(
@@ -194,6 +209,7 @@ fn context_and_output_checks_run_around_the_adapter_and_retain_failed_usage() {
             TIMEOUT,
             WorkerAccess::ExecuteChecks,
             None,
+            u64::MAX,
         );
         assert!(rejected.reply.is_err());
         assert_eq!(
@@ -212,12 +228,32 @@ fn context_and_output_checks_run_around_the_adapter_and_retain_failed_usage() {
             TIMEOUT,
             WorkerAccess::ExecuteChecks,
             None,
+            u64::MAX,
         );
         assert_eq!(result.reply.is_err(), expected_feedback.is_some());
         assert_eq!(result.feedback_code, expected_feedback);
-        assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 3);
-        assert_eq!(result.raw_artifact_ids.len(), 1);
         assert_eq!(fixture.cas.get(&result.raw_artifact_ids[0]).unwrap(), RAW);
-        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        // A reply outside its contract is re-asked once in the same Attempt: both calls are
+        // charged, and the refused reply and the re-ask request are kept beside the capture.
+        let reasked = expected_feedback == Some(TaskFeedbackCodeV1::InvalidOutputContract);
+        let calls = if reasked { 2 } else { 1 };
+        assert_eq!(model.calls.load(Ordering::SeqCst), calls);
+        assert_eq!(
+            result.usage.unwrap().chargeable_tokens.get(),
+            3 * calls as u128
+        );
+        assert_eq!(result.raw_artifact_ids.len(), if reasked { 3 } else { 1 });
+        if reasked {
+            assert_eq!(fixture.cas.get(&result.raw_artifact_ids[1]).unwrap(), reply);
+            let error = result.reply.unwrap_err();
+            assert!(
+                error.contains(&format!("raw reply kept: {}", result.raw_artifact_ids[1])),
+                "{error}"
+            );
+            assert!(
+                error.contains("the second reply did not parse either"),
+                "{error}"
+            );
+        }
     }
 }

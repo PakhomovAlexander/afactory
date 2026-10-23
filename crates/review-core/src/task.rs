@@ -28,6 +28,7 @@ pub mod plan;
 pub mod planning;
 pub mod project_brief;
 pub mod provider;
+pub mod provider_event;
 pub mod remote_check;
 pub mod repair;
 pub mod report;

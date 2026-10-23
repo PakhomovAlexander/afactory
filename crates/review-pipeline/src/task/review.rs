@@ -1209,6 +1209,7 @@ impl TaskOperatorHost for ReviewTaskDomain {
             }
         };
         TaskWorkOutput {
+            notes: Default::default(),
             usage_observation: None,
             usage: None,
             outputs,

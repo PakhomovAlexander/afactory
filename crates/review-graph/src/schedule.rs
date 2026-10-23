@@ -154,6 +154,8 @@ pub struct Scheduler<'a> {
     plan: &'a Planned,
     max_parallel: usize,
     scope_limits: BTreeMap<String, usize>,
+    /// Input-free nodes that resolve before any other node starts; see [`Self::with_first`].
+    first: BTreeSet<String>,
 }
 
 impl<'a> Scheduler<'a> {
@@ -163,7 +165,22 @@ impl<'a> Scheduler<'a> {
             plan,
             max_parallel: max_parallel.max(1),
             scope_limits: BTreeMap::new(),
+            first: BTreeSet::new(),
         }
+    }
+
+    /// Nodes that run before every other node and must all complete for any other node to
+    /// start: a Task's Provider admissions, so that no implementer, gate or check runs when a
+    /// later reviewer's or evaluator's admission is refused. Each must depend on nothing. When
+    /// one of them does not complete, every other node is suppressed as missing its upstream.
+    pub fn with_first(mut self, first: BTreeSet<String>) -> Result<Self, String> {
+        if first.iter().any(|id| {
+            !self.plan.nodes.contains_key(id) || !self.plan.dependencies_of(id).is_empty()
+        }) {
+            return Err("A node that runs first must exist and depend on nothing".into());
+        }
+        self.first = first;
+        Ok(self)
     }
 
     /// Additional bounds for flattened child Pipeline namespaces. All share this scheduler.
@@ -196,7 +213,21 @@ impl<'a> Scheduler<'a> {
         let mut in_flight: BTreeSet<String> = BTreeSet::new();
 
         let mut nodes = self.plan.nodes.clone();
-        let mut order = self.plan.order.clone();
+        // The nodes that run first lead the scan; the rest keep their plan order. Neither changes
+        // the report, which lists nodes in plan order.
+        let mut order: Vec<String> = self
+            .plan
+            .order
+            .iter()
+            .filter(|id| self.first.contains(*id))
+            .chain(
+                self.plan
+                    .order
+                    .iter()
+                    .filter(|id| !self.first.contains(*id)),
+            )
+            .cloned()
+            .collect();
         let mut child_inputs: BTreeMap<String, ArtifactMap> = BTreeMap::new();
         let mut owners: BTreeMap<String, (ArtifactMap, Vec<String>)> = BTreeMap::new();
         let mut child_limits: BTreeMap<String, (String, usize)> = BTreeMap::new();
@@ -234,6 +265,24 @@ impl<'a> Scheduler<'a> {
                             progressed = true;
                         }
                         continue;
+                    }
+                    if !self.first.contains(node_id) {
+                        // Nothing else starts before every first node has resolved, and
+                        // nothing else runs at all when one of them did not complete.
+                        if self.first.iter().any(|id| !outcomes.contains_key(id)) {
+                            continue;
+                        }
+                        if self.first.iter().any(|id| unusable.contains(id)) {
+                            outcomes.insert(
+                                node_id.clone(),
+                                NodeOutcome::Suppressed {
+                                    reason: SuppressionReason::UpstreamMissing,
+                                },
+                            );
+                            unusable.insert(node_id.clone());
+                            progressed = true;
+                            continue;
+                        }
                     }
                     let is_child = child_inputs.contains_key(node_id);
                     let coordinates = !is_child && dispatch.coordinates_owned_children(node);

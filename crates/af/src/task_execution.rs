@@ -3836,6 +3836,9 @@ fn show_lines(
                 .join(", ")
         ));
     }
+    // A running Attempt's Provider wait or re-ask (ADR-0199); a settled one's diagnostic,
+    // printed by the failure lines, carries its retry history.
+    lines.extend(provider_event_lines(state));
     lines.extend(state::failed_gate_tail(&state.task_id, view));
     lines.extend(state::failure_lines(view));
     lines.extend(runs::take_show_notes());
@@ -3844,6 +3847,49 @@ fn show_lines(
         view.state.next_action.as_deref().unwrap_or("none")
     ));
     Ok(lines)
+}
+
+/// One line per running Attempt that recorded a Provider event (ADR-0199), from its latest:
+/// `NODE: waiting 120 s for capacity (retry 2 of 3)` while the wait lasts, then
+/// `NODE: retry 2 of 3 after capacity is running`. A settled Attempt prints none: its
+/// diagnostic carries its retry history.
+fn provider_event_lines(state: &TaskProjection) -> Vec<String> {
+    use review_core::task::provider_event::ProviderEventV1;
+    let running: BTreeSet<String> = state
+        .execution
+        .iter()
+        .flat_map(|execution| execution.attempt_accounting())
+        .filter(|attempt| attempt.started && attempt.settled_unix_ms.is_none() && !attempt.released)
+        .map(|attempt| attempt.attempt_id)
+        .collect();
+    let mut latest = BTreeMap::new();
+    for event in &state.provider_events {
+        if running.contains(&event.attempt_id) {
+            latest.insert(event.attempt_id.clone(), event);
+        }
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64);
+    latest
+        .values()
+        .map(|event| {
+            let line = match &event.event {
+                ProviderEventV1::RetryWait {
+                    class,
+                    retry,
+                    max_retries,
+                    wait_ms,
+                    ..
+                } if event.now_unix_ms.saturating_add(*wait_ms) <= now => format!(
+                    "retry {retry} of {max_retries} after {} is running",
+                    class.label()
+                ),
+                _ => event.describe(),
+            };
+            format!("{}: {line}", event.node)
+        })
+        .collect()
 }
 
 /// The Task's settled Attempts whose usage is unknown, by cause (ADR-0143): no usage was
@@ -4652,9 +4698,17 @@ fn inspection(
     let mut runtime_observations = Vec::new();
     let mut runtime_attempt_ids = BTreeSet::new();
     let mut decisions = Vec::new();
+    let mut provider_events = Vec::new();
     for event in events {
-        // A lease's execution marker and a gate retry are their own event kinds, not
-        // `TaskTransition@5`: the history lists the transitions only.
+        // A lease's execution marker, a gate retry and a Provider event are their own event
+        // kinds, not `TaskTransition@5`: the history lists the transitions only; the Provider
+        // events are listed beside it.
+        if review_store::store::task::is_provider_event(&event) {
+            let value = review_store::store::task::read_provider_event(&event)
+                .map_err(|e| e.to_string())?;
+            provider_events.push(json!({"sequence":event.sequence,"record":value}));
+            continue;
+        }
         if review_store::store::task::is_beside_transitions(&event) {
             continue;
         }
@@ -4762,6 +4816,9 @@ fn inspection(
     }
     value["history"] = json!(history);
     value["execution_records"] = json!(execution);
+    if !provider_events.is_empty() {
+        value["provider_events"] = json!(provider_events);
+    }
     if !runtime_observations.is_empty() {
         let run_id = review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?;
         let walls = store

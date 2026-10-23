@@ -607,6 +607,7 @@ impl EventStore {
                 EventType::TaskTransitionV5
                     | EventType::TaskExecutionStartedV1
                     | EventType::TaskGateRetriedV1
+                    | EventType::TaskProviderEventV1
             )
         }) && task_permit.is_none()
         {
