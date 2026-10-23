@@ -1003,7 +1003,9 @@ fn a_command_line_hands_the_terminal_to_af_task_show_and_enter_returns() {
     let expected = String::from_utf8(shown.stdout).unwrap();
     let expected: Vec<&str> = expected.lines().collect();
     assert!(!expected.is_empty());
-    let mut browser = Browser::launch(&repo, &home);
+    // Wide enough that no line of the command's own output wraps: its next command and its
+    // not-found error name whole commands and paths.
+    let mut browser = Browser::launch_sized(&repo, &home, ROWS, 200);
     let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
     browser.wait_for("project settings", ready);
     let line = "task show pagination-cli";
@@ -1033,7 +1035,9 @@ fn a_failing_command_line_shows_its_non_zero_exit() {
     let code = failed.status.code().unwrap();
     assert_ne!(code, 0);
     let error = String::from_utf8(failed.stderr).unwrap();
-    let mut browser = Browser::launch(&repo, &home);
+    // Wide enough that no line of the command's own output wraps: its next command and its
+    // not-found error name whole commands and paths.
+    let mut browser = Browser::launch_sized(&repo, &home, ROWS, 400);
     let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
     browser.wait_for("project settings", ready);
     let line = "task show nothing-here";

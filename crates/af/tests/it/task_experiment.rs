@@ -163,7 +163,7 @@ fn start(fixture: &Fixture, task_id: &str, files: Value, expected: i32) -> Value
     );
     assert_eq!(code, expected, "{stderr}\n{stdout}");
     let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v11.json"), &outcome);
+    schemas::valid(&schemas::validator("task-inspection-v12.json"), &outcome);
     outcome
 }
 

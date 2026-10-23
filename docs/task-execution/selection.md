@@ -61,7 +61,7 @@ coverage. Unknown facts are not inferred. Exact structural compilation then chec
 children, installed signatures, effects, lineage, independent verification and replacement
 contracts. Resource admission accounts for mandatory work and protected verification, including
 paid Provider admission, before dispatch. The recorded deadline never resets on fallback or
-resume. Declared reservations are bounds, not predictions of model latency or success.
+resume; a plan judges its whole declared wall, since its clock starts at the first `af task run`. Declared reservations are bounds, not predictions of model latency or success.
 
 Worker executable checks and Provider account identity reads during planning are token-free.
 They do not prove that the model service will accept a request. Model capability admission runs
@@ -71,8 +71,17 @@ image tools must be resolved by their actual runtime environment.
 
 `af task plan --file ticket.json --json` shows the selected plan and selection assessment with
 zero Attempts. `af task explain TASK_ID --json` exposes the same recorded assessment. A selection
-refusal exits 1 with `af/task-selection@1`, the persisted selection and request artifact IDs,
-candidate reasons and zero charged Attempts. No execution Task is opened for a refusal. Start
+refusal exits 1 with `af/task-selection@2` on stdout under `--json`, the persisted selection and
+request artifact IDs, candidate reasons and zero charged Attempts, and prints the refusal on
+stderr in either mode: the decision, each candidate's reason, and for an infeasible plan the
+smallest limits that fit with the reserve each verification slot protects. Those limits are the
+document's `planning_diagnostic.required_limits` (with `supplied_limits`, `raised`, `reserves`,
+`mandatory` and `unfixable`), computed by the planner from the declared allowances alone, token
+free (a raised `wall_ms` keeps 5 s beyond what the mandatory Attempts and the verification
+reserve need, for the start of the run); `af task plan --file ticket.json --fit` plans with them
+and prints every limit it raised. A
+refusal no Task limit fixes, a Pipeline's own token scope or Attempt bound, is named in
+`unfixable`. No execution Task is opened for a refusal. Start
 and plan use the same selector. Once selected, resume recompiles the captured root and closure;
 it does not reroute against edited working files or a changed live catalog.
 

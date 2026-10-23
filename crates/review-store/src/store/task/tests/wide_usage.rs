@@ -315,6 +315,9 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
         }
         f.store = EventStore::open(&f.path).unwrap();
         let state = f.state();
+        // The clock started at the first admission: the deadline moved by the wait before it.
+        let deadline = state.deadline_unix_ms();
+        assert!(deadline >= f.revision.limits.deadline_unix_ms);
         let execution = state.execution.unwrap();
         assert_eq!(execution.budget.committed_tokens(), actual + 7);
         assert!(execution.budget.breached());
@@ -322,7 +325,7 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
         assert_eq!(execution.budget.begun_attempts(), 2);
         assert_eq!(
             execution.budget.remaining_limits().deadline_unix_ms,
-            f.revision.limits.deadline_unix_ms
+            deadline
         );
         let active_accounting = execution
             .attempt_accounting()

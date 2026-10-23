@@ -678,6 +678,9 @@ fn owned_recording_after_execution_deadline_preserves_missing_children_without_a
     let mut f = fixture(false, Some(deadline));
     let (lease, parent) = started(&mut f);
     let (id, set) = children(&f, &parent);
+    // The Task's clock started at its admission, so its deadline is the recorded one moved by
+    // the wait before it.
+    let deadline = f.state().deadline_unix_ms();
     std::thread::sleep(std::time::Duration::from_millis(
         deadline.saturating_sub(now().unwrap()) + 5,
     ));

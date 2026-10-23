@@ -198,6 +198,76 @@ fn man_pages_render_for_every_command_and_topic() {
     assert!(root.contains("review"));
 }
 
+/// The one Task state model has its own topic, every new flag is documented in its command's
+/// `--help` (ADR-0146: a command's `--help` is its contract), and the exit codes a script
+/// branches on are listed (P5).
+#[test]
+fn task_states_topic_and_the_state_flags_describe_the_commands() {
+    let topic = af(&["help", "task-states"]);
+    assert!(topic.status.success(), "{}", err(&topic));
+    let text = out(&topic);
+    for cause in review_core::task::state::TaskCauseV1::ALL {
+        assert!(
+            text.contains(cause.as_str()),
+            "{} missing:\n{text}",
+            cause.as_str()
+        );
+    }
+    for outcome in review_core::task::state::TaskOutcomeV1::ALL {
+        assert!(text.contains(outcome.as_str()), "{text}");
+    }
+    for needle in [
+        "deadline starts when you run",
+        "next: af task run ID --retry-gate",
+        "af task show ID --checks",
+    ] {
+        assert!(text.contains(needle), "{needle}:\n{text}");
+    }
+    let unknown = af(&["help", "nonsense"]);
+    assert!(err(&unknown).contains("task-states"), "{}", err(&unknown));
+    let codes = out(&af(&["help", "exit-codes"]));
+    for needle in [
+        "5    gate_failed",
+        "6    provider_failed",
+        "7    expired",
+        "3    changes_requested",
+    ] {
+        assert!(codes.contains(needle), "{needle}:\n{codes}");
+    }
+    let json = out(&af(&["help", "json"]));
+    for needle in [
+        "af/task-inspection@12",
+        "af/task-checks@1",
+        "af/task-list@3",
+        "af/task-list-entry@3",
+        "af/task-report@2",
+        "af/task-selection@2",
+        "planning_diagnostic.required_limits",
+    ] {
+        assert!(json.contains(needle), "{needle}:\n{json}");
+    }
+    for (command, flags) in [
+        (
+            &["task", "show", "--help"][..],
+            &["--checks", "af/task-checks@1", "next"][..],
+        ),
+        (&["task", "plan", "--help"], &["--fit", "--replace"]),
+    ] {
+        let help = af(command);
+        assert!(help.status.success(), "{}", err(&help));
+        for flag in flags {
+            assert!(
+                out(&help).contains(flag),
+                "{command:?} lacks {flag}:\n{}",
+                out(&help)
+            );
+        }
+    }
+    let root = out(&af(&["--help"]));
+    assert!(root.contains("task-states"), "{root}");
+    assert!(root.contains("5 gate failed"), "{root}");
+}
+
 /// `af task report` says what it prints, what it never does, and its selectors, in `--help`, in
 /// `af help task report` and in its man page (ADR-0142).
 #[test]
@@ -213,7 +283,7 @@ fn task_report_help_and_man_page_describe_the_command() {
             "<TASK_ID>...",
             "<!-- af-task-report:v1 -->",
             "<!-- /af-task-report -->",
-            "af/task-report@1",
+            "af/task-report@2",
             "Never:",
             "--repo <DIR>",
             "--state <DIR>",

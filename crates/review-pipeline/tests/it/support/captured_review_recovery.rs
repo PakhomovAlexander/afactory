@@ -86,11 +86,16 @@ pub fn run_expired_waiting(
     };
     let task_run = review_store::store::task::task_run_id(lease.task_id()).unwrap();
     let frozen_events = store.replay(&task_run).unwrap();
+    // The Task's clock started at its admission: its deadline is the recorded one moved by the
+    // wait before it.
+    let deadline = store
+        .task_projection(&cas, lease.task_id())
+        .unwrap()
+        .unwrap()
+        .deadline_unix_ms();
     store.release_task_lease(&cas, &lease).unwrap();
     drop(store);
-    std::thread::sleep(Duration::from_millis(
-        limits.deadline_unix_ms.saturating_sub(now()) + 5,
-    ));
+    std::thread::sleep(Duration::from_millis(deadline.saturating_sub(now()) + 5));
     let mut store = EventStore::open(&path).unwrap();
     let lease = store
         .take_task_lease(&cas, lease.task_id(), "recovery", 15_000)

@@ -682,7 +682,8 @@ fn the_bar_groups_a_task_by_the_phase_its_inspection_read() {
         .unwrap();
     // The list read still saw it running; the inspection read it finished and satisfied.
     listed.entry["phase"] = json!({"kind": "running"});
-    listed.entry["outcome"] = serde_json::Value::Null;
+    listed.entry["state"] =
+        json!({"phase": "running", "outcome": null, "cause": null, "next_action": null});
     listed.entry["chargeable_tokens"] = json!("999");
     assert_eq!(listed.state(), State::Done);
     // Its outcome and charge come from that same read, not the older list entry.

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-list-entry:2",
-  "title": "Task list entry af/task-list-entry@2",
-  "$comment": "One common Task entry in the CLI list. Unfinished outcome, absent snapshot and absent delivery are explicit nulls. phase/result/delivery identity and charge consistency are checked by Store projection, not by this structural schema.",
+  "$id": "urn:af:schema:task-list-entry:3",
+  "title": "Task list entry af/task-list-entry@3",
+  "$comment": "One common Task entry in `af task list --json`, inside `af/task-list@3`. `state` is the one state every rendering prints (`af help task-states`); `phase` is the phase the Store recorded. An absent snapshot and an absent delivery are explicit nulls. Identity and charge consistency are checked by Store projection, not by this structural schema.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,14 +10,16 @@
     "task_id",
     "kind",
     "phase",
-    "outcome",
+    "state",
     "chargeable_tokens",
     "derived_snapshot_id",
-    "delivery"
+    "delivery",
+    "round",
+    "updated_unix_ms"
   ],
   "properties": {
     "schema": {
-      "const": "af/task-list-entry@2"
+      "const": "af/task-list-entry@3"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
@@ -28,15 +30,16 @@
     "phase": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/taskPhase"
     },
-    "outcome": {
-      "anyOf": [
-        {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/text"
-        },
-        {
-          "type": "null"
-        }
-      ]
+    "state": {
+      "$ref": "urn:af:schema:task-state:1#/$defs/state"
+    },
+    "gate": {
+      "description": "The last check receipt's summary, as `af task show --json` carries it; absent before a check recorded one and for a collected Task.",
+      "$ref": "urn:af:schema:task-state:1#/$defs/gate"
+    },
+    "round": {
+      "description": "The review round the Task is in: rounds handed to a successor plan plus the one its current execution recorded; 0 before a review recorded a round and for a collected Task.",
+      "$ref": "#/$defs/count"
     },
     "chargeable_tokens": {
       "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
@@ -60,12 +63,16 @@
     "delivery": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:task-inspection:11#/$defs/deliveryReceipt"
+          "$ref": "urn:af:schema:task-inspection:12#/$defs/deliveryReceipt"
         },
         {
           "type": "null"
         }
       ]
+    },
+    "updated_unix_ms": {
+      "description": "Policy time of the Task's last recorded event, or when it was collected; `af task list` prints its age.",
+      "$ref": "#/$defs/count"
     },
     "collected": {
       "description": "Present exactly when the Task was collected by `af task gc --apply` (ADR-0135): its retained tombstone. Such an entry is finished, carries no derived Snapshot or delivery, has a zero footprint under `--sizes`, and its phase names the result its log recorded.",
@@ -134,6 +141,42 @@
     },
     {
       "if": {
+        "required": [
+          "collected"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "gate"
+          ]
+        },
+        "properties": {
+          "state": {
+            "properties": {
+              "cause": {
+                "const": "collected"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "state": {
+            "properties": {
+              "cause": {
+                "not": {
+                  "const": "collected"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
         "properties": {
           "phase": {
             "properties": {
@@ -146,15 +189,25 @@
       },
       "then": {
         "properties": {
-          "outcome": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/text"
+          "state": {
+            "properties": {
+              "phase": {
+                "const": "finished"
+              }
+            }
           }
         }
       },
       "else": {
         "properties": {
-          "outcome": {
-            "type": "null"
+          "state": {
+            "properties": {
+              "phase": {
+                "not": {
+                  "const": "finished"
+                }
+              }
+            }
           },
           "derived_snapshot_id": {
             "type": "null"

@@ -635,7 +635,7 @@ fn summary_of(document: &Value, stages: &[Stage]) -> Summary {
 /// One Task as `af task list` lists it.
 struct Listed {
     task_id: String,
-    /// The `af/task-list-entry@2` document.
+    /// The `af/task-list-entry@3` document.
     entry: Value,
     summary: Result<Summary, String>,
 }
@@ -653,8 +653,10 @@ impl Listed {
             // A Task without a result lists as `incomplete`, as `af task list` prints it.
             return summary.outcome.as_deref().unwrap_or("incomplete");
         }
-        // `af task list` prints a Task without a result the same way.
-        self.entry["outcome"].as_str().unwrap_or("incomplete")
+        // Without its inspection, the outcome the list entry's state names.
+        self.entry["state"]["outcome"]
+            .as_str()
+            .unwrap_or("incomplete")
     }
 
     fn percent(&self) -> String {

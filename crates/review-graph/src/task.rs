@@ -227,6 +227,11 @@ pub struct CompiledTask {
     pub token_scopes: BTreeMap<String, review_attempt::task_budget::TaskTokenScope>,
 }
 
+/// The wall a fitted plan keeps beyond what its mandatory Attempts and verification reserve
+/// need: the clock starts at admission, and the first reservation, which must still find the
+/// whole reserve ahead of it, comes a moment after.
+pub const FIT_WALL_START_MS: u64 = 5_000;
+
 impl CompiledTask {
     /// Every compiled check node that lists remote checks, with the checks it lists, child
     /// pipelines included. Empty for a graph whose checks all run on this machine.
@@ -460,19 +465,54 @@ impl CompiledTask {
         for (scope, minimum) in scope_minimum {
             if minimum > self.token_scopes[&scope].tokens {
                 return Err(format!(
-                    "Task token scope {scope} cannot retain verification and mandatory work"
+                    "Task token scope {scope} cannot retain verification and mandatory work: it \
+                     needs {minimum} tokens and the Pipeline gives it {}",
+                    self.token_scopes[&scope].tokens
                 ));
             }
         }
         if minimum_tokens > limits.tokens || minimum_attempts > u64::from(limits.max_attempts) {
-            return Err("Task cannot retain verification reserves and mandatory work within its token and Attempt allowance".into());
+            // Every term of the rule, so the refusal says what would pass (issue #250): the
+            // reserve each verification slot protects, the mandatory work beside it, what the
+            // Task supplied and the exact deficit. Declared allowances only; nothing is estimated.
+            let reserves = self
+                .verification_reserves()?
+                .iter()
+                .map(|slot| {
+                    format!(
+                        "{} {} x {} tokens",
+                        slot.node, slot.attempts, slot.tokens_per_attempt
+                    )
+                })
+                .collect::<Vec<_>>();
+            return Err(format!(
+                "Task cannot retain verification reserves and mandatory work within its token and \
+                 Attempt allowance: it needs tokens >= {minimum_tokens} (verification reserve {} \
+                 + {} for one Attempt of each mandatory Worker) and max_attempts >= \
+                 {minimum_attempts} ({} + {}); the Task supplies tokens {}, max_attempts {}, a \
+                 deficit of {} tokens and {} Attempts; reserves per verification slot: [{}]",
+                limits.verification.tokens,
+                minimum_tokens - limits.verification.tokens,
+                limits.verification.attempts,
+                minimum_attempts - u64::from(limits.verification.attempts),
+                limits.tokens,
+                limits.max_attempts,
+                minimum_tokens.saturating_sub(limits.tokens),
+                minimum_attempts.saturating_sub(u64::from(limits.max_attempts)),
+                reserves.join("; ")
+            ));
         }
-        if self
+        if let Some(call) = self
             .calls
             .get("root")
-            .is_some_and(|call| root_attempts > u64::from(call.max_attempts))
+            .filter(|call| root_attempts > u64::from(call.max_attempts))
         {
-            return Err("Root Pipeline cannot retain verification and mandatory Provider admission within its Attempt bound".into());
+            return Err(format!(
+                "Root Pipeline cannot retain verification and mandatory Provider admission within \
+                 its Attempt bound: it needs {root_attempts} Attempts and the Pipeline's \
+                 max_attempts is {}",
+                call.max_attempts
+            ));
         }
         TaskBudget::new(limits, self.execution_allowances()?)?
             .with_call_limits(
@@ -483,6 +523,182 @@ impl CompiledTask {
             )?
             .with_owned_templates(templates)?
             .with_token_scopes(self.token_scopes.clone())
+    }
+
+    /// The reserve each verification slot protects: its verifier Attempts and what each may
+    /// use, as `TaskBudget` sums them.
+    pub fn verification_reserves(
+        &self,
+    ) -> Result<Vec<review_core::task::limits_fit::TaskVerificationSlotReserveV1>, String> {
+        Ok(self
+            .execution_allowances()?
+            .into_iter()
+            .filter(|(_, allowance)| allowance.verification_attempts > 0)
+            .map(
+                |(node, allowance)| review_core::task::limits_fit::TaskVerificationSlotReserveV1 {
+                    node,
+                    attempts: allowance.verification_attempts,
+                    tokens_per_attempt: allowance.tokens_per_attempt,
+                    wall_ms_per_attempt: allowance.wall_ms_per_attempt,
+                },
+            )
+            .collect())
+    }
+
+    /// The longest dependency path of mandatory non-verifier wall time: independent Workers may
+    /// overlap, and verification keeps its separately protected aggregate allocation.
+    pub fn mandatory_path_wall_ms(&self) -> Result<u64, String> {
+        let mut path_wall: BTreeMap<String, u64> = BTreeMap::new();
+        for name in &self.order {
+            let node = &self.nodes[name];
+            let prior = node
+                .inputs
+                .values()
+                .map(|address| &address.node)
+                .chain(
+                    node.conditions
+                        .iter()
+                        .map(|condition| &condition.source.node),
+                )
+                .filter_map(|source| path_wall.get(source))
+                .copied()
+                .max()
+                .unwrap_or(0);
+            let own = self
+                .allowances
+                .get(name)
+                .filter(|a| a.verification_attempts == 0)
+                .filter(|_| {
+                    node.conditions.iter().all(|condition| {
+                        matches!(
+                            self.nodes[&condition.source.node].operator,
+                            CompiledOperator::ProviderAdmission { .. }
+                        )
+                    })
+                })
+                .map_or(0, |a| a.wall_ms_per_attempt);
+            path_wall.insert(
+                name.clone(),
+                prior.checked_add(own).ok_or("Task wall path overflow")?,
+            );
+        }
+        Ok(path_wall.values().copied().max().unwrap_or(0))
+    }
+
+    /// The smallest limits at least `limits` (and `wall_ms`, the wall the Task has when it runs)
+    /// that this graph's budget and deadline rules accept: the same terms [`Self::budget`],
+    /// `TaskBudget::new` and the deadline check use, raised only as far as they need, and a
+    /// raised wall [`FIT_WALL_START_MS`] more, since the first reservation comes after the clock
+    /// started. A rule no Task limit can satisfy is named in `unfixable`.
+    pub fn limits_fit(
+        &self,
+        limits: &review_core::task::TaskLimitsV1,
+        wall_ms: u64,
+    ) -> Result<review_core::task::limits_fit::TaskLimitsFitV1, String> {
+        use review_core::task::VerificationReserveV1;
+        use review_core::task::limits_fit::*;
+        let add = |a: u64, b: u64| a.checked_add(b).ok_or("Task resource total overflow");
+        let reserves = self.verification_reserves()?;
+        let mut reserve = VerificationReserveV1 {
+            tokens: 0,
+            attempts: 0,
+            wall_ms: 0,
+        };
+        for slot in &reserves {
+            let count = u64::from(slot.attempts);
+            reserve.tokens = add(
+                reserve.tokens,
+                slot.tokens_per_attempt
+                    .checked_mul(count)
+                    .ok_or("Task verifier token reservation overflow")?,
+            )?;
+            reserve.wall_ms = add(
+                reserve.wall_ms,
+                slot.wall_ms_per_attempt
+                    .checked_mul(count)
+                    .ok_or("Task verifier wall reservation overflow")?,
+            )?;
+            reserve.attempts = reserve
+                .attempts
+                .checked_add(slot.attempts)
+                .ok_or("Task verifier Attempt reservation overflow")?;
+        }
+        let verification = VerificationReserveV1 {
+            tokens: reserve.tokens.max(limits.verification.tokens),
+            attempts: reserve.attempts.max(limits.verification.attempts),
+            wall_ms: reserve.wall_ms.max(limits.verification.wall_ms),
+        };
+        let mut mandatory = TaskMandatoryWorkV1 {
+            tokens: 0,
+            attempts: 0,
+            wall_ms: self.mandatory_path_wall_ms()?,
+        };
+        let mut largest = 0u64;
+        for (name, allowance) in self.allowances.iter().chain(
+            self.owned_children
+                .iter()
+                .map(|(name, template)| (name, &template.allowance)),
+        ) {
+            largest = largest.max(allowance.tokens_per_attempt);
+            let node = self
+                .nodes
+                .get(name)
+                .ok_or("Allowance has no compiled node")?;
+            if allowance.verification_attempts == 0
+                && node.conditions.iter().all(|condition| {
+                    self.nodes
+                        .get(&condition.source.node)
+                        .is_some_and(|source| {
+                            matches!(source.operator, CompiledOperator::ProviderAdmission { .. })
+                        })
+                })
+            {
+                mandatory.tokens = add(mandatory.tokens, allowance.tokens_per_attempt)?;
+                mandatory.attempts += 1;
+            }
+        }
+        let tokens = add(verification.tokens, mandatory.tokens)?
+            .max(largest)
+            .max(limits.tokens);
+        let attempts = u64::from(verification.attempts) + mandatory.attempts;
+        let max_attempts = u32::try_from(attempts)
+            .map_err(|_| "Task Attempt total overflow")?
+            .max(limits.max_attempts);
+        let needed = add(mandatory.wall_ms, verification.wall_ms)?;
+        let wall = if needed > wall_ms {
+            add(needed, FIT_WALL_START_MS)?
+        } else {
+            wall_ms
+        };
+        let mut unfixable = Vec::new();
+        let required_limits = review_core::task::TaskLimitsV1 {
+            tokens,
+            max_attempts,
+            deadline_unix_ms: limits.deadline_unix_ms.max(1),
+            verification: verification.clone(),
+        };
+        if let Err(reason) = self.budget(required_limits) {
+            unfixable.push(reason);
+        }
+        let fit = TaskLimitsFitV1 {
+            supplied: TaskFitLimitsV1 {
+                tokens: limits.tokens,
+                max_attempts: limits.max_attempts,
+                wall_ms,
+                verification: limits.verification.clone(),
+            },
+            required: TaskFitLimitsV1 {
+                tokens,
+                max_attempts,
+                wall_ms: wall,
+                verification,
+            },
+            reserves,
+            mandatory,
+            unfixable,
+        };
+        fit.validate()?;
+        Ok(fit)
     }
 
     pub fn validate_experimental_slots(&self) -> Result<(), String> {
@@ -542,7 +758,7 @@ impl CompiledTask {
         inputs: &crate::ArtifactMap,
         read_outcome: impl Fn(&str) -> Result<ReceiptOutcomeV1, String>,
     ) -> Result<bool, String> {
-        let mut unavailable = false;
+        let mut unavailable = None;
         for (index, condition) in self
             .nodes
             .get(node)
@@ -558,14 +774,17 @@ impl CompiledTask {
             match ids {
                 [id] if read_outcome(id)? != condition.outcome => return Ok(false),
                 [_] => (),
-                [] => unavailable = true,
+                [] => unavailable = unavailable.or(Some(&condition.source.node)),
                 _ => return Err("Branch condition has more than one receipt".into()),
             }
         }
-        if unavailable {
-            Err("Required branch receipt was not produced".into())
-        } else {
-            Ok(true)
+        match unavailable {
+            // Named after the branch whose receipt is missing: that node's own failure is the
+            // cause, and a reader finds it first.
+            Some(source) => Err(format!(
+                "Required branch receipt was not produced: {source} did not publish one"
+            )),
+            None => Ok(true),
         }
     }
 

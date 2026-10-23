@@ -30,7 +30,13 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 189] = [
+const SCHEMAS: [&str; 195] = [
+    "task-state-v1.json",
+    "task-selection-v2.json",
+    "pipeline-selection-v1.json",
+    "task-collected-inspection-v2.json",
+    "task-list-v3.json",
+    "task-checks-v1.json",
     "project-registered-v1.json",
     "project-brief-v1.json",
     "project-survey-pin-v1.json",
@@ -46,7 +52,7 @@ const SCHEMAS: [&str; 189] = [
     "project-workspace-removed-v1.json",
     "project-v1.json",
     "project-workspaces-v1.json",
-    "task-report-v1.json",
+    "task-report-v2.json",
     "provider-models-v1.json",
     "code-task-policy-v1.json",
     "remote-check-evidence-v1.json",
@@ -72,7 +78,7 @@ const SCHEMAS: [&str; 189] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v11.json",
+    "task-inspection-v12.json",
     "experiment-execution-plan-v1.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -99,7 +105,7 @@ const SCHEMAS: [&str; 189] = [
     "task-file-v1.json",
     "task-catalog-v2.json",
     "compiled-task-v1.json",
-    "task-list-entry-v2.json",
+    "task-list-entry-v3.json",
     "task-owned-child-set-v1.json",
     "task-token-usage-v3.json",
     "task-usage-observation-v1.json",
@@ -4099,6 +4105,8 @@ mod provider_onboarding;
 
 #[path = "schema_parity/task_recording.rs"]
 mod task_recording;
+#[path = "schema_parity/task_state.rs"]
+mod task_state;
 
 #[path = "schema_parity/project.rs"]
 mod project;

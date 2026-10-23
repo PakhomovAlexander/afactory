@@ -31,12 +31,14 @@ Namespaces:
   config     show the effective configuration and where each value came from
   self       optimize the current project, or manage af installations
 
-`af help <topic>` explains config, layers, environment, exit-codes, json, and self. `af` alone \
+`af help <topic>` explains config, layers, environment, exit-codes, json, task-states, and \
+self. `af` alone \
 at a terminal opens a read-first browser over this scope's settings, providers and pipelines.";
 
 const AF_AFTER_HELP: &str = "\
 Exit codes:
   0 pass · 1 error · 2 usage · 3 fail · 4 incomplete · 10 outdated (self update --check)
+  af task run: 5 gate failed · 6 provider failed · 7 expired (`af help exit-codes`)
 
 Examples:
   af onboard --apply             generate `.af/` for this repository (token-free preview first)
@@ -1231,6 +1233,13 @@ pub(crate) enum TaskCommand {
         authority: String,
         #[arg(long)]
         uncommitted: bool,
+        /// When the Task's limits are too small for the Pipeline, plan with the smallest limits
+        /// that fit instead of refusing, and print every limit it raised
+        #[arg(long)]
+        fit: bool,
+        /// Re-plan an unstarted Task of the same ID from a changed Task file, in place
+        #[arg(long)]
+        replace: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1423,10 +1432,22 @@ Without --apply nothing is written. --apply is refused while any Task's writer l
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// Show one Task: identity, Snapshot, Gates, evaluation, spend
+    /// Show one Task: its state, why it ended, its checks, spend and the next command
+    #[command(
+        long_about = "Show one Task: its state (phase/outcome/cause, `af help task-states`), why \
+it ended, its Plan, warm checks, failed nodes with their first error line and the artifact IDs \
+of their whole diagnostic and stderr, and as the last line the one command to run next.\n\n\
+--checks prints the gate's last check receipt instead: each check's status, duration, warm or \
+cold, the step that stopped it, its failing and flaky tests and the last 40 lines of its stderr; \
+with --json, one `af/task-checks@1` document.",
+        after_long_help = "Examples:\n  af task show pagination-cli\n  af task show pagination-cli --checks\n  af task show pagination-cli --json"
+    )]
     Show {
         /// Task id
         task_id: String,
+        /// Print the gate's last check receipt: each check, its failing tests and its stderr
+        #[arg(long)]
+        checks: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
@@ -1439,7 +1460,7 @@ findings by severity, tokens and active time, and a Total row; then per round it
 time, failed Attempts and per node the Worker, Attempts, tokens, elapsed time and check \
 results.\n\nThe default output is one Markdown block, ready to paste into a pull request \
 description, between these two lines:\n\n  <!-- af-task-report:v1 -->\n  \
-<!-- /af-task-report -->\n\n--json prints one `af/task-report@1` document instead. Tasks \
+<!-- /af-task-report -->\n\n--json prints one `af/task-report@2` document instead. Tasks \
 appear in the order given, numbered as rounds. Active time is the sum of the Task's runs, the \
 writer leases that started an Attempt, so waiting between runs is not counted; wall time runs \
 from its first to its last recorded event. A figure the Store does not record is shown as \

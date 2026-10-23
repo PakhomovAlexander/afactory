@@ -374,10 +374,18 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
     if state.starts_with(&repository) {
-        return Err("Task state must be outside the repository".into());
+        return Err(format!(
+            "Task state {} must be outside the repository {}; name a --state directory outside \
+             it, or omit --state for the default under $XDG_STATE_HOME/af",
+            state.display(),
+            repository.display()
+        ));
     }
     if !state.join("events.sqlite").is_file() {
-        return Err(format!("Task state {} does not exist", state.display()));
+        return Err(super::task_execution::task_not_found(
+            &state,
+            &options.task_id,
+        ));
     }
     // A separate SQLite write transaction is an OS-released process lock. Prepared delivery
     // events remain durable in the Task database while an exact concurrent command is refused;
@@ -387,8 +395,8 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     let repository_text = utf8_path(&repository, "repository")?;
     let worktree_text = utf8_path(&worktree, "worktree")?;
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
-    let task =
-        delivery_common::projection(&state, &cas, &options.task_id)?.ok_or("Unknown Task")?;
+    let task = delivery_common::projection(&state, &cas, &options.task_id)?
+        .ok_or_else(|| super::task_execution::task_not_found(&state, &options.task_id))?;
     let events = delivery_common::events(&task);
     let assets = delivery_common::assets(&cas, &task)?;
     let mut store = delivery_common::CommonDelivery::open(&state, &task)?;
@@ -993,18 +1001,18 @@ pub(super) fn list(options: InspectOptions, sizes: bool) -> Result<(), String> {
     print_task_list(&options, tasks, store)
 }
 
-pub(super) fn show(options: InspectOptions) -> Result<(), String> {
+pub(super) fn show(options: InspectOptions, checks: bool) -> Result<(), String> {
     let repository = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
     let task_id = options.task_id.as_deref().expect("validated by parser");
-    if super::task_execution::show_if_common(task_id, &state, options.json)? {
+    if super::task_execution::show_if_common(task_id, &state, options.json, checks)? {
         return Ok(());
     }
-    Err(format!("Task `{task_id}` was not found"))
+    Err(super::task_execution::task_not_found(&state, task_id))
 }
 
-/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@1` document, over
+/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@2` document, over
 /// the named Tasks of one Store. Read-only; nothing is printed unless every Task is found.
 pub(super) fn report(options: InspectOptions, task_ids: &[String]) -> Result<(), String> {
     for task_id in task_ids {
@@ -1731,7 +1739,7 @@ fn print_task_list(
 ) -> Result<(), String> {
     if options.json {
         let mut document = serde_json::json!({
-            "schema": "af/task-list@2",
+            "schema": TASK_LIST_V3,
             "tasks": tasks,
         });
         if let Some(store) = store {
@@ -1746,37 +1754,83 @@ fn print_task_list(
     if tasks.is_empty() {
         println!("no Tasks");
     }
-    for task in tasks {
-        // A collected Task keeps only its retained summary: no delivery is shown for it.
-        let state = match task["collected"]["collected_unix_ms"].as_u64() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    let mut rows = vec![[
+        "TASK".to_owned(),
+        "STATE".to_owned(),
+        "ROUND".to_owned(),
+        "TOKENS".to_owned(),
+        "AGE".to_owned(),
+        "NEXT".to_owned(),
+    ]];
+    let mut extras = vec![String::new()];
+    for task in &tasks {
+        let state: review_core::task::state::TaskStateV1 =
+            serde_json::from_value(task["state"].clone()).map_err(|error| error.to_string())?;
+        // Unknown usage is never shown as spend: `1200 (+1 unknown)` (ADR-0143).
+        let unknown = match task["unknown_usage_attempts"].as_u64() {
+            Some(n) if n > 0 => format!(" (+{n} unknown)"),
+            _ => String::new(),
+        };
+        let round = match task["round"].as_u64() {
+            Some(0) | None => "-".to_owned(),
+            Some(n) => n.to_string(),
+        };
+        // Delivery is shown only once there is one; a collected Task says when it went.
+        let mut extra = match task["collected"]["collected_unix_ms"].as_u64() {
             Some(time) => format!(
-                "collected {}",
+                "  collected {}",
                 review_core::task::collection::collected_time(time)
             ),
             None => task
                 .pointer("/delivery/outcome/kind")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or("not-delivered")
-                .to_owned(),
+                .map(|kind| format!("  delivery {kind}"))
+                .unwrap_or_default(),
         };
-        let sizes = match task.get("sizes") {
-            Some(sizes) => format!(
+        if let Some(sizes) = task.get("sizes") {
+            extra.push_str(&format!(
                 "  {} bytes exclusive, {} shared",
                 sizes["exclusive_bytes"], sizes["shared_bytes"]
+            ));
+        }
+        rows.push([
+            task["task_id"].as_str().unwrap_or("-").to_owned(),
+            state.label(),
+            round,
+            format!(
+                "{}{unknown}",
+                task["chargeable_tokens"].as_str().unwrap_or("-")
             ),
-            None => String::new(),
-        };
-        // Unknown usage is never shown as spend: `1200 tokens (+1 unknown)` (ADR-0143).
-        let unknown = match task["unknown_usage_attempts"].as_u64() {
-            Some(n) if n > 0 => format!(" (+{n} unknown)"),
-            _ => String::new(),
-        };
-        println!(
-            "{}  {:<10} {:>8} tokens{unknown}  {state}{sizes}",
-            task["task_id"].as_str().unwrap_or("-"),
-            task["outcome"].as_str().unwrap_or("incomplete"),
-            task["chargeable_tokens"].as_str().unwrap_or("-"),
-        );
+            task["updated_unix_ms"]
+                .as_u64()
+                .map_or_else(|| "-".to_owned(), |at| age(now.saturating_sub(at))),
+            state.next_verb().to_owned(),
+        ]);
+        extras.push(extra);
+    }
+    if !tasks.is_empty() {
+        let mut widths = [0usize; 6];
+        for row in &rows {
+            for (width, cell) in widths.iter_mut().zip(row) {
+                *width = (*width).max(cell.chars().count());
+            }
+        }
+        for (row, extra) in rows.iter().zip(&extras) {
+            let mut line = String::new();
+            for (index, (cell, width)) in row.iter().zip(widths).enumerate() {
+                if index == 3 {
+                    line.push_str(&format!("{cell:>width$}  "));
+                } else if index == 5 {
+                    line.push_str(cell);
+                } else {
+                    line.push_str(&format!("{cell:<width$}  "));
+                }
+            }
+            println!("{}{extra}", line.trim_end());
+        }
     }
     if let Some(store) = store {
         println!(
@@ -1785,6 +1839,20 @@ fn print_task_list(
         );
     }
     Ok(())
+}
+
+/// The document `af task list --json` prints.
+pub(crate) const TASK_LIST_V3: &str = "af/task-list@3";
+
+/// How long ago, as `af task list` prints it: `45s`, `12m`, `3h`, `2d`.
+fn age(ms: u64) -> String {
+    let seconds = ms / 1_000;
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3_600 => format!("{}m", seconds / 60),
+        3_600..86_400 => format!("{}h", seconds / 3_600),
+        _ => format!("{}d", seconds / 86_400),
+    }
 }
 
 fn scan_delivery_manifest(root: &Path) -> Result<Manifest, String> {

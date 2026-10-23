@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-file:1",
   "title": "TaskFile af.task-file/1",
-  "$comment": "JSON representation of the JSON/TOML CLI Task file. Admission additionally checks encoded byte bounds, sorted Jira fields, captured source/package existence, kind/profile compatibility and joint resource feasibility. Omitted options use their Rust defaults; explicit null is invalid. wall_ms is an input duration, optionally capped by command-line policy before the absolute deadline is validated.",
+  "$comment": "JSON representation of the JSON/TOML CLI Task file. Admission additionally checks encoded byte bounds, sorted Jira fields, captured source/package existence, kind/profile compatibility and joint resource feasibility. Omitted options use their Rust defaults; explicit null is invalid. wall_ms is an input duration, optionally capped by command-line policy before the absolute deadline is validated. wall_ms starts at the first `af task run`, not at planning.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,7 +10,6 @@
     "task_id",
     "kind",
     "goal",
-    "strategy",
     "limits"
   ],
   "properties": {
@@ -170,6 +169,7 @@
       "$ref": "urn:af:schema:task-contracts:1#/$defs/choice"
     },
     "strategy": {
+      "description": "Absent, the Task's kind fills it in, with `verification` and `facts.standard` unless the file names them: `implement` is `reviewed` with `verification` `review`, `verification` is `light` with `evaluation`, both with `facts.standard = true`, and `report` is `report`. A kind without a default needs `strategy`.",
       "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
     },
     "verification": {

@@ -451,7 +451,7 @@ fn a_finished_remote_check_task_closes_its_gate_pull_request_and_deletes_its_bra
     fixture.map("");
     let done = run_remote_task(&fixture, TASK);
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v11.json"),
+        &crate::schemas::validator("task-inspection-v12.json"),
         &done,
     );
     let [cleanup] = done["gate_cleanups"].as_array().unwrap().as_slice() else {
@@ -594,8 +594,17 @@ fn a_remote_pipeline_without_a_target_is_refused_before_any_attempt() {
         let state = fixture
             .root
             .join(format!("state-{}", why.replace(' ', "-")));
-        let (code, stdout, stderr) = fixture.plan(&state, TASK, REMOTE);
+        // The refusal document is printed under --json; the reason goes to stderr either way.
+        let file = fixture.task_file(TASK, REMOTE);
+        let (code, stdout, stderr) = fixture.af(
+            &state,
+            &["task", "plan", "--file", file.to_str().unwrap(), "--json"],
+        );
         assert_eq!(code, 1, "{why}: {stderr}\n{stdout}");
+        assert!(
+            stderr.contains(KNOB),
+            "{why}: stderr names the knob\n{stderr}"
+        );
         let said = format!("{stdout}\n{stderr}");
         assert!(said.contains(KNOB), "{why}: names the knob\n{said}");
         if why == "a mapping that still selects checks" {

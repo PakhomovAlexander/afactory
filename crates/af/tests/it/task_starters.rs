@@ -187,8 +187,9 @@ fn starter_repair_uses_current_evidence(name: &str, attempts: u64) {
         std::fs::write(worker_path(&repo,"builtin/implementer"),"import json,sys\njson.load(sys.stdin)\nopen('pagination.py','w').write('def paginate(items, offset=0, limit=2):\\n    return items[offset:offset+limit]\\n')\nprint(json.dumps({'schema':'af.worker-reply/1','outputs':{'report':[{'summary':'Injected missing bounds check'}]}}))\n").unwrap();
     }
     repin(&repo);
+    // An unavailable reviewer is a failed Worker (6).
     let code = if name == "implementation-reviewed" {
-        4
+        6
     } else {
         0
     };
@@ -495,7 +496,9 @@ fn reviewed_implementation_preserves_evidence(failed_review: bool) {
     file["limits"]["max_attempts"] = json!(6);
     std::fs::write(path, serde_json::to_vec(&file).unwrap()).unwrap();
     repin(&repo);
-    let code = if failed_review { 3 } else { 4 };
+    // A review that asked for changes stays the verdict (3); without it, the failed independent
+    // Worker is (6).
+    let code = if failed_review { 3 } else { 6 };
     let result = task(
         &repo,
         &state,

@@ -163,10 +163,12 @@ fn repair_is_rejected(case: &str) {
         &state,
         &["task", "start", "--execute", "--file", "ticket.json"],
     );
-    let expected = if matches!(case, "negative" | "failed_checks") {
-        3
-    } else {
-        4
+    // A negative fix verification asked for changes (3), a failed check is a failed gate (5),
+    // and a fix-verifier reply the kernel refuses is a failed Worker (6).
+    let expected = match case {
+        "negative" => 3,
+        "failed_checks" => 5,
+        _ => 6,
     };
     assert_eq!(code, expected, "{case}: {value:#}");
     assert_ne!(value["result"]["acceptance"], "satisfied", "{case}");

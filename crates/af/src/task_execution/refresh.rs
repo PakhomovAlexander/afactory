@@ -81,15 +81,15 @@ pub(crate) fn refresh(
     inspect: &crate::cli::TaskInspectArgs,
 ) -> Result<i32, String> {
     let (repo, state) = state_path(&inspect.repo, inspect.state.as_deref())?;
-    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
-    if !state.join("events.sqlite").is_file() {
-        return Err("No common Task Store exists".into());
+    if !store_present(&state)? {
+        return Err(task_not_found(&state, id));
     }
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     let before = store
         .task_projection(&cas, id)
         .map_err(|e| e.to_string())?
-        .ok_or("Unknown Task")?;
+        .ok_or_else(|| task_not_found(&state, id))?;
     if before.lease_until_unix_ms() > clock()? {
         return Err("Task has an active writer; refresh later".into());
     }
@@ -163,7 +163,7 @@ pub(crate) fn refresh(
         .unwrap()
         .artifact_ids = vec![requirements_id];
     revision.provenance.adapter_id = cas
-        .put_json(&json!({"schema":"af.task-file-adapter/1",
+        .put_json(&json!({"schema":TASK_FILE_ADAPTER_V1,
         "source_file_id":original.file_id,"source_capture_id":fresh.capture_id}))
         .map_err(|e| e.to_string())?;
     // Only the requirements artifact is replaced. Every other record the provenance carried that
@@ -200,8 +200,16 @@ pub(crate) fn refresh(
                 || state.revision.limits.clone(),
                 |e| e.budget.remaining_limits(),
             );
-            let assessment =
-                selection::assess(&cas, &authority, &compiler, revision, Some(&capacity))?;
+            let now = clock()?;
+            let wall_ms = capacity.deadline_unix_ms.saturating_sub(now);
+            let assessment = selection::assess(
+                &cas,
+                &authority,
+                &compiler,
+                revision,
+                Some(&capacity),
+                selection::PlanClock { now, wall_ms },
+            )?;
             let (compiler, revision_id, plan_id, waiting) = match assessment {
                 selection::SelectionAssessment::Prepared(
                     selection::PreparedSelection::Selected(selected),

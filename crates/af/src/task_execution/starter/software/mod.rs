@@ -1201,11 +1201,11 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
                 name: format!("builtin/{name}"),
                 fallback: PipelineFallbackV1::Refuse,
             }),
-            strategy: if name.contains("heavy") {
+            strategy: Some(if name.contains("heavy") {
                 "heavy".into()
             } else {
                 "fast".into()
-            },
+            }),
             verification,
             facts: BTreeMap::from([
                 ("standard".into(), TaskFactV1::Boolean(true)),

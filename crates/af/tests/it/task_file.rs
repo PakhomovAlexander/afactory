@@ -753,9 +753,10 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         std::fs::read_to_string(home.join("probe-setting-leaked")).unwrap_or_default()
     );
     if let Some(after) = switch_after {
+        // The Provider answered as another account: `provider_failed/identity_changed`.
         assert_eq!(
             output.status.code(),
-            Some(4),
+            Some(6),
             "{}\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
@@ -809,7 +810,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             String::from_utf8_lossy(&output.stderr)
         );
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result["schema"], "af/task-inspection@11");
+        assert_eq!(result["schema"], "af/task-inspection@12");
         assert_eq!(result["chargeable_tokens"], exact.to_string());
         assert_eq!(result["result"]["domain_conclusion"], "incomplete");
         assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
@@ -820,8 +821,8 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         let listed = run(&["task", "list"]);
         assert!(listed.status.success());
         let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
-        assert_eq!(listed["schema"], "af/task-list@2");
-        assert_eq!(listed["tasks"][0]["schema"], "af/task-list-entry@2");
+        assert_eq!(listed["schema"], "af/task-list@3");
+        assert_eq!(listed["tasks"][0]["schema"], "af/task-list-entry@3");
         assert_eq!(listed["tasks"][0]["chargeable_tokens"], exact.to_string());
         let text = crate::common::af()
             .current_dir(&repo)
@@ -830,7 +831,15 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             .output()
             .unwrap();
         assert!(text.status.success());
-        assert!(String::from_utf8_lossy(&text.stdout).contains(&format!("{exact} tokens")));
+        let text = String::from_utf8_lossy(&text.stdout).into_owned();
+        let row = text
+            .lines()
+            .find(|line| line.starts_with("review-cli"))
+            .unwrap();
+        assert!(
+            row.split_whitespace().any(|cell| cell == exact.to_string()),
+            "{text}"
+        );
         let cas = review_store::Cas::open(state.join("cas")).unwrap();
         let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
         let projection = store.task_projection(&cas, "review-cli").unwrap().unwrap();
@@ -1110,10 +1119,14 @@ fn embedded_review_never_accepts(case: &str) {
         .arg(&state)
         .output()
         .unwrap();
+    // A missing reviewer is a failed Worker (`provider_failed`, 6), a failed check a failed gate
+    // (`gate_failed`, 5), never `changes_requested`.
     let code = if matches!(case, "missing_coverage" | "stale_checks") {
         1
     } else if case == "missing" {
-        4
+        6
+    } else if case == "failed_checks" {
+        5
     } else {
         3
     };
@@ -1340,7 +1353,7 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = fixture(temp.path());
     let planned = af(&repo, &state, &["plan", "--file", "ticket.json"]);
-    assert_eq!(planned["schema"], "af/task-inspection@11");
+    assert_eq!(planned["schema"], "af/task-inspection@12");
     assert_eq!(planned["attempts"], 0);
     assert!(planned["plan"].is_object());
     assert!(planned["graph"].is_object());

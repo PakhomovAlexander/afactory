@@ -24,10 +24,10 @@ fn expired_recording_inspection_keeps_one_task_and_exact_old_and_new_history() {
     let database = std::fs::read(state.join("events.sqlite")).unwrap();
     let original = store.task_projection(&cas, &task_id).unwrap().unwrap();
     let shown = json_output(cli(repo.path(), state, &["task", "show", &task_id]), 0);
-    let explained = json_output(cli(repo.path(), state, &["task", "explain", &task_id]), 4);
+    let explained = json_output(cli(repo.path(), state, &["task", "explain", &task_id]), 7);
     for value in [&shown, &explained] {
-        valid(&validator("task-inspection-v11.json"), value);
-        assert_eq!(value["schema"], "af/task-inspection@11");
+        valid(&validator("task-inspection-v12.json"), value);
+        assert_eq!(value["schema"], "af/task-inspection@12");
         assert!(
             value.get("review_integrations").is_none(),
             "ordinary Review recovery must not invent Integration"

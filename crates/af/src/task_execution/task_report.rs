@@ -1,5 +1,5 @@
 //! `af task report` (ADR-0142): what recorded Tasks cost and how they ran, as one Markdown block
-//! for a pull request description or one `af/task-report@1` document.
+//! for a pull request description or one `af/task-report@2` document.
 //!
 //! Read-only. It reads what `af task show` and `af task list` read — the Task's projection,
 //! execution records, review rounds, attempt walls and the event times of its log — opens the
@@ -24,7 +24,7 @@ use review_store::store::task::execution::TaskAttemptAccounting;
 
 /// The report over `task_ids`, in the order given, from the Store under `state`. An ID the
 /// Store does not hold, or one named twice, is an error that names it.
-pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV1, String> {
+pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV2, String> {
     let mut seen = BTreeSet::new();
     for id in task_ids {
         if !seen.insert(id.as_str()) {
@@ -33,7 +33,7 @@ pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV1, St
     }
     let first = task_ids.first().ok_or("name at least one Task")?;
     if !store_present(state)? {
-        return Err(format!("Task `{first}` was not found"));
+        return Err(task_not_found(state, first));
     }
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
@@ -41,7 +41,7 @@ pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV1, St
     let mut pipelines: Vec<TaskReportPipelineV1> = Vec::new();
     let mut tasks = Vec::new();
     for id in task_ids {
-        let (task, pipeline) = entry(&cas, &store, id)?;
+        let (task, pipeline) = entry(&cas, &store, state, id)?;
         if let Some(pipeline) = pipeline
             && !pipelines.contains(&pipeline)
         {
@@ -49,27 +49,29 @@ pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV1, St
         }
         tasks.push(task);
     }
-    TaskReportV1::new(pipelines, tasks)
+    TaskReportV2::new(pipelines, tasks)
 }
 
 /// One Task's entry, and the pipeline its current plan runs.
 fn entry(
     cas: &Cas,
     store: &EventStore,
+    state_dir: &Path,
     id: &str,
-) -> Result<(TaskReportEntryV1, Option<TaskReportPipelineV1>), String> {
-    let not_found = || format!("Task `{id}` was not found");
+) -> Result<(TaskReportEntryV2, Option<TaskReportPipelineV1>), String> {
+    let not_found = || task_not_found(state_dir, id);
     let run_id = review_store::store::task::task_run_id(id).map_err(|_| not_found())?;
     // A collected Task keeps its retained summary and its event times; its records are gone.
     if let Some(collected) = store.collected_task(id).map_err(|e| e.to_string())? {
         let times = event_times(None, store, &run_id)?.ok_or_else(not_found)?;
         let summary = &collected.collected;
-        let task = TaskReportEntryV1 {
+        let task = TaskReportEntryV2 {
             round: 0,
             task_id: summary.task_id.clone(),
             kind: summary.kind.clone(),
             pipeline: None,
-            outcome: summary.outcome.clone(),
+            state: state::collected(&summary.outcome),
+            detail: None,
             collected: true,
             review_rounds: None,
             findings: None,
@@ -97,6 +99,8 @@ fn entry(
         TaskPhaseV1::Finished { result_id } => Some(artifact(cas, result_id, TASK_RESULT_V1)?),
         _ => None,
     };
+    // The same state `af task show` prints, from the same derivation.
+    let view = state::view(cas, &state, result.as_ref(), clock()?)?;
     let mut plans = Plans::default();
     let (pipeline, planned_review) = match &state.plan_id {
         Some(plan_id) => {
@@ -143,12 +147,13 @@ fn entry(
     } else {
         None
     };
-    let task = TaskReportEntryV1 {
+    let task = TaskReportEntryV2 {
         round: 0,
         task_id: state.task_id.clone(),
         kind: state.revision.kind.clone(),
         pipeline: pipeline.as_ref().map(TaskReportPipelineV1::label),
-        outcome: outcome_label(&state.phase, result.as_ref()).to_owned(),
+        state: view.state.clone(),
+        detail: state::report_summary(&view).map(|detail| preview::text(&detail)),
         collected: false,
         review_rounds: Some(rounds.len() as u64),
         findings,
@@ -882,7 +887,7 @@ fn report_model(model: &str) -> String {
 /// totals row, and each round's node breakdown in a collapsed `<details>` element. Every
 /// recorded value is sanitized display text, so recorded data can neither break the table nor
 /// carry markup.
-pub(crate) fn markdown(report: &TaskReportV1) -> String {
+pub(crate) fn markdown(report: &TaskReportV2) -> String {
     let mut out = String::new();
     let mut line = |text: &str| {
         out.push_str(text);
@@ -904,10 +909,9 @@ pub(crate) fn markdown(report: &TaskReportV1) -> String {
     line(&raw_row(TASK_REPORT_COLUMNS.iter().map(|c| c.to_string())));
     line("| ---: | --- | --- | --- | ---: | ---: |");
     for task in &report.tasks {
-        let outcome = if task.collected {
-            format!("{} (collected)", task.outcome)
-        } else {
-            task.outcome.clone()
+        let outcome = match &task.detail {
+            Some(detail) => format!("{}: {detail}", task.state.label()),
+            None => task.state.label(),
         };
         line(&raw_row([
             task.round.to_string(),
@@ -1042,7 +1046,7 @@ fn pipeline_line(pipeline: &TaskReportPipelineV1) -> String {
 /// set, `gate failed` when a check failed and the review did not run, `not run` when it has not
 /// run, `—` for a Task without a review and `unknown` for a collected one; then
 /// `; N reviewer(s) failed` when a reviewer's Attempt failed.
-fn findings_cell(task: &TaskReportEntryV1) -> String {
+fn findings_cell(task: &TaskReportEntryV2) -> String {
     let Some(findings) = &task.findings else {
         return if task.collected { UNKNOWN } else { "—" }.into();
     };
@@ -1086,7 +1090,7 @@ fn findings_cell(task: &TaskReportEntryV1) -> String {
 }
 
 /// The round's `<summary>` after `Round N · `: its Task, runs, wall time and failed Attempts.
-fn details_summary(task: &TaskReportEntryV1) -> String {
+fn details_summary(task: &TaskReportEntryV2) -> String {
     let mut summary = format!(
         "{}: {} {}, {} wall",
         task.task_id,
