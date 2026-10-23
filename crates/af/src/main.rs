@@ -1790,6 +1790,28 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             inspect,
             ..
         } => task_execution::runs::detach(&task_id, &inspect),
+        // `--from` conflicts with `--detach` at parse time (cli.rs), so the detach arm never
+        // sees a `--from`; the continue arm precedes the foreground arm, which matches `..`.
+        cli::TaskCommand::Run {
+            task_id,
+            from: Some(from),
+            round,
+            goal,
+            bindings,
+            execute,
+            inspect,
+            ..
+        } => task_execution::run_from(task_execution::ContinueOptions {
+            task_id,
+            from,
+            round,
+            goal,
+            bindings,
+            repo: inspect.repo,
+            state: inspect.state,
+            json: inspect.json,
+            execute,
+        }),
         cli::TaskCommand::Run {
             task_id,
             confirm_plan,
@@ -1799,6 +1821,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             detach: false,
             quiet,
             inspect,
+            ..
         } => task_execution::run(
             &task_id,
             &inspect.repo,

@@ -15,7 +15,7 @@ default per checkout). `af help task-states` lists every state a Task can be in.
 ## 1. Plan
 
 `af task plan --file TASK_FILE --json` captures the Task file and the checkout and compiles the
-plan without running anything: one `af/task-inspection@12` document whose `plan_id` is the
+plan without running anything: one `af/task-inspection@13` document whose `plan_id` is the
 plan to confirm and whose `state.next_action` is the command that runs it. A plan that does
 not fit its limits is refused with `af/task-selection@2`; `--fit` plans with the smallest
 limits that fit.
@@ -23,7 +23,7 @@ limits that fit.
 ## 2. Run, or run in the background
 
 `af task run TASK_ID --confirm-plan PLAN_ID --json` runs exactly that plan and prints the
-finished Task as `af/task-inspection@12`. While it waits it prints on stderr one line per node
+finished Task as `af/task-inspection@13`. While it waits it prints on stderr one line per node
 that starts or finishes, with the time since the run started and the tokens charged so far
 (`af task run: implement finished (2 min elapsed, 41k tokens so far)`), and every 5 minutes a
 heartbeat (`af task run: implement running 23 min, 412k tokens, host load 11.2`); `--quiet`

@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 209] = [
+const SCHEMAS: [&str; 213] = [
     "task-findings-v1.json",
     "task-materialized-v1.json",
     "task-diff-v1.json",
@@ -40,6 +40,10 @@ const SCHEMAS: [&str; 209] = [
     "task-run-process-v1.json",
     "task-cancel-request-v1.json",
     "task-delivery-proof-v1.json",
+    "task-base-v1.json",
+    "diff-subject-v1.json",
+    "task-review-findings-v1.json",
+    "task-read-first-v1.json",
     "task-check-report-v1.json",
     "task-gate-retried-v1.json",
     "task-state-v1.json",
@@ -92,7 +96,7 @@ const SCHEMAS: [&str; 209] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v12.json",
+    "task-inspection-v13.json",
     "experiment-execution-plan-v1.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -2404,6 +2408,8 @@ mod task_agent_loop;
 mod task_contracts;
 #[path = "schema_parity/task_reports.rs"]
 mod task_reports;
+#[path = "schema_parity/task_review_findings.rs"]
+mod task_review_findings;
 
 #[test]
 fn task_lifecycle_events_have_closed_versioned_payloads() {

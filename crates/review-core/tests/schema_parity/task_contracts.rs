@@ -302,7 +302,7 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
     // it prints; a binding record rides beside it and is checked by its own schema.
     let record = settled(json!("7"));
     let document = |bindings: Value| {
-        json!({"schema":"af/task-inspection@12","task_id":"chain-history","revision_id":id('1'),
+        json!({"schema":"af/task-inspection@13","task_id":"chain-history","revision_id":id('1'),
             "phase":{"kind":"running"}, "state":{"phase":"running","outcome":null,"cause":null,"next_action":null}, "clock":{"wall_ms":60000,"started_unix_ms":1,"deadline_unix_ms":60001},"plan_id":id('2'),"chargeable_tokens":"7","attempts":1,
             "history":[],"run_reports":[],
             "execution_records":[{"artifact_id":id('3'),
@@ -310,17 +310,17 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
             "input_bindings":bindings})
     };
     assert_valid(
-        "task-inspection-v12.json",
+        "task-inspection-v13.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a')}}})),
     );
     assert_invalid(
-        "task-inspection-v12.json",
+        "task-inspection-v13.json",
         &document(json!({"schema":"af.task-input-bindings/1","bindings":{}})),
         "a binding record with no bindings",
     );
     assert_invalid(
-        "task-inspection-v12.json",
+        "task-inspection-v13.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a'),"surprise":true}}})),
         "an unknown binding field",

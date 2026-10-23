@@ -429,7 +429,10 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         strategy: Some("fast".into()),
         verification: None,
         facts: BTreeMap::new(),
-        limits: FileLimits {
+        continue_from: None,
+        context: Vec::new(),
+        base: None,
+        limits: Some(FileLimits {
             tokens: 0,
             max_attempts: 3,
             wall_ms: 90000,
@@ -438,7 +441,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
                 attempts: 2,
                 wall_ms: 10000,
             },
-        },
+        }),
     };
     let sources = DocumentSourcesV1 {
         schema: "af.document-sources/1".into(),

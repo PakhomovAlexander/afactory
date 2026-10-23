@@ -50,8 +50,11 @@ A report Task reading an experiment binds all three kinds of port:
 }
 ```
 
-Any root input the selected Pipeline declares is bindable, except `requirements`, `base` and
-`continuation`, which are refused by name. At resolution the selected Pipeline is the one the
+Any root input the selected Pipeline declares is bindable, except `requirements`, `base`,
+`continuation` and `findings`, which are refused by name; a continuation fills `findings` from
+the continued Task's review round (`"continue"` or `af task run NEW --from TASK`,
+[ADR-0203](../adr/0203-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
+At resolution the selected Pipeline is the one the
 Task file names in `pipeline`; when it names none, every captured Pipeline accepting the Task's
 kind is consulted and must declare the port alike, or the refusal asks for the Pipeline to be
 named. A port none of them declares is refused by name at plan time.
@@ -176,7 +179,7 @@ make it. `fixtures/task-runtime/bound-inputs/` is built that way, and says so.
   Task output — two for a port bound from two — and one `bound <port> <- artifact sha256:…` line
   per exact-artifact binding, and its
   `--json` document carries `input_bindings` — present only when there is a binding, inside the
-  one `af/task-inspection@12` generation. The self-optimizer's AF history adapter reads it as
+  one `af/task-inspection@13` generation. The self-optimizer's AF history adapter reads it as
   provenance that changes no counter.
 - The durable record is one `af/TaskInputBindings@1` artifact referenced from the revision's
   `provenance.input_artifact_ids`, one entry per bound port. A port bound from several outputs
@@ -196,7 +199,7 @@ it added is new, and every existing one stays.
 |---|---|
 | `review-core` | `task::input_bindings`: `TASK_INPUT_BINDINGS_V1 = "af/TaskInputBindings@1"`, `TaskInputBindingsV1 { schema, bindings: BTreeMap<String, TaskInputBindingV1> }`, `TaskInputBindingV1 { artifact_id, resolved_artifact_id, snapshot_id, rerooted_snapshot_id, task }`, `ReferencedTaskV1 { task_id, task_revision_id, result_id, port, acceptance, domain_conclusion }`, each `deny_unknown_fields` with a `validate()` in the shape of `ArtifactInputV1::validate`. `resolved_artifact_id` is present only for a re-rooted `source`, whose port carries a new `af/SourceTree@1` envelope. No existing type gained a field. |
 | `review-source-git` | `task::TaskSourceOriginV2 { schema, repository_id, content_digest, bound_from }` and `TaskSourceBoundFromV1 { artifact_id, snapshot_id, task }`, both `deny_unknown_fields`, plus `read_origin`, which accepts either generation, branches on `schema` and reports whether a committed `source_revision` is present. `capture_snapshot(cas, manifest, origin, None)` performs the re-rooting; there is no new capture path. |
-| `af` | `task_execution::input_bindings` owns the two Task-file reference forms, resolution and the typed record; its `RecordedTasks` seam is the whole Store surface resolution reads. `TaskFile` gained `inputs: Option<BTreeMap<String, TaskInputRefV1>>` under the existing `present_option` treatment, so an absent table stays absent on round-trip. `start_captured` resolves bindings before it builds the revision, skips the construction a bound port replaces, and installs bound ports last so a profile that rebuilds its own input set cannot drop one. `preview::render` annotates `IN` and adds `BOUND` rows through the existing `text()` sanitizer. `present_with_format` adds `input_bindings` and the `af/task-inspection@12` bump beside the existing conditional generations. `self_optimizer::optimization_adapters` admits `af/task-inspection@12`. `task::delivery_common` reads either origin generation and `task::deliver` refuses a re-rooted source before the prepared record and any Git mutation. |
+| `af` | `task_execution::input_bindings` owns the two Task-file reference forms, resolution and the typed record; its `RecordedTasks` seam is the whole Store surface resolution reads. `TaskFile` gained `inputs: Option<BTreeMap<String, TaskInputRefV1>>` under the existing `present_option` treatment, so an absent table stays absent on round-trip. `start_captured` resolves bindings before it builds the revision, skips the construction a bound port replaces, and installs bound ports last so a profile that rebuilds its own input set cannot drop one. `preview::render` annotates `IN` and adds `BOUND` rows through the existing `text()` sanitizer. `present_with_format` adds `input_bindings` and the `af/task-inspection@13` bump beside the existing conditional generations. `self_optimizer::optimization_adapters` admits `af/task-inspection@13`. `task::delivery_common` reads either origin generation and `task::deliver` refuses a re-rooted source before the prepared record and any Git mutation. |
 
 `selection::assess` preserves exactly one record no port carries — the `af/TaskInputBindings@1`
 one — instead of overwriting `provenance.input_artifact_ids` with the port identities alone. A
@@ -225,7 +228,7 @@ that re-rooted it first, which is not what this Task's file referenced.
 
 `schemas/task-file-v1.json` gained the optional `inputs` property with the two closed forms;
 `schemas/task-input-bindings-v1.json`, `schemas/task-source-origin-v2.json` and
-`schemas/task-inspection-v12.json` gains the optional `input_bindings` property. The `SCHEMAS` array in
+`schemas/task-inspection-v13.json` gains the optional `input_bindings` property. The `SCHEMAS` array in
 `crates/review-core/tests/schema_parity.rs` and its length constant grew by three, with parity
 tests in `crates/review-core/tests/schema_parity/task_contracts.rs` beside the existing
 Task-contract ones.
@@ -252,7 +255,7 @@ Task-contract ones.
 - Unit, `af::task_execution::preview`: the `IN` annotation and the `BOUND` rows sanitize a
   hostile Task ID, as `display_data_cannot_inject_terminal_actions` already requires, render the
   exact-artifact form, and keep the exact artifact ID off the wrap boundary.
-- Unit, `af::self_optimizer::optimization_adapters`: a real bound `af/task-inspection@12` receipt is
+- Unit, `af::self_optimizer::optimization_adapters`: a real bound `af/task-inspection@13` receipt is
   admitted and its accounting reads exactly as the same receipt at `@11`.
 - Integration, `crates/af/tests/task_input_bindings.rs`: the `fixtures/task-runtime/bound-inputs/`
   repository runs four Tasks in one Store. `chain-base` is an ordinary reviewed implementation
@@ -264,11 +267,11 @@ Task-contract ones.
   that re-rooted tree again by exact artifact: it is carried verbatim, and its delivery refusal
   names the artifact it bound rather than the Task recorded in the origin of the first
   re-rooting. The test asserts the `af task explain` `BOUND` rows, validates both bound documents
-  against `schemas/task-inspection-v12.json`, and checks that `chain-base`'s own document is
+  against `schemas/task-inspection-v13.json`, and checks that `chain-base`'s own document is
   unchanged.
 - Integration, the same file: `successor-issue.json` binds `history` and captures a local issue.
   Changing the issue and running `af task refresh` makes a new revision that still carries the
-  binding record in its provenance, still emits `input_bindings` in its `af/task-inspection@12` document, and
+  binding record in its provenance, still emits `input_bindings` in its `af/task-inspection@13` document, and
   still prints the `BOUND` row and the `bound` line.
 - Unit, `af::providers`: a Claude usage probe whose leader starts a same-group descendant that
   ignores `SIGHUP` and then exits without a limit leaves no descendant behind — the exit is

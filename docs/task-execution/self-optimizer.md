@@ -195,7 +195,7 @@ For a deliverable candidate, use the controlled configuration Pipeline below.
 
 ### Native `af` receipts
 
-The `af` adapter reads the public `af/task-inspection@12` receipt that `af task show --json`
+The `af` adapter reads the public `af/task-inspection@13` receipt that `af task show --json`
 prints and refuses any other inspection version. A receipt whose Task bound a root input
 port carries an `input_bindings` record beside the same sections
 ([ADR-0117](../adr/0117-bind-task-inputs-to-recorded-task-outputs.md)); it is provenance and

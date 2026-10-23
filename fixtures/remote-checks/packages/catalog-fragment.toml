@@ -8,8 +8,8 @@ digest = "sha256:6f58bf5955dfe27b4fe6441d93f1b1ffa65bff13f1020d18a536df329a13db3
 path = ".af/task-packages/kernel/gate-bench-remote"
 
 [packages."kernel/implementation-reviewed-remote"]
-version = "1.2.0"
-digest = "sha256:57021f45263e5297b528a10e84354b6ec2bca04765f0bbfae81b1588a74389c8"
+version = "1.3.0"
+digest = "sha256:8fba4533274a981e406dcb8a9ae14b97b447d862ce844299638387f96bec09bd"
 path = ".af/task-packages/kernel/implementation-reviewed-remote"
 
 [packages."kernel/verification-reviewed-remote"]

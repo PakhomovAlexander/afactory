@@ -924,6 +924,19 @@ pub(crate) fn resolve_task_workspace(
             }
             None
         }
+        // A continuation plans a new Task, so the Workspace's bindings come with its Store.
+        T::Run {
+            inspect, bindings, ..
+        } => {
+            if let Some(label) = inspect.workspace.take() {
+                let selected = select(&inspect.repo, &label)?;
+                inspect.state = Some(selected.state);
+                if bindings.is_none() {
+                    *bindings = selected.bindings;
+                }
+            }
+            None
+        }
         T::Deliver {
             repo,
             state,
@@ -935,7 +948,6 @@ pub(crate) fn resolve_task_workspace(
         | T::Output { inspect, .. }
         | T::Approve { inspect, .. }
         | T::Reject { inspect, .. }
-        | T::Run { inspect, .. }
         | T::Explain { inspect, .. }
         | T::Export { inspect, .. }
         | T::ObserveAdoption { inspect, .. }

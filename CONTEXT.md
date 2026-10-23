@@ -221,6 +221,20 @@ Exact independently verified repair evidence projected into the next admitted di
 It retains the original Round and claim identities, grants no complete-Review coverage and does
 not create Campaign Resolution authority. Later discovery can reopen a previously fixed claim.
 
+**Task continuation**:
+A new Task planned from a finished reviewed one (`af task run NEW --from TASK`, or a Task file's
+`continue`): its source is the candidate a review round of TASK reviewed, and its implementer
+receives that round's findings as one typed `af/TaskReviewFindings@1` input. It records the lineage and
+carries no acceptance, verification or budget of the Task it continues (ADR-0203).
+_Avoid_: **Task Review Continuation** — that is repair evidence inside one Review; "follow-up
+Task" with the findings pasted into its goal.
+
+**Base sibling**:
+The tree before the change, materialized read-only beside a judging Worker's own tree at
+`../base`, with `../diff-subject.json` (`af/diff-subject@1`) listing each changed path and its
+digest on each side. Context for a reviewer, evaluator or verifier, never a port and never sealed
+back (ADR-0203).
+
 **Captured Issue Source**:
 An exact read-only observation of ticket fields, with raw source, per-field value and normalized
 text identities. A source revision label alone is not immutable identity. It supplies Task

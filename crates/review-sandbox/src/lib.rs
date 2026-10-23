@@ -184,8 +184,11 @@ impl Drop for Sandbox {
         // A read-only sandbox left its directories at 0o555, and unlinking an entry needs
         // write on its parent — so `TempDir`'s own cleanup would fail silently and strand a
         // whole materialized tree in TMPDIR. Restore writability first, then let the TempDir
-        // (dropped after this body) remove the tree.
-        restore_writable_dirs(&self.root);
+        // (dropped after this body) remove the tree, and the read-only `base/` beside it.
+        match &self._dir {
+            Some(dir) => restore_writable_dirs(dir.path()),
+            None => restore_writable_dirs(&self.root),
+        }
     }
 }
 
@@ -489,9 +492,49 @@ impl Sandbox {
     }
 
     fn apply_read_only(&self) -> std::io::Result<()> {
+        apply_tree_read_only(&self.root)
+    }
+
+    /// Materialize `manifest` read-only as `base/`, the sibling of this sandbox's `tree/`, and
+    /// write each of `beside` read-only next to both (ADR-0203). A Worker that judges a change
+    /// reads the tree before it at `../base` and the change's paths in `../diff-subject.json`;
+    /// neither is under the root, so neither is sealed back or counted as an edit. Only a
+    /// sandbox that owns its temporary directory has a sibling to write.
+    pub fn attach_base(
+        &self,
+        manifest: &Manifest,
+        cas: &Cas,
+        beside: &[(&str, &[u8])],
+    ) -> std::io::Result<PathBuf> {
+        let dir = self
+            ._dir
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("a sandbox at a stable root has no sibling"))?;
+        if beside.iter().any(|(name, _)| {
+            name.is_empty() || name.contains('/') || [".", "..", "base", "tree"].contains(name)
+        }) {
+            return Err(std::io::Error::other(
+                "a file beside the tree is one plain name",
+            ));
+        }
+        let base = dir.path().join("base");
+        materialize(manifest, cas, &base).map_err(std::io::Error::other)?;
+        apply_tree_read_only(&base)?;
+        for (name, bytes) in beside {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes)?;
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o444))?;
+        }
+        Ok(base)
+    }
+}
+
+/// Make every file under `root` read-only, then every directory, `root` included.
+fn apply_tree_read_only(root: &Path) -> std::io::Result<()> {
+    {
         // Files first, then directories: a read-only directory cannot have its contents chmod'd.
-        let mut level = vec![self.root.clone()];
-        let mut seen_dirs = vec![self.root.clone()];
+        let mut level = vec![root.to_path_buf()];
+        let mut seen_dirs = vec![root.to_path_buf()];
         let mut pending_files = Vec::new();
         while !level.is_empty() {
             let (scanned, ()) = review_parallel::try_join(
@@ -511,7 +554,9 @@ impl Sandbox {
         apply_file_permissions(pending_files)?;
         apply_directories_read_only(seen_dirs)
     }
+}
 
+impl Sandbox {
     /// Seal the sandbox and capture what changed.
     ///
     /// Consumes the handle on purpose. The design requires a sandbox to be terminated and frozen

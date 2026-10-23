@@ -372,3 +372,5 @@ future readers need.
   next](0201-make-the-first-run-say-what-to-do-next.md)
 - [0202 — Give the agent loop its verbs, and deliver a verified
   verification](0202-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)
+- [0203 — Continue a Task from its reviewed candidate, and give judging Workers the
+  base](0203-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)

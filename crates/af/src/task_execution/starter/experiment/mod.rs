@@ -350,7 +350,10 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         strategy: Some("fast".into()),
         verification: Some(FileVerification::Evaluation),
         facts: BTreeMap::new(),
-        limits: FileLimits {
+        continue_from: None,
+        context: Vec::new(),
+        base: None,
+        limits: Some(FileLimits {
             tokens: 0,
             max_attempts: 8,
             wall_ms: 600000,
@@ -359,7 +362,7 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
                 attempts: 3,
                 wall_ms: 180000,
             },
-        },
+        }),
     };
     files.insert("experiment.json".into(), json_bytes(&task)?);
     files.insert(".af/task-catalog.toml".into(), toml_bytes(&catalog)?);

@@ -34,6 +34,11 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
         TASK_STATES,
     ),
     (
+        "task-file",
+        "The Task file: its fields, project defaults, context and continuing a reviewed Task",
+        TASK_FILE,
+    ),
+    (
         "agents",
         "Driving af from an agent: plan, run, findings, diff, materialize, deliver, report",
         AGENTS,
@@ -360,7 +365,7 @@ never under --json.
 
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@12; a collected Task:
+  af task show --json                  af/task-inspection@13; a collected Task:
                                        af/task-collected-inspection@2
   af task show --checks --json         af/task-checks@1
   af task list --json                  af/task-list@3, one af/task-list-entry@3 per Task
@@ -411,6 +416,54 @@ failing and flaky tests and the end of its stderr.
 tokens so far; `af task wait ID` blocks until the Task settles and exits with its outcome's code.
 A run `af task cancel ID` stopped is `abandoned/cancelled/host_cancelled`, and `af task show`
 names who cancelled it. `af help agents` walks the whole loop.";
+
+const TASK_FILE: &str = "\
+A Task file (JSON, or TOML for any other extension) is what `af task plan --file` and `af task
+start --file` read. Only `task_id`, `kind` and `goal` are required; `schema` defaults to
+af.task-file/1. The full shape is schemas/task-file-v1.json, and docs/tasks.md walks through it.
+
+  {\"task_id\": \"pagination\", \"kind\": \"implement\",
+   \"goal\": \"Add offset/limit pagination; the design says how.\",
+   \"context\": [\"docs/design.md#pagination\", \"src/list.rs\"]}
+
+Project defaults: what a Task file omits comes from `[task.defaults]` of `.af/af.toml` in the
+committed Authority Snapshot: `limits` (tokens, max_attempts, wall_ms and the verification
+reserve), `pipeline` and its `fallback`. A field the Task file names wins whole; the default
+Pipeline applies only to a Task of a kind it accepts. `af task plan` prints on stderr what came
+from the defaults (`defaults: limits (...), pipeline kernel/implementation-reviewed (fallback
+refuse) from .af/af.toml [task.defaults]`). Without `limits` in either place the plan is refused.
+
+  [task.defaults]
+  pipeline = \"kernel/implementation-reviewed\"
+  fallback = \"refuse\"
+  [task.defaults.limits]
+  tokens = 6000000
+  max_attempts = 16
+  wall_ms = 10800000
+  [task.defaults.limits.verification]
+  tokens = 2000000
+  attempts = 8
+  wall_ms = 3600000
+
+Context: each `context` entry names a file of the Task's source tree, with an optional
+`#section`. The Worker's requirements end with a \"Read first\" list: the project's standing
+rules, `.af/rules.md` of the Authority Snapshot, then each context file, each with the digest of
+the bytes the Task captured. A changed file is a changed plan; a missing one is refused.
+
+Continuing a reviewed Task: `af task run NEW --from TASK [--round N] [--goal FILE]` plans NEW
+from TASK's own Task file. Its source is the candidate TASK's review round reviewed (the last
+round unless --round names one), not the base, and its implementer receives that round's
+reviewer findings and the evaluator's verdict as one af/TaskReviewFindings@1 document on the
+Pipeline's optional `findings` input; nothing is pasted into the goal. --goal replaces the goal.
+Without --execute it plans and waits for `af task run NEW --confirm-plan PLAN_ID`. A Task file
+says the same with `\"continue\": {\"task\": \"TASK\", \"round\": 1}`. `af task show NEW` prints
+`continues TASK round N`, `--json` carries it as `continues`, and `af task report` names it in the
+continued Task's row.
+
+Examples:
+  af task plan --file ticket.json   # needs: a Task file ticket.json; stderr names the defaults
+  af task run fix-2 --from fix-1   # needs: a finished reviewed Task fix-1; plans fix-2 from it
+  af task run fix-2 --from fix-1 --round 1 --goal goal.md --execute   # needs: the same, goal.md";
 
 const PROVIDERS: &str = "\
 A Provider is a login of an official model CLI, `claude` (Claude Code) or `codex` (Codex CLI),

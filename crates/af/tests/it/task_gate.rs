@@ -269,7 +269,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     );
     let before = fixture.show_json("gate-retry");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v12.json"),
+        &crate::schemas::validator("task-inspection-v13.json"),
         &before,
     );
     assert_eq!(before["result"]["domain_conclusion"], "changes_requested");
@@ -349,7 +349,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     assert!(!stdout.contains("--retry-gate"), "{stdout}");
     let after = fixture.show_json("gate-retry");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v12.json"),
+        &crate::schemas::validator("task-inspection-v13.json"),
         &after,
     );
     assert_eq!(after["result"]["domain_conclusion"], "verified");

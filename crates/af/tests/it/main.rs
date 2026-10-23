@@ -57,6 +57,7 @@ mod task_acceptance;
 mod task_agent_loop;
 mod task_catalog;
 mod task_cli_fixture;
+mod task_continue;
 mod task_delivery;
 mod task_developer;
 mod task_document;

@@ -183,6 +183,12 @@ pub const LAYOUT: &[Entry] = &[
         "Task packages, kinds, selection, providers",
     ),
     file(
+        "rules.md",
+        Writer::Human,
+        Versioning::Versioned,
+        "standing rules every Task Worker reads first",
+    ),
+    file(
         "optimization-policy.json",
         Writer::Human,
         Versioning::Versioned,

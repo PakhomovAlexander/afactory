@@ -1,8 +1,17 @@
 schema = "af.pipeline/1"
 name = "kernel/implementation-reviewed-remote"
-version = "1.2.0"
+version = "1.3.0"
 max_attempts = 16
 max_parallel = 2
+
+[contract.inputs.findings]
+artifact_type = "af/TaskReviewFindings@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.inputs.findings.affinity]
+kind = "unbound"
 
 [contract.inputs.history]
 artifact_type = "af/ReviewHistory@1"
@@ -114,6 +123,10 @@ id = "implement"
 [nodes.operator]
 op = "worker"
 slot = "implementer"
+
+[nodes.inputs.findings]
+kind = "input"
+port = "findings"
 
 [nodes.inputs.requirements]
 kind = "input"

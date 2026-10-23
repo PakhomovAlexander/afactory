@@ -77,8 +77,8 @@ Start here (`af help start` explains each step):
 
 Task, Worker, Attempt, Snapshot, Provider and the other words are explained in \
 `af help concepts`; `af help` lists every topic (config, layers, environment, exit-codes, json, \
-providers, task-states, agents, self, storage, telemetry). `af` alone at a terminal opens a browser \
-over this scope's settings, Providers, pipelines and Tasks.";
+providers, task-states, task-file, agents, self, storage, telemetry). `af` alone at a terminal \
+opens a browser over this scope's settings, Providers, pipelines and Tasks.";
 
 const AF_AFTER_HELP: &str = "\
 Exit codes (`af help exit-codes`):
@@ -1815,17 +1815,61 @@ in the background and returns once it holds the Task and its plan is admitted, p
 and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@1` under --json). \
 The run has no terminal, survives the shell that started it, and is the same process a \
 foreground run is; `af task wait`, `af task status` and `af task cancel` follow it. Every run \
-records its process in the Store, `runs/<TASK_ID>-<N>.json`, before it takes the Task.\n\nNever: writes to the original repository, commits, pushes, or delivers; see \
+records its process in the Store, `runs/<TASK_ID>-<N>.json`, before it takes the Task.\n\n\
+--from TASK plans NEW_ID as a new Task that continues the finished Task TASK from its reviewed \
+candidate (ADR-0203): the candidate Snapshot of its last review round (--round N for another) is \
+the new source, that round's reviewer findings and evaluator verdict are the implementer's \
+`findings` input, --goal FILE replaces the goal, and TASK's Task file is the rest. Without \
+--execute it prints the plan for --confirm-plan, as `af task plan` does; --from runs in the \
+foreground and cannot be combined with --detach.\n\nNever: writes to the original repository, commits, pushes, or delivers; see \
 `af task deliver`.",
         after_long_help = "Examples:\n  \
 af task run TASK_ID --confirm-plan PLAN_ID   # needs: a planned Task and the plan ID it printed\n  \
 af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --retry-gate\n  \
 af task run TASK_ID --execute --detach   # needs: a planned Task\n  \
-af task run TASK_ID --execute --quiet --json   # needs: a planned Task"
+af task run TASK_ID --execute --quiet --json   # needs: a planned Task\n  \
+af task run NEW_ID --from TASK_ID   # needs: a finished reviewed Task TASK_ID\n  \
+af task run NEW_ID --from TASK_ID --round 1 --goal goal.md --execute   # needs: the same, goal.md"
     )]
     Run {
         /// Task id
         task_id: String,
+        /// Plan TASK_ID as a new Task that continues the finished Task TASK from its reviewed
+        /// candidate: that review round's candidate Snapshot is the new source, its reviewer
+        /// findings and evaluator verdict the implementer's `findings` input, and TASK's Task
+        /// file the rest. Without --execute the plan is printed for --confirm-plan
+        #[arg(
+            long,
+            value_name = "TASK",
+            conflicts_with_all = ["confirm_plan", "retry_gate", "detach"],
+            help_heading = "Continue"
+        )]
+        from: Option<String>,
+        /// The review round of --from TASK to continue; omitted, its last round
+        #[arg(
+            long,
+            value_name = "N",
+            requires = "from",
+            value_parser = clap::value_parser!(u32).range(1..=16),
+            help_heading = "Continue"
+        )]
+        round: Option<u32>,
+        /// A file whose text replaces the continued Task's goal; omitted, the goal stays
+        #[arg(
+            long,
+            value_name = "FILE",
+            requires = "from",
+            help_heading = "Continue"
+        )]
+        goal: Option<PathBuf>,
+        /// Local Provider bindings for the new Task, as `af task plan --bindings` takes them
+        #[arg(
+            long,
+            value_name = "FILE",
+            requires = "from",
+            help_heading = "Continue"
+        )]
+        bindings: Option<PathBuf>,
         /// Confirm the exact plan shown by plan/start/explain; stale identities refuse
         #[arg(long, value_name = "PLAN_ID", conflicts_with = "execute")]
         confirm_plan: Option<String>,
