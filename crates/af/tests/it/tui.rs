@@ -84,6 +84,8 @@ fn environment(home: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
         ("XDG_STATE_HOME", home.join("state").into_os_string()),
         ("XDG_DATA_HOME", home.join("data").into_os_string()),
         ("XDG_CACHE_HOME", home.join("cache").into_os_string()),
+        // Cleared-environment PTY children still need the runner's writable scratch root.
+        ("TMPDIR", std::env::temp_dir().into_os_string()),
         ("AF_SELF_OFFLINE", "1".into()),
         ("NO_COLOR", "1".into()),
         ("TERM", "xterm-256color".into()),

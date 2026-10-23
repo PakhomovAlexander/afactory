@@ -34,9 +34,13 @@ impl Expiry {
     }
 
     pub(super) fn diagnostic(self, id: &str) -> String {
+        let mut at = review_core::task::collection::utc_time(self.unix_seconds);
+        if self.nanoseconds != 0 {
+            at.pop(); // The shared UTC formatter always ends in Z.
+            at.push_str(&format!(".{:09}Z", self.nanoseconds));
+        }
         format!(
-            "Provider `{id}` is disabled until Unix {}.{:09} (UTC); run `af provider enable {id}` to enable immediately",
-            self.unix_seconds, self.nanoseconds
+            "Provider `{id}` is disabled until {at} (UTC); run `af provider enable {id}` to enable immediately"
         )
     }
 }
@@ -66,6 +70,10 @@ impl Default for State {
 
 impl State {
     fn parse(bytes: &[u8]) -> Result<Self, String> {
+        // Apply the same aggregate bound on publication as on descriptor-bound reads.
+        if bytes.len() as u64 > MAX_REGISTRY_BYTES {
+            return Err("oversized Provider disable state".into());
+        }
         let state: Self =
             serde_json::from_slice(bytes).map_err(|_| "malformed Provider disable state")?;
         if state.schema != SCHEMA || state.providers.len() > MAX_PROVIDERS {
@@ -74,7 +82,7 @@ impl State {
         let mut ids = BTreeSet::new();
         for entry in &state.providers {
             validate_explicit_id(&entry.id).map_err(|_| "invalid Provider disable ID")?;
-            if entry.id.len() > 64 || !ids.insert(&entry.id) {
+            if !ids.insert(&entry.id) {
                 return Err("invalid or duplicate Provider disable ID".into());
             }
             entry.expires_at.time()?;
@@ -210,6 +218,13 @@ fn update(
     let lock = registry_lock(path)?;
     let now = clock();
     let mut state = read(path, &lock.directory)?;
+    // A removed registry entry must remain explicitly cleanable, even at full capacity.
+    // Decide under the update lock, before reclaiming expired entries as well.
+    if duration.is_none() && !state.providers.iter().any(|entry| entry.id == id) {
+        registered_spec(id).map_err(|error| {
+            format!("Provider `{id}` is neither registered nor present in disable state: {error}")
+        })?;
+    }
     // Expired entries have no authority and are reclaimed only during explicit updates.
     state
         .providers
@@ -270,8 +285,15 @@ pub fn disable(id: &str, value: &str) -> Result<i32, String> {
 
 pub fn enable(id: &str) -> Result<i32, String> {
     validate_explicit_id(id)?;
-    registered_spec(id)?;
-    update(&path()?, id, None, SystemTime::now)?;
+    let path = path()?;
+    // Refuse unknown IDs without creating a state directory or lock. The locked update
+    // repeats this admission against the state it actually publishes.
+    if !load_at(&path)?.providers.iter().any(|entry| entry.id == id) {
+        registered_spec(id).map_err(|error| {
+            format!("Provider `{id}` is neither registered nor present in disable state: {error}")
+        })?;
+    }
+    update(&path, id, None, SystemTime::now)?;
     println!("Provider `{id}` enabled; next: af provider status");
     Ok(EXIT_OK)
 }

@@ -1,6 +1,49 @@
 use super::*;
 
 #[test]
+fn expiry_diagnostics_use_exact_utc_calendar_dates_and_enable_action() {
+    for (seconds, nanoseconds, expected) in [
+        (0, 0, "1970-01-01T00:00:00Z"),
+        (951_782_400, 1, "2000-02-29T00:00:00.000000001Z"),
+        (1_790_599_874, 123456789, "2026-09-28T12:51:14.123456789Z"),
+        (4_102_444_799, 999999999, "2099-12-31T23:59:59.999999999Z"),
+    ] {
+        let expiry = Expiry {
+            unix_seconds: seconds,
+            nanoseconds,
+        };
+        assert_eq!(
+            expiry.diagnostic("example"),
+            format!(
+                "Provider `example` is disabled until {expected} (UTC); run `af provider enable example` to enable immediately"
+            )
+        );
+        assert_eq!(Expiry::from_time(expiry.time().unwrap()).unwrap(), expiry);
+    }
+}
+
+#[test]
+fn aggregate_byte_limit_bounds_long_ids_before_atomic_publication() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("state.json");
+    let now = UNIX_EPOCH + Duration::from_secs(100);
+    let id = "p".repeat(1024);
+    let expiry = update(&path, &id, Some(Duration::from_secs(60)), || now)
+        .unwrap()
+        .unwrap();
+    assert_eq!(until_at(&path, &id, now).unwrap(), Some(expiry));
+    let original = fs::read(&path).unwrap();
+    let oversized = "p".repeat(MAX_REGISTRY_BYTES as usize);
+    assert!(update(&path, &oversized, Some(Duration::from_secs(60)), || now).is_err());
+    assert_eq!(fs::read(&path).unwrap(), original);
+    let mut oversized_read = original;
+    oversized_read.resize(MAX_REGISTRY_BYTES as usize + 1, b' ');
+    assert!(State::parse(&oversized_read).is_err());
+    fs::write(&path, &oversized_read).unwrap();
+    assert!(until_at(&path, &id, now).is_err());
+}
+
+#[test]
 fn duration_is_positive_bounded_and_checked() {
     for (value, seconds) in [
         ("1s", 1),
@@ -95,6 +138,34 @@ fn concurrent_updates_preserve_each_other_and_readers_see_whole_files() {
 }
 
 #[test]
+fn concurrent_orphan_cleanup_preserves_a_new_disable() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("state.json");
+    let now = UNIX_EPOCH + Duration::from_secs(100);
+    for i in 0..16 {
+        update(
+            &path,
+            &format!("orphan-{i}"),
+            Some(Duration::from_secs(60)),
+            || now,
+        )
+        .unwrap();
+    }
+    thread::scope(|scope| {
+        for i in 0..16 {
+            let path = &path;
+            scope.spawn(move || update(path, &format!("orphan-{i}"), None, || now).unwrap());
+        }
+        let path = &path;
+        scope.spawn(move || update(path, "new", Some(Duration::from_secs(60)), || now).unwrap());
+    });
+    let state = load_at(&path).unwrap();
+    assert_eq!(state.providers.len(), 1);
+    assert_eq!(state.providers[0].id, "new");
+    assert!(state.disabled_until("new", now).unwrap().is_some());
+}
+
+#[test]
 fn malformed_unsafe_and_unknown_state_fail_closed_without_replacement() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("state.json");
@@ -144,6 +215,11 @@ fn published_state_fixture_round_trips_the_closed_rust_shape() {
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     assert!(validator.is_valid(&value));
+    let mut long_id = value.clone();
+    long_id["providers"][0]["id"] = serde_json::json!("p".repeat(1024));
+    assert!(validator.is_valid(&long_id));
+    let parsed = State::parse(&serde_json::to_vec(&long_id).unwrap()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), long_id);
     for invalid in [
         serde_json::json!({"schema":"af.provider-disables/0", "providers":[]}),
         serde_json::json!({"schema":"af.provider-disables/1", "providers":[], "extra":true}),

@@ -26,7 +26,6 @@
           "id": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 64,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
             "not": {
               "enum": [
@@ -59,5 +58,5 @@
       }
     }
   },
-  "$comment": "IDs must also be unique, and timestamps representable by the machine wall clock. Expiry applies exactly at the timestamp; expired entries are inert."
+  "$comment": "IDs must also be unique, and timestamps representable by the machine wall clock. The complete serialized state is bounded to 65536 bytes, as is the registry; IDs have no separate length cap. Expiry applies exactly at the timestamp; expired entries are inert."
 }

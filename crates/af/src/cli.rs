@@ -842,7 +842,7 @@ pub(crate) enum ProviderCommand {
         #[arg(long = "for", value_name = "DURATION")]
         duration: String,
     },
-    /// Enable a registered Provider immediately, without probing it
+    /// Enable a Provider or clear a removed Provider's disable entry, without probing it
     Enable { id: String },
     /// Show the provider registry and each harness login, without a model call
     #[command(

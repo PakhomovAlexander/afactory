@@ -576,7 +576,10 @@ fn captured_task_rechecks_disable_on_fresh_run_and_enable_restores_the_same_plan
         String::from_utf8_lossy(&refused.stdout),
         String::from_utf8_lossy(&refused.stderr)
     );
-    assert!(text.contains("disabled until Unix"), "{text}");
+    assert!(
+        text.contains("disabled until ") && text.contains("Z (UTC)"),
+        "{text}"
+    );
     assert!(text.contains("af provider enable codex-personal"), "{text}");
     assert_eq!(
         std::fs::read(f.home.join("spawns")).unwrap(),

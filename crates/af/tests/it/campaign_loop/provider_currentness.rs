@@ -232,7 +232,7 @@ fn review_disable_after_admission_refuses_captured_private_send_before_account_p
         }) = &attempt.result
         {
             let diagnostic = cas.get_json(diagnostic_id).unwrap().to_string();
-            if diagnostic.contains("disabled until Unix") {
+            if diagnostic.contains("disabled until ") && diagnostic.contains("Z (UTC)") {
                 assert!(
                     diagnostic.contains("af provider enable test-codex"),
                     "{diagnostic}"

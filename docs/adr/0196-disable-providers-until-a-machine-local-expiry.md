@@ -2,7 +2,9 @@
 
 **Status:** proposed (2026-10-23). Extends
 [ADR-0146](0146-refuse-a-provider-cli-that-does-not-accept-afs-invocation.md) with the v3
-status document; its capability checks remain binding.
+status document; its capability checks remain binding. Amended by
+[ADR-0197](0197-preserve-provider-id-domain-and-clear-orphaned-disables.md) for long IDs,
+orphan cleanup and human-readable UTC deadlines.
 
 ## Context
 
@@ -15,14 +17,17 @@ private send after the operator disables that Provider.
 
 `af provider disable ID --for DURATION` and `af provider enable ID` are deterministic,
 token-free machine-local bootstrap commands, exempt from project pin dispatch like setup and
-remove. They require a registered ID but never probe its account, model or executable. Durations
+remove. Disable requires a registered ID; enable also accepts an ID retained in disable state
+after registry removal. Neither probes its account, model or executable. Durations
 are positive integers suffixed `s`, `m`, `h` or `d`, bounded to 30 days with checked arithmetic.
-Disable replaces the ID's deadline; enable removes it immediately and is idempotent.
+Disable replaces the ID's deadline; enable removes it immediately and is idempotent for
+registered IDs. After orphan cleanup, the ID is unknown and another enable is refused.
 
 Keep registry v1 unchanged. Store `af.provider-disables/1` separately in
 `$XDG_CONFIG_HOME/af/provider-disables-v1.json`, falling back to
 `$HOME/.config/af/provider-disables-v1.json`, independently of `AF_PROVIDERS_FILE`. The closed
-shape records at most 32 unique registered IDs and absolute Unix seconds plus nanoseconds.
+shape records at most 32 unique IDs and absolute Unix seconds plus nanoseconds, under the
+existing 64 KiB aggregate file bound, without a separate ID length limit.
 A Provider is disabled exactly while the wall clock is less than its deadline. Every lookup
 reads the file afresh; expiry needs no daemon, process memory, restart or cleanup. Clock changes
 therefore affect the remaining suspension. Explicit updates reclaim expired entries.

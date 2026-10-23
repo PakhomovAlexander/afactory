@@ -76,25 +76,30 @@ af provider status
 af provider enable claude-personal
 ```
 
-Disable and enable require a registered ID and never start a Provider process or spend tokens.
+Disable requires a registered ID. Enable also accepts an ID still present in disable state after
+registry removal, reclaiming that entry's capacity; an ID in neither place is refused. Neither
+command starts a Provider process or spends tokens.
 `--for` accepts a positive integer followed by `s`, `m`, `h` or `d`, up to `30d`; `2d` is exactly
-48 hours. Repeating disable replaces the deadline. Enable restores availability immediately and
-is idempotent. Both commands run in the invoking release as machine-local bootstrap operations.
+48 hours. Repeating disable replaces the deadline. Enable restores a registered Provider's
+availability immediately and is idempotent while the ID remains registered. Clearing an orphan
+leaves its ID unknown, so a second enable is refused. Both commands run in the invoking release
+as machine-local bootstrap operations.
 Execution, status and model discovery keep their existing project pin dispatch: an older pinned
 release does **not** honor suspension. Use a pin containing this feature for the work it controls.
 
 Suspensions live separately from registry v1 in
 `$XDG_CONFIG_HOME/af/provider-disables-v1.json` (default
 `~/.config/af/provider-disables-v1.json`), independent of `AF_PROVIDERS_FILE`. They do not edit the
-registry, auth directories or credentials. The file is private, bounded, versioned and atomically
-published under a lock; malformed or unsafe state refuses Provider work. Correct the reported
+registry, auth directories or credentials. The file is private, versioned, bounded to 32 entries
+and 64 KiB, and atomically published under a lock. IDs use the registry's validation without a
+separate length cap. Malformed or unsafe state refuses Provider work. Correct the reported
 path or permissions before retrying; enable deliberately refuses to overwrite malformed state.
 
 Each new lookup compares the current wall clock to the stored absolute Unix timestamp, including
 nanoseconds: the Provider is available at the expiry instant, across restarts and downtime.
 Changing the system clock changes the remaining suspension. No background process is needed.
-Status shows a disabled row, the expiry and `af provider enable ID` without probing that Provider,
-even with `--usage`. JSON is `af/provider-status@3`, with `disabled_until` and `enable_command`
+Status shows a disabled row, the RFC3339 UTC expiry and `af provider enable ID` without probing
+that Provider, even with `--usage`. JSON is `af/provider-status@3`, with `disabled_until` and `enable_command`
 (non-null only while disabled), `auth = "not_probed"` and `usability = "unusable"`.
 
 Review and model preflights, Task admission and every captured or resumed Task private send
@@ -132,7 +137,8 @@ distinct_providers = false
 distinct_models = true
 ```
 
-`distinct_providers` compares registered IDs; different IDs alone do not prove different
+`distinct_providers` compares Provider kinds (adapter families, such as `claude` versus `codex`);
+two registered IDs of the same kind do not satisfy it. Different IDs alone do not prove different
 principals. Setting both principal and model booleans to true requires both. Change this trusted
 table through the project's implementation and verification Tasks, review and commit the catalog,
 and bind independent slots to the appropriate registered accounts or exact model packages.
