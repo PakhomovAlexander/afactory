@@ -370,6 +370,8 @@ future readers need.
   `add`](0197-detect-provider-logins-and-register-them-through-add.md)
 - [0199 — Recover an Attempt from a transient Provider failure and a reply that does not
   parse](0199-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)
+- [0200 — Recover a lost or interrupted Attempt without charging its
+  reservation](0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)
 - [0201 — Make the first run say what to do
   next](0201-make-the-first-run-say-what-to-do-next.md)
 - [0202 — Give the agent loop its verbs, and deliver a verified

@@ -42,6 +42,7 @@ mod interrupt;
 mod model_check;
 mod model_failures;
 mod onboard;
+mod power;
 mod project;
 /// Project Briefs (ADR-0160), beside the Surveyor they render from.
 #[path = "projects/brief.rs"]
@@ -1285,6 +1286,18 @@ fn main() {
     // The Storage Budget first: it names the sandbox root (`[storage] sandbox_root`) the stale
     // sandbox sweep below looks in.
     storage::set_output(runs_task_work(&command), verbose_sweeps(&command));
+    // A Mac does not idle-sleep while Task work runs; `af task run --verbose` says so
+    // (ADR-0200). Held until af exits.
+    let _power = runs_task_work(&command)
+        .then(|| {
+            power::hold(matches!(
+                &command,
+                cli::Command::Task {
+                    command: cli::TaskCommand::Run { verbose: true, .. }
+                }
+            ))
+        })
+        .flatten();
     if runs_task_work(&command)
         && let Err(error) = storage::install()
     {
@@ -1653,7 +1666,9 @@ fn main() {
     if let Some(sweep) = sandbox_sweep {
         // The command's own work is done; a sweep still removing a large leftover finishes
         // before the process ends, so a stale directory never outlives two Task-running commands.
-        let _ = sweep.join();
+        if let Ok(Some(line)) = sweep.join() {
+            eprintln!("{line}");
+        }
     }
     drop(dispatched);
     perf_trace::finish();
@@ -2085,7 +2100,10 @@ fn exit_interrupted(
 ) -> ! {
     let code = interrupt::exit_code(signal);
     let resume = match interrupt::noted_task() {
-        Some(id) => format!("resume it with `af task run {id}`"),
+        Some(id) => format!(
+            "resume it with `af task run {id}`, which dispatches the interrupted node again \
+             without using one of its Attempts"
+        ),
         None => "run the same command again to resume it".into(),
     };
     let message = if argv.get(1).is_some_and(|s| s == "provider")
@@ -4806,19 +4824,21 @@ fn provider_doctor(options: &Options) -> Result<i32, String> {
 /// it always completes. It keeps every directory whose process still exists and every one the
 /// kernel preserved on purpose. One stderr line reports what was removed; stdout and every
 /// `--json` document are untouched.
-fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<()>> {
+/// The sweep's line, if it removed anything, is printed once the command's own work is done:
+/// the first line of `af task run` is the one that says what the run does (ADR-0200).
+fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<Option<String>>> {
     std::thread::Builder::new()
         .name("af-sandbox-sweep".into())
         .spawn(|| {
             let report = review_sandbox::sweep_stale_sandboxes();
-            if report.removed > 0 {
-                eprintln!(
+            (report.removed > 0).then(|| {
+                format!(
                     "af: removed {} stale sandbox director{} left by exited processes under {}",
                     report.removed,
                     if report.removed == 1 { "y" } else { "ies" },
                     terminal_text(&review_sandbox::sandbox_root().display().to_string())
-                );
-            }
+                )
+            })
         })
         .ok()
 }

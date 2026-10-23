@@ -271,8 +271,14 @@ pub fn run_integration_handoff() -> tempfile::TempDir {
     run_integration_handoff_with(std::time::Duration::ZERO, 3)
 }
 
+/// The lease a delayed handoff holds. The heartbeat renews every lease once a third of it has
+/// passed (ADR-0200), production's 60 s lease and this one alike; 15 s lets a preparation
+/// outlast the lease without a minute-long test.
+pub const DELAYED_LEASE_MS: u64 = 15_000;
+
 /// The same handoff after a slow successor preparation, in a Campaign capped at
 /// `max_rounds`. When the successor is the final permitted Round, it captures no Integration.
+/// A nonzero `delay` must outlast [`DELAYED_LEASE_MS`], so only renewal keeps the lease.
 pub fn run_integration_handoff_with(
     delay: std::time::Duration,
     max_rounds: u32,
@@ -314,11 +320,16 @@ pub fn run_integration_handoff_observed(
     let lease = if delay.is_zero() {
         lease
     } else {
-        // Use the production CLI's 15-second renewable lease, without changing any Task
-        // execution deadline, Attempt allowance or captured Campaign cap.
+        // A renewable lease of DELAYED_LEASE_MS on the heartbeat's own cadence for it, without
+        // changing any Task execution deadline, Attempt allowance or captured Campaign cap.
         store.release_task_lease(&cas, &lease).unwrap();
         store
-            .take_task_lease(&cas, lease.task_id(), "delayed-preparation", 15_000)
+            .take_task_lease(
+                &cas,
+                lease.task_id(),
+                "delayed-preparation",
+                DELAYED_LEASE_MS,
+            )
             .unwrap()
     };
     let shared = SharedEventStore::new(&mut store);
@@ -331,8 +342,10 @@ pub fn run_integration_handoff_observed(
     )
     .unwrap();
     let authority = CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
-    let runtime =
-        TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
+    let timing = review_pipeline::task::lease::LeaseTiming::for_lease(DELAYED_LEASE_MS);
+    let runtime = TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
+        .unwrap()
+        .with_lease_timing(timing);
     let report = runtime.execute().unwrap();
     assert!(report.complete(), "{report:?}");
     let conclusion = host.publish_recorded_round_conclusion(&cas).unwrap();
@@ -346,7 +359,8 @@ pub fn run_integration_handoff_observed(
         &host,
         &phase,
     )
-    .unwrap();
+    .unwrap()
+    .with_lease_timing(timing);
     let (report_id, report) = phase_runtime.execute_review_integration(&phase).unwrap();
     assert!(report.complete(), "{report:?}");
     // Observed, the atomic integration's transaction first rolls back once, as a failed final
@@ -479,14 +493,24 @@ pub fn run_integration_handoff_observed(
     );
     if !delay.is_zero() {
         let started = std::time::Instant::now();
-        review_pipeline::task::lease::with_heartbeat(&shared, &cas, &lease, || {
-            // Deterministic stand-in for slow Git/CAS/compiler preparation. No Store lock
-            // or paid work is held while the real common lease renewal thread runs.
-            std::thread::sleep(delay);
-            Ok(())
-        })
+        review_pipeline::task::lease::with_heartbeat_supervised(
+            &shared,
+            &cas,
+            &lease,
+            review_pipeline::task::lease::HeartbeatControl {
+                cancellation: None,
+                writer_lost: None,
+                timing,
+            },
+            || {
+                // Deterministic stand-in for slow Git/CAS/compiler preparation. No Store lock
+                // or paid work is held while the real common lease renewal thread runs.
+                std::thread::sleep(delay);
+                Ok(())
+            },
+        )
         .unwrap();
-        assert!(started.elapsed() > std::time::Duration::from_secs(15));
+        assert!(started.elapsed() > std::time::Duration::from_millis(DELAYED_LEASE_MS));
         assert!(
             shared
                 .lock()

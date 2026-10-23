@@ -54,6 +54,64 @@ struct RecordedAttempt {
     /// reported 0 tokens: whether usage is known is its own fact, never read from the charge
     /// (ADR-0143).
     usage_observed: bool,
+    /// Why this Attempt was settled as abandoned, read from who settled it (ADR-0200).
+    abandoned: Option<TaskAbandonCause>,
+    /// When abandoned work stopped: its own writer's settlement, or the last time its lost
+    /// writer recorded anything.
+    abandoned_unix_ms: Option<u64>,
+}
+
+impl RecordedAttempt {
+    fn abandoned_unix_ms(&self) -> Option<u64> {
+        self.abandoned_unix_ms
+    }
+}
+
+/// Why an Attempt was abandoned, read from the writer epoch that recorded its settlement
+/// (ADR-0200): a later writer settles an Attempt whose writer was lost (its process died, or
+/// its lease expired or was taken), and the writer that started an Attempt settles it as
+/// abandoned only when its host cancelled it (SIGINT or SIGTERM). Neither is an answer of the
+/// Attempt, so neither counts against an Attempt limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TaskAbandonCause {
+    WriterLost,
+    HostCancelled,
+}
+
+impl TaskAbandonCause {
+    /// The word `af task show`, `af task list` and the resume messages use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WriterLost => "writer_lost",
+            Self::HostCancelled => "host_cancelled",
+        }
+    }
+}
+
+/// One node's abandoned Attempts against the recovery allowance that bounds them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskNodeRecovery {
+    pub node: String,
+    /// Begun Attempts that count against the node's Attempt limit.
+    pub chargeable: u32,
+    pub writer_lost: u32,
+    pub host_cancelled: u32,
+    pub allowance: u32,
+    /// When the latest abandoned Attempt stopped: its settlement by its own writer, or the
+    /// last time its lost writer recorded anything.
+    pub last_abandoned_unix_ms: Option<u64>,
+}
+
+impl TaskNodeRecovery {
+    pub fn abandoned(&self) -> u32 {
+        self.writer_lost + self.host_cancelled
+    }
+
+    /// Whether the abandoned Attempts used up the allowance, so the node is not dispatched
+    /// again.
+    pub fn exhausted(&self) -> bool {
+        self.abandoned() > self.allowance
+    }
 }
 
 /// Read-only accounting from the common ledger. The effective charge includes observations
@@ -80,6 +138,9 @@ pub struct TaskAttemptAccounting {
     /// zero (ADR-0143). None for every Attempt whose usage is known, including one a later
     /// observation reported after it settled, even one that reported 0 tokens.
     pub unknown_usage: Option<task::usage::TaskUnknownUsageCauseV1>,
+    /// Why this Attempt was abandoned, when it was (ADR-0200). An abandoned Attempt counts
+    /// against its node's recovery allowance, not against any Attempt limit.
+    pub abandoned: Option<TaskAbandonCause>,
 }
 
 impl TaskAttemptAccounting {
@@ -360,6 +421,9 @@ impl TaskExecutionProjection {
                 false,
             )
             .map_err(conflict)?;
+        self.budget
+            .install_recovery_allowances(&graph.recovery_allowances())
+            .map_err(conflict)?;
         self.graph = graph;
         self.invocations.clear();
         self.outputs.clear();
@@ -460,7 +524,7 @@ impl TaskExecutionProjection {
             state,
         )?;
         let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
-        if graph.schema != "af.compiled-task/1" || graph.inputs != state.revision.inputs {
+        if graph.validate_schema().is_err() || graph.inputs != state.revision.inputs {
             return Err(conflict("Task execution requires its exact compiled graph"));
         }
         let planned = graph.scheduler_plan().map_err(conflict)?;
@@ -583,9 +647,56 @@ impl TaskExecutionProjection {
                         }) if !attempt.usage_observed => Some(unknown.cause),
                         _ => None,
                     },
+                    abandoned: attempt.abandoned,
                 }
             })
             .collect()
+    }
+
+    /// The recovery state of every node of the current graph that has abandoned Attempts,
+    /// in node order (ADR-0200).
+    pub fn recoveries(&self) -> Vec<TaskNodeRecovery> {
+        let mut nodes: BTreeMap<&str, TaskNodeRecovery> = BTreeMap::new();
+        for attempt in self.attempts.values() {
+            let Some(cause) = attempt.abandoned else {
+                continue;
+            };
+            let node = attempt.reservation.node.as_str();
+            let Some(budget) = self.budget.recovery(node) else {
+                continue;
+            };
+            let entry = nodes.entry(node).or_insert_with(|| TaskNodeRecovery {
+                node: node.into(),
+                chargeable: budget.chargeable,
+                writer_lost: 0,
+                host_cancelled: 0,
+                allowance: budget.allowance,
+                last_abandoned_unix_ms: None,
+            });
+            match cause {
+                TaskAbandonCause::WriterLost => entry.writer_lost += 1,
+                TaskAbandonCause::HostCancelled => entry.host_cancelled += 1,
+            }
+            entry.last_abandoned_unix_ms = entry
+                .last_abandoned_unix_ms
+                .max(attempt.abandoned_unix_ms());
+        }
+        nodes.into_values().collect()
+    }
+
+    /// The node and start time of every started Attempt nobody settled: work of a writer that
+    /// may have been lost. Its successor settles it as abandoned before new dispatch.
+    pub fn orphaned_attempts(&self) -> Vec<(String, Option<u64>)> {
+        self.attempts
+            .values()
+            .filter(|a| a.started && !a.released && a.settlement.is_none())
+            .map(|a| (a.reservation.node.clone(), a.started_unix_ms))
+            .collect()
+    }
+
+    /// The recovery allowance and chargeable count of `node` in the current graph.
+    pub fn node_recovery(&self, node: &str) -> Option<review_attempt::task_budget::NodeRecovery> {
+        self.budget.recovery(node)
     }
 
     /// Immutable observations of settled Attempts, including failures. These references do
@@ -1039,6 +1150,8 @@ impl TaskProjection {
                         released: false,
                         settlement: None,
                         usage_observed: false,
+                        abandoned: None,
+                        abandoned_unix_ms: None,
                     },
                 );
             }
@@ -1114,8 +1227,8 @@ impl TaskProjection {
                 charged_tokens,
                 result,
                 raw_artifact_ids,
+                usage_id,
                 unknown_usage,
-                ..
             } => {
                 let attempt = execution
                     .attempts
@@ -1158,12 +1271,19 @@ impl TaskProjection {
                     }
                     execution.verify_output(cas, &out)?;
                 }
+                // An abandoned Attempt is charged what it was observed to use, never its
+                // reservation (ADR-0200), and `settle_exact` refuses a charge below an
+                // observation. Below its reservation it must say how it knows: a usage report,
+                // or the unknown-usage marker of an Attempt that reported nothing (ADR-0143).
                 if matches!(result, TaskAttemptResultV1::Abandoned { .. })
                     && unknown_usage.is_none()
+                    && usage_id.is_none()
+                    && !attempt.usage_observed
                     && *charged_tokens < u128::from(attempt.reservation.tokens)
                 {
                     return Err(conflict(
-                        "Abandoned Task work with reported usage retains its full reserved charge",
+                        "Abandoned Task work below its reservation needs a usage report or the \
+                         unknown-usage marker",
                     ));
                 }
                 // Preserve the original terminal receipt for exact replay. The common
@@ -1181,6 +1301,22 @@ impl TaskProjection {
                     .ledger
                     .charge_exact(&AttemptId(attempt_id.clone()), charge)
                     .map_err(conflict)?;
+                // Abandoned work is no answer of its Attempt: it leaves the Attempt limits and
+                // counts against the node's recovery allowance instead (ADR-0200).
+                let abandoned =
+                    matches!(result, TaskAttemptResultV1::Abandoned { .. }).then(|| {
+                        if attempt.prepared_epoch == self.epoch {
+                            TaskAbandonCause::HostCancelled
+                        } else {
+                            TaskAbandonCause::WriterLost
+                        }
+                    });
+                if abandoned.is_some() {
+                    execution
+                        .budget
+                        .recover(&attempt.reservation.id)
+                        .map_err(conflict)?;
+                }
                 if !matches!(result, TaskAttemptResultV1::Succeeded { .. })
                     || attempt.prepared_epoch != self.epoch
                 {
@@ -1202,6 +1338,11 @@ impl TaskProjection {
                     .expect("known Attempt");
                 recorded.settlement = Some(record.clone());
                 recorded.settled_unix_ms = Some(time);
+                recorded.abandoned = abandoned;
+                recorded.abandoned_unix_ms = abandoned.map(|cause| match cause {
+                    TaskAbandonCause::HostCancelled => time,
+                    TaskAbandonCause::WriterLost => self.previous_writer.0,
+                });
             }
             TaskExecutionRecordV1::Published {
                 output_id,
@@ -1257,8 +1398,10 @@ impl TaskProjection {
 }
 
 impl EventStore {
-    /// Recover a previous writer's pending work before new dispatch. Started work is charged
-    /// conservatively; only a durable prepare with no start record may release its credit.
+    /// Recover a previous writer's pending work before new dispatch. Started work is settled
+    /// as abandoned by a lost writer and charged its observed usage, or zero with its usage
+    /// unknown (ADR-0143, ADR-0200); only a durable prepare with no start record may release
+    /// its credit.
     pub fn recover_task_attempts(
         &mut self,
         cas: &Cas,
@@ -1282,6 +1425,7 @@ impl EventStore {
             now_unix_ms: time,
             change: TaskChangeV1::Resumed {},
         })?;
+        let (last_seen, expiry) = state.previous_writer_unix_ms();
         let Some(execution) = state.execution else {
             return Ok(());
         };
@@ -1327,7 +1471,20 @@ impl EventStore {
                     .max()
                     .unwrap_or(0)
                     .max(ledger_charge);
-                let diagnostic_id = cas.put_json(&json!({"schema":"af.task-diagnostic/1", "reason":"previous Task writer disappeared", "attempt_id":id})).map_err(|e| StoreError::Artifact(e.to_string()))?;
+                // The lost writer's last record and its lease's expiry, against the time its
+                // successor observed the loss (ADR-0200).
+                let diagnostic_id = cas
+                    .put_json(&json!({
+                        "schema": "af.task-diagnostic/1",
+                        "reason": "previous Task writer disappeared",
+                        "cause": TaskAbandonCause::WriterLost.as_str(),
+                        "attempt_id": id,
+                        "lost_writer_epoch": attempt.prepared_epoch,
+                        "last_recorded_unix_ms": last_seen,
+                        "lease_expiry_unix_ms": expiry,
+                        "observed_unix_ms": time,
+                    }))
+                    .map_err(|e| StoreError::Artifact(e.to_string()))?;
                 let usage_id = walls
                     .iter()
                     .find(|wall| &wall.attempt_id == id)
@@ -1369,11 +1526,9 @@ impl EventStore {
                     .collect();
                 TaskExecutionRecordV1::Settled {
                     attempt_id: id.clone(),
-                    charged_tokens: if reported {
-                        observed.max(u128::from(attempt.reservation.tokens))
-                    } else {
-                        0
-                    },
+                    // What the Provider reported before the loss, never the reservation; the
+                    // reservation is released by the settlement (ADR-0200).
+                    charged_tokens: if reported { observed } else { 0 },
                     result: TaskAttemptResultV1::Abandoned { diagnostic_id },
                     raw_artifact_ids,
                     usage_id,

@@ -6,6 +6,7 @@ mod lease;
 mod owned;
 mod planning;
 mod recording;
+mod recovery;
 mod report;
 mod reservation;
 mod retry;
@@ -1263,8 +1264,10 @@ fn writer_recovery_settles_unreported_started_work_as_unknown_and_releases_unsta
         assert!(execution.pending_attempts().is_empty());
         assert_eq!(execution.budget.reserved_tokens(), 0);
         assert_eq!(execution.budget.committed_tokens(), 0);
-        // The Attempt still counts against the Attempt limits.
+        // The Attempt still counts as begun, but abandoned it counts against no Attempt limit
+        // (ADR-0200).
         assert_eq!(execution.budget.begun_attempts(), u64::from(started));
+        assert_eq!(execution.budget.chargeable_attempts(), 0);
         assert!(!execution.outputs.contains_key("root.nodes.write"));
         let accounting = execution.attempt_accounting();
         assert_eq!(accounting.len(), 1);

@@ -118,9 +118,14 @@ pub(crate) fn view(
         // A plan that waits for `af task run` to confirm it, a refreshed one included.
         _ if !state.admitted => TaskStatePhaseV1::Planned,
         // A run that ended on a node's own failure without finishing waits for a person (a
-        // signed decision, say); one that was interrupted or lost its writer was abandoned.
+        // signed decision, say); one that was interrupted or lost its writer was abandoned, and
+        // so was a node whose Attempt was (ADR-0200).
         _ if abandoned_cause(cas, state, cancelled) != TaskCauseV1::HostCancelled
-            && failures.iter().any(|f| f.cause.is_some()) =>
+            && failures.iter().any(|f| {
+                f.cause.is_some_and(|cause| {
+                    !matches!(cause, TaskCauseV1::WriterLost | TaskCauseV1::HostCancelled)
+                })
+            }) =>
         {
             TaskStatePhaseV1::Waiting
         }
@@ -146,12 +151,18 @@ pub(crate) fn view(
             };
             TaskStateV1::new(phase).with_next(next)
         }
+        // A node that used up its recovery allowance is never dispatched again: `af task run`
+        // refuses, so the next command starts the Task again from its file (ADR-0200).
         TaskStatePhaseV1::Abandoned => TaskStateV1::ended(
             phase,
             TaskOutcomeV1::Cancelled,
             Some(abandoned_cause(cas, state, cancelled)),
         )
-        .with_next(format!("af task run {id}")),
+        .with_next(if super::recovery::exhausted_any(state) {
+            format!("af task start --file {TASK_FILE}")
+        } else {
+            format!("af task run {id}")
+        }),
         TaskStatePhaseV1::Finished => {
             let result = result.ok_or("A finished Task has no recorded result")?;
             finished(
@@ -197,12 +208,21 @@ pub(crate) fn started(state: &TaskProjection) -> bool {
             .is_some_and(|execution| execution.budget.begun_attempts() > 0)
 }
 
-/// Why a Task that ran stopped before it finished: an `af task cancel` of its last lease, an
-/// interrupt, as its last Attempt's usage or diagnostic records it, or a writer that lost its
-/// lease (the default when nothing says more).
+/// Why a Task that ran stopped before it finished: an `af task cancel` of its last lease, a
+/// started Attempt nobody settled (its writer was lost), the cause its last Attempt was
+/// abandoned with (ADR-0200), an interrupt as its last Attempt's usage or diagnostic records it,
+/// or a writer that lost its lease (the default when nothing says more).
 fn abandoned_cause(cas: &Cas, state: &TaskProjection, cancelled: Option<u64>) -> TaskCauseV1 {
+    use review_store::store::task::execution::TaskAbandonCause;
     if cancelled == Some(state.lease_epoch()) {
         return TaskCauseV1::HostCancelled;
+    }
+    if state
+        .execution
+        .as_ref()
+        .is_some_and(|execution| !execution.orphaned_attempts().is_empty())
+    {
+        return TaskCauseV1::WriterLost;
     }
     let mut attempts = state
         .execution
@@ -213,6 +233,11 @@ fn abandoned_cause(cas: &Cas, state: &TaskProjection, cancelled: Option<u64>) ->
     let Some(last) = attempts.last() else {
         return TaskCauseV1::WriterLost;
     };
+    match last.abandoned {
+        Some(TaskAbandonCause::WriterLost) => return TaskCauseV1::WriterLost,
+        Some(TaskAbandonCause::HostCancelled) => return TaskCauseV1::HostCancelled,
+        None => {}
+    }
     let interrupted = last.unknown_usage == Some(TaskUnknownUsageCauseV1::Interrupted)
         || attempt_error(cas, last).and_then(|error| TaskCauseV1::of_diagnostic(&error))
             == Some(TaskCauseV1::HostCancelled);

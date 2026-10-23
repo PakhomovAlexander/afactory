@@ -56,6 +56,7 @@ mod planning;
 pub(super) mod pr_body;
 mod preview;
 mod provider_admission;
+pub(crate) mod recovery;
 pub(super) mod refresh;
 pub(crate) mod runs;
 mod selection;
@@ -2359,10 +2360,10 @@ fn start_captured(
         // The unstarted Task keeps its log: its next revision and plan replace the recorded
         // ones in one barrier, as a source refresh does.
         Some(_) => store
-            .take_task_lease(&cas, &revision.task_id, &writer, 15_000)
+            .take_task_lease(&cas, &revision.task_id, &writer, recovery::lease_ms())
             .map_err(|e| e.to_string())?,
         None => store
-            .open_task(&cas, &revision_id, &writer, 15_000)
+            .open_task(&cas, &revision_id, &writer, recovery::lease_ms())
             .map_err(|e| e.to_string())?,
     };
     let outcome = (|| {
@@ -2455,7 +2456,9 @@ fn release(
         .release_task_lease(cas, lease)
         .map_err(|e| e.to_string());
     match outcome {
-        Err(error) => Err(error),
+        // A writer that lost its lease cannot release it either: it says so, and how to
+        // continue (ADR-0200).
+        Err(error) => Err(recovery::writer_lost(lease.task_id(), &error).unwrap_or(error)),
         Ok(()) => {
             released?;
             Ok(())
@@ -2755,7 +2758,8 @@ fn execute(
 ) -> Result<(), String> {
     let cancellation = std::sync::atomic::AtomicBool::new(false);
     let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?
-        .with_cancellation(&cancellation);
+        .with_cancellation(&cancellation)
+        .with_lease_timing(recovery::timing());
     crate::interrupt::note_task(lease.task_id());
     let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
     // Interrupted work is neither assembled nor finished: the lease is released and the Task
@@ -3014,10 +3018,6 @@ pub(super) fn run(
     // The wall clock starts at the first admission (P5): a plan that has not run yet gets its
     // whole wall from now, and one that ran keeps its deadline.
     let deadline = projection.deadline_at(clock()?);
-    eprintln!(
-        "af task run: Task {id} {}",
-        state::deadline_line(deadline, clock()?)
-    );
     let verification = projection
         .revision
         .acceptance
@@ -3074,14 +3074,31 @@ pub(super) fn run(
     // by the lease's writer and `af task wait` knows a run is on its way (ADR-0202).
     let writer = format!("cli-{}", writer_pid());
     let run_record = runs::begin(&state, id, &writer)?;
-    let lease = store
-        .take_task_lease(&cas, id, &writer, 15_000)
-        .map_err(|e| e.to_string())?;
+    // A run that died holds its lease until it expires: wait it out rather than refuse
+    // (ADR-0200).
+    let lease = recovery::take_lease(&cas, &mut store, id, &writer)?;
     let outcome = (|| {
         confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
+        let before = store
+            .task_projection(&cas, id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Unknown Task")?;
         store
             .recover_task_attempts(&cas, &lease)
             .map_err(|e| e.to_string())?;
+        // The first line says which interrupted node runs again, or why the Task cannot
+        // continue.
+        let after = store
+            .task_projection(&cas, id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Unknown Task")?;
+        recovery::announce(id, &before, &after)?;
+        // After the resume's line: the first line says what the run does with an interrupted
+        // node (ADR-0200).
+        eprintln!(
+            "af task run: Task {id} {}",
+            state::deadline_line(deadline, clock()?)
+        );
         if retry_gate {
             let gates = store
                 .retry_task_gate(&cas, &lease, &trusted)
@@ -3788,6 +3805,11 @@ fn show_lines(
     )];
     if let Some(summary) = state::summary(view) {
         lines.push(format!("why: {}", preview::text(&summary)));
+    } else if view.state.phase == review_core::task::state::TaskStatePhaseV1::Abandoned
+        && let Some(abandoned) = recovery::abandoned(state, clock()?)
+    {
+        // The interrupted node of an abandoned Task, and when it stopped (ADR-0200).
+        lines.push(format!("why: {}", abandoned.why()));
     }
     if let Some(id) = &state.plan_id {
         lines.push(format!("Plan {id}"));

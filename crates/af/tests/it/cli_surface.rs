@@ -381,6 +381,31 @@ fn self_status_and_update_help_describe_the_release_check() {
     }
 }
 
+/// `af task run` says how an interrupted run resumes and what `--verbose` adds (ADR-0200), in
+/// `--help` and in `af help task run`.
+#[test]
+fn task_run_help_describes_the_resume_of_an_interrupted_run() {
+    for help in [af(&["task", "run", "--help"]), af(&["help", "task", "run"])] {
+        assert!(help.status.success(), "{}", err(&help));
+        let text = out(&help);
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "--verbose",
+            "Say on stderr how the run keeps the machine awake: the power assertion it holds on \
+             macOS, or why it holds none",
+            "resumes with `af task run TASK_ID`",
+            "It waits for a dead run's lease to expire (at most 60 s)",
+            "charged only the usage its Provider reported",
+            "without using one of the node's Attempts",
+            "unless its slot declares `recovery_attempts`",
+            "the first line says `cannot continue Task TASK_ID` with the count and the fix",
+            "af task run TASK_ID # needs: a Task whose run was interrupted (`interrupted by SIGINT`)",
+        ] {
+            assert!(flat.contains(needle), "`{needle}` missing:\n{text}");
+        }
+    }
+}
+
 /// `af task run --verbose` and `af task start --execute --verbose` print every line of the
 /// storage sweep; without it a Task command prints one summary line (finding C14).
 #[test]

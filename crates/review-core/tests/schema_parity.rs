@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 216] = [
+const SCHEMAS: [&str; 218] = [
     "task-findings-v1.json",
     "task-materialized-v1.json",
     "task-diff-v1.json",
@@ -123,6 +123,7 @@ const SCHEMAS: [&str; 216] = [
     "task-file-v1.json",
     "task-catalog-v2.json",
     "compiled-task-v1.json",
+    "compiled-task-v2.json",
     "task-list-entry-v3.json",
     "task-owned-child-set-v1.json",
     "task-token-usage-v3.json",
@@ -205,6 +206,7 @@ const SCHEMAS: [&str; 216] = [
     "task-phase-v1.json",
     "pipeline-definition-v1.json",
     "pipeline-definition-v2.json",
+    "pipeline-definition-v3.json",
     "execution-plan-v1.json",
     "plan-decision-v1.json",
     "review-history-v1.json",
@@ -4737,3 +4739,6 @@ fn a_reply_reask_and_a_draft_validation_are_closed_versioned_shapes() {
     passed.outcome = ReceiptOutcomeV1::Passed;
     assert!(passed.validate().is_err());
 }
+
+#[path = "schema_parity/recovery_allowance.rs"]
+mod recovery_allowance;

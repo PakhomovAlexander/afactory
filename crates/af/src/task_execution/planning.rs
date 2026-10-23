@@ -117,7 +117,7 @@ pub(super) fn start(
             &cas,
             &revision_id,
             &format!("cli-{}", std::process::id()),
-            15_000,
+            review_pipeline::task::lease::TASK_LEASE_MS,
         )
         .map_err(|e| e.to_string())?;
     let outcome = (|| {
@@ -171,14 +171,13 @@ pub(super) fn resume(
         compiler: &compiler,
         developer: developer.as_ref(),
     };
-    let lease = store
-        .take_task_lease(
-            &cas,
-            &state.task_id,
-            &format!("cli-{}", std::process::id()),
-            15_000,
-        )
-        .map_err(|e| e.to_string())?;
+    // A run that died holds its lease until it expires: wait it out (ADR-0200).
+    let lease = super::recovery::take_lease(
+        &cas,
+        &mut store,
+        &state.task_id,
+        &format!("cli-{}", std::process::id()),
+    )?;
     let outcome = (|| {
         confirm_current_plan(&cas, &store, &state.task_id, state.plan_id.as_deref())?;
         store

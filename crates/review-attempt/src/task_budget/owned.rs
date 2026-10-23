@@ -75,14 +75,8 @@ impl TaskBudget {
             return Err("Task children differ from their bounded owner namespace".into());
         }
         for child in children {
-            self.nodes.insert(
-                child.clone(),
-                NodeAccount {
-                    allowance: template.allowance.clone(),
-                    begun: 0,
-                    prepared: 0,
-                },
-            );
+            self.nodes
+                .insert(child.clone(), NodeAccount::new(template.allowance.clone()));
         }
         self.owned_children.insert(parent.into(), children.to_vec());
         Ok(())
@@ -163,14 +157,8 @@ impl TaskBudget {
             );
         }
         for (child, allowance) in children {
-            self.nodes.insert(
-                child.clone(),
-                NodeAccount {
-                    allowance: allowance.clone(),
-                    begun: 0,
-                    prepared: 0,
-                },
-            );
+            self.nodes
+                .insert(child.clone(), NodeAccount::new(allowance.clone()));
         }
         self.owned_children.insert(parent.into(), names);
         Ok(())

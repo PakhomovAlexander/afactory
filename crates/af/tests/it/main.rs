@@ -75,6 +75,7 @@ mod task_outcomes;
 mod task_planning;
 mod task_preview;
 mod task_public_schemas;
+mod task_recovery;
 mod task_refresh;
 mod task_remote_checks;
 mod task_repair;

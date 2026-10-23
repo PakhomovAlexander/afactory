@@ -117,8 +117,9 @@ pub(crate) fn long_running_implementer(repo: &Path, ready: &Path, resume: &Path)
     assert_eq!(original.matches(slot).count(), 1);
     let root = "max_attempts = 3\nmax_parallel = 2\n";
     assert_eq!(original.matches(root).count(), 1);
-    // The cancelled Attempt keeps its charge under the existing accounting, so the resumed
-    // run needs a second implementer Attempt within the slot, pipeline and Task limits.
+    // A second implementer Attempt within the slot, pipeline and Task limits. The resumed run
+    // does not need it: the cancelled Attempt is abandoned and counts against the node's
+    // recovery allowance instead (ADR-0200), which `task_recovery` proves with one Attempt.
     std::fs::write(
         &pipeline,
         original
@@ -286,9 +287,14 @@ fn sigint_stops_the_worker_group_records_a_cancelled_attempt_and_the_task_resume
         let attempts = execution.attempt_accounting();
         let started: Vec<_> = attempts.iter().filter(|a| a.started).collect();
         assert_eq!(started.len(), 1, "{attempts:#?}");
-        let Some(TaskAttemptResultV1::Failed { diagnostic_id, .. }) = &started[0].result else {
+        // Its host cancelled it: abandoned, not failed (ADR-0200).
+        let Some(TaskAttemptResultV1::Abandoned { diagnostic_id }) = &started[0].result else {
             panic!("the interrupted Attempt is settled, not succeeded: {attempts:#?}");
         };
+        assert_eq!(
+            started[0].abandoned,
+            Some(review_store::store::task::execution::TaskAbandonCause::HostCancelled)
+        );
         let diagnostic = cas.get_json(diagnostic_id).unwrap();
         assert!(diagnostic.to_string().contains("cancelled"), "{diagnostic}");
         assert!(
@@ -442,7 +448,7 @@ fn sigint_to_af_task_run_stops_its_worker_and_the_task_resumes() {
         let attempts = execution.attempt_accounting();
         let started: Vec<_> = attempts.iter().filter(|a| a.started).collect();
         assert_eq!(started.len(), 1, "{attempts:#?}");
-        let Some(TaskAttemptResultV1::Failed { diagnostic_id, .. }) = &started[0].result else {
+        let Some(TaskAttemptResultV1::Abandoned { diagnostic_id }) = &started[0].result else {
             panic!("the interrupted Attempt is settled, not succeeded: {attempts:#?}");
         };
         assert!(

@@ -1822,11 +1822,20 @@ candidate (ADR-0203): the candidate Snapshot of its last review round (--round N
 the new source, that round's reviewer findings and evaluator verdict are the implementer's \
 `findings` input, --goal FILE replaces the goal, and TASK's Task file is the rest. Without \
 --execute it prints the plan for --confirm-plan, as `af task plan` does; --from runs in the \
-foreground and cannot be combined with --detach.\n\nNever: writes to the original repository, commits, pushes, or delivers; see \
+foreground and cannot be combined with --detach.\n\nResuming: a run that stopped \
+before the Task finished (Ctrl-C, SIGTERM, a closed lid, a killed process, a lost writer lease) \
+resumes with `af task run TASK_ID`. It waits for a dead run's lease to expire (at most 60 s), \
+and its first line says what it does: the interrupted node's Attempt is settled as abandoned, \
+charged only the usage its Provider reported, and dispatched again without using one of the \
+node's Attempts, once per node unless its slot declares `recovery_attempts`. When a node has \
+used that allowance, the first line says `cannot continue Task TASK_ID` with the count and the \
+fix. On macOS the run holds a power assertion (caffeinate), so the machine does not \
+idle-sleep.\n\nNever: writes to the original repository, commits, pushes, or delivers; see \
 `af task deliver`.",
         after_long_help = "Examples:\n  \
 af task run TASK_ID --confirm-plan PLAN_ID   # needs: a planned Task and the plan ID it printed\n  \
 af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --retry-gate\n  \
+af task run TASK_ID   # needs: a Task whose run was interrupted (`interrupted by SIGINT`)\n  \
 af task run TASK_ID --execute --detach   # needs: a planned Task\n  \
 af task run TASK_ID --execute --quiet --json   # needs: a planned Task\n  \
 af task run NEW_ID --from TASK_ID   # needs: a finished reviewed Task TASK_ID\n  \
@@ -1884,7 +1893,8 @@ af task run NEW_ID --from TASK_ID --round 1 --goal goal.md --execute   # needs: 
         #[arg(long, conflicts_with = "confirm_plan")]
         retry_gate: bool,
         /// Print every line of the storage sweep that ends the run, not only its one summary
-        /// line (`storage: freed 1.2 GiB (2 warm keys)`)
+        /// line (`storage: freed 1.2 GiB (2 warm keys)`). Say on stderr how the run keeps the
+        /// machine awake: the power assertion it holds on macOS, or why it holds none
         #[arg(long)]
         verbose: bool,
         /// Run in the background: return once the run holds the Task, with its pid and log

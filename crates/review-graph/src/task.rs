@@ -231,8 +231,61 @@ pub struct CompiledTask {
 /// need: the clock starts at admission, and the first reservation, which must still find the
 /// whole reserve ahead of it, comes a moment after.
 pub const FIT_WALL_START_MS: u64 = 5_000;
+/// The label of a compiled graph whose slots declare no recovery allowance.
+pub const COMPILED_TASK_SCHEMA_V1: &str = "af.compiled-task/1";
+/// The label of a compiled graph with a slot that declares `recovery_attempts`, the shape an
+/// `af.pipeline/3` slot compiles to (ADR-0200).
+pub const COMPILED_TASK_SCHEMA_V2: &str = "af.compiled-task/2";
 
 impl CompiledTask {
+    /// The one label this graph's shape has: version 2 when a slot declares
+    /// `recovery_attempts`, version 1 otherwise.
+    pub fn expected_schema(&self) -> &'static str {
+        if self
+            .slots
+            .values()
+            .any(|slot| slot.recovery_attempts.is_some())
+        {
+            COMPILED_TASK_SCHEMA_V2
+        } else {
+            COMPILED_TASK_SCHEMA_V1
+        }
+    }
+
+    /// Refuse a graph labelled with another version than its shape has, so neither label is
+    /// read as the other (ADR-0145).
+    pub fn validate_schema(&self) -> Result<(), String> {
+        if self.schema != self.expected_schema() {
+            return Err(format!(
+                "Compiled Task graph is labelled {:?} but its shape is {}",
+                self.schema,
+                self.expected_schema()
+            ));
+        }
+        Ok(())
+    }
+
+    /// The recovery allowance of every paid node whose slot declares one (ADR-0200); every
+    /// other node has the default of one.
+    pub fn recovery_allowances(&self) -> BTreeMap<String, u32> {
+        self.allowances
+            .keys()
+            .filter_map(|name| {
+                let CompiledOperator::Primitive { operator, .. } = &self.nodes.get(name)?.operator
+                else {
+                    return None;
+                };
+                let slot = match operator {
+                    TaskOperatorV1::Worker { slot }
+                    | TaskOperatorV1::Verify { slot }
+                    | TaskOperatorV1::FixVerify { slot } => slot,
+                    _ => return None,
+                };
+                Some((name.clone(), self.slots.get(slot)?.recovery_attempts?))
+            })
+            .collect()
+    }
+
     /// Every compiled check node that lists remote checks, with the checks it lists, child
     /// pipelines included. Empty for a graph whose checks all run on this machine.
     pub fn remote_checks(&self) -> BTreeMap<String, BTreeSet<String>> {
@@ -547,7 +600,8 @@ impl CompiledTask {
                     .collect(),
             )?
             .with_owned_templates(templates)?
-            .with_token_scopes(self.token_scopes.clone())
+            .with_token_scopes(self.token_scopes.clone())?
+            .with_recovery_allowances(&self.recovery_allowances())
     }
 
     /// The reserve each verification slot protects: its verifier Attempts and what each may
@@ -1176,6 +1230,7 @@ fn compile_structure_mode(
     compiler.graph.outputs = outputs;
     compiler.graph.coverage = coverage;
     compiler.graph.order = compiler.graph.scheduler_plan()?.order;
+    compiler.graph.schema = compiler.graph.expected_schema().into();
     Ok((compiler.graph, compiler.resource_refusals))
 }
 
@@ -1545,6 +1600,7 @@ impl Compiler<'_> {
                     || parent.output_type != slot.output_type
                     || parent.min_attempts < slot.min_attempts
                     || parent.max_attempts > slot.max_attempts
+                    || parent.recovery_allowance() > slot.recovery_allowance()
                 {
                     return Err(format!(
                         "Child slot {local} has an incompatible parent binding"
@@ -2409,5 +2465,96 @@ mod downstream_tests {
         );
         assert!(graph.downstream_of("accept").is_empty());
         assert_eq!(graph.downstream_of("root").len(), 5);
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    /// One Worker node on slot `root.slots.implementer`, which declares `recovery`.
+    fn graph(recovery: Option<u32>) -> CompiledTask {
+        let slot = WorkerSlotV1 {
+            worker: "fixture/implementer".into(),
+            role: "implement".into(),
+            input_type: "af/ImplementationInput@1".into(),
+            output_type: "af/ImplementationReport@1".into(),
+            min_attempts: 1,
+            max_attempts: 1,
+            allow_local_replacement: true,
+            independent_from: BTreeSet::new(),
+            recovery_attempts: recovery,
+        };
+        let node = CompiledNode {
+            operator: CompiledOperator::Primitive {
+                operator: TaskOperatorV1::Worker {
+                    slot: "root.slots.implementer".into(),
+                },
+                signature: "worker/fixture/implementer".into(),
+            },
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+            },
+            inputs: BTreeMap::new(),
+            conditions: Vec::new(),
+        };
+        let mut graph = CompiledTask {
+            schema: String::new(),
+            nodes: BTreeMap::from([("root.nodes.implement".into(), node)]),
+            order: Vec::new(),
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            coverage: BTreeMap::new(),
+            calls: BTreeMap::new(),
+            slots: BTreeMap::from([("root.slots.implementer".into(), slot)]),
+            replaced_workers: BTreeMap::new(),
+            max_parallel: 1,
+            allowances: BTreeMap::from([(
+                "root.nodes.implement".into(),
+                NodeAllowance {
+                    tokens_per_attempt: 10,
+                    wall_ms_per_attempt: 1_000,
+                    max_attempts: 1,
+                    verification_attempts: 0,
+                },
+            )]),
+            owned_children: BTreeMap::new(),
+            experimental_slots: BTreeMap::new(),
+            review_integration: None,
+            token_scopes: BTreeMap::new(),
+        };
+        graph.schema = graph.expected_schema().into();
+        graph
+    }
+
+    /// A graph with a slot recovery allowance is `af.compiled-task/2`, every other graph
+    /// `af.compiled-task/1`, and a graph labelled otherwise than its shape is refused
+    /// (ADR-0200).
+    #[test]
+    fn a_slot_recovery_allowance_labels_the_graph_version_2_and_reaches_its_node() {
+        let plain = graph(None);
+        assert_eq!(plain.schema, COMPILED_TASK_SCHEMA_V1);
+        assert!(plain.recovery_allowances().is_empty());
+        plain.validate_schema().unwrap();
+        let declared = graph(Some(3));
+        assert_eq!(declared.schema, COMPILED_TASK_SCHEMA_V2);
+        assert_eq!(
+            declared.recovery_allowances(),
+            BTreeMap::from([("root.nodes.implement".into(), 3)])
+        );
+        declared.validate_schema().unwrap();
+        for (mut graph, label) in [
+            (plain, COMPILED_TASK_SCHEMA_V2),
+            (declared, COMPILED_TASK_SCHEMA_V1),
+        ] {
+            graph.schema = label.into();
+            assert!(
+                graph
+                    .validate_schema()
+                    .unwrap_err()
+                    .contains("but its shape is")
+            );
+        }
     }
 }

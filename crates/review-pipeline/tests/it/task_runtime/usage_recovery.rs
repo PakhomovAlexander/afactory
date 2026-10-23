@@ -178,7 +178,11 @@ fn recovery_case(fail_at: usize, incomplete: bool, wait_past_leases: impl FnOnce
         .propose_task_plan(&f.cas, &lease, &f.plan_id, &authority)
         .unwrap();
     f.store.admit_task_plan(&f.cas, &lease, &authority).unwrap();
-    let runtime = TaskRuntime::new(&mut f.store, &f.cas, lease.clone(), &authority, &host).unwrap();
+    // The heartbeat renews this 5 s lease on its own cadence, not the production minute's, so
+    // its real expiry stays inside the Task's deadline.
+    let runtime = TaskRuntime::new(&mut f.store, &f.cas, lease.clone(), &authority, &host)
+        .unwrap()
+        .with_lease_timing(review_pipeline::task::lease::LeaseTiming::for_lease(5000));
     assert!(runtime.execute().is_err());
     drop(runtime);
     assert_eq!(model.calls.load(Ordering::SeqCst), fail_at + 1);

@@ -541,6 +541,10 @@ impl TaskProjection {
                     plan.preparation.is_some(),
                 )
                 .map_err(conflict)?;
+            execution
+                .budget
+                .install_recovery_allowances(&graph.recovery_allowances())
+                .map_err(conflict)?;
             execution.graph = graph;
             execution.active_review_integration = None;
             execution.invocations.clear();

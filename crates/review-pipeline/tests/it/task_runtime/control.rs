@@ -231,10 +231,22 @@ fn unix_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// The cadence ADR-0128 measured these cases under: a 15 s lease renewed with 10 s left, a 4 s
+/// reserve and a 1 s tick. Production renews a 60 s lease on the same rule (ADR-0200).
+fn adr_0128(cancellation: &AtomicBool) -> review_pipeline::task::lease::HeartbeatControl<'_> {
+    let timing = review_pipeline::task::lease::LeaseTiming::for_lease(15_000);
+    assert_eq!(timing.renew_below_ms(), 10_000);
+    review_pipeline::task::lease::HeartbeatControl {
+        cancellation: Some(cancellation),
+        writer_lost: None,
+        timing,
+    }
+}
+
 // Issue #134: the heartbeat renewed only through the connection the work was holding, so a
-// Store operation longer than the lease's remaining time fenced a live writer. With the
-// production 15 s lease, 10 s threshold and 1 s tick, the work keeps the Store from the start
-// of its section until a second after that lease would have expired.
+// Store operation longer than the lease's remaining time fenced a live writer. With ADR-0128's
+// 15 s lease, 10 s threshold and 1 s tick, the work keeps the Store from the start of its
+// section until a second after that lease would have expired.
 #[test]
 fn a_live_writer_keeps_its_lease_while_its_work_holds_the_store_past_the_renewal_margin() {
     let mut f = Fixture::new(SUCCESS);
@@ -245,11 +257,11 @@ fn a_live_writer_keeps_its_lease_while_its_work_holds_the_store_past_the_renewal
     let original = f.store.task_lease_state(&lease).unwrap();
     let cancellation = AtomicBool::new(false);
     let shared = review_store::SharedEventStore::new(&mut f.store);
-    let result = review_pipeline::task::lease::with_heartbeat_controlled(
+    let result = review_pipeline::task::lease::with_heartbeat_supervised(
         &shared,
         &f.cas,
         &lease,
-        Some(&cancellation),
+        adr_0128(&cancellation),
         || {
             let held = shared.lock().unwrap();
             while unix_ms() < original + 1_000 {
@@ -390,11 +402,11 @@ fn a_live_writer_keeps_its_lease_while_the_store_holds_the_sqlite_write_lock_pas
     let original = f.store.task_lease_state(&lease).unwrap();
     let cancellation = AtomicBool::new(false);
     let shared = review_store::SharedEventStore::new(&mut f.store);
-    let result = review_pipeline::task::lease::with_heartbeat_controlled(
+    let result = review_pipeline::task::lease::with_heartbeat_supervised(
         &shared,
         &f.cas,
         &lease,
-        Some(&cancellation),
+        adr_0128(&cancellation),
         || {
             let held = shared.lock().unwrap();
             wait_until_unix_ms(original - 4_800);
@@ -590,8 +602,203 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
     assert_eq!(execution.budget.begun_attempts(), 1);
     assert_eq!(execution.budget.committed_tokens(), 7);
     assert!(!execution.outputs.contains_key("root.nodes.write"));
+    // Its host cancelled it: abandoned, with the spend it reported (ADR-0200).
+    let row = &execution.attempt_accounting()[0];
     assert!(matches!(
-        execution.attempt_accounting()[0].result,
-        Some(TaskAttemptResultV1::Failed { .. })
+        row.result,
+        Some(TaskAttemptResultV1::Abandoned { .. })
     ));
+    assert_eq!(
+        row.abandoned,
+        Some(review_store::store::task::execution::TaskAbandonCause::HostCancelled)
+    );
+}
+
+/// Item 1 of ADR-0200: the heartbeat renews on its own thread, by its own clock, however long
+/// the work blocks. Here the work blocks the main loop and every Store write, holding the shared
+/// connection for three lease lengths; the lease is renewed throughout and nothing is cancelled.
+#[test]
+fn a_writer_keeps_its_lease_while_its_work_blocks_for_three_lease_lengths() {
+    use review_pipeline::task::lease::{HeartbeatControl, LeaseTiming};
+    const LEASE_MS: u64 = 9_000;
+    let mut f = Fixture::new(SUCCESS);
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "writer", LEASE_MS)
+        .unwrap();
+    let original = f.store.task_lease_state(&lease).unwrap();
+    let cancellation = AtomicBool::new(false);
+    let writer_lost = AtomicBool::new(false);
+    let shared = review_store::SharedEventStore::new(&mut f.store);
+    let result = review_pipeline::task::lease::with_heartbeat_supervised(
+        &shared,
+        &f.cas,
+        &lease,
+        HeartbeatControl {
+            cancellation: Some(&cancellation),
+            writer_lost: Some(&writer_lost),
+            timing: LeaseTiming::for_lease(LEASE_MS),
+        },
+        || {
+            let held = shared.lock().unwrap();
+            std::thread::sleep(Duration::from_millis(3 * LEASE_MS));
+            drop(held);
+            let store = shared.lock().unwrap();
+            store.task_lease_state(&lease).map_err(|e| e.to_string())
+        },
+    );
+    let until = result.expect("a live writer keeps its lease however long its work blocks");
+    assert!(
+        until >= original + 2 * LEASE_MS,
+        "renewed again and again while the work blocked: {until} against {original}"
+    );
+    assert!(!cancellation.load(Ordering::Acquire));
+    assert!(!writer_lost.load(Ordering::Acquire));
+}
+
+/// Item 1 of ADR-0200: a writer whose renewal cannot complete stops its Worker at once, before
+/// one lease length has passed since its lease was last renewed, says it lost its writer, and
+/// settles nothing: the successor settles the Attempt as abandoned by a lost writer, with the
+/// lost writer's last record and its lease's expiry.
+#[test]
+fn a_writer_that_cannot_renew_stops_its_worker_within_one_lease_and_leaves_it_to_its_successor() {
+    use review_pipeline::task::lease::{LeaseTiming, WRITER_LOST};
+    const LEASE_MS: u64 = 9_000;
+    let markers = tempfile::tempdir().unwrap();
+    let ready = markers.path().join("ready");
+    let script = format!(
+        "import sys,subprocess,os\nsys.stdin.read()\nchild=subprocess.Popen(['sleep','60'])\nopen({:?},'w').write(str(os.getpid())+' '+str(child.pid))\nchild.wait()\n",
+        ready.to_str().unwrap()
+    );
+    // The Worker's own deadline lies far beyond the lease, so only the lost lease stops it.
+    let mut f = Fixture::with_wall(
+        &script,
+        false,
+        "Return the checked document using the declared output contract.",
+        30_000,
+    );
+    let path = f._directory.path().join("events.sqlite");
+    let host = CapturedTaskHost::capture_with_models(
+        &f.cas,
+        &f.compiler,
+        &f.task,
+        &f.plan,
+        f.graph.clone(),
+        &EmptyTaskEnvironment,
+        &DocumentDomain,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "writer", LEASE_MS)
+        .unwrap();
+    f.store
+        .propose_task_plan(&f.cas, &lease, &f.plan_id, &authority)
+        .unwrap();
+    f.store.admit_task_plan(&f.cas, &lease, &authority).unwrap();
+    let cancellation = AtomicBool::new(false);
+    let runtime = TaskRuntime::new(&mut f.store, &f.cas, lease.clone(), &authority, &host)
+        .unwrap()
+        .with_cancellation(&cancellation)
+        .with_lease_timing(LeaseTiming::for_lease(LEASE_MS));
+    let (error, pids, expiry, stopped_at) = std::thread::scope(|scope| {
+        let blocker = scope.spawn(|| {
+            let until = Instant::now() + LOAD_SAFE_WALL;
+            let pids: Vec<i32> = loop {
+                if let Ok(text) = std::fs::read_to_string(&ready) {
+                    let pids: Vec<i32> = text
+                        .split_whitespace()
+                        .filter_map(|n| n.parse().ok())
+                        .collect();
+                    if pids.len() == 2 {
+                        break pids;
+                    }
+                }
+                assert!(Instant::now() < until, "the Worker never became ready");
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            // Hold the database's write lock: no renewal can commit, on any connection.
+            let lock = sqlite_write_lock(&path);
+            let observer = review_store::EventStore::open_read_only(&path).unwrap();
+            let expiry = observer.task_lease_state(&lease).unwrap();
+            let alive = |pid: i32| {
+                nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
+                    && !std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
+                        s.rsplit_once(')')
+                            .is_some_and(|(_, s)| s.trim_start().starts_with('Z'))
+                    })
+            };
+            while pids.iter().any(|pid| alive(*pid)) {
+                assert!(Instant::now() < until, "the Worker was never stopped");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let stopped_at = unix_ms();
+            lock.execute_batch("ROLLBACK").unwrap();
+            (pids, expiry, stopped_at)
+        });
+        let error = runtime.execute().unwrap_err();
+        let (pids, expiry, stopped_at) = blocker.join().unwrap();
+        (error, pids, expiry, stopped_at)
+    });
+    assert!(error.starts_with(WRITER_LOST), "{error}");
+    assert!(runtime.writer_lost());
+    assert!(cancellation.load(Ordering::Acquire));
+    // Renewed at most once after the last expiry the observer read, the lease ran out no later
+    // than one lease length after it, and the Worker was stopped before that.
+    assert!(
+        stopped_at < expiry + LEASE_MS,
+        "stopped at {stopped_at}, lease expiry {expiry}"
+    );
+    assert_eq!(pids.len(), 2);
+    let state = runtime.projection().unwrap();
+    let execution = state.execution.as_ref().unwrap();
+    assert_eq!(
+        execution.pending_attempts().len(),
+        1,
+        "the lost writer settled nothing"
+    );
+    drop(runtime);
+
+    // Its successor takes the expired lease and settles the Attempt as abandoned.
+    let last = f.store.task_lease_state(&lease).err();
+    let mut successor = None;
+    let until = Instant::now() + LOAD_SAFE_WALL;
+    while successor.is_none() {
+        successor = f
+            .store
+            .take_task_lease(&f.cas, &f.task.task_id, "successor", 60_000)
+            .ok();
+        assert!(Instant::now() < until, "the lease never expired: {last:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let successor = successor.unwrap();
+    f.store.recover_task_attempts(&f.cas, &successor).unwrap();
+    let state = f
+        .store
+        .task_projection(&f.cas, &f.task.task_id)
+        .unwrap()
+        .unwrap();
+    let execution = state.execution.unwrap();
+    let row = execution
+        .attempt_accounting()
+        .into_iter()
+        .find(|row| row.started)
+        .unwrap();
+    assert_eq!(
+        row.abandoned,
+        Some(review_store::store::task::execution::TaskAbandonCause::WriterLost)
+    );
+    let Some(TaskAttemptResultV1::Abandoned { diagnostic_id }) = &row.result else {
+        panic!("{row:#?}");
+    };
+    let diagnostic = f.cas.get_json(diagnostic_id).unwrap();
+    assert_eq!(diagnostic["cause"], "writer_lost");
+    assert!(diagnostic["lease_expiry_unix_ms"].as_u64().unwrap() >= expiry);
+    assert!(
+        diagnostic["observed_unix_ms"].as_u64().unwrap()
+            >= diagnostic["lease_expiry_unix_ms"].as_u64().unwrap()
+    );
+    assert!(execution.budget.recovery(&row.reservation.node).is_some());
 }

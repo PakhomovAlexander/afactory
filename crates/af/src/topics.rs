@@ -407,10 +407,11 @@ Every state that ended names the one command to run next, the last line of `af t
 `af task run` (`next: af task run ID --retry-gate`), `none` when there is none: `af task findings
 ID` after reviewer findings, `af task run ID --retry-gate` after a failed gate the kernel can run
 again on the same candidate, `af task show ID --checks` after one it cannot, `af task run ID` to
-resume, `af task plan --file TASK_FILE --fit` after a budget or deadline ran out (TASK_FILE with a
-new `task_id` once the Task ran), `af provider status` or `af provider setup ID --login` after a
-Provider failure. `af task show ID --checks` prints the gate's last check receipt: each check's
-failing and flaky tests and the end of its stderr.
+resume (`af task start --file TASK_FILE` once an interrupted node used up its recovery
+allowance), `af task plan --file TASK_FILE --fit` after a budget or deadline ran out (TASK_FILE
+with a new `task_id` once the Task ran), `af provider status` or `af provider setup ID --login`
+after a Provider failure. `af task show ID --checks` prints the gate's last check receipt: each
+check's failing and flaky tests and the end of its stderr.
 
 `af task status ID` prints the state in one line without waiting, with the node that runs and the
 tokens so far; `af task wait ID` blocks until the Task settles and exits with its outcome's code.

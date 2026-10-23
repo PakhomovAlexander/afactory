@@ -266,7 +266,8 @@ Every state that ended names the one command to run next: the last line of `af t
 `state.next_action` under `--json`. It is `af task findings ID` after reviewer findings,
 `af task run ID --retry-gate` after a failed gate that the kernel can run again on the same
 candidate ([Retry a failed gate](#retry-a-failed-gate)), whatever its cause, `af task show ID
---checks` after one it cannot, `af task run ID` to resume a cancelled run, `af task plan --file
+--checks` after one it cannot, `af task run ID` to resume a cancelled run (`af task start --file
+TASK_FILE` once its interrupted node used up its recovery allowance), `af task plan --file
 TASK_FILE --fit` after a budget or deadline ran out (with a new `task_id` once the Task ran), and
 `af provider status` or `af provider setup ID --login` after a Provider failure. `af task show` prints, per
 failed node, its cause, the first line of its error and the artifact IDs of its whole diagnostic
@@ -303,7 +304,9 @@ machine slept — is charged 0 and its usage is recorded as unknown, with its ca
 or `unreported`); it is never charged its reservation or an estimate
 ([ADR-0143](adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)). It
 adds nothing to the Task's, a node's or the verification reserve's charged tokens, so only the
-Attempt limits bound repeated failures of this kind. `task list` prints such a Task's tokens as
+Attempt limits bound repeated failures of this kind. An Attempt that was abandoned, its writer
+lost or its run interrupted, is charged what was reported too, never its reservation, and is
+bounded by its node's recovery allowance instead ([below](#resume-an-interrupted-task)). `task list` prints such a Task's tokens as
 `1200 (+1 unknown)` rather than as spend, `task show` adds the line
 `tokens 1200 (+1 unknown: capacity)` naming the causes, and their `--json` documents carry
 `unknown_usage_attempts`. A Claude Attempt whose bound model's safety classifier refused it
@@ -318,6 +321,36 @@ Task ID is also the delivery confirmation. An unverified Task is evidence, not a
 read `task show`, fix the catalog, check, Worker or goal problem, then start a corrected Task
 under a new Task ID, or continue it from its reviewed candidate with `af task run NEW --from ID`
 ([Continue a reviewed Task](#continue-a-reviewed-task)).
+
+## Resume an interrupted Task
+
+A run that stopped before its Task finished resumes with the same command, `af task run
+TASK_ID`: after Ctrl-C or SIGTERM, after a closed lid or a reboot, after `af` was killed, or after
+it lost its writer lease (the lease the one `af` process recording on a Task holds). The
+interrupted Attempt is settled as *abandoned*: it is charged only the usage its Provider reported
+before it stopped, never its reservation, which goes back to the Task's remaining tokens, and it
+uses none of its node's Attempts. The node runs again, once by default; a slot that declares
+`recovery_attempts` in an `af.pipeline/3` pipeline allows more. The run's first line says what
+it does:
+
+```text
+resuming Task pagination-cli: node root.nodes.implement was interrupted at 17:41:03Z (its writer was lost); settling the lost Attempt and dispatching a new one (1 recovery of 1)
+```
+
+or why it cannot continue, with exit code 1:
+
+```text
+af task: cannot continue Task pagination-cli: node root.nodes.implement lost its writer 2 times (recovery allowance 1); fix: start it again with `af task start --file TASK_FILE` (the Task file it was started from), or allow more with `[slots.implementer] recovery_attempts` in its pipeline (af.pipeline/3)
+```
+
+A killed run holds its 60 s lease until it expires; `af task run` waits that out and says so.
+Until a run resumes it, the Task's state is `abandoned/cancelled/writer_lost` (or
+`host_cancelled`) in `af task show` and `af task list`, `af task show` adds `why: node N stopped
+at T`, and the next command is `af task run TASK_ID`, or `af task start --file TASK_FILE` once a
+node used up its recovery allowance; under `--json` that is the `state` object. On macOS `af task run` keeps the Mac
+from idle-sleeping while it runs (`caffeinate`), and `af task run --verbose` says so. The whole
+contract is in [interrupted runs](task-execution/interrupted-runs.md)
+([ADR-0200](adr/0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
 
 ## Retry a failed gate
 

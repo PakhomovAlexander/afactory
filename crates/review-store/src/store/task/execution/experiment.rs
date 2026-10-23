@@ -989,6 +989,7 @@ mod derived_package_tests {
                         max_attempts: 1,
                         allow_local_replacement: false,
                         independent_from: BTreeSet::new(),
+                        recovery_attempts: None,
                     },
                 )]),
                 replaced_workers: BTreeMap::new(),

@@ -18,9 +18,12 @@ impl BoundedCli {
     fn spawn(directory: &Path, label: &str, repo: &Path, home: &Path, args: &[&str]) -> Self {
         let stdout = directory.join(format!("{label}.stdout"));
         let stderr = directory.join(format!("{label}.stderr"));
+        // The fifteen-second lease this fixture waits out; production leases are 60 s
+        // (ADR-0200) and the debug-only setting keeps the wait short.
         let child = crate::common::af()
             .current_dir(repo)
             .env("HOME", home)
+            .env("AF_TEST_TASK_LEASE_MS", "15000")
             .args(["review"])
             .args(args)
             .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
@@ -198,16 +201,13 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
         })
         .max()
         .or((interrupted.charged_tokens > 0).then_some(interrupted.charged_tokens));
-    // Reported usage keeps the reservation floor; an Attempt killed before any report settles
-    // at zero with its usage unknown (ADR-0143).
-    let expected_recovery_charge = reported.map_or(0, |observed| {
-        observed
-            .max(interrupted.charged_tokens)
-            .max(u128::from(interrupted.reservation.tokens))
-    });
+    // Reported usage is charged as reported, never the reservation (ADR-0200); an Attempt
+    // killed before any report settles at zero with its usage unknown (ADR-0143).
+    let expected_recovery_charge =
+        reported.map_or(0, |observed| observed.max(interrupted.charged_tokens));
     let lease_until = original.lease_until_unix_ms();
     assert!(now_ms() < lease_until);
-    // Prove the real writer used the unchanged fifteen-second lease, including any heartbeat.
+    // Prove the real writer used the fixture's fifteen-second lease, including any heartbeat.
     let lease_record = before_task
         .iter()
         .rev()

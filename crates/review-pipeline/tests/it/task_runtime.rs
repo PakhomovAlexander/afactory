@@ -898,6 +898,10 @@ impl Fixture {
         )
     }
     fn with_model_instructions(script: &str, model: bool, instructions: &str) -> Self {
+        Self::with_wall(script, model, instructions, 5000)
+    }
+    /// A fixture whose Worker Attempt may run for `wall_ms`.
+    fn with_wall(script: &str, model: bool, instructions: &str, wall_ms: u64) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -935,7 +939,7 @@ impl Fixture {
             .unwrap()
             .as_millis() as u64
             + 60_000;
-        task.limits.verification.wall_ms = 5000;
+        task.limits.verification.wall_ms = wall_ms.max(5000);
         if model {
             task.limits.tokens = 5000;
             task.limits.verification.tokens = 1000;
@@ -976,7 +980,7 @@ impl Fixture {
             outcome_port: Some("output".into()),
             attempt: Some(OperatorAttemptCost {
                 tokens: if model { 1000 } else { 0 },
-                wall_ms: 5000,
+                wall_ms,
             }),
         };
         let worker = TaskWorkerManifest {

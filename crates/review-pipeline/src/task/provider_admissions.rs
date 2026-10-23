@@ -58,11 +58,11 @@ impl TaskRuntime<'_, '_> {
             }
             nodes.push(&planned.nodes[id]);
         }
-        lease::with_heartbeat_controlled(
+        lease::with_heartbeat_supervised(
             &self.store,
             self.cas,
             &self.lease,
-            self.cancellation,
+            self.heartbeat_control(),
             || {
                 let mut outcomes = Vec::new();
                 // These independent, bounded probes deliberately occupy at most one slot. Their

@@ -644,8 +644,26 @@ _Avoid_: "apply to the repository" — Integration never writes a source checkou
 
 **Attempt**:
 One execution of one node. An abandoned Attempt is *fenced*, and anything arriving under a
-revoked epoch is quarantined — recorded, charged, and unable to reach the FindingSet.
+revoked epoch is quarantined — recorded, charged, and unable to reach the FindingSet. An Attempt
+is *abandoned* when its Writer was lost or its host cancelled it (SIGINT, SIGTERM): it is charged
+the usage its Provider reported, never its reservation, and counts against its node's Recovery
+Allowance instead of its Attempt limits
+([ADR-0200](docs/adr/0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
 _Avoid_: treating a fenced Attempt as a free retry; it spent tokens and the budget knows.
+
+**Writer**:
+The one `af` process that holds a Task's lease and may record on it, renewing the lease from its
+own heartbeat thread. A successor takes the lease only after it expired or was released, so two
+Writers never coexist; a lost Writer records nothing more, and its successor settles its
+unfinished Attempt as abandoned.
+_Avoid_: "owner" or "session" — a Writer is one lease epoch, not a person or a terminal.
+
+**Recovery Allowance**:
+How many abandoned Attempts one node may have and still be dispatched again: one, unless its
+slot declares `recovery_attempts` (`af.pipeline/3`). Past it the Task cannot continue, and
+`af task run` says so on its first line.
+_Avoid_: counting it as an Attempt limit; Attempt limits count only Attempts that answered or
+failed.
 
 **Budget Scope**:
 The accounting boundary charged by one Attempt — each named token scope it belongs to (one

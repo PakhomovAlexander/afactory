@@ -677,7 +677,15 @@
       }
     },
     "graph": {
-      "$ref": "urn:af:schema:compiled-task:1"
+      "$comment": "af.compiled-task/2 is the graph of an af.pipeline/3 pipeline, whose slots declare recovery_attempts (ADR-0200); every other graph is af.compiled-task/1.",
+      "oneOf": [
+        {
+          "$ref": "urn:af:schema:compiled-task:1"
+        },
+        {
+          "$ref": "urn:af:schema:compiled-task:2"
+        }
+      ]
     },
     "plan": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/executionPlan"
