@@ -1265,7 +1265,7 @@ Exit codes: 0 registered, 4 Provider CLI missing, cannot start or incompatible, 
 conflict, 6 not authenticated.",
         after_long_help = "Examples:\n  af provider add codex-main --kind codex   # needs: a codex login in ~/.codex\n  \
 af provider add claude-work --kind claude --auth-dir /secure/claude-work   # needs: that directory\n  \
-af provider add claude-ci --kind claude --auth-dir /secure/claude-ci --unverified   # needs: that directory"
+af provider add claude-ci --kind claude --auth-dir /secure/ci --unverified   # needs: that directory"
     )]
     Add {
         /// Stable ID used by --provider NODE=ID
