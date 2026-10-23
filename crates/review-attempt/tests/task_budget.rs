@@ -775,3 +775,41 @@ fn infeasible_verifier_reserve_explains_each_resource_and_protected_node() {
         assert!(!error.contains("implement"), "unprotected Worker: {error}");
     }
 }
+
+/// A gate retry (ADR-0196) gives its check node one Attempt more than its compiled allowance;
+/// the Task's own Attempt and token limits still bound it, and an unknown node is refused.
+#[test]
+fn a_retried_gate_gets_one_more_attempt_and_the_task_limits_still_bind_it() {
+    let mut retried = budget(4, 200, 1000);
+    spend(&mut retried, "implement", 1, 5);
+    spend(&mut retried, "review.verify", 2, 5);
+    assert!(
+        retried
+            .prepare("review.verify", 3)
+            .unwrap_err()
+            .contains("exhausted its Attempt limit")
+    );
+    retried.allow_retry("review.verify").unwrap();
+    spend(&mut retried, "review.verify", 3, 5);
+    assert_eq!(retried.begun_attempts(), 3);
+    assert!(
+        retried
+            .prepare("review.verify", 4)
+            .unwrap_err()
+            .contains("exhausted its Attempt limit"),
+        "one retry is one Attempt"
+    );
+    assert!(
+        retried
+            .allow_retry("absent")
+            .unwrap_err()
+            .contains("absent")
+    );
+
+    // Without room in the Task's own Attempt limit the retried node still cannot start.
+    let mut tight = budget(2, 200, 1000);
+    spend(&mut tight, "implement", 1, 5);
+    spend(&mut tight, "review.verify", 2, 5);
+    tight.allow_retry("review.verify").unwrap();
+    assert!(tight.prepare("review.verify", 3).is_err());
+}

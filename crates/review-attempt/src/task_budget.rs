@@ -388,6 +388,23 @@ impl TaskBudget {
         })
     }
 
+    /// One more Attempt for `node` than its compiled allowance, for a gate retry
+    /// (`TaskGateRetried@1`): its earlier Attempts stay counted and charged, and the Task's own
+    /// Attempt, token and wall limits and its verification reserve bound the new one as they
+    /// bound every Attempt, so a Task without room for it refuses it at [`Self::prepare`].
+    pub fn allow_retry(&mut self, node: &str) -> Result<(), String> {
+        let account = self
+            .nodes
+            .get_mut(node)
+            .ok_or_else(|| format!("Unknown Task node {node}"))?;
+        account.allowance.max_attempts = account
+            .allowance
+            .max_attempts
+            .checked_add(1)
+            .ok_or("Task Attempt count overflow")?;
+        Ok(())
+    }
+
     pub fn prepare(&mut self, node: &str, now_unix_ms: u64) -> Result<TaskReservation, String> {
         if self.breached || now_unix_ms < self.last_time {
             return Err("Task budget breached or policy clock moved backwards".into());

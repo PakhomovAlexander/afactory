@@ -345,6 +345,13 @@ impl ProviderTaskDomain<'_> {
     }
 }
 impl TaskDomain for ProviderTaskDomain<'_> {
+    fn admit_checks(
+        &self,
+        cas: &Cas,
+        task: &review_core::task::TaskRevisionV1,
+    ) -> Result<(), String> {
+        self.inner.admit_checks(cas, task)
+    }
     fn validate_experiment_preparation(
         &self,
         cas: &Cas,

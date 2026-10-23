@@ -596,7 +596,9 @@ impl EventStore {
         if events.iter().any(|e| {
             matches!(
                 e.event_type,
-                EventType::TaskTransitionV5 | EventType::TaskExecutionStartedV1
+                EventType::TaskTransitionV5
+                    | EventType::TaskExecutionStartedV1
+                    | EventType::TaskGateRetriedV1
             )
         }) && task_permit.is_none()
         {

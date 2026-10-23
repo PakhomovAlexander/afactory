@@ -33,6 +33,7 @@
       "enum": [
         "TaskTransition@5",
         "TaskExecutionStarted@1",
+        "TaskGateRetried@1",
         "TaskReviewResultSelected@1",
         "CheckCompleted@1",
         "CampaignOpened@1",
@@ -170,6 +171,25 @@
         "properties": {
           "payload": {
             "$ref": "urn:af:schema:task-execution-started:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskGateRetried@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:task-gate-retried:1"
           }
         }
       }

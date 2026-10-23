@@ -832,9 +832,10 @@
           "charged_tokens": "0",
           "kind": "usage_observed",
           "raw_artifact_ids": [
-            "<run:45>"
+            "<run:45>",
+            "<run:46>"
           ],
-          "usage_id": "<run:46>"
+          "usage_id": "<run:47>"
         }
       },
       {
@@ -845,13 +846,14 @@
           "charged_tokens": "0",
           "kind": "settled",
           "raw_artifact_ids": [
-            "<run:45>"
+            "<run:45>",
+            "<run:46>"
           ],
           "result": {
             "kind": "succeeded",
-            "output_id": "<run:47>"
+            "output_id": "<run:48>"
           },
-          "usage_id": "<run:46>"
+          "usage_id": "<run:47>"
         }
       },
       {
@@ -860,14 +862,14 @@
         "record": {
           "attempt_id": "4e27a434f2f8f3d579808052b1",
           "kind": "published",
-          "output_id": "<run:47>"
+          "output_id": "<run:48>"
         }
       },
       {
         "artifact_id": "<run:26>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
-          "invocation_id": "<run:48>",
+          "invocation_id": "<run:49>",
           "kind": "invocation"
         }
       },
@@ -878,7 +880,7 @@
           "attempt_id": "6793b5444595249e7390a03c27",
           "deadline_unix_ms": "<ms>",
           "feedback_ids": [],
-          "invocation_id": "<run:48>",
+          "invocation_id": "<run:49>",
           "kind": "reserved",
           "reservation_id": "reservation:3",
           "reserved_tokens": 0
@@ -889,7 +891,7 @@
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
           "attempt_id": "6793b5444595249e7390a03c27",
-          "context_id": "<run:49>",
+          "context_id": "<run:50>",
           "kind": "context_bound"
         }
       },
@@ -911,7 +913,7 @@
           "raw_artifact_ids": [
             "sha256:f23927897af4d475223fe9a8631bfc26c6552028eae36e32c4e6e54c8367730a"
           ],
-          "usage_id": "<run:50>"
+          "usage_id": "<run:51>"
         }
       },
       {
@@ -926,9 +928,9 @@
           ],
           "result": {
             "kind": "succeeded",
-            "output_id": "<run:51>"
+            "output_id": "<run:52>"
           },
-          "usage_id": "<run:50>"
+          "usage_id": "<run:51>"
         }
       },
       {
@@ -937,14 +939,14 @@
         "record": {
           "attempt_id": "6793b5444595249e7390a03c27",
           "kind": "published",
-          "output_id": "<run:51>"
+          "output_id": "<run:52>"
         }
       },
       {
         "artifact_id": "<run:32>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
-          "invocation_id": "<run:52>",
+          "invocation_id": "<run:53>",
           "kind": "invocation"
         }
       },
@@ -953,7 +955,7 @@
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
           "kind": "published",
-          "output_id": "<run:53>"
+          "output_id": "<run:54>"
         }
       }
     ],
@@ -973,7 +975,7 @@
     ],
     "runtime_observations": [
       {
-        "artifact_id": "<run:45>",
+        "artifact_id": "<run:46>",
         "artifact_type": "af/TaskRuntimeEvidence@1",
         "record": {
           "task_id": "cold-only",
@@ -982,7 +984,7 @@
           "context_id": "<run:44>",
           "spans": [
             {
-              "span_id": "<run:54>",
+              "span_id": "<run:55>",
               "kind": "check",
               "label": "pagination",
               "started_unix_ms": "<ms>",
@@ -1025,21 +1027,21 @@
               "node": "root.nodes.check",
               "outcome": {
                 "kind": "completed",
-                "output_id": "<run:47>"
+                "output_id": "<run:48>"
               }
             },
             {
               "node": "root.nodes.evaluate",
               "outcome": {
                 "kind": "completed",
-                "output_id": "<run:51>"
+                "output_id": "<run:52>"
               }
             },
             {
               "node": "root.nodes.accept",
               "outcome": {
                 "kind": "completed",
-                "output_id": "<run:53>"
+                "output_id": "<run:54>"
               }
             }
           ]
@@ -1055,7 +1057,7 @@
       "outputs": {
         "snapshot": {
           "artifact_ids": [
-            "<run:55>"
+            "<run:56>"
           ],
           "artifact_type": "af/SourceTree@1",
           "cardinality": "one",
@@ -1063,7 +1065,7 @@
         },
         "verification": {
           "artifact_ids": [
-            "<run:56>"
+            "<run:57>"
           ],
           "artifact_type": "af/VerificationResult@1",
           "cardinality": "one",
@@ -1071,23 +1073,23 @@
         }
       },
       "evidence": [
-        "<run:56>"
+        "<run:57>"
       ],
       "missing_obligations": []
     }
   },
   "delivery": {
     "schema": "af/task-delivery@1",
-    "delivery_id": "<run:57>",
+    "delivery_id": "<run:58>",
     "task_id": "cold-only",
     "result_id": "<run:6>",
     "source_snapshot_id": "sha256:12d88076fdfa220a5ad645afbccf32414153aeede7d31df69280dd963bdc361d",
     "derived_snapshot_id": "sha256:0343e3ba8f6a9f3eeb7a77a86c46b9ea7a44071562332b739f06a5a069429be3",
     "target": {
-      "repository": "<run:58>",
+      "repository": "<run:59>",
       "repository_id": "b85758986f7c6ec49167d1a4a90134639eb78cae",
       "branch": "af/cold-only",
-      "worktree": "<run:59>"
+      "worktree": "<run:60>"
     },
     "outcome": {
       "kind": "delivered"

@@ -147,6 +147,33 @@ Task ID is also the delivery confirmation. An unverified Task is evidence, not a
 read `task show`, fix the catalog, check, Worker or goal problem, then start a corrected Task
 under a new Task ID.
 
+## Retry a failed gate
+
+A Task whose last round ended at a failed gate, its check not passing and no reviewer or
+evaluator run after it, ends its `task run` and `task show` output with the command that runs
+that gate again
+([ADR-0196](adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+
+```text
+check kernel: stopped at tests step test (exit 100); rerun it with: python3 scripts/nextest-gate.py --locked --profile ci --test-threads 7
+check kernel failed twice: af::it task_heavy::heavy_review_cannot_erase_stale_claims
+check kernel host: load 61.20 at start, 48.03 at end, 14 CPUs, 7 test threads
+next: af task run pagination-cli --retry-gate
+```
+
+When the failure was the host's rather than the candidate's (a loaded machine, a stale pin you
+have since fixed outside the Snapshot), `af task run TASK_ID --retry-gate` runs the failed check
+again on the same sealed candidate, in a new check Attempt of the same round, under the plan you
+confirmed: nothing is re-planned or re-admitted, no Provider is probed and no new Task is made.
+When the check passes, the Task continues into its review or evaluation as if it had passed the
+first time; when it fails again, it ends at the gate again. `task show` adds `gate retried: NODE
+ran again on the same candidate`, and the Task's accounting keeps the failed check Attempt beside
+the new one. The retry gives the check node one Attempt more than its plan did, so the Task's own
+Attempt, token and wall limits, and its Pipeline's, must still hold it. It is refused, with the
+reason and nothing recorded, for a Task that was verified, delivered, has not finished, or whose
+last failure was not the gate's (its checks passed, or a reviewer or evaluator ran after them),
+and when the plan's approval or deadline has passed or the limits leave no room.
+
 ## Deliver the verified Snapshot
 
 Choose an absent branch and an absent sibling path. The source checkout must still be clean at
@@ -233,6 +260,16 @@ Under `[warm]` a check and its toolchain probe also receive the kernel's rustup 
 lacks is `cold toolchain_unresolved`, never a download into the check's throwaway `HOME`. The
 kernel only passes that path on. It never writes, bounds or removes the rustup home.
 
+That toolchain is resolved once more before the Task's plan is admitted, so before any
+implementer Attempt
+([ADR-0196](adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+when the source Snapshot's `rust-toolchain.toml` pins a toolchain the kernel's rustup home does
+not hold, `af task start --execute` and `af task run` refuse the Task with the code policy file,
+the `[warm] build_cache` field, the pinned toolchain and the probe's answer, and nothing runs or
+is charged. Install it (`rustup toolchain install 1.88.0`) and run the Task again with `af task
+run TASK_ID --confirm-plan PLAN_ID`. A `[rust_toolchain]` request with a machine mapping is
+checked against the mapping the same way. A Snapshot that pins nothing names nothing to refuse.
+
 A declared `caches` kind gives the check an offline `CARGO_HOME` from the machine's cache
 policy, as a Gate's `[gate] caches` do. That directory is materialized beside the check, never
 into the source. It takes precedence over `cargo_home`: the two are never bound at once, and
@@ -284,6 +321,29 @@ check belongs in a `[warm]` directory or a Gate's `build_caches`. Review gate ch
 kernel's `RUSTUP_HOME` and `RUSTUP_AUTO_INSTALL=0`, as Task checks under `[warm]` do, so their
 private `HOME` never downloads a toolchain; Cargo's registry comes from a Cache Snapshot or the
 check's own `CARGO_HOME`.
+
+## What a check reports
+
+A Task code check also gets `AF_CHECK_REPORT`, a file in its runtime directory where it may
+account for itself
+([ADR-0196](adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+one JSON object per line, each `"schema": "af.check-report/1"`. A `"record": "step"` line names
+one step of the gate, its `stage` (`preflight`, `lint`, `build`, `tests` or `release`), its
+`exit_code`, its `command` and, when the gate names one, the `fix` that repairs what it refuses;
+one `"record": "tests"` line names the test threads, the tests that failed, and those that failed
+in the parallel run and passed alone (`flaky`, with `"parallel": "failed", "isolated":
+"passed"`). This repository's `scripts/ci-step.py` and `scripts/nextest-gate.py` write them.
+
+After the check, af records an `af/TaskCheckReport@1`
+([schema](../schemas/task-check-report-v1.json)) beside its `af/TaskCheckReceipt@1`: for each
+local check that started, the 1-minute load average when it started and ended and the CPUs
+available to af, which af measures itself, and what the check wrote, `admitted`, `absent` when it
+wrote nothing, or `refused` with the reason when its lines are not this contract. A check's own
+account never changes its result; its exit code does. `af task show` prints, per check, where it
+stopped (`check kernel: stopped at preflight step performance-kernel-harness (exit 1); fix:
+python3 -I scripts/performance/cli.py harness-digest --write`), its flaky tests and the tests
+that failed twice, each on its own line, and the host's load beside a check that did not pass or
+had flaky tests.
 
 ## The Storage Budget
 

@@ -241,6 +241,38 @@ fn task_report_help_and_man_page_describe_the_command() {
     assert!(page.contains("Never"), "{page}");
 }
 
+/// `af task run --retry-gate` (ADR-0196) says what it runs again, on what, and when it refuses,
+/// in `--help` and in `af help task run`, and conflicts with `--confirm-plan`.
+#[test]
+fn task_run_help_describes_the_retry_of_a_failed_gate() {
+    for help in [af(&["task", "run", "--help"]), af(&["help", "task", "run"])] {
+        assert!(help.status.success(), "{}", err(&help));
+        let text = out(&help);
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "--retry-gate",
+            "Run the failed gate of a finished Task again on the same sealed candidate",
+            "a new check Attempt in the same round under the recorded plan",
+            "nothing re-planned or re-admitted",
+            "the Task continues into review when the check passes",
+            "Refused when the Task's last failure was not a gate",
+            "af task run TASK_ID --retry-gate",
+        ] {
+            assert!(flat.contains(needle), "`{needle}` missing:\n{text}");
+        }
+    }
+    let both = af(&[
+        "task",
+        "run",
+        "t",
+        "--retry-gate",
+        "--confirm-plan",
+        "sha256:00",
+    ]);
+    assert_eq!(both.status.code(), Some(2));
+    assert!(err(&both).contains("cannot be used with"), "{}", err(&both));
+}
+
 /// `af provider models` says what it reads, what the list proves, its options and its exit codes,
 /// in `--help`, in `af help provider models` and in its man page (ADR-0148).
 #[test]

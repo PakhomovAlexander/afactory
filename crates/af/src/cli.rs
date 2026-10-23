@@ -1296,6 +1296,9 @@ pub(crate) enum TaskCommand {
         inspect: TaskInspectArgs,
     },
     /// Run or resume a captured Task using its exact recorded plan and authority
+    #[command(
+        after_long_help = "Examples:\n  af task run TASK_ID --confirm-plan PLAN_ID\n  af task run TASK_ID --retry-gate    # after `next: af task run TASK_ID --retry-gate`"
+    )]
     Run {
         task_id: String,
         /// Confirm the exact plan shown by plan/start/explain; stale identities refuse
@@ -1304,6 +1307,12 @@ pub(crate) enum TaskCommand {
         /// Explicit automation opt-in: run the current plan without preview confirmation
         #[arg(long)]
         execute: bool,
+        /// Run the failed gate of a finished Task again on the same sealed candidate: a new
+        /// check Attempt in the same round under the recorded plan, nothing re-planned or
+        /// re-admitted; the Task continues into review when the check passes. Refused when the
+        /// Task's last failure was not a gate
+        #[arg(long, conflicts_with = "confirm_plan")]
+        retry_gate: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },

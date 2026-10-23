@@ -7,6 +7,7 @@ use review_core::task::verification::{
 
 pub(super) fn signatures(policy: &str, enabled: bool) -> BTreeMap<String, OperatorSignature> {
     let signature = |inputs, outputs, evidence, retains, outcome_port| OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 { inputs, outputs },
         effects: BTreeSet::new(),
         evidence,

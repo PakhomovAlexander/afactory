@@ -90,9 +90,14 @@ digest = "sha256:a572ef1a36c634c15b4823ac64c07206946a4f9a0bc91b23595030845a1202c
 path = ".af/task-packages/kernel/ux"
 
 [packages."kernel/implementation-ux"]
-version = "1.0.0"
-digest = "sha256:43d3eeeccbf3338b623c2b38b5817b582e50c2820df485fb452ab71a6c4de904"
+version = "1.1.0"
+digest = "sha256:9fb19d7852c52e2fb5500f36f07b266080dedc1b2cad4d0e4c15223f88f763aa"
 path = ".af/task-packages/kernel/implementation-ux"
+
+[packages."kernel/implementer-long"]
+version = "1.0.0"
+digest = "sha256:0ffb113fe16813e017fd563d8f9ac42a60fda42e954d7dfd7d42a53a9ae10246"
+path = ".af/task-packages/kernel/implementer-long"
 
 [packages."kernel/review-light"]
 version = "1.2.0"
@@ -174,6 +179,7 @@ distinct_models = false
 "warm/bugs" = "codex-main"
 "warm/evaluator" = "codex-main"
 "kernel/implementer" = "claude-main"
+"kernel/implementer-long" = "claude-main"
 "kernel/correctness" = "codex-main"
 "kernel/bugs" = "codex-main"
 "kernel/evaluator" = "codex-main"
@@ -184,3 +190,8 @@ distinct_models = false
 [provider_admission]
 tokens = 32768
 wall_ms = 45000
+
+[packages."kernel/verification-ux"]
+version = "1.0.0"
+digest = "sha256:4d34fa8c4991ee208e8444f370e511a89f444a409f6a50954d63e6291626be9d"
+path = ".af/task-packages/kernel/verification-ux"

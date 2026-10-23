@@ -1420,6 +1420,7 @@ mod tests {
 
     fn signature(effects: &[&str]) -> OperatorSignature {
         OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 {
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
@@ -1483,7 +1484,12 @@ mod tests {
                 &signature(&["read-source", "execute-checks"]),
                 true,
             )
-            .unwrap();
+            .unwrap_or_else(|error| {
+                panic!(
+                    "materializing the selected Cargo cache: {error}; its operator detail is \
+                     the `cache diagnostic for Task node` line on stderr"
+                )
+            });
         let vars = environment.command_environment(&input, &sandbox).unwrap();
         assert!(vars.contains(&("CARGO_NET_OFFLINE".into(), "true".into())));
         assert!(
@@ -1499,6 +1505,92 @@ mod tests {
             .get(&input.node)
             .unwrap()
             .clone()
+    }
+
+    /// One process of [`a_selected_cargo_cache_materializes_in_every_round_of_many_processes`];
+    /// it runs nothing unless that test started it.
+    const MATERIALIZING_PROCESS: &str = "one_of_many_cache_materializing_processes";
+
+    #[test]
+    #[ignore = "one process of a_selected_cargo_cache_materializes_in_every_round_of_many_processes"]
+    fn one_of_many_cache_materializing_processes() {
+        if std::env::var_os("AF_CACHE_RACE_CHILD").is_none() {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let cache = directory.path().join("cache");
+        let cached = cache.join("registry/cache/example.crate");
+        std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        std::fs::write(&cached, b"captured crate").unwrap();
+        let policy = cas.put_json(&serde_json::json!({"policy":"one"})).unwrap();
+        let selected = selected_source(&cas, b"[toolchain]\nchannel='1.88.0'\n", b"one");
+        let environment = OptimizationEnvironment::new(
+            super::super::source::SnapshotTaskEnvironment {
+                policy: Policy::trusted_local(),
+            },
+            policy.clone(),
+        );
+        let input = invocation(&cas, selected.clone(), "root.nodes.ordinary_check");
+        let source = cache_source(cache.clone());
+        for round in 0..10 {
+            // The call `materialize_worker` makes, on the sandbox it prepares, with the operator
+            // detail a durable report never carries.
+            let sandbox = environment
+                .source
+                .materialize_preparation(
+                    &cas,
+                    &input,
+                    &signature(&["read-source", "execute-checks"]),
+                )
+                .unwrap();
+            if let Err(error) = review_sandbox::materialize_cache(&source, &sandbox, &cas) {
+                panic!("round {round}: {error}: {}", error.operator_detail());
+            }
+            // And the whole selection path the two tests below take.
+            assert!(
+                prepare(&cas, selected.clone(), &policy, &cache)
+                    .snapshot
+                    .is_some()
+            );
+        }
+    }
+
+    /// Issue #149: these tests failed intermittently with `cache materialization failed` and
+    /// nothing else, because the panic carried only the durable message. The cause was the macOS
+    /// metadata normalization naming its held descriptor `/dev/fd/<n>` for the ACL calls
+    /// (`SYMLINK_ACL`), a lookup that fails with EBADF or ENOENT while many processes
+    /// materialize at once (ADR-0167); the calls now name the no-follow path. Sixteen processes
+    /// each materialize a selected Cargo cache ten times, through the call `materialize_worker`
+    /// makes and then through the whole selection path, and every round of every one succeeds;
+    /// a failure names its round and its operator detail.
+    #[test]
+    fn a_selected_cargo_cache_materializes_in_every_round_of_many_processes() {
+        let test = format!(
+            "{}::{MATERIALIZING_PROCESS}",
+            module_path!().split_once("::").unwrap().1
+        );
+        let processes: Vec<_> = (0..16)
+            .map(|_| {
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &test, "--ignored", "--test-threads", "1"])
+                    .env("AF_CACHE_RACE_CHILD", "1")
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        for process in processes {
+            let output = process.wait_with_output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // A child that selected no test also exits 0: it must report the process as passed.
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{stdout}{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]

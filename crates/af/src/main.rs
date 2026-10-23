@@ -1727,6 +1727,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             task_id,
             confirm_plan,
             execute,
+            retry_gate,
             inspect,
         } => task_execution::run(
             &task_id,
@@ -1735,6 +1736,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             inspect.json,
             confirm_plan.as_deref(),
             execute,
+            retry_gate,
         ),
         cli::TaskCommand::Output {
             task_id,

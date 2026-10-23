@@ -50,3 +50,45 @@ pub fn fixture_named(root: &Path, name: &str) -> (PathBuf, PathBuf) {
     }
     (repo, root.join("state"))
 }
+
+/// ADR-0114's load-safe wall, two minutes, for a fixture process whose subject is not a
+/// deadline: one that answers ends when it answers, and only a hung one waits this long.
+pub const LOAD_SAFE_WALL_MS: i64 = 120_000;
+
+/// Give every Worker Attempt of the fixture at `repo` (each package's `[signature.attempt]`)
+/// and its code policy's checks the load-safe wall. A loaded gate host left a 5 s reviewer 377
+/// ms of its wall after its preparation and killed it, so the Task ended on a lost Attempt
+/// instead of its review (ADR-0124). The caller re-pins the packages, gives its Task file a wall
+/// that holds them, and commits.
+pub fn load_safe_walls(repo: &Path) {
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    for pin in catalog["packages"].as_table().unwrap().values() {
+        let path = repo.join(pin["path"].as_str().unwrap()).join("worker.toml");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let mut worker: toml::Value = toml::from_str(&text).unwrap();
+        if let Some(attempt) = worker
+            .get_mut("signature")
+            .and_then(|signature| signature.get_mut("attempt"))
+            .and_then(toml::Value::as_table_mut)
+        {
+            attempt.insert("wall_ms".into(), toml::Value::Integer(LOAD_SAFE_WALL_MS));
+            std::fs::write(&path, toml::to_string(&worker).unwrap()).unwrap();
+        }
+    }
+    let policy = repo.join(".af/code-policy.toml");
+    let mut value: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&policy).unwrap()).unwrap();
+    value["check_wall_ms"] = toml::Value::Integer(LOAD_SAFE_WALL_MS);
+    std::fs::write(&policy, toml::to_string(&value).unwrap()).unwrap();
+}
+
+/// A Task wall of an hour and a verification wall of half of it: room for every Attempt of a
+/// test's Task file at [`LOAD_SAFE_WALL_MS`].
+pub fn load_safe_limits(limits: &mut serde_json::Value) {
+    limits["wall_ms"] = serde_json::json!(3_600_000);
+    limits["verification"]["wall_ms"] = serde_json::json!(1_800_000);
+}

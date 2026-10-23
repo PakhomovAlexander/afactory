@@ -31,6 +31,10 @@ pub struct TaskExecutionProjection {
     pub(super) review_integrations:
         BTreeMap<String, super::review_integration::RegisteredTaskReviewIntegration>,
     pub(super) active_review_integration: Option<String>,
+    /// Attempts whose selected output a gate retry (`TaskGateRetried@1`) superseded: their check
+    /// node, or a node after it, runs again. They keep their settlement and charge; they are
+    /// never an output to recover again.
+    retired: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -367,6 +371,7 @@ impl TaskExecutionProjection {
     pub fn reusable_output(&self, node: &str) -> Option<(String, String)> {
         self.attempts.iter().find_map(|(id, attempt)| {
             if attempt.reservation.node != node
+                || self.retired.contains(id)
                 || self.invocations.get(node).map(|(_, i)| &i.plan_id) != Some(&attempt.plan_id)
                 || self.ledger.attempt(&AttemptId(id.clone()))?.state
                     != review_attempt::AttemptState::Selected
@@ -419,11 +424,9 @@ impl TaskExecutionProjection {
             .get(node)
             .ok_or_else(|| conflict("Unknown Task invocation"))?;
         let mut previous = BTreeMap::new();
-        for (id, attempt) in self
-            .attempts
-            .iter()
-            .filter(|(_, a)| &a.invocation_id == invocation_id && !a.released)
-        {
+        for (id, attempt) in self.attempts.iter().filter(|(id, a)| {
+            &a.invocation_id == invocation_id && !a.released && !self.retired.contains(*id)
+        }) {
             match &attempt.settlement {
                 Some(TaskExecutionRecordV1::Settled {
                     result: TaskAttemptResultV1::Succeeded { .. },
@@ -486,6 +489,50 @@ impl TaskExecutionProjection {
             experiments: BTreeMap::new(),
             review_integrations: BTreeMap::new(),
             active_review_integration: None,
+            retired: BTreeSet::new(),
+        })
+    }
+
+    /// Clear what a gate retry runs again: the check `node`'s published output, and every
+    /// output and invocation after it. Their selected Attempts are retired; `node`'s own
+    /// invocation stays, because its sealed candidate does not change.
+    pub(super) fn reopen_gate(&mut self, node: &str) {
+        let after = self.graph.downstream_of(node);
+        self.outputs.remove(node);
+        for later in &after {
+            self.outputs.remove(later);
+            self.invocations.remove(later);
+        }
+        let retired: Vec<String> = self
+            .attempts
+            .iter()
+            .filter(|(_, attempt)| {
+                attempt.reservation.node == node || after.contains(&attempt.reservation.node)
+            })
+            .filter(|(_, attempt)| {
+                matches!(
+                    attempt.settlement,
+                    Some(TaskExecutionRecordV1::Settled {
+                        result: TaskAttemptResultV1::Succeeded { .. },
+                        ..
+                    })
+                )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        self.retired.extend(retired);
+    }
+
+    /// Whether any of `nodes` that a plan pays for started or reserved an Attempt: a reviewer or
+    /// evaluator that ran.
+    pub(super) fn attempts_of(&self, nodes: &BTreeSet<String>) -> bool {
+        self.attempts.values().any(|attempt| {
+            nodes.contains(&attempt.reservation.node)
+                && self
+                    .graph
+                    .allowances
+                    .contains_key(&attempt.reservation.node)
+                && !attempt.released
         })
     }
 

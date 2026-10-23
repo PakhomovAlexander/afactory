@@ -953,6 +953,7 @@ impl Fixture {
         configuration_port.artifact_type = "af/OptimizationConfiguration@1".into();
         configuration_port.optional = true;
         let signature = OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 {
                 inputs: BTreeMap::from([
                     (

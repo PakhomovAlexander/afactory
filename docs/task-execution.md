@@ -84,6 +84,15 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   and every remote fact is one `af/RemoteCheckEvidence@1`
   ([ADR-0140](adr/0140-run-a-declared-check-through-a-gate-pull-request.md),
   [Remote Checks](task-execution/remote-checks.md)).
+- A gate is evidence, not a verdict to discard. A gate run reruns the tests that failed in its
+  parallel run once each, alone, and fails only on those that fail twice; every local check
+  records `af/TaskCheckReport@1` beside its receipt (the host's load and CPUs at its start and
+  end, its steps by stage, its test threads and its flaky tests). A Task that ended at a failed
+  gate is reopened at that gate by `af task run ID --retry-gate` (`TaskGateRetried@1`): a new
+  check Attempt on the same sealed candidate, nothing re-planned or re-admitted. A check whose
+  pinned toolchain does not resolve refuses the Task before its plan is admitted
+  ([ADR-0196](adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md),
+  [Retry a failed gate](tasks.md#retry-a-failed-gate)).
 - A report is accepted by an independent verifier, not by its author, and every report receipt
   names the source Snapshot its repository citations were resolved against. A report Task
   allows no `write-source`, has no `snapshot` output and is never delivered; `af task output`
@@ -151,6 +160,7 @@ What it never grants:
 | Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
 | Inspection and listing | [`task-inspection-v11`](../schemas/task-inspection-v11.json), [`task-list-entry-v2`](../schemas/task-list-entry-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json), [`task-report-v1`](../schemas/task-report-v1.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
 | Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
+| Gate evidence and retry ([ADR-0196](adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)) | `crates/review-core/src/task/check_report.rs`, `crates/review-store/src/store/task/gate_retry.rs`, [`task-check-report-v1`](../schemas/task-check-report-v1.json), [`task-gate-retried-v1`](../schemas/task-gate-retried-v1.json) |
 | Store hygiene ([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)) | `crates/review-store/src/store/task/collection.rs`, [`task-collected-v1`](../schemas/task-collected-v1.json), [`task-collected-inspection-v1`](../schemas/task-collected-inspection-v1.json), [`task-gc-v1`](../schemas/task-gc-v1.json) |
 | Review accounting | [`review-report-v4`](../schemas/review-report-v4.json) |
 | Executable credential-free fixtures | `fixtures/task-runtime/` (`pagination`, `review`, `review-v2`, `embedded-review`, `bounded-repair`) |
