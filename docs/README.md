@@ -1,17 +1,22 @@
 # Documentation
 
 Where to look, by question. The [README](../README.md) covers installing, the quickstart, and the
-`.af/` layout; the CLI documents itself with `af help layers`, `af help self`, `af help exit-codes`,
-and `--help` on every namespace and command.
+`.af/` layout; the CLI documents itself with `af help` (every topic), `af help start`,
+`af help concepts`, and `--help` on every namespace and command.
 
 ## Start here
 
-1. [`../CONTEXT.md`](../CONTEXT.md) — the vocabulary. Everything else assumes it.
-2. [`architecture.md`](architecture.md) — the boundaries and the tests that enforce them.
-3. [`adr/README.md`](adr/README.md) — why each boundary is where it is.
+1. [The README Quickstart](../README.md#quickstart) — install, connect a Provider, onboard a
+   repository and review a change, four steps with one command each; `af doctor` checks each.
+2. `af help concepts` — Task, Worker, Attempt, Snapshot, Round, Campaign, Store, Provider, Gate,
+   Pipeline and Candidate, two sentences each, with the command that shows each one.
+3. [`../CONTEXT.md`](../CONTEXT.md) — the whole vocabulary, with the terms each word must not be
+   confused with. Everything below assumes it.
 4. [`providers.md`](providers.md) — getting model access onto a machine, safely, before running
    anything that spends tokens.
 5. [`tasks.md`](tasks.md) — the `af task` walkthrough, once review makes sense.
+6. [`architecture.md`](architecture.md) and [`adr/README.md`](adr/README.md) — the boundaries,
+   the tests that enforce them, and why each is where it is.
 
 ## By document
 
@@ -19,6 +24,7 @@ and `--help` on every namespace and command.
 |---|---|
 | [`architecture.md`](architecture.md) | How the kernel is built: crates, contracts, the store, source capture, Check nodes, reviewer adapters, sandboxes, the pipeline graph, pipeline definitions, routing, and Attempt budgets. Each section names the test that pins it. |
 | [`../CONTEXT.md`](../CONTEXT.md) | What a word means. Snapshot, Subject, Base, Campaign, Round, Report, Finding, Attempt, Provider and the rest, each with the nearby term it must not be confused with. Read it before arguing about behaviour. |
+| [`self-management.md`](self-management.md) | What the installer does and prints, how releases are signed and verified, how af updates itself and when it checks, shell completions and man pages, source builds, and removing af with or without `--purge`. |
 | [`providers.md`](providers.md) | How a machine gets model access: registering a Provider, why an interactive login is opt-in and terminal-only, what `status` checks versus what `doctor` proves, and every `af provider` exit code. |
 | [`tasks.md`](tasks.md) | How to run implementation Tasks with `af task`: start, inspect, evaluate, and deliver to a new local worktree. |
 | [`project.md`](project.md) | What `af project` knows about a repository: its Project identity and Project Store, its Workspaces (one checkout per line of work, with its own Task Store, Task files and bindings), every `af project` command, `--workspace` on `af task`, and what is written where. |

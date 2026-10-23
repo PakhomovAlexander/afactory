@@ -364,3 +364,5 @@ future readers need.
   group](0194-bind-calibration-to-each-cases-observed-shard-cpu-group.md)
 - [0195 — State the lines a pull request adds per directory, and check
   them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)
+- [0196 — Make the first run say what to do
+  next](0196-make-the-first-run-say-what-to-do-next.md)

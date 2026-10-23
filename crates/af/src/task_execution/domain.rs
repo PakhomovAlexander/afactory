@@ -185,11 +185,18 @@ pub(crate) fn write_output(
     id: &str,
     port: &str,
     format: &str,
-    output: &Path,
+    output: Option<&Path>,
     repo: &Path,
     state: Option<&Path>,
     json: bool,
 ) -> Result<i32, String> {
+    if output.is_none() && json {
+        return Err(
+            "--json describes the file --output writes — fix: add --output FILE, or drop --json \
+             to print the output itself on stdout"
+                .into(),
+        );
+    }
     let (_, state) = state_path(repo, state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
@@ -260,6 +267,14 @@ pub(crate) fn write_output(
             .into_bytes()
         }
         _ => return Err("Unsupported output format".into()),
+    };
+    // Without --output the bytes are the result, on stdout.
+    let Some(output) = output else {
+        std::io::stdout()
+            .write_all(&bytes)
+            .and_then(|()| std::io::stdout().flush())
+            .map_err(|e| format!("writing {port} to stdout: {e}"))?;
+        return Ok(0);
     };
     let parent = output
         .parent()

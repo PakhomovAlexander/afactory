@@ -340,6 +340,14 @@ exit 64
     assert_eq!(code(&success), 0, "{}", err(&success));
     let stdout = out(&success);
     assert!(stdout.contains("authenticated and registered"), "{stdout}");
+    // The next step of a first run follows a registration (ADR-0196).
+    assert!(
+        stdout
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with("next: af onboard (in a repository)")),
+        "{stdout}"
+    );
     assert!(err(&success).is_empty(), "{}", err(&success));
 
     // 5 — the same auth context under a second ID conflicts, refused before any Provider work.

@@ -36,6 +36,7 @@ mod authority;
 mod caches;
 mod cli;
 mod config;
+mod doctor;
 mod interrupt;
 mod model_check;
 mod model_failures;
@@ -1118,6 +1119,7 @@ fn help_command(words: &[String]) -> Result<i32, String> {
     let mut root = cli::Af::command();
     if words.is_empty() {
         root.print_long_help().map_err(|error| error.to_string())?;
+        println!("\n{}", topics::listing());
         return Ok(0);
     }
     if words.len() == 1
@@ -1226,7 +1228,9 @@ fn main() {
     }
     let Some(command) = parsed.command else {
         if !tui::wanted() {
-            // Not a terminal: the usage error a bare `af` has always been, help on stderr.
+            // Not a terminal: the usage error a bare `af` has always been, help on stderr, after
+            // the first-run hints.
+            eprintln!("{}\n", cli::FIRST_RUN_HINTS);
             let refused = cli::Af::command()
                 .arg_required_else_help(true)
                 .try_get_matches_from(["af"]);
@@ -1418,9 +1422,11 @@ fn main() {
                 }
                 cli::SelfCommand::Remove { version } => selfmgmt::remove(&version).map(|()| 0),
                 cli::SelfCommand::Prune => selfmgmt::prune().map(|()| 0),
-                cli::SelfCommand::SetupShell { shell, write } => {
-                    selfmgmt::setup_shell(shell, write).map(|()| 0)
-                }
+                cli::SelfCommand::SetupShell {
+                    shell,
+                    write,
+                    remove,
+                } => selfmgmt::setup_shell(shell, write, remove).map(|()| 0),
                 cli::SelfCommand::Uninstall { purge } => selfmgmt::uninstall(purge).map(|()| 0),
                 cli::SelfCommand::Man { out_dir } => selfmgmt::man(&out_dir).map(|()| 0),
                 cli::SelfCommand::RefreshCheck => selfmgmt::refresh_check().map(|()| 0),
@@ -1549,6 +1555,7 @@ fn main() {
                 0
             }),
         ),
+        cli::Command::Doctor(args) => ("af doctor", doctor::run(&args.repo, args.json)),
         cli::Command::Help { words } => ("af help", help_command(&words)),
     };
     if let Some(signal) = interrupt::received() {
@@ -1746,7 +1753,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             &task_id,
             &port,
             &format,
-            &output,
+            output.as_deref(),
             &inspect.repo,
             inspect.state.as_deref(),
             inspect.json,

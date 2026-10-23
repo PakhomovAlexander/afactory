@@ -583,6 +583,9 @@ impl ReleaseSource for GithubSource {
 
     fn fetch(&self, tag: &str, asset: &str, dir: &Path) -> Result<PathBuf, String> {
         let mut refused = None;
+        // Why the anonymous route did not answer, for a `gh` failure to say both.
+        let mut anonymous =
+            "the anonymous releases API was refused earlier in this command".to_string();
         if !self.via_gh.get() {
             let to = dir.join(asset);
             let url = format!(
@@ -591,8 +594,11 @@ impl ReleaseSource for GithubSource {
             );
             match curl_get(&url, &to, false)? {
                 Some(200) => return Ok(to),
-                Some(code) if anonymous_refused(code) => refused = Some(code),
-                None => {}
+                Some(code) if anonymous_refused(code) => {
+                    refused = Some(code);
+                    anonymous = format!("HTTP {code}");
+                }
+                None => anonymous = "curl is not installed".to_string(),
                 Some(code) => {
                     return Err(format!(
                         "downloading {asset} of {tag} from {} answered HTTP {code}",
@@ -609,7 +615,9 @@ impl ReleaseSource for GithubSource {
                 ),
                 None => GhError::Missing.to_string(),
             }),
-            Err(GhError::Failed(text)) => Err(text),
+            Err(GhError::Failed(text)) => {
+                Err(format!("{text}; the anonymous route failed: {anonymous}"))
+            }
             Ok(path) => Ok(path),
         }
     }
@@ -894,7 +902,7 @@ fn verified_sums(
 ) -> Result<(String, &'static str), String> {
     let sums_path = src
         .fetch(tag, "SHA256SUMS", dir)
-        .map_err(|error| format!("release {tag} has no SHA256SUMS: {error}"))?;
+        .map_err(|error| format!("could not fetch SHA256SUMS of {tag} ({error})"))?;
     let sums = std::fs::read_to_string(&sums_path).map_err(|error| error.to_string())?;
     let Some((key, _)) = release_key()? else {
         return Ok((sums, "sha256sums"));
@@ -944,7 +952,9 @@ pub(crate) fn release_digests(
     version: &str,
 ) -> Result<(BTreeMap<String, String>, &'static str), String> {
     if offline() {
-        return Err(format!("{OFFLINE_ENV} is set"));
+        return Err(format!(
+            "could not fetch SHA256SUMS of v{version} ({OFFLINE_ENV} is set)"
+        ));
     }
     parse_version(version)?;
     let policy = config::load_machine()?.self_policy()?;
@@ -1509,8 +1519,12 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
         && argv.get(command_index + 1).map(String::as_str) != Some("optimize");
     // `catalog digest` is read-only (ADR-0157): even a malformed invocation that reaches here
     // instead of running early neither dispatches, installs nor schedules a check.
-    matches!(first, None | Some("help" | "completions" | "config"))
-        || binary_management_self
+    // `doctor` reads this machine as it is and writes nothing: it never dispatches to a pin,
+    // installs one, or schedules an update check.
+    matches!(
+        first,
+        None | Some("help" | "completions" | "config" | "doctor")
+    ) || binary_management_self
         || matches!(
             (first, argv.get(command_index + 1).map(String::as_str)),
             (
@@ -1924,7 +1938,8 @@ fn ci() -> bool {
 static CHECK_SCHEDULED: AtomicBool = AtomicBool::new(false);
 
 /// The update policy for this invocation, when it takes part in the check at all: never for a
-/// command exempt from dispatch (help, version, `self`, `config`, completions, the browser),
+/// command exempt from dispatch (help, version, `self`, `config`, `doctor`, completions, the
+/// browser),
 /// offline, under CI, with `update_check = false`, or with `auto_update = "never"`.
 fn update_policy(argv: &[String]) -> Option<(Paths, SelfPolicy)> {
     if exempt_from_dispatch(argv) || offline() || ci() {
@@ -2655,11 +2670,25 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
             }
         }
     }
+    // What `setup-shell --write` installed lives in the shells' own directories, outside af's.
+    let shell = shell_files()?;
     if purge {
         // What af left outside its own directories goes first, while the Provider and Store
         // registries it reads are still there (ADR-0144).
         for line in crate::storage::purge_outside_roots() {
             println!("{line}");
+        }
+        for (_, path) in &shell.completions {
+            if remove_shell_file(path)? {
+                println!("removed {}", path.display());
+            }
+        }
+        let pages = remove_man_pages(&shell.man_dir)?;
+        if pages > 0 {
+            println!(
+                "removed {pages} af man page(s) from {}",
+                shell.man_dir.display()
+            );
         }
         for dir in [
             config::config_home()?.join("af"),
@@ -2674,6 +2703,28 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
         }
     } else {
         println!("kept config, state, and cache (add --purge to remove them)");
+        // This af is gone now, so what it leaves is named with the command that removes it.
+        let mut left: Vec<String> = Vec::new();
+        for (shell, path) in &shell.completions {
+            println!(
+                "kept the {} completions at {}",
+                shell.name(),
+                path.display()
+            );
+            left.push(shell_words::quote(&path.display().to_string()).into_owned());
+        }
+        if !shell.man_pages.is_empty() {
+            println!(
+                "kept {} af man page(s) in {}",
+                shell.man_pages.len(),
+                shell.man_dir.display()
+            );
+            let dir = shell_words::quote(&shell.man_dir.display().to_string()).into_owned();
+            left.push(format!("{dir}/af.1 {dir}/af-*.1 {dir}/af-*.7"));
+        }
+        if !left.is_empty() {
+            println!("  remove them with: rm -f {}", left.join(" "));
+        }
     }
     Ok(())
 }
@@ -2770,7 +2821,12 @@ pub(crate) fn complete_version(current: &OsStr) -> Vec<CompletionCandidate> {
 
 fn detect_shell() -> Option<Shell> {
     let shell = std::env::var("SHELL").ok()?;
-    match Path::new(&shell).file_name()?.to_str()? {
+    shell_named(Path::new(&shell).file_name()?.to_str()?)
+}
+
+/// The shell a program name such as `$SHELL`'s last component names.
+pub(crate) fn shell_named(name: &str) -> Option<Shell> {
+    match name {
         "bash" => Some(Shell::Bash),
         "zsh" => Some(Shell::Zsh),
         "fish" => Some(Shell::Fish),
@@ -2780,12 +2836,20 @@ fn detect_shell() -> Option<Shell> {
     }
 }
 
-pub(crate) fn setup_shell(shell: Option<Shell>, write: bool) -> Result<(), String> {
-    let shell = shell.or_else(detect_shell).ok_or(
-        "could not detect the shell from $SHELL — fix: af self setup-shell --shell fish|zsh|bash",
-    )?;
+/// Every shell `setup-shell` supports, in its message's order.
+const SHELLS: [Shell; 5] = [
+    Shell::Bash,
+    Shell::Zsh,
+    Shell::Fish,
+    Shell::Elvish,
+    Shell::Powershell,
+];
+
+/// Where `setup-shell --write` puts `shell`'s completion script, and the rc line the shell needs
+/// to load it, if any.
+pub(crate) fn completion_target(shell: Shell) -> Result<(PathBuf, Option<String>), String> {
     let data = config::data_home()?;
-    let (completion_path, rc_line): (PathBuf, Option<String>) = match shell {
+    Ok(match shell {
         Shell::Fish => (config::config_home()?.join("fish/completions/af.fish"), None),
         Shell::Bash => (
             data.join("bash-completion/completions/af"),
@@ -2803,8 +2867,118 @@ pub(crate) fn setup_shell(shell: Option<Shell>, write: bool) -> Result<(), Strin
             config::config_home()?.join("powershell/af.ps1"),
             Some(". ~/.config/powershell/af.ps1   # in $PROFILE".into()),
         ),
-    };
-    let man_dir = data.join("man/man1");
+    })
+}
+
+/// The directory `setup-shell --write` renders the man pages into.
+pub(crate) fn man_dir() -> Result<PathBuf, String> {
+    Ok(config::data_home()?.join("man/man1"))
+}
+
+/// The file names of every man page `af self man` renders: one per visible command, one per
+/// help topic.
+pub(crate) fn man_page_names() -> Vec<String> {
+    fn walk(command: &clap::Command, name: &str, names: &mut Vec<String>) {
+        if command.is_hide_set() {
+            return;
+        }
+        names.push(format!("{name}.1"));
+        for sub in command.get_subcommands() {
+            walk(sub, &format!("{name}-{}", sub.get_name()), names);
+        }
+    }
+    let mut root = Af::command();
+    root.build();
+    let mut names = Vec::new();
+    walk(&root, "af", &mut names);
+    for (topic, _, _) in crate::topics::TOPICS {
+        names.push(format!("af-{topic}.7"));
+    }
+    names
+}
+
+/// What `setup-shell --write` left on this machine, for every supported shell: the completion
+/// files that exist and the af man pages present in the man directory.
+pub(crate) struct ShellFiles {
+    pub(crate) completions: Vec<(Shell, PathBuf)>,
+    pub(crate) man_dir: PathBuf,
+    pub(crate) man_pages: Vec<PathBuf>,
+}
+
+pub(crate) fn shell_files() -> Result<ShellFiles, String> {
+    let mut completions = Vec::new();
+    for shell in SHELLS {
+        let (path, _) = completion_target(shell)?;
+        if std::fs::symlink_metadata(&path).is_ok() {
+            completions.push((shell, path));
+        }
+    }
+    let man_dir = man_dir()?;
+    let man_pages = man_page_names()
+        .into_iter()
+        .map(|name| man_dir.join(name))
+        .filter(|path| std::fs::symlink_metadata(path).is_ok())
+        .collect();
+    Ok(ShellFiles {
+        completions,
+        man_dir,
+        man_pages,
+    })
+}
+
+/// Remove `path` when it is a file or a link; anything else there is not af's to remove.
+fn remove_shell_file(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("inspecting {}: {error}", path.display())),
+        Ok(metadata) if metadata.is_dir() => Err(format!(
+            "{} is a directory, not a file af wrote; left in place",
+            path.display()
+        )),
+        Ok(_) => std::fs::remove_file(path)
+            .map(|()| true)
+            .map_err(|error| format!("removing {}: {error}", path.display())),
+    }
+}
+
+/// Remove the af man pages present in the man directory; returns how many went.
+fn remove_man_pages(dir: &Path) -> Result<usize, String> {
+    let mut removed = 0;
+    for name in man_page_names() {
+        if remove_shell_file(&dir.join(name))? {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+pub(crate) fn setup_shell(shell: Option<Shell>, write: bool, remove: bool) -> Result<(), String> {
+    let shell = shell.or_else(detect_shell).ok_or(
+        "could not detect the shell from $SHELL — fix: af self setup-shell --shell bash|zsh|fish|elvish|powershell",
+    )?;
+    let (completion_path, rc_line) = completion_target(shell)?;
+    let man_dir = man_dir()?;
+    if remove {
+        let completion = remove_shell_file(&completion_path)?;
+        println!(
+            "completions: {} ({})",
+            completion_path.display(),
+            if completion { "removed" } else { "absent" }
+        );
+        let pages = remove_man_pages(&man_dir)?;
+        println!(
+            "man pages:   {} ({pages} af page(s) removed)",
+            man_dir.display()
+        );
+        if let Some(line) = &rc_line
+            && !line.starts_with('#')
+        {
+            println!("done — remove the rc line you added for af, if any: {line}");
+        } else {
+            println!("done");
+        }
+        return Ok(());
+    }
     println!("shell:       {}", shell.name());
     println!("completions: {}", completion_path.display());
     println!("man pages:   {}", man_dir.display());
@@ -2823,7 +2997,12 @@ pub(crate) fn setup_shell(shell: Option<Shell>, write: bool) -> Result<(), Strin
     std::fs::write(&completion_path, script)
         .map_err(|error| format!("writing {}: {error}", completion_path.display()))?;
     man(&man_dir)?;
-    println!("written");
+    // What the files do not do by themselves: fish autoloads the directory; every other shell
+    // needs the line above in its rc file (bash-completion 2.x loads it on demand).
+    match shell {
+        Shell::Fish => println!("done — fish picks this up in a new shell"),
+        _ => println!("done — add the rc line above, then open a new shell"),
+    }
     Ok(())
 }
 
@@ -2920,6 +3099,180 @@ pub(crate) fn print_version(json: bool) -> Result<(), String> {
     let mut stdout = std::io::stdout().lock();
     serde_json::to_writer_pretty(&mut stdout, &view).map_err(|error| error.to_string())?;
     writeln!(stdout).map_err(|error| error.to_string())
+}
+
+// ------------------------------------------------------------------------------------------
+// what `af doctor` reads
+
+/// This installation as `af doctor` reads it; reading it writes nothing.
+pub(crate) struct Installation {
+    pub(crate) running: Option<PathBuf>,
+    pub(crate) receipt: Option<Receipt>,
+    /// Where the running version's receipt is, or would be.
+    pub(crate) receipt_path: PathBuf,
+    /// The default link, `$XDG_BIN_HOME/af`.
+    pub(crate) bin: PathBuf,
+    pub(crate) default: Option<String>,
+    pub(crate) default_status: &'static str,
+    /// Staging directories no running installer holds: what a killed install left behind.
+    pub(crate) abandoned_stagings: Vec<PathBuf>,
+}
+
+pub(crate) fn installation() -> Result<Installation, String> {
+    let paths = paths()?;
+    let default = default_version(&paths);
+    Ok(Installation {
+        running: std::env::current_exe().ok(),
+        receipt: running_receipt(&paths),
+        receipt_path: version_dir(&paths, VERSION).join("receipt.toml"),
+        default_status: default_status(&paths, default.as_deref()),
+        default,
+        abandoned_stagings: staging_dirs(&paths)
+            .into_iter()
+            .filter(|dir| !staging_in_use(dir))
+            .collect(),
+        bin: paths.bin,
+    })
+}
+
+/// A repository's af pin as `af doctor` reads it.
+pub(crate) struct PinHere {
+    pub(crate) version: String,
+    pub(crate) lock: PathBuf,
+    /// The lock records this target's archive digest: the pin names bytes, not just a version.
+    pub(crate) bound: bool,
+    /// The pinned version is installed here.
+    pub(crate) installed: bool,
+    /// The installed copy's receipt names the digest the lock records; `None` when either is
+    /// missing.
+    pub(crate) matches: Option<bool>,
+}
+
+/// The pin of the repository at `repo`, read as dispatch reads it; `Err` is the reason a lock
+/// is refused.
+pub(crate) fn pin_here(repo: &Path) -> Result<Option<PinHere>, String> {
+    let Some(pinned) = read_pinned(repo)? else {
+        return Ok(None);
+    };
+    let paths = paths()?;
+    let digest = pinned.pin.digest_for(TARGET).map(str::to_string);
+    let receipt = read_receipt(&paths, &pinned.pin.version);
+    Ok(Some(PinHere {
+        bound: digest.is_some(),
+        installed: installed(&paths, &pinned.pin.version).is_some(),
+        matches: match (&digest, &receipt) {
+            (Some(digest), Some(receipt)) => Some(strip_sha256(digest) == receipt.sha256),
+            _ => None,
+        },
+        version: pinned.pin.version,
+        lock: pinned.lock,
+    }))
+}
+
+/// Where the running version's install receipt is, or would be.
+pub(crate) fn receipt_path() -> Result<PathBuf, String> {
+    Ok(version_dir(&paths()?, VERSION).join("receipt.toml"))
+}
+
+/// The update check as `af doctor` reads it: the cache, the policy, and why checks are off.
+pub(crate) struct UpdateFacts {
+    pub(crate) checked_at_epoch: Option<u64>,
+    pub(crate) now_epoch: u64,
+    pub(crate) latest: Option<String>,
+    pub(crate) policy: SelfPolicy,
+    /// Why no check runs, when none does.
+    pub(crate) off: Option<String>,
+}
+
+pub(crate) fn update_facts() -> Result<UpdateFacts, String> {
+    let paths = paths()?;
+    let policy = config::load_machine()?.self_policy()?;
+    let cache = read_cache(&paths);
+    let off = if offline() {
+        Some(format!("{OFFLINE_ENV} is set"))
+    } else if ci() {
+        Some("CI is set".to_string())
+    } else if !policy.update_check {
+        Some("[self] update_check = false".to_string())
+    } else if policy.auto_update == AutoUpdate::Never {
+        Some("[self] auto_update = \"never\"".to_string())
+    } else {
+        None
+    };
+    Ok(UpdateFacts {
+        checked_at_epoch: (cache.checked_at_epoch > 0).then_some(cache.checked_at_epoch),
+        now_epoch: epoch_now(),
+        latest: cache.latest,
+        policy,
+        off,
+    })
+}
+
+/// Whether the release source answers the way updates reach it: a local directory that can be
+/// read, or GitHub's releases API anonymously over HTTPS. One bounded request whose answer is
+/// discarded; nothing is written. `Err` says why the anonymous route is closed.
+pub(crate) fn release_source_reachability(policy: &SelfPolicy) -> Result<String, String> {
+    if let Some(root) = std::env::var_os(SOURCE_ENV).filter(|root| !root.is_empty()) {
+        let root = PathBuf::from(root);
+        return if root.is_dir() {
+            Ok(format!(
+                "{SOURCE_ENV} {} is a readable directory",
+                root.display()
+            ))
+        } else {
+            Err(format!(
+                "{SOURCE_ENV} {} is not a directory",
+                root.display()
+            ))
+        };
+    }
+    let url = format!(
+        "https://api.github.com/repos/{}/releases?per_page=1",
+        policy.source
+    );
+    let mut command = Command::new("curl");
+    command
+        .args([
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--tlsv1.2",
+            "-sS",
+            "--max-time",
+            "10",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "-H",
+            "Accept: application/vnd.github+json",
+        ])
+        .arg(&url)
+        .stdin(Stdio::null());
+    let output = match review_process::reap::output(&mut command) {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("curl is not installed, so releases are reached through gh only".into());
+        }
+        Err(error) => return Err(format!("running curl: {error}")),
+    };
+    match String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u16>()
+    {
+        Ok(200) => Ok(format!("github:{} answers anonymously", policy.source)),
+        Ok(code) if anonymous_refused(code) => Err(format!(
+            "github:{} refuses anonymous requests (HTTP {code}), so updates need `gh auth login`",
+            policy.source
+        )),
+        Ok(code) if code != 0 => Err(format!("github:{} answered HTTP {code}", policy.source)),
+        _ => Err(format!(
+            "github:{} cannot be reached: {}",
+            policy.source,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -4017,6 +4370,11 @@ mod tests {
         assert!(!exempt_from_dispatch(&argv(&["af", "provider", "status"])));
         assert!(exempt_from_dispatch(&argv(&[
             "af", "catalog", "digest", "pkg"
+        ])));
+        // `doctor` reads the machine as it is: no pin dispatch, install or update check.
+        assert!(exempt_from_dispatch(&argv(&["af", "doctor", "--json"])));
+        assert!(exempt_from_dispatch(&argv(&[
+            "af", "--repo", "/w", "doctor"
         ])));
         assert!(exempt_from_dispatch(&argv(&[
             "af", "--repo", "x", "catalog", "digest"

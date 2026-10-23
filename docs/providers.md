@@ -10,6 +10,24 @@ kind, and an auth directory. Bootstrap runs in the invoking release rather than 
 pinned one, and registry publication stays atomic for older readers
 ([ADR-0111](adr/0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)).
 
+## In a first run
+
+The [README Quickstart](../README.md#quickstart) registers a Provider in its second step, and
+every first-run surface points at it:
+
+- `af provider detect --apply` finds the `claude` and `codex` logins on this machine and registers
+  them; without a login yet, `af provider setup claude-main --kind claude --login` (or
+  `codex-main --kind codex`) at your own terminal starts one. A successful `setup` or `add` ends
+  with `next: af onboard (in a repository)`.
+- `af onboard` reads the registry without starting any CLI: it picks `claude` or `codex` Workers
+  when only that kind is registered, and its `providers` block names, for every model Worker, a
+  registered Provider of its kind and the `--provider NODE=ID` binding to pass, or the command
+  that registers one. `--probe` adds each Provider's login state from the status probe.
+- `af doctor` lists every registered Provider's login state from the same probe, and the logins
+  it found where the CLIs look by default that no registry entry names; it never charges, and
+  `af provider doctor` stays the charged end-to-end check.
+- `af` alone at a terminal opens on the Providers pane while nothing is registered.
+
 ## The default terminal boundary
 
 An interactive Provider login prints an **OAuth URL and an authorization code**. Those are
@@ -50,6 +68,15 @@ Not authenticated yet? Run this yourself, in your own terminal:
 ```sh
 af provider setup codex-main --kind codex --login
 ```
+
+`setup` verifies the named auth directory and writes only an ID, the Provider kind and the
+auth-directory path to the machine-local registry; credentials remain owned by that CLI. A login
+starts from an empty allowlisted environment in an owned auth directory that is not writable by
+other users, and one canonical auth context admits only one setup or login at a time. `setup` is
+machine-local, so it never dispatches to a repository's older pinned `af`, and registry
+publication stays atomic for those older readers. If a crash leaves publication fenced,
+`af provider recover` validates the marker plus the live, candidate and prior hashes before
+archiving it; it reports which version is live and retains both preserved copies.
 
 `--login` prints the warning above, hands the terminal to the official CLI, verifies the result,
 and only then writes the registry entry. It cannot be combined with `--json`: JSON is the

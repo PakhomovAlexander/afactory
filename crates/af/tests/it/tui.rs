@@ -298,8 +298,27 @@ impl Browser {
         Browser::launch_with(cwd, home, rows, columns, &[])
     }
 
-    /// A browser whose environment also carries `extra`.
+    /// A browser whose environment also carries `extra`, on a machine that has registered a
+    /// Provider (see [`registered_machine`]).
     fn launch_with(
+        cwd: &Path,
+        home: &Path,
+        rows: usize,
+        columns: usize,
+        extra: &[(&str, &str)],
+    ) -> Browser {
+        let path = registered_machine(home);
+        let mut environment = vec![("PATH", path.as_str())];
+        environment.extend_from_slice(extra);
+        Browser::spawn(cwd, home, rows, columns, &environment)
+    }
+
+    /// The browser on a machine whose registry names no Provider: a first run.
+    fn launch_first_run(cwd: &Path, home: &Path) -> Browser {
+        Browser::spawn(cwd, home, ROWS, COLS, &[])
+    }
+
+    fn spawn(
         cwd: &Path,
         home: &Path,
         rows: usize,
@@ -404,6 +423,39 @@ impl Browser {
     }
 }
 
+/// A machine that has registered a Provider, as every case here but the first run expects, so
+/// the browser opens on the settings (ADR-0196). The Provider is a `codex` context whose CLI is a
+/// fake that is not logged in, first on the returned `PATH`, so discovery is quick and the same
+/// on every machine. A test that wrote its own registry keeps it.
+fn registered_machine(home: &Path) -> String {
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    let registry = home.join("config/af/providers.toml");
+    if registry.exists() {
+        return inherited;
+    }
+    let auth = home.join("codex-fixture");
+    std::fs::create_dir_all(&auth).unwrap();
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &registry,
+        format!(
+            "version = 1\n[[providers]]\nid = \"codex-fixture\"\nkind = \"codex\"\nauth_dir = {:?}\n",
+            auth.canonicalize().unwrap().to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let bin = home.join("fixture-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script = "#!/bin/sh\n\
+        if [ \"$1\" = login ] && [ \"$2\" = status ]; then\n  \
+        printf '%s\\n' 'Not logged in' >&2\n  exit 1\nfi\nexit 64\n";
+    let codex = bin.join("codex");
+    std::fs::write(&codex, crate::provider_cli::with_help("codex", script)).unwrap();
+    let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&codex, executable).unwrap();
+    format!("{}:{inherited}", bin.display())
+}
+
 fn bar_rows(screen: &Screen) -> Vec<String> {
     let mut rows = Vec::new();
     for line in screen.lines() {
@@ -506,6 +558,23 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
         assert!(listed, "{}", screen.text());
     }
     assert!(screen.lines()[ROWS - 1].starts_with("NORMAL  hub"));
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// A first run: with no Provider registered the browser opens on the Providers pane, whose
+/// first row says how to register one (ADR-0196).
+#[test]
+fn bare_af_with_no_provider_registered_opens_on_the_providers_pane() {
+    let (_temp, root) = temp_root();
+    let repo = hub(&root);
+    let mut browser = Browser::launch_first_run(&repo, &root.join("home"));
+    // The row is cut at the pane's width; `l` scrolls the rest into view.
+    let hint = "no Provider registered yet -- :provider detect scans this machine";
+    let ready = |screen: &Screen| screen.text().contains(hint);
+    let screen = browser.wait_for("the first-run row", ready);
+    assert!(screen.text().contains("PROVIDERS"), "{}", screen.text());
+    assert!(!screen.text().contains("SETTINGS"), "{}", screen.text());
     browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }

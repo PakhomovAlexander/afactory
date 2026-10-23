@@ -433,6 +433,72 @@ pub(crate) fn registry_location() -> Option<PathBuf> {
     registry_path().ok().flatten()
 }
 
+/// One Provider as the registry declares it, or one claude/codex login found where its CLI
+/// looks by default, read without starting any CLI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Declared {
+    pub(crate) id: String,
+    /// `claude` or `codex`.
+    pub(crate) kind: &'static str,
+    pub(crate) auth_dir: Option<PathBuf>,
+}
+
+/// The registry as onboarding and `af doctor` read it: no probe, no Provider CLI started.
+pub(crate) struct RegistryRead {
+    pub(crate) path: Option<PathBuf>,
+    /// Why the registry could not be read, when it could not.
+    pub(crate) warning: Option<String>,
+    pub(crate) registered: Vec<Declared>,
+    /// Ambient candidates: a CLI on PATH whose default or `CLAUDE_CONFIG_DIR`/`CODEX_HOME`
+    /// login directory no registry entry names.
+    pub(crate) candidates: Vec<Declared>,
+}
+
+impl RegistryRead {
+    /// The registered IDs of one kind, in registry order.
+    pub(crate) fn ids_of(&self, kind: &str) -> Vec<&str> {
+        self.registered
+            .iter()
+            .filter(|entry| entry.kind == kind)
+            .map(|entry| entry.id.as_str())
+            .collect()
+    }
+}
+
+pub(crate) fn read_registry_entries() -> RegistryRead {
+    let (specs, path, warning) = load_specs();
+    let mut registered = Vec::new();
+    let mut candidates = Vec::new();
+    for spec in specs {
+        let declared = Declared {
+            id: spec.id,
+            kind: spec.kind.name(),
+            auth_dir: spec.auth_dir,
+        };
+        if spec.registry_declared {
+            registered.push(declared);
+        } else {
+            candidates.push(declared);
+        }
+    }
+    RegistryRead {
+        path,
+        warning,
+        registered,
+        candidates,
+    }
+}
+
+/// Every Provider's status as `af provider status` probes it, token-free, without the usage
+/// probe: what `af onboard --probe` and `af doctor` show.
+pub(crate) fn probed_statuses() -> Vec<ProviderStatus> {
+    discover_with_cancel(&AtomicBool::new(false), UsageProbe::Skip).providers
+}
+
+/// The line a successful `setup` or `add` ends with: the next step of a first run.
+const NEXT_AFTER_REGISTERING: &str =
+    "next: af onboard (in a repository) · af provider status lists every Provider";
+
 fn print_status_table(inventory: &ProviderInventory, usage: UsageProbe) {
     if inventory.providers.is_empty() {
         println!("No supported provider CLI is installed and no provider registry entries exist");
@@ -559,7 +625,7 @@ pub(crate) fn usability_name(status: &str) -> &'static str {
     }
 }
 
-fn available_provider_id(kind: &str, ids: &BTreeSet<String>) -> String {
+pub(crate) fn available_provider_id(kind: &str, ids: &BTreeSet<String>) -> String {
     let base = format!("{kind}-main");
     if !ids.contains(&base) {
         return base;
@@ -599,7 +665,7 @@ pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<i32, String>
             previous.display()
         );
     }
-    println!("next: af provider status");
+    println!("{NEXT_AFTER_REGISTERING}");
     Ok(EXIT_OK)
 }
 
@@ -989,11 +1055,11 @@ impl SetupReport<'_> {
                         previous.display()
                     );
                 }
-                println!("next: af provider status");
+                println!("{NEXT_AFTER_REGISTERING}");
             }
             SetupOutcome::AlreadyRegistered => {
                 println!("provider {id} is authenticated and registered ({kind}, {auth_dir})");
-                println!("next: af provider status");
+                println!("{NEXT_AFTER_REGISTERING}");
             }
             SetupOutcome::HumanActionRequired(action) => {
                 println!("provider {id} is not authenticated ({kind}, {auth_dir})");

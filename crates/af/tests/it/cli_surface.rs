@@ -825,3 +825,151 @@ fn json_errors_are_one_document_on_stdout() {
     );
     assert_eq!(document["exit_code"], 1);
 }
+
+/// Bare `af` without a terminal keeps its usage on stderr and exit 2, after two first-run lines
+/// (ADR-0196).
+#[test]
+fn bare_af_without_a_terminal_prints_the_first_run_hints() {
+    let bare = crate::common::af()
+        .env("AF_SELF_OFFLINE", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(bare.status.code(), Some(2));
+    assert!(out(&bare).is_empty(), "{}", out(&bare));
+    let text = err(&bare);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[..2],
+        [
+            "af: no command given, and the browser opens only when stdout is a terminal",
+            "first run? af provider detect · af onboard · af help start",
+        ],
+        "{text}"
+    );
+    assert!(text.contains("Usage: af"), "{text}");
+}
+
+/// `af --help` opens with what af is and the four steps, lists the commands once in the order a
+/// first run needs them, and every topic it names resolves; `af help` lists every topic once
+/// with the registry's description (ADR-0146, ADR-0196).
+#[test]
+fn root_help_has_one_command_list_and_every_named_topic_resolves() {
+    let help = out(&af(&["--help"]));
+    assert!(
+        help.starts_with("af runs model and command Workers in sandboxes"),
+        "{help}"
+    );
+    assert!(
+        help.contains("Start here (`af help start` explains each step):"),
+        "{help}"
+    );
+    for step in [
+        "1. af provider detect",
+        "2. af onboard",
+        "3. git add .af && git commit",
+        "4. af review plan --policy-rev HEAD --base HEAD --uncommitted",
+        "af doctor",
+    ] {
+        assert!(help.contains(step), "`{step}` missing:\n{help}");
+    }
+    assert!(
+        !help.contains("Namespaces:"),
+        "a second command list:\n{help}"
+    );
+    let commands: Vec<&str> = help
+        .split("Commands, in the order a first run needs them:\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .take_while(|line| line.starts_with("  "))
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(
+        commands[..7],
+        [
+            "provider", "onboard", "review", "task", "self", "doctor", "help"
+        ],
+        "{help}"
+    );
+    let mut unique = commands.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), commands.len(), "{help}");
+    let named: Vec<String> = help
+        .split("`af help ")
+        .skip(1)
+        .filter_map(|rest| rest.split('`').next())
+        .map(str::to_owned)
+        .collect();
+    assert!(named.contains(&"start".to_owned()) && named.contains(&"concepts".to_owned()));
+    for topic in &named {
+        let shown = af(&["help", topic]);
+        assert!(shown.status.success(), "af help {topic}: {}", err(&shown));
+        assert!(
+            out(&shown).starts_with(&format!("af help {topic} — ")),
+            "{}",
+            out(&shown)
+        );
+    }
+
+    let listed = out(&af(&["help"]));
+    let topics = listed
+        .split("Topics (`af help TOPIC`):\n")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{listed}"));
+    let rows: Vec<(&str, &str)> = topics
+        .lines()
+        .take_while(|line| line.starts_with("  "))
+        .map(|line| {
+            let line = line.trim_start();
+            let (name, about) = line.split_once(' ').unwrap();
+            (name, about.trim_start())
+        })
+        .collect();
+    let names: Vec<&str> = rows.iter().map(|(name, _)| *name).collect();
+    assert_eq!(
+        names,
+        [
+            "start",
+            "concepts",
+            "config",
+            "layers",
+            "environment",
+            "exit-codes",
+            "json",
+            "self",
+            "storage",
+            "telemetry"
+        ]
+    );
+    for (name, about) in rows {
+        // The same description `af help TOPIC` heads its page with: one source.
+        let page = out(&af(&["help", name]));
+        assert_eq!(
+            page.lines().next(),
+            Some(format!("af help {name} — {about}").as_str())
+        );
+    }
+    let concepts = out(&af(&["help", "concepts"]));
+    for word in [
+        "Task",
+        "Worker",
+        "Attempt",
+        "Snapshot",
+        "Round",
+        "Campaign",
+        "Store",
+        "Provider",
+        "Gate",
+        "Pipeline",
+        "Candidate",
+    ] {
+        assert!(
+            concepts
+                .lines()
+                .any(|line| line.starts_with(&format!("{word} "))),
+            "{word} missing:\n{concepts}"
+        );
+    }
+}

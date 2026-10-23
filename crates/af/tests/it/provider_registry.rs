@@ -1326,6 +1326,12 @@ fn add_normalizes_valid_inline_and_empty_provider_arrays() {
             ],
         );
         assert!(output.status.success(), "{}", stderr(&output));
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("\nnext: af onboard (in a repository)"),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
         let registry = std::fs::read_to_string(config.join("providers.toml")).unwrap();
         let value: toml::Value = toml::from_str(&registry).unwrap();
         assert_eq!(

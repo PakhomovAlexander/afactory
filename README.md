@@ -23,168 +23,122 @@ accepts and the hand edit or `af onboard --refresh-lock` a change needs; that li
 release, not a promise about the next one
 ([ADR-0145](docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)).
 
-## Install
-
-```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://github.com/PakhomovAlexander/afactory/releases/latest/download/install.sh | sh
-af self setup-shell --write     # completions + man pages for your shell
-af self status                  # what is installed, the default, the release key, the pin here
-af self update --check          # exit 10 when a newer release exists; `af self update` installs it
-```
-
-The installer places the newest release in the self-managed layout (`$XDG_DATA_HOME/af/versions/<v>/`,
-default symlink at `~/.local/bin/af`) and `af` takes over from there. Every release ships
-per-target tarballs, a `SHA256SUMS` file, and `SHA256SUMS.minisig` signed with the release key in
-[`crates/af/keys/release.pub`](crates/af/keys/release.pub); the binary embeds that
-key and refuses an unsigned or badly signed release. `install.sh` verifies the archive digest and
-the signature, fetching over HTTPS only; without `minisign` on `PATH` it refuses, unless
-`AF_INSTALL_ALLOW_UNSIGNED=1` accepts the checksum alone (from the same release as the archive,
-so it catches a corrupt download only). A re-run verifies the installed binary again.
-
-Updates need no `gh` for the public repository: `af self` lists and downloads releases
-anonymously over HTTPS with `curl`, as the installer does, and turns to the GitHub CLI (under
-your own `gh` login) only when that is refused, as it is for a repository that is not public.
-`af self update` without `--version` never moves the default to a release older than the one
-running.
-
-Supported targets: `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, and
-`aarch64-unknown-linux-musl` (static: no glibc floor). On x86_64 macOS, or another Linux or macOS
-target, build from source:
-
-```sh
-cargo install --path crates/af --locked
-```
-
-A source checkout can be ahead of the latest published release. `af --version --json` identifies
-its version, commit and target. A source build has no release receipt, so onboarding generates
-package pins but cannot create a verified `af` release pin; use an official installed release for
-that byte-binding pin. Onboarding leaves an existing release pin in the lock unchanged. Dispatch
-enforces the pinned bytes only through install receipts: a source build of any other version runs
-the pinned release, but a source build of the pinned version itself has no receipt to compare and
-runs as built.
-
-A source install has no signed release receipt, so `af self update`, `rollback`, and `uninstall`
-refuse to manage it. `af self status` identifies that state and prints the exact
-`af self install <version>` command. That command replaces the running source-installed executable
-with a verified release and adopts the self-managed layout. It never replaces an unrelated file at
-the default path.
-
-After an eligible command (any but `help`, `--version`, `af self`, `af config`, `completions`
-and the browser), `af` spawns a detached `af self refresh-check` that caches the newest release
-and exits. Headless and `--json` runs check too: the command's output and exit status never change,
-and nothing waits for the network. `[self] check_every` (24h) throttles invocations; no timer,
-daemon or service runs between them. The cached notice reaches stderr only when stderr is a
-terminal and the run has no `--json`. `CI`, `AF_SELF_OFFLINE=1`, `[self] update_check = false` and
-`auto_update = "never"` turn the check off; `af help self` has the whole policy
-([ADR-0154](docs/adr/0154-check-for-updates-after-headless-and-json-commands.md)). While a
-background check runs, `af self uninstall` refuses rather than race an installation it may be
-making; run it again when the check has finished.
-
-`af` runs on Linux and macOS only. Windows and other non-unix hosts are unsupported, and so are the
-BSDs: a source build on any of them stops with a compile error.
-
 ## Quickstart
 
-Start from a clean, trusted Git checkout. Generate the proposed authority using the repository's
-real acceptance Gate:
+Four steps, one command each. `af help start` prints them too, and `af doctor` checks where you
+are at any point, token-free.
+
+<a id="install"></a>
+
+1. **Install** af. Install `minisign` first: the installer verifies the release signature with
+   it and refuses without it (`brew install minisign` on macOS, `sudo apt install minisign` on
+   Debian and Ubuntu).
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -fsSL https://github.com/PakhomovAlexander/afactory/releases/latest/download/install.sh | sh
+   ```
+
+   `curl … | AF_INSTALL_CHANNEL=rc sh` (or `curl … | sh -s -- --rc`) installs the newest
+   pre-release instead. The installer ends with the next steps below and, when its bin directory
+   is not on `PATH`, the line that puts it there for your shell. Signatures, updates, source
+   builds and removal are in [docs/self-management.md](docs/self-management.md).
+
+2. **Connect a Provider**, the `claude` or `codex` CLI login af's model Workers run under:
+
+   ```sh
+   af provider detect --apply
+   ```
+
+   It finds the logins on this machine and registers them. With no login yet, run
+   `af provider setup claude-main --kind claude --login` (or `codex-main --kind codex`) at your
+   own terminal, never through an agent. af never reads a credential; see
+   [docs/providers.md](docs/providers.md).
+
+3. **Onboard a repository**: in a clean, trusted checkout, preview `.af/` (the reviewers, the
+   Provider each needs, and the repository's acceptance Gate, such as `make check`), write it,
+   and commit it:
+
+   ```sh
+   af onboard && af onboard --apply && git add .af && git commit -m 'Configure Afactory review authority'
+   ```
+
+   `af onboard` alone is token-free and writes nothing. To read the generated policy, Worker
+   prompts and lock before trusting them, run the commands one at a time and look at
+   `git diff --cached -- .af` before the commit. Pass `--gate 'check=make check'` when the Gate
+   it detects is not the one you want.
+
+4. **Review a change**: make one, plan its review token-free, then run it with the `--provider`
+   bindings the onboard preview printed:
+
+   ```sh
+   af review plan --policy-rev HEAD --base HEAD --uncommitted
+   af review --policy-rev HEAD --base HEAD --uncommitted --provider correctness=claude-main --provider architecture=codex-main
+   ```
+
+   The plan shows the Change Set, the route, the Gate and the bindings a run needs, and needs no
+   login. The run executes the Gate and the reviewers and spends tokens within the budgets `.af/`
+   sets; `af review report` shows its verdict and Findings again.
+
+At any step, one token-free command checks the machine and the repository and names the fix for
+what is missing:
 
 ```sh
-af onboard                          # preview .af/ and the exact apply command; spends no tokens
-af onboard --runner codex --gate 'check=make check' --apply  # replace with this repository's Gate
+af doctor
 ```
 
-Review all generated policy, Worker prompts, Gate commands and lock entries before trusting them.
-Intent-to-add makes new files visible in the diff without staging their contents:
+### What just happened
+
+`.af/` is the repository's review authority: the pipeline, the Worker packages, and a lock that
+pins them and the af release that wrote them. Only committed authority is trusted, which is why
+`--policy-rev` names a revision. A review captures that revision and your change as immutable
+Snapshots, runs every Worker in a sandbox over them, and folds the typed results into a Ledger
+of Findings; nothing is written to your checkout, committed or pushed. Campaigns are light by
+default: one closed Round. If it finds defects, fix them and run the project's Gate; do not start
+another Campaign, and use `--heavy` only when a human asks for convergence review
+([ADR-0037](docs/adr/0037-default-campaigns-to-one-round-light-review.md)). `af help concepts`
+explains Task, Worker, Attempt, Snapshot and the other words in two sentences each.
+
+### Agents and CI
+
+Every reading command takes `--json` for one versioned document, and exit codes are stable
+(`af help json`, `af help exit-codes`). A Provider login is a human's: `af provider setup --login`
+runs only at an interactive terminal, because the OAuth URL and code it prints are credentials in
+transit ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md)); without one, setup
+exits 3 with the command for a human to run. `af doctor --json` (`af/doctor@1`) tells an agent
+what is missing. `CI` turns the background update check off.
+
+### Updating and removing
 
 ```sh
-git add --intent-to-add .af
-git diff -- .af
+af self update --check   # exit 10 when a newer release exists; af self update installs it
+af self uninstall        # --purge also removes config, state, Stores, completions and man pages
 ```
 
-After approving that diff, commit only the authority and capture its local revision. No push or
-remote branch is needed:
+Campaign state lives under the XDG state root: `af review campaigns` lists it and
+`af review gc --older-than 14 --keep 5 --apply` removes old Campaigns; `af storage` shows
+everything af keeps against its budget. More in
+[docs/self-management.md](docs/self-management.md).
+
+### A first Task
+
+`af task` runs implementation Tasks the same way. The software starter is token-free: its
+Workers are deterministic commands.
 
 ```sh
-git add .af
-git commit -m 'Configure Afactory review authority'
-policy_rev=$(git rev-parse HEAD)
-base_rev="$policy_rev"
+af catalog init --profile software --destination task-demo && cd task-demo
+task_files=$(mktemp -d "$(dirname "$PWD")/af-task-requests.XXXXXX")
+mv implementation-*.json review-*.json planning.json "$task_files/"
+git init -q && git add . && git commit -qm 'Task starter'
+af task plan --file "$task_files/implementation-small.json"
+af task run implementation-small --execute
+af task show implementation-small
+af task deliver implementation-small --branch pagination --worktree ../pagination --confirm implementation-small
 ```
 
-Now make the source changes you want reviewed, keeping this shell open, then inspect the plan:
-
-```sh
-af review plan --policy-rev "$policy_rev" --base "$base_rev" --uncommitted
-```
-
-The policy revision must contain the reviewed, committed `.af/`. The Base independently selects
-what to compare against; for an existing branch change, set `base_rev` to its intended comparison
-commit. The plan can show an empty Change Set, but `run` refuses it: make a real candidate change
-before execution. Planning needs no Provider login, Gate execution or model calls.
-
-To execute that plan with the generated Codex Workers, register a Provider at your own terminal
-and supply its bindings explicitly (this step runs the Gate and spends model tokens):
-
-```sh
-af provider setup codex-main --kind codex --login  # log in at YOUR terminal, then register
-af provider status                 # verify registered and ambient Claude / Codex contexts
-af provider models --resolve 'GPT-6 Sol/high'      # exact model IDs and effort levels, token-free
-af review run --campaign pr-123 --policy-rev "$policy_rev" --base "$base_rev" --uncommitted \
-  --provider correctness=codex-main --provider architecture=codex-main --json
-```
-
-`af onboard` previews a deterministic authority bundle and writes nothing without `--apply`; it
-never executes a Gate or a model, reads a credential, or overwrites existing policy. Its preview
-prints a copyable apply command carrying the exact detected or explicit Gate; replace `make check`
-above when the repository uses another deterministic acceptance command. `af provider setup`
-verifies the named auth directory and writes only an ID, Provider kind, and auth-directory path to
-the machine-local registry; credentials remain owned by that CLI. An already authenticated context
-needs no login. Starting one is opt-in with `--login` and happens only at an interactive terminal,
-because the OAuth URL and authorization code it prints are credentials in transit that must never
-reach a pipe, chat, an agent transcript, or logs; without both, setup exits 3 and prints the exact
-command for a human to run ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md)). An
-explicitly authorized Linux host can instead use the separately permissioned
-[private-host login protocol](docs/provider-auth-host.md) to let the user complete browser consent
-without terminal access. It reports `authenticated_unverified` and never implicitly calls a model
-or resumes a Task ([ADR-0137](docs/adr/0137-permit-provider-logins-through-private-host-capabilities.md)).
-Login starts from an empty allowlisted environment in an owned auth directory that is
-not writable by other users, and one canonical auth context admits only one setup/login at a time.
-`setup` is machine-local and therefore does not dispatch to a repository's older pinned `af`;
-registry publication remains atomic for those older readers. `af provider add` registers an already
-authenticated context without opening a login and applies the same auth-directory safety checks.
-If a crash leaves publication fenced, `af provider recover` validates the marker plus the live,
-candidate, and prior hashes before archiving it; it reports which version is live and retains both
-preserved copies. Recovery is machine-local and also bypasses an older project pin.
-`af provider remove` drops named entries from the registry through the same atomic publication and
-leaves each auth directory and its login untouched; it is machine-local too
-([ADR-0136](docs/adr/0136-remove-a-registered-provider-by-id.md)).
-Ambient IDs shown by `status` are discovery labels and cannot be selected directly. `af provider
-status` is a fast registry and authentication check; `--usage` adds the optional subscription and
-quota probe, whose failure exits 7 and never demotes an authenticated Provider, and `af provider
-doctor` remains the charged end-to-end check. `af provider models` lists each Provider's exact
-model IDs, aliases and effort levels from its harness's own protocol, token-free, and `--resolve`
-prints the configuration to copy; every binding is checked against the same rules before anything
-is charged ([ADR-0148](docs/adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)).
-`status`, `models` and `setup` take `--json` for a stable versioned document; see
-[docs/providers.md](docs/providers.md). `af review
-plan` resolves policy, Base, candidate, the exact Change Set, the selected route, Gates, budgets,
-and required Provider bindings without Campaign state, external calls, or tokens — the route line
-reads like `route    route => .af/pipelines/docs.toml (docs); 3 changed path(s)`. `af review run`
-opens or resumes the Campaign, runs the Gate, admits the Providers, dispatches the Workers, and
-prints the verdict; `af review report` shows the Campaign's wall-clock, per-Attempt Provider usage,
-and every Finding's disposition afterwards.
-
-Campaigns are light by default: one closed Round. If it finds defects, fix them and run the
-project's deterministic gate; do not start another Campaign. `--heavy` keeps the pipeline's full
-convergence window and is for when a human explicitly asks for deep convergence review
-([ADR-0037](docs/adr/0037-default-campaigns-to-one-round-light-review.md)). Campaign state lives
-under the XDG review-state root and grows with every Subject materialized:
-
-```sh
-af review campaigns                            # every Campaign, its verdicts and Round history
-af review gc --older-than 14 --keep 5          # preview: what would go, and how much
-af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directories
-```
+`plan` captures the Task and shows its plan without running anything; `run --execute` runs that
+plan (`--confirm-plan PLAN_ID` instead confirms the exact plan you reviewed); `deliver` writes
+the verified result to a new local branch and worktree, never to your checkout. The starter's
+README walks through the rest; [docs/tasks.md](docs/tasks.md) is the guide.
 
 ## What it does
 
@@ -218,14 +172,25 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
 
 ## Requirements
 
-- Git, and a Rust toolchain at or above 1.88 for source builds (`rust-toolchain.toml` pins it).
+`af doctor` checks every one of these on the machine and repository it runs in.
+
+- Git 2.30 or later, `curl`, and `minisign` for `install.sh` (`brew install minisign`,
+  `sudo apt install minisign`), which refuses without it unless `AF_INSTALL_ALLOW_UNSIGNED=1`;
+  `gh` only for a release repository that is not public.
 - The `claude` and/or `codex` CLIs for model Workers. `af provider setup` verifies and registers a
   context without reading credentials, and with `--login` runs that CLI's official login at your
   terminal; `af provider status` shows what each context can do. Command Workers need neither.
+- Whatever the repository's Gate runs. A Gate runs on this machine, so its tools must be installed
+  before a review starts, or the first paid run fails at the Gate. This repository's own
+  `make check` needs:
+  - Rust at or above 1.88 (`rust-toolchain.toml` pins it), from https://rustup.rs:
+    `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+  - a C compiler and `make`: `xcode-select --install` on macOS, `sudo apt install build-essential`
+  - `cargo-nextest`: `cargo install cargo-nextest --locked`
+  - `python3` and `npx`: `brew install python node`, `sudo apt install python3 npm`
+  - `minisign`, as above
 - Optional: an OCI container runtime (Docker or compatible) for `provider = "container"` Gates.
   Detection runs the runtime's own `info`; an unusable runtime is refused, never silently downgraded.
-- `curl` and `minisign` for `install.sh`, which refuses without `minisign` unless
-  `AF_INSTALL_ALLOW_UNSIGNED=1`; `gh` only for a release repository that is not public.
 
 ## Configuration
 
@@ -249,6 +214,7 @@ and budgets are described in [`docs/architecture.md`](docs/architecture.md).
 ## Documentation
 
 - [`docs/README.md`](docs/README.md) — map of everything below.
+- [`docs/self-management.md`](docs/self-management.md) — installing, updating and removing af.
 - [`docs/architecture.md`](docs/architecture.md) — how the kernel is built, boundary by boundary.
 - [`CONTEXT.md`](CONTEXT.md) — the vocabulary: Snapshot, Subject, Campaign, Round, Finding, Attempt.
 - [`docs/adr/README.md`](docs/adr/README.md) — the binding design decisions.
