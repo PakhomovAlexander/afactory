@@ -287,6 +287,8 @@ fn run(example: &Example, repo: &Path, bin: &Path, jq: bool) -> (Option<i32>, St
             crate::common::PROBE_TIMEOUT_SETTING,
             crate::common::LOAD_SAFE_PROBE_TIMEOUT_MS,
         )
+        // Nor the developer's own `/opt/homebrew/bin/codex`, as for every `crate::common::af()`.
+        .env(crate::common::DETECT_SYSTEM_DIRS_SETTING, "")
         .stdin(Stdio::null());
     for (name, value) in crate::common::private_home_env() {
         command.env(name, value);

@@ -4716,7 +4716,8 @@ mod option_tests {
             ),
             (&["task", "start", "--file", "t.json"], false, false),
             (&["review", "run", "--campaign", "c"], true, false),
-            (&["provider", "doctor"], true, false),
+            // P4 made `--campaign` required: a doctor's admission evidence is a Campaign's.
+            (&["provider", "doctor", "--campaign", "c"], true, false),
             (&["self", "optimize", "--execute"], true, false),
             (&["self", "optimize"], false, false),
             (&["self", "status"], false, false),

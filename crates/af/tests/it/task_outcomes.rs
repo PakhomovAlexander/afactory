@@ -833,9 +833,11 @@ fn not_found_errors_name_the_task_the_store_and_what_it_holds() {
         fixture.root.join("out.json").to_str().unwrap(),
     ]);
     assert_eq!(port.status.code(), Some(1));
+    // P4's not-found shape: the port, the Task, and the ports its result has.
     assert!(
         err(&port).contains(
-            "Task pagination-cli has no such output port nope; ports: snapshot, verification"
+            "Output port nope not found in the result of Task pagination-cli; its ports are \
+             snapshot, verification"
         ),
         "{}",
         err(&port)

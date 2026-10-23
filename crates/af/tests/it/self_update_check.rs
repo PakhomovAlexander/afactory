@@ -1697,10 +1697,12 @@ fn a_release_check_stalled_for_over_an_hour_is_reported_and_is_no_check() {
 
     let status = headless(&sandbox, af_binary(), &home, &["self", "status"]);
     assert!(status.status.success(), "{}", err(&status));
+    // af resolves the roots it keeps state under once, so the fix names the canonical path
+    // (macOS `/var` is `/private/var`).
     let expected = format!(
         "check:      a release check has been running since {}; fix: rm {}",
         iso(since),
-        lock_path.display()
+        std::fs::canonicalize(&lock_path).unwrap().display()
     );
     assert!(out(&status).contains(&expected), "{}", out(&status));
     let json = headless(&sandbox, af_binary(), &home, &["self", "status", "--json"]);

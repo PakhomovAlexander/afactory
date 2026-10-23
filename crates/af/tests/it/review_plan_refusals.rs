@@ -78,7 +78,9 @@ fn onboarded(root: &Path) -> PathBuf {
     repo
 }
 
-/// Register `id` of `kind` with an auth directory of its own in the private home.
+/// Register `id` of `kind` with an auth directory of its own in the private home. The directory
+/// holds no login and no Provider CLI is installed here, so it is registered `--unverified`
+/// (ADR-0197); a token-free plan reads only the registry.
 fn register(repo: &Path, id: &str, kind: &str) {
     let home = crate::common::private_home_env()
         .into_iter()
@@ -97,6 +99,7 @@ fn register(repo: &Path, id: &str, kind: &str) {
             kind,
             "--auth-dir",
             auth.to_str().unwrap(),
+            "--unverified",
         ],
     );
     assert!(added.status.success(), "{}", err(&added));

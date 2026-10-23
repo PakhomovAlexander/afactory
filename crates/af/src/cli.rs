@@ -1265,7 +1265,8 @@ Exit codes: 0 registered, 4 Provider CLI missing, cannot start or incompatible, 
 conflict, 6 not authenticated.",
         after_long_help = "Examples:\n  af provider add codex-main --kind codex   # needs: a codex login in ~/.codex\n  \
 af provider add claude-work --kind claude --auth-dir /secure/claude-work   # needs: that directory\n  \
-af provider add claude-ci --kind claude --auth-dir /secure/ci --unverified   # needs: that directory"
+# needs: the directory /secure/ci\n  \
+af provider add claude-ci --kind claude --auth-dir /secure/ci --unverified"
     )]
     Add {
         /// Stable ID used by --provider NODE=ID
@@ -1667,9 +1668,9 @@ af task output TASK_ID --port report --format canonical-markdown --output report
         inspect: TaskInspectArgs,
     },
     /// Run or resume a captured Task using its exact recorded plan and authority
-    #[command(
-        after_long_help = "Examples:\n  af task run TASK_ID --confirm-plan PLAN_ID\n  af task run TASK_ID --retry-gate    # after `next: af task run TASK_ID --retry-gate`"
-    )]
+    #[command(after_long_help = "Examples:\n  \
+af task run TASK_ID --confirm-plan PLAN_ID   # needs: a planned Task and the plan ID it printed\n  \
+af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --retry-gate")]
     Run {
         task_id: String,
         /// Confirm the exact plan shown by plan/start/explain; stale identities refuse
@@ -1821,7 +1822,9 @@ of their whole diagnostic and stderr, and as the last line the one command to ru
 --checks prints the gate's last check receipt instead: each check's status, duration, warm or \
 cold, the step that stopped it, its failing and flaky tests and the last 40 lines of its stderr; \
 with --json, one `af/task-checks@1` document.",
-        after_long_help = "Examples:\n  af task show pagination-cli\n  af task show pagination-cli --checks\n  af task show pagination-cli --json"
+        after_long_help = "Examples:\n  af task show pagination-cli   # needs: Task pagination-cli\n  \
+af task show pagination-cli --checks   # needs: Task pagination-cli\n  \
+af task show pagination-cli --json   # needs: Task pagination-cli"
     )]
     Show {
         /// Task id
@@ -2736,7 +2739,7 @@ pub(crate) enum LayerArg {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum SelfCommand {
-    /// What is installed, the default, its receipt, the pin that applies here, and the last release check
+    /// What is installed, the pin that applies here, and the last release check
     #[command(
         long_about = "What is installed, the default, its receipt, the pin that applies here, and the last release check.\n\n\
 The `last check:` line says when a release check last answered and the newest releases it found; \
