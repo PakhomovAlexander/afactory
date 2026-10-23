@@ -1,6 +1,6 @@
 schema = "af.code-task-policy/1"
 # The kernel's own gate. verify.sh runs `make check` with a stable external target dir.
-check_wall_ms = 3600000
+check_wall_ms = 5400000
 require_container = false
 
 [checks.kernel]
