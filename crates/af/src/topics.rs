@@ -1,6 +1,19 @@
 //! Long-form help pages: `af help <topic>`, also rendered as `man af-<topic>`.
 
+/// Every topic: its name, the one-line description `af help` lists, and its page. This table is
+/// the one source of topic descriptions: `af help`, `af help <topic>`, the man pages and the
+/// browser's `:help` all read it.
 pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
+    (
+        "start",
+        "The first run in four steps: Provider, onboard, commit, review",
+        START,
+    ),
+    (
+        "concepts",
+        "Task, Worker, Attempt, Snapshot and the other words af uses",
+        CONCEPTS,
+    ),
     ("config", "How af is configured", CONFIG),
     (
         "layers",
@@ -36,6 +49,23 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
         TELEMETRY,
     ),
 ];
+
+/// `af help` without a word: every topic once, with its registry description.
+pub(crate) fn listing() -> String {
+    let width = TOPICS
+        .iter()
+        .map(|(name, _, _)| name.len())
+        .max()
+        .unwrap_or(0);
+    let mut text = String::from("Topics (`af help TOPIC`):\n");
+    for (name, about, _) in TOPICS {
+        text.push_str(&format!("  {name:<width$}  {about}\n"));
+    }
+    text.push_str(
+        "\nAny other word is a command path: `af help review run` equals `af review run --help`.",
+    );
+    text
+}
 
 pub(crate) fn find(name: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
     TOPICS.iter().find(|(topic, _, _)| *topic == name)
@@ -136,6 +166,67 @@ paths; `--json` carries the whole list in `undeclared_af_paths`, and `af task de
 in the receipt. Nothing is removed: not from the Snapshot, not from the delivered worktree. Set
 `[delivery] undeclared_af_paths = \"refuse\"` in `.af/af.toml` to make delivery stop instead,
 before it prepares a record or touches git. The value is captured when a Task is planned.";
+
+const START: &str = "\
+The first run, in four steps. `af doctor` checks where you are at any point, token-free.
+
+1. Register a Provider: the claude or codex CLI login af's model Workers run under.
+     af provider detect --apply
+   finds the logins on this machine (~/.claude, ~/.codex, CLAUDE_CONFIG_DIR, CODEX_HOME) and
+   registers them; without --apply it only lists them. With no login yet, run this at your own
+   terminal, never through an agent: af provider setup claude-main --kind claude --login
+   (or codex-main --kind codex). af never reads a credential: the registry holds an ID, a kind
+   and a directory. `af provider status` shows what is registered and logged in.
+
+2. Onboard a repository. In a clean git checkout:
+     af onboard              preview `.af/`, the review authority (token-free; writes nothing)
+     af onboard --apply      write it; the preview prints the exact command to copy
+   The preview names the reviewers, the Provider each one needs and the Gate: the repository's
+   own acceptance command, such as `make check`. It picks claude or codex Workers from the
+   Provider kinds you registered.
+
+3. Review that authority, then commit it:
+     git add .af && git diff --cached -- .af && git commit -m 'Configure Afactory'
+   Only committed `.af/` is trusted: --policy-rev selects it by revision.
+
+4. Review a change. Make one, then:
+     af review plan --policy-rev HEAD --base HEAD --uncommitted        token-free
+     af review --policy-rev HEAD --base HEAD --uncommitted \\
+       --provider correctness=claude-main --provider architecture=codex-main
+   The plan shows the change, the route, the Gate and the bindings the run needs. The run executes
+   the Gate and the reviewers, spending tokens within the budgets `.af/` sets, and prints the
+   verdict and the Findings; `af review report` shows them again.
+
+Then an implementation Task: `af catalog init --profile software --destination task-demo`
+creates a token-free starter whose README walks through `af task plan`, `af task run`,
+`af task show` and `af task deliver`. `af help concepts` explains the words used here.";
+
+const CONCEPTS: &str = "\
+Task       One piece of work with typed inputs, required outputs and limits, run by a Pipeline
+           until it is verified or not. `af task list` and `af task show TASK_ID` show them.
+Worker     A packaged reviewer, implementer or evaluator: a model (claude, codex) or a command,
+           with its prompt and declared inputs. `af onboard` lists a repository's reviewers.
+Attempt    One execution of one Worker or check, charged against its budget; a failed one is
+           still spent. `af review report --campaign NAME` lists each Attempt and its tokens.
+Snapshot   An immutable, content-addressed capture of the repository's files that every Worker
+           reads; never the live checkout. `af task show TASK_ID` names a Task's Snapshots.
+Round      One run of a review Pipeline over one exact change; it closes only with a real
+           verdict. `af review campaigns` shows each Campaign's Rounds.
+Campaign   One logical review owning one Ledger of Findings across its Rounds; light by default,
+           one closed Round. `af review campaigns` lists them; `af review ledger` shows one.
+Store      Where af records a Task's or a Campaign's events and artifacts, outside the
+           repository under XDG state. `af storage` shows every Store and its size.
+Provider   A named, machine-local login of the claude or codex CLI that model Workers run under;
+           af never reads its credential. `af provider status` lists them.
+Gate       The checks a Pipeline declares, such as `make check`, that must pass before reviewers
+           run; a check that could not run is not a pass. `af onboard` shows the Gate.
+Pipeline   The typed graph of Gates and Workers a review or Task runs, pinned in `.af/`.
+           `af review plan` names the one a change routes to; `af task explain TASK_ID --tree`.
+Candidate  The change under review: the working tree (--uncommitted) or a revision
+           (--candidate REV), compared against --base. `af review plan` shows its Change Set.
+
+The full vocabulary, with the terms each word must not be confused with, is CONTEXT.md in the
+af repository.";
 
 const CONFIG: &str = "\
 Everything a human writes is TOML; everything af writes goes to the Store, except `.af/af.lock`
@@ -653,8 +744,8 @@ Updates — `[self]` in ~/.config/af/config.toml
   keep_versions = 3
 
   The check never runs on the hot path. After an eligible command — any but help, --version,
-  `af self`, `af config`, completions and the browser — af spawns a detached child that
-  refreshes the cache and exits, with or without a terminal and under --json too; `af self
+  `af self`, `af config`, `af doctor`, completions and the browser — af spawns a detached child
+  that refreshes the cache and exits, with or without a terminal and under --json too; `af self
   status` schedules it too when it is due, and `af self status --refresh` runs it at once. The
   child holds none of the command's pipes, and never changes its output or exit status.
   check_every throttles invocations, counted from the last attempt, a failed one included: no
@@ -680,7 +771,7 @@ Updates — `[self]` in ~/.config/af/config.toml
 
 Commands
   af self status [--refresh] | update [--check] | rollback | install V | remove V | prune
-  af self setup-shell [--write] | uninstall [--purge]
+  af self setup-shell [--write | --remove] | uninstall [--purge]
   Update, rollback, remove, prune, and uninstall refuse to touch a binary af did not install.
   uninstall refuses while a background check runs, since it may be installing a release: run
   it again when the check has finished. A check that starts after an uninstall writes nothing,
@@ -701,7 +792,8 @@ mod tests {
     use super::*;
 
     /// A topic that is a table starts as one: its first row keeps the indent of the rows below
-    /// it, which a `"\` string continuation would strip.
+    /// it, which a `"\` string continuation would strip. A definition list (`af help concepts`)
+    /// starts its terms at the margin and indents each definition's continuation under its text.
     #[test]
     fn a_tables_first_row_keeps_its_indent() {
         for (name, _, text) in TOPICS {
@@ -709,7 +801,14 @@ mod tests {
             let first = lines.next().unwrap();
             let second = lines.next().unwrap_or_default();
             let indented = |line: &str| line.starts_with("  ");
-            if indented(second) && !second.trim_start().starts_with('$') {
+            let definition_column = first.find(char::is_whitespace).and_then(|end| {
+                first[end..]
+                    .find(|c: char| !c.is_whitespace())
+                    .map(|start| end + start)
+            });
+            let definition_list = !indented(first)
+                && definition_column == Some(second.len() - second.trim_start().len());
+            if indented(second) && !second.trim_start().starts_with('$') && !definition_list {
                 assert!(
                     indented(first),
                     "af help {name}: its first line {first:?} lost the indent of {second:?}"
@@ -718,5 +817,31 @@ mod tests {
         }
         assert!(EXIT_CODES.starts_with("  0    pass"));
         assert!(ENVIRONMENT.starts_with("  AF_<TABLE>__<KEY>"));
+    }
+
+    /// One registry: every topic once, findable by its name, listed by `af help` with exactly
+    /// the description `af help TOPIC` heads its page with.
+    #[test]
+    fn every_topic_is_listed_once_with_its_registry_description() {
+        let listing = listing();
+        let mut names = std::collections::BTreeSet::new();
+        for (name, about, text) in TOPICS {
+            assert!(names.insert(*name), "{name} twice");
+            assert_eq!(find(name).map(|(found, _, _)| *found), Some(*name));
+            assert!(!about.is_empty() && !text.is_empty(), "{name}");
+            let rows = listing
+                .lines()
+                .filter(|line| line.split_whitespace().next() == Some(*name))
+                .collect::<Vec<_>>();
+            assert_eq!(rows.len(), 1, "{name}: {listing}");
+            assert!(rows[0].trim_end().ends_with(about), "{name}: {}", rows[0]);
+        }
+        assert_eq!(
+            &TOPICS[..2]
+                .iter()
+                .map(|(name, _, _)| *name)
+                .collect::<Vec<_>>(),
+            &["start", "concepts"]
+        );
     }
 }

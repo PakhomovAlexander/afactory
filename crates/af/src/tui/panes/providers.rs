@@ -32,6 +32,10 @@ const BAR: usize = 10;
 pub(crate) const REMOVE_NEEDS_A_PROVIDER: &str =
     "d removes a Provider: select one in the bar, or open it";
 
+/// The pane's first row on a machine whose registry names no Provider, in the browser's ASCII
+/// (`--` for a dash).
+pub(crate) const NONE_REGISTERED: &str = "no Provider registered yet -- :provider detect scans this machine (read-only); :provider detect --apply registers what it finds";
+
 /// One probed Provider's catalog, under its Provider id and with its kind.
 #[derive(Clone)]
 pub(crate) struct SharedCatalog {
@@ -114,6 +118,9 @@ pub(crate) struct ProvidersPane {
     /// Discover on load. A pane over an inventory already taken never runs a Provider CLI
     /// unless `R` asks.
     discover: bool,
+    /// Whether the registry named no Provider when the pane loaded, read without a probe, for
+    /// the time before discovery hands an inventory over.
+    unregistered: bool,
     selected: Option<String>,
     rows: Vec<Row>,
     spinner: usize,
@@ -132,6 +139,7 @@ impl ProvidersPane {
             usage: UsageProbe::Skip,
             job: None,
             discover: true,
+            unregistered: false,
             selected: None,
             rows: Vec::new(),
             spinner: 0,
@@ -216,12 +224,28 @@ impl ProvidersPane {
         self.rebuild();
     }
 
+    /// Whether this machine has no registered Provider: no inventory entry but an ambient
+    /// candidate, or, before discovery answers, a registry that names none.
+    pub(crate) fn none_registered(&self) -> bool {
+        match &self.inventory {
+            Some(inventory) => inventory
+                .providers
+                .iter()
+                .all(providers::is_ambient_candidate),
+            None => self.unregistered,
+        }
+    }
+
     fn rebuild(&mut self) {
         let title = match &self.selected {
             Some(id) => format!("PROVIDERS  {id}"),
             None => "PROVIDERS  (af provider status)".to_owned(),
         };
-        let mut rows = vec![Row::painted(title, Paint::Title), Row::blank()];
+        let mut rows = vec![Row::painted(title, Paint::Title)];
+        if self.none_registered() {
+            rows.push(Row::plain(NONE_REGISTERED));
+        }
+        rows.push(Row::blank());
         match &self.inventory {
             Some(inventory) => {
                 let selected = self.selected.as_deref();
@@ -253,6 +277,7 @@ impl ProvidersPane {
 impl Pane for ProvidersPane {
     fn load(&mut self, _scope: &Scope) -> Result<(), String> {
         if self.discover && self.inventory.is_none() && self.job.is_none() {
+            self.unregistered = providers::read_registry_entries().registered.is_empty();
             self.start(UsageProbe::Skip);
         }
         Ok(())

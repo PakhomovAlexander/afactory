@@ -1,5 +1,6 @@
-//! Execute the documented token-free onboarding path, including the reviewed local policy
-//! commit. No remote, Provider login, Gate or model is needed to reach a real review plan.
+//! Execute the README Quickstart's token-free commands, including the local policy commit, the
+//! doctor and a first Task. No remote, Provider login, Gate or model is needed to reach a real
+//! review plan.
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -30,6 +31,9 @@ fn shell(root: &Path, script: &str) -> std::process::Output {
         .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
         .env("GIT_COMMITTER_NAME", "Quickstart fixture")
         .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+        // Plenty of free disk for `af doctor`, whatever the machine running the test has.
+        .env("AF_TEST_FREE_BYTES", (1_u64 << 40).to_string())
+        .env_remove("SHELL")
         .output()
         .unwrap()
 }
@@ -41,8 +45,8 @@ fn readme() -> String {
     std::fs::read_to_string(workspace.join("README.md")).unwrap()
 }
 
-#[test]
-fn readme_quickstart_reaches_a_plan_with_local_committed_authority() {
+/// The README Quickstart's code blocks, in order.
+fn quickstart_blocks() -> Vec<String> {
     let readme = readme();
     let quickstart = readme
         .split("## Quickstart\n")
@@ -51,26 +55,86 @@ fn readme_quickstart_reaches_a_plan_with_local_committed_authority() {
         .split("## What it does")
         .next()
         .unwrap();
-    let blocks: Vec<_> = quickstart
+    quickstart
         .split("```sh\n")
         .skip(1)
-        .map(|part| part.split("```").next().unwrap())
-        .collect();
-    // Keep the executable setup, review, commit and plan blocks distinct from paid execution.
-    assert!(blocks[0].contains("af onboard"));
-    assert!(blocks[1].contains("git diff"));
-    assert!(blocks[2].contains("git commit"));
-    assert!(blocks[3].contains("af review plan"));
-    for block in &blocks[..4] {
-        assert!(!block.contains("af provider"));
-        assert!(!block.contains("af review run"));
+        .map(|part| {
+            // A block inside a list item is indented; its commands are not.
+            part.split("```")
+                .next()
+                .unwrap()
+                .lines()
+                .map(str::trim_start)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect()
+}
+
+/// The README's commands, run against a fixture repository: every one that is token-free and
+/// local. The rest are named exactly: the install (network), `af provider detect --apply` (it
+/// registers this machine's logins; package P1 adds it), the review run (it spends tokens) and
+/// `af self update`/`uninstall` (they manage this machine's installation).
+#[test]
+fn readme_quickstart_reaches_a_plan_with_local_committed_authority() {
+    let blocks = quickstart_blocks();
+    assert_eq!(blocks.len(), 7, "{blocks:#?}");
+    let [install, provider, onboard, review, doctor, updating, task] = &blocks[..] else {
+        unreachable!()
+    };
+    // The four steps, one command each, then the doctor and a first Task.
+    assert!(
+        install.starts_with("curl --proto '=https' --tlsv1.2 -fsSL "),
+        "{install}"
+    );
+    assert!(
+        install.trim_end().ends_with("/install.sh | sh"),
+        "{install}"
+    );
+    assert_eq!(provider.trim(), "af provider detect --apply");
+    assert_eq!(
+        onboard.trim(),
+        "af onboard && af onboard --apply && git add .af && git commit -m 'Configure Afactory review authority'"
+    );
+    let (plan, run) = review.trim().split_once('\n').unwrap();
+    assert_eq!(
+        plan,
+        "af review plan --policy-rev HEAD --base HEAD --uncommitted"
+    );
+    assert!(
+        run.starts_with("af review --policy-rev HEAD --base HEAD --uncommitted --provider "),
+        "{run}"
+    );
+    assert_eq!(doctor.trim(), "af doctor");
+    // Updating and removing manage this machine's installation; they are not run here.
+    for line in updating.lines() {
+        assert!(line.starts_with("af self "), "{updating}");
     }
+    for command in [
+        "af task plan",
+        "af task run",
+        "af task show",
+        "af task deliver",
+    ] {
+        assert!(task.contains(command), "{command} missing: {task}");
+    }
+    let readme = readme();
+    let before = readme
+        .split("curl --proto '=https' --tlsv1.2 -fsSL")
+        .next()
+        .unwrap();
+    assert!(
+        before.contains("brew install minisign"),
+        "the minisign line comes first"
+    );
+    assert!(readme.contains("AF_INSTALL_CHANNEL=rc"));
+
     let root = tempfile::tempdir().unwrap();
     let script = format!(
         r#"
 af() {{
   case "$1 ${{2:-}}" in
-    "onboard "*|"review plan"|"catalog test"|"task start"|"task explain") "$AF_BIN" "$@" ;;
+    "onboard "*|"review plan"|"doctor "*) "$AF_BIN" "$@" ;;
     *) echo "Unexpected command in token-free walkthrough: $*" >&2; exit 1 ;;
   esac
 }}
@@ -81,19 +145,15 @@ printf 'check:\n\t@touch "%s"; exit 1\n' "$PWD/../gate-ran" > Makefile
 printf '# Example\n' > README.md
 git add Makefile README.md
 git commit -qm 'Initial source'
-{}
-{}
-{}
-# The guide asks the operator to make a real source change after capturing policy and Base.
+{onboard}
+# The guide asks the operator to make a real source change after committing the policy.
 printf '\nA candidate change.\n' >> README.md
-{{
-{}
-}} > ../plan.txt
-af review plan --policy-rev "$policy_rev" --base "$base_rev" --uncommitted --json > ../plan.json
+{plan} > ../plan.txt
+{plan} --json > ../plan.json
+{doctor} > ../doctor.txt
 test ! -e ../gate-ran
 test -z "$(git remote)"
-"#,
-        blocks[0], blocks[1], blocks[2], blocks[3]
+"#
     );
     let output = shell(root.path(), &script);
     assert!(
@@ -106,8 +166,8 @@ test -z "$(git remote)"
         serde_json::from_slice(&std::fs::read(root.path().join("plan.json")).unwrap()).unwrap();
     assert_eq!(plan["schema"], "af/review-plan@1");
     assert_eq!(plan["token_free"], true);
-    // Planning records nothing; `af onboard --apply` registers the Project and its checkout
-    // (ADR-0158), which is the only state the walkthrough leaves.
+    // Planning and the doctor record nothing; `af onboard --apply` registers the Project and its
+    // checkout (ADR-0158), which is the only state the walkthrough leaves.
     let kept: std::collections::BTreeSet<String> = std::fs::read_dir(root.path().join("state/af"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -129,6 +189,49 @@ test -z "$(git remote)"
     let text = std::fs::read_to_string(root.path().join("plan.txt")).unwrap();
     assert!(text.contains("correctness"), "{text}");
     assert!(text.contains("architecture"), "{text}");
+    let doctor = std::fs::read_to_string(root.path().join("doctor.txt")).unwrap();
+    assert!(doctor.contains("validates"), "{doctor}");
+    assert!(doctor.contains("Gate check runs make"), "{doctor}");
+}
+
+/// The README's first Task, run as written on the software starter: token-free command Workers
+/// plan, run, show and deliver it to a new worktree.
+#[test]
+fn readme_first_task_plans_runs_shows_and_delivers_the_starter() {
+    let blocks = quickstart_blocks();
+    let task = blocks.last().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let script = format!(
+        r#"
+af() {{
+  case "$1 ${{2:-}}" in
+    "catalog init"|"task plan"|"task run"|"task show"|"task deliver") "$AF_BIN" "$@" ;;
+    *) echo "Unexpected command in the first Task: $*" >&2; exit 1 ;;
+  esac
+}}
+{task}
+git status --porcelain > ../status.txt
+"#
+    );
+    let output = shell(root.path(), &script);
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let shown = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        shown.contains("Task implementation-small: finished/verified"),
+        "{shown}"
+    );
+    // Delivered to a new worktree; the checkout itself is untouched.
+    assert!(root.path().join("pagination").is_dir());
+    assert!(
+        std::fs::read_to_string(root.path().join("status.txt"))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

@@ -142,7 +142,7 @@ fn every_not_found_refusal_takes_one_shape() {
         (
             vec!["help", "nope"],
             "Topic or command nope not found in af help",
-            "; topics: config, layers",
+            "; topics: start, concepts, config, layers",
         ),
     ];
     for (args, starts, offers) in &cases {

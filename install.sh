@@ -1,11 +1,16 @@
 #!/bin/sh
-# Install af — the newest stable release, or AF_INSTALL_VERSION — into the self-managed layout:
+# Install af — the newest stable release, the newest pre-release under AF_INSTALL_CHANNEL=rc (or
+# --rc, the `[self] channel = "rc"` of an installed af), or AF_INSTALL_VERSION — into the
+# self-managed layout:
 #   $XDG_DATA_HOME/af/versions/<v>/{af,receipt.toml}   and   $XDG_BIN_HOME/af -> that binary
 # Needs curl, tar and minisign; never stores a token. Re-running is idempotent and verifies the
 # installed binary again against the release; `af self` takes over from here: the installed
-# binary records the activation, so `af self rollback` works from the first update on.
+# binary records the activation, so `af self rollback` works from the first update on. It ends
+# with the next steps of a first run, and the PATH line for $SHELL when the bin directory is not
+# on PATH.
 #
 #   curl --proto '=https' --tlsv1.2 -fsSL https://github.com/PakhomovAlexander/afactory/releases/latest/download/install.sh | sh
+#   curl ... | AF_INSTALL_CHANNEL=rc sh      or      curl ... | sh -s -- --rc
 #
 # A private fork, or a host without curl, falls back to the GitHub CLI: `gh auth login` with an
 # account that can read the release repository (AF_REPO), and the same script works unchanged.
@@ -16,6 +21,18 @@
 # the checksum alone, which comes from the same place as the archive and so only catches a
 # corrupt download. The installed `af` carries the key itself and verifies every later install.
 set -eu
+
+channel="${AF_INSTALL_CHANNEL:-stable}"
+for argument in "$@"; do
+  case "$argument" in
+    --rc) channel=rc ;;
+    *) echo "af: install.sh takes only --rc, not '$argument' — fix: curl ... | sh -s -- --rc, or AF_INSTALL_CHANNEL=rc" >&2; exit 2 ;;
+  esac
+done
+case "$channel" in
+  stable|rc) ;;
+  *) echo "af: AF_INSTALL_CHANNEL is '$channel'; it is stable or rc — fix: AF_INSTALL_CHANNEL=rc, or leave it unset for stable" >&2; exit 2 ;;
+esac
 
 REPO="${AF_REPO:-PakhomovAlexander/afactory}"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/af/versions"
@@ -76,6 +93,33 @@ semver_max() {
     END { if (seen) print "v" a "." b "." c }'
 }
 
+# The newest of the given tags, pre-releases (`vX.Y.Z-rc.N`) included, by semantic version: a
+# release ranks above its own pre-releases, and rc.N by N. What AF_INSTALL_CHANNEL=rc installs.
+semver_max_rc() {
+  sed 's/^v//' | awk -F. '
+    function better(a2, b2, c2, r2) {
+      if (!seen) return 1
+      if (a2 != a) return a2 > a
+      if (b2 != b) return b2 > b
+      if (c2 != c) return c2 > c
+      return (r2 < 0 && r >= 0) || (r2 >= 0 && r >= 0 && r2 > r)
+    }
+    {
+      line = $0; pre = -1; core = line
+      if (index(line, "-rc.")) { core = substr(line, 1, index(line, "-rc.") - 1); pre = substr(line, index(line, "-rc.") + 4) }
+      n = split(core, part, ".")
+      if (n != 3 || part[1] !~ /^[0-9]+$/ || part[2] !~ /^[0-9]+$/ || part[3] !~ /^[0-9]+$/) next
+      if (pre != -1 && pre !~ /^[0-9]+$/) next
+      if (better(part[1] + 0, part[2] + 0, part[3] + 0, pre + 0)) { a = part[1] + 0; b = part[2] + 0; c = part[3] + 0; r = pre + 0; tag = line; seen = 1 }
+    }
+    END { if (seen) print "v" tag }'
+}
+
+# newest_tag: the newest tag on stdin for the chosen channel.
+newest_tag() {
+  if [ "$channel" = rc ]; then semver_max_rc; else semver_max; fi
+}
+
 # semver_lt A B: true when A < B (major.minor.patch, numeric). As in semver, and as `af self`
 # orders them, a pre-release precedes its release: 0.8.0-rc.1 < 0.8.0.
 semver_lt() {
@@ -95,17 +139,17 @@ else
   if [ "$via" = curl ]; then
     code=$(http_get "https://api.github.com/repos/$REPO/releases?per_page=100" "$tmp/releases.json")
     case "$code" in
-      200) tag=$(release_tags < "$tmp/releases.json" | semver_max) ;;
+      200) tag=$(release_tags < "$tmp/releases.json" | newest_tag) ;;
       404) use_gh "$REPO is not public" ;;
       *) echo "af: GitHub API returned $code listing releases of $REPO — fix: retry later, or set AF_INSTALL_VERSION=X.Y.Z to skip the lookup" >&2; exit 1 ;;
     esac
   fi
   if [ "$via" = gh ]; then
-    tags=$(gh release list --repo "$REPO" --exclude-pre-releases --exclude-drafts --limit 100 --json tagName -q '.[].tagName') \
+    tags=$(gh release list --repo "$REPO" --exclude-drafts --limit 100 --json tagName -q '.[].tagName') \
       || { echo "af: gh could not list the releases of $REPO — fix: gh auth login (an account with access to $REPO)" >&2; exit 1; }
-    tag=$(printf '%s\n' "$tags" | semver_max)
+    tag=$(printf '%s\n' "$tags" | newest_tag)
   fi
-  [ -n "$tag" ] || { echo "af: no release found in $REPO" >&2; exit 1; }
+  [ -n "$tag" ] || { echo "af: no $channel release found in $REPO" >&2; exit 1; }
 fi
 version="${tag#v}"
 if semver_lt "$version" "$FLOOR"; then
@@ -152,7 +196,15 @@ if command -v minisign >/dev/null 2>&1; then
 elif [ "${AF_INSTALL_ALLOW_UNSIGNED:-}" = 1 ]; then
   echo "af: minisign is not installed and AF_INSTALL_ALLOW_UNSIGNED=1, so only the checksum is verified; it comes from the same release as the archive and catches a corrupt download only" >&2
 else
-  echo "af: minisign is not installed, so the release signature cannot be verified — fix: brew install minisign (macOS) or apt install minisign (Debian/Ubuntu) and run this again; or set AF_INSTALL_ALLOW_UNSIGNED=1 to accept the checksum alone (only the checksum is verified then; the installed af verifies every later update with its embedded key)" >&2
+  # The exact install line for this machine's package manager.
+  if command -v brew >/dev/null 2>&1; then get_minisign="brew install minisign"
+  elif command -v apt-get >/dev/null 2>&1; then get_minisign="sudo apt install minisign"
+  elif command -v dnf >/dev/null 2>&1; then get_minisign="sudo dnf install minisign"
+  elif command -v pacman >/dev/null 2>&1; then get_minisign="sudo pacman -S minisign"
+  elif command -v apk >/dev/null 2>&1; then get_minisign="apk add minisign"
+  else get_minisign="brew install minisign (macOS) or sudo apt install minisign (Debian/Ubuntu)"
+  fi
+  echo "af: minisign is not installed, so the release signature cannot be verified — fix: $get_minisign, then run this again; or set AF_INSTALL_ALLOW_UNSIGNED=1 to accept the checksum alone (only the checksum is verified then; the installed af verifies every later update with its embedded key)" >&2
   exit 1
 fi
 expected=$(grep " [*]*$asset\$" "$tmp/SHA256SUMS" | awk '{print $1}')
@@ -192,10 +244,23 @@ RECEIPT
 fi
 
 # The binary activates itself: it links the default and records the activation in its own
-# state, so what the installer did is exactly what `af self update` would have done.
-AF_SELF_OFFLINE=1 "$DATA/$version/af" self update --version "$version"
+# state, so what the installer did is exactly what `af self update` would have done. Its line
+# would only repeat the one above; a failure still reaches stderr and stops here.
+AF_SELF_OFFLINE=1 "$DATA/$version/af" self update --version "$version" >/dev/null
+
+# At most six lines end the install: the version and path above, the next steps of a first run,
+# and the PATH line for this shell when the bin directory is not on PATH yet.
+echo "next:"
+echo "  af provider detect   find and connect your claude/codex logins"
+echo "  af onboard            in a repository: preview .af/ (token-free)"
+echo "  af self setup-shell --write   completions + man pages"
 case ":$PATH:" in
   *":$BIN:"*) ;;
-  *) echo "add $BIN to PATH, e.g.:  export PATH=\"$BIN:\$PATH\"" ;;
+  *)
+    case "${SHELL##*/}" in
+      fish) echo "  fish_add_path $BIN   # af is not on PATH yet" ;;
+      zsh) echo "  export PATH=\"$BIN:\$PATH\"   # add to ~/.zshrc: af is not on PATH yet" ;;
+      bash) echo "  export PATH=\"$BIN:\$PATH\"   # add to ~/.bashrc: af is not on PATH yet" ;;
+      *) echo "  add $BIN to PATH: af is not on PATH yet" ;;
+    esac ;;
 esac
-echo "next: af self setup-shell --write   (completions + man pages) · af self status"

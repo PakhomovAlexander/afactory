@@ -24,6 +24,7 @@ mod campaign_loop;
 mod catalog_digest;
 mod cli_surface;
 mod common_review_summaries;
+mod doctor;
 mod help_examples;
 mod help_hygiene;
 mod install_script;

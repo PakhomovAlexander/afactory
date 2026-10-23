@@ -1,17 +1,22 @@
 # Documentation
 
 Where to look, by question. The [README](../README.md) covers installing, the quickstart, and the
-`.af/` layout; the CLI documents itself with `af help layers`, `af help self`, `af help exit-codes`,
-`af help providers`, and `--help` on every namespace and command.
+`.af/` layout; the CLI documents itself with `af help` (every topic), `af help start`,
+`af help concepts`, `af help providers`, and `--help` on every namespace and command.
 
 ## Start here
 
-1. [`../CONTEXT.md`](../CONTEXT.md) — the vocabulary. Everything else assumes it.
-2. [`architecture.md`](architecture.md) — the boundaries and the tests that enforce them.
-3. [`adr/README.md`](adr/README.md) — why each boundary is where it is.
+1. [The README Quickstart](../README.md#quickstart) — install, connect a Provider, onboard a
+   repository and review a change, four steps with one command each; `af doctor` checks each.
+2. `af help concepts` — Task, Worker, Attempt, Snapshot, Round, Campaign, Store, Provider, Gate,
+   Pipeline and Candidate, two sentences each, with the command that shows each one.
+3. [`../CONTEXT.md`](../CONTEXT.md) — the whole vocabulary, with the terms each word must not be
+   confused with. Everything below assumes it.
 4. [`providers.md`](providers.md) — getting model access onto a machine, safely, before running
    anything that spends tokens.
 5. [`tasks.md`](tasks.md) — the `af task` walkthrough, once review makes sense.
+6. [`architecture.md`](architecture.md) and [`adr/README.md`](adr/README.md) — the boundaries,
+   the tests that enforce them, and why each is where it is.
 
 ## By document
 
@@ -28,7 +33,7 @@ Where to look, by question. The [README](../README.md) covers installing, the qu
 | [`task-execution/experiments.md`](task-execution/experiments.md) | How an experiment Task measures a declared command on the source and on a candidate, compares the two under a declared objective, and gates its evaluator on the result: the `[measures]` and `[objectives]` policy tables, the report line, failure reasons and comparison rules. |
 | [`task-execution/remote-checks.md`](task-execution/remote-checks.md) | How a declared check runs as a Remote Check: the policy's `remote` table, the pipeline's `remote_checks`, the operator's machine-local push target, the plan's `publish-gate` effect, the gate branches and draft pull request, the recorded evidence and reasons, cleanup, and what a workflow must allow. |
 | [`task-execution/report.md`](task-execution/report.md) | How a report Task's author reads an exact source Snapshot, how the kernel resolves the report's repository citations against that Snapshot's Manifest, and how an independent verifier on the same Snapshot accepts it: `report_sources`, `af/DocumentDraft@2`, the report policy, checks and output. |
-| [`self-management.md`](self-management.md) | How `af` checks for newer releases: when the check runs, the bounds on every network call, what the `af/self-check@3` cache records, how a stalled check is reported, and what `af self status` prints for a stable or a pre-release user. |
+| [`self-management.md`](self-management.md) | What the installer does and prints, how releases are signed and verified, how af updates itself, how it checks for newer releases (when the check runs, the bounds on every network call, what the `af/self-check@3` cache records, how a stalled check is reported, and what `af self status` prints for a stable or a pre-release user), shell completions and man pages, source builds, and removing af with or without `--purge`. |
 | [`telemetry.md`](telemetry.md) | What Telemetry records about af's own work and what it never touches: the spans a run records, the four levels, how credentials are withheld, the machine-only `[telemetry]` table, a run's executions and retained history, `af telemetry status`, `reindex`, `runs`, `show`, `tail` and `gc`, telemetry in the Storage Budget, and the layout of the telemetry store. |
 | [`performance-ci.md`](performance-ci.md) | How the continuous performance workflow schedules pull request, main, nightly and dispatch runs from the trusted control: the operator's image and runner variables, the owner-review prerequisite, the hosted sample scratch, each job, reruns, and what has not been demonstrated. |
 | [`performance-sdlc.md`](performance-sdlc.md) | The SDLC rollout: PR and release comparisons, image provisioning, the stable check, local evidence collection and the transition from advisory reporting to calibrated enforcement. |

@@ -58,29 +58,30 @@ Campaigns and maintenance:
 
 Run options (`af review [OPTIONS]` is `af review run [OPTIONS]`): see `af review run --help`.{after-help}";
 
-const AF_ABOUT: &str = "Afactory — deterministic multi-agent review and implementation";
-const AF_LONG_ABOUT: &str = "\
-af drives sandboxed, budgeted Worker attempts over an immutable Snapshot of a git repository \
-and folds their typed results into a findings ledger. Project policy lives in `.af/` (committed \
-TOML); state lives outside the repository under XDG directories; every model call is bounded \
-and journaled.
+const AF_ABOUT: &str =
+    "Afactory — model Workers review and change a git repository in sandboxes, on a budget";
+/// `af --help`: what af is in one sentence, the four first steps, and where the words and the
+/// topics are explained. The one command list is clap's, in the order a first run needs it.
+pub(crate) const AF_LONG_ABOUT: &str = "\
+af runs model and command Workers in sandboxes over an immutable Snapshot of a git repository, \
+on a token budget, and never publishes: `af review` folds what reviewers find into a ledger, and \
+`af task` turns a Task file into a verified change you deliver to a new local worktree.
 
-Namespaces:
-  review     plan, run, and work a review Campaign
-  task       start, inspect, and deliver an implement Task
-  project    show this repository's Project and manage its Workspaces
-  catalog    capture shared Pipeline, Worker and Task-kind packages from Git
-  provider   inspect and preflight the configured model providers
-  onboard    generate or validate `.af/` review authority for a repository
-  config     show the effective configuration and where each value came from
-  self       optimize the current project, or manage af installations
+Start here (`af help start` explains each step):
+  1. af provider detect           find the claude/codex logins on this machine and register them
+  2. af onboard                   in a repository: preview `.af/` (token-free); --apply writes it
+  3. git add .af && git commit    review that authority, then commit it
+  4. af review plan --policy-rev HEAD --base HEAD --uncommitted
+                                  token-free; `af review` with --provider NODE=ID runs it
+  af doctor                       check this machine and repository, token-free
 
-`af help <topic>` explains config, layers, environment, exit-codes, json, providers, task-states, \
-and self. `af` alone \
-at a terminal opens a read-first browser over this scope's settings, providers and pipelines.";
+Task, Worker, Attempt, Snapshot, Provider and the other words are explained in \
+`af help concepts`; `af help` lists every topic (config, layers, environment, exit-codes, json, \
+providers, task-states, self, storage, telemetry). `af` alone at a terminal opens a browser \
+over this scope's settings, Providers, pipelines and Tasks.";
 
 const AF_AFTER_HELP: &str = "\
-Exit codes:
+Exit codes (`af help exit-codes`):
   0 pass · 1 error · 2 usage · 3 fail · 4 incomplete · 10 outdated (self update --check)
   af task run: 5 gate failed · 6 provider failed · 7 expired (`af help exit-codes`)
 
@@ -92,10 +93,16 @@ Examples:
   af review --policy-rev HEAD --base HEAD --uncommitted \\
     --provider correctness=claude-main --provider architecture=codex-main
   af self status                 # what is installed and which pin applies here
+  af doctor                      # what is ready on this machine and in this repository
 
 Review and commit generated `.af/` before selecting it with --policy-rev. These review examples
 use trusted policy at HEAD and compare working-tree changes against HEAD; run refuses an empty diff.
 To execute, also supply --provider NODE=ID for every model Worker required by that policy.";
+
+/// What bare `af` prints first when stdout is not a terminal, before its usage on stderr.
+pub(crate) const FIRST_RUN_HINTS: &str = "\
+af: no command given, and the browser opens only when stdout is a terminal
+first run? af provider detect · af onboard · af help start";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -106,6 +113,7 @@ To execute, also supply --provider NODE=ID for every model Worker required by th
     after_long_help = AF_AFTER_HELP,
     disable_help_subcommand = true,
     disable_version_flag = true,
+    subcommand_help_heading = "Commands, in the order a first run needs them",
     max_term_width = 100
 )]
 pub(crate) struct Af {
@@ -127,6 +135,7 @@ pub(crate) struct Af {
 pub(crate) enum Command {
     /// Capture shared Pipeline, Worker and Task-kind packages from an exact Git revision
     #[command(
+        display_order = 9,
         long_about = "Capture shared Pipeline, Worker and Task-kind packages from an exact Git revision.\n\n\
 `init` writes starter packages and `sync` writes a captured import into --destination. The \
 destination is a safe project-relative path under --repo (default `.`) that must not exist yet: \
@@ -141,6 +150,7 @@ symlink or a non-directory is refused, and an existing destination is never over
     },
     /// Plan, run, and work a review Campaign
     #[command(
+        display_order = 3,
         long_about = "Plan, run, and work a review Campaign.\n\n\
 A Campaign reviews one Subject (a diff or the working tree) against committed `.af/` policy. \
 `plan` is token-free. `run` executes the pipeline inside sandboxes and folds results into the \
@@ -163,6 +173,7 @@ af review report --campaign pr-42 --format md   # needs: Campaign pr-42",
     Review(ReviewNamespace),
     /// Inspect and preflight the configured model providers
     #[command(
+        display_order = 1,
         alias = "providers",
         subcommand_required = true,
         arg_required_else_help = true,
@@ -190,6 +201,7 @@ See `af help providers` for the registry model and the order of first use."
     },
     /// Generate or validate `.af/` review authority for a repository
     #[command(
+        display_order = 2,
         long_about = "Set up a repository for af review: write the `.af/` policy a review runs \
 under, then commit it. af reads review policy only from a commit, so nothing you have not \
 reviewed and committed ever governs a review. Four steps:\n\n  \
@@ -205,7 +217,7 @@ packages they reference; it drops a pin whose `.af/workers/NAME` package or \
 The command never calls a model, runs a Gate, reads credentials, creates Campaign state, fetches \
 a pull request, commits, pushes, comments, or overwrites an existing `.af/` directory. Notes for \
 agents and automation close this page.",
-        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; architecture = GPT-6 Sol/high (default)\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6 Sol/high\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  \
+        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; architecture = GPT-6 Sol/high\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6 Sol/high\nWithout --runner, onboarding picks claude or codex when only that Provider kind is registered on this machine (`af provider status`), and mixed otherwise; the `profile` line says which and why.\n\nThe preview's `providers` block names, for every model Worker, a registered Provider of its kind and the --provider binding to pass, or the command that registers one; it reads the registry without starting a Provider CLI unless --probe asks.\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  \
 af onboard\n  \
 af onboard --gate 'check=make check' --apply   # needs: a repository without .af/\n  \
 af onboard --runner mixed --apply   # needs: a repository without .af/\n  \
@@ -228,6 +240,7 @@ explicitly requests convergence review, and repeat that explicit mode when resum
     Onboard(OnboardArgs),
     /// Start, inspect, and deliver an implement Task
     #[command(
+        display_order = 4,
         subcommand_required = true,
         arg_required_else_help = true,
         long_about = "Start, inspect, and deliver an implement Task.\n\n\
@@ -251,6 +264,7 @@ af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --con
     },
     /// Show this repository's Project, measure it into Surveys, and manage its Workspaces
     #[command(
+        display_order = 8,
         subcommand_required = true,
         arg_required_else_help = true,
         long_about = "Show this repository's Project, measure it into Surveys, and manage its \
@@ -303,6 +317,7 @@ af task plan --workspace research --file ticket.json   # needs: Workspace resear
     },
     /// Show the effective configuration and where each value came from
     #[command(
+        display_order = 10,
         subcommand_required = true,
         arg_required_else_help = true,
         long_about = "Show the effective configuration and where each value came from.\n\n\
@@ -319,6 +334,7 @@ af config edit --layer user   # needs: $EDITOR and a terminal"
     },
     /// See, install, update, roll back, and remove af itself, or analyze project economics
     #[command(
+        display_order = 5,
         name = "self",
         subcommand_required = true,
         arg_required_else_help = true,
@@ -352,6 +368,7 @@ af self setup-shell --write"
     },
     /// Show what af keeps on this machine against its storage budget, and reclaim it
     #[command(
+        display_order = 11,
         args_conflicts_with_subcommands = true,
         long_about = "Show what af keeps on this machine against its storage budget, and reclaim it.\n\n\
 af keeps at most `[storage] max_bytes` (\"auto\" by default: 20 GiB, or 40 GiB on a host whose cache \
@@ -378,6 +395,7 @@ repository's `.af/af.toml` cannot change it. See `af help storage`.",
     },
     /// Show what Telemetry recorded on this machine: its runs, span trees, live tail and ledger
     #[command(
+        display_order = 12,
         subcommand_required = true,
         arg_required_else_help = true,
         long_about = "Show what Telemetry recorded on this machine: its runs, span trees, live tail and ledger.\n\n\
@@ -401,6 +419,7 @@ refused `[telemetry]` key.",
     },
     /// Print a shell completion script (values complete live from the binary)
     #[command(
+        display_order = 13,
         long_about = "Print a shell completion script.\n\n\
 The script is thin: it asks the running `af` for candidates, so campaign names, task IDs, \
 config keys, and installed versions complete from real state and the script never goes stale \
@@ -416,20 +435,56 @@ source <(af completions bash)"
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Explain a topic (config, layers, environment, exit-codes, json, providers, self, storage, telemetry) or a command
+    /// Check this machine and repository, token-free: binary, PATH, shell, tools, Providers
     #[command(
+        display_order = 6,
+        long_about = "Check this machine and repository, token-free: what a first run needs and \
+what is missing, each with the one command that fixes it.\n\n\
+Checks, each `ok`, `warn` or `fail` with a one-line `fix:`:\n\
+  binary     the running af, its version, install receipt and how it was verified, the default link\n\
+  path       the default link's directory on PATH, and whether `af` on PATH is that link\n\
+  shell      completions and man pages for $SHELL\n\
+  update     the cached release check: its age, a newer release, the policy, the release source\n\
+  tools      git >= 2.30, curl, minisign; gh when curl is missing; what the repository's Gate runs\n\
+             (make, cargo, cc, cargo-nextest, npx, python3) and a container runtime when it needs one\n\
+  providers  the registry, each registered Provider's login (the token-free status probe), and\n\
+             claude/codex logins found but not registered\n\
+  storage    what af keeps against [storage] max_bytes, free disk against min_free_bytes, and\n\
+             installs a killed installer abandoned\n\
+  project    in a repository: `.af/`, the lock's af pin, each Gate command, and a Provider for\n\
+             every model Worker kind\n\n\
+It never calls a model, logs in, installs, or writes a file, and it schedules no update check; \
+the charged end-to-end Provider check is `af provider doctor`. Exit codes: 0 nothing failed \
+(warnings allowed), 1 at least one check failed, 2 usage error. --json prints one `af/doctor@1` \
+document.",
+        after_long_help = "Examples:\n  af doctor\n  af doctor --repo ../other-checkout   # needs: a checkout at ../other-checkout\n  af doctor --json | jq '.checks[] | select(.status != \"ok\")'"
+    )]
+    Doctor(MachineDoctorArgs),
+    /// Explain a topic or a command; `af help` lists every topic
+    #[command(
+        display_order = 7,
         long_about = "Explain a topic or a command.\n\n\
-Topics: config, layers, environment, exit-codes, json, providers, self, storage, telemetry. \
-Anything else \
-is treated \
-as a command path, so `af help review run` equals `af review run --help`.",
-        after_long_help = "Examples:\n  af help layers\n  af help exit-codes\n  af help review ledger"
+`af help` alone lists every topic with what it explains; start with `af help start` and \
+`af help concepts`. A word that is not a topic is a command path, so `af help review run` \
+equals `af review run --help`.",
+        after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help review ledger"
     )]
     Help {
         /// A topic name or a command path
         #[arg(value_name = "TOPIC|COMMAND")]
         words: Vec<String>,
     },
+}
+
+/// `af doctor`.
+#[derive(Debug, Args)]
+pub(crate) struct MachineDoctorArgs {
+    /// The repository whose `.af/`, pin and Gates to check [default: .]
+    #[arg(long, value_name = "DIR", default_value = ".")]
+    pub(crate) repo: PathBuf,
+    /// One `af/doctor@1` document on stdout instead of text
+    #[arg(long)]
+    pub(crate) json: bool,
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1335,7 +1390,9 @@ af provider doctor --campaign pr-42 --provider correctness=claude-main"
 pub(crate) enum ProviderAuthCommand {
     /// Begin or reuse one login; a private host grant is required before the CLI starts
     Begin {
+        /// Provider ID to log in and register
         id: String,
+        /// The Provider's CLI kind
         #[arg(long, value_enum)]
         kind: ProviderKindArg,
         /// Exact existing or new native auth directory; ambient credentials are never selected
@@ -1353,19 +1410,26 @@ pub(crate) enum ProviderAuthCommand {
     },
     /// Inspect closed non-secret state; interrupted owners never appear authenticated
     Status {
+        /// Provider ID the login session belongs to
         id: String,
+        /// The Provider's CLI kind
         #[arg(long, value_enum)]
         kind: ProviderKindArg,
+        /// The session's native auth directory
         #[arg(long, value_name = "DIR")]
         auth_dir: PathBuf,
     },
     /// Cancel only the currently identified recovery session (idempotent)
     Cancel {
+        /// Provider ID the login session belongs to
         id: String,
+        /// The Provider's CLI kind
         #[arg(long, value_enum)]
         kind: ProviderKindArg,
+        /// The session's native auth directory
         #[arg(long, value_name = "DIR")]
         auth_dir: PathBuf,
+        /// The recovery session to cancel, as `status` names it
         #[arg(long)]
         recovery_id: String,
     },
@@ -1387,9 +1451,10 @@ pub(crate) struct OnboardArgs {
         help_heading = "Selector"
     )]
     pub(crate) repo: PathBuf,
-    /// Runner profile for the generated Workers
-    #[arg(long, value_enum, default_value_t = RunnerArg::Mixed, help_heading = "Generate")]
-    pub(crate) runner: RunnerArg,
+    /// Runner profile for the generated Workers [default: the Provider kinds registered on
+    /// this machine: claude, codex, or mixed for both or none]
+    #[arg(long, value_enum, help_heading = "Generate")]
+    pub(crate) runner: Option<RunnerArg>,
     /// A Gate the review must pass, NAME=COMMAND (repeatable)
     #[arg(long, value_name = "NAME=COMMAND", action = ArgAction::Append, help_heading = "Generate")]
     pub(crate) gate: Vec<String>,
@@ -1402,6 +1467,10 @@ pub(crate) struct OnboardArgs {
     /// Run this command under release VERSION, installing it on demand (how a pin moves)
     #[arg(long, value_name = "VERSION", help_heading = "Action")]
     pub(crate) af: Option<String>,
+    /// Also run the token-free Provider status probe for the providers block (it starts each
+    /// registered Provider's CLI to check its login)
+    #[arg(long, help_heading = "Output")]
+    pub(crate) probe: bool,
     /// One JSON document on stdout instead of text
     #[arg(long, help_heading = "Output")]
     pub(crate) json: bool,
@@ -1418,34 +1487,43 @@ pub(crate) enum RunnerArg {
 pub(crate) enum CatalogCommand {
     /// Create supported Task and Worker starters in an absent directory
     Init {
+        /// The starter set to write (a starter name, not an installed Task-kind profile)
         #[arg(long, default_value="document", value_parser=["document", "software", "planning", "all", "experiment", "report"])]
         profile: String,
         /// Existing minisign public key assigned to developer owner; enables the Planner
         #[arg(long)]
         developer_public_key: Option<PathBuf>,
+        /// Directory the destination is relative to
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         /// Absent directory, as a safe path relative to --repo (an absolute path is refused)
         #[arg(long)]
         destination: String,
+        /// One JSON document on stdout instead of text
         #[arg(long)]
         json: bool,
     },
     /// Check exact Pipeline/Worker contract fixtures from a local Git revision without dispatch
     Test {
+        /// Local Git checkout holding the catalog
         #[arg(long)]
         source: PathBuf,
+        /// Git revision whose committed catalog is checked
         #[arg(long, default_value = "HEAD")]
         revision: String,
+        /// Catalog manifest path in that revision
         #[arg(long, default_value = "catalog.toml")]
         manifest: String,
         /// Fixture path in the same Git commit (defaults beside the manifest)
         #[arg(long)]
         fixtures: Option<String>,
+        /// Check only this Pipeline's fixtures
         #[arg(long, conflicts_with = "worker")]
         pipeline: Option<String>,
+        /// Check only this Worker's fixtures
         #[arg(long)]
         worker: Option<String>,
+        /// One JSON document on stdout instead of text
         #[arg(long)]
         json: bool,
     },
@@ -1481,15 +1559,19 @@ pin=$(af catalog digest .af/task-packages/team/implementer) || exit 1"
         /// Local Git checkout or public HTTPS Git URL
         #[arg(long)]
         source: String,
+        /// Git revision to capture the catalog from
         #[arg(long, default_value = "HEAD")]
         revision: String,
+        /// Catalog manifest path in that revision
         #[arg(long, default_value = "catalog.toml")]
         manifest: String,
+        /// Directory the destination is relative to
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         /// Absent directory, as a safe path relative to --repo (an absolute path is refused)
         #[arg(long)]
         destination: String,
+        /// One JSON document on stdout instead of text
         #[arg(long)]
         json: bool,
     },
@@ -1566,31 +1648,56 @@ af task start --file ../ticket.json --execute --json   # needs: a Task file and 
     },
     /// Capture and compile a Task file without dispatching any Worker (`start` without --execute)
     #[command(
-        long_about = "Capture and compile a Task file without dispatching any Worker, and print \
-the plan with its ID. `af task start` without --execute does the same; `af task run TASK_ID \
---confirm-plan PLAN_ID` then runs exactly that plan.",
+        long_about = "Capture a Task file and compile its plan without dispatching any Worker: \
+token-free, and nothing runs. `af task start` without --execute does the same. The Task is \
+recorded in its Store with the plan; `af task run TASK_ID --confirm-plan PLAN_ID` runs exactly \
+that plan, and `af task explain TASK_ID` shows it again.\n\nNever: calls a model, runs a check, \
+writes to the repository, commits or pushes.",
         after_long_help = "Examples:\n  \
 af task plan --file ../ticket.json   # needs: a Task file (af catalog init writes starters)\n  \
-af task plan --file ../ticket.json --json   # needs: a Task file"
+af task plan --file ../ticket.json --uncommitted --json   # needs: a Task file"
     )]
     Plan {
+        /// Versioned Task JSON/TOML file to capture (keep it outside the checkout)
         #[arg(long, value_name = "FILE")]
         file: PathBuf,
+        /// Capture local Worker tuning for this Task (default: the Workspace's bindings file)
         #[arg(long, value_name = "FILE")]
         bindings: Option<PathBuf>,
         /// Explicit machine-local read-only issue source accounts
         #[arg(long, value_name = "FILE", requires = "file")]
         source_bindings: Option<PathBuf>,
-        #[arg(long, value_name = "DIR", default_value = ".")]
+        /// Repository to work in
+        #[arg(
+            long,
+            value_name = "DIR",
+            default_value = ".",
+            help_heading = "Selector"
+        )]
         repo: PathBuf,
-        #[arg(long, value_name = "DIR")]
+        /// Explicit state directory outside the repository: absent, empty or already an af
+        /// Store; it becomes af-owned, and af may remove it whole
+        #[arg(long, value_name = "DIR", help_heading = "Selector")]
         state: Option<PathBuf>,
         /// The Workspace whose Store and bindings file to use, by label (`af project workspaces`)
-        #[arg(long, value_name = "LABEL", conflicts_with = "state")]
+        #[arg(
+            long,
+            value_name = "LABEL",
+            conflicts_with = "state",
+            help_heading = "Selector"
+        )]
         workspace: Option<String>,
-        #[arg(long, default_value = "HEAD", conflicts_with = "uncommitted")]
+        /// Source revision whose committed `.af/` and files the Task captures (default: HEAD)
+        #[arg(
+            long,
+            value_name = "REV",
+            default_value = "HEAD",
+            conflicts_with = "uncommitted",
+            help_heading = "Selector"
+        )]
         authority: String,
-        #[arg(long)]
+        /// Capture the working tree instead of a revision
+        #[arg(long, help_heading = "Selector")]
         uncommitted: bool,
         /// When the Task's limits are too small for the Pipeline, plan with the smallest limits
         /// that fit instead of refusing, and print every limit it raised
@@ -1599,11 +1706,13 @@ af task plan --file ../ticket.json --json   # needs: a Task file"
         /// Re-plan an unstarted Task of the same ID from a changed Task file, in place
         #[arg(long)]
         replace: bool,
-        #[arg(long)]
+        /// One JSON document on stdout instead of text
+        #[arg(long, help_heading = "Output")]
         json: bool,
     },
     /// Capture an updated issue and replace its plan without executing Workers
     Refresh {
+        /// Task id
         task_id: String,
         /// Read a fresh local JSON/TOML issue (defaults to the captured project path)
         #[arg(long, value_name = "FILE", conflicts_with = "source_bindings")]
@@ -1616,62 +1725,93 @@ af task plan --file ../ticket.json --json   # needs: a Task file"
     },
     /// Write exact outer-plan or pending experiment bytes for an external developer signature
     DecisionPayload {
+        /// Task id
         task_id: String,
-        #[arg(long)]
+        /// The captured developer label whose key will sign the payload
+        #[arg(long, value_name = "LABEL")]
         developer: String,
+        /// The decision the payload records
         #[arg(long, value_parser = ["approved", "rejected"])]
         decision: String,
-        #[arg(long)]
+        /// Why, recorded in the signed payload
+        #[arg(long, value_name = "TEXT")]
         reason: String,
+        /// Where to write the payload bytes; the file must not exist
         #[arg(long, value_name = "ABSENT_FILE")]
         output: PathBuf,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// Write one recorded Task output to an absent file: Markdown for a person, or JSON
+    /// Write one recorded Task output to stdout or an absent file: Markdown or JSON
     #[command(
+        long_about = "Write one recorded output of a finished Task: to stdout, or with --output \
+to a file that must not exist yet (nothing is ever overwritten). The port is one of the Task's \
+output ports, as `af task show TASK_ID` lists them, holding a single artifact.\n\n--json \
+describes the written file as one `af.task-output/1` document, so it needs --output; the bytes \
+alone go to stdout without it.",
         after_long_help = "Formats:\n  json                the recorded artifact envelope, for machines and audit\n  markdown            a Document or report as a person reads it: its sections, sources,\n                      plain-language result and matching review; derived, not itself\n                      reviewed. Other Markdown outputs (an optimization report, a\n                      comparison) as their own renderer writes them\n  canonical-markdown  a Document or report exactly as recorded: the bytes the checks and\n                      the reviewer judged\n  human-markdown      the same as markdown, for a Document or report\n\nAn unknown --port is refused with the ports the Task's result has.\n\nExamples:\n  \
+# needs: a finished report Task\n  \
+af task output TASK_ID --port report --format markdown\n  \
 # needs: a finished report Task\n  \
 af task output TASK_ID --port report --format markdown --output report.md\n  \
 # needs: a finished report Task\n  \
 af task output TASK_ID --port report --format canonical-markdown --output report-canonical.md"
     )]
     Output {
+        /// Task id
         task_id: String,
-        #[arg(long)]
+        /// The output port to write, as `af task show TASK_ID` lists them
+        #[arg(long, value_name = "PORT")]
         port: String,
+        /// json, markdown, canonical-markdown or human-markdown (see Formats below)
         #[arg(long, default_value="json", value_parser=["json","markdown","canonical-markdown","human-markdown"])]
         format: String,
-        #[arg(long)]
-        output: PathBuf,
+        /// Write to this file, which must not exist, instead of stdout
+        #[arg(long, value_name = "ABSENT_FILE")]
+        output: Option<PathBuf>,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
     /// Record an exact outer-plan or pending experiment approval signed by a captured developer key
     Approve {
+        /// Task id
         task_id: String,
-        #[arg(long)]
+        /// The payload `af task decision-payload` wrote
+        #[arg(long, value_name = "FILE")]
         payload: PathBuf,
-        #[arg(long)]
+        /// The developer's minisign signature over that payload
+        #[arg(long, value_name = "FILE")]
         signature: PathBuf,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
     /// Record an exact plan rejection signed by a captured developer key
     Reject {
+        /// Task id
         task_id: String,
-        #[arg(long)]
+        /// The payload `af task decision-payload` wrote
+        #[arg(long, value_name = "FILE")]
         payload: PathBuf,
-        #[arg(long)]
+        /// The developer's minisign signature over that payload
+        #[arg(long, value_name = "FILE")]
         signature: PathBuf,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
     /// Run or resume a captured Task using its exact recorded plan and authority
-    #[command(after_long_help = "Examples:\n  \
+    #[command(
+        long_about = "Run or resume a captured Task using its exact recorded plan and authority.\n\n\
+--confirm-plan names the plan you reviewed (`af task plan`, `start` or `explain` print it); a \
+plan that changed since refuses. --execute runs the current plan without that confirmation, for \
+automation. Model Workers spend tokens within the plan's budget.\n\nNever: writes to the \
+original repository, commits, pushes, or delivers; see `af task deliver`.",
+        after_long_help = "Examples:\n  \
 af task run TASK_ID --confirm-plan PLAN_ID   # needs: a planned Task and the plan ID it printed\n  \
-af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --retry-gate")]
+af task run TASK_ID --execute --json   # needs: a planned Task\n  \
+af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --retry-gate"
+    )]
     Run {
+        /// Task id
         task_id: String,
         /// Confirm the exact plan shown by plan/start/explain; stale identities refuse
         #[arg(long, value_name = "PLAN_ID", conflicts_with = "execute")]
@@ -1693,7 +1833,17 @@ af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --re
         inspect: TaskInspectArgs,
     },
     /// Explain a captured Task's ports, hierarchy, bindings, coverage and budgets
+    #[command(
+        long_about = "Explain a captured Task's ports, hierarchy, bindings, coverage and budgets: \
+the plan `af task run --confirm-plan` would run, read from its Store. Token-free; records \
+nothing.",
+        after_long_help = "Examples:\n  \
+af task explain TASK_ID   # needs: a planned Task\n  \
+af task explain TASK_ID --tree   # needs: a planned Task\n  \
+af task explain TASK_ID --plan PLAN_ID --json   # needs: a Task and one of its plan IDs"
+    )]
     Explain {
+        /// Task id
         task_id: String,
         /// Render the expanded Pipeline hierarchy as an ASCII tree
         #[arg(long, conflicts_with = "json")]
@@ -1705,9 +1855,23 @@ af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --re
         inspect: TaskInspectArgs,
     },
     /// Export reusable definitions and contract fixtures into an absent directory
+    #[command(
+        long_about = "Export the executable definition a Task's plan produced (a generated plan, \
+once its Planner ran) as a shared catalog directory: `catalog.toml`, `contracts.json` and the \
+Pipeline and Worker packages, under one package name. The destination, a safe path under \
+--repo, must not exist; nothing is overwritten, and nothing exported is authorized to execute \
+until a catalog that names it is reviewed and committed.",
+        after_long_help = "Examples:\n  \
+# needs: a planned Task\n  \
+af task export TASK_ID --name team/pagination --destination exported\n  \
+# needs: a planned Task\n  \
+af task export TASK_ID --name team/pagination --destination exported --json"
+    )]
     Export {
+        /// Task id
         task_id: String,
-        #[arg(long)]
+        /// The package name the exported definitions carry, such as `team/pagination`
+        #[arg(long, value_name = "NAME")]
         name: String,
         /// Absent directory, as a safe path relative to --repo (an absolute path is refused)
         #[arg(long)]
@@ -2807,21 +2971,38 @@ af self update --version 0.9.0   # needs: the network and an af installed by af 
     #[command(
         long_about = "Install completions and man pages for your shell.\n\nWithout --write, prints \
 what would be written and the one line to add to your rc file when the shell needs it. With \
---write, writes only into the shell's autoload directory; rc files are never edited.",
-        after_long_help = "Examples:\n  af self setup-shell\n  af self setup-shell --shell zsh --write"
+--write, writes only into the shell's autoload directory and the man directory, then says what \
+is left to do: nothing for fish, which picks the completions up in a new shell; the rc line \
+above for the others. --remove deletes exactly the completion file and the af man pages it \
+would write. rc files are never edited. Supported shells: bash, zsh, fish, elvish, powershell.",
+        after_long_help = "Examples:\n  af self setup-shell\n  af self setup-shell --shell zsh --write\n  af self setup-shell --remove"
     )]
     SetupShell {
         /// Shell to set up (default: $SHELL)
         #[arg(long, value_enum)]
         shell: Option<Shell>,
         /// Write the files instead of printing the plan
-        #[arg(long)]
+        #[arg(long, conflicts_with = "remove")]
         write: bool,
+        /// Remove the completion file and the af man pages instead
+        #[arg(long)]
+        remove: bool,
     },
     /// Remove every version this receipt installed, and the default symlink
+    #[command(
+        long_about = "Remove every version this receipt installed, and the default symlink.\n\n\
+Without --purge it keeps af's config, state and cache, and names the shell completion files and \
+man pages `af self setup-shell --write` installed, which stay; --purge removes those too, with \
+af's config, state, cache and data directories, every registered Store, and the Claude history \
+af's Workers left in each registered Claude config directory.",
+        after_long_help = "Examples:\n  \
+af self uninstall   # needs: an af installed by af self\n  \
+af self uninstall --purge   # needs: an af installed by af self"
+    )]
     Uninstall {
-        /// Also remove af's config, state, cache, and data directories, every registered Store,
-        /// and the Claude history af's Workers left in each registered Claude config directory
+        /// Also remove af's config, state, cache, and data directories, the shell completions
+        /// and man pages, every registered Store, and the Claude history af's Workers left in
+        /// each registered Claude config directory
         #[arg(long)]
         purge: bool,
     },
@@ -2973,5 +3154,44 @@ mod tests {
             .collect();
         assert_eq!(names[..2], ["status", "update"]);
         assert_eq!(names.last(), Some(&"optimize"));
+    }
+
+    /// Every argument of every visible command says what it is: `--help` is a command's
+    /// contract (ADR-0146), and a blank line in it is a flag nobody can use safely.
+    #[test]
+    fn every_argument_of_every_command_has_a_description() {
+        fn walk(command: &clap::Command, path: &str, blank: &mut Vec<String>) {
+            for arg in command.get_arguments() {
+                if arg.is_hide_set() || ["help", "version"].contains(&arg.get_id().as_str()) {
+                    continue;
+                }
+                let help = arg.get_help().or(arg.get_long_help());
+                if help.is_none_or(|help| help.to_string().trim().is_empty()) {
+                    blank.push(format!("{path} {}", arg.get_id()));
+                }
+            }
+            for sub in command.get_subcommands() {
+                if !sub.is_hide_set() {
+                    walk(sub, &format!("{path} {}", sub.get_name()), blank);
+                }
+            }
+        }
+        let mut root = super::Af::command();
+        root.build();
+        let mut blank = Vec::new();
+        walk(&root, "af", &mut blank);
+        assert!(blank.is_empty(), "undocumented arguments: {blank:#?}");
+        // The walk reaches the commands this rule was written for.
+        for path in [
+            ["task", "plan"],
+            ["task", "run"],
+            ["task", "explain"],
+            ["task", "output"],
+            ["task", "export"],
+        ] {
+            let task = root.find_subcommand(path[0]).unwrap();
+            let sub = task.find_subcommand(path[1]).unwrap();
+            assert!(sub.get_arguments().count() > 1, "{path:?}");
+        }
     }
 }

@@ -1991,3 +1991,77 @@ fn bare_help_opens_with_the_worker_and_the_tagline() {
         .collect();
     assert!(topic[0].starts_with("af help layers -- "), "{}", topic[0]);
 }
+
+/// A first run: a registry that names no Provider opens the browser on the Providers pane, whose
+/// first row says how to register one; one registered Provider keeps the settings first
+/// (ADR-0201).
+#[test]
+fn an_empty_registry_opens_on_the_providers_pane_with_the_first_run_row() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let mut only_candidates = inventory();
+    only_candidates.providers.remove(0);
+    let providers = ProvidersPane::with_inventory(only_candidates, UsageProbe::Skip);
+    let mut app = App::new(hub_scope(&root, &repo), Some(repo), Panes::new(providers));
+    assert_eq!(app.opened, Opened::Folder(Tab::Providers));
+    assert_eq!(app.breadcrumb(), "providers/");
+    let rows = app.panes.providers.rows();
+    assert_eq!(
+        rows[1].text(),
+        "no Provider registered yet -- :provider detect scans this machine (read-only); :provider detect --apply registers what it finds"
+    );
+    assert!(
+        app.frame(100, 30)
+            .text()
+            .contains("no Provider registered yet"),
+        "{}",
+        app.frame(100, 30).text()
+    );
+
+    // A registered Provider: the browser opens on the settings, and the pane has no such row.
+    let registered = hub_app(&root.join("again"));
+    assert_eq!(registered.opened, Opened::Root);
+    assert!(
+        registered
+            .panes
+            .providers
+            .rows()
+            .iter()
+            .all(|row| !row.text().contains("no Provider registered"))
+    );
+}
+
+/// In a repository without `.af/`, the settings' `project` row says how it comes to be.
+#[test]
+fn a_repository_without_af_shows_its_project_layer_absent_with_af_onboard() {
+    let (_temp, root) = temp_root();
+    let repo = root.join("plain");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Skip);
+    let mut app = App::new(hub_scope(&root, &repo), Some(repo), Panes::new(providers));
+    assert_eq!(app.opened, Opened::Root);
+    let project = app
+        .panes
+        .settings
+        .rows()
+        .iter()
+        .map(Row::text)
+        .find(|text| text.starts_with("project "))
+        .unwrap();
+    assert!(project.contains(".af/af.toml"), "{project}");
+    assert!(project.contains("absent  <- af onboard"), "{project}");
+    assert!(app.frame(100, 30).text().contains("absent  <- af onboard"));
+
+    // The hub has `.af/`: its project row is just present.
+    let hub = hub_app(&root.join("hub-root"));
+    let project = hub
+        .panes
+        .settings
+        .rows()
+        .iter()
+        .map(Row::text)
+        .find(|text| text.starts_with("project "))
+        .unwrap();
+    assert!(!project.contains("af onboard"), "{project}");
+}

@@ -185,6 +185,50 @@ fn document_starter_runs_without_credentials_code_artifacts_or_code_checks_and_r
         .unwrap();
     assert!(!refused.status.success());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    // Without --output the Document's bytes are the result, on stdout, and nothing is written.
+    let printed = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "task",
+            "output",
+            "release-notes",
+            "--port",
+            "document",
+            "--format",
+            "canonical-markdown",
+            "--state",
+        ])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(
+        printed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&printed.stderr)
+    );
+    assert_eq!(String::from_utf8(printed.stdout).unwrap(), text);
+    // --json describes a written file, so without --output it is one error document.
+    let refused = run(
+        &repo,
+        &state,
+        &[
+            "task",
+            "output",
+            "release-notes",
+            "--port",
+            "document",
+            "--format",
+            "canonical-markdown",
+        ],
+        1,
+    );
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("add --output FILE"),
+        "{refused}"
+    );
     assert_eq!(
         run(
             &repo,

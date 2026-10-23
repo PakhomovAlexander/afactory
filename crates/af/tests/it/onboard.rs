@@ -400,3 +400,284 @@ fn absent_gate_is_a_refusal_and_help_is_self_contained() {
         "{text}"
     );
 }
+
+/// A Provider registry naming `providers` (ID, kind), each with an auth directory of its own,
+/// at `root/providers.toml`; `AF_PROVIDERS_FILE` points `af` at it.
+fn registry(root: &Path, providers: &[(&str, &str)]) -> PathBuf {
+    std::fs::create_dir_all(root).unwrap();
+    let mut text = "version = 1\n".to_string();
+    for (id, kind) in providers {
+        let auth = root.join(format!("auth-{id}"));
+        std::fs::create_dir_all(&auth).unwrap();
+        text.push_str(&format!(
+            "[[providers]]\nid = \"{id}\"\nkind = \"{kind}\"\nauth_dir = {:?}\n",
+            auth.canonicalize().unwrap().to_str().unwrap()
+        ));
+    }
+    let path = root.join("providers.toml");
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+/// `af onboard` with the registry at `providers` and a PATH holding no Provider CLI, so a probe
+/// finds none and no ambient login appears.
+fn onboard_with(repo: &Path, providers: &Path, args: &[&str]) -> Output {
+    let empty = repo.parent().unwrap().join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    crate::common::af()
+        .args(["onboard", "--repo", repo.to_str().unwrap()])
+        .args(args)
+        .env("AF_PROVIDERS_FILE", providers)
+        .env("PATH", &empty)
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .output()
+        .unwrap()
+}
+
+/// The lines of one block of the text preview: those indented under `name` up to the next.
+fn block(text: &str, name: &str) -> Vec<String> {
+    text.lines()
+        .skip_while(|line| *line != name)
+        .skip(1)
+        .take_while(|line| line.starts_with("  "))
+        .map(|line| line.trim().to_owned())
+        .collect()
+}
+
+#[test]
+fn the_providers_block_and_the_runner_follow_the_registered_kinds() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+    std::fs::write(repo.join("Makefile"), "check:\n\t@true\n").unwrap();
+
+    // None registered: mixed, and every model Worker is told how to register its kind.
+    let none = registry(&root.path().join("none"), &[]);
+    let output = onboard_with(&repo, &none, &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("profile     multi-review@1 · runner mixed (no Provider is registered on this machine yet; see providers below; pass --runner to change)"),
+        "{text}"
+    );
+    // The block stands between the reviewers and the gates.
+    let order: Vec<&str> = text
+        .lines()
+        .filter(|line| ["reviewers", "providers", "gates"].contains(line))
+        .collect();
+    assert_eq!(order, ["reviewers", "providers", "gates"], "{text}");
+    assert_eq!(
+        block(&text, "providers"),
+        [
+            "correctness needs a claude Provider: none registered   ← af provider detect, or af provider setup claude-main --kind claude --login",
+            "architecture needs a codex Provider: none registered   ← af provider detect, or af provider setup codex-main --kind codex --login",
+        ]
+    );
+    assert!(
+        text.contains("Register a Provider if the providers block says none: af provider detect"),
+        "{text}"
+    );
+
+    // One kind: the runner follows it, and each Worker is bound to its Provider.
+    let codex = registry(&root.path().join("codex"), &[("codex-main", "codex")]);
+    let output = onboard_with(&repo, &codex, &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("runner codex (the only Provider kind registered on this machine; pass --runner to change)"),
+        "{text}"
+    );
+    assert_eq!(
+        block(&text, "providers"),
+        [
+            "correctness needs a codex Provider: codex-main (registered; --probe checks its login)   ← bind with --provider correctness=codex-main",
+            "architecture needs a codex Provider: codex-main (registered; --probe checks its login)   ← bind with --provider architecture=codex-main",
+        ]
+    );
+    assert!(text.contains(" --runner codex "), "{text}");
+    assert!(!text.contains("Register a Provider"), "{text}");
+    let report: serde_json::Value =
+        serde_json::from_slice(&onboard_with(&repo, &codex, &["--json"]).stdout).unwrap();
+    assert_eq!(report["reviewers"][0]["runner"], "codex");
+    // The text-only block leaves the JSON document's shape as it was.
+    assert!(report.get("providers").is_none(), "{report}");
+
+    // Both kinds: mixed, each Worker bound to the Provider of its own kind.
+    let both = registry(
+        &root.path().join("both"),
+        &[("claude-work", "claude"), ("codex-main", "codex")],
+    );
+    let output = onboard_with(&repo, &both, &[]);
+    let text = stdout(&output);
+    assert!(
+        text.contains("runner mixed (claude and codex Providers are both registered on this machine; pass --runner to change)"),
+        "{text}"
+    );
+    assert_eq!(
+        block(&text, "providers"),
+        [
+            "correctness needs a claude Provider: claude-work (registered; --probe checks its login)   ← bind with --provider correctness=claude-work",
+            "architecture needs a codex Provider: codex-main (registered; --probe checks its login)   ← bind with --provider architecture=codex-main",
+        ]
+    );
+
+    // --probe asks the status probe; with no CLI on PATH it says so instead of guessing.
+    let probed = onboard_with(&repo, &both, &["--probe"]);
+    assert!(probed.status.success(), "{}", stderr(&probed));
+    let lines = block(&stdout(&probed), "providers");
+    assert!(
+        lines[0]
+            .starts_with("correctness needs a claude Provider: claude-work (installation failed)"),
+        "{lines:#?}"
+    );
+
+    // An explicit --runner wins, and the block names what that choice needs.
+    let output = onboard_with(&repo, &codex, &["--runner", "claude"]);
+    let text = stdout(&output);
+    assert!(text.contains("runner claude (--runner)"), "{text}");
+    assert!(
+        block(&text, "providers")[0]
+            .starts_with("correctness needs a claude Provider: none registered"),
+        "{text}"
+    );
+    assert!(!repo.join(".af").exists());
+}
+
+#[test]
+fn apply_and_validate_say_what_to_register_and_fill_the_plan_line() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+    let none = registry(&root.path().join("none"), &[]);
+    let applied = onboard_with(&repo, &none, &["--gate", "check=true", "--apply"]);
+    assert!(applied.status.success(), "{}", stderr(&applied));
+    let text = stdout(&applied);
+    assert!(
+        text.contains("Register a Provider if the providers block says none: af provider detect"),
+        "{text}"
+    );
+    let guide = std::fs::read_to_string(repo.join(".af/README.md")).unwrap();
+    let collapsed = guide.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        collapsed.contains("2. Run `af provider status`; if a Worker's kind has no Provider, `af provider detect` or `af provider setup <id> --kind <kind> --login` at your terminal."),
+        "{guide}"
+    );
+    // The private-host protocol is the closing note for agents, not step 2.
+    let (steps, note) = guide.split_once("## Agents without a terminal").unwrap();
+    assert!(!steps.contains("af provider auth"), "{guide}");
+    assert!(note.contains("af provider auth"), "{guide}");
+
+    // Validation with both kinds registered fills the token-free plan line.
+    let both = registry(
+        &root.path().join("both"),
+        &[("claude-work", "claude"), ("codex-main", "codex")],
+    );
+    let validated = onboard_with(&repo, &both, &[]);
+    assert!(validated.status.success(), "{}", stderr(&validated));
+    let text = stdout(&validated);
+    assert!(
+        text.contains("`af review plan --policy-rev HEAD --base HEAD --uncommitted --provider architecture=codex-main --provider correctness=claude-work`"),
+        "{text}"
+    );
+    assert!(!text.contains("Register a Provider"), "{text}");
+    // Without them it keeps placeholders and says how to register.
+    let text = stdout(&onboard_with(&repo, &none, &[]));
+    assert!(
+        text.contains("--provider architecture=<codex-provider-id> --provider correctness=<claude-provider-id>"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Register a Provider if the providers block says none"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_failing_checksum_fetch_says_what_happened_and_what_the_lock_records() {
+    use crate::common::{FAKE_CURL, Sandbox, executable, tool_dir};
+    let sandbox = Sandbox::new();
+    let real = sandbox.adopt_real_binary();
+    let repo = repo(&sandbox.path("work"));
+    // GitHub refuses the anonymous route, and gh is installed but not logged in.
+    let tools = tool_dir(&sandbox.path("fakes"), &["sh", "git", "cp", "basename"]);
+    executable(&tools.join("curl"), FAKE_CURL);
+    executable(
+        &tools.join("gh"),
+        "#!/bin/sh\necho 'To get started with GitHub CLI, please run:  gh auth login' >&2\nexit 4\n",
+    );
+    let output = sandbox
+        .command(&real)
+        .args([
+            "onboard",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--gate",
+            "check=true",
+            "--json",
+        ])
+        .env_remove("AF_RELEASE_SOURCE")
+        .env("AF_SELF_OFFLINE", "")
+        // No detached update check: the subject is the lock's own fetch.
+        .env("CI", "1")
+        .env("PATH", &tools)
+        .env("FAKE_CURL_STATUS", "404")
+        .env("FAKE_CURL_LOG", sandbox.path("curl.log"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let warnings: Vec<&str> = report["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|warning| warning.as_str().unwrap())
+        .collect();
+    let version = env!("CARGO_PKG_VERSION");
+    let target = env!("AF_TARGET");
+    let warning = warnings
+        .iter()
+        .find(|warning| warning.starts_with("could not fetch SHA256SUMS"))
+        .unwrap_or_else(|| panic!("{warnings:#?}"));
+    assert!(
+        warning.starts_with(&format!("could not fetch SHA256SUMS of v{version} (")),
+        "{warning}"
+    );
+    assert!(warning.contains("gh auth login"), "{warning}");
+    assert!(
+        warning.contains("the anonymous route failed: HTTP 404"),
+        "{warning}"
+    );
+    assert!(
+        warning.contains(&format!("); the lock records this target only ({target})")),
+        "{warning}"
+    );
+    assert!(!warning.contains("has no SHA256SUMS"), "{warning}");
+    assert_eq!(report["lock_af_targets"], serde_json::json!([target]));
+}
+
+#[test]
+fn a_build_without_a_receipt_names_the_receipt_path_and_the_install() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+    let output = af(&repo, &["--gate", "check=true", "--json"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let warning = report["warnings"][0].as_str().unwrap();
+    let version = env!("CARGO_PKG_VERSION");
+    assert!(
+        warning.contains(&format!(
+            "no install receipt at {}",
+            crate::common::private_home_env()
+                .into_iter()
+                .find(|(name, _)| *name == "XDG_DATA_HOME")
+                .unwrap()
+                .1
+                .join(format!("af/versions/{version}/receipt.toml"))
+                .display()
+        )),
+        "{warning}"
+    );
+    assert!(
+        warning.contains(&format!("af self install {version}")),
+        "{warning}"
+    );
+}

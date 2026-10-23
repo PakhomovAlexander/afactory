@@ -408,6 +408,13 @@ impl App {
             exe: std::env::current_exe().map_err(|error| format!("the af executable: {error}")),
         };
         app.load();
+        // A first run: nothing registered yet, so the browser opens where that is fixed.
+        if app.opened == Opened::Root && app.panes.providers.none_registered() {
+            let providers = Tab::Providers;
+            app.tree
+                .select(NodeKind::Folder(providers), providers.name());
+            app.show(Opened::Folder(providers));
+        }
         app
     }
 
