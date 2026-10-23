@@ -433,7 +433,7 @@ fn a_bound_task_is_never_collected_and_the_preview_names_its_binder() {
     );
     assert_eq!(entry(&next, "chain-base")["disposition"]["kind"], "collect");
     let kept = json_of(&repo, &state, &["task", "show", "chain-base"], 0);
-    assert_eq!(kept["schema"], "af/task-inspection@12");
+    assert_eq!(kept["schema"], "af/task-inspection@13");
 }
 
 #[test]

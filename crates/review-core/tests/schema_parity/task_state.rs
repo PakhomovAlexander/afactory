@@ -1,6 +1,6 @@
 //! The one Task state every rendering prints (`schemas/task-state-v1.json`) and the documents
 //! that carry it: `af/task-list@3` with its `af/task-list-entry@3`, `af/task-checks@1`,
-//! `af/task-collected-inspection@2` and the `state` of `af/task-inspection@12`. The Rust
+//! `af/task-collected-inspection@2` and the `state` of `af/task-inspection@13`. The Rust
 //! validator and the schema accept exactly the same states, and the previous versions fail
 //! closed.
 use super::{assert_invalid, assert_valid, validator};
@@ -225,7 +225,7 @@ fn a_collected_inspection_states_the_collection_as_its_cause() {
 #[test]
 fn an_inspection_carries_the_state_its_failures_and_its_gate() {
     let value = json!({
-        "schema":"af/task-inspection@12", "task_id":"pagination-cli", "revision_id":id('1'),
+        "schema":"af/task-inspection@13", "task_id":"pagination-cli", "revision_id":id('1'),
         "phase":{"kind":"running"},
         "state":{"phase":"abandoned","outcome":"cancelled","cause":"host_cancelled",
             "next_action":"af task run pagination-cli"},
@@ -239,11 +239,11 @@ fn an_inspection_carries_the_state_its_failures_and_its_gate() {
             "diagnostic_id":id('4')}],
         "history":[], "execution_records":[], "run_reports":[]
     });
-    assert_valid("task-inspection-v12.json", &value);
+    assert_valid("task-inspection-v13.json", &value);
     for (pointer, replacement, why) in [
         (
             "/schema",
-            json!("af/task-inspection@11"),
+            json!("af/task-inspection@12"),
             "the previous version",
         ),
         (
@@ -270,12 +270,12 @@ fn an_inspection_carries_the_state_its_failures_and_its_gate() {
     ] {
         let mut changed = value.clone();
         *changed.pointer_mut(pointer).unwrap() = replacement;
-        assert_invalid("task-inspection-v12.json", &changed, why);
+        assert_invalid("task-inspection-v13.json", &changed, why);
     }
     let mut stateless = value;
     stateless.as_object_mut().unwrap().remove("state");
     assert_invalid(
-        "task-inspection-v12.json",
+        "task-inspection-v13.json",
         &stateless,
         "an inspection without its state",
     );

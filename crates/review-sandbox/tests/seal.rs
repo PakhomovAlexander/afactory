@@ -509,3 +509,51 @@ fn clones_from_a_template_isolate_their_writes() {
     let sealed_a = a.seal().unwrap();
     assert_eq!(sealed_a.mutations.modified, vec![path.to_string()]);
 }
+
+/// The base sibling (ADR-0198): the tree before the change is materialized read-only beside the
+/// sandbox's own, with a document next to both; neither is part of what the sandbox seals, and
+/// the whole directory goes with the handle.
+#[test]
+fn the_base_beside_the_tree_is_read_only_unsealed_and_removed_with_the_sandbox() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = review_store::Cas::open(directory.path().join("cas")).unwrap();
+    let entry = |path: &str, bytes: &[u8]| Entry {
+        path: path.into(),
+        kind: EntryKind::File,
+        content: cas.put(bytes).unwrap(),
+        size: bytes.len() as u64,
+    };
+    let base = Manifest::new(vec![entry("src/lib.rs", b"fn before() {}\n")]).unwrap();
+    let tree = Manifest::new(vec![entry("src/lib.rs", b"fn after() {}\n")]).unwrap();
+    let sandbox = Sandbox::materialize(&tree, &cas, Mode::ReadOnly).unwrap();
+    let at = sandbox
+        .attach_base(&base, &cas, &[("diff-subject.json", b"{}")])
+        .unwrap();
+    assert_eq!(at, sandbox.root().parent().unwrap().join("base"));
+    assert_eq!(
+        std::fs::read(sandbox.root().join("../base/src/lib.rs")).unwrap(),
+        b"fn before() {}\n"
+    );
+    assert_eq!(
+        std::fs::read(sandbox.root().join("../diff-subject.json")).unwrap(),
+        b"{}"
+    );
+    let write = std::fs::OpenOptions::new()
+        .append(true)
+        .open(at.join("src/lib.rs"));
+    assert!(write.is_err(), "the base is not writable");
+    assert!(std::fs::write(at.join("src/new.rs"), b"x").is_err());
+    assert!(
+        sandbox
+            .attach_base(&base, &cas, &[("../escape", b"x")])
+            .is_err()
+    );
+    let parent = sandbox.root().parent().unwrap().to_path_buf();
+    drop(sandbox);
+    assert!(!parent.exists(), "the base goes with the sandbox");
+
+    let sandbox = Sandbox::materialize(&tree, &cas, Mode::EphemeralWrite).unwrap();
+    sandbox.attach_base(&base, &cas, &[]).unwrap();
+    let sealed = sandbox.seal().unwrap();
+    assert!(sealed.unchanged(), "{:?}", sealed.mutations);
+}

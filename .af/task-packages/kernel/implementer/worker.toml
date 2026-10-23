@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "kernel/implementer"
-version = "1.5.0"
+version = "1.6.0"
 
 [signature]
 effects = ["write-source", "execute-checks"]
@@ -24,6 +24,15 @@ optional = false
 covers = []
 
 [signature.contract.inputs.source.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.findings]
+artifact_type = "af/TaskFindings@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[signature.contract.inputs.findings.affinity]
 kind = "unbound"
 
 [signature.contract.outputs.candidate]

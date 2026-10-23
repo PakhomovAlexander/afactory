@@ -104,13 +104,17 @@ impl RecordedTasks for EventStore {
 
 /// Root ports no binding may supply, whatever a Pipeline declares. Named so the refusal can say
 /// why.
-const NOT_BINDABLE: [&str; 3] = ["requirements", "base", "continuation"];
+const NOT_BINDABLE: [&str; 4] = ["requirements", "base", "continuation", "findings"];
 
 /// Why each of [`NOT_BINDABLE`] stays refused (ADR-0117).
 fn not_bindable_reason(port: &str) -> &'static str {
     match port {
         "requirements" => "the Task file's goal is the requirements the Task is judged against",
         "base" => "a bound base would make the Subject a diff outside the Review selector rules",
+        "findings" => {
+            "a continuation fills it from the continued Task's review round; write a `continue` \
+             table or run `af task run NEW --from TASK`"
+        }
         _ => "a Pipeline that needs it binds it inside its own graph",
     }
 }
@@ -163,6 +167,26 @@ impl DeclaredPorts {
             consulted: count,
             ports,
         }
+    }
+
+    /// Whether the selected Pipeline takes `port` as `artifact_type` one: `false` when no
+    /// consulted Pipeline declares it, and a refusal when only some do or one declares it
+    /// another way, so a continuation's findings never decide the Pipeline (ADR-0198).
+    pub(super) fn declares(&self, port: &str, artifact_type: &str) -> Result<bool, String> {
+        if !self.ports.contains_key(port) {
+            return Ok(false);
+        }
+        let (declared, cardinality) = self.port(port)?;
+        if declared != artifact_type || cardinality != PortCardinality::One {
+            return Err(format!(
+                "the selected Pipeline declares the root input {} as {} {}, and it takes {} one",
+                shown(port, NAME_SHOWN),
+                shown(&declared, NAME_SHOWN),
+                cardinality_name(cardinality),
+                shown(artifact_type, NAME_SHOWN)
+            ));
+        }
+        Ok(true)
     }
 
     /// The one type and cardinality `port` carries, or why it cannot be bound.
@@ -383,7 +407,7 @@ fn exact_artifact(cas: &Cas, exact: &ExactArtifactRefV1) -> Result<ArtifactInput
     })
 }
 
-type BoundSource = (ArtifactInputV1, TaskInputBindingV1, Manifest);
+pub(super) type BoundSource = (ArtifactInputV1, TaskInputBindingV1, Manifest);
 type AdmittedSource = (String, String, TaskSnapshot, Manifest);
 
 /// The referenced `af/SourceTree@1`, admitted before anything is decided about it.
@@ -431,7 +455,7 @@ fn admitted_source(cas: &Cas, recorded: &ArtifactInputV1) -> Result<AdmittedSour
 
 /// A bound `source` is decided by one property of the admitted Snapshot and nothing else: a
 /// root capture is carried verbatim, a derived tree is re-rooted over the identical Manifest.
-fn bind_source(
+pub(super) fn bind_source(
     cas: &Cas,
     recorded: ArtifactInputV1,
     task: Option<&ReferencedTaskV1>,

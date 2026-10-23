@@ -1766,11 +1766,32 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         ),
         cli::TaskCommand::Run {
             task_id,
+            from: Some(from),
+            round,
+            goal,
+            bindings,
+            execute,
+            inspect,
+            ..
+        } => task_execution::run_from(task_execution::ContinueOptions {
+            task_id,
+            from,
+            round,
+            goal,
+            bindings,
+            repo: inspect.repo,
+            state: inspect.state,
+            json: inspect.json,
+            execute,
+        }),
+        cli::TaskCommand::Run {
+            task_id,
             confirm_plan,
             execute,
             retry_gate,
             verbose: _,
             inspect,
+            ..
         } => task_execution::run(
             &task_id,
             &inspect.repo,

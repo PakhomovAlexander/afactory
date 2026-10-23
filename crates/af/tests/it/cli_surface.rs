@@ -236,7 +236,7 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     }
     let json = out(&af(&["help", "json"]));
     for needle in [
-        "af/task-inspection@12",
+        "af/task-inspection@13",
         "af/task-checks@1",
         "af/task-list@3",
         "af/task-list-entry@3",
@@ -1220,4 +1220,61 @@ fn the_surface_documents_verbose_storage_canonical_markdown_and_the_provider_lis
     // The pointer for `af review tui` is no command of the namespace.
     let review = collapsed(&["review", "--help"]);
     assert!(!review.contains(" tui "), "{review}");
+}
+
+/// `af task run NEW --from TASK` (ADR-0198) says what it plans and from what in `--help` and in
+/// `af help task run`; `--round`, `--goal` and `--bindings` need `--from`, which conflicts with
+/// `--confirm-plan`; and `af help task-file` describes defaults, context and continuation.
+#[test]
+fn task_run_help_and_the_task_file_topic_describe_continuation() {
+    for help in [af(&["task", "run", "--help"]), af(&["help", "task", "run"])] {
+        assert!(help.status.success(), "{}", err(&help));
+        let text = out(&help);
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "--from <TASK>",
+            "--round <N>",
+            "--goal <FILE>",
+            "continues the finished Task TASK from its reviewed candidate",
+            "the implementer's `findings` input",
+            "af task run NEW_ID --from TASK_ID",
+        ] {
+            assert!(flat.contains(needle), "`{needle}` missing:\n{text}");
+        }
+    }
+    for args in [
+        &["task", "run", "t", "--round", "1"][..],
+        &["task", "run", "t", "--goal", "g.md"][..],
+        &[
+            "task",
+            "run",
+            "t",
+            "--from",
+            "s",
+            "--confirm-plan",
+            "sha256:00",
+        ][..],
+        &["task", "run", "t", "--from", "s", "--round", "17"][..],
+    ] {
+        let refused = af(args);
+        assert_eq!(
+            refused.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            err(&refused)
+        );
+    }
+    let topic = af(&["help", "task-file"]);
+    assert!(topic.status.success(), "{}", err(&topic));
+    let text = out(&topic);
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "Only `task_id`, `kind` and `goal` are required",
+        "[task.defaults]",
+        ".af/rules.md",
+        "af/TaskFindings@1",
+        "af task run NEW --from TASK [--round N] [--goal FILE]",
+    ] {
+        assert!(flat.contains(needle), "`{needle}` missing:\n{text}");
+    }
 }

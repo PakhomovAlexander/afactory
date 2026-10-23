@@ -83,11 +83,18 @@ The branch and worktree must be absent. Delivery records its preparation before 
 verifies the materialized result, and supports retry/recovery with the same command. It makes
 no commit, push, PR or remote call. The common Store keeps delivery receipts alongside the Task.
 
-JSON inspection uses [`af/task-inspection@12`](../../schemas/task-inspection-v12.json) and list
+JSON inspection uses [`af/task-inspection@13`](../../schemas/task-inspection-v13.json) and list
 entries use [`af/task-list-entry@3`](../../schemas/task-list-entry-v3.json); their
 `chargeable_tokens` values are exact unsigned decimal strings. `explain` includes the captured
 [`af.compiled-task/1`](../../schemas/compiled-task-v1.json) graph and
 ExecutionPlan. Public schemas describe these shapes without replacing Store replay validation.
+
+A Task that ended `changes_requested` continues from its reviewed candidate with `af task run
+NEW --from TASK`: the candidate is the new source and the round's findings the implementer's
+`findings` input, and `af task show NEW` prints `continues TASK round N`. A Task file may also
+leave `limits` and `pipeline` to `[task.defaults]` of `.af/af.toml` and point its Worker at files
+to read first with `context` ([Continue a reviewed Task](../tasks.md#continue-a-reviewed-task),
+[ADR-0198](../adr/0198-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
 
 Exact plan inspection accepts only a plan recorded in the selected Task's history. It emits
 `af/task-plan-inspection@1`, including the original revision, compiled graph, bindings and

@@ -120,7 +120,7 @@ fn malformed_implementer(fixture: &Fixture) {
 /// the triple and the next command they agree on are returned.
 fn agreed_state(fixture: &Fixture) -> (String, Option<String>) {
     let shown = fixture.json(&["task", "show", TASK]);
-    schemas::valid(&schemas::validator("task-inspection-v12.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v13.json"), &shown);
     let listed = fixture.json(&["task", "list"]);
     schemas::valid(&schemas::validator("task-list-v3.json"), &listed);
     let reported = fixture.json(&["task", "report", TASK]);

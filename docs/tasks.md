@@ -96,6 +96,47 @@ this table. Without `pipeline`, planning
 `requirements` are input data; they cannot change the committed execution permissions. The
 [Task-file walkthrough](task-execution/task-file.md) runs this example end to end.
 
+### Short goals, context and project defaults
+
+Only `task_id`, `kind` and `goal` are required; `schema` defaults to `af.task-file/1`
+([ADR-0198](adr/0198-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md),
+`af help task-file`). What a Task file omits comes from `[task.defaults]` of `.af/af.toml` in the
+committed Authority Snapshot: `limits`, `pipeline` and its `fallback`. A field the Task file names
+wins whole, and the default Pipeline applies only to a Task of a kind it accepts. `af task plan`
+prints on stderr what came from the defaults; without `limits` in either place the plan is
+refused, naming both.
+
+```toml
+[task.defaults]
+pipeline = "kernel/implementation-reviewed"
+fallback = "refuse"
+
+[task.defaults.limits]
+tokens = 6000000
+max_attempts = 16
+wall_ms = 10800000
+
+[task.defaults.limits.verification]
+tokens = 2000000
+attempts = 8
+wall_ms = 3600000
+```
+
+A goal can stay short and point at what it needs. `context` names files of the Task's source
+tree, each with an optional `#section`; standing rules live in `.af/rules.md`. The Worker's
+requirements end with a "Read first" list, the rules first, each file with the digest of the bytes
+the Task captured, recorded as one `af/TaskReadFirst@1` artifact in the revision's provenance. A
+changed file is a changed plan, and a file the tree does not hold is refused by name.
+
+```json
+{
+  "task_id": "pagination-docs",
+  "kind": "implement",
+  "goal": "Document paginate; the design says how.",
+  "context": ["docs/design.md#paginate", "pagination.py"]
+}
+```
+
 ## Start and inspect a Task
 
 Run from the clean repository at committed `HEAD`. State defaults to a directory outside the
@@ -242,7 +283,8 @@ diagnostic ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-mode
 [model bindings](task-execution/model-bindings.md)). The
 Task ID is also the delivery confirmation. An unverified Task is evidence, not a deliverable:
 read `task show`, fix the catalog, check, Worker or goal problem, then start a corrected Task
-under a new Task ID.
+under a new Task ID, or continue it from its reviewed candidate with `af task run NEW --from ID`
+([Continue a reviewed Task](#continue-a-reviewed-task)).
 
 ## Retry a failed gate
 
@@ -272,6 +314,43 @@ Attempt, token and wall limits, and its Pipeline's, must still hold it. It is re
 reason and nothing recorded, for a Task that was verified, delivered, has not finished, or whose
 last failure was not the gate's (its checks passed, or a reviewer or evaluator ran after them),
 and when the plan's approval or deadline has passed or the limits leave no room.
+
+## Continue a reviewed Task
+
+A Task that ended `changes_requested` holds a reviewed candidate and the findings against it.
+`af task run NEW --from TASK` plans a new Task from TASK's own captured Task file
+([ADR-0198](adr/0198-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)):
+
+- its source is the candidate TASK's last review round reviewed (`--round N` names another), bound
+  as a Snapshot exactly as an `inputs.source` binding of a derived tree is, not the base;
+- its implementer receives that round's reviewer reports and the evaluator's verdict as one
+  `af/TaskFindings@1` artifact on the Pipeline's optional `findings` input, each finding under the
+  ID its reply answers by (`bugs-1`, `evaluator`), outside the 64 KiB requirements bound;
+- its goal is TASK's goal, unless `--goal FILE` replaces it; nothing is pasted into it.
+
+```sh
+af task run pagination-2 --from pagination-cli            # plans; prints the plan
+af task run pagination-2 --confirm-plan PLAN_ID           # runs it
+af task run pagination-2 --from pagination-cli --round 1 --goal goal.md --execute
+```
+
+A Task file says the same with `"continue": {"task": "pagination-cli", "round": 1}`; it excludes
+`inputs.source` and `inputs.findings`. TASK must be finished and must have recorded a review
+round, and the selected Pipeline must declare `findings` (the kernel's
+`kernel/implementation-reviewed`, `kernel/implementation-ux` and `kernel/review-light` do), or the
+plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
+carries `continues` (`af/task-inspection@13`), and `af task report` names it in NEW's row.
+
+## The tree before the change
+
+Every Worker that judges a candidate without writing it, a reviewer, an evaluator or a verifier,
+gets the tree before the change beside its own, read-only, at `../base`, and
+`../diff-subject.json` (`af/diff-subject@1`): each changed path with its content digest on each
+side. The base is the source Snapshot's recorded base: a sealed candidate's parent, or, for a bound
+tree, the parent of the tree it was bound from. A Task file may name it instead with `"base":
+{"commit": "SHA"}`, captured at plan time as `af/TaskBase@1`. Neither file is under the Worker's
+tree, so neither is sealed back or counts as an edit. A root capture with no declared base has no
+base, and its Workers get neither file.
 
 ## Deliver the verified Snapshot
 

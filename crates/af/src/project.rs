@@ -35,6 +35,11 @@ pub struct ProjectFile {
     #[serde(default)]
     #[allow(dead_code)]
     brief: Option<std::collections::BTreeMap<String, crate::project_brief::BriefTable>>,
+    /// The `[task.defaults]` a Task file inherits (ADR-0198). Admitted and checked here so the
+    /// full-file parse refuses an unknown key; Task capture reads it from the Authority
+    /// Snapshot.
+    #[serde(default)]
+    task: Option<crate::task_execution::defaults::TaskTable>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -157,6 +162,9 @@ impl ProjectFile {
             return Err("authority project name must not be empty".into());
         }
         validate_safe_name(&self.defaults.pipeline, "default review pipeline")?;
+        if let Some(task) = &self.task {
+            task.validate()?;
+        }
         let mut names = std::collections::BTreeSet::new();
         for route in &self.routes {
             validate_safe_name(&route.name, "route name")?;

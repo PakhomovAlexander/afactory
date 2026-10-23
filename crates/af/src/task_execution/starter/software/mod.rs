@@ -1211,7 +1211,10 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
                 ("standard".into(), TaskFactV1::Boolean(true)),
                 ("capability".into(), TaskFactV1::Text("tutorial.pagination/1".into())),
             ]),
-            limits: FileLimits {
+            continue_from: None,
+        context: Vec::new(),
+        base: None,
+        limits: Some(FileLimits {
                 tokens: 0,
                 max_attempts: attempts,
                 wall_ms: 180000,
@@ -1220,7 +1223,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
                     attempts: reserved,
                     wall_ms: u64::from(reserved) * 5000,
                 },
-            },
+            }),
         };
         files.insert(format!("{name}.json"), json_bytes(&task)?);
     }
@@ -1230,8 +1233,9 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
     task.pipeline.as_mut().unwrap().fallback = PipelineFallbackV1::Generate;
     task.facts
         .insert("standard".into(), TaskFactV1::Boolean(false));
-    task.limits.max_attempts = 7;
-    task.limits.wall_ms = 900000;
+    let limits = task.limits.as_mut().expect("the starter states its limits");
+    limits.max_attempts = 7;
+    limits.wall_ms = 900000;
     files.insert("planning.json".into(), json_bytes(&task)?);
     files.insert(".af/task-catalog.toml".into(), toml_bytes(&catalog)?);
     files.insert("catalog.toml".into(), toml_bytes(&shared)?);

@@ -30,10 +30,10 @@ fn integration_inspection_preserves_phase_and_handoff_wire_without_mutating_hist
         ),
         0,
     );
-    let schema = validator("task-inspection-v12.json");
+    let schema = validator("task-inspection-v13.json");
     for value in [&shown, &explained] {
         valid(&schema, value);
-        assert_eq!(value["schema"], "af/task-inspection@12");
+        assert_eq!(value["schema"], "af/task-inspection@13");
         assert_eq!(value["phase"]["kind"], "finished");
         let phases = value["review_integrations"].as_array().unwrap();
         assert_eq!(phases.len(), 2);

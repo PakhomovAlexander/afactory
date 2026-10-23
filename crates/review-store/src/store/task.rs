@@ -77,7 +77,9 @@ pub fn now() -> Result<u64, StoreError> {
 /// Every port's artifact identity, then the provenance records no port carries that a Task
 /// revision keeps across selection and source refresh: the `af/TaskInputBindings@1` record a
 /// Task file's `inputs` table produced (ADR-0117), and the `af/ProjectBriefCapture@1` and
-/// `af/ProjectBriefReceipt@1` records of its Project Briefs (ADR-0160). Nothing else is
+/// `af/ProjectBriefReceipt@1` records of its Project Briefs (ADR-0160), and a continuation's
+/// `af/TaskFindings@1`, the `af/TaskReadFirst@1` record and a declared `af/TaskBase@1`
+/// (ADR-0198). Nothing else is
 /// preserved, so a revision whose adapter recorded some other observation keeps byte for byte
 /// the list it had.
 ///
@@ -100,6 +102,10 @@ pub fn revision_provenance_inputs(cas: &Cas, revision: &TaskRevisionV1) -> Vec<S
                 TASK_INPUT_BINDINGS_V1,
                 review_core::task::project_brief::PROJECT_BRIEF_CAPTURE_V1,
                 review_core::task::project_brief::PROJECT_BRIEF_RECEIPT_V1,
+                // A continuation's findings and a Task's read-first record (ADR-0198).
+                review_core::task::findings::TASK_FINDINGS_V1,
+                review_core::task::findings::TASK_READ_FIRST_V1,
+                review_core::task::findings::TASK_BASE_V1,
             ]
             .contains(&e.artifact_type.as_str())
         });

@@ -40,6 +40,9 @@ use serde_json::json;
 mod bindings;
 pub(crate) mod catalog;
 pub(crate) mod collection;
+mod context;
+mod continuation;
+pub(crate) mod defaults;
 pub(super) mod developer;
 pub(crate) mod domain;
 pub(super) mod export;
@@ -82,6 +85,8 @@ pub(super) struct StartOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TaskFile {
+    /// Absent, the file is read as `af.task-file/1`, the one version this release reads.
+    #[serde(default = "task_file_schema")]
     schema: String,
     task_id: String,
     kind: String,
@@ -153,7 +158,39 @@ struct TaskFile {
     verification: Option<FileVerification>,
     #[serde(default)]
     facts: BTreeMap<String, TaskFactV1>,
-    limits: FileLimits,
+    /// Absent, the project's `[task.defaults] limits` of `.af/af.toml` fill it in (ADR-0198).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    limits: Option<FileLimits>,
+    /// Continue a recorded Task from its reviewed candidate: that round's candidate Snapshot is
+    /// the source and its findings the `findings` port (ADR-0198). Absent by default, and absent
+    /// on round-trip, so a Task file without it keeps its exact revision and plan.
+    #[serde(
+        rename = "continue",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    continue_from: Option<continuation::ContinueRefV1>,
+    /// Files the Worker reads first, captured by digest from the tree the Task reads, each a
+    /// repository path with an optional `#section` (ADR-0198).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    context: Vec<String>,
+    /// The tree before the change the Task's judging Workers read at `../base`; absent, the
+    /// source Snapshot's recorded base (ADR-0198).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    base: Option<context::BaseRefV1>,
+}
+
+fn task_file_schema() -> String {
+    "af.task-file/1".into()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1200,7 +1237,18 @@ fn start_kind(
     if let Some(seconds) = options.timeout_secs {
         seconds.checked_mul(1000).ok_or("Task timeout overflow")?;
     }
-    let mut bytes = input_file::read(&options.file, 16 * 1024 * 1024, "Task file")?;
+    let bytes = input_file::read(&options.file, 16 * 1024 * 1024, "Task file")?;
+    start_kind_bytes(options, bytes, expected_kind, presentation)
+}
+
+/// `start_kind` over Task file bytes already in hand: a file read from disk, or the file
+/// `af task run NEW --from TASK` derives from the continued Task's captured one.
+fn start_kind_bytes(
+    options: StartOptions,
+    mut bytes: Vec<u8>,
+    expected_kind: Option<&str>,
+    presentation: Presentation,
+) -> Result<i32, String> {
     let original = parse_task_file(&options.file, &bytes)?;
     let mut refitted = false;
     // `--fit` plans again at the limits the planner computed; a second refusal can only raise
@@ -1210,18 +1258,20 @@ fn start_kind(
             Started::Code(code) => {
                 if refitted && presentation == Presentation::Print {
                     let fitted = parse_task_file(&options.file, &bytes)?;
-                    eprintln!("{}", fit_difference(&original.limits, &fitted.limits));
+                    if let (Some(original), Some(fitted)) = (&original.limits, &fitted.limits) {
+                        eprintln!("{}", fit_difference(original, fitted));
+                    }
                 }
                 return Ok(code);
             }
             Started::Refit(fit) => {
                 let mut file = parse_task_file(&options.file, &bytes)?;
-                file.limits = FileLimits {
+                file.limits = Some(FileLimits {
                     tokens: fit.required.tokens,
                     max_attempts: fit.required.max_attempts,
                     wall_ms: fit.required.wall_ms,
                     verification: fit.required.verification.clone(),
-                };
+                });
                 // The request planned is the fitted one; the Store captures exactly it.
                 bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
                 bytes.push(b'\n');
@@ -1425,8 +1475,23 @@ fn start_bytes(
         }
     }
     // Reject invalid duration before creating state, capturing authority or occupying an ID.
-    let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
-    started.checked_add(wall).ok_or("Task deadline overflow")?;
+    // Limits the project's defaults fill in are judged once they are read.
+    if let Some(limits) = &file.limits {
+        let wall = effective_task_wall_ms(limits.wall_ms, options.timeout_secs)?;
+        started.checked_add(wall).ok_or("Task deadline overflow")?;
+    }
+    if file.continue_from.is_some()
+        && file
+            .inputs
+            .as_ref()
+            .is_some_and(|inputs| inputs.contains_key("source"))
+    {
+        return Err(format!(
+            "Task file `{}` continues a Task and binds `inputs.source`; a continuation reads the \
+             continued Task's reviewed candidate as its source, so drop `inputs.source`",
+            file.task_id
+        ));
+    }
     let (repo, state) = state_path(&options.repo, options.state.as_deref())?;
     crate::storage::owned::prepare(&state, options.state.is_some())?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
@@ -1476,6 +1541,22 @@ fn start_bytes(
     {
         return Err("af review --file requires a Review Task profile".into());
     }
+    // What the Task file leaves to the project's `[task.defaults]` (ADR-0198), filled in from
+    // the Authority Snapshot before anything is recorded, and judged as a stated limit is.
+    let project_defaults = defaults::captured(&cas, &policy_source.manifest)?;
+    let filled = defaults::apply(
+        &mut file,
+        project_defaults.as_ref(),
+        authority.2.pipelines(),
+    )?;
+    let limits = file.limits.as_ref().ok_or("Task file has no limits")?;
+    let wall = effective_task_wall_ms(limits.wall_ms, options.timeout_secs)?;
+    started.checked_add(wall).ok_or("Task deadline overflow")?;
+    if presentation == Presentation::Print
+        && let Some(line) = defaults::line(&filled)
+    {
+        eprintln!("{line}");
+    }
     let binds_source = file
         .inputs
         .as_ref()
@@ -1487,6 +1568,28 @@ fn start_bytes(
                 .into(),
         );
     }
+    if options.uncommitted && file.continue_from.is_some() {
+        return Err(
+            "--uncommitted captures the invoking checkout, and a continuation reads the \
+             continued Task's reviewed candidate instead; drop --uncommitted"
+                .into(),
+        );
+    }
+    if file.base.is_some() && file.continue_from.is_some() {
+        return Err(format!(
+            "Task file `{}` names a `base` and continues a Task; a continuation's base is the \
+             candidate it continues, so drop `base`",
+            file.task_id
+        ));
+    }
+    // A declared base is a committed tree of this repository, captured now like the source.
+    let declared_base = file
+        .base
+        .as_ref()
+        .map(|base| context::capture_base(&source_repo, &cas, base))
+        .transpose()?;
+    // The standing rules are policy: read from the Authority Snapshot, like the catalog.
+    let rules = context::rules(&policy_source.manifest)?;
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
             .dirty()
@@ -1501,7 +1604,7 @@ fn start_bytes(
         started,
         cas,
         store,
-        source,
+        (source, declared_base, rules),
         authority,
         presentation,
         replace,
@@ -1516,7 +1619,11 @@ fn start_captured(
     started: u64,
     cas: Cas,
     mut store: EventStore,
-    source: review_source_git::Snapshot,
+    (source, declared_base, rules): (
+        review_source_git::Snapshot,
+        Option<context::DeclaredBase>,
+        Option<review_core::task::findings::TaskReadFirstEntryV1>,
+    ),
     (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
     presentation: Presentation,
     replace: Option<Box<TaskProjection>>,
@@ -1556,14 +1663,72 @@ fn start_captured(
     {
         return Err("A bound history port and a history file claim one port".into());
     }
+    // A continuation is resolved from this Store too, before anything is recorded: the
+    // reviewed candidate becomes the source and the round's findings the `findings` port, which
+    // the selected Pipeline must take, or the implementer would never read them (ADR-0198).
+    let continued = file
+        .continue_from
+        .as_ref()
+        .map(|reference| continuation::resolve(&cas, &store, reference))
+        .transpose()?;
+    if file.base.is_some()
+        && matches!(
+            profile,
+            TaskKindProfile::Document | TaskKindProfile::OptimizationAnalysis
+        )
+    {
+        return Err(format!(
+            "base: a {} Task reads no source tree, so it has no change to set a base for; drop \
+             `base`",
+            file.kind
+        ));
+    }
+    if let Some(continued) = &continued {
+        if matches!(
+            profile,
+            TaskKindProfile::Document | TaskKindProfile::OptimizationAnalysis
+        ) {
+            return Err(format!(
+                "continue: a {} Task reads no source tree, so it cannot continue Task `{}`",
+                file.kind,
+                preview::text(&continued.findings.continues.task_id)
+            ));
+        }
+        let named = file.pipeline.as_ref().map(|choice| choice.name.as_str());
+        let declared = input_bindings::DeclaredPorts::of(compiler.pipelines(), &file.kind, named);
+        let takes = declared
+            .declares(
+                continuation::FINDINGS_PORT,
+                review_core::task::findings::TASK_FINDINGS_V1,
+            )
+            .map_err(|error| format!("continue: {error}"))?;
+        if !takes {
+            let whose = match named {
+                Some(name) => format!("the Pipeline {}", preview::text(name)),
+                None => format!(
+                    "no captured Pipeline accepting kind {}",
+                    preview::text(&file.kind)
+                ),
+            };
+            return Err(format!(
+                "continue: {whose} declares the optional `findings` input, so its implementer \
+                 could never read the findings; name a Pipeline that does in the Task file's \
+                 `pipeline` (`af task catalog` lists the captured ones)"
+            ));
+        }
+    }
     // What the declared layout says about the Snapshot this Task will read. A pure function of
     // a recorded manifest: no working tree is walked, nothing is removed, and Snapshot identity
     // is whatever the capture already made it. The result is advice here and a receipt field
     // later. A bound `source` reads the bound tree, so that is the tree classified.
-    let read = match bound.as_ref() {
-        Some(bound) => bound.source_manifest.as_ref().unwrap_or(&source.manifest),
-        None => &source.manifest,
+    let read = match (continued.as_ref(), bound.as_ref()) {
+        (Some(continued), _) => &continued.manifest,
+        (None, Some(bound)) => bound.source_manifest.as_ref().unwrap_or(&source.manifest),
+        (None, None) => &source.manifest,
     };
+    // The rules and context the Worker reads first, bound by digest: the rules from the
+    // Authority Snapshot, the context from the tree the Task reads.
+    let read_first = context::capture(&file.context, rules, read)?;
     let undeclared = review_config::layout::classify_manifest(read).undeclared;
     if presentation == Presentation::Print {
         super::af_paths::warn(&undeclared);
@@ -1578,8 +1743,12 @@ fn start_captured(
         if file.document_sources.is_some() {
             return Err("Document source input is only valid for a document Task".into());
         }
-        // A bound `source` captures no Git tree from the invoking checkout.
-        match bound_ports.get("source") {
+        // A bound or continued `source` captures no Git tree from the invoking checkout.
+        match continued
+            .as_ref()
+            .map(|continued| &continued.source)
+            .or(bound_ports.get("source"))
+        {
             Some(port) => Some(port.clone()),
             None => {
                 let snapshot = capture_snapshot(&cas, &source.manifest, &origin, None)?;
@@ -1611,7 +1780,8 @@ fn start_captured(
         None
     };
     let input_file = cas.put(&bytes).map_err(|e| e.to_string())?;
-    let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
+    let limits = file.limits.clone().ok_or("Task file has no limits")?;
+    let wall = effective_task_wall_ms(limits.wall_ms, options.timeout_secs)?;
     // The deadline is taken from as late as the revision allows: its clock starts at the
     // first admission (P5), and the time spent here before the Task is recorded would come out
     // of its wall.
@@ -1643,6 +1813,23 @@ fn start_captured(
             serde_json::to_value(&issue.requirements).map_err(|e| e.to_string())?;
         input_refs.push(issue.capture_id.clone());
     }
+    // The Worker's requirements end with what to read first, each file by the digest of the
+    // bytes the Task captured, so a changed file is a changed plan.
+    let base_id = declared_base
+        .as_ref()
+        .map(|base| context::record_base(&cas, base, &source.repository_id))
+        .transpose()?;
+    let read_first_id = match &read_first {
+        Some(record) => {
+            let text = requirements_payload["text"].as_str().unwrap_or_default();
+            requirements_payload["text"] =
+                json!(format!("{text}\n\n{}", record.lines().join("\n")));
+            let id = context::record(&cas, record)?;
+            input_refs.push(id.clone());
+            Some(id)
+        }
+        None => None,
+    };
     let requirements = cas
         .put_artifact(
             "af/Requirements@1",
@@ -1681,13 +1868,18 @@ fn start_captured(
         inputs:BTreeMap::from([("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),
         required_outputs:serde_json::from_value(json!({"snapshot":{"artifact_type":SOURCE_TREE_V1,"cardinality":"one"},"verification":{"artifact_type":VERIFICATION_RESULT_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?,
         acceptance:BTreeMap::from([("verified".into(),AcceptanceObligationV1 {evidence_type:VERIFICATION_RESULT_V1.into(),verifier_policy:authority.invocation_policy_id()?.into()})]),
-        provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:std::iter::once(requirements).chain(undeclared_record).collect()},
+        provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:std::iter::once(requirements).chain(undeclared_record).chain(read_first_id).chain(base_id).chain(continued.as_ref().map(|continued|continued.findings_id.clone())).collect()},
         authority:TaskAuthorityV1 {policy_id:authority_id,allowed_effects:BTreeSet::from(["read-source".into(),"write-source".into(),"execute-checks".into()]),data_destinations:BTreeSet::new()},
-        limits:TaskLimitsV1 {tokens:file.limits.tokens,max_attempts:file.limits.max_attempts,deadline_unix_ms:deadline,verification:file.limits.verification},
+        limits:TaskLimitsV1 {tokens:limits.tokens,max_attempts:limits.max_attempts,deadline_unix_ms:deadline,verification:limits.verification},
         strategy,pipeline:file.pipeline,facts:file.facts,
     };
     if let Some(source_port) = source_port {
         revision.inputs.insert("source".into(), source_port);
+    }
+    if let Some(continued) = &continued {
+        revision
+            .inputs
+            .insert(continuation::FINDINGS_PORT.into(), continued.port());
     }
     if profile == TaskKindProfile::Report {
         use review_core::task::report_task::*;
@@ -2637,6 +2829,89 @@ fn confirm_current_plan(
     Ok(())
 }
 
+/// `af task run NEW --from TASK`: what the command line names.
+pub(super) struct ContinueOptions {
+    pub task_id: String,
+    pub from: String,
+    pub round: Option<u32>,
+    pub goal: Option<PathBuf>,
+    pub bindings: Option<PathBuf>,
+    pub repo: PathBuf,
+    pub state: Option<PathBuf>,
+    pub json: bool,
+    pub execute: bool,
+}
+
+/// `af task run NEW --from TASK [--round N] [--goal FILE]` (ADR-0198): plan, and with
+/// `--execute` run, a new Task from the finished Task's own captured Task file with a
+/// `continue` table, so its source is the reviewed candidate and its implementer reads the
+/// round's findings. Without `--execute` it plans, exactly as `af task plan` does, and the plan
+/// waits for `--confirm-plan`.
+pub(super) fn run_from(options: ContinueOptions) -> Result<i32, String> {
+    let (_, state) = state_path(&options.repo, options.state.as_deref())?;
+    require_store(&state)?;
+    let goal = options
+        .goal
+        .as_deref()
+        .map(|path| -> Result<String, String> {
+            let bytes = input_file::read(path, 256 * 1024, "goal file")?;
+            let text = String::from_utf8(bytes)
+                .map_err(|_| format!("goal file {} is not UTF-8 text", path.display()))?;
+            if text.trim().is_empty() {
+                return Err(format!(
+                    "goal file {} is empty; say what the new Task is for",
+                    path.display()
+                ));
+            }
+            Ok(text)
+        })
+        .transpose()?;
+    let bytes = {
+        let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+        let store =
+            EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+        if store
+            .task_projection(&cas, &options.from)
+            .map_err(|e| crate::store_release::explain(&state, e.to_string()))?
+            .is_none()
+        {
+            return Err(format!("--from: {}", task_not_found(&state, &options.from)));
+        }
+        continuation::derived_file(
+            &cas,
+            &store,
+            &options.task_id,
+            &options.from,
+            options.round,
+            goal,
+        )?
+    };
+    if !options.execute {
+        crate::model_check::enable_plan_time();
+    }
+    let start = StartOptions {
+        // Named for the messages that quote it; the bytes are the derived file, never read
+        // from this path.
+        file: PathBuf::from(format!(
+            "{} (af task run --from {}).json",
+            options.task_id, options.from
+        )),
+        bindings: options.bindings,
+        source_bindings: None,
+        repo: options.repo,
+        state: options.state,
+        authority: "HEAD".into(),
+        uncommitted: false,
+        json: options.json,
+        plan_only: !options.execute,
+        timeout_secs: None,
+        optimization_history: None,
+        fit: false,
+        replace: false,
+    };
+    start_kind_bytes(start, bytes, None, Presentation::Print)
+}
+
 pub(super) fn run(
     id: &str,
     repo: &Path,
@@ -3344,7 +3619,7 @@ struct Inspection {
 }
 
 /// The document `af task show --json` and `af task explain --json` print.
-pub(crate) const TASK_INSPECTION_V12: &str = "af/task-inspection@12";
+pub(crate) const TASK_INSPECTION_V13: &str = "af/task-inspection@13";
 
 #[allow(clippy::too_many_arguments)]
 fn present_with_format(
@@ -3460,6 +3735,7 @@ fn show_lines(
             ),
         });
     }
+    lines.extend(continuation::show_line(value));
     lines.extend(check_cache_lines(value));
     lines.extend(check_report_lines(cas, state));
     lines.extend(remote_check_lines(value));
@@ -4242,7 +4518,7 @@ fn inspection(
     };
     // One state model for every rendering of this Task: `list`, `show`, `report` and `run`.
     let view = state::view(cas, &state, result.as_ref(), clock()?)?;
-    let mut value = json!({"schema":TASK_INSPECTION_V12,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
+    let mut value = json!({"schema":TASK_INSPECTION_V13,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     // The wall clock starts at the first admission: the wall the Task has, when its clock
     // started, and the deadline it has since.
@@ -4513,6 +4789,10 @@ fn inspection(
     let bindings = input_bindings::recorded(cas, &state.revision)?;
     if let Some(record) = &bindings {
         value["input_bindings"] = serde_json::to_value(record).map_err(|e| e.to_string())?;
+    }
+    // The lineage of a continued Task (ADR-0198), read from its revision's provenance.
+    if let Some((findings_id, record)) = continuation::recorded(cas, &state.revision)? {
+        value["continues"] = continuation::inspection_value(&findings_id, &record);
     }
     if let Some(delivery) = delivery_view(cas, &state)? {
         value["delivery"] = delivery;

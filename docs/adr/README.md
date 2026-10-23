@@ -368,3 +368,5 @@ future readers need.
   candidate](0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
 - [0197 — Detect Provider logins, and register them through
   `add`](0197-detect-provider-logins-and-register-them-through-add.md)
+- [0198 — Continue a Task from its reviewed candidate, and give judging Workers the
+  base](0198-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-inspection:12",
-  "title": "Task inspection af/task-inspection@12",
-  "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together. Version 12 adds the `state` every rendering prints, the `gate` summary of the last check receipt with its check reports and gate retries, and the `failures` of the last run report (`af help task-states`).",
+  "$id": "urn:af:schema:task-inspection:13",
+  "title": "Task inspection af/task-inspection@13",
+  "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together. Version 12 adds the `state` every rendering prints, the `gate` summary of the last check receipt with its check reports and gate retries, and the `failures` of the last run report (`af help task-states`). Version 13 adds `continues`, the Task and review round a continued Task was planned from (ADR-0198).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -21,7 +21,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-inspection@12"
+      "const": "af/task-inspection@13"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
@@ -1112,6 +1112,43 @@
     "input_bindings": {
       "$comment": "The af/TaskInputBindings@1 record of a Task whose file bound a root input port to a recorded Task's output or an exact artifact (ADR-0117). Present only when there is a binding; it is provenance and changes no counter.",
       "$ref": "urn:af:schema:task-input-bindings:1"
+    },
+    "continues": {
+      "description": "What a continued Task continues (ADR-0198): the Task and review round it was planned from with `af task run NEW --from TASK` or a Task file's `continue` table, that Task's result, the reviewed candidate Snapshot this Task reads as its source, and the af/TaskFindings@1 artifact its implementer receives with the number of findings it holds. Absent for a Task that continues nothing; provenance, never authority.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "round",
+        "result_id",
+        "snapshot_id",
+        "findings_id",
+        "findings"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "result_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "findings_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "findings": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        }
+      }
     },
     "gate": {
       "description": "The last check receipt the Task recorded, summarized: its status and the failing and flaky tests its runners named, as `af task list --json` carries them; and the gate's evidence `af task show` prints beside it (ADR-0196): each check node's latest `af/TaskCheckReport@1` and every `af task run --retry-gate` that ran a failed gate again on the same candidate. Absent before a check recorded one.",

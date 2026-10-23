@@ -256,7 +256,7 @@ impl Consumer {
             "{task_id}: {stderr}\n{}",
             self.explain(&outcome)
         );
-        schemas::valid(&schemas::validator("task-inspection-v12.json"), &outcome);
+        schemas::valid(&schemas::validator("task-inspection-v13.json"), &outcome);
         self.retain(task_id, code, &outcome);
         outcome
     }

@@ -15,11 +15,14 @@ use serde_json::Value;
 const SAFE: u64 = review_core::json::SAFE_INTEGER_MAX as u64;
 
 /// Every field of `af.task-file/1`, in the order the schema declares them.
-const FIELDS: [&str; 15] = [
+const FIELDS: [&str; 18] = [
     "schema",
     "task_id",
     "kind",
     "goal",
+    "context",
+    "continue",
+    "base",
     "requirements",
     "inputs",
     "document_sources",
@@ -33,7 +36,7 @@ const FIELDS: [&str; 15] = [
     "limits",
 ];
 
-const REQUIRED: [&str; 6] = ["schema", "task_id", "kind", "goal", "strategy", "limits"];
+const REQUIRED: [&str; 3] = ["task_id", "kind", "goal"];
 
 const LIMITS: [&str; 4] = ["tokens", "max_attempts", "wall_ms", "verification"];
 
@@ -116,6 +119,18 @@ pub(super) fn diagnose(document: &Value) -> Option<String> {
             | "report_sources"
             | "optimization_history" => text(path, value),
             "requirements" => table(path, value),
+            "continue" => typed::<super::continuation::ContinueRefV1>(path, value),
+            "base" => typed::<super::context::BaseRefV1>(path, value),
+            "context" => match value.as_array() {
+                None => Some(format!(
+                    "context must be a list of repository paths, got {}",
+                    quoted(value)
+                )),
+                Some(items) => items
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, item)| text(&format!("context[{index}]"), item)),
+            },
             "inputs" => table(path, value).or_else(|| {
                 value.as_object().and_then(|ports| {
                     ports.iter().find_map(|(port, binding)| {
@@ -303,6 +318,23 @@ mod tests {
         let mut missing = valid();
         missing.as_object_mut().unwrap().remove("goal");
         assert!(diagnose(&missing).unwrap().starts_with("goal is missing"));
+        let short = json!({"task_id":"t-1","kind":"implement","goal":"do it"});
+        assert_eq!(diagnose(&short), None, "the rest may come from defaults");
+        let mut context = valid();
+        context["context"] = json!(["docs/a.md", 7]);
+        assert_eq!(
+            diagnose(&context).unwrap(),
+            "context[1] must be a string, got 7 (number)"
+        );
+        let mut continued = valid();
+        continued["continue"] = json!({"task": "t-0", "rounds": 1});
+        assert!(
+            diagnose(&continued)
+                .unwrap()
+                .starts_with("continue: unknown field `rounds`"),
+            "{:?}",
+            diagnose(&continued)
+        );
         let mut reserve = valid();
         reserve["limits"]["verification"]["attempts"] = json!(-1);
         assert_eq!(

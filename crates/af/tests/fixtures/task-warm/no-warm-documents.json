@@ -242,7 +242,7 @@
     "type": "af/ExecutionPlan@1"
   },
   "inspection": {
-    "schema": "af/task-inspection@12",
+    "schema": "af/task-inspection@13",
     "task_id": "cold-only",
     "revision_id": "<run:1>",
     "phase": {

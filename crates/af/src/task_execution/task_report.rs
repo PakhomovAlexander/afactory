@@ -153,7 +153,7 @@ fn entry(
         kind: state.revision.kind.clone(),
         pipeline: pipeline.as_ref().map(TaskReportPipelineV1::label),
         state: view.state.clone(),
-        detail: state::report_summary(&view).map(|detail| preview::text(&detail)),
+        detail: report_detail(cas, &state, &view)?,
         collected: false,
         review_rounds: Some(rounds.len() as u64),
         findings,
@@ -173,6 +173,28 @@ fn entry(
     Ok((task, pipeline))
 }
 
+/// The detail a report row prints beside the state: the state's own summary, then, for a
+/// continued Task, the Task and round it continues (ADR-0198), so a chain of continuations reads
+/// as one in the report.
+fn report_detail(
+    cas: &Cas,
+    state: &TaskProjection,
+    view: &state::TaskView,
+) -> Result<Option<String>, String> {
+    let summary = state::report_summary(view).map(|detail| preview::text(&detail));
+    let lineage = super::continuation::recorded(cas, &state.revision)?.map(|(_, record)| {
+        format!(
+            "continues {} round {}",
+            preview::text(&record.continues.task_id),
+            record.continues.round
+        )
+    });
+    Ok(match (summary, lineage) {
+        (Some(summary), Some(lineage)) => Some(format!("{summary}; {lineage}")),
+        (summary, lineage) => summary.or(lineage),
+    })
+}
+
 /// Every review round the Task recorded, in the order it published them: each
 /// `af/TaskReviewRound@1` an execution record published, read from the Task log rather than from
 /// the current execution outputs, so a round published before `af task refresh` or a review
@@ -182,10 +204,25 @@ fn recorded_rounds(
     store: &EventStore,
     run_id: &str,
 ) -> Result<Vec<TaskReviewRoundV1>, String> {
+    recorded_outputs(cas, store, run_id, TASK_REVIEW_ROUND_V1)?
+        .iter()
+        .map(|id| artifact(cas, id, TASK_REVIEW_ROUND_V1))
+        .collect()
+}
+
+/// The ID of every artifact of `artifact_type` an execution record of the Task published, in
+/// log order and each once: a continuation reads a round's findings and the evaluator's verdict
+/// this way (ADR-0198).
+pub(super) fn recorded_outputs(
+    cas: &Cas,
+    store: &EventStore,
+    run_id: &str,
+    artifact_type: &str,
+) -> Result<Vec<String>, String> {
     use review_core::task::event::TaskChangeV1 as Change;
     use review_core::task::execution::TaskExecutionRecordV1 as Record;
     let mut seen = BTreeSet::new();
-    let mut rounds = Vec::new();
+    let mut ids = Vec::new();
     for event in store.replay(run_id).map_err(|e| e.to_string())? {
         if review_store::store::task::is_beside_transitions(&event) {
             continue;
@@ -208,15 +245,15 @@ fn recorded_rounds(
         for id in output
             .outputs
             .values()
-            .filter(|port| port.artifact_type == TASK_REVIEW_ROUND_V1)
+            .filter(|port| port.artifact_type == artifact_type)
             .flat_map(|port| port.artifact_ids.iter())
         {
             if seen.insert(id.clone()) {
-                rounds.push(artifact(cas, id, TASK_REVIEW_ROUND_V1)?);
+                ids.push(id.clone());
             }
         }
     }
-    Ok(rounds)
+    Ok(ids)
 }
 
 /// What the Task's reviewer Attempts and checks say about its review.
