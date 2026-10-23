@@ -493,15 +493,24 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
     let (_temp, root) = temp_root();
     let repo = hub(&root);
     let mut browser = Browser::launch(&repo, &root.join("home"));
-    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
-    let screen = browser.wait_for("project settings", ready);
-    let bar = bar_rows(&screen);
     let folders = [
         "  v providers/",
         "  v workers/",
         "  v pipelines/",
         "  v tasks/",
     ];
+    // PTY reads can end midway through a frame, after SETTINGS but before the statusbar.
+    // Wait for every part asserted below within the same existing wait bound.
+    let ready = |screen: &Screen| {
+        let bar = bar_rows(screen);
+        screen.text().contains("SETTINGS  project: hub")
+            && folders
+                .iter()
+                .all(|folder| bar.iter().any(|row| row.starts_with(folder)))
+            && screen.lines()[ROWS - 1].starts_with("NORMAL  hub")
+    };
+    let screen = browser.wait_for("project settings and statusbar", ready);
+    let bar = bar_rows(&screen);
     for folder in folders {
         // A folder whose pane is still discovering carries a spinner after its name.
         let listed = bar.iter().any(|row| row.starts_with(folder));

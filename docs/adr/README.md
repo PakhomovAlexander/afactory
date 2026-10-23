@@ -369,3 +369,5 @@ future readers need.
   disables](0197-preserve-provider-id-domain-and-clear-orphaned-disables.md)
 - [0198 — Admit explicit ninety-minute checks and isolate Command catalog
   fixtures](0198-admit-explicit-ninety-minute-checks-and-isolate-command-catalog-fixtures.md)
+- [0199 — Wait for complete fixture evidence and diagnose guarded
+  failures](0199-wait-for-complete-fixture-evidence-and-diagnose-guarded-failures.md)

@@ -54,6 +54,10 @@ path = "junit.xml"
 #   Store operation held the shared one into the lease's last 4 s, cost the next write its
 #   sequence comparison; both are the kernel's correct answers to a real-time budget the
 #   fixture spent on scheduling. Alone the two pass together in 25 s (ADR-0182).
+# - heavy_starter_repair_uses_current_evidence: the same eleven-Attempt shape, with 5 s
+#   Workers and a 15 s heartbeat lease. It passed alone in 30.38 s but took 92.2 s in the
+#   full gate and exhausted resources at repair verification. Hold the suite's threads as
+#   the heavy-review fixtures do; this is suite exclusivity, not machine isolation (ADR-0199).
 # - guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness: the
 #   kernel compares the measured command's real elapsed_ms, building included, and requires a
 #   10% improvement of the candidate over a baseline slowed by 1.5 s inside the timed operation;
@@ -70,6 +74,7 @@ test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/authority_instances_at_both_package_sizes_pass_the_oracle$/)
 | test(/::heavy_review_cannot_erase_stale_claims$/)
 | test(/::heavy_review_cannot_erase_rediscovered_claims$/)
+| test(/::heavy_starter_repair_uses_current_evidence$/)
 | test(/::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness$/)
 '''
 threads-required = "num-test-threads"
