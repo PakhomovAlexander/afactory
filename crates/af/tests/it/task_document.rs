@@ -277,8 +277,10 @@ fn document_failures_keep_negative_or_missing_evidence_and_never_accept_a_stale_
         }
         std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
         commit(&repo);
+        // A verifier whose reply is refused, or that is missing, is a failed Worker (6); a
+        // document the verifier rejects asked for changes (3).
         let code = if matches!(case, "stale_document" | "missing_verifier") {
-            4
+            6
         } else {
             3
         };

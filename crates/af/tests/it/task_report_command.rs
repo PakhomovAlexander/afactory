@@ -3,7 +3,7 @@
 //! with no usage report at capacity, ADR-0143), two
 //! Tasks of one Store (one of them later collected, and reported alone), and two Tasks under two
 //! pipelines, one whose review round recorded a major and a minor finding. Every `--json` document validates against
-//! `schemas/task-report-v1.json`, every Markdown block passes `scripts/check-pr-report.py` (beside
+//! `schemas/task-report-v2.json`, every Markdown block passes `scripts/check-pr-report.py` (beside
 //! the lines added block a description also carries, ADR-0195), and
 //! neither carries a Provider label, a path or an account the Store or the machine holds.
 
@@ -54,7 +54,7 @@ fn stdout(output: &Output) -> String {
 /// The `--json` document, validated against the published schema.
 fn document(repo: &Path, state: &Path, ids: &[&str]) -> Value {
     let value: Value = serde_json::from_str(&stdout(&report(repo, state, ids, true))).unwrap();
-    schemas::valid(&schemas::validator("task-report-v1.json"), &value);
+    schemas::valid(&schemas::validator("task-report-v2.json"), &value);
     value
 }
 
@@ -236,7 +236,8 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
             .unwrap(),
     ))
     .unwrap();
-    assert_eq!(task["outcome"], shown["result"]["domain_conclusion"]);
+    // The state is the one `af task show` prints.
+    assert_eq!(task["state"], shown["state"]);
     assert_eq!(task["attempts"]["total"], shown["attempts"]);
     assert_eq!(task["chargeable_tokens"], shown["chargeable_tokens"]);
     let text = String::from_utf8(
@@ -249,12 +250,14 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
             .stdout,
     )
     .unwrap();
+    let recorded = &task["state"];
+    let label = [&recorded["phase"], &recorded["outcome"], &recorded["cause"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join("/");
     assert!(
-        text.starts_with(&format!(
-            "Task {}: {}\n",
-            task_interrupt::TASK,
-            task["outcome"].as_str().unwrap()
-        )),
+        text.starts_with(&format!("Task {}: {label}\n", task_interrupt::TASK)),
         "{text}"
     );
 
@@ -329,7 +332,10 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
         "{markdown}"
     );
     assert!(
-        markdown.contains(&format!("| 1 | {} | verified | — |", task_interrupt::TASK)),
+        markdown.contains(&format!(
+            "| 1 | {} | finished/verified | — |",
+            task_interrupt::TASK
+        )),
         "{markdown}"
     );
     assert_eq!(
@@ -449,7 +455,7 @@ fn fixture_report(f: &Fixture, json: bool) -> String {
     let text = stdout(&command.output().unwrap());
     if json {
         let value: Value = serde_json::from_str(&text).unwrap();
-        schemas::valid(&schemas::validator("task-report-v1.json"), &value);
+        schemas::valid(&schemas::validator("task-report-v2.json"), &value);
     }
     text
 }
@@ -464,10 +470,7 @@ fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stay
     assert_eq!(task["runs"], 1);
     assert_eq!(task["attempts"]["total"], done["attempts"]);
     assert_eq!(task["chargeable_tokens"], done["chargeable_tokens"]);
-    let outcome = done["result"]["domain_conclusion"]
-        .as_str()
-        .unwrap_or("planned");
-    assert_eq!(task["outcome"], outcome);
+    assert_eq!(task["state"], done["state"]);
 
     let cas = Cas::open_existing(f.state.join("cas")).unwrap();
     let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
@@ -627,7 +630,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     // `af task show --json`: the settlement carries the marker and a closed diagnostic.
     let shown = f.cli(&["task", "show", "release-notes"]);
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v11.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v12.json"), &shown);
     assert_eq!(shown["unknown_usage_attempts"], 1, "{shown:#}");
     let settled = shown["execution_records"]
         .as_array()
@@ -657,10 +660,10 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
         "{text}"
     );
     let listed = fixture_text(&f, &["task", "list"]);
-    assert!(listed.contains("5712 tokens (+1 unknown)"), "{listed}");
+    assert!(listed.contains("5712 (+1 unknown)"), "{listed}");
     let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
     schemas::valid(
-        &schemas::validator("task-list-entry-v2.json"),
+        &schemas::validator("task-list-entry-v3.json"),
         &listed["tasks"][0],
     );
     assert_eq!(
@@ -735,7 +738,7 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
     let tokens = before["chargeable_tokens"].as_str().unwrap().to_owned();
     let listed = fixture_text(&f, &["task", "list"]);
     assert!(
-        listed.contains(&format!("{tokens} tokens (+1 unknown)")),
+        listed.contains(&format!("{tokens} (+1 unknown)")),
         "{listed}"
     );
 
@@ -765,14 +768,11 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
         .lines()
         .find(|line| line.starts_with("release-notes"))
         .unwrap();
-    assert!(
-        row.contains(&format!("{tokens} tokens (+1 unknown)")),
-        "{row}"
-    );
+    assert!(row.contains(&format!("{tokens} (+1 unknown)")), "{row}");
     assert!(row.contains("collected "), "{row}");
     let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
     let entry = &listed["tasks"][0];
-    schemas::valid(&schemas::validator("task-list-entry-v2.json"), entry);
+    schemas::valid(&schemas::validator("task-list-entry-v3.json"), entry);
     assert_eq!(entry["unknown_usage_attempts"], 1, "{entry:#}");
     assert_eq!(entry["collected"]["unknown_usage_attempts"], 1, "{entry:#}");
     schemas::valid(
@@ -800,7 +800,7 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
         .lines()
         .find(|line| line.starts_with("| 1 | release-notes |"))
         .unwrap();
-    assert!(round.contains(" (collected) | "), "{round}");
+    assert!(round.contains("/collected | "), "{round}");
     assert!(round.contains(&cell), "{round}");
     let total = markdown
         .lines()
@@ -1500,7 +1500,10 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
             "nothing but the error is printed"
         );
         let said = String::from_utf8_lossy(&refused.stderr);
-        assert!(said.contains("Task `missing-task` was not found"), "{said}");
+        assert!(
+            said.contains("Task `missing-task` not found in Store "),
+            "{said}"
+        );
     }
     let twice = report(&repo, &state, &["gc-older", "gc-older"], false);
     assert_eq!(twice.status.code(), Some(1));
@@ -1508,7 +1511,10 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
     let empty = tempfile::tempdir().unwrap();
     let none = report(&repo, empty.path(), &["gc-older"], false);
     assert_eq!(none.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&none.stderr).contains("Task `gc-older` was not found"));
+    assert!(
+        String::from_utf8_lossy(&none.stderr)
+            .contains("Task `gc-older` not found: there is no Task Store at ")
+    );
 
     // A collected Task keeps its row from the tombstone: its Attempts are unknown, not zero.
     let collected = crate::common::af()
@@ -1538,7 +1544,7 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
         markdown
             .lines()
             .any(|line| line.starts_with("| 1 | gc-older | ")
-                && line.contains(" (collected) | unknown | ")),
+                && line.contains("/collected | unknown | ")),
         "{markdown}"
     );
     let pipelines = |markdown: &str| -> Vec<String> {
@@ -1927,12 +1933,23 @@ fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
     let table = round_table(&markdown);
     assert_eq!(table.len(), 3, "{markdown}");
     for (index, (row, task)) in table.iter().zip(tasks).enumerate() {
+        // The Outcome cell is the state `af task show` prints, then why a failed Task ended so.
+        let recorded = &task["state"];
+        let label = [&recorded["phase"], &recorded["outcome"], &recorded["cause"]]
+            .into_iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("/");
+        let outcome = match task["detail"].as_str() {
+            Some(detail) => format!("{label}: {detail}"),
+            None => label,
+        };
         assert_eq!(
             *row,
             [
                 (index + 1).to_string(),
                 ids[index].to_owned(),
-                task["outcome"].as_str().unwrap().to_owned(),
+                outcome,
                 ["1 major, 1 minor", "—"][index].to_owned(),
                 thousands(task["chargeable_tokens"].as_str().unwrap()),
                 duration(task["active_ms"].as_u64().unwrap()),

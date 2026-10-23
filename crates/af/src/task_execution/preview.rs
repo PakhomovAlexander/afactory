@@ -396,7 +396,16 @@ pub(super) fn render(
     status: &str,
     tree: bool,
 ) -> Result<String, String> {
-    render_marked(cas, revision, plan_id, plan, graph, status, tree).map(|(text, _)| text)
+    let clock = TaskClock::Deadline(plan.limits.deadline_unix_ms);
+    render_marked(cas, revision, plan_id, plan, graph, status, tree, clock).map(|(text, _)| text)
+}
+
+/// What the preview's `TIME` row states: the wall a Task that has not run yet will have once its
+/// clock starts at its first run, or the deadline of one that ran.
+#[derive(Clone, Copy)]
+enum TaskClock {
+    NotStarted { wall_ms: u64 },
+    Deadline(u64),
 }
 
 /// The preview, and the lines of its tree that name a Worker slot.
@@ -409,6 +418,7 @@ fn render_marked(
     graph: &CompiledTask,
     status: &str,
     tree: bool,
+    clock: TaskClock,
 ) -> Result<(String, SlotMarks), String> {
     let mut marks = SlotMarks::new();
     if graph.order.iter().any(|id| !graph.nodes.contains_key(id)) {
@@ -573,22 +583,33 @@ fn render_marked(
             plan.limits.tokens, plan.limits.verification.tokens, plan.limits.max_attempts
         ),
     );
-    let left = plan.limits.deadline_unix_ms.saturating_sub(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .min(u64::MAX as u128) as u64,
-    );
-    line(
-        &mut out,
-        &format!(
-            "TIME  {}s remaining | deadline {} Unix ms{}",
-            left / 1000,
-            plan.limits.deadline_unix_ms,
-            if left == 0 { " [EXPIRED]" } else { "" }
+    match clock {
+        TaskClock::NotStarted { wall_ms } => line(
+            &mut out,
+            &format!(
+                "TIME  {} wall | deadline starts when you run",
+                super::state::duration_words(wall_ms)
+            ),
         ),
-    );
+        TaskClock::Deadline(deadline) => {
+            let left = deadline.saturating_sub(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+            line(
+                &mut out,
+                &format!(
+                    "TIME  {}s remaining | deadline {}{}",
+                    left / 1000,
+                    super::state::local_time(deadline),
+                    if left == 0 { " [EXPIRED]" } else { "" }
+                ),
+            );
+        }
+    }
     line(
         &mut out,
         &format!(
@@ -669,7 +690,14 @@ pub(super) fn current_marked(
     } else {
         "confirmation required; no new Worker dispatched"
     };
-    render_marked(cas, &state.revision, id, &plan, &graph, status, tree)
+    // A plan that never ran has its whole wall ahead of it: the clock starts at its first run.
+    let clock = match state.clock_started_unix_ms() {
+        None => TaskClock::NotStarted {
+            wall_ms: state.wall_ms(),
+        },
+        Some(_) => TaskClock::Deadline(state.deadline_unix_ms()),
+    };
+    render_marked(cas, &state.revision, id, &plan, &graph, status, tree, clock)
 }
 
 #[cfg(test)]

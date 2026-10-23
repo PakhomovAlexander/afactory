@@ -467,9 +467,8 @@ impl TaskExecutionProjection {
         if graph.order != planned.order {
             return Err(conflict("Compiled Task order is not canonical"));
         }
-        let budget = graph
-            .budget(state.revision.limits.clone())
-            .map_err(conflict)?;
+        // The deadline the Task's clock gives it, started at its first admission.
+        let budget = graph.budget(state.limits()).map_err(conflict)?;
         let budget = if plan.preparation.is_some() {
             budget.with_deferred_verification().map_err(conflict)?
         } else {
@@ -876,14 +875,7 @@ impl TaskProjection {
                     .plan_id
                     .clone()
                     .ok_or_else(|| conflict("Task has no plan"))?;
-                execution.apply_experiment(
-                    cas,
-                    &self.revision,
-                    &revision_id,
-                    &outer_plan_id,
-                    &record,
-                    time,
-                )?;
+                execution.apply_experiment(cas, &revision_id, &outer_plan_id, &record, time)?;
                 match record {
                     TaskExecutionRecordV1::ExperimentPrepared { .. } => {
                         self.phase = TaskPhaseV1::Waiting {

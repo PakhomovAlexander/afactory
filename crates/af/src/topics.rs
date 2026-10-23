@@ -11,6 +11,11 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
     ("exit-codes", "What every exit code means", EXIT_CODES),
     ("json", "The --json contract", JSON),
     (
+        "task-states",
+        "The one Task state every af task command prints: phase, outcome, cause and next command",
+        TASK_STATES,
+    ),
+    (
         "self",
         "Installing, updating, pinning, and removing af",
         SELF_TOPIC,
@@ -35,14 +40,87 @@ pub(crate) fn find(name: &str) -> Option<&'static (&'static str, &'static str, &
 /// `review_config::layout` rather than stored a second time here: that table, the one in
 /// the documentation and every classification are the same data.
 pub(crate) fn body(topic: &str, text: &str) -> String {
-    if topic != "config" {
-        return text.to_string();
+    match topic {
+        "config" => format!(
+            "{text}\n\nWhat `.af/` holds\n\n{}\n{}\n\n{UNDECLARED}",
+            review_config::layout::render_table(),
+            review_config::layout::ELSEWHERE,
+        ),
+        // The tables are rendered from the enum every Task rendering prints, so this page and
+        // the binary cannot say different things.
+        "task-states" => format!("{text}\n\n{}", task_state_tables()),
+        "exit-codes" => format!("{text}\n\n{}", task_exit_codes()),
+        _ => text.to_string(),
     }
-    format!(
-        "{text}\n\nWhat `.af/` holds\n\n{}\n{}\n\n{UNDECLARED}",
-        review_config::layout::render_table(),
-        review_config::layout::ELSEWHERE,
-    )
+}
+
+/// The phase, outcome and cause tables of `af help task-states`, from
+/// `review_core::task::state`; `docs/tasks.md` carries the same rows.
+pub(crate) fn task_state_tables() -> String {
+    use review_core::task::state::*;
+    let mut out = String::from("Phases\n\n");
+    for phase in TaskStatePhaseV1::ALL {
+        out.push_str(&format!(
+            "  {:<10} {}\n",
+            phase.as_str(),
+            phase.description()
+        ));
+    }
+    out.push_str("\nOutcomes, with the exit code af task run ends with\n\n");
+    for outcome in TaskOutcomeV1::ALL {
+        out.push_str(&format!(
+            "  {:<18} {}  {}\n",
+            outcome.as_str(),
+            outcome.exit_code(),
+            outcome.description()
+        ));
+    }
+    out.push_str("\nCauses, with the outcome each belongs to\n\n");
+    for cause in TaskCauseV1::ALL {
+        out.push_str(&format!(
+            "  {:<24} {:<18} {}\n",
+            cause.as_str(),
+            cause.outcome().map_or("(retained)", TaskOutcomeV1::as_str),
+            cause.description()
+        ));
+    }
+    out.trim_end().to_owned()
+}
+
+/// The Task outcome section of `af help exit-codes`.
+fn task_exit_codes() -> String {
+    use review_core::task::state::TaskOutcomeV1;
+    let mut out = String::from(
+        "`af task run`, `af task start --execute`, `af task explain` and `af review run --file` \
+         end with their Task's outcome (`af help task-states`):\n\n",
+    );
+    let mut codes: Vec<(u8, Vec<&str>)> = Vec::new();
+    for outcome in TaskOutcomeV1::ALL {
+        match codes
+            .iter_mut()
+            .find(|(code, _)| *code == outcome.exit_code())
+        {
+            Some((_, names)) => names.push(outcome.as_str()),
+            None => codes.push((outcome.exit_code(), vec![outcome.as_str()])),
+        }
+    }
+    codes.sort();
+    for (code, names) in codes {
+        let extra = if code == 4 {
+            ", or a Task that waits for a person's decision"
+        } else {
+            ""
+        };
+        out.push_str(&format!("  {code:<4} {}{extra}\n", names.join(", ")));
+    }
+    out.push_str(
+        "\nWhere such a code's result goes to stdout alone (under --json, `af task explain`, \
+         `af task run` of a Task that already finished), stderr ends with `Task ID: \
+         phase/outcome/cause; next: COMMAND`, so a non-zero exit always says why there.\n\
+         \n`af task show`, `af task list` and `af task report` exit 0 once they read the Store: \
+         the state they print is data, not their outcome.",
+    );
+    out
 }
 
 /// What the same table says about a captured Snapshot, and the one knob over it.
@@ -149,7 +227,45 @@ stderr still gets one diagnostic line, so discarding stdout never hides a refusa
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
 change bumps the version rather than reinterpreting an old one. Nothing af prints under --json is
 affected by a TTY, colours, or the update check: its notice goes to stderr, only on a TTY, and
-never under --json.";
+never under --json.
+
+The Task documents, each named by its `schema`:
+
+  af task show --json                  af/task-inspection@12; a collected Task:
+                                       af/task-collected-inspection@2
+  af task show --checks --json         af/task-checks@1
+  af task list --json                  af/task-list@3, one af/task-list-entry@3 per Task
+  af task report --json                af/task-report@2
+  af task plan --json, refused         af/task-selection@2; an infeasible plan carries
+                                       planning_diagnostic.required_limits and .reserves
+
+Each carries the Task's `state` (`af help task-states`); a previous version is refused, never
+read.";
+
+const TASK_STATES: &str = "\
+Every af task command that shows a Task prints one state for it, in text and under --json alike:
+`af task list`, `af task show`, `af task report` and the last line of `af task run`. The state is
+`phase/outcome/cause`, for example `finished/gate_failed/check_failed`; `outcome` is present once
+the Task ended and `cause` once that outcome is not `verified`. Under --json it is the `state`
+object: `phase`, `outcome`, `cause` and `next_action`, null where absent.
+
+  planned --af task run--> running --> finished
+     |                      |   ^
+     |                      v   | af task run (resume)
+     |                   abandoned
+     +--> waiting (plan review, resources, input or a decision) --> running
+
+A Task's wall clock starts at its first `af task run`, not when it is planned: the preview says
+`deadline starts when you run`, and `af task run` prints the deadline in local time with the time
+left (`deadline 17:41:18 +03 (2 h 59 min from now)`).
+
+Every state that ended names the one command to run next, the last line of `af task show` and
+`af task run` (`next: af task run ID --retry-gate`), `none` when there is none: `af task findings
+ID` after reviewer findings, `af task run ID --retry-gate` after a failed check, `af task run ID`
+to resume, `af task plan --file TASK_FILE --fit` after a budget or deadline ran out (TASK_FILE with
+a new `task_id` once the Task ran), `af provider status` or `af provider setup ID --login` after a
+Provider failure. `af task show ID --checks` prints the gate's last check receipt: each check's
+failing and flaky tests and the end of its stderr.";
 
 const STORAGE: &str = "\
 af keeps a bounded amount of disk between runs (ADR-0144). One budget covers warm build keys,

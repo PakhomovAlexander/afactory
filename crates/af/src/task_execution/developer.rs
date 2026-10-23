@@ -667,15 +667,15 @@ pub(crate) fn apply(
         // negative decision.  The inspection still carries needs_human/non-success Task state;
         // the command itself must not masquerade a successfully persisted rejection as an I/O
         // or authorization failure.
-        return Ok(
-            if requested
-                == review_core::task::optimization_experiment::ExperimentDecisionKindV1::Rejected
-            {
-                0
-            } else {
-                presented
-            },
-        );
+        let code = if requested
+            == review_core::task::optimization_experiment::ExperimentDecisionKindV1::Rejected
+        {
+            0
+        } else {
+            presented
+        };
+        state_note(&cas, &store, task_id, code);
+        return Ok(code);
     }
     let value = bytes
         .strip_prefix(b"af/task-plan-authorization/1\n")
@@ -741,7 +741,7 @@ pub(crate) fn apply(
     .map(|_| ())
     .map_err(|e| e.to_string());
     release(&cas, &mut store, &lease, outcome)?;
-    present(&cas, &store, task_id, inspect.json, false)
+    present_noting(&cas, &store, task_id, inspect.json, false)
 }
 
 #[cfg(test)]

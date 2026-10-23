@@ -191,21 +191,32 @@ pub(crate) fn write_output(
     json: bool,
 ) -> Result<i32, String> {
     let (_, state) = state_path(repo, state)?;
+    if !store_present(&state)? {
+        return Err(task_not_found(&state, id));
+    }
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     let task = store
         .task_projection(&cas, id)
         .map_err(|e| e.to_string())?
-        .ok_or("Unknown Task")?;
+        .ok_or_else(|| task_not_found(&state, id))?;
     let TaskPhaseV1::Finished { result_id } = &task.phase else {
         return Err("Task has no finished result to export".into());
     };
     let result: TaskResultV1 = artifact(&cas, result_id, TASK_RESULT_V1)?;
-    let value = result
-        .outputs
-        .get(port)
-        .ok_or("Task result has no such output port")?;
+    let value = result.outputs.get(port).ok_or_else(|| {
+        format!(
+            "Task {id} has no such output port {}; ports: {}",
+            preview::text(port),
+            result
+                .outputs
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
     if value.cardinality != PortCardinality::One || value.artifact_ids.len() != 1 {
         return Err("Output command requires a single artifact port".into());
     }

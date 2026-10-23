@@ -30,7 +30,21 @@ pub(super) enum SelectionAssessment {
         revision_id: String,
         decision: SelectionDecision,
         view: serde_json::Value,
+        /// The smallest limits the refused candidate fits, for an infeasible refusal.
+        fit: Option<Box<review_core::task::limits_fit::TaskLimitsFitV1>>,
     },
+}
+
+/// The document a refused selection prints.
+pub(super) const TASK_SELECTION_V2: &str = "af/task-selection@2";
+
+/// The clock a selection judges the deadline by: `now`, and the wall the Task has from it. A
+/// plan that has not run judges its whole declared wall, since its clock starts at the first
+/// `af task run`; a refresh judges what is left.
+#[derive(Clone, Copy)]
+pub(super) struct PlanClock {
+    pub now: u64,
+    pub wall_ms: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -131,27 +145,42 @@ pub(super) fn available_tools(
     Ok(())
 }
 
+/// What a refused plan prints: with `--json`, the `af/task-selection@2` document on stdout; in
+/// either mode, the refusal and its reasons on stderr. With `fit`, an infeasible refusal whose
+/// fit no Pipeline bound blocks is handed back for `af task plan --fit` to plan again.
+pub(super) enum Prepared {
+    Ready(PreparedSelection),
+    Refused,
+    Refit(Box<review_core::task::limits_fit::TaskLimitsFitV1>),
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     cas: &Cas,
     authority: &RunAuthority,
     compiler: &TaskPlanCompiler,
     request: TaskRevisionV1,
     json_output: bool,
-) -> Result<Option<PreparedSelection>, String> {
-    match assess(cas, authority, compiler, request, None)? {
-        SelectionAssessment::Prepared(value) => Ok(Some(value)),
+    clock: PlanClock,
+    fit_requested: bool,
+    file: &Path,
+) -> Result<Prepared, String> {
+    match assess(cas, authority, compiler, request, None, clock)? {
+        SelectionAssessment::Prepared(value) => Ok(Prepared::Ready(value)),
+        SelectionAssessment::Refused {
+            fit: Some(fit),
+            decision: SelectionDecision::Infeasible {},
+            ..
+        } if fit_requested && fit.fixable() && !fit.raised().is_empty() => Ok(Prepared::Refit(fit)),
         SelectionAssessment::Refused { decision, view, .. } => {
-            println!(
-                "{}",
-                if json_output {
-                    serde_json::to_string(&view)
-                } else {
-                    serde_json::to_string_pretty(&view)
-                }
-                .map_err(|e| e.to_string())?
-            );
-            eprintln!("{}", refusal_line(&decision, &view)?);
-            Ok(None)
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string(&view).map_err(|e| e.to_string())?
+                );
+            }
+            eprint!("{}", refusal_text(&decision, &view, file)?);
+            Ok(Prepared::Refused)
         }
     }
 }
@@ -182,13 +211,137 @@ pub(super) fn refusal_line(
     Ok(line)
 }
 
+/// The refusal as stderr prints it in either mode: the decision line, one line per refused
+/// candidate's reason, and for an infeasible plan the smallest limits that fit and the command
+/// that plans with them.
+pub(super) fn refusal_text(
+    decision: &SelectionDecision,
+    view: &serde_json::Value,
+    file: &Path,
+) -> Result<String, String> {
+    let mut out = format!(
+        "No Pipeline selected for Task {}: {}\n",
+        preview::text(view["task_id"].as_str().unwrap_or("?")),
+        decision_words(decision)
+    );
+    for candidate in view["selection"]["candidates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let pipeline = preview::text(candidate["pipeline"].as_str().unwrap_or("?"));
+        if let Some(reason) = candidate["state"]["reason"].as_str() {
+            out.push_str(&format!("  {pipeline}: {}\n", preview::text(reason)));
+        }
+        for reason in candidate["state"]["reasons"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let Some(reason) = reason.as_str() {
+                out.push_str(&format!("  {pipeline}: {}\n", preview::text(reason)));
+            }
+        }
+        if let Some(facts) = candidate["state"]["facts"].as_array() {
+            let facts = facts
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(preview::text)
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "  {pipeline}: needs the facts {facts}; add them to the Task file's `facts`\n"
+            ));
+        }
+    }
+    let diagnostic = &view["planning_diagnostic"];
+    if let Some(required) = diagnostic.get("required_limits") {
+        out.push_str(&format!(
+            "  the smallest limits that fit: {}\n",
+            limits_text(required)
+        ));
+        if required["wall_ms"] != diagnostic["supplied_limits"]["wall_ms"] {
+            out.push_str(&format!(
+                "  wall_ms keeps {} ms beyond the mandatory Attempts' {} ms and the verification \
+                 reserve, for the start of the run\n",
+                review_graph::task::FIT_WALL_START_MS,
+                diagnostic["mandatory"]["wall_ms"]
+            ));
+        }
+        for slot in diagnostic["reserves"].as_array().into_iter().flatten() {
+            out.push_str(&format!(
+                "  verification reserve {}: {} Attempts x {} tokens, {} ms each\n",
+                preview::text(slot["node"].as_str().unwrap_or("?")),
+                slot["attempts"],
+                slot["tokens_per_attempt"],
+                slot["wall_ms_per_attempt"]
+            ));
+        }
+        for reason in diagnostic["unfixable"].as_array().into_iter().flatten() {
+            if let Some(reason) = reason.as_str() {
+                out.push_str(&format!(
+                    "  no Task limit fixes: {}\n",
+                    preview::text(reason)
+                ));
+            }
+        }
+    }
+    if let Some(next) = view["next_action"].as_str() {
+        out.push_str(&format!("next: {next}\n"));
+    } else if decision == &(SelectionDecision::Infeasible {}) {
+        out.push_str(&format!(
+            "next: af task plan --file {} --fit\n",
+            shell_words::quote(&file.display().to_string())
+        ));
+    }
+    Ok(out)
+}
+
+fn decision_words(decision: &SelectionDecision) -> String {
+    match decision {
+        SelectionDecision::Infeasible {} => {
+            "infeasible: the Task's limits are too small for the plan".into()
+        }
+        SelectionDecision::NeedsFacts { facts } => format!(
+            "needs facts: {}",
+            facts.iter().cloned().collect::<Vec<_>>().join(", ")
+        ),
+        SelectionDecision::Unavailable {} => {
+            "unavailable: a Worker or check cannot run here".into()
+        }
+        SelectionDecision::Ambiguous { pipelines } => format!(
+            "ambiguous: {} fit equally; name one with `pipeline` in the Task file",
+            pipelines.iter().cloned().collect::<Vec<_>>().join(", ")
+        ),
+        SelectionDecision::Invalid {} => "invalid: no candidate compiles".into(),
+        SelectionDecision::Refused {} => "refused: no candidate accepts the Task".into(),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+/// `tokens 400, max_attempts 3, wall_ms 60000, verification tokens 200 attempts 2 wall_ms 10000`.
+pub(super) fn limits_text(limits: &serde_json::Value) -> String {
+    format!(
+        "tokens {}, max_attempts {}, wall_ms {}, verification tokens {} attempts {} wall_ms {}",
+        limits["tokens"],
+        limits["max_attempts"],
+        limits["wall_ms"],
+        limits["verification"]["tokens"],
+        limits["verification"]["attempts"],
+        limits["verification"]["wall_ms"]
+    )
+}
+
 pub(super) fn assess(
     cas: &Cas,
     authority: &RunAuthority,
     compiler: &TaskPlanCompiler,
     mut request: TaskRevisionV1,
     capacity: Option<&TaskLimitsV1>,
+    clock: PlanClock,
 ) -> Result<SelectionAssessment, String> {
+    let mut fits: BTreeMap<String, review_core::task::limits_fit::TaskLimitsFitV1> =
+        BTreeMap::new();
     request.provenance.input_artifact_ids = provenance_input_artifact_ids(cas, &request);
     let request_id = capture_revision(cas, &request)?;
     let requested = request.pipeline.as_ref();
@@ -209,6 +362,16 @@ pub(super) fn assess(
                     Err(reason) => return CandidateState::Invalid { reason },
                 };
             if !resources.is_empty() {
+                // The Workers are not bound yet, so the fit leaves Provider admission out;
+                // `--fit` plans again and refits once they are.
+                if let Ok(fit) = candidate.candidate_fit(
+                    cas,
+                    graph.clone(),
+                    capacity.unwrap_or(&revision.limits),
+                    clock.wall_ms,
+                ) {
+                    fits.insert(root.to_owned(), fit);
+                }
                 return CandidateState::Infeasible {
                     reason: resources.join("; "),
                 };
@@ -240,18 +403,13 @@ pub(super) fn assess(
                 Ok(adapters) => adapters,
                 Err(reason) => return CandidateState::Unavailable { reason },
             };
-            let now = match clock() {
-                Ok(now) => now,
-                Err(reason) => return CandidateState::Unavailable { reason },
-            };
-            match candidate.candidate_resources(
-                cas,
-                graph,
-                capacity.unwrap_or(&revision.limits),
-                now,
-            ) {
+            let limits = capacity.unwrap_or(&revision.limits);
+            match candidate.candidate_resources(cas, graph.clone(), limits, clock.now) {
                 Err(reason) => return CandidateState::Invalid { reason },
                 Ok(reasons) if !reasons.is_empty() => {
+                    if let Ok(fit) = candidate.candidate_fit(cas, graph, limits, clock.wall_ms) {
+                        fits.insert(root.to_owned(), fit);
+                    }
                     return CandidateState::Infeasible {
                         reason: reasons.join("; "),
                     };
@@ -298,9 +456,39 @@ pub(super) fn assess(
                 },
             ));
         }
-        let view = json!({"schema":"af/task-selection@1", "task_id":request.task_id,
+        // The infeasible candidate the Task named, or the first one assessed: its smallest
+        // limits that fit, computed by the planner from the reserves it protects.
+        let fit = (selection.decision == SelectionDecision::Infeasible {})
+            .then(|| {
+                selection
+                    .candidates
+                    .iter()
+                    .filter(|c| matches!(c.state, CandidateState::Infeasible { .. }))
+                    .find_map(|c| fits.get(&c.pipeline).map(|fit| (c, fit.clone())))
+            })
+            .flatten();
+        let mut view = json!({"schema":TASK_SELECTION_V2, "task_id":request.task_id,
             "selection_id": selection_id, "request_revision_id":request_id,
             "attempts":0, "chargeable_tokens":0, "selection":selection});
+        if let Some((candidate, fit)) = &fit {
+            let CandidateState::Infeasible { reason } = &candidate.state else {
+                unreachable!("filtered to infeasible candidates");
+            };
+            view["planning_diagnostic"] = json!({
+                "kind": "infeasible",
+                "pipeline": candidate.pipeline,
+                "reason": reason,
+                "supplied_limits": fit.supplied,
+                "required_limits": fit.required,
+                "raised": fit.raised().into_iter().map(|(name, supplied, required)| {
+                    json!({"limit": name, "supplied": supplied, "required": required})
+                }).collect::<Vec<_>>(),
+                "reserves": fit.reserves,
+                "mandatory": fit.mandatory,
+                "unfixable": fit.unfixable,
+            });
+        }
+        let fit = fit.map(|(_, fit)| Box::new(fit));
         request.provenance.adapter_id = cas
             .put_json(
                 &serde_json::to_value(SelectedAdapter {
@@ -318,6 +506,7 @@ pub(super) fn assess(
             revision_id,
             decision: selection.decision,
             view,
+            fit,
         });
     };
     let (mut revision, compiler, adapters) = admitted

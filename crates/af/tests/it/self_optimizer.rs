@@ -31,7 +31,7 @@ fn af(repo: &Path, state: &Path, extra: &[&str]) -> Value {
 fn valid_inspection(value: &Value) {
     static SCHEMA: std::sync::OnceLock<jsonschema::Validator> = std::sync::OnceLock::new();
     schemas::valid(
-        SCHEMA.get_or_init(|| schemas::validator("task-inspection-v11.json")),
+        SCHEMA.get_or_init(|| schemas::validator("task-inspection-v12.json")),
         value,
     );
 }
@@ -1204,7 +1204,7 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
         state,
         &["task", "show", task, "--repo", delivered.to_str().unwrap()],
     );
-    assert_eq!(adoption_projection["schema"], "af/task-inspection@11");
+    assert_eq!(adoption_projection["schema"], "af/task-inspection@12");
     valid_inspection(&adoption_projection);
     let projected = adoption_projection["adoption_observations"]
         .as_array()
@@ -1659,7 +1659,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
     }
 
     let waiting = af(&repo, &state, &["--experiment", "--execute"]);
-    assert_eq!(waiting["schema"], "af/task-inspection@11");
+    assert_eq!(waiting["schema"], "af/task-inspection@12");
     valid_inspection(&waiting);
     assert_eq!(waiting["attempts"], 0);
     assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
@@ -2072,7 +2072,7 @@ fn actual_code_task_runtime_evidence_round_trips_through_native_af_capture() {
         String::from_utf8_lossy(&task.stderr)
     );
     let receipt: Value = serde_json::from_slice(&task.stdout).unwrap();
-    assert_eq!(receipt["schema"], "af/task-inspection@11");
+    assert_eq!(receipt["schema"], "af/task-inspection@12");
     valid_inspection(&receipt);
     let runtime = receipt["runtime_observations"].as_array().unwrap();
     assert!(runtime.iter().any(|entry| {

@@ -183,7 +183,7 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(outcome["schema"], "af/task-inspection@11");
+    assert_eq!(outcome["schema"], "af/task-inspection@12");
     assert_eq!(outcome["result"]["acceptance"], "satisfied");
     assert!(outcome.get("delivery").is_none());
     assert_eq!(outcome["attempts"], 3);
@@ -241,8 +241,11 @@ fn failed_gate_is_typed_unverified_and_skips_the_evaluator() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), false);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 3, "{stderr}");
+    // A failed gate is `gate_failed`, never `changes_requested`, and exits 5.
+    assert_eq!(code, 5, "{stderr}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(outcome["state"]["outcome"], "gate_failed");
+    assert_eq!(outcome["state"]["cause"], "check_failed");
     assert_eq!(outcome["result"]["acceptance"], "unsatisfied");
     assert_eq!(verification(&outcome, &state)["outcome"], "failed");
     assert_eq!(outcome["attempts"], 2);
@@ -363,7 +366,9 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     assert_eq!(code, 0, "{stderr}");
     let listed: serde_json::Value = serde_json::from_str(listed.trim()).unwrap();
     assert_eq!(listed["tasks"][0]["task_id"], task_id);
-    assert_eq!(listed["tasks"][0]["outcome"], "verified");
+    assert_eq!(listed["tasks"][0]["state"]["outcome"], "verified");
+    // Once delivered, no next command is left.
+    assert!(listed["tasks"][0]["state"]["next_action"].is_null());
     assert_eq!(
         listed["tasks"][0]["delivery"]["outcome"]["kind"],
         "delivered"
@@ -385,7 +390,7 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     );
     assert_eq!(code, 0, "{stderr}");
     let shown: serde_json::Value = serde_json::from_str(shown.trim()).unwrap();
-    assert_eq!(shown["schema"], "af/task-inspection@11");
+    assert_eq!(shown["schema"], "af/task-inspection@12");
     assert_eq!(shown["result"]["acceptance"], "satisfied");
     assert!(shown["history"].as_array().unwrap().len() >= 8);
 }
@@ -675,7 +680,7 @@ fn delivery_refuses_unverified_and_dirty_sources_without_creating_a_target() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), false);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 3, "{stderr}");
+    assert_eq!(code, 5, "{stderr}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let task_id = outcome["task_id"].as_str().unwrap();
     let refused = directory.path().join("refused");

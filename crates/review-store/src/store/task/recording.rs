@@ -45,7 +45,7 @@ impl TaskProjection {
                     reason: TaskWaitingReasonV1::NeedsHuman,
                 })
             || self.resume_phase != Some(TaskPhaseV1::Running {})
-            || time < self.revision.limits.deadline_unix_ms
+            || time < self.deadline_unix_ms()
             || self.revision_id != revision_id
             || self.plan_id.as_deref() != Some(plan_id)
             || self.run_reports.last().map(String::as_str) != Some(report_id)

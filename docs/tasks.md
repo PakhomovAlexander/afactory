@@ -86,7 +86,12 @@ checked-in `fixtures/task-runtime/pagination` example uses this one:
 }
 ```
 
-The Task ID is chosen here and must be new to the state directory. Without `pipeline`, planning
+The Task ID is chosen here: planning the same file again shows the existing plan, and a changed
+file under a planned ID needs `af task plan --replace`. A file that omits `strategy` takes its
+kind's: `implement` is `reviewed` with `verification` `review`, `verification` is `light` with
+`evaluation`, both with `facts.standard = true`, and `report` is `report`; a field the file names
+overrides the kind's, and one its kind's profile cannot verify by is refused with both values and
+this table. Without `pipeline`, planning
 [selects](task-execution/selection.md) a fitting Pipeline from the catalog. The goal and any
 `requirements` are input data; they cannot change the committed execution permissions. The
 [Task-file walkthrough](task-execution/task-file.md) runs this example end to end.
@@ -121,8 +126,99 @@ spellings a Provider accepts ([model bindings](task-execution/model-bindings.md)
 [ADR-0148](adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)).
 
 The [ASCII preview guide](task-execution/preview.md) covers the two plan views and agent
-approval. `task list` shows terminal outcome, chargeable tokens and current delivery state.
-`task show` adds exact Snapshot IDs and the append-only event history. Both accept `--json`.
+approval. `task list` prints a header row and one line per Task: its ID, its state, its review
+round, chargeable tokens, how long ago it last changed and the verb of its next command, then its
+delivery once there is one. `task show` adds the plan, the checks, each failed node and the next
+command; `--json` adds exact Snapshot IDs and the append-only event history. Both accept `--json`
+([Task states](#task-states)).
+
+## Task states
+
+Every `af task` command that shows a Task prints one state for it, in text and under `--json`
+alike: `af task list`, `af task show`, `af task report` and the last line of `af task run`. The
+state is `phase/outcome/cause`, for example `finished/gate_failed/check_failed`; `outcome` is
+present once the Task ended and `cause` once that outcome is not `verified`. Under `--json` it is
+the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where absent
+(`af help task-states` prints the same tables).
+
+```text
+  planned --af task run--> running --> finished
+     |                      |   ^
+     |                      v   | af task run (resume)
+     |                   abandoned
+     +--> waiting (plan review, resources, input or a decision) --> running
+```
+
+| Phase | Meaning |
+| --- | --- |
+| `planned` | a plan is recorded and waits for `af task run` to confirm it |
+| `running` | a writer holds the Task's lease and runs it now |
+| `waiting` | the Task waits for a plan review, resources, input or a decision |
+| `abandoned` | the Task stopped before it finished and no writer holds it |
+| `finished` | the Task recorded its result (or was collected after it did) |
+
+| Outcome | Exit code of `af task run` | Meaning |
+| --- | ---: | --- |
+| `verified` | 0 | every acceptance obligation is satisfied; the result can be delivered |
+| `changes_requested` | 3 | the review or the evaluator ran to completion and asked for changes |
+| `gate_failed` | 5 | a required check of the gate failed or could not run |
+| `provider_failed` | 6 | a Worker's Provider or process failed, or its reply was not admissible |
+| `cancelled` | 4 | the run stopped before it finished; `af task run` resumes it |
+| `exhausted` | 4 | a token, Attempt or verification-reserve limit ran out |
+| `expired` | 7 | the Task's wall clock ran out |
+
+| Cause | Outcome | Meaning |
+| --- | --- | --- |
+| `reviewer_findings` | `changes_requested` | the review recorded findings at or above its gate |
+| `evaluator_rejected` | `changes_requested` | the independent evaluator did not accept the result |
+| `check_failed` | `gate_failed` | a required check ran and failed |
+| `check_flaky_then_failed` | `gate_failed` | a required check failed; some of its tests were flaky before |
+| `preflight_failed` | `gate_failed` | a required check stopped before its tests ran, or never started |
+| `malformed_reply` | `provider_failed` | a Worker's process failed or its reply broke its output contract |
+| `provider_network` | `provider_failed` | a request to the Provider failed on the network |
+| `provider_capacity` | `provider_failed` | the Provider's model was at capacity or its rate limit was reached |
+| `provider_timeout` | `provider_failed` | a Worker or Provider call ran out of its Attempt time |
+| `identity_changed` | `provider_failed` | the Provider answered as another account, model or policy than the plan bound |
+| `identity_unverified` | `provider_failed` | the Provider's login could not be verified |
+| `model_refused` | `provider_failed` | the bound model refused, was switched or is unknown to its Provider |
+| `writer_lost` | `cancelled` | the writer lost its lease before the Task finished |
+| `deadline` | `expired` | the Task's wall clock ran out |
+| `budget` | `exhausted` | a token, Attempt or verification-reserve limit ran out |
+| `collected` | the one it retained | the Task was collected; only its summary remains |
+| `host_cancelled` | `cancelled` | the run was interrupted (Ctrl-C or a signal) |
+
+Every state that ended names the one command to run next: the last line of `af task show` and
+`af task run` (`next: af task run ID --retry-gate`), `none` when there is none, and
+`state.next_action` under `--json`. It is `af task findings ID` after reviewer findings,
+`af task run ID --retry-gate` after a failed check, `af task show ID --checks` when a check did not
+reach its tests, `af task run ID` to resume a cancelled run, `af task plan --file TASK_FILE --fit`
+after a budget or deadline ran out (with a new `task_id` once the Task ran), and `af provider
+status` or `af provider setup ID --login` after a Provider failure. `af task show` prints, per
+failed node, its cause, the first line of its error and the artifact IDs of its whole diagnostic
+and stderr; a node that only lacks the receipt of a branch that failed comes after that branch.
+A command that exits with an outcome's code while its result goes to stdout, such as `af task
+explain` or `af task run` of a Task that already finished, ends with the same line on stderr as
+the run log does, `Task ID: finished/gate_failed/check_failed; next: af task run ID --retry-gate`:
+a non-zero exit always says why on stderr.
+
+`af task show ID --checks` prints the gate's last check receipt: each check's status, duration,
+warm or cold directories, the step that stopped it, its failing tests (named from the runner's
+`FAIL`, `TIMEOUT` and `SIGABRT` lines), its `flaky:` tests and the last 40 lines of its stderr;
+`--json` prints one [`af/task-checks@1`](../schemas/task-checks-v1.json) document. `af task list
+--json` rows carry the same `gate` summary, and after a failed gate `af task run` names the
+failing tests, at most 20, then `… and N more; af task show ID --checks`.
+
+A Task's wall clock starts at its first `af task run`, not when it is planned: the preview says
+`deadline starts when you run`, the Store moves the recorded deadline by the time the Task waited
+for that run, so the confirmed plan is exactly the plan that runs, and the run prints the
+deadline in local time with the time left (`deadline 17:41:18 +03 (2 h 59 min from now)`);
+`af task show --json` carries it as `clock`. `af task plan` of a Task file whose content and bindings equal the planned Task's prints
+the existing plan; a changed file under a planned ID is refused, and `af task plan --replace`
+plans an unstarted Task again in place. A plan the Task's limits are too small for is refused
+with the reason on stderr and the smallest limits that fit, computed from the reserve each
+verification slot protects, a raised `wall_ms` keeping 5 s beyond the mandatory Attempts and the
+reserve for the start of the run; `af task plan --fit` plans with them and prints what it raised,
+and `--json` carries them as `planning_diagnostic.required_limits`.
 
 Each Attempt runs under a token reservation that bounds it while it runs, and settles at the
 usage its Provider reported. An Attempt whose Provider reported no usage — a Codex call that
@@ -133,7 +229,7 @@ or `unreported`); it is never charged its reservation or an estimate
 ([ADR-0143](adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)). It
 adds nothing to the Task's, a node's or the verification reserve's charged tokens, so only the
 Attempt limits bound repeated failures of this kind. `task list` prints such a Task's tokens as
-`1200 tokens (+1 unknown)` rather than as spend, `task show` adds the line
+`1200 (+1 unknown)` rather than as spend, `task show` adds the line
 `tokens 1200 (+1 unknown: capacity)` naming the causes, and their `--json` documents carry
 `unknown_usage_attempts`. A Claude Attempt whose bound model's safety classifier refused it
 (`model_refused`) has known usage: it is charged what its result reports and is not retried,
@@ -434,8 +530,9 @@ gpt-6-sol/high`, or `command`), the gate with its check names, and parallel step
 grouped (`review (bugs, correctness: codex gpt-6-sol/high)`); Provider admission is left out.
 A Task whose plan is no longer retained (it was collected) or that never reached planning names
 no pipeline, and one line `**unknown pipeline**: not retained` stands for all such Tasks.
-Then each Task is a round, numbered in the order given, with one row: its outcome as `task show`
-states it, its review findings, chargeable tokens and active time. A Tokens cell, in a round, the
+Then each Task is a round, numbered in the order given, with one row: its state as `task show`
+states it, followed for a Task that did not verify by why (`finished/gate_failed/check_failed:
+check kernel, 2 tests: a::b, c::d`), its review findings, chargeable tokens and active time. A Tokens cell, in a round, the
 `Total:` row or a node, is the charged total followed by `(+N unknown)` when N of its Attempts
 reported no usage, and the round's details name their causes
 (`1 Attempt's usage unknown (capacity)`); a collected Task keeps the count, not the causes. **Findings** counts what the
@@ -467,7 +564,7 @@ estimated. For a Task resumed once after an interrupt it prints:
 
 | Round | Task | Outcome | Findings | Tokens | Active |
 | ---: | --- | --- | --- | ---: | ---: |
-| 1 | pagination-cli | verified | — | 0 | 1.8s |
+| 1 | pagination-cli | finished/verified | — | 0 | 1.8s |
 |  | Total: 4 Attempts (1 failed) |  |  | 0 | 1.8s |
 
 <details>
@@ -489,8 +586,9 @@ after a heading, a thematic break, a fence, an HTML block or a list item. Provid
 and a recorded model that is not a model identity (a path or a URL, say) reads `unknown`: the
 report never carries a Provider label, a path, a credential, a prompt or Worker output.
 `--json` prints the same figures as one
-[`af/task-report@1`](../schemas/task-report-v1.json) document, with exact decimal tokens and
-times in milliseconds, the `pipelines` with their steps, and each Task's `round` and `findings`;
+[`af/task-report@2`](../schemas/task-report-v2.json) document, with exact decimal tokens and
+times in milliseconds, the `pipelines` with their steps, and each Task's `round`, `state`,
+`detail` and `findings`;
 an unknown figure is absent there.
 
 ## Troubleshooting

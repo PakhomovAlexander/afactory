@@ -245,19 +245,21 @@ fn text(plan: &CollectionPlan, outcome: Option<&CollectionOutcome>) -> String {
     out
 }
 
-/// The `af/task-list-entry@2` of a collected Task: its retained summary, the result its log
+/// The `af/task-list-entry@3` of a collected Task: its retained summary, the result its log
 /// named, and `collected`; nothing artifact-backed. The unknown-usage count is the tombstone's,
 /// so the collected Task still lists `(+N unknown)` (ADR-0143).
 pub(super) fn list_entry(task: &CollectedTask) -> Value {
     let mut entry = json!({
-        "schema": "af/task-list-entry@2",
+        "schema": super::TASK_LIST_ENTRY_V3,
         "task_id": task.collected.task_id,
         "kind": task.collected.kind,
         "phase": {"kind": "finished", "result_id": task.result_id},
-        "outcome": task.collected.outcome,
+        "state": super::state::collected(&task.collected.outcome),
+        "round": 0,
         "chargeable_tokens": task.collected.chargeable_tokens,
         "derived_snapshot_id": null,
         "delivery": null,
+        "updated_unix_ms": task.collected.collected_unix_ms,
         "collected": task.collected,
     });
     if task.collected.unknown_usage_attempts > 0 {
@@ -266,13 +268,15 @@ pub(super) fn list_entry(task: &CollectedTask) -> Value {
     entry
 }
 
-/// The `af/task-collected-inspection@1` document `af task show --json` prints for a collected
-/// Task in place of the artifact-backed inspection.
+/// The `af/task-collected-inspection@2` document `af task show --json` prints for a collected
+/// Task in place of the artifact-backed inspection: its retained summary and the same state
+/// `af task list` prints for it.
 pub(super) fn inspection(task: &CollectedTask) -> Value {
     json!({
-        "schema": "af/task-collected-inspection@1",
+        "schema": "af/task-collected-inspection@2",
         "task_id": task.collected.task_id,
         "phase": {"kind": "finished", "result_id": task.result_id},
+        "state": super::state::collected(&task.collected.outcome),
         "collected": task.collected,
     })
 }
@@ -288,8 +292,12 @@ pub(super) fn present(task: &CollectedTask, json_output: bool) -> Result<(), Str
     }
     let collected = &task.collected;
     println!(
-        "Task {}: collected {}",
+        "Task {}: {}",
         collected.task_id,
+        super::state::collected(&collected.outcome).label()
+    );
+    println!(
+        "  collected: {}",
         collected_time(collected.collected_unix_ms)
     );
     println!("  kind: {}", collected.kind);
@@ -310,5 +318,6 @@ pub(super) fn present(task: &CollectedTask, json_output: bool) -> Result<(), Str
         collected_time(collected.last_event_unix_ms)
     );
     println!("  bytes collected: {}", collected.collected_bytes);
+    println!("next: none");
     Ok(())
 }

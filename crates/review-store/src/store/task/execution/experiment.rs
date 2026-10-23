@@ -437,7 +437,6 @@ impl TaskExecutionProjection {
     pub(super) fn apply_experiment(
         &mut self,
         cas: &Cas,
-        task: &TaskRevisionV1,
         revision_id: &str,
         outer_plan_id: &str,
         record: &TaskExecutionRecordV1,
@@ -535,7 +534,7 @@ impl TaskExecutionProjection {
                 let remaining = ExperimentAllowanceV1 {
                     tokens: remaining.tokens,
                     attempts: remaining.max_attempts,
-                    wall_ms: task.limits.deadline_unix_ms.saturating_sub(now),
+                    wall_ms: remaining.deadline_unix_ms.saturating_sub(now),
                 };
                 let max_children = match slot_envelope.artifact_type.as_str() {
                     EXPERIMENTAL_SLOT_V2 => {

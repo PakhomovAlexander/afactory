@@ -1,4 +1,4 @@
-//! What `af task report` prints (ADR-0142): what recorded Tasks cost and how they ran, read from
+//! What `af task report` prints (ADR-0142), as one `af/task-report@2` document: what recorded Tasks cost and how they ran, read from
 //! the Store and never estimated. A figure the Store does not record is absent, never zero.
 //!
 //! The document names a Provider only by its kind, model and effort. It has no field for a
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::usage::{DecimalU128, TaskUnknownUsageCauseV1};
 use super::{is_name, is_package_name, require, safe_number};
 
-pub const TASK_REPORT_V1: &str = "af/task-report@1";
+pub const TASK_REPORT_V2: &str = "af/task-report@2";
 
 /// The first line of the Markdown block a pull request description carries.
 pub const TASK_REPORT_BEGIN: &str = "<!-- af-task-report:v1 -->";
@@ -45,7 +45,7 @@ const PRIVATE_SEGMENTS: [&str; 8] = [
 /// side of the `/` a name of a home, auth or state directory. Anything else, including any
 /// value with an `@` such as an email address, may be a path, a URL or an account and is
 /// reported as [`TASK_REPORT_UNKNOWN_MODEL`].
-/// `schemas/task-report-v1.json` states the same rule as the model's pattern, and
+/// `schemas/task-report-v2.json` states the same rule as the model's pattern, and
 /// [`TASK_REPORT_MODEL_CASES`] is the table both are held to.
 pub fn is_model_identity(model: &str) -> bool {
     let bytes = model.as_bytes();
@@ -132,13 +132,13 @@ pub const TASK_REPORT_MODEL_CASES: [(&str, bool); 51] = [
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskReportV1 {
-    /// Always [`TASK_REPORT_V1`].
+pub struct TaskReportV2 {
+    /// Always [`TASK_REPORT_V2`].
     pub schema: String,
     /// Each distinct pipeline the reported Tasks' current plans run, in first-use order.
     pub pipelines: Vec<TaskReportPipelineV1>,
     /// One entry per requested Task, in the order the command named them.
-    pub tasks: Vec<TaskReportEntryV1>,
+    pub tasks: Vec<TaskReportEntryV2>,
     pub totals: TaskReportTotalsV1,
 }
 
@@ -219,7 +219,7 @@ pub struct TaskReportFindingsV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskReportEntryV1 {
+pub struct TaskReportEntryV2 {
     /// The Task's 1-based position in the report: its row of the round table.
     pub round: u64,
     pub task_id: String,
@@ -232,9 +232,18 @@ pub struct TaskReportEntryV1 {
         deserialize_with = "super::present_option"
     )]
     pub pipeline: Option<String>,
-    /// The outcome `af task show` states: the result's domain conclusion, or the phase of an
-    /// unfinished Task.
-    pub outcome: String,
+    /// The state `af task show`, `af task list` and `af task run` print for the Task: its phase,
+    /// outcome, cause and next command ([`super::state`]).
+    pub state: super::state::TaskStateV1,
+    /// Why a Task that did not verify ended as it did, in one line: the failed check and its
+    /// failing tests (`check kernel, 2 tests: a::b, c::d`), or the failed node and its first
+    /// error line. Absent for a verified, unfinished or collected Task.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub detail: Option<String>,
     /// The Task was collected (ADR-0135): only its retained summary and its event times remain.
     pub collected: bool,
     #[serde(
@@ -467,7 +476,7 @@ pub struct TaskReportTotalsV1 {
 
 impl TaskReportTotalsV1 {
     /// The totals of `tasks`, exactly: a sum that would overflow is refused.
-    pub fn of(tasks: &[TaskReportEntryV1]) -> Result<Self, String> {
+    pub fn of(tasks: &[TaskReportEntryV2]) -> Result<Self, String> {
         fn sum(values: impl Iterator<Item = Option<u64>>) -> Result<Option<u64>, String> {
             let mut total = Some(0u64);
             for value in values {
@@ -512,18 +521,18 @@ impl TaskReportTotalsV1 {
     }
 }
 
-impl TaskReportV1 {
+impl TaskReportV2 {
     /// The report over `tasks` in this order, each numbered by its position, with the distinct
     /// `pipelines` their plans run in first-use order.
     pub fn new(
         pipelines: Vec<TaskReportPipelineV1>,
-        mut tasks: Vec<TaskReportEntryV1>,
+        mut tasks: Vec<TaskReportEntryV2>,
     ) -> Result<Self, String> {
         for (index, task) in tasks.iter_mut().enumerate() {
             task.round = u64::try_from(index + 1).map_err(|e| e.to_string())?;
         }
         let report = Self {
-            schema: TASK_REPORT_V1.into(),
+            schema: TASK_REPORT_V2.into(),
             pipelines,
             totals: TaskReportTotalsV1::of(&tasks)?,
             tasks,
@@ -534,7 +543,7 @@ impl TaskReportV1 {
 
     pub fn validate(&self) -> Result<(), String> {
         require(
-            self.schema == TASK_REPORT_V1,
+            self.schema == TASK_REPORT_V2,
             "Task report needs its schema",
         )?;
         require(
@@ -672,7 +681,7 @@ impl TaskReportFindingsV1 {
     }
 }
 
-impl TaskReportEntryV1 {
+impl TaskReportEntryV2 {
     /// Its Attempts whose usage is unknown: those its Attempts record, or for a collected Task
     /// the count its tombstone retained.
     pub fn unknown_usage(&self) -> u64 {
@@ -686,9 +695,18 @@ impl TaskReportEntryV1 {
             is_name(&self.task_id) && is_package_name(&self.kind),
             "Task report entry needs its Task ID and kind",
         )?;
+        self.state.validate()?;
         require(
-            !self.outcome.trim().is_empty() && self.outcome.chars().count() <= 256,
-            "Task report entry needs a bounded outcome",
+            self.detail.as_ref().is_none_or(|detail| {
+                !detail.trim().is_empty()
+                    && detail.chars().count() <= 512
+                    && !detail.chars().any(char::is_control)
+            }),
+            "Task report entry detail is one bounded line",
+        )?;
+        require(
+            self.collected == (self.state.cause == Some(super::state::TaskCauseV1::Collected)),
+            "A collected Task's state names the collection as its cause",
         )?;
         require(
             self.pipeline.as_ref().is_none_or(|pipeline| {
@@ -865,17 +883,22 @@ mod tests {
     }
 
     /// The report over `tasks`, which all run `fixture/plain@1.0.0`.
-    fn with_tasks(tasks: Vec<TaskReportEntryV1>) -> Result<TaskReportV1, String> {
-        TaskReportV1::new(vec![plain()], tasks)
+    fn with_tasks(tasks: Vec<TaskReportEntryV2>) -> Result<TaskReportV2, String> {
+        TaskReportV2::new(vec![plain()], tasks)
     }
 
-    fn entry(task_id: &str, attempts: Option<(u64, u64)>) -> TaskReportEntryV1 {
-        TaskReportEntryV1 {
+    fn entry(task_id: &str, attempts: Option<(u64, u64)>) -> TaskReportEntryV2 {
+        TaskReportEntryV2 {
             round: 0,
             task_id: task_id.into(),
             kind: "implement".into(),
             pipeline: Some("fixture/plain@1.0.0".into()),
-            outcome: "pass".into(),
+            state: super::super::state::TaskStateV1::ended(
+                super::super::state::TaskStatePhaseV1::Finished,
+                super::super::state::TaskOutcomeV1::Verified,
+                None,
+            ),
+            detail: None,
             collected: false,
             review_rounds: Some(1),
             findings: None,
@@ -972,35 +995,35 @@ mod tests {
         renumbered.tasks[1].round = 1;
         assert!(renumbered.validate().is_err(), "a round is a position");
         assert!(
-            TaskReportV1::new(vec![], vec![entry("a", None)]).is_err(),
+            TaskReportV2::new(vec![], vec![entry("a", None)]).is_err(),
             "a Task's pipeline is listed"
         );
         assert!(
-            TaskReportV1::new(vec![plain(), plain()], vec![entry("a", None)]).is_err(),
+            TaskReportV2::new(vec![plain(), plain()], vec![entry("a", None)]).is_err(),
             "a pipeline is listed once"
         );
         let mut other = plain();
         other.name = "fixture/other".into();
         assert!(
-            TaskReportV1::new(vec![plain(), other.clone()], vec![entry("a", None)]).is_err(),
+            TaskReportV2::new(vec![plain(), other.clone()], vec![entry("a", None)]).is_err(),
             "a listed pipeline is used"
         );
         let mut second = entry("b", None);
         second.pipeline = Some("fixture/other@1.0.0".into());
         assert!(
-            TaskReportV1::new(
+            TaskReportV2::new(
                 vec![other.clone(), plain()],
                 vec![entry("a", None), second.clone()]
             )
             .is_err(),
             "pipelines are in first-use order"
         );
-        TaskReportV1::new(vec![plain(), other], vec![entry("a", None), second]).unwrap();
+        TaskReportV2::new(vec![plain(), other], vec![entry("a", None), second]).unwrap();
 
         let step = |edit: &dyn Fn(&mut TaskReportPipelineV1)| {
             let mut pipeline = plain();
             edit(&mut pipeline);
-            TaskReportV1::new(vec![pipeline], vec![entry("a", None)])
+            TaskReportV2::new(vec![pipeline], vec![entry("a", None)])
         };
         assert!(step(&|p| p.steps[1].stage = 3).is_err(), "a skipped stage");
         assert!(

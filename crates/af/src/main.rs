@@ -831,6 +831,8 @@ fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::S
         plan_only,
         timeout_secs: args.timeout_secs,
         optimization_history: None,
+        fit: false,
+        replace: false,
     }
 }
 
@@ -1640,6 +1642,8 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             plan_only: !execute,
             timeout_secs,
             optimization_history: None,
+            fit: false,
+            replace: false,
         }),
         cli::TaskCommand::Plan {
             file,
@@ -1649,6 +1653,8 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             state,
             authority,
             uncommitted,
+            fit,
+            replace,
             json,
             workspace: _,
         } => {
@@ -1667,6 +1673,8 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
                 plan_only: true,
                 timeout_secs: None,
                 optimization_history: None,
+                fit,
+                replace,
             })
         }
         cli::TaskCommand::DecisionPayload {
@@ -1829,11 +1837,13 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             inspect.state.as_deref(),
             inspect.json,
         ),
-        cli::TaskCommand::Show { task_id, inspect } => {
-            task::inspect_from_cli(Some(task_id), inspect.repo, inspect.state, inspect.json)
-                .and_then(task::show)
-                .map(|()| 0)
-        }
+        cli::TaskCommand::Show {
+            task_id,
+            checks,
+            inspect,
+        } => task::inspect_from_cli(Some(task_id), inspect.repo, inspect.state, inspect.json)
+            .and_then(|options| task::show(options, checks))
+            .map(|()| 0),
         cli::TaskCommand::Report { task_ids, inspect } => {
             task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
                 .and_then(|options| task::report(options, &task_ids))

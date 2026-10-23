@@ -195,8 +195,9 @@ fn starter_repair_uses_current_evidence(name: &str, attempts: u64) {
     crate::task_cli::load_safe_limits(&mut ticket["limits"]);
     std::fs::write(&file, serde_json::to_vec_pretty(&ticket).unwrap()).unwrap();
     repin(&repo);
+    // An unavailable reviewer is a failed Worker (6).
     let code = if name == "implementation-reviewed" {
-        4
+        6
     } else {
         0
     };
@@ -507,7 +508,9 @@ fn reviewed_implementation_preserves_evidence(failed_review: bool) {
     file["limits"]["max_attempts"] = json!(6);
     std::fs::write(path, serde_json::to_vec(&file).unwrap()).unwrap();
     repin(&repo);
-    let code = if failed_review { 3 } else { 4 };
+    // A review that asked for changes stays the verdict (3); without it, the failed independent
+    // Worker is (6).
+    let code = if failed_review { 3 } else { 6 };
     let result = task(
         &repo,
         &state,

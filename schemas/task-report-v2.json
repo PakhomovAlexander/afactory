@@ -1,24 +1,37 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-report:1",
-  "title": "af/task-report@1",
+  "$id": "urn:af:schema:task-report:2",
+  "title": "af/task-report@2",
   "description": "What `af task report --json` prints (ADR-0142): what recorded Tasks cost and how they ran, read from one Store and never estimated. A figure the Store does not record is absent, never zero or null. Tasks appear in the order the command named them, each numbered by its position (its round), and `pipelines` lists the distinct pipelines their current plans run, in first-use order. A Worker is named only by Provider kind, model and effort: every object is closed, so no Provider registry label or principal, path, credential, prompt or Worker output can appear. Totals are the sums of the Tasks' figures; a sum is absent when any Task does not record its part.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "pipelines", "tasks", "totals"],
+  "required": [
+    "schema",
+    "pipelines",
+    "tasks",
+    "totals"
+  ],
   "properties": {
-    "schema": { "const": "af/task-report@1" },
+    "schema": {
+      "const": "af/task-report@2"
+    },
     "pipelines": {
       "description": "Each distinct pipeline the Tasks' current plans run, in the order a Task first names it. Two entries share a `name@version` only when the Tasks' plans bind it differently.",
       "type": "array",
-      "items": { "$ref": "#/$defs/pipeline" }
+      "items": {
+        "$ref": "#/$defs/pipeline"
+      }
     },
     "tasks": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/task" }
+      "items": {
+        "$ref": "#/$defs/task"
+      }
     },
-    "totals": { "$ref": "#/$defs/totals" }
+    "totals": {
+      "$ref": "#/$defs/totals"
+    }
   },
   "$defs": {
     "count": {
@@ -26,7 +39,9 @@
       "minimum": 0,
       "maximum": 9007199254740991
     },
-    "tokens": { "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128" },
+    "tokens": {
+      "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
+    },
     "model": {
       "description": "A model identity, copied only when it is one. An allow-list: 1 to 96 characters from `A-Z a-z 0-9 ._:+-` plus at most one `/`; the first character and the first character after the `/` alphanumeric; no `..`; no `:` directly before the `/` (so no `://`); no drive-letter prefix such as `C:`; and neither side of the `/` a home, auth or state directory name (`home`, `users`, `root`, `tmp`, `var`, `private`, `state`, `auth`, `auth.*`, in any case). Any other recorded value may be a path, a URL or an account (an email address has an `@`) and is reported as `unknown`.",
       "type": "string",
@@ -40,9 +55,15 @@
     "pipeline": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "version", "steps"],
+      "required": [
+        "name",
+        "version",
+        "steps"
+      ],
       "properties": {
-        "name": { "$ref": "urn:af:schema:task-contracts:1#/$defs/package" },
+        "name": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+        },
         "version": {
           "type": "string",
           "minLength": 1,
@@ -52,14 +73,21 @@
         "steps": {
           "description": "Every node of the plan's compiled graph that runs a Worker, and every check node (the gate), in dependency order. Kernel bookkeeping nodes and Provider admission are left out.",
           "type": "array",
-          "items": { "$ref": "#/$defs/step" }
+          "items": {
+            "$ref": "#/$defs/step"
+          }
         }
       }
     },
     "step": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["stage", "role", "nodes", "checks"],
+      "required": [
+        "stage",
+        "role",
+        "nodes",
+        "checks"
+      ],
       "properties": {
         "stage": {
           "description": "The step's position in dependency order, from 1; steps of one stage run in parallel.",
@@ -75,7 +103,9 @@
           "description": "The qualified nodes of the step, in compiled order: nodes of one stage, role, Worker and check list form one step.",
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/$defs/node" }
+          "items": {
+            "$ref": "#/$defs/node"
+          }
         },
         "worker": {
           "description": "The Worker the plan binds the step's slot to. Absent for a gate.",
@@ -85,17 +115,39 @@
           "description": "A gate's checks, local and remote, in name order; empty for a Worker step.",
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "urn:af:schema:task-contracts:1#/$defs/name" }
+          "items": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          }
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "role": { "const": "gate" } } },
-          "then": {
-            "properties": { "checks": { "minItems": 1 } },
-            "not": { "required": ["worker"] }
+          "if": {
+            "properties": {
+              "role": {
+                "const": "gate"
+              }
+            }
           },
-          "else": { "properties": { "checks": { "maxItems": 0 } } }
+          "then": {
+            "properties": {
+              "checks": {
+                "minItems": 1
+              }
+            },
+            "not": {
+              "required": [
+                "worker"
+              ]
+            }
+          },
+          "else": {
+            "properties": {
+              "checks": {
+                "maxItems": 0
+              }
+            }
+          }
         }
       ]
     },
@@ -103,19 +155,36 @@
       "description": "What the Task's review recorded. Absent for a Task whose plan has no review and for a collected Task.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["review_ran", "gate_failed", "failed_reviewers"],
+      "required": [
+        "review_ran",
+        "gate_failed",
+        "failed_reviewers"
+      ],
       "dependentRequired": {
-        "blocker": ["major", "minor"],
-        "major": ["blocker", "minor"],
-        "minor": ["blocker", "major"]
+        "blocker": [
+          "major",
+          "minor"
+        ],
+        "major": [
+          "blocker",
+          "minor"
+        ],
+        "minor": [
+          "blocker",
+          "major"
+        ]
       },
       "properties": {
         "blocker": {
           "description": "Findings by severity, each counted once: the entries of the `FindingSet@1` each recorded review round's reduce step wrote whose `last_seen_round` is that round, a finding seen in several rounds of the Task counted once. The three counts are present together, or absent together when they are unknown: the review ran but a round it recorded has no complete `FindingSet@1` (a required reviewer's result is missing, say), or it recorded no round yet.",
           "$ref": "#/$defs/count"
         },
-        "major": { "$ref": "#/$defs/count" },
-        "minor": { "$ref": "#/$defs/count" },
+        "major": {
+          "$ref": "#/$defs/count"
+        },
+        "minor": {
+          "$ref": "#/$defs/count"
+        },
         "review_ran": {
           "description": "A reviewer Attempt began, or a recorded round wrote its findings or admitted a reviewer's result.",
           "type": "boolean"
@@ -131,17 +200,41 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "review_ran": { "const": false } } },
-          "then": {
-            "required": ["blocker", "major", "minor"],
+          "if": {
             "properties": {
-              "blocker": { "const": 0 },
-              "major": { "const": 0 },
-              "minor": { "const": 0 },
-              "failed_reviewers": { "const": 0 }
+              "review_ran": {
+                "const": false
+              }
             }
           },
-          "else": { "properties": { "gate_failed": { "const": false } } }
+          "then": {
+            "required": [
+              "blocker",
+              "major",
+              "minor"
+            ],
+            "properties": {
+              "blocker": {
+                "const": 0
+              },
+              "major": {
+                "const": 0
+              },
+              "minor": {
+                "const": 0
+              },
+              "failed_reviewers": {
+                "const": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "gate_failed": {
+                "const": false
+              }
+            }
+          }
         }
       ]
     },
@@ -152,7 +245,7 @@
         "round",
         "task_id",
         "kind",
-        "outcome",
+        "state",
         "collected",
         "runs",
         "chargeable_tokens",
@@ -166,16 +259,27 @@
           "minimum": 1,
           "maximum": 9007199254740991
         },
-        "task_id": { "$ref": "urn:af:schema:task-contracts:1#/$defs/name" },
-        "kind": { "$ref": "urn:af:schema:task-contracts:1#/$defs/package" },
+        "task_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "kind": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+        },
         "pipeline": {
           "description": "The current plan's root Pipeline as `name@version`. Absent before a plan exists and for a collected Task.",
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(/[A-Za-z0-9][A-Za-z0-9_-]{0,127})*@\\S+$"
         },
-        "outcome": {
-          "description": "The outcome `af task show` states: the result's domain conclusion (`pass`, `changes_requested`, `incomplete`, ...), or for an unfinished Task its phase (`planned`, `needs-plan-review`, ...).",
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/text"
+        "state": {
+          "description": "The state `af task show`, `af task list` and `af task run` print for the Task (`af help task-states`).",
+          "$ref": "urn:af:schema:task-state:1#/$defs/state"
+        },
+        "detail": {
+          "description": "Why a Task that did not verify ended as it did, in one line: the failed check and its failing tests, or the failed node and its first error line. Absent for a verified, unfinished or collected Task.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
         },
         "collected": {
           "description": "The Task was collected by `af task gc --apply` (ADR-0135): only its retained summary and its event times remain, so it carries neither `attempts` nor `nodes`.",
@@ -185,19 +289,25 @@
           "description": "Every Review Round the Task published, read from its log, so a round published before `af task refresh` cleared the execution outputs still counts. Absent for a collected Task.",
           "$ref": "#/$defs/count"
         },
-        "findings": { "$ref": "#/$defs/findings" },
+        "findings": {
+          "$ref": "#/$defs/findings"
+        },
         "runs": {
           "description": "Writer leases in which an Attempt of the Task started: `af task start --execute` and every `af task run` that resumed it with new work. A lease that only settled or released an earlier writer's Attempts, as `af task refresh` does, or only published already selected results and finished the Task, is not a run.",
           "$ref": "#/$defs/count"
         },
-        "attempts": { "$ref": "#/$defs/attempts" },
+        "attempts": {
+          "$ref": "#/$defs/attempts"
+        },
         "collected_unknown_usage": {
           "description": "A collected Task's Attempts whose usage was unknown, as its `af/TaskCollected@1` tombstone retained the count (ADR-0143): the Tokens cell reads `(+N unknown)` after the charged total. Absent when none, and on a Task that records its Attempts, whose `attempts.unknown_usage` states it.",
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
         },
-        "chargeable_tokens": { "$ref": "#/$defs/tokens" },
+        "chargeable_tokens": {
+          "$ref": "#/$defs/tokens"
+        },
         "wall_ms": {
           "description": "From the Task's first to its last recorded event; a collection tombstone is not the Task's event.",
           "$ref": "#/$defs/count"
@@ -209,31 +319,107 @@
         "nodes": {
           "description": "Every node that began an Attempt, in the order its first Attempt began: one entry per node and Worker binding, so a node whose Attempts ran under plans that bound it to different Workers (after `af task refresh`) has one entry per Worker, each with its own Attempts and tokens.",
           "type": "array",
-          "items": { "$ref": "#/$defs/node_report" }
+          "items": {
+            "$ref": "#/$defs/node_report"
+          }
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "collected": { "const": true } } },
-          "then": {
-            "not": {
-              "anyOf": [{ "required": ["attempts"] }, { "required": ["nodes"] }, { "required": ["findings"] }]
+          "if": {
+            "properties": {
+              "collected": {
+                "const": true
+              }
             }
           },
-          "else": { "not": { "required": ["collected_unknown_usage"] } }
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "attempts"
+                  ]
+                },
+                {
+                  "required": [
+                    "nodes"
+                  ]
+                },
+                {
+                  "required": [
+                    "findings"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "collected_unknown_usage"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collected": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "cause": {
+                    "const": "collected"
+                  }
+                }
+              }
+            },
+            "not": {
+              "required": [
+                "detail"
+              ]
+            }
+          },
+          "else": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "cause": {
+                    "not": {
+                      "const": "collected"
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       ]
     },
     "attempts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["total", "failed", "failed_tokens", "failures", "unknown_usage"],
+      "required": [
+        "total",
+        "failed",
+        "failed_tokens",
+        "failures",
+        "unknown_usage"
+      ],
       "properties": {
         "total": {
           "description": "Attempts begun, as `af task show` counts them.",
           "$ref": "#/$defs/count"
         },
-        "failed": { "$ref": "#/$defs/count" },
+        "failed": {
+          "$ref": "#/$defs/count"
+        },
         "failed_tokens": {
           "description": "Tokens charged to the failed Attempts.",
           "$ref": "#/$defs/tokens"
@@ -241,7 +427,9 @@
         "failures": {
           "description": "The failed Attempts by reason class, in class order.",
           "type": "array",
-          "items": { "$ref": "#/$defs/failure" }
+          "items": {
+            "$ref": "#/$defs/failure"
+          }
         },
         "unknown_usage": {
           "description": "Settled Attempts whose Provider reported no usage: each was charged zero and its usage is unknown (ADR-0143), so the Tokens cell reads `(+N unknown)` after the charged total.",
@@ -251,14 +439,19 @@
           "description": "Those Attempts by cause, in cause order. Absent when none.",
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/$defs/unknown_usage" }
+          "items": {
+            "$ref": "#/$defs/unknown_usage"
+          }
         }
       }
     },
     "unknown_usage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cause", "attempts"],
+      "required": [
+        "cause",
+        "attempts"
+      ],
       "properties": {
         "cause": {
           "description": "What af knows of why no usage was reported: a classified native failure, the writer's expired lease, an interruption, or `unreported`.",
@@ -283,7 +476,11 @@
     "failure": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["class", "attempts", "tokens"],
+      "required": [
+        "class",
+        "attempts",
+        "tokens"
+      ],
       "properties": {
         "class": {
           "description": "The failed Attempt's typed retry feedback code; `abandoned` for an Attempt recovery settled; `unclassified` for a failure that recorded no feedback.",
@@ -303,15 +500,27 @@
           "minimum": 1,
           "maximum": 9007199254740991
         },
-        "tokens": { "$ref": "#/$defs/tokens" }
+        "tokens": {
+          "$ref": "#/$defs/tokens"
+        }
       }
     },
     "node_report": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["node", "role", "attempts", "failed_attempts", "tokens", "unknown_usage", "checks"],
+      "required": [
+        "node",
+        "role",
+        "attempts",
+        "failed_attempts",
+        "tokens",
+        "unknown_usage",
+        "checks"
+      ],
       "properties": {
-        "node": { "$ref": "#/$defs/node" },
+        "node": {
+          "$ref": "#/$defs/node"
+        },
         "role": {
           "description": "The Worker slot's role, or the kernel operation of a node without a Worker (`check`, `seal`, `provider_admission`, ...).",
           "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
@@ -325,8 +534,12 @@
           "minimum": 1,
           "maximum": 9007199254740991
         },
-        "failed_attempts": { "$ref": "#/$defs/count" },
-        "tokens": { "$ref": "#/$defs/tokens" },
+        "failed_attempts": {
+          "$ref": "#/$defs/count"
+        },
+        "tokens": {
+          "$ref": "#/$defs/tokens"
+        },
         "unknown_usage": {
           "description": "The entry's Attempts whose usage is unknown (ADR-0143).",
           "$ref": "#/$defs/count"
@@ -338,7 +551,9 @@
         "checks": {
           "description": "Every check result the node's Attempts published, in Attempt order.",
           "type": "array",
-          "items": { "$ref": "#/$defs/check" }
+          "items": {
+            "$ref": "#/$defs/check"
+          }
         }
       }
     },
@@ -347,18 +562,37 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind"],
-          "properties": { "kind": { "const": "command" } }
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "command"
+            }
+          }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "provider_kind", "model", "effort"],
+          "required": [
+            "kind",
+            "provider_kind",
+            "model",
+            "effort"
+          ],
           "properties": {
-            "kind": { "const": "model" },
-            "provider_kind": { "$ref": "urn:af:schema:task-contracts:1#/$defs/name" },
-            "model": { "$ref": "#/$defs/model" },
-            "effort": { "$ref": "urn:af:schema:task-contracts:1#/$defs/name" }
+            "kind": {
+              "const": "model"
+            },
+            "provider_kind": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            },
+            "model": {
+              "$ref": "#/$defs/model"
+            },
+            "effort": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            }
           }
         }
       ]
@@ -366,10 +600,21 @@
     "check": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "status"],
+      "required": [
+        "name",
+        "status"
+      ],
       "properties": {
-        "name": { "$ref": "urn:af:schema:task-contracts:1#/$defs/name" },
-        "status": { "enum": ["passed", "failed", "not_run"] },
+        "name": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "not_run"
+          ]
+        },
         "elapsed_ms": {
           "description": "The check's recorded span; absent when it never started or recorded none.",
           "$ref": "#/$defs/count"
@@ -379,22 +624,37 @@
     "totals": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tasks", "chargeable_tokens", "unknown_usage", "active_ms"],
+      "required": [
+        "tasks",
+        "chargeable_tokens",
+        "unknown_usage",
+        "active_ms"
+      ],
       "properties": {
         "tasks": {
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
         },
-        "review_rounds": { "$ref": "#/$defs/count" },
-        "attempts": { "$ref": "#/$defs/count" },
-        "failed_attempts": { "$ref": "#/$defs/count" },
-        "chargeable_tokens": { "$ref": "#/$defs/tokens" },
+        "review_rounds": {
+          "$ref": "#/$defs/count"
+        },
+        "attempts": {
+          "$ref": "#/$defs/count"
+        },
+        "failed_attempts": {
+          "$ref": "#/$defs/count"
+        },
+        "chargeable_tokens": {
+          "$ref": "#/$defs/tokens"
+        },
         "unknown_usage": {
           "description": "Attempts whose usage is unknown, over every Task: those its Attempts record, or a collected Task's retained count (ADR-0143).",
           "$ref": "#/$defs/count"
         },
-        "active_ms": { "$ref": "#/$defs/count" }
+        "active_ms": {
+          "$ref": "#/$defs/count"
+        }
       }
     }
   }

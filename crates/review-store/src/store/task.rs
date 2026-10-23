@@ -141,6 +141,56 @@ impl TaskProjection {
     pub fn lease_until_unix_ms(&self) -> u64 {
         self.lease_until
     }
+
+    /// The wall the Task has once it runs: its revision's deadline less the time it was opened.
+    /// The revision records an absolute deadline from planning; the clock starts at the first
+    /// plan admission, so a Task that waited between plan and run keeps its whole wall.
+    pub fn wall_ms(&self) -> u64 {
+        self.revision
+            .limits
+            .deadline_unix_ms
+            .saturating_sub(self.opened_unix_ms)
+    }
+
+    /// When the Task's wall clock started: its first plan admission. `None` before it ran.
+    pub fn clock_started_unix_ms(&self) -> Option<u64> {
+        self.clock_started_unix_ms
+    }
+
+    /// The Task's deadline: its revision's, moved by the time the Task waited between being
+    /// opened and its first plan admission. Before that admission, the deadline it would have
+    /// if its clock started at `now`; every rule that bounds execution by the deadline reads it
+    /// here, never from the revision alone.
+    pub fn deadline_at(&self, now: u64) -> u64 {
+        let started = self.clock_started_unix_ms.unwrap_or(now);
+        self.revision
+            .limits
+            .deadline_unix_ms
+            .saturating_add(started.saturating_sub(self.opened_unix_ms))
+    }
+
+    /// The deadline once the clock started; before it, the revision's own.
+    pub fn deadline_unix_ms(&self) -> u64 {
+        self.revision
+            .limits
+            .deadline_unix_ms
+            .saturating_add(self.clock_shift_ms())
+    }
+
+    /// How far the clock moved the Task's recorded deadlines: the time between its genesis and
+    /// its first admission; 0 before that admission. A plan's deadline is its revision's, so it
+    /// moves by the same amount.
+    pub fn clock_shift_ms(&self) -> u64 {
+        self.clock_started_unix_ms
+            .map_or(0, |started| started.saturating_sub(self.opened_unix_ms))
+    }
+
+    /// The revision's limits with the deadline [`Self::deadline_unix_ms`] states.
+    pub fn limits(&self) -> task::TaskLimitsV1 {
+        let mut limits = self.revision.limits.clone();
+        limits.deadline_unix_ms = self.deadline_unix_ms();
+        limits
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -359,6 +409,11 @@ pub struct TaskProjection {
     pub execution_epochs: BTreeSet<u64>,
     /// Every `af task run --retry-gate` that reopened the Task at its failed gates, in log order.
     pub gate_retries: Vec<task::gate_retry::TaskGateRetriedV1>,
+    /// Policy time of the Task's genesis (`Opened`).
+    opened_unix_ms: u64,
+    /// Policy time of the Task's first plan admission, when its wall clock started; never reset
+    /// by a refresh, a re-admission or a resume.
+    clock_started_unix_ms: Option<u64>,
 }
 
 /// The light optimizer's final DAG node can only know trial accounting. After every Attempt has
@@ -1179,6 +1234,8 @@ impl TaskProjection {
                     }
                     self.check_approval(cas, time)?;
                     self.admitted = true;
+                    // The wall clock starts at the first admission and never again.
+                    self.clock_started_unix_ms.get_or_insert(time);
                     self.phase = TaskPhaseV1::Running {};
                     self.resume_phase = None;
                 }
@@ -1357,8 +1414,8 @@ impl TaskProjection {
     }
 
     fn check_approval(&self, cas: &Cas, time: u64) -> Result<(), StoreError> {
-        let plan = self.check_plan_decision(cas, time)?;
-        if time >= plan.limits.deadline_unix_ms {
+        self.check_plan_decision(cas, time)?;
+        if time >= self.deadline_at(time) {
             return Err(conflict("Task plan deadline expired"));
         }
         Ok(())
@@ -1666,6 +1723,8 @@ impl EventStore {
                     storage_sweeps: Vec::new(),
                     execution_epochs: BTreeSet::new(),
                     gate_retries: Vec::new(),
+                    opened_unix_ms: transition.now_unix_ms,
+                    clock_started_unix_ms: None,
                 });
             } else {
                 return Err(conflict("Task transition precedes genesis"));

@@ -294,7 +294,7 @@ fn start_with(fixture: &Fixture, extra: &[(&str, &Path)], task_id: &str, expecte
     );
     assert_eq!(code, expected, "{stderr}\n{stdout}");
     let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v11.json"), &outcome);
+    schemas::valid(&schemas::validator("task-inspection-v12.json"), &outcome);
     outcome
 }
 
@@ -725,7 +725,7 @@ fn a_check_that_writes_past_the_bound_is_ended_failed_and_its_directory_removed(
         Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096\nhard_max_bytes = 4096"),
     ));
     let started = std::time::Instant::now();
-    let outcome = start(&fixture, "bound-grow", 3);
+    let outcome = start(&fixture, "bound-grow", 5);
     assert!(
         started.elapsed() < std::time::Duration::from_secs(80),
         "the monitor ended the check before it finished sleeping"
@@ -825,7 +825,7 @@ fn a_check_that_removes_its_warm_root_fails_as_suspect_with_the_cause_recorded()
         false,
         Some("build_cache = [\"cargo_target\"]"),
     ));
-    let outcome = start(&fixture, "remove-root", 3);
+    let outcome = start(&fixture, "remove-root", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -856,7 +856,7 @@ fn a_check_that_replaces_the_key_lock_with_an_oversized_file_fails_and_the_key_i
         false,
         Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096"),
     ));
-    let outcome = start(&fixture, "replace-lock", 3);
+    let outcome = start(&fixture, "replace-lock", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -878,7 +878,7 @@ fn a_check_that_widens_the_toolchain_key_fails_as_suspect_and_the_key_is_emptied
         false,
         Some("build_cache = [\"cargo_target\"]"),
     ));
-    let outcome = start(&fixture, "widen-key", 3);
+    let outcome = start(&fixture, "widen-key", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -896,7 +896,7 @@ fn a_check_that_makes_the_key_read_only_still_fails_and_is_evicted() {
         false,
         Some("build_cache = [\"cargo_target\"]"),
     ));
-    let outcome = start(&fixture, "read-only-key", 3);
+    let outcome = start(&fixture, "read-only-key", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -926,7 +926,7 @@ fn an_oversized_entry_with_a_non_utf8_name_is_counted_and_evicted() {
         false,
         Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096\nhard_max_bytes = 4096"),
     ));
-    let outcome = start(&fixture, "odd-name", 3);
+    let outcome = start(&fixture, "odd-name", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -1346,7 +1346,7 @@ fn a_fast_check_that_writes_past_the_bound_fails_and_its_directory_is_removed() 
         false,
         Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096\nhard_max_bytes = 4096"),
     ));
-    let outcome = start(&fixture, "fast-grow", 3);
+    let outcome = start(&fixture, "fast-grow", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -1382,7 +1382,7 @@ fn an_unreadable_subtree_a_check_leaves_fails_it_as_suspect() {
         false,
         Some("build_cache = [\"cargo_target\"]\nmax_bytes = 1048576"),
     ));
-    let outcome = start(&fixture, "hidden-grow", 3);
+    let outcome = start(&fixture, "hidden-grow", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -1539,7 +1539,7 @@ fn a_check_refused_its_declared_cache_keeps_its_name_and_every_kind() {
         false,
         Some(&format!("{BOTH}\ncaches = [\"cargo\"]")),
     ));
-    let outcome = start(&fixture, "refused-cache", 4);
+    let outcome = start(&fixture, "refused-cache", 5);
     let groups = named_groups(&outcome);
     assert_eq!(groups.len(), 1);
     assert_eq!(
@@ -1576,7 +1576,7 @@ fn every_check_of_a_warm_task_has_one_named_group_even_when_the_deadline_skips_i
         "import time\ntime.sleep(60)\n",
     ));
     check_node_runs(&fixture, &["exhaust", "pagination"]);
-    let outcome = start(&fixture, "deadline-skip", 4);
+    let outcome = start(&fixture, "deadline-skip", 5);
     let groups = named_groups(&outcome);
     let names: Vec<_> = groups
         .iter()

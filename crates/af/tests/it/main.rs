@@ -59,6 +59,7 @@ mod task_human_report;
 mod task_input_bindings;
 mod task_interrupt;
 mod task_issues;
+mod task_outcomes;
 mod task_planning;
 mod task_preview;
 mod task_public_schemas;

@@ -426,7 +426,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
             name: pipeline.name,
             fallback: PipelineFallbackV1::Refuse,
         }),
-        strategy: "fast".into(),
+        strategy: Some("fast".into()),
         verification: None,
         facts: BTreeMap::new(),
         limits: FileLimits {

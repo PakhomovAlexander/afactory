@@ -985,6 +985,24 @@ impl TaskPlanCompiler {
         self.compiled_resources(&graph, limits, now_unix_ms)
     }
 
+    /// The smallest limits `graph` fits, Provider admission installed as `candidate_resources`
+    /// installs it when the Workers are bound; `wall_ms` is the wall the Task has once it runs.
+    pub fn candidate_fit(
+        &self,
+        cas: &Cas,
+        mut graph: CompiledTask,
+        limits: &review_core::task::TaskLimitsV1,
+        wall_ms: u64,
+    ) -> Result<review_core::task::limits_fit::TaskLimitsFitV1, String> {
+        if let (Some(cost), Ok(bindings)) = (
+            &self.provider_admission,
+            self.effective_bindings(cas, &graph),
+        ) {
+            graph.install_provider_admission(&bindings, cost)?;
+        }
+        graph.limits_fit(limits, wall_ms)
+    }
+
     /// A compiled graph already includes paid Provider admission. Recheck remaining capacity
     /// without inserting another operation or altering the recorded plan.
     pub fn compiled_resources(
@@ -1000,51 +1018,18 @@ impl TaskPlanCompiler {
         let remaining = limits.deadline_unix_ms.saturating_sub(now_unix_ms);
         // Bound mandatory non-verifier time along the dependency path; independent Workers
         // may overlap. Verification keeps its separately protected aggregate allocation.
-        let mut path_wall: BTreeMap<String, u64> = BTreeMap::new();
-        for name in &graph.order {
-            let node = &graph.nodes[name];
-            let prior = node
-                .inputs
-                .values()
-                .map(|address| &address.node)
-                .chain(
-                    node.conditions
-                        .iter()
-                        .map(|condition| &condition.source.node),
-                )
-                .filter_map(|source| path_wall.get(source))
-                .copied()
-                .max()
-                .unwrap_or(0);
-            let own = graph
-                .allowances
-                .get(name)
-                .filter(|a| a.verification_attempts == 0)
-                .filter(|_| {
-                    node.conditions.iter().all(|condition| {
-                        matches!(
-                            graph.nodes[&condition.source.node].operator,
-                            CompiledOperator::ProviderAdmission { .. }
-                        )
-                    })
-                })
-                .map_or(0, |a| a.wall_ms_per_attempt);
-            path_wall.insert(
-                name.clone(),
-                prior.checked_add(own).ok_or("Task wall path overflow")?,
-            );
-        }
-        let required = path_wall
-            .values()
-            .copied()
-            .max()
-            .unwrap_or(0)
+        let required = graph
+            .mandatory_path_wall_ms()?
             .checked_add(limits.verification.wall_ms)
             .ok_or("Task wall reservation overflow")?;
         if now_unix_ms >= limits.deadline_unix_ms || remaining < required {
-            reasons.push(
-                "Remaining Task deadline cannot protect verification and declared Attempts".into(),
-            );
+            reasons.push(format!(
+                "Remaining Task deadline cannot protect verification and declared Attempts: it \
+                 needs wall_ms >= {required} (the longest path of mandatory Attempts {} + the \
+                 verification reserve {}) and the Task has {remaining}",
+                required - limits.verification.wall_ms,
+                limits.verification.wall_ms
+            ));
         }
         Ok(reasons)
     }

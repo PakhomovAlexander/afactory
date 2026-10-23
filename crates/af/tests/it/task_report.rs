@@ -137,7 +137,7 @@ pub(crate) fn start(repo: &Path, state: &Path, code: i32) -> Value {
         &["task", "start", "--execute", "--file", "report.json"],
         code,
     );
-    schemas::valid(&schemas::validator("task-inspection-v11.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v12.json"), &done);
     done
 }
 
@@ -577,7 +577,7 @@ fn a_verifier_evaluation_that_names_another_snapshot_is_refused_at_output_admiss
         "'source_snapshot_id': snapshot,",
         "'source_snapshot_id': 'sha256:' + '0' * 64,",
     );
-    let done = start(&repo, &state, 4);
+    let done = start(&repo, &state, 6);
     assert_ne!(done["result"]["acceptance"], "satisfied");
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let message = diagnostic(&cas, &done, "root.nodes.verify").unwrap();
@@ -611,7 +611,7 @@ fn an_author_may_add_scratch_but_an_author_that_edits_its_source_fails_its_attem
         "import json, sys\n",
         "import json, sys\nopen('README.md', 'a').write('edited\\n')\n",
     );
-    let done = start(&repo, &state, 4);
+    let done = start(&repo, &state, 6);
     assert_eq!(done["attempts"], 1);
     assert_ne!(done["result"]["acceptance"], "satisfied");
     let cas = Cas::open_existing(state.join("cas")).unwrap();

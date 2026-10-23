@@ -12,23 +12,38 @@ pub(super) fn read(path: &Path, max: u64) -> Result<Vec<u8>, String> {
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
         Mode::empty(),
     )
-    .map_err(|_| "Cannot open local Task input")?
+    .map_err(|error| {
+        format!(
+            "cannot open Task file {}: {}",
+            path.display(),
+            std::io::Error::from(error)
+        )
+    })?
     .into();
     let metadata = file
         .metadata()
-        .map_err(|_| "Cannot inspect opened Task input")?;
+        .map_err(|error| format!("cannot inspect Task file {}: {error}", path.display()))?;
     if !metadata.is_file() {
-        return Err("Local Task input must be a regular file".into());
+        return Err(format!(
+            "Task file {} must be a regular file (local Task input)",
+            path.display()
+        ));
     }
     if metadata.len() > max {
-        return Err("Local Task input exceeds its byte bound".into());
+        return Err(format!(
+            "Task file {} exceeds its byte bound of {max} bytes (local Task input)",
+            path.display()
+        ));
     }
     let mut bytes = Vec::new();
     file.take(limit)
         .read_to_end(&mut bytes)
-        .map_err(|_| "Cannot read local Task input")?;
+        .map_err(|error| format!("cannot read Task file {}: {error}", path.display()))?;
     if bytes.len() as u64 > max {
-        return Err("Local Task input exceeds its byte bound".into());
+        return Err(format!(
+            "Task file {} exceeds its byte bound of {max} bytes (local Task input)",
+            path.display()
+        ));
     }
     Ok(bytes)
 }
@@ -45,6 +60,13 @@ mod tests {
         assert_eq!(read(&file, 5).unwrap(), b"exact");
         assert!(read(&file, 4).unwrap_err().contains("byte bound"));
         assert!(read(root.path(), 100).unwrap_err().contains("regular file"));
+        let missing = root.path().join("absent.json");
+        let error = read(&missing, 100).unwrap_err();
+        assert!(
+            error.starts_with(&format!("cannot open Task file {}: ", missing.display()))
+                && error.contains("No such file"),
+            "{error}"
+        );
         assert!(read(&file, u64::MAX).is_err());
         {
             let link = root.path().join("explicit-link");

@@ -239,7 +239,7 @@ fn outcome(
         .collect();
     let budget = state.execution.as_ref().map(|e| &e.budget);
     let breached = budget.is_some_and(|b| b.breached());
-    let expired = now_unix_ms >= state.revision.limits.deadline_unix_ms;
+    let expired = now_unix_ms >= state.deadline_at(now_unix_ms);
     let resources_exhausted = breached || expired;
     let round = captured.compiler.round();
     let authority = round.authority();
