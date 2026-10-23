@@ -114,7 +114,10 @@ fn task_exit_codes() -> String {
         out.push_str(&format!("  {code:<4} {}{extra}\n", names.join(", ")));
     }
     out.push_str(
-        "\n`af task show`, `af task list` and `af task report` exit 0 once they read the Store: \
+        "\nWhere such a code's result goes to stdout alone (under --json, `af task explain`, \
+         `af task run` of a Task that already finished), stderr ends with `Task ID: \
+         phase/outcome/cause; next: COMMAND`, so a non-zero exit always says why there.\n\
+         \n`af task show`, `af task list` and `af task report` exit 0 once they read the Store: \
          the state they print is data, not their outcome.",
     );
     out

@@ -410,6 +410,75 @@ next: af task run pagination-cli --retry-gate
         ),
         "{report}"
     );
+    // A command that exits with the outcome's code while its result goes to stdout says why on
+    // stderr too: a non-zero exit never leaves stderr silent.
+    let state_line = format!(
+        "Task {TASK}: finished/gate_failed/check_failed; next: af task run {TASK} --retry-gate"
+    );
+    for args in [
+        &["task", "explain", TASK][..],
+        &["task", "explain", TASK, "--json"],
+        &["task", "run", TASK],
+    ] {
+        let exited = fixture.af(args);
+        assert_eq!(exited.status.code(), Some(5), "{args:?}: {}", err(&exited));
+        assert!(
+            err(&exited).trim_end().ends_with(&state_line),
+            "{args:?}: {}",
+            err(&exited)
+        );
+    }
+}
+
+/// Every refusal before any state exists exits non-zero with its reason on stderr, in text and
+/// under `--json`, where stdout carries the one `af/error@1` document.
+#[test]
+fn a_refusal_names_its_reason_on_stderr_in_text_and_json() {
+    let fixture = fixture("pagination");
+    let zero = fixture.task_file("zero.json", |ticket| {
+        ticket["limits"]["wall_ms"] = 0.into();
+    });
+    let zero = zero.to_str().unwrap();
+    for args in [
+        &["task", "plan", "--file", zero][..],
+        &["task", "start", "--file", zero],
+        &["task", "start", "--file", zero, "--execute"],
+    ] {
+        for json in [false, true] {
+            let args = [args, if json { &["--json"][..] } else { &[] }].concat();
+            let refused = fixture.af(&args);
+            assert_eq!(
+                refused.status.code(),
+                Some(1),
+                "{args:?}: {:?}\n{}",
+                refused.status,
+                err(&refused)
+            );
+            assert!(
+                err(&refused).contains("Task wall_ms and --timeout-secs must be positive"),
+                "{args:?}: {:?}\n{}",
+                refused.status,
+                err(&refused)
+            );
+            if json {
+                let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
+                assert_eq!(document["schema"], "af/error@1", "{args:?}");
+            } else {
+                assert!(out(&refused).is_empty(), "{args:?}: {}", out(&refused));
+            }
+            assert!(!fixture.state.exists(), "{args:?} created state");
+        }
+    }
+    let tight = fixture.task_file("tight.json", |ticket| {
+        ticket["limits"]["max_attempts"] = 2.into();
+    });
+    let refused = fixture.af(&["task", "plan", "--file", tight.to_str().unwrap(), "--json"]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        err(&refused).contains("cannot retain verification reserves"),
+        "{}",
+        err(&refused)
+    );
 }
 
 /// `af task show` prints each failed node's cause, its first error line and its diagnostic, and

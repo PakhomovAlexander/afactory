@@ -2181,6 +2181,8 @@ fn start_captured(
     );
     if !options.plan_only {
         run_log_tail(&cas, &store, &revision.task_id, options.json);
+    } else if let Ok(code) = presented {
+        state_note(&cas, &store, &revision.task_id, code);
     }
     // The request is in the Store, so a copy the repository would carry is redundant. Advice
     // only, and given last: the Task deadline was derived and the plan compiled, recorded and
@@ -2612,11 +2614,16 @@ pub(super) fn run(
     if matches!(projection.phase, TaskPhaseV1::Finished { .. }) {
         // A finished Task returns its recorded result, and its run log ends as the first did.
         let code = present(&cas, &store, id, json, false)?;
-        run_log_tail(&cas, &store, id, json);
+        if json {
+            run_log_tail(&cas, &store, id, json);
+        } else {
+            state_note(&cas, &store, id, code);
+        }
         return Ok(code);
     }
     if projection.plan_id.is_none() {
         present(&cas, &store, id, json, true)?;
+        state_note(&cas, &store, id, 4);
         return Ok(4);
     }
     let authority: RunAuthority = serde_json::from_value(
@@ -2759,11 +2766,41 @@ fn run_log_tail(cas: &Cas, store: &EventStore, id: &str, json: bool) {
     for line in state::failed_gate_tail(id, &view) {
         eprintln!("{line}");
     }
-    eprintln!(
+    eprintln!("{}", state_line(id, &view));
+}
+
+/// The run log's last line: the Task's state and the next command.
+fn state_line(id: &str, view: &state::TaskView) -> String {
+    format!(
         "Task {id}: {}; next: {}",
         view.state.label(),
         view.state.next_action.as_deref().unwrap_or("none")
-    );
+    )
+}
+
+/// A command whose exit status reports a Task that did not verify, or one waiting for a
+/// person, while its result went to stdout, ends with the run log's last line on stderr: a
+/// non-zero exit never leaves stderr silent. Best effort, as [`run_log_tail`].
+fn state_note(cas: &Cas, store: &EventStore, id: &str, code: i32) {
+    if code == 0 {
+        return;
+    }
+    if let Ok(Inspection { view, .. }) = inspection(cas, store, id, false, None) {
+        eprintln!("{}", state_line(id, &view));
+    }
+}
+
+/// [`present`], then [`state_note`] for a non-zero exit.
+fn present_noting(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    json_output: bool,
+    explain: bool,
+) -> Result<i32, String> {
+    let code = present(cas, store, id, json_output, explain)?;
+    state_note(cas, store, id, code);
+    Ok(code)
 }
 
 pub(super) fn explain(
@@ -2791,7 +2828,9 @@ pub(super) fn explain(
     if let Some(plan_id) = plan {
         return inspection::explain_plan(&cas, &store, id, plan_id, json, tree);
     }
-    present_with_format(&cas, &store, id, json, true, tree, None)
+    let code = present_with_format(&cas, &store, id, json, true, tree, None)?;
+    state_note(&cas, &store, id, code);
+    Ok(code)
 }
 
 pub(super) fn show_if_common(

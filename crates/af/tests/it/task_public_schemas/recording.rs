@@ -52,6 +52,34 @@ fn expired_recording_inspection_keeps_one_task_and_exact_old_and_new_history() {
                 .payload
         );
     }
+    // The one state model renders the expired Task alike (P5): `show`, `explain` and `list`
+    // under `--json`, and explain's exit 7 says so on stderr. (`af task report` reads the Task
+    // package this Store-level fixture never captured.)
+    let state_value = &shown["state"];
+    assert_eq!(state_value["phase"], "finished", "{state_value}");
+    assert_eq!(state_value["outcome"], "expired", "{state_value}");
+    assert_eq!(state_value["cause"], "deadline", "{state_value}");
+    let next = state_value["next_action"].as_str().unwrap();
+    assert!(!next.is_empty(), "{state_value}");
+    assert_eq!(explained["state"], *state_value);
+    let listed = json_output(cli(repo.path(), state, &["task", "list"]), 0);
+    let entry = listed["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["task_id"] == task_id.as_str())
+        .unwrap();
+    assert_eq!(entry["state"], *state_value);
+    let explain = cli(repo.path(), state, &["task", "explain", &task_id]);
+    assert!(
+        String::from_utf8_lossy(&explain.stderr)
+            .trim_end()
+            .ends_with(&format!(
+                "Task {task_id}: finished/expired/deadline; next: {next}"
+            )),
+        "{}",
+        String::from_utf8_lossy(&explain.stderr)
+    );
     assert_eq!(shown["history"], explained["history"]);
     assert_eq!(shown["execution_records"], explained["execution_records"]);
     assert_eq!(

@@ -135,14 +135,16 @@ pub(super) fn start(
         )
     })();
     release(&cas, &mut store, &lease, outcome)?;
-    present_with_advisory(
+    let code = present_with_advisory(
         &cas,
         &store,
         &revision.task_id,
         options.json,
         true,
         &undeclared,
-    )
+    )?;
+    state_note(&cas, &store, &revision.task_id, code);
+    Ok(code)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -208,7 +210,7 @@ pub(super) fn resume(
         )
     })();
     release(&cas, &mut store, &lease, outcome)?;
-    present(&cas, &store, &state.task_id, json, true)
+    present_noting(&cas, &store, &state.task_id, json, true)
 }
 
 pub(super) fn persist_plan(cas: &Cas, plan: &ExecutionPlanV1) -> Result<String, String> {

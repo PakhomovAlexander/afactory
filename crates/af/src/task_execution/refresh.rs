@@ -131,7 +131,7 @@ pub(crate) fn refresh(
     }
     // Whitespace and unselected response fields alone do not invalidate an exact plan.
     if same_observation(&original.capture, &capture) {
-        return present(&cas, &store, id, inspect.json, true);
+        return present_noting(&cas, &store, id, inspect.json, true);
     }
     let mut refs: Vec<_> = original
         .requirements
@@ -299,7 +299,7 @@ pub(crate) fn refresh(
         })
     };
     release(&cas, &mut store, &lease, outcome)?;
-    present(&cas, &store, id, inspect.json, true)
+    present_noting(&cas, &store, id, inspect.json, true)
 }
 
 #[cfg(test)]

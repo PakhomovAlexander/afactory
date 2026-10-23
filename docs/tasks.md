@@ -196,6 +196,10 @@ after a budget or deadline ran out (with a new `task_id` once the Task ran), and
 status` or `af provider setup ID --login` after a Provider failure. `af task show` prints, per
 failed node, its cause, the first line of its error and the artifact IDs of its whole diagnostic
 and stderr; a node that only lacks the receipt of a branch that failed comes after that branch.
+A command that exits with an outcome's code while its result goes to stdout, such as `af task
+explain` or `af task run` of a Task that already finished, ends with the same line on stderr as
+the run log does, `Task ID: finished/gate_failed/check_failed; next: af task run ID --retry-gate`:
+a non-zero exit always says why on stderr.
 
 `af task show ID --checks` prints the gate's last check receipt: each check's status, duration,
 warm or cold directories, the step that stopped it, its failing tests (named from the runner's

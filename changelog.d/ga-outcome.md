@@ -26,3 +26,6 @@
 - Not-found errors name the Task, the Store's path and the Tasks it holds; an unreadable Task file,
   a missing output port and Task state inside the repository name the path, the ports or the
   repository root.
+- A non-zero exit always says why on stderr: `af task explain`, `af task refresh`, a plan
+  decision and `af task run` of a Task that already finished end with the run log's last line,
+  `Task ID: phase/outcome/cause; next: …`, on stderr beside their result on stdout.
