@@ -3,6 +3,7 @@
 use super::*;
 use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 
 pub(crate) struct Fixture {
     pub(crate) _root: tempfile::TempDir,
@@ -203,7 +204,10 @@ fn captured_admission_cost_survives_checkout_changes_and_fresh_store_replay() {
         assert_eq!(
             out.status.code(),
             Some(if accepted { 0 } else { 4 }),
-            "{}\n{}",
+            "status {:?}, raw {}, Unix signal {:?}\n{}\n{}",
+            out.status,
+            out.status.into_raw(),
+            out.status.signal(),
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );

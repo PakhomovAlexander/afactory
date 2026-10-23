@@ -371,3 +371,5 @@ future readers need.
   fixtures](0198-admit-explicit-ninety-minute-checks-and-isolate-command-catalog-fixtures.md)
 - [0199 — Wait for complete fixture evidence and diagnose guarded
   failures](0199-wait-for-complete-fixture-evidence-and-diagnose-guarded-failures.md)
+- [0200 — Isolate targeted starter repair and retain native exit
+  status](0200-isolate-targeted-starter-repair-and-retain-native-exit-status.md)
