@@ -33,6 +33,7 @@ mod project_brief;
 mod project_collect;
 mod project_survey;
 mod provider_auth_handoff;
+mod provider_availability;
 mod provider_cli_health;
 mod provider_models;
 mod provider_onboarding;

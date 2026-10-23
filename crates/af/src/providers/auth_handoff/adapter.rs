@@ -70,6 +70,7 @@ enum Protocol {
 
 impl NativeLogin {
     pub(super) fn start(spec: &ProviderSpec, lock: &BoundDirectoryLock) -> Result<Self, Failure> {
+        super::super::availability::check(spec).map_err(|_| Failure::Failed)?;
         let auth_dir = spec.auth_dir.as_deref().ok_or(Failure::Unsupported)?;
         if !spec.explicit_selector || !auth_dir.is_absolute() {
             return Err(Failure::Unsupported);

@@ -141,6 +141,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
         crate::common::af()
             .current_dir(&self.repo)
             .env("HOME", &self.home)
+            .env("XDG_CONFIG_HOME", self.home.join("config"))
             .env("USER", "fixture")
             .env("PATH", &self.path)
             .env("AF_PROVIDERS_FILE", self.home.join("providers.toml"))
@@ -538,4 +539,56 @@ fn a_cli_that_stops_starting_mid_task_fails_its_attempt_as_an_environment_failur
         );
         assert!(!diagnostic.contains("identity"), "{diagnostic}");
     }
+}
+
+#[test]
+fn captured_task_rechecks_disable_on_fresh_run_and_enable_restores_the_same_plan() {
+    let f = Fixture::new(true, 10, 49152);
+    let program = f._root.path().join("bin/codex");
+    let script = std::fs::read_to_string(&program).unwrap().replacen(
+        '\n',
+        "\nimport os\nwith open(os.environ['CODEX_HOME']+'/spawns','a') as f: f.write('call\\n')\n",
+        1,
+    );
+    std::fs::write(&program, script).unwrap();
+    success(f.cli(&["task", "plan", "--file", "document.json"]));
+    let spawns = std::fs::read(f.home.join("spawns")).unwrap();
+    let availability = |args: &[&str]| {
+        crate::common::af()
+            .current_dir(&f.repo)
+            .env("HOME", &f.home)
+            .env("XDG_CONFIG_HOME", f.home.join("config"))
+            .env("AF_PROVIDERS_FILE", f.home.join("providers.toml"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let disabled = availability(&["provider", "disable", "codex-personal", "--for", "2d"]);
+    assert!(
+        disabled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&disabled.stderr)
+    );
+    let refused = f.cli(&["task", "run", "--execute", "release-notes"]);
+    assert!(!refused.status.success());
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(text.contains("disabled until Unix"), "{text}");
+    assert!(text.contains("af provider enable codex-personal"), "{text}");
+    assert_eq!(
+        std::fs::read(f.home.join("spawns")).unwrap(),
+        spawns,
+        "disabled captured Task spawned its harness"
+    );
+    assert!(!f.home.join("calls").exists());
+    let enabled = availability(&["provider", "enable", "codex-personal"]);
+    assert!(enabled.status.success());
+    success(f.cli(&["task", "run", "--execute", "release-notes"]));
+    assert_eq!(
+        std::fs::read_to_string(f.home.join("calls")).unwrap(),
+        "admission\nauthor\n"
+    );
 }

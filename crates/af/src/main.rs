@@ -1984,6 +1984,10 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
             providers::add(&id, kind, auth_dir.as_deref())
         }
         cli::ProviderCommand::Remove { ids } => providers::remove(&ids),
+        cli::ProviderCommand::Disable { id, duration } => {
+            providers::availability::disable(&id, &duration)
+        }
+        cli::ProviderCommand::Enable { id } => providers::availability::enable(&id),
         cli::ProviderCommand::Auth { command } => match command {
             cli::ProviderAuthCommand::Begin {
                 id,

@@ -832,6 +832,18 @@ pub(crate) enum ChallengeKindArg {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum ProviderCommand {
+    /// Disable a registered Provider locally until a wall-clock expiry, without probing it
+    #[command(
+        long_about = "Disable a registered Provider on this machine without probing it.\n\n--for accepts a positive integer with s, m, h or d (maximum 30d). Expiry survives restarts. New probes and private sends are refused; already-running calls may finish. Older pinned releases do not honor this state.",
+        after_long_help = "Example:\n  af provider disable claude-personal --for 2d"
+    )]
+    Disable {
+        id: String,
+        #[arg(long = "for", value_name = "DURATION")]
+        duration: String,
+    },
+    /// Enable a registered Provider immediately, without probing it
+    Enable { id: String },
     /// Show the provider registry and each harness login, without a model call
     #[command(
         long_about = "Show the provider registry and each harness login, without a model call.\n\n\
@@ -849,7 +861,7 @@ unavailable.",
         after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage"
     )]
     Status {
-        /// Emit the versioned `af/provider-status@2` document instead of the table
+        /// Emit the versioned `af/provider-status@3` document instead of the table
         #[arg(long)]
         json: bool,
         /// Also probe subscription and quota windows (slower, and may be unavailable)

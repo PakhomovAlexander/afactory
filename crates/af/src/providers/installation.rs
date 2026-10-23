@@ -288,6 +288,9 @@ pub(super) fn run_bounded(
     attempt_deadline: Option<Instant>,
     timeout: Duration,
 ) -> BoundedRun {
+    if let Err(error) = availability::check(spec) {
+        return BoundedRun::GaveUp(error);
+    }
     if cancelled.load(Ordering::Acquire) {
         return BoundedRun::GaveUp("was cancelled".into());
     }
