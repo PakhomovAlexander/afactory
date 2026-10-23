@@ -95,6 +95,58 @@ push_url = "git@github.com:owner/name.git"
   every `gh api` call names `--hostname github.com`.
 - The file selects no checks. One that still carries the `checks` key of the first release is
   refused, with a message that the pipeline's check node chooses now.
+- `no_perf_paths` is optional: the prose-only paths whose change alone earns the gate pull
+  request the `no-perf` label, described below. Without it af never adds the label.
+
+### The `no-perf` label of a gate pull request
+
+A repository whose performance workflow honours `no-perf`
+([ADR-0196](../adr/0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md))
+can have af label a gate pull request whose candidate only changes prose. af cannot tell which
+files of an arbitrary repository a build, a test or the product reads — Markdown can be
+compiled in, and `.af/` prompts are runtime inputs — so it never guesses from extensions or
+diff size. The operator lists the paths:
+
+```toml
+[[github_pr]]
+repository_id = "5f1c…"
+github = "owner/name"
+push_url = "git@github.com:owner/name.git"
+no_perf_paths = ["docs/*.md", "docs/adr/*.md", "docs/design/*.md",
+                 "docs/task-execution/*.md", "changelog.d/*.md"]
+```
+
+- Each entry is a repository path whose first component is literal; a later component may use
+  `*`, which matches within that one component (`docs/*.md` matches `docs/a.md`, not
+  `docs/x/a.md`). At most 64 entries of 256 bytes. `**`, `.` and `..`, a leading wildcard, and
+  any path through `.af`, `.cargo` or a `.git*` name, a root `action.yml` and Cargo's
+  `Cargo.toml`, `Cargo.lock`, `build.rs` and `rust-toolchain(.toml)` are refused, and never
+  qualify even when a wildcard would match them.
+- Af adds the label only when the PR API reports the successfully pushed candidate head.
+  If GitHub still reports an older head, the PR stays unlabeled; a retry can label it after
+  the API catches up.
+- Every remote phase classifies the whole change from the Task's source Snapshot to the
+  candidate, never the last repair round. It qualifies only when it is not empty, has at most
+  1000 changed paths, and every path that differs in presence, mode or bytes is a regular,
+  non-executable file on both sides that an entry matches. Anything else — one unlisted path,
+  an executable or a link — does not qualify.
+- af changes only the exact `no-perf` label, and only on the open draft gate pull request whose
+  head and base are this Task's two `af-gate/` branches in the mapped repository, at the gate
+  base commit and the Task's own head. Every other label stays. A candidate that qualifies gets
+  the label; one that does not loses it, and a stale label is removed, and read back, before a
+  repair round's head is pushed. If it cannot be removed, nothing is pushed and the checks are
+  `remote_push_refused`; after the pull request is opened, the checks are `remote_pr_refused`.
+  A label that cannot be added only leaves the pull request measured.
+- af never creates the label: GitHub would create a missing label in the repository on first
+  use, which is the repository owner's decision. Create it once, spelled exactly `no-perf`:
+  `gh label create no-perf --repo owner/name --description "no performance measurement"`.
+  Without it, gate pull requests stay unlabeled.
+
+The list above is Afactory's: its top-level and ADR, design and Task-execution documents and its
+change notes, none of which a build, test fixture or `af` reads. A crate's `README.md`, `.af/`,
+fixtures, schemas, scripts and workflows are deliberately absent. Afactory's own gate pull
+requests target `af-gate/**` bases, which its `Performance` workflow never measures, so for this
+repository the label only says what the gate's candidate is.
 
 The mapping is the authorization for this machine to push the gate branches of that repository.
 It is read when a plan is captured: a pipeline with remote checks and no target for the source

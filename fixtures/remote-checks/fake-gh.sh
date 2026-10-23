@@ -1,6 +1,8 @@
 #!/bin/sh
 # A fake `gh` serving recorded GitHub API documents; it never contacts a network. It simulates
-# GitHub's pull request and its `refs/pull/12/merge` test merge in the local bare repository.
+# GitHub's pull request and its `refs/pull/12/merge` test merge in the local bare repository,
+# and the pull request's labels (`labels`, one name per line) and the repository's labels
+# (`repo-labels`, likewise).
 STATE='@STATE@'
 BARE='@BARE@'
 TASK='@TASK@'
@@ -40,7 +42,16 @@ pull() {
   PULL_HEAD=$(pull_sha head_sha); PULL_BASE=$(pull_sha base_sha)
   if [ -e "$STATE/pull-head-sha" ]; then PULL_HEAD=$(cat "$STATE/pull-head-sha"); fi
   printf '{"number":12,"html_url":"https://github.com/octo/gate/pull/12","state":"%s","draft":true,' "$PULL_STATE"
-  printf '"head":{"ref":"af-gate/%s/head","sha":"%s","repo":{"full_name":"octo/gate"}},"base":{"ref":"af-gate/%s/base","sha":"%s","repo":{"full_name":"octo/gate"}}}' "$TASK" "$PULL_HEAD" "$TASK" "$PULL_BASE"
+  printf '"head":{"ref":"af-gate/%s/head","sha":"%s","repo":{"full_name":"octo/gate"}},"base":{"ref":"af-gate/%s/base","sha":"%s","repo":{"full_name":"octo/gate"}},' "$TASK" "$PULL_HEAD" "$TASK" "$PULL_BASE"
+  printf '"labels":'; labels_json; printf '}'
+}
+labels_json() {
+  if [ -e "$STATE/labels-malformed" ]; then printf '[{"id":1}]'; return; fi
+  printf '['; SEP=''
+  if [ -e "$STATE/labels" ]; then
+    while IFS= read -r NAME; do printf '%s{"name":"%s"}' "$SEP" "$NAME"; SEP=','; done < "$STATE/labels"
+  fi
+  printf ']'
 }
 serve() { sed -e "s/@HEAD@/$(head_sha)/g" -e "s/@TASK@/$TASK/g" "$1"; }
 case "$1" in
@@ -68,6 +79,40 @@ if [ "$1" = "--method" ] && [ "$2" = "PATCH" ]; then
   esac
   echo "fake gh: unsupported PATCH $3" >&2; exit 2
 fi
+if [ "$1" = "--method" ] && [ "$2" = "DELETE" ]; then
+  # Removing one label from the gate pull request; every other label stays.
+  case "$3" in
+    repos/octo/gate/issues/12/labels/*)
+      if [ -e "$STATE/refuse-label-remove" ]; then
+        echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1
+      fi
+      NAME=${3#repos/octo/gate/issues/12/labels/}
+      if ! grep -qx -- "$NAME" "$STATE/labels" 2>/dev/null; then
+        echo "gh: Label does not exist (HTTP 404)" >&2; exit 1
+      fi
+      grep -vx -- "$NAME" "$STATE/labels" > "$STATE/labels.next"; mv "$STATE/labels.next" "$STATE/labels"
+      # Which head the pull request had when the label left it.
+      printf '%s %s\n' "$NAME" "$(head_sha)" >> "$STATE/labels-removed"
+      labels_json; exit 0;;
+  esac
+  echo "fake gh: unsupported DELETE $3" >&2; exit 2
+fi
+if [ "$1" = "--method" ] && [ "$2" = "POST" ] && [ "$3" = "repos/octo/gate/issues/12/labels" ]; then
+  if [ -e "$STATE/refuse-label-add" ]; then
+    echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1
+  fi
+  case "$4 $5" in
+    "-f labels[]="*) NAME=${5#"labels[]="};;
+    *) echo "fake gh: unsupported label POST $4 $5" >&2; exit 2;;
+  esac
+  # GitHub would create a label the repository does not have; af never asks it to.
+  if ! grep -qx -- "$NAME" "$STATE/repo-labels" 2>/dev/null; then
+    echo "$NAME" >> "$STATE/labels-created"
+  fi
+  grep -qx -- "$NAME" "$STATE/labels" 2>/dev/null || echo "$NAME" >> "$STATE/labels"
+  printf '%s %s\n' "$NAME" "$(head_sha)" >> "$STATE/labels-added"
+  labels_json; exit 0
+fi
 if [ "$1" = "--method" ] && [ "$2" = "POST" ]; then
   if [ -e "$STATE/refuse-pull" ]; then
     echo "gh: Validation Failed (HTTP 422): pushes to $BARE are not allowed" >&2; exit 1
@@ -82,8 +127,16 @@ case "$1" in
     if [ -e "$STATE/log-$JOB.txt" ]; then cat "$STATE/log-$JOB.txt"; exit 0; fi
     echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
   repos/octo/gate/pulls\?*)
+    if [ -e "$STATE/pull-record-malformed" ]; then printf '[{"number":12}]'; exit 0; fi
+    if [ -e "$STATE/pull-list-fails" ]; then echo "gh: Server Error (HTTP 502)" >&2; exit 1; fi
     if [ -e "$STATE/pull-open" ]; then printf '['; pull; printf ']'; else printf '[]'; fi;;
   repos/octo/gate/pulls/12) pull;;
+  repos/octo/gate/labels/*)
+    NAME=${1#repos/octo/gate/labels/}
+    if [ -e "$STATE/label-read-fails" ]; then echo "gh: Server Error (HTTP 502)" >&2; exit 1; fi
+    if grep -qx -- "$NAME" "$STATE/repo-labels" 2>/dev/null; then printf '{"name":"%s"}' "$NAME"; exit 0; fi
+    if [ -e "$STATE/repo-label-spelled" ]; then printf '{"name":"%s"}' "$(cat "$STATE/repo-label-spelled")"; exit 0; fi
+    echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
   repos/octo/gate/actions/runs\?*)
     if [ -e "$STATE/runs-hang" ]; then echo $$ > "$STATE/hang.pid"; exec sleep 60; fi
     if [ -e "$STATE/runs.json" ]; then serve "$STATE/runs.json"

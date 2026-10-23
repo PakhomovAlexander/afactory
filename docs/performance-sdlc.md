@@ -23,6 +23,37 @@ alternatives. Use a separate diagnostic child run for CPU profiles and phase tra
 instrumentation overhead must not enter the timing verdict. Promote a successful experiment
 through a normal PR and the full comparison.
 
+## The no-perf label
+
+A pull request to `main` labeled exactly `no-perf` is not measured: no plan, build or shard runs,
+and `Performance check` reports `exempt (label no-perf), not measured`, which is an exemption and
+never a measured or qualified result. Adding the label cancels a running measurement; removing
+it measures again. Only the exact lowercase name counts, only on the run's first attempt (a
+rerun measures), and pushes to `main`, the nightly schedule, dispatches, calibration and release
+handoffs ignore it
+([ADR-0196](adr/0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)).
+Ordinary correctness checks, including the laboratory's own unit and schema tests in
+`validate.yml` and `make check`, run whatever the label says.
+
+Agents opening or updating an ordinary Afactory pull request apply it conservatively:
+
+1. Inspect the entire diff against the base, not the latest commit or the task's intent.
+2. Label only when every changed file is prose — an ADR, a runbook, a design note, a change note
+   — or a similarly clear non-executable edit that no build, test, benchmark, af runtime input
+   or embedded file reads. Markdown is not prose by its extension: a crate's `README.md` can be
+   compiled in, and `.af/` prompts are runtime inputs.
+3. Keep the measurement for code of any size, however small or easy; dependencies, lock files
+   and build settings; the performance harness, fixtures, golden data and benchmarks; CI
+   workflows and performance policy; `.af/`; and every mixed or uncertain change.
+4. Say in the pull request description why the change has no runtime impact.
+5. Re-evaluate on every update, and remove a `no-perf` the new diff no longer justifies.
+
+A change to the laboratory, its workflows or its policy is never labeled: it is exactly what the
+measurement has to see. Reviewers check the label against the diff like any other claim. Remote
+Check gate pull requests target `af-gate/**` bases and are never measured here; the label af
+puts on them for its operators' `no_perf_paths` is described in
+[Remote Checks](task-execution/remote-checks.md#3-give-this-machine-a-push-target).
+
 ## Infrastructure rollout
 
 1. Merge the laboratory with ordinary validation. The installation PR and first push explicitly
@@ -42,7 +73,9 @@ through a normal PR and the full comparison.
    they cannot be replaced with convenient reruns.
 6. Review activation only when retained originals establish readiness. Export branch rules,
    arrange owner review at the exact head, and merge the enforcement policy change. Then require
-   `Performance check`. Until then keep `fixtures/performance/enforcement.toml` advisory.
+   `Performance check`. Until then keep `fixtures/performance/enforcement.toml` advisory. A
+   required check still passes a `no-perf` exemption; decide then whether everyone who may label
+   a pull request should keep that power.
 
 ## Durable collection
 
