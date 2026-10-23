@@ -33,6 +33,27 @@ fn first_load(text: &str) -> Option<f64> {
     (load.is_finite() && load >= 0.0).then_some(load)
 }
 
+/// The host's name, as `uname -n` would print it: Linux's `/proc/sys/kernel/hostname`, macOS's
+/// `kern.hostname` through `/usr/sbin/sysctl`; `None` elsewhere or when it reports none.
+pub fn hostname() -> Option<String> {
+    let text = if cfg!(target_os = "linux") {
+        std::fs::read_to_string("/proc/sys/kernel/hostname").ok()?
+    } else if cfg!(target_os = "macos") {
+        let mut command = std::process::Command::new("/usr/sbin/sysctl");
+        command.args(["-n", "kern.hostname"]).env_clear();
+        let output = crate::run_supervised(&mut command, None, Duration::from_secs(5)).ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8(output.stdout).ok()?
+    } else {
+        return None;
+    };
+    let name = text.trim();
+    (!name.is_empty() && name.len() <= 255 && !name.chars().any(char::is_control))
+        .then(|| name.to_string())
+}
+
 /// The CPUs available to this process: its affinity and quota where the host has them, at
 /// least one.
 pub fn available_cpus() -> u32 {
@@ -49,6 +70,12 @@ mod tests {
         assert!(available_cpus() >= 1);
         let load = load_average_1m().expect("macOS and Linux report a load average");
         assert!(load >= 0.0 && load.is_finite());
+    }
+
+    #[test]
+    fn the_host_names_itself() {
+        let name = hostname().expect("macOS and Linux report a host name");
+        assert!(!name.is_empty() && !name.contains('\n'));
     }
 
     #[test]

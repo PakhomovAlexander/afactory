@@ -368,3 +368,5 @@ future readers need.
   candidate](0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
 - [0197 — Detect Provider logins, and register them through
   `add`](0197-detect-provider-logins-and-register-them-through-add.md)
+- [0198 — Key warm check layers by content, lock them, split the build deadline, and seal without
+  generated files](0198-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)

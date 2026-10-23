@@ -23,9 +23,16 @@ executor = "github-pr"
 workflow = ".github/workflows/ci.yml"
 required = ["validation / lint", "validation / check (ubuntu-latest)"]
 
+# Offline (ADR-0198): npm runs markdownlint-cli2 only from the warm layer's npm_cache, never the
+# network; the kernel fills that cache once and verifies the tarball's SHA-256 before every run.
 [checks.markdownlint]
 name = "markdownlint"
 required = true
+offline = true
+
+[[checks.markdownlint.npm_packages]]
+spec = "markdownlint-cli2@0.22.1"
+sha256 = "57f59b92ce95a5d0beb9d484bf5ecede02fde29f913ad1a6cc74b15901650037"
 
 [checks.markdownlint.command]
 program = "npx"
@@ -57,7 +64,10 @@ checks = ["kernel"]
 # the R2 candidate's gate 61 s in, before a reviewer saw it. The bound is a disk safety, not a
 # budget: 32 GiB against 98 GiB free.
 [warm]
-build_cache = ["cargo_target", "cargo_home"]
+build_cache = ["cargo_target", "cargo_home", "npm_cache"]
+# The build has its own deadline (ADR-0198): until verify.sh reports its `build` step, at most
+# 40 minutes; the tests then have check_wall_ms of their own. A busy layer is waited for.
+build_wall_ms = 2400000
 # Eviction bound: a directory above it is removed after the check, whose result stands (R5).
 max_bytes = 17179869184
 # The only bound that ends a running check: a disk safety, twice the eviction bound.

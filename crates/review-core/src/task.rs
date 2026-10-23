@@ -4,6 +4,7 @@
 //! compatibility; the Store establishes identity, authority and legal transitions.
 
 pub mod campaign_review;
+pub mod check_layer;
 pub mod check_report;
 pub mod collection;
 pub mod delivery;
@@ -34,6 +35,7 @@ pub mod review_context;
 pub mod review_handoff;
 pub mod review_integration;
 pub mod runtime;
+pub mod seal;
 pub mod source;
 pub mod state;
 pub mod storage_sweep;

@@ -1820,8 +1820,9 @@ af task gc --older-than 0 --keep 10 --json   # needs: a Task Store"
 it ended, its Plan, warm checks, failed nodes with their first error line and the artifact IDs \
 of their whole diagnostic and stderr, and as the last line the one command to run next.\n\n\
 --checks prints the gate's last check receipt instead: each check's status, duration, warm or \
-cold, the step that stopped it, its failing and flaky tests and the last 40 lines of its stderr; \
-with --json, one `af/task-checks@1` document.",
+cold, its warm layer (key, lock, source groups, build and test phases, an eviction and its \
+cause), the step that stopped it, its failing and flaky tests and the last 40 lines of its \
+stderr; with --json, one `af/task-checks@2` document.",
         after_long_help = "Examples:\n  af task show pagination-cli   # needs: Task pagination-cli\n  \
 af task show pagination-cli --checks   # needs: Task pagination-cli\n  \
 af task show pagination-cli --json   # needs: Task pagination-cli"

@@ -300,8 +300,18 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
         // part of what the Worker wrote, so it never reaches the candidate.
         let access = worker_access(signature);
         let owned = owned_top_levels(&sealed);
+        // What the project's ignore rules exclude among what the Worker added — generated
+        // files of its own test runs and builds — is left out and listed (ADR-0198).
+        let rules = sealed.ignore_rules().map_err(|e| e.to_string())?;
+        let ignored: BTreeSet<String> = sealed
+            .ignored_by(&rules)
+            .into_iter()
+            .filter(|path| !shell_scratch(access, &owned, path))
+            .collect();
         let manifest = sealed
-            .capture_snapshot_where(cas, |path| !shell_scratch(access, &owned, path))
+            .capture_snapshot_where(cas, |path| {
+                !shell_scratch(access, &owned, path) && !ignored.contains(path)
+            })
             .map_err(|e| e.to_string())?;
         let manifest_id = cas
             .put_json(&serde_json::to_value(&manifest).map_err(|e| e.to_string())?)
@@ -312,7 +322,29 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
             manifest_id: manifest_id.clone(),
         };
         let mut refs = source.artifact_ids.clone();
-        refs.extend([parent_snapshot_id.clone(), manifest_id]);
+        refs.extend([parent_snapshot_id.clone(), manifest_id.clone()]);
+        if !ignored.is_empty() {
+            let record = review_core::task::seal::SealIgnoredV1::new(
+                manifest_id,
+                ignored.iter().cloned().collect(),
+            );
+            record.validate()?;
+            let id = cas
+                .put_json(&serde_json::to_value(&record).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            eprintln!(
+                "seal: left out {} generated path{} the ignore rules exclude ({}{}); listed in {id}",
+                record.ignored_count,
+                if record.ignored_count == 1 { "" } else { "s" },
+                record.ignored[0],
+                if record.ignored_count > 1 {
+                    ", …"
+                } else {
+                    ""
+                }
+            );
+            refs.push(id);
+        }
         let id = cas
             .put_artifact(
                 CANDIDATE_TREE_V1,

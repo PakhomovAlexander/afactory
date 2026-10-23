@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-checks:1",
-  "title": "Task checks af/task-checks@1",
-  "$comment": "What `af task show ID --checks --json` prints: the Task's state and gate summary, and the last check receipt its execution recorded with every check it names. `receipt` is null before a check recorded one. Read-only: nothing runs.",
+  "$id": "urn:af:schema:task-checks:2",
+  "title": "Task checks af/task-checks@2",
+  "$comment": "What `af task show ID --checks --json` prints: the Task's state and gate summary, and the last check receipt its execution recorded with every check it names. `receipt` is null before a check recorded one. Read-only: nothing runs. Under a warm layer each started check carries `layer`, its `af/TaskCheckLayer@1` entry (ADR-0198): the key, how the check came by it, warm or cold at the start, the source groups the content rule made stale, the build and test phases against their deadlines, and an eviction with its cause.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,7 +14,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-checks@1"
+      "const": "af/task-checks@2"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
@@ -165,6 +165,10 @@
           "items": {
             "type": "string"
           }
+        },
+        "layer": {
+          "description": "The check's warm layer, as `af/TaskCheckLayer@1` recorded it beside the receipt; absent without a warm layer or for a check that never started.",
+          "$ref": "urn:af:schema:task-check-layer:1#/$defs/run"
         }
       }
     }

@@ -183,6 +183,12 @@ pub const LAYOUT: &[Entry] = &[
         "Task packages, kinds, selection, providers",
     ),
     file(
+        "seal-ignore",
+        Writer::Human,
+        Versioning::Versioned,
+        "what sealing leaves out of a candidate",
+    ),
+    file(
         "optimization-policy.json",
         Writer::Human,
         Versioning::Versioned,

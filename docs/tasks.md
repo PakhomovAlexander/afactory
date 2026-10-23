@@ -203,9 +203,11 @@ the run log does, `Task ID: finished/gate_failed/check_failed; next: af task run
 a non-zero exit always says why on stderr.
 
 `af task show ID --checks` prints the gate's last check receipt: each check's status, duration,
-warm or cold directories, the step that stopped it, its failing tests (named from the runner's
+warm or cold directories, its warm layer when the policy has `[warm]` (the key, how the check came
+by it, the source groups it rebuilt, its build and test phases and an eviction with its cause,
+[Warm checks](task-execution/warm-checks.md)), the step that stopped it, its failing tests (named from the runner's
 `FAIL`, `TIMEOUT` and `SIGABRT` lines), its `flaky:` tests and the last 40 lines of its stderr;
-`--json` prints one [`af/task-checks@1`](../schemas/task-checks-v1.json) document. `af task list
+`--json` prints one [`af/task-checks@2`](../schemas/task-checks-v2.json) document. `af task list
 --json` rows carry the same `gate` summary, and after a failed gate `af task run` names the
 failing tests, at most 20, then `… and N more; af task show ID --checks`.
 

@@ -30,15 +30,20 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 199] = [
+const SCHEMAS: [&str; 204] = [
     "task-check-report-v1.json",
+    "seal-ignored-v1.json",
+    "task-check-layer-v1.json",
+    "warm-sources-v1.json",
+    "warm-holder-v1.json",
+    "warm-eviction-v1.json",
     "task-gate-retried-v1.json",
     "task-state-v1.json",
     "task-selection-v2.json",
     "pipeline-selection-v1.json",
     "task-collected-inspection-v2.json",
     "task-list-v3.json",
-    "task-checks-v1.json",
+    "task-checks-v2.json",
     "provider-detect-v1.json",
     "store-writer-v1.json",
     "project-registered-v1.json",
@@ -3816,6 +3821,8 @@ fn retired_warm_set_and_session_contracts_are_refused() {
     assert!(validate_event_payload(EventType::WarmSetSelectedV2, &with_session).is_err());
 }
 
+#[path = "schema_parity/check_layer.rs"]
+mod check_layer;
 #[path = "schema_parity/task_check_report.rs"]
 mod task_check_report;
 #[path = "schema_parity/task_usage.rs"]

@@ -69,6 +69,13 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   while Cargo home stays warm. `af task show` reports the target bytes available before the check, not compiler hits or
   the Snapshot that last built them
   ([ADR-0161](adr/0161-refresh-native-check-source-mtimes-before-reusing-cargo-target.md)).
+  Since [ADR-0198](adr/0198-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)
+  only the source groups whose content the layer did not build are stamped now; the others get
+  back the stamp of the build that holds their content. A busy layer is waited for until the
+  check's deadline (or copied, with `clone_when_busy`), a held one is never evicted, a declared
+  `build_wall_ms` gives the build its own deadline, an `offline` check runs from a verified npm
+  cache, and sealing leaves generated files out
+  ([Warm checks](task-execution/warm-checks.md)).
 - The kernel measures; a model never writes a number the kernel did not record. A code policy's
   `[measures]` are run by the installed `measure` operator against a read-only Snapshot, and
   `compare` folds two `af/Measurement@1` under a declared `[objectives]` entry in exact decimal
@@ -158,9 +165,10 @@ What it never grants:
 |---|---|
 | Task, Pipeline, plan, result and decision wire contracts | `crates/review-core/src/task/`, [`task-contracts-v1`](../schemas/task-contracts-v1.json), `fixtures/task-contracts/` |
 | Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
-| Inspection and listing | [`task-state-v1`](../schemas/task-state-v1.json), [`task-inspection-v12`](../schemas/task-inspection-v12.json), [`task-list-v3`](../schemas/task-list-v3.json), [`task-list-entry-v3`](../schemas/task-list-entry-v3.json), [`task-checks-v1`](../schemas/task-checks-v1.json), [`task-selection-v2`](../schemas/task-selection-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json), [`task-report-v2`](../schemas/task-report-v2.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
+| Inspection and listing | [`task-state-v1`](../schemas/task-state-v1.json), [`task-inspection-v12`](../schemas/task-inspection-v12.json), [`task-list-v3`](../schemas/task-list-v3.json), [`task-list-entry-v3`](../schemas/task-list-entry-v3.json), [`task-checks-v2`](../schemas/task-checks-v2.json), [`task-selection-v2`](../schemas/task-selection-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json), [`task-report-v2`](../schemas/task-report-v2.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
 | Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
 | Gate evidence and retry ([ADR-0196](adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)) | `crates/review-core/src/task/check_report.rs`, `crates/review-store/src/store/task/gate_retry.rs`, [`task-check-report-v1`](../schemas/task-check-report-v1.json), [`task-gate-retried-v1`](../schemas/task-gate-retried-v1.json) |
+| Warm check layer ([ADR-0198](adr/0198-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)) | `crates/review-core/src/task/check_layer.rs`, `crates/review-pipeline/src/task/warm_check.rs`, `crates/review-check/src/offline.rs`, `crates/review-sandbox/src/seal_ignore.rs`, [`task-check-layer-v1`](../schemas/task-check-layer-v1.json), [`warm-sources-v1`](../schemas/warm-sources-v1.json), [`warm-holder-v1`](../schemas/warm-holder-v1.json), [`warm-eviction-v1`](../schemas/warm-eviction-v1.json), [`seal-ignored-v1`](../schemas/seal-ignored-v1.json) |
 | Store hygiene ([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)) | `crates/review-store/src/store/task/collection.rs`, [`task-collected-v1`](../schemas/task-collected-v1.json), [`task-collected-inspection-v1`](../schemas/task-collected-inspection-v1.json), [`task-gc-v1`](../schemas/task-gc-v1.json) |
 | Review accounting | [`review-report-v4`](../schemas/review-report-v4.json) |
 | Executable credential-free fixtures | `fixtures/task-runtime/` (`pagination`, `review`, `review-v2`, `embedded-review`, `bounded-repair`) |
@@ -172,6 +180,7 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 - [Task file](task-execution/task-file.md) — plan, explain, run, show, list and deliver a captured Task; state outside the checkout; exit codes.
 - [Task input bindings](task-execution/task-inputs.md) — the `inputs` table that binds a root port to a recorded Task's output, its plan-time resolution, and where it is implemented.
 - [Model bindings](task-execution/model-bindings.md) — native Claude/Codex Workers, Provider registry labels, token-free identity capture, paid capability admission, usage retention and cancellation.
+- [Warm checks](task-execution/warm-checks.md) — the warm layer a check reuses: its content rule, lock, clone option, build and test deadlines, eviction, offline npm checks and what sealing leaves out.
 - [Local bindings](task-execution/local-bindings.md) — per-developer `af.task-bindings/1` files that replace Workers without weakening policy.
 - [Selection](task-execution/selection.md) — choosing a captured Pipeline before any Planner call; fallback, ranking and persisted refusal reasons.
 - [Generated plans](task-execution/generated-plans.md) — the fixed Planner, bounded compiler repair and exact signed developer approval.

@@ -258,7 +258,7 @@ The Task documents, each named by its `schema`:
 
   af task show --json                  af/task-inspection@12; a collected Task:
                                        af/task-collected-inspection@2
-  af task show --checks --json         af/task-checks@1
+  af task show --checks --json         af/task-checks@2
   af task list --json                  af/task-list@3, one af/task-list-entry@3 per Task
   af task report --json                af/task-report@2
   af task plan --json, refused         af/task-selection@2; an infeasible plan carries

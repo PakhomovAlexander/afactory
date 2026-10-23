@@ -509,3 +509,82 @@ fn clones_from_a_template_isolate_their_writes() {
     let sealed_a = a.seal().unwrap();
     assert_eq!(sealed_a.mutations.modified, vec![path.to_string()]);
 }
+
+/// Issue #160 and ADR-0198: a tree holding a tracked `.pyc`, generated `.pyc` files and a FIFO.
+/// The FIFO is refused by name and never opened; without it, the generated files are listed as
+/// ignored and left out of the candidate, while the tracked one stays.
+#[test]
+fn sealing_refuses_a_fifo_by_name_and_leaves_generated_files_out_but_keeps_tracked_ones() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = review_store::Cas::open(directory.path().join("cas")).unwrap();
+    let entry = |path: &str, text: &str| Entry {
+        path: path.into(),
+        kind: EntryKind::File,
+        content: cas.put(text.as_bytes()).unwrap(),
+        size: text.len() as u64,
+    };
+    let manifest = Manifest::new(vec![
+        entry(".gitignore", "*.log\n"),
+        entry("fixtures/tracked.pyc", "tracked bytecode"),
+        entry("src/main.py", "print('hi')\n"),
+    ])
+    .unwrap();
+    let generate = |root: &std::path::Path| {
+        std::fs::create_dir_all(root.join("src/__pycache__")).unwrap();
+        std::fs::write(root.join("src/__pycache__/main.cpython-312.pyc"), b"gen").unwrap();
+        std::fs::write(root.join("fixtures/new.pyc"), b"gen").unwrap();
+        std::fs::write(root.join("run.log"), b"log").unwrap();
+        std::fs::write(root.join("src/new.py"), b"x = 1\n").unwrap();
+        std::fs::write(root.join("fixtures/tracked.pyc"), b"edited bytecode").unwrap();
+    };
+
+    let with_fifo = Sandbox::materialize(&manifest, &cas, Mode::EphemeralWrite).unwrap();
+    generate(with_fifo.root());
+    let fifo = with_fifo.root().join("src/pipe");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+    let started = std::time::Instant::now();
+    let refused = match with_fifo.seal() {
+        Ok(_) => panic!("a tree holding a FIFO sealed"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "never opened"
+    );
+    assert!(
+        refused.contains("FIFO at src/pipe") && refused.contains("remove src/pipe"),
+        "{refused}"
+    );
+
+    let sandbox = Sandbox::materialize(&manifest, &cas, Mode::EphemeralWrite).unwrap();
+    generate(sandbox.root());
+    let sealed = sandbox.seal().unwrap();
+    let rules = sealed.ignore_rules().unwrap();
+    let ignored = sealed.ignored_by(&rules);
+    assert_eq!(
+        ignored,
+        [
+            "fixtures/new.pyc",
+            "run.log",
+            "src/__pycache__/main.cpython-312.pyc"
+        ]
+    );
+    let captured = sealed
+        .capture_snapshot_where(&cas, |path| !ignored.iter().any(|left| left == path))
+        .unwrap();
+    let paths: Vec<&str> = captured
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            ".gitignore",
+            "fixtures/tracked.pyc",
+            "src/main.py",
+            "src/new.py"
+        ],
+        "a tracked file is sealed whatever the rules say"
+    );
+}

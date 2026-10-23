@@ -4205,7 +4205,10 @@ fn cache_states(caches: &[serde_json::Value]) -> String {
                     None => state,
                 }
             } else {
-                let state = if first {
+                let state = if reason == "cloned" {
+                    // A private copy of a busy layer (ADR-0198): warm with the holder's build.
+                    format!("{base} copied {bytes} (layer busy)")
+                } else if first {
                     format!("{base} cold {reason}")
                 } else {
                     format!("{base} removed {bytes} ({reason})")

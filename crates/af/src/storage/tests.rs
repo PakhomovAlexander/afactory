@@ -2390,3 +2390,55 @@ fn a_path_the_inventory_could_not_measure_is_no_warning_after_a_run() {
     let warned: Vec<&String> = run_warnings(&report).collect();
     assert_eq!(warned, ["removing /state/x: permission denied"]);
 }
+
+/// ADR-0198: a warm key a check holds is never evicted. The sweep reads its lock at inventory
+/// and again at eviction, so a key a check locked after the inventory measured it is refused and
+/// left in place; an idle key the sweep evicts leaves its eviction record, the cause a check that
+/// finds it gone reports.
+#[test]
+fn a_held_warm_key_is_refused_at_eviction_and_an_evicted_one_leaves_its_cause() {
+    let layout = layout();
+    let key = warm_key(&layout, 'a', '1', CHUNK, 30 * DAY);
+    let _newest = warm_key(&layout, 'a', '2', CHUNK, Duration::from_secs(60));
+    let stock = inventory(&layout.roots, Detail::Tasks);
+    let entry = stock
+        .entries
+        .iter()
+        .find(|entry| entry.path == key)
+        .unwrap();
+    assert_eq!(entry.in_use, None, "idle when the inventory measured it");
+    let held = nix::fcntl::Flock::lock(
+        std::fs::File::open(key.join(review_sandbox::KEY_LOCK)).unwrap(),
+        nix::fcntl::FlockArg::LockExclusive,
+    )
+    .unwrap();
+    let refused = evict(&layout.roots, &policy(1024), &stock, entry).unwrap_err();
+    assert!(
+        refused.reason.contains("a check holds it now"),
+        "{}",
+        refused.reason
+    );
+    assert!(
+        key.join("cargo_target/blob").exists(),
+        "a held key keeps every byte"
+    );
+    assert!(review_sandbox::read_key_eviction(&layout.roots.warm, &hex('a'), &hex('1')).is_none());
+    drop(held);
+
+    let (bytes, _, _) = evict(&layout.roots, &policy(1024), &stock, entry).unwrap();
+    assert!(!key.exists());
+    let record: review_core::task::check_layer::WarmEvictionV1 = serde_json::from_slice(
+        &review_sandbox::read_key_eviction(&layout.roots.warm, &hex('a'), &hex('1')).unwrap(),
+    )
+    .unwrap();
+    record.validate().unwrap();
+    assert_eq!(
+        record.by,
+        review_core::task::check_layer::WarmEvictorV1::StorageSweep
+    );
+    assert_eq!(record.bytes, bytes);
+    // The record sits beside the key, never below a key, so the next inventory lists no key
+    // for it.
+    let after = inventory(&layout.roots, Detail::Tasks);
+    assert!(after.entries.iter().all(|entry| entry.path != key));
+}

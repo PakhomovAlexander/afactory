@@ -384,8 +384,8 @@ next: af task run pagination-cli --retry-gate
 "
     );
     let document = fixture.json(&["task", "show", TASK, "--checks"]);
-    schemas::valid(&schemas::validator("task-checks-v1.json"), &document);
-    assert_eq!(document["schema"], "af/task-checks@1");
+    schemas::valid(&schemas::validator("task-checks-v2.json"), &document);
+    assert_eq!(document["schema"], "af/task-checks@2");
     let check = &document["receipt"]["checks"][0];
     assert_eq!(
         check["failed_tests"],

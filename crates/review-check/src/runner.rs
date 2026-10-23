@@ -42,6 +42,102 @@ pub struct CheckDefinition {
         deserialize_with = "review_core::task::present_option"
     )]
     pub remote: Option<RemoteCheckV1>,
+    /// The check runs without network (ADR-0198): npm reads only its cache, which a Task check
+    /// finds in the warm layer's `npm_cache` directory, and every proxy variable names a closed
+    /// local port. Absent or `false`, a definition serializes exactly as it did before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub offline: bool,
+    /// The npm packages an offline check runs, each pinned by the SHA-256 of its registry
+    /// tarball. The kernel fills the cache with them once, while the network is still allowed,
+    /// and verifies every pin before each run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub npm_packages: Vec<NpmPackagePin>,
+}
+
+/// One npm package an offline check runs: `name@version`, exact, and the SHA-256 of the tarball
+/// the registry serves for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NpmPackagePin {
+    pub spec: String,
+    pub sha256: String,
+}
+
+impl NpmPackagePin {
+    /// The package name and exact version, when `spec` is `name@1.2.3` (or `@scope/name@1.2.3`,
+    /// with an optional pre-release); `None` for anything a resolver would have to choose.
+    pub fn parts(&self) -> Option<(&str, &str)> {
+        let at = self.spec.rfind('@').filter(|at| *at > 0)?;
+        let (name, version) = (&self.spec[..at], &self.spec[at + 1..]);
+        let unscoped = match name.strip_prefix('@') {
+            Some(scoped) => {
+                let (scope, rest) = scoped.split_once('/')?;
+                (is_npm_name(scope) && is_npm_name(rest)).then_some(rest)?
+            }
+            None => name,
+        };
+        let (core, pre) = match version.split_once('-') {
+            Some((core, pre)) => (core, Some(pre)),
+            None => (version, None),
+        };
+        let numbers: Vec<&str> = core.split('.').collect();
+        (is_npm_name(unscoped)
+            && name.len() <= 214
+            && self.spec.len() <= 256
+            && numbers.len() == 3
+            && numbers.iter().all(|n| {
+                !n.is_empty()
+                    && n.bytes().all(|b| b.is_ascii_digit())
+                    && (n.len() == 1 || !n.starts_with('0'))
+            })
+            && pre.is_none_or(|pre| {
+                pre.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+                    && pre
+                        .bytes()
+                        .last()
+                        .is_some_and(|b| b.is_ascii_alphanumeric())
+            }))
+        .then_some((name, version))
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.parts().is_none() {
+            return Err(format!(
+                "npm package `{}` is not an exact `name@version`",
+                self.spec
+            ));
+        }
+        if self.sha256.len() != 64
+            || !self
+                .sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(format!(
+                "npm package `{}` needs sha256 as 64 lowercase hex digits",
+                self.spec
+            ));
+        }
+        Ok(())
+    }
+
+    /// The tarball URL the public registry serves the package at, which npm's cache keys it by.
+    pub fn tarball_url(&self) -> Option<String> {
+        let (name, version) = self.parts()?;
+        let base = name.rsplit('/').next().unwrap_or(name);
+        Some(format!(
+            "https://registry.npmjs.org/{name}/-/{base}-{version}.tgz"
+        ))
+    }
+}
+
+fn is_npm_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'_' | b'~')
+        })
+        && !value.starts_with(['.', '_', '-'])
 }
 
 impl CheckDefinition {
@@ -51,6 +147,8 @@ impl CheckDefinition {
             command,
             required: true,
             remote: None,
+            offline: false,
+            npm_packages: Vec::new(),
         }
     }
 

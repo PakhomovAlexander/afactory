@@ -237,7 +237,7 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     let json = out(&af(&["help", "json"]));
     for needle in [
         "af/task-inspection@12",
-        "af/task-checks@1",
+        "af/task-checks@2",
         "af/task-list@3",
         "af/task-list-entry@3",
         "af/task-report@2",
@@ -249,7 +249,7 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     for (command, flags) in [
         (
             &["task", "show", "--help"][..],
-            &["--checks", "af/task-checks@1", "next"][..],
+            &["--checks", "af/task-checks@2", "next"][..],
         ),
         (&["task", "plan", "--help"], &["--fit", "--replace"]),
     ] {
