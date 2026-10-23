@@ -862,6 +862,9 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
     std::fs::write(&bindings_path, toml::to_string(&bindings).unwrap()).unwrap();
     std::fs::create_dir_all(root.join("tasks")).unwrap();
     let file = root.join("tasks/cycle.json");
+    // Reserve the report check plus the verifier and its model admission: 400_000 + 32_768
+    // tokens, three Attempts, and 60_000 + 1_800_000 + 45_000 ms. The author and its
+    // admission need two more Attempts outside verification; the existing totals otherwise fit.
     std::fs::write(
         &file,
         serde_json::to_vec(&json!({
@@ -874,9 +877,9 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
             "facts": {},
             "limits": {
                 "tokens": 2_000_000,
-                "max_attempts": 3,
+                "max_attempts": 5,
                 "wall_ms": 14_400_000,
-                "verification": {"tokens": 400_000, "attempts": 2, "wall_ms": 1_900_000}
+                "verification": {"tokens": 432_768, "attempts": 3, "wall_ms": 1_905_000}
             }
         }))
         .unwrap(),

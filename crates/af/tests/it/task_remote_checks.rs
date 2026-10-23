@@ -1005,6 +1005,10 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
         let bindings_path = local.join(format!("{task_id}.toml"));
         std::fs::write(&bindings_path, toml::to_string(&bindings).unwrap()).unwrap();
         let file = root.join(format!("{task_id}.json"));
+        // Reviewed twins reserve bugs + correctness + evaluator (400_000 + 400_000 +
+        // 300_000 tokens), plus three distinct model admissions at 32_768 each. Their
+        // existing Attempt and wall bounds fit; the gate-only twin needs no model admission.
+        let verification_tokens = if standard { 1_198_304 } else { 400_000 };
         let mut task = json!({
             "schema": "af.task-file/1",
             "task_id": task_id,
@@ -1017,7 +1021,7 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
                 "tokens": 3_000_000,
                 "max_attempts": 16,
                 "wall_ms": 36_000_000,
-                "verification": {"tokens": 400_000, "attempts": 8, "wall_ms": 14_400_000}
+                "verification": {"tokens": verification_tokens, "attempts": 8, "wall_ms": 14_400_000}
             }
         });
         if standard {
