@@ -366,3 +366,5 @@ future readers need.
   them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)
 - [0196 — Rerun a failed test alone, report the gate, and retry a failed gate on the same
   candidate](0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
+- [0197 — Detect Provider logins, and register them through
+  `add`](0197-detect-provider-logins-and-register-them-through-add.md)

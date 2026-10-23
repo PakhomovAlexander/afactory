@@ -1650,7 +1650,7 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
             (first, argv.get(command_index + 1).map(String::as_str)),
             (
                 Some("provider"),
-                Some("setup" | "remove" | "recover" | "auth")
+                Some("detect" | "setup" | "remove" | "recover" | "auth")
             ) | (Some("catalog"), Some("digest"))
         )
         || argv
@@ -4671,6 +4671,10 @@ mod tests {
             "codex"
         ])));
         assert!(exempt_from_dispatch(&argv(&["af", "provider", "recover"])));
+        // Detection reads and writes only the machine-local registry and the machine's CLIs.
+        assert!(exempt_from_dispatch(&argv(&[
+            "af", "provider", "detect", "--apply"
+        ])));
         // An older pinned release has no `remove`, and the registry is machine-local (ADR-0136).
         assert!(exempt_from_dispatch(&argv(&[
             "af",

@@ -2,7 +2,7 @@
 
 Where to look, by question. The [README](../README.md) covers installing, the quickstart, and the
 `.af/` layout; the CLI documents itself with `af help layers`, `af help self`, `af help exit-codes`,
-and `--help` on every namespace and command.
+`af help providers`, and `--help` on every namespace and command.
 
 ## Start here
 
@@ -19,7 +19,7 @@ and `--help` on every namespace and command.
 |---|---|
 | [`architecture.md`](architecture.md) | How the kernel is built: crates, contracts, the store, source capture, Check nodes, reviewer adapters, sandboxes, the pipeline graph, pipeline definitions, routing, and Attempt budgets. Each section names the test that pins it. |
 | [`../CONTEXT.md`](../CONTEXT.md) | What a word means. Snapshot, Subject, Base, Campaign, Round, Report, Finding, Attempt, Provider and the rest, each with the nearby term it must not be confused with. Read it before arguing about behaviour. |
-| [`providers.md`](providers.md) | How a machine gets model access: registering a Provider, why an interactive login is opt-in and terminal-only, what `status` checks versus what `doctor` proves, and every `af provider` exit code. |
+| [`providers.md`](providers.md) | How a machine gets model access: finding and registering its logins with `af provider detect`, registering a Provider, why an interactive login is opt-in and terminal-only, what `status` checks versus what `doctor` proves, and every `af provider` exit code. |
 | [`tasks.md`](tasks.md) | How to run implementation Tasks with `af task`: start, inspect, evaluate, and deliver to a new local worktree. |
 | [`project.md`](project.md) | What `af project` knows about a repository: its Project identity and Project Store, its Workspaces (one checkout per line of work, with its own Task Store, Task files and bindings), every `af project` command, `--workspace` on `af task`, and what is written where. |
 | [`task-execution/preflight.md`](task-execution/preflight.md) | Offline orchestration checklist for source lineage, declared budgets and evidence ordering; advisory only. |

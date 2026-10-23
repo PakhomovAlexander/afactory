@@ -224,6 +224,11 @@ exit 64
         std::fs::create_dir(dir).unwrap();
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
+    // Each directory holds its CLI's login marker, so status asks the CLI about it.
+    for dir in [&default, &auth] {
+        std::fs::write(dir.join("settings.json"), "{}").unwrap();
+    }
+    std::fs::write(home.join(".codex/config.toml"), "").unwrap();
     std::fs::write(auth.join("logged-in"), "").unwrap();
     let run = |args: &[&str]| {
         crate::common::af()
@@ -253,6 +258,7 @@ exit 64
         "claude",
         "--auth-dir",
         auth.to_str().unwrap(),
+        "--unverified",
     ]);
     assert!(added.status.success(), "{}", stderr(&added));
     // Once one is, the default directory with no login is one the operator does not use.
@@ -301,6 +307,7 @@ exit 64
     for dir in [&default, &auth] {
         std::fs::create_dir(dir).unwrap();
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(dir.join("config.toml"), "").unwrap();
     }
     std::fs::write(auth.join("registered"), "").unwrap();
     let run = |args: &[&str]| {
@@ -323,6 +330,7 @@ exit 64
         "codex",
         "--auth-dir",
         auth.to_str().unwrap(),
+        "--unverified",
     ]);
     assert!(added.status.success(), "{}", stderr(&added));
     let output = run(&["provider", "status"]);
@@ -647,12 +655,20 @@ exit 64
         std::fs::metadata(&auth).unwrap().permissions().mode() & 0o777,
         0o700
     );
+    // The auth-context lock lives in af's state, below the home's `.local/state`, never in the
+    // auth directory (ADR-0197).
+    assert!(!auth.join(".af-codex-setup.lock").exists());
+    let locks = root.path().join(".local/state/af/locks");
     assert_eq!(
-        std::fs::metadata(auth.join(".af-codex-setup.lock"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
+        std::fs::metadata(&locks).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let lock = locks.join(format!(
+        "codex-{}",
+        crate::common::sha256_hex(auth.canonicalize().unwrap().to_str().unwrap().as_bytes())
+    ));
+    assert_eq!(
+        std::fs::metadata(lock).unwrap().permissions().mode() & 0o777,
         0o600
     );
 }
@@ -731,6 +747,7 @@ fn explicit_registration_rejects_an_auth_directory_writable_by_other_users() {
             "codex",
             "--auth-dir",
             auth.to_str().unwrap(),
+            "--unverified",
         ],
     );
     assert!(!added.status.success());
@@ -760,6 +777,7 @@ fn status_revalidates_auth_directory_safety_after_registration() {
             "codex",
             "--auth-dir",
             auth.to_str().unwrap(),
+            "--unverified",
         ],
     );
     assert!(added.status.success(), "{}", stderr(&added));
@@ -990,6 +1008,7 @@ fn add_creates_a_machine_local_registry_and_refuses_ambiguous_duplicates() {
             "codex",
             "--auth-dir",
             auth.to_str().unwrap(),
+            "--unverified",
         ],
     );
     assert!(output.status.success(), "{}", stderr(&output));
@@ -1019,6 +1038,7 @@ fn add_creates_a_machine_local_registry_and_refuses_ambiguous_duplicates() {
             "codex",
             "--auth-dir",
             auth.to_str().unwrap(),
+            "--unverified",
         ],
     );
     assert!(!duplicate.status.success());
@@ -1038,7 +1058,7 @@ fn add_creates_private_registry_state_even_with_a_wide_umask() {
         std::fs::create_dir(&auth).unwrap();
         std::fs::create_dir(&second_auth).unwrap();
         let script = format!(
-            "umask {umask}; exec \"$1\" provider add codex-main --kind codex --auth-dir \"$2\""
+            "umask {umask}; exec \"$1\" provider add codex-main --kind codex --auth-dir \"$2\" --unverified"
         );
         let output = Command::new("/bin/sh")
             .args(["-c", &script, "sh"])
@@ -1055,7 +1075,7 @@ fn add_creates_private_registry_state_even_with_a_wide_umask() {
             stderr(&output)
         );
         let second_script = format!(
-            "umask {umask}; exec \"$1\" provider add codex-second --kind codex --auth-dir \"$2\""
+            "umask {umask}; exec \"$1\" provider add codex-second --kind codex --auth-dir \"$2\" --unverified"
         );
         let second = Command::new("/bin/sh")
             .args(["-c", &second_script, "sh"])
@@ -1156,6 +1176,7 @@ fn add_rejects_registry_state_writable_by_other_users() {
                 "codex",
                 "--auth-dir",
                 auth.to_str().unwrap(),
+                "--unverified",
             ],
         );
         assert!(!output.status.success());
@@ -1192,6 +1213,7 @@ fn add_rejects_a_nonsticky_writable_rename_ancestor() {
             "codex",
             "--auth-dir",
             auth.to_str().unwrap(),
+            "--unverified",
         ],
     );
     assert!(!output.status.success());
@@ -1208,7 +1230,14 @@ fn add_uses_the_active_cli_directory_by_default() {
     let auth = root.path().join("codex-home");
     std::fs::create_dir(&auth).unwrap();
     let output = crate::common::af()
-        .args(["provider", "add", "codex-main", "--kind", "codex"])
+        .args([
+            "provider",
+            "add",
+            "codex-main",
+            "--kind",
+            "codex",
+            "--unverified",
+        ])
         .env("HOME", root.path())
         .env("XDG_CONFIG_HOME", root.path().join("config"))
         .env("CODEX_HOME", &auth)
@@ -1238,6 +1267,7 @@ fn add_refuses_ids_reserved_for_ambient_discovery() {
             "codex",
             "--auth-dir",
             auth.to_str().unwrap(),
+            "--unverified",
         ],
     );
     assert!(!output.status.success());
@@ -1272,6 +1302,7 @@ fn concurrent_adds_are_serialized_without_losing_entries() {
                     "codex",
                     "--auth-dir",
                     auth.to_str().unwrap(),
+                    "--unverified",
                 ],
             );
             assert!(output.status.success(), "{}", stderr(&output));
@@ -1323,6 +1354,7 @@ fn add_normalizes_valid_inline_and_empty_provider_arrays() {
                 "codex",
                 "--auth-dir",
                 second.to_str().unwrap(),
+                "--unverified",
             ],
         );
         assert!(output.status.success(), "{}", stderr(&output));
@@ -1365,6 +1397,7 @@ fn add_refuses_to_exceed_the_registry_entry_limit() {
             "codex",
             "--auth-dir",
             extra.to_str().unwrap(),
+            "--unverified",
         ],
     );
     assert!(!output.status.success());
@@ -1450,6 +1483,7 @@ fn remove_drops_the_named_entry_and_touches_nothing_else() {
             "codex",
             "--auth-dir",
             first.to_str().unwrap(),
+            "--unverified",
         ],
     );
     assert!(output.status.success(), "{}", stderr(&output));
@@ -1533,6 +1567,7 @@ fn remove_repairs_a_registry_whose_auth_directories_are_gone() {
             "codex",
             "--auth-dir",
             extra,
+            "--unverified",
         ];
         af(root, &args)
     };

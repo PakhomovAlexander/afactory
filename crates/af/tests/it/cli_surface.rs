@@ -455,6 +455,131 @@ fn provider_models_help_and_man_page_describe_the_command() {
     assert!(page.contains("list_models"), "{page}");
 }
 
+/// `af provider detect` says what it scans, what it never reads, what `--apply` writes, its ID
+/// rule and its exit codes, in `--help`, in `af help provider detect` and in its man page; `af
+/// help providers` explains the registry and the commands in the order of first use; and the
+/// `add`, `setup` and `status` changes of ADR-0197 are in their own help (ADR-0146).
+#[test]
+fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
+    for help in [
+        af(&["provider", "detect", "--help"]),
+        af(&["help", "provider", "detect"]),
+    ] {
+        assert!(help.status.success(), "{}", err(&help));
+        let text = out(&help).split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "Usage: af provider detect [OPTIONS]",
+            "--dir <PATH>",
+            "--id <ID>",
+            "--kind <KIND>",
+            "--all",
+            "--apply",
+            "--json",
+            "--identity",
+            "~/.local/bin, ~/.claude/local (claude), /opt/homebrew/bin, /usr/local/bin, ~/.npm-global/bin, ~/.volta/bin and ~/.bun/bin",
+            "No shell rc file, `npm prefix` or `nvm` is evaluated",
+            "env (CLAUDE_CONFIG_DIR, CODEX_HOME), default (~/.claude, ~/.codex), sibling",
+            "registry (every auth_dir already registered) and explicit (--dir)",
+            "Shell aliases or functions that set CLAUDE_CONFIG_DIR or CODEX_HOME are not read",
+            ".claude.json, .credentials.json or settings.json",
+            "auth.json or config.toml",
+            "listed `empty` and not probed unless --all",
+            "Nothing is written without --apply",
+            "A registry conflict stops it at that row with exit 5; the rows before it stay registered",
+            "~/.config/claude-work is claude-work, ~/.codex-gridgain is codex-gridgain",
+            "*-ambient is never generated",
+            "af/provider-detect@1",
+            "Exit codes: 0 the scan completed, 1 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible (the rows are still printed), 5 a registry conflict stopped --apply.",
+            "af provider detect --apply",
+        ] {
+            assert!(text.contains(needle), "`{needle}` missing:\n{text}");
+        }
+    }
+    let provider = out(&af(&["provider", "--help"]));
+    assert!(
+        provider
+            .lines()
+            .any(|line| line.trim_start().starts_with("detect ")),
+        "{provider}"
+    );
+    assert!(provider.contains("af help providers"), "{provider}");
+
+    let topic = af(&["help", "providers"]);
+    assert!(topic.status.success(), "{}", err(&topic));
+    let text = out(&topic);
+    let order: Vec<usize> = [
+        "af provider detect ",
+        "af provider detect --apply",
+        "af provider setup ID",
+        "af provider add ID",
+        "af provider status",
+        "af provider doctor",
+    ]
+    .iter()
+    .map(|needle| {
+        text.find(needle)
+            .unwrap_or_else(|| panic!("`{needle}`:\n{text}"))
+    })
+    .collect();
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+    for needle in [
+        "~/.config/af/providers.toml",
+        "never an email",
+        "--identity",
+    ] {
+        assert!(text.contains(needle), "`{needle}` missing:\n{text}");
+    }
+    assert!(out(&af(&["help", "json"])).contains("af/provider-detect@1"));
+    assert!(out(&af(&["help"])).contains("providers"));
+
+    let add = out(&af(&["provider", "add", "--help"]))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for needle in [
+        "--unverified",
+        "refused with exit 6",
+        "prints `warning: not verified here`",
+        "6 not authenticated",
+    ] {
+        assert!(add.contains(needle), "`{needle}` missing:\n{add}");
+    }
+    let setup = out(&af(&["provider", "setup", "--help"]))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        setup.contains("only --login creates a missing one"),
+        "{setup}"
+    );
+    let status = out(&af(&["provider", "status", "--help"]))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for needle in [
+        "--verbose",
+        "holds no login marker is not probed",
+        "--auth-dir DIR --login",
+    ] {
+        assert!(status.contains(needle), "`{needle}` missing:\n{status}");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let man = af(&["self", "man", dir.path().to_str().unwrap()]);
+    assert!(man.status.success(), "{}", err(&man));
+    let page = std::fs::read_to_string(dir.path().join("af-provider-detect.1")).unwrap();
+    assert!(page.contains("identity"), "{page}");
+    assert!(dir.path().join("af-providers.7").is_file());
+
+    let dynamic = crate::common::af()
+        .env("COMPLETE", "fish")
+        .env("AF_SELF_OFFLINE", "1")
+        .args(["--", "af", "provider", ""])
+        .output()
+        .unwrap();
+    assert!(out(&dynamic).contains("detect"), "{}", out(&dynamic));
+}
+
 /// `af project` is a namespace of its own with long help and examples, listed in `af --help`,
 /// and every `af task` command that takes `--state` takes `--workspace` beside it (ADR-0158).
 #[test]
