@@ -1,11 +1,11 @@
-"""The laboratory's Python compatibility legs gate a required check, and fail it when they do not
+"""The laboratory's latest-stable Python checks gate a required check, and fail it when they do not
 succeed.
 
 The repository's required checks name `validation / lint` and `validation / check
-(ubuntu-latest)` (`.af/code-policy.toml`); the `performance-python` matrix is not one of them.
+(ubuntu-latest)` (`.af/code-policy.toml`); the `performance-python` job is not one of them.
 These tests read `.github/workflows/validate.yml` as text (the standard library has no YAML
-reader) and require that the required `lint` job depends on the matrix, runs whatever its
-outcome, and first executes a guard that fails unless the matrix succeeded. The guard's own
+reader) and require that the required `lint` job depends on the job, runs whatever its
+outcome, and first executes a guard that fails unless the job succeeded. The guard's own
 shell is extracted and run for every result GitHub reports for a dependency.
 """
 import os
@@ -102,19 +102,35 @@ class RequiredPythonCompatibility(unittest.TestCase):
         self.text = read(WORKFLOW).decode("utf-8")
         self.jobs = jobs(self.text)
 
-    def test_the_matrix_runs_python_3_9_and_3_11_plus_with_tomllib_parity(self):
-        matrix = "\n".join(self.jobs["performance-python"])
-        legs = re.findall(r'- python: "([0-9.]+)"\n\s+tomllib: "([0-9]*)"', matrix)
-        versions = dict(legs)
-        self.assertEqual(versions.get("3.9"), "", legs)
-        later = [v for v in versions if tuple(int(p) for p in v.split(".")) >= (3, 11)]
-        self.assertTrue(later, legs)
-        self.assertTrue(all(versions[v] == "1" for v in later), legs)
-        self.assertIn("fail-fast: false", matrix)
-        self.assertIn("python scripts/test-performance.py", matrix)
-        self.assertIn("python scripts/performance/schemas.py", matrix)
+    def test_one_latest_stable_python_runs_tests_and_required_tomllib_parity(self):
+        job = self.jobs["performance-python"]
+        self.assertEqual(key(job, "name"), "performance lab (latest stable Python)")
+        self.assertIsNone(key(job, "strategy"))
+        text = "\n".join(job)
+        self.assertNotIn("matrix.", text)
+        self.assertIn("AF_PERF_REQUIRE_TOMLLIB: '1'", text)
+        self.assertIn("python scripts/test-performance.py", text)
+        self.assertIn("python scripts/performance/schemas.py", text)
 
-    def test_a_required_check_depends_on_the_matrix_and_always_runs(self):
+    def test_every_validation_job_selects_latest_stable_python_before_using_it(self):
+        for name, job in self.jobs.items():
+            with self.subTest(job=name):
+                actions = steps(job)
+                setup = [i for i, step in enumerate(actions)
+                         if "uses: actions/setup-python@" in step[0]]
+                self.assertEqual(len(setup), 1)
+                text = "\n".join(actions[setup[0]])
+                self.assertIn("python-version: '3.x'", text)
+                self.assertIn("check-latest: true", text)
+                self.assertNotIn("allow-prereleases:", text)
+                uses_python = [i for i, step in enumerate(actions)
+                               if any(re.search(r"^\s*(?:run: )?(?:python3?|make)\s", line)
+                                      for line in step if "run:" in line or line.startswith("          "))
+                               and i != setup[0]]
+                self.assertTrue(uses_python)
+                self.assertLess(setup[0], min(uses_python))
+
+    def test_a_required_check_depends_on_the_python_job_and_always_runs(self):
         policy = read(POLICY).decode("utf-8")
         required = re.search(r'^required = (\[[^\]]*"validation / [^\]]*\])$', policy, re.M)
         self.assertIsNotNone(required)
@@ -136,7 +152,7 @@ class RequiredPythonCompatibility(unittest.TestCase):
                              for line in first), first)
 
     @unittest.skipUnless(shutil.which("bash"), "bash unavailable")
-    def test_the_guard_fails_unless_every_leg_succeeded(self):
+    def test_the_guard_fails_unless_the_python_job_succeeded(self):
         script = block(steps(self.jobs["lint"])[0], "run")
         self.assertIsNotNone(script)
         for result in DEPENDENCY_RESULTS + ("",):

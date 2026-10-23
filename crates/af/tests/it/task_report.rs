@@ -746,33 +746,6 @@ fn kernel_repository(root: &Path) -> PathBuf {
     repo
 }
 
-/// A local command Worker replacing `package` with its exact committed contract and schemas:
-/// only the runner and the model-token reservation differ, so no Provider is needed to plan.
-fn local_replacement(repo: &Path, directory: &Path, package: &str, local: &str) -> toml::Value {
-    let target = directory.join(local);
-    task_cli::copy_tree(&repo.join(".af/task-packages").join(package), &target);
-    let manifest = target.join("worker.toml");
-    let mut worker: toml::Value =
-        toml::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
-    worker["name"] = toml::Value::String(local.into());
-    worker["runner"] = toml::from_str(
-        "kind = \"command\"\n[command]\nprogram = \"/usr/bin/python3\"\n\
-         [[command.args]]\nvalue = \"@package/worker.py\"\nprovenance = \"literal\"\n",
-    )
-    .unwrap();
-    worker["signature"]["attempt"]["tokens"] = toml::Value::Integer(0);
-    std::fs::write(&manifest, toml::to_string(&worker).unwrap()).unwrap();
-    std::fs::write(target.join("worker.py"), "raise SystemExit(1)\n").unwrap();
-    let mut pin = toml::map::Map::new();
-    pin.insert("version".into(), worker["version"].clone());
-    pin.insert(
-        "digest".into(),
-        toml::Value::String(review_config::lock::package_digest(local, &target).unwrap()),
-    );
-    pin.insert("path".into(), toml::Value::String(local.into()));
-    toml::Value::Table(pin)
-}
-
 #[test]
 fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_test_and_plans() {
     let directory = tempfile::tempdir().unwrap();
@@ -823,8 +796,10 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
     );
 
     // The staged Workers are what the plan names: the analyst reads source with a shell, the
-    // verifier only reads. Local command stand-ins with the exact committed contracts replace
-    // both model Workers, so planning needs no Provider.
+    // verifier only reads. Keep both model identities and their exact committed contracts;
+    // isolated fake Providers serve only catalog and identity probes.
+    crate::planning_models::assert_repository_policy(&repo);
+    let providers = crate::planning_models::Providers::new(&root);
     let worker = |name: &str| -> toml::Value {
         toml::from_str(
             &std::fs::read_to_string(
@@ -860,12 +835,19 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
         ("kernel/analyst", "local/analyst"),
         ("kernel/report-verifier", "local/report-verifier"),
     ] {
-        packages.insert(name.into(), local_replacement(&repo, &local, package, name));
+        packages.insert(
+            name.into(),
+            crate::planning_models::local_replacement(&repo, &local, package, name),
+        );
     }
     let mut bindings = toml::map::Map::new();
     bindings.insert(
         "schema".into(),
         toml::Value::String("af.task-bindings/1".into()),
+    );
+    bindings.insert(
+        "providers".into(),
+        crate::planning_models::provider_bindings(&local, &packages),
     );
     bindings.insert("packages".into(), toml::Value::Table(packages));
     bindings.insert(
@@ -880,6 +862,9 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
     std::fs::write(&bindings_path, toml::to_string(&bindings).unwrap()).unwrap();
     std::fs::create_dir_all(root.join("tasks")).unwrap();
     let file = root.join("tasks/cycle.json");
+    // Reserve the report check plus the verifier and its model admission: 400_000 + 32_768
+    // tokens, three Attempts, and 60_000 + 1_800_000 + 45_000 ms. The author and its
+    // admission need two more Attempts outside verification; the existing totals otherwise fit.
     std::fs::write(
         &file,
         serde_json::to_vec(&json!({
@@ -892,18 +877,18 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
             "facts": {},
             "limits": {
                 "tokens": 2_000_000,
-                "max_attempts": 3,
+                "max_attempts": 5,
                 "wall_ms": 14_400_000,
-                "verification": {"tokens": 400_000, "attempts": 2, "wall_ms": 1_900_000}
+                "verification": {"tokens": 432_768, "attempts": 3, "wall_ms": 1_905_000}
             }
         }))
         .unwrap(),
     )
     .unwrap();
     let state = root.join("state");
-    let planned = af(
-        &repo,
-        &[
+    let planned = providers
+        .command(&repo)
+        .args([
             "task",
             "plan",
             "--file",
@@ -913,12 +898,15 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
             "--state",
             state.to_str().unwrap(),
             "--json",
-        ],
-    );
+        ])
+        .output()
+        .unwrap();
+    providers.assert_no_dispatch();
     assert_eq!(planned.status.code(), Some(0), "{}", text(&planned));
     let planned: Value = serde_json::from_slice(&planned.stdout).unwrap();
     assert!(planned["plan_id"].as_str().is_some(), "{planned}");
     assert_eq!(planned["attempts"], 0);
+    crate::planning_models::assert_model_bindings(&planned["plan"], &local, &bindings);
     assert_eq!(
         planned["plan"]["authority"]["allowed_effects"],
         json!(["execute-checks", "read-source"])

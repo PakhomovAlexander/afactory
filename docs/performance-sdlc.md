@@ -106,3 +106,11 @@ They do not measure the integration changes, Linux hosted performance, or a cali
 The original final AF Task was incomplete following cache cleanup failure; its semantic
 reviewers did not run. The integration uses ordinary validation and records those limitations
 instead of claiming native AF acceptance.
+
+## Python validation
+
+`validate.yml` runs the laboratory tests and schema parity once on the latest stable Python,
+selected with `actions/setup-python` using `python-version: '3.x'` and `check-latest: true`.
+Tomli/tomllib parity is mandatory. The required `lint` check fails when this job fails, is
+cancelled or is skipped. The other validation jobs use the same Python selection before
+executing Python or Make commands ([ADR-0197](adr/0197-validate-on-one-latest-stable-python.md)).
