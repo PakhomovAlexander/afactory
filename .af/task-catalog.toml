@@ -153,9 +153,9 @@ path = ".af/task-packages/kernel/report-verifier"
 
 [independence]
 command_workers_by_package = true
-distinct_principals = true
+distinct_principals = false
 distinct_providers = false
-distinct_models = false
+distinct_models = true
 
 [providers]
 "warm/implementer" = "claude-main"
