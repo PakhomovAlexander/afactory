@@ -230,7 +230,7 @@ pub struct CompiledTask {
 /// The label of a compiled graph whose slots declare no recovery allowance.
 pub const COMPILED_TASK_SCHEMA_V1: &str = "af.compiled-task/1";
 /// The label of a compiled graph with a slot that declares `recovery_attempts`, the shape an
-/// `af.pipeline/3` slot compiles to (ADR-0197).
+/// `af.pipeline/3` slot compiles to (ADR-0200).
 pub const COMPILED_TASK_SCHEMA_V2: &str = "af.compiled-task/2";
 
 impl CompiledTask {
@@ -261,7 +261,7 @@ impl CompiledTask {
         Ok(())
     }
 
-    /// The recovery allowance of every paid node whose slot declares one (ADR-0197); every
+    /// The recovery allowance of every paid node whose slot declares one (ADR-0200); every
     /// other node has the default of one.
     pub fn recovery_allowances(&self) -> BTreeMap<String, u32> {
         self.allowances
@@ -2303,7 +2303,7 @@ mod recovery_tests {
 
     /// A graph with a slot recovery allowance is `af.compiled-task/2`, every other graph
     /// `af.compiled-task/1`, and a graph labelled otherwise than its shape is refused
-    /// (ADR-0197).
+    /// (ADR-0200).
     #[test]
     fn a_slot_recovery_allowance_labels_the_graph_version_2_and_reaches_its_node() {
         let plain = graph(None);

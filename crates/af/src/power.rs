@@ -1,4 +1,4 @@
-//! A power assertion while af runs Task work (ADR-0197). On macOS `af task run` and
+//! A power assertion while af runs Task work (ADR-0200). On macOS `af task run` and
 //! `af task start --execute` start `/usr/bin/caffeinate -i -s -w <af's pid>`, so the machine does
 //! not idle-sleep (and, on AC power, does not sleep) while a Worker runs; `caffeinate` ends by
 //! itself when af ends, however af ends. It runs in its own process group, so a Ctrl-C meant for

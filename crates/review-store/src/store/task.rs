@@ -356,7 +356,7 @@ pub struct TaskProjection {
     lease_until: u64,
     last_time: u64,
     /// The last time the writer before the current lease recorded anything, when a lost writer
-    /// was last seen alive, and the expiry of its lease (ADR-0197).
+    /// was last seen alive, and the expiry of its lease (ADR-0200).
     previous_writer: (u64, u64),
     resume_phase: Option<TaskPhaseV1>,
     recording_recovery: Option<recording::RecordingRecovery>,

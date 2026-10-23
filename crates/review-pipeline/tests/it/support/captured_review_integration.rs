@@ -271,8 +271,14 @@ pub fn run_integration_handoff() -> tempfile::TempDir {
     run_integration_handoff_with(std::time::Duration::ZERO, 3)
 }
 
+/// The lease a delayed handoff holds. The heartbeat renews every lease once a third of it has
+/// passed (ADR-0200), production's 60 s lease and this one alike; 15 s lets a preparation
+/// outlast the lease without a minute-long test.
+pub const DELAYED_LEASE_MS: u64 = 15_000;
+
 /// The same handoff after a slow successor preparation, in a Campaign capped at
 /// `max_rounds`. When the successor is the final permitted Round, it captures no Integration.
+/// A nonzero `delay` must outlast [`DELAYED_LEASE_MS`], so only renewal keeps the lease.
 pub fn run_integration_handoff_with(
     delay: std::time::Duration,
     max_rounds: u32,
@@ -314,12 +320,16 @@ pub fn run_integration_handoff_observed(
     let lease = if delay.is_zero() {
         lease
     } else {
-        // A 15-second renewable lease on ADR-0128's cadence (the production CLI's before
-        // ADR-0197 lengthened it to 60 s), without changing any Task execution deadline,
-        // Attempt allowance or captured Campaign cap.
+        // A renewable lease of DELAYED_LEASE_MS on the heartbeat's own cadence for it, without
+        // changing any Task execution deadline, Attempt allowance or captured Campaign cap.
         store.release_task_lease(&cas, &lease).unwrap();
         store
-            .take_task_lease(&cas, lease.task_id(), "delayed-preparation", 15_000)
+            .take_task_lease(
+                &cas,
+                lease.task_id(),
+                "delayed-preparation",
+                DELAYED_LEASE_MS,
+            )
             .unwrap()
     };
     let shared = SharedEventStore::new(&mut store);
@@ -332,7 +342,7 @@ pub fn run_integration_handoff_observed(
     )
     .unwrap();
     let authority = CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
-    let timing = review_pipeline::task::lease::LeaseTiming::for_lease(15_000);
+    let timing = review_pipeline::task::lease::LeaseTiming::for_lease(DELAYED_LEASE_MS);
     let runtime = TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
         .unwrap()
         .with_lease_timing(timing);
@@ -500,7 +510,7 @@ pub fn run_integration_handoff_observed(
             },
         )
         .unwrap();
-        assert!(started.elapsed() > std::time::Duration::from_secs(15));
+        assert!(started.elapsed() > std::time::Duration::from_millis(DELAYED_LEASE_MS));
         assert!(
             shared
                 .lock()

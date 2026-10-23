@@ -19,7 +19,7 @@ impl BoundedCli {
         let stdout = directory.join(format!("{label}.stdout"));
         let stderr = directory.join(format!("{label}.stderr"));
         // The fifteen-second lease this fixture waits out; production leases are 60 s
-        // (ADR-0197) and the debug-only setting keeps the wait short.
+        // (ADR-0200) and the debug-only setting keeps the wait short.
         let child = crate::common::af()
             .current_dir(repo)
             .env("HOME", home)
@@ -201,7 +201,7 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
         })
         .max()
         .or((interrupted.charged_tokens > 0).then_some(interrupted.charged_tokens));
-    // Reported usage is charged as reported, never the reservation (ADR-0197); an Attempt
+    // Reported usage is charged as reported, never the reservation (ADR-0200); an Attempt
     // killed before any report settles at zero with its usage unknown (ADR-0143).
     let expected_recovery_charge =
         reported.map_or(0, |observed| observed.max(interrupted.charged_tokens));

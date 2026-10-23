@@ -634,7 +634,7 @@ revoked epoch is quarantined — recorded, charged, and unable to reach the Find
 is *abandoned* when its Writer was lost or its host cancelled it (SIGINT, SIGTERM): it is charged
 the usage its Provider reported, never its reservation, and counts against its node's Recovery
 Allowance instead of its Attempt limits
-([ADR-0197](docs/adr/0197-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
+([ADR-0200](docs/adr/0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
 _Avoid_: treating a fenced Attempt as a free retry; it spent tokens and the budget knows.
 
 **Writer**:

@@ -1017,7 +1017,10 @@ fn a_final_check_that_could_not_run_remains_incomplete_with_its_raw_evidence() {
 
 #[test]
 fn delayed_prospective_review_preparation_renews_lease_and_refreshes_only_the_task_prefix() {
-    fixture::run_integration_handoff_with(std::time::Duration::from_secs(16), 3);
+    fixture::run_integration_handoff_with(
+        std::time::Duration::from_millis(fixture::DELAYED_LEASE_MS + 1_000),
+        3,
+    );
 }
 
 /// A Proposal that touches a protected path is a recorded conflict: no Integration Snapshot is

@@ -181,7 +181,7 @@ pub struct TaskRuntime<'store, 'host> {
     authority: &'host dyn TaskAuthority,
     host: &'host dyn TaskOperatorHost,
     cancellation: Option<&'host AtomicBool>,
-    /// Set by the heartbeat when this writer lost its lease (ADR-0197): the run records nothing
+    /// Set by the heartbeat when this writer lost its lease (ADR-0200): the run records nothing
     /// more, so the successor settles its work as abandoned by a lost writer.
     writer_lost: AtomicBool,
     lease_timing: lease::LeaseTiming,
@@ -1095,7 +1095,7 @@ impl TaskRuntime<'_, '_> {
             if let Some(attempt) = &attempt {
                 // A writer that lost its lease records nothing more: its successor settles this
                 // Attempt as abandoned by a lost writer, from the usage retained above
-                // (ADR-0197).
+                // (ADR-0200).
                 if self.writer_lost() {
                     return Err(format!(
                         "{}: Attempt {} of {} is left for the next writer to settle",
@@ -1110,7 +1110,7 @@ impl TaskRuntime<'_, '_> {
                     },
                     // Its host stopped it (SIGINT or SIGTERM): no answer of the Attempt, so it
                     // is abandoned and counts against the node's recovery allowance, not its
-                    // Attempt limit (ADR-0197).
+                    // Attempt limit (ADR-0200).
                     Err(error) if cancelled => {
                         let diagnostic_id = self.cas.put_json(&serde_json::json!({"schema":"af.task-diagnostic/1", "error":error, "cause":"host_cancelled"})).map_err(|e| e.to_string())?;
                         TaskAttemptResultV1::Abandoned { diagnostic_id }

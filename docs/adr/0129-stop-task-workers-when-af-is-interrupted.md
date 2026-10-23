@@ -1,7 +1,7 @@
 # ADR-0129: Stop Task Workers when af is interrupted
 
 **Status:** accepted (2026-10-01); superseded in part by
-[ADR-0197](0197-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md): an
+[ADR-0200](0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md): an
 interrupted Attempt settles `Abandoned`, not `Failed`, and a resumed run dispatches it again
 within its node's recovery allowance instead of one more Attempt of its slot. Amends
 [ADR-0089](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md): the CLI now installs

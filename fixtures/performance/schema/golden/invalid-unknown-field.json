@@ -13,7 +13,7 @@
   "constants": {
     "artifact_envelope_cap_bytes": 8388608,
     "policy_id": "sha256:c18398d24826d0cbe9c3794f765d453ea7aa6e1bb9c186554b356a0079323940",
-    "task_lease_ms": 15000
+    "task_lease_ms": 60000
   },
   "entries": [
     {

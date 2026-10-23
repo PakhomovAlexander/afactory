@@ -1,4 +1,4 @@
-//! A slot's `recovery_attempts` (ADR-0197) is `af.pipeline/3`'s alone: each version's schema
+//! A slot's `recovery_attempts` (ADR-0200) is `af.pipeline/3`'s alone: each version's schema
 //! and Rust admission accept the pipelines of its own shape and refuse every other.
 
 use review_core::task::pipeline::PipelineDefinitionV1;

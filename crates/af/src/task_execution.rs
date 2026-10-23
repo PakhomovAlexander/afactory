@@ -1815,7 +1815,7 @@ fn release(
         .map_err(|e| e.to_string());
     match outcome {
         // A writer that lost its lease cannot release it either: it says so, and how to
-        // continue (ADR-0197).
+        // continue (ADR-0200).
         Err(error) => Err(recovery::writer_lost(lease.task_id(), &error).unwrap_or(error)),
         Ok(()) => {
             released?;
@@ -2314,7 +2314,7 @@ pub(super) fn run(
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
     // A run that died holds its lease until it expires: wait it out rather than refuse
-    // (ADR-0197).
+    // (ADR-0200).
     let lease = recovery::take_lease(&cas, &mut store, id, &format!("cli-{}", writer_pid()))?;
     let outcome = (|| {
         confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
@@ -2685,7 +2685,7 @@ fn present_with_format(
             println!("Plan {id}");
         }
         // An interrupted run's Task, with nothing working on it: its cause and what continues
-        // it (ADR-0197).
+        // it (ADR-0200).
         if let Some(abandoned) = recovery::abandoned(&state, clock()?) {
             for line in abandoned.lines() {
                 println!("{line}");

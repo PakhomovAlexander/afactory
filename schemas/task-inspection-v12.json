@@ -55,7 +55,7 @@
       "maximum": 9007199254740991
     },
     "cause": {
-      "description": "Present exactly when the Task is abandoned: unfinished, its lease neither held nor renewed, and its last run ended with an Attempt nobody settled or a node whose latest Attempt was abandoned (ADR-0197). `writer_lost`: the run's writer died or lost its lease, and the next writer settles or settled its Attempt; `host_cancelled`: SIGINT or SIGTERM stopped the run. `af task show` prints such a Task as `phase abandoned`; `phase` keeps the phase the Task recorded.",
+      "description": "Present exactly when the Task is abandoned: unfinished, its lease neither held nor renewed, and its last run ended with an Attempt nobody settled or a node whose latest Attempt was abandoned (ADR-0200). `writer_lost`: the run's writer died or lost its lease, and the next writer settles or settled its Attempt; `host_cancelled`: SIGINT or SIGTERM stopped the run. `af task show` prints such a Task as `phase abandoned`; `phase` keeps the phase the Task recorded.",
       "enum": ["writer_lost", "host_cancelled"]
     },
     "next_action": {
@@ -591,7 +591,7 @@
       }
     },
     "graph": {
-      "$comment": "af.compiled-task/2 is the graph of an af.pipeline/3 pipeline, whose slots declare recovery_attempts (ADR-0197); every other graph is af.compiled-task/1.",
+      "$comment": "af.compiled-task/2 is the graph of an af.pipeline/3 pipeline, whose slots declare recovery_attempts (ADR-0200); every other graph is af.compiled-task/1.",
       "oneOf": [
         {
           "$ref": "urn:af:schema:compiled-task:1"

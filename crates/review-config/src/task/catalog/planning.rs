@@ -97,7 +97,7 @@ impl TaskPlanCompiler {
         let pipelines: BTreeMap<_, _> = self.pipelines.iter()
             // `af.planning-request/1` lists `af.pipeline/1` contracts and slots, so a pipeline
             // with a Project Brief port (`af.pipeline/2`, ADR-0160) or a slot recovery allowance
-            // (`af.pipeline/3`, ADR-0197) is not offered for composition.
+            // (`af.pipeline/3`, ADR-0200) is not offered for composition.
             .filter(|(name, pipeline)| !self.preparation_roots.contains(*name) && !self.generated.contains_key(*name) && pipeline.schema == PipelineSchema::V1)
             .map(|(name, pipeline)| (name, serde_json::json!({"version":pipeline.version, "digest":self.packages[name].bytes.digest, "contract":pipeline.contract, "accepts":pipeline.accepts, "slots":pipeline.slots, "max_attempts":pipeline.max_attempts, "max_parallel":pipeline.max_parallel})))
             .collect();

@@ -119,7 +119,7 @@ pub(crate) fn long_running_implementer(repo: &Path, ready: &Path, resume: &Path)
     assert_eq!(original.matches(root).count(), 1);
     // A second implementer Attempt within the slot, pipeline and Task limits. The resumed run
     // does not need it: the cancelled Attempt is abandoned and counts against the node's
-    // recovery allowance instead (ADR-0197), which `task_recovery` proves with one Attempt.
+    // recovery allowance instead (ADR-0200), which `task_recovery` proves with one Attempt.
     std::fs::write(
         &pipeline,
         original
@@ -287,7 +287,7 @@ fn sigint_stops_the_worker_group_records_a_cancelled_attempt_and_the_task_resume
         let attempts = execution.attempt_accounting();
         let started: Vec<_> = attempts.iter().filter(|a| a.started).collect();
         assert_eq!(started.len(), 1, "{attempts:#?}");
-        // Its host cancelled it: abandoned, not failed (ADR-0197).
+        // Its host cancelled it: abandoned, not failed (ADR-0200).
         let Some(TaskAttemptResultV1::Abandoned { diagnostic_id }) = &started[0].result else {
             panic!("the interrupted Attempt is settled, not succeeded: {attempts:#?}");
         };

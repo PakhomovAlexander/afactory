@@ -1,4 +1,4 @@
-# ADR-0197: Recover a lost or interrupted Attempt without charging its reservation
+# ADR-0200: Recover a lost or interrupted Attempt without charging its reservation
 
 **Status:** accepted (2026-10-23). Supersedes in part
 [ADR-0143](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md): the
@@ -76,6 +76,12 @@ The owner's rules: a user whose Mac sleeps or whose client auto-updates must not
    the lease's expiry and the last recorded time, or the writer that now holds the lease.
    `LeaseTiming::for_lease` derives the same cadence for any lease of 6 s or more;
    `for_lease(15_000)` is ADR-0128's.
+   The performance laboratory records production's lease as a product constraint and its probe
+   holds that lease, so its registry follows: `task_lease_ms = 60000` in
+   `fixtures/performance/suite.toml`, `TASK_LEASE_MS` in `perflab/suite.py`, `reference.py` and the
+   probe's `fixtures.rs`, the regenerated golden constants and the re-pinned harness digest. No
+   probe case waits a lease out, so no measured region grows; a registry that kept 15 s would
+   measure a lease production no longer takes.
 2. **A lost writer records nothing more.** Its runtime does not settle the interrupted Attempt,
    and cannot release the lease. The usage the Provider reported is already in the Attempt wall
    sidecar, written before settlement (ADR-0088).

@@ -169,7 +169,7 @@ pub(super) fn resume(
         compiler: &compiler,
         developer: developer.as_ref(),
     };
-    // A run that died holds its lease until it expires: wait it out (ADR-0197).
+    // A run that died holds its lease until it expires: wait it out (ADR-0200).
     let lease = super::recovery::take_lease(
         &cas,
         &mut store,

@@ -24,7 +24,7 @@ Project Brief port (ADR-0160); its parity test also proves that the same pipelin
 `af.pipeline/1` is refused and that a version-2 pipeline without the port is not admitted.
 
 `v3/pipeline-definition.json` is `af.pipeline/3`, the pipeline shape with a slot that declares
-`recovery_attempts` (ADR-0197): the `v1` pipeline with that one key. Its parity test proves that
+`recovery_attempts` (ADR-0200): the `v1` pipeline with that one key. Its parity test proves that
 the same pipeline labelled `af.pipeline/1` or `af.pipeline/2` is refused, that a version-3
 pipeline without the key is not admitted, and that removing the key gives back the `v1` fixture.
 

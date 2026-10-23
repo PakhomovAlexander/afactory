@@ -168,7 +168,7 @@ fn an_attempt_without_a_usage_report_is_charged_zero_with_its_cause() {
             assert_eq!(row.charged_tokens, 0);
             assert_eq!(row.unknown_usage, Some(cause));
             assert!(row.usage_id.is_none());
-            // An interrupted Attempt is abandoned by its host, not failed (ADR-0197).
+            // An interrupted Attempt is abandoned by its host, not failed (ADR-0200).
             if matches!(ending, Ending::Interrupted) {
                 assert!(matches!(
                     row.result,

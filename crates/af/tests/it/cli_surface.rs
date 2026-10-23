@@ -273,7 +273,7 @@ fn task_run_help_describes_the_retry_of_a_failed_gate() {
     assert!(err(&both).contains("cannot be used with"), "{}", err(&both));
 }
 
-/// `af task run` says how an interrupted run resumes and what `--verbose` adds (ADR-0197), in
+/// `af task run` says how an interrupted run resumes and what `--verbose` adds (ADR-0200), in
 /// `--help` and in `af help task run`.
 #[test]
 fn task_run_help_describes_the_resume_of_an_interrupted_run() {

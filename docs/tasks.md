@@ -176,7 +176,7 @@ host_cancelled)` and `next: af task run TASK_ID`, and `af task list` prints `aba
 …`; their `--json` documents carry `cause` and `next_action`. On macOS `af task run` keeps the Mac
 from idle-sleeping while it runs (`caffeinate`), and `af task run --verbose` says so. The whole
 contract is in [interrupted runs](task-execution/interrupted-runs.md)
-([ADR-0197](adr/0197-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
+([ADR-0200](adr/0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
 
 ## Retry a failed gate
 

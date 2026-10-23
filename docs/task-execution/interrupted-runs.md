@@ -4,7 +4,7 @@ A Task run can stop before its Task finishes: the laptop's lid closes on battery
 sends SIGTERM, a VM reboots, the process is killed, or its writer lease is lost. The next
 `af task run TASK_ID` continues it. This page is the recovery contract: what is charged, what
 runs again, how many times, and what `af task run`, `af task show` and `af task list` print. The
-decision is [ADR-0197](../adr/0197-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md).
+decision is [ADR-0200](../adr/0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md).
 
 Terms: a *writer* is the one `af` process that holds a Task's *lease* and may record on it; an
 *Attempt* is one bounded run of a node's Worker or check ([CONTEXT.md](../../CONTEXT.md)

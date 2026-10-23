@@ -2,7 +2,7 @@
 //!
 //! The Task revision, the three captured packages, the compiled plan and every event come from
 //! the product's own compiler and protected Store writers: no SQL, no private test module, no
-//! relaxed validation. Leases are the production 15-second lease, renewed or freshly taken
+//! relaxed validation. Leases are the production 60-second lease, renewed or freshly taken
 //! (never extended) immediately before a timed region by whoever measures.
 
 use std::collections::BTreeMap;
@@ -175,7 +175,7 @@ impl Default for Setup<'_> {
 /// happens once, before the Task's lease is opened, so no capture runs while a setup lease is
 /// live; it serves only proposal and admission and is dropped before `then` runs. Proposing and
 /// admitting validate the plan as well and need a lease; on a loaded host one of those writes
-/// alone can take most of a 15-second lease, so with [`Setup::hand_over`] each gets its own.
+/// alone has taken most of the earlier 15-second lease, so with [`Setup::hand_over`] each gets its own.
 /// The region captures a fresh host and authority through [`Region::capture`]. A write that
 /// runs past its lease still fails, through the Store; nothing is retried, renewed in a region
 /// or extended.

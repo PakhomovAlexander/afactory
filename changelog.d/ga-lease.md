@@ -7,7 +7,7 @@
   advertised resume now runs the node again. The resume's first line says which node runs again,
   or `cannot continue Task X: node N lost its writer 2 times (recovery allowance 1); fix: …`
   with exit 1; a dead run's lease is waited out with a line saying so instead of refused
-  ([ADR-0197](docs/adr/0197-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
+  ([ADR-0200](docs/adr/0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
 - The writer lease is 60 s, renewed by its own heartbeat thread once a third has passed; a writer
   that loses it stops its Workers at once and says `lost its writer lease (writer_lost: …)` with
   the Store's observed time and the lease's expiry. On macOS `af task run` and
@@ -18,3 +18,6 @@
   `abandoned (…); next: …`; their documents are `af/task-inspection@12` and
   `af/task-list-entry@3`, with `cause` and `next_action`. The refusal `Task reservation is not
   dispatchable` names the guard that fired and its numbers (`reservation 40 > remaining 129`).
+- The performance laboratory follows the production lease: its `product_constraints` and golden
+  constants say `task_lease_ms = 60000`, its probe takes the 60 s lease, and the protected
+  harness digest is re-pinned.

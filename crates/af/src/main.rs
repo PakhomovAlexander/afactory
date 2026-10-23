@@ -1251,7 +1251,7 @@ fn main() {
         std::process::exit(1);
     }
     // A Mac does not idle-sleep while Task work runs; `af task run --verbose` says so
-    // (ADR-0197). Held until af exits.
+    // (ADR-0200). Held until af exits.
     let _power = runs_task_work(&command)
         .then(|| {
             power::hold(matches!(
@@ -4370,7 +4370,7 @@ fn provider_doctor(options: &Options) -> Result<i32, String> {
 /// kernel preserved on purpose. One stderr line reports what was removed; stdout and every
 /// `--json` document are untouched.
 /// The sweep's line, if it removed anything, is printed once the command's own work is done:
-/// the first line of `af task run` is the one that says what the run does (ADR-0197).
+/// the first line of `af task run` is the one that says what the run does (ADR-0200).
 fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<Option<String>>> {
     std::thread::Builder::new()
         .name("af-sandbox-sweep".into())

@@ -1753,7 +1753,7 @@ fn print_task_list(
                 "collected {}",
                 review_core::task::collection::collected_time(time)
             ),
-            // An interrupted run's Task names its cause and what continues it (ADR-0197).
+            // An interrupted run's Task names its cause and what continues it (ADR-0200).
             None => match (task["cause"].as_str(), task["next_action"].as_str()) {
                 (Some(cause), Some(next)) => format!("abandoned ({cause}); next: {next}"),
                 _ => task

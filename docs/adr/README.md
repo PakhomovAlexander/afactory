@@ -366,5 +366,5 @@ future readers need.
   them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)
 - [0196 — Rerun a failed test alone, report the gate, and retry a failed gate on the same
   candidate](0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
-- [0197 — Recover a lost or interrupted Attempt without charging its
-  reservation](0197-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)
+- [0200 — Recover a lost or interrupted Attempt without charging its
+  reservation](0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)

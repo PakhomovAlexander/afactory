@@ -1,4 +1,4 @@
-//! Abandoned Attempts (ADR-0197): a lost writer's Attempt and a host-cancelled one leave the
+//! Abandoned Attempts (ADR-0200): a lost writer's Attempt and a host-cancelled one leave the
 //! Attempt limits, are charged only what they were observed to use, and are bounded by the
 //! node's recovery allowance.
 use super::*;

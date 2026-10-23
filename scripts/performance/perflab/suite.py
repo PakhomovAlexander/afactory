@@ -27,7 +27,7 @@ TIERS = ("quick", "nightly", "release")
 CAPABILITY_STATES = ("supported", "not_yet_executable")
 DEFAULT_RELATIVE = Fraction(5, 100)
 DEFAULT_ABSOLUTE_MS = Fraction(1)
-TASK_LEASE_MS = 15000
+TASK_LEASE_MS = 60000
 ARTIFACT_ENVELOPE_CAP_BYTES = 8 * 1024 * 1024
 
 _TIER_KEY = r"^(?:quick|nightly|release)$"

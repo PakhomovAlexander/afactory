@@ -259,7 +259,7 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
     );
 
     // The interrupted Attempt is the one failure, of the implementer, with its recorded charge:
-    // abandoned, since its host cancelled it (ADR-0197).
+    // abandoned, since its host cancelled it (ADR-0200).
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let projection = store
