@@ -1632,8 +1632,9 @@ const NO_WARM_DOCUMENTS: &str = include_str!("../fixtures/task-warm/no-warm-docu
 /// deadline and every identity derived from it, an Attempt ULID, a writer pid, a fixture path —
 /// becomes `<run:N>`, N its first appearance, and the two runs must pair such values one to
 /// one, so every equality between them survives. Host timings are masked first, because two
-/// runs can agree on a duration by chance; so are the host's load and CPUs a check report
-/// records (ADR-0196), which two runs share by chance and two machines need not.
+/// runs can agree on a duration by chance: the inspection's `clock/wall_ms` among them, the
+/// time between the Task's opening and its deadline; so are the host's load and CPUs a check
+/// report records (ADR-0196), which two runs share by chance and two machines need not.
 #[derive(Default)]
 struct RunIndependent {
     first: std::collections::BTreeMap<String, usize>,
@@ -1641,25 +1642,43 @@ struct RunIndependent {
 }
 
 impl RunIndependent {
-    fn pair(&mut self, first: &Value, second: &Value, key: &str) -> Value {
+    fn pair(&mut self, first: &Value, second: &Value, path: &str) -> Value {
+        let key = path.rsplit('/').next().unwrap_or(path);
         match (first, second) {
             (Value::Object(a), Value::Object(b)) => {
                 assert_eq!(
                     a.keys().collect::<Vec<_>>(),
                     b.keys().collect::<Vec<_>>(),
-                    "two runs record the same fields at {key}"
+                    "two runs record the same fields at {path}"
                 );
                 Value::Object(
                     a.iter()
-                        .map(|(name, value)| (name.clone(), self.pair(value, &b[name], name)))
+                        .map(|(name, value)| {
+                            let path = format!("{path}/{name}");
+                            (name.clone(), self.pair(value, &b[name], &path))
+                        })
                         .collect(),
                 )
             }
             (Value::Array(a), Value::Array(b)) => {
-                assert_eq!(a.len(), b.len(), "two runs record as many entries at {key}");
-                Value::Array(a.iter().zip(b).map(|(a, b)| self.pair(a, b, key)).collect())
+                assert_eq!(
+                    a.len(),
+                    b.len(),
+                    "two runs record as many entries at {path}"
+                );
+                Value::Array(
+                    a.iter()
+                        .zip(b)
+                        .map(|(a, b)| self.pair(a, b, path))
+                        .collect(),
+                )
             }
-            _ if key.ends_with("_unix_ms") || key == "elapsed_ms" => Value::String("<ms>".into()),
+            _ if key.ends_with("_unix_ms")
+                || key == "elapsed_ms"
+                || path.ends_with("/clock/wall_ms") =>
+            {
+                Value::String("<ms>".into())
+            }
             _ if key.starts_with("load_1m_") || key.starts_with("cpus_") => {
                 Value::String("<host>".into())
             }
@@ -1668,7 +1687,7 @@ impl RunIndependent {
                 let next = self.first.len();
                 let a = *self.first.entry(first.to_string()).or_insert(next);
                 let b = *self.second.entry(second.to_string()).or_insert(next);
-                assert_eq!(a, b, "run-dependent values pair one to one at {key}");
+                assert_eq!(a, b, "run-dependent values pair one to one at {path}");
                 Value::String(format!("<run:{a}>"))
             }
         }
