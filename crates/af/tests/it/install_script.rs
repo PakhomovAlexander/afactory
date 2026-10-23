@@ -210,3 +210,44 @@ fn install_sh_refuses_unsigned_pins_curl_to_https_and_verifies_again_on_a_rerun(
         "minisign was not asked"
     );
 }
+
+/// Finding I1: `install.sh` verifies a release over the anonymous route alone. With an empty
+/// HOME and no `gh` on PATH, it lists, downloads and verifies through `curl` and installs.
+#[test]
+fn install_sh_needs_no_gh_when_curl_reaches_the_release() {
+    let Some(host) = install_host() else {
+        return;
+    };
+    let installer = Installer::new();
+    let sandbox = &installer.sandbox;
+    sandbox.publish_for("0.8.3", host);
+    write(
+        &sandbox.release_dir("0.8.3").join("SHA256SUMS.minisig"),
+        "signature\n",
+    );
+    for directory in std::env::split_paths(&installer.with_minisign) {
+        assert!(!directory.join("gh").exists(), "{}", directory.display());
+    }
+    assert!(
+        std::fs::read_dir(sandbox.path("home"))
+            .unwrap()
+            .next()
+            .is_none(),
+        "an empty HOME"
+    );
+    let installed = installer.run(&installer.with_minisign, &[]);
+    assert!(installed.status.success(), "{}", err(&installed));
+    assert!(
+        out(&installed).contains("af 0.8.3 installed at")
+            && out(&installed).contains("minisign verified"),
+        "{}",
+        out(&installed)
+    );
+    assert!(!err(&installed).contains("gh"), "{}", err(&installed));
+    let calls = std::fs::read_to_string(sandbox.path("curl.log")).unwrap();
+    assert!(
+        calls.contains("https://api.github.com/repos/owner/repo/releases?per_page=100")
+            && calls.contains("releases/download/v0.8.3/SHA256SUMS.minisig"),
+        "{calls}"
+    );
+}

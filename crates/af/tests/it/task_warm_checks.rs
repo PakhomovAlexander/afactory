@@ -239,6 +239,7 @@ fn af_with(fixture: &Fixture, extra: &[(&str, &Path)], args: &[&str]) -> (i32, S
         .env_remove("CARGO_HOME")
         .env_remove("RUSTUP_HOME")
         .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE")
         .envs(extra.iter().copied())
         .args(args)
         .output()
@@ -1177,6 +1178,35 @@ fn both_kinds_are_warm_on_the_second_run_from_the_installed_toolchain() {
     assert_eq!(kinds(group)[0], ("cargo_target".into(), true, 0));
 }
 
+/// The implementer of `fixture` replaced by one that also removes the kernel's rustup home, as
+/// a machine whose rustup home went away while a Task ran: the toolchain resolved when the plan
+/// was admitted (ADR-0196) and no longer does when the check probes it.
+fn removing_the_rustup_home_while_it_runs(fixture: &Fixture) {
+    let implementer = fixture.repo.join(".af/task-packages/fixture/implementer");
+    std::fs::write(
+        implementer.join("worker.py"),
+        format!(
+            "import json,os,sys\njson.load(sys.stdin)\n\
+             open('pagination.py','w').write('def paginate(items, offset=0, limit=2):\\n    return items[offset:offset+limit]\\n')\n\
+             os.rmdir({:?})\n\
+             print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'report':[{{'summary':'Implemented pagination'}}]}}}}))\n",
+            fixture.home.join(".rustup").display().to_string()
+        ),
+    )
+    .unwrap();
+    let catalog_path = fixture.repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    catalog["packages"]["fixture/implementer"]["digest"] =
+        toml::Value::String(package_digest("fixture/implementer", &implementer).unwrap());
+    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    git(&fixture.repo, &["add", "-A"]);
+    git(
+        &fixture.repo,
+        &["commit", "-qm", "the rustup home goes away"],
+    );
+}
+
 #[test]
 fn without_a_rustup_home_the_probe_fails_and_the_check_runs_cold_with_its_reason() {
     let fixture = fixture(code_policy(
@@ -1185,8 +1215,11 @@ fn without_a_rustup_home_the_probe_fails_and_the_check_runs_cold_with_its_reason
         false,
         Some("build_cache = [\"cargo_target\"]"),
     ));
-    std::fs::remove_dir(fixture.home.join(".rustup")).unwrap();
+    // Admission resolves the toolchain while the rustup home is there (ADR-0196); the check
+    // runs after the implementer removed it.
+    removing_the_rustup_home_while_it_runs(&fixture);
     let outcome = start(&fixture, "no-rustup", 0);
+    assert!(!fixture.home.join(".rustup").exists());
     let groups = named_groups(&outcome);
     assert_eq!(groups.len(), 1);
     assert_eq!(
@@ -1201,6 +1234,109 @@ fn without_a_rustup_home_the_probe_fails_and_the_check_runs_cold_with_its_reason
         shown.contains("cargo_target cold toolchain_unresolved"),
         "{shown}"
     );
+}
+
+/// A check whose toolchain does not resolve on this machine is refused before the plan is
+/// admitted (ADR-0196): before the implementer runs, with the policy file and the field in the
+/// message, and nothing charged. Here once with no rustup home at all, once with a Snapshot
+/// that pins a toolchain the rustup home does not hold.
+#[test]
+fn a_check_whose_toolchain_does_not_resolve_is_refused_before_the_implementer_runs() {
+    for (case, pinned) in [
+        ("no-rustup-home", "1.88.0"),
+        ("unavailable-toolchain", "9.9.9"),
+    ] {
+        let fixture = fixture(code_policy(
+            BUILD,
+            60_000,
+            false,
+            Some("build_cache = [\"cargo_target\"]"),
+        ));
+        if pinned == "1.88.0" {
+            std::fs::remove_dir(fixture.home.join(".rustup")).unwrap();
+        } else {
+            commit(
+                &fixture,
+                "rust-toolchain.toml",
+                &format!("[toolchain]\nchannel = \"{pinned}\"\n"),
+            );
+            // Like a rustup proxy whose home lacks the pinned channel, with auto-install off.
+            let rustc = fixture.bin.join("rustc");
+            let stub = std::fs::read_to_string(&rustc).unwrap();
+            std::fs::write(
+                &rustc,
+                stub.replacen(
+                    "#!/bin/sh\n",
+                    &format!(
+                        "#!/bin/sh\nif grep -q '{pinned}' rust-toolchain.toml 2>/dev/null; then \
+                         echo \"error: toolchain '{pinned}' is not installed\" >&2; exit 1; fi\n"
+                    ),
+                    1,
+                ),
+            )
+            .unwrap();
+        }
+        let file = fixture.root.join("tasks").join(format!("{case}.json"));
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "af.task-file/1", "task_id": case, "kind": "implement",
+                "goal": "Implement this Jira ticket: offset/limit pagination",
+                "pipeline": {"name": "fixture/implementation", "fallback": "refuse"},
+                "strategy": "small", "facts": {},
+                "limits": {"tokens": 1000, "max_attempts": 3, "wall_ms": 600_000,
+                    "verification": {"tokens": 200, "attempts": 2, "wall_ms": 300_000}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (code, stdout, stderr) = af(
+            &fixture,
+            &[
+                "task",
+                "start",
+                "--execute",
+                "--file",
+                file.to_str().unwrap(),
+                "--state",
+                fixture.state.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(code, 1, "{case}: {stderr}\n{stdout}");
+        let flat = stderr.split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            ".af/code-policy.toml: [warm] build_cache = [\"cargo_target\"] makes check \
+             `pagination` resolve its Rust toolchain before it runs",
+            &format!(
+                "the toolchain `{pinned}` its Snapshot's rust-toolchain.toml pins does not resolve on this machine (rustc -vV exited with"
+            ),
+            &format!("`rustup toolchain install {pinned}`"),
+            "nothing ran and nothing was charged",
+        ] {
+            assert!(
+                flat.contains(needle),
+                "{case}: `{needle}` missing:\n{stderr}"
+            );
+        }
+        let (code, shown, stderr) = af(
+            &fixture,
+            &[
+                "task",
+                "show",
+                case,
+                "--state",
+                fixture.state.to_str().unwrap(),
+                "--json",
+            ],
+        );
+        assert_eq!(code, 0, "{stderr}");
+        let shown: Value = serde_json::from_str(shown.trim()).unwrap();
+        assert_eq!(shown["attempts"], 0, "{case}: no Attempt ran: {shown}");
+        assert!(
+            shown.get("result").is_none_or(Value::is_null),
+            "{case}: {shown}"
+        );
+    }
 }
 
 #[test]
@@ -1902,6 +2038,42 @@ fn a_native_toolchain_check_keeps_one_warm_key_across_tasks() {
     assert_ne!(third[0]["toolchain_id"], cold[0]["toolchain_id"]);
     assert_eq!(third[0]["bytes_available"], 0, "a new key starts cold");
     assert_eq!(warm_directories(&fixture).len(), 2);
+}
+
+/// Finding C1: `[task] rust_toolchain_policy` in the user's configuration selects the native
+/// toolchain mapping with no variable exported: the gate resolves the mapped toolchain, and the
+/// variable naming the same mapping selects the same warm key, so its check is warm.
+#[test]
+fn a_configured_toolchain_policy_resolves_the_native_toolchain_without_the_variable() {
+    let fixture = fixture(format!(
+        "{}{NATIVE}",
+        code_policy(
+            BUILD,
+            60_000,
+            false,
+            Some("build_cache = [\"cargo_target\"]")
+        )
+    ));
+    let mapping = native_toolchain(&fixture, "first");
+    let config = fixture.home.join(".config/af/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "[task]\nrust_toolchain_policy = \"{}\"\n",
+            mapping.display()
+        ),
+    )
+    .unwrap();
+    let configured = start(&fixture, "configured-one", 0);
+    let cold = observations(&configured);
+    assert!(cold[0]["toolchain_id"].is_string(), "{cold:?}");
+    assert_eq!(cold[0]["bytes_available"], 0);
+    let extra = [("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE", mapping.as_path())];
+    let variable = start_with(&fixture, &extra, "variable-two", 0);
+    let warm = observations(&variable);
+    assert_eq!(warm[0]["toolchain_id"], cold[0]["toolchain_id"], "one key");
+    assert_eq!(warm[0]["bytes_available"], 4096, "the second check is warm");
 }
 
 /// A check that reports the four directories af gave it, and whether each was empty and

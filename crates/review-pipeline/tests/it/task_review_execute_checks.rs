@@ -215,6 +215,7 @@ fn run(case: &'static str) -> Outcome {
     };
     let result_type = review_core::contract::REVIEWER_RESULT_V2;
     let signature = OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 {
             inputs: BTreeMap::from([
                 (
@@ -557,6 +558,7 @@ fn run(case: &'static str) -> Outcome {
 
 fn bare_signature(effects: &str, roles: &str) -> OperatorSignature {
     OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 {
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),

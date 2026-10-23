@@ -27,7 +27,7 @@ keep_versions = 3
 source = "PakhomovAlexander/afactory"
 
 [storage]
-max_bytes = "20GiB"
+max_bytes = "auto"
 min_free_bytes = "10GiB"
 auto_gc = false
 keep_days = 14
@@ -204,12 +204,39 @@ impl Config {
     }
 }
 
+/// `[storage] max_bytes = "auto"`, the default: [`AUTO_MAX_BYTES`], or on a host whose cache
+/// volume has more than [`ROOMY_FREE_BYTES`] free, [`ROOMY_MAX_BYTES`].
+pub(crate) const AUTO_MAX_BYTES: u64 = 20 << 30;
+/// Room enough for one 16 GiB warm build key with half its size to spare, plus 16 GiB of Task
+/// records, review campaigns and installed versions: a budget smaller than its own warm key
+/// made every gate run cold (finding K18).
+pub(crate) const ROOMY_MAX_BYTES: u64 = 40 << 30;
+pub(crate) const ROOMY_FREE_BYTES: u64 = 100 << 30;
+
+/// What `max_bytes = "auto"` is on a host whose cache volume has `free` bytes free.
+pub(crate) fn auto_max_bytes(free: Option<u64>) -> u64 {
+    if free.is_some_and(|free| free > ROOMY_FREE_BYTES) {
+        ROOMY_MAX_BYTES
+    } else {
+        AUTO_MAX_BYTES
+    }
+}
+
+/// Where `[storage] max_bytes` came from: a byte count a layer set, or `"auto"` and the free
+/// bytes it was chosen by (`None` when they could not be measured).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaxBytesSource {
+    Set,
+    Auto { free: Option<u64> },
+}
+
 /// The `[storage]` table, typed (ADR-0144). Every field has a built-in default, and only
 /// machine layers set it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoragePolicy {
     /// The budget over every byte af keeps between runs.
     pub(crate) max_bytes: u64,
+    pub(crate) max_bytes_source: MaxBytesSource,
     /// The free-disk floor below which a check or a Worker Attempt is refused.
     pub(crate) min_free_bytes: u64,
     /// Age-based collection after every `af task run` and `af review run`. Off by default: a
@@ -228,6 +255,12 @@ pub(crate) struct StoragePolicy {
     pub(crate) keep_worker_transcripts: bool,
     /// Leave remote-check gate pull requests and branches open when a Task finishes.
     pub(crate) keep_gate_pull_requests: bool,
+    /// Where sandboxes and check runtime directories are made instead of the temporary
+    /// directory (`TMPDIR`), and so where the free-disk floor measures them.
+    pub(crate) sandbox_root: Option<PathBuf>,
+    /// Where warm build keys live instead of `$XDG_CACHE_HOME/af/task-build-cache`, and so where
+    /// the free-disk floor measures them.
+    pub(crate) build_cache_root: Option<PathBuf>,
 }
 
 impl Config {
@@ -267,8 +300,33 @@ impl Config {
                 .and_then(|value| u64::try_from(value).ok())
                 .ok_or_else(|| format!("[storage] {key} must be a non-negative integer"))
         };
+        let path_of = |key: &str| -> Result<Option<PathBuf>, String> {
+            match table.get(key) {
+                None => Ok(None),
+                Some(Value::String(text)) => expand_path(text)
+                    .map(Some)
+                    .map_err(|why| format!("[storage] {key} = \"{text}\" {why}")),
+                Some(_) => Err(format!(
+                    "[storage] {key} must be a path: absolute, or starting with ~/"
+                )),
+            }
+        };
+        let build_cache_root = path_of("build_cache_root")?;
+        let (max_bytes, max_bytes_source) = match get("max_bytes")? {
+            Value::String(text) if text.trim() == "auto" => {
+                // Measured where the warm keys live: the budget has to hold one of them.
+                let volume = match &build_cache_root {
+                    Some(root) => root.clone(),
+                    None => cache_home()?,
+                };
+                let free = crate::storage::measure_volume(&volume).free.ok();
+                (auto_max_bytes(free), MaxBytesSource::Auto { free })
+            }
+            _ => (bytes_of("max_bytes")?, MaxBytesSource::Set),
+        };
         Ok(StoragePolicy {
-            max_bytes: bytes_of("max_bytes")?,
+            max_bytes,
+            max_bytes_source,
             min_free_bytes: bytes_of("min_free_bytes")?,
             auto_gc: bool_of("auto_gc")?,
             keep_days: count_of("keep_days")?,
@@ -280,7 +338,63 @@ impl Config {
                 .map_err(|_| "[storage] keep_surveys is too large".to_string())?,
             keep_worker_transcripts: bool_of("keep_worker_transcripts")?,
             keep_gate_pull_requests: bool_of("keep_gate_pull_requests")?,
+            sandbox_root: path_of("sandbox_root")?,
+            build_cache_root,
         })
+    }
+
+    /// `[task] rust_toolchain_policy`: the operator's Rust toolchain mapping file
+    /// (docs/task-execution/rust-toolchain.md), from the user's configuration, a project's
+    /// `.af/af.toml` or the environment, `AF_TASK_RUST_TOOLCHAIN_POLICY_FILE` above every
+    /// layer. `None` when nothing sets it.
+    pub(crate) fn rust_toolchain_policy(&self) -> Result<Option<PathBuf>, String> {
+        match self
+            .effective
+            .get("task")
+            .and_then(Value::as_table)
+            .and_then(|table| table.get("rust_toolchain_policy"))
+        {
+            None => Ok(None),
+            Some(Value::String(text)) => expand_path(text).map(Some).map_err(|why| {
+                format!(
+                    "[task] rust_toolchain_policy = \"{text}\" ({}) {why}",
+                    self.origin_text("task.rust_toolchain_policy")
+                )
+            }),
+            Some(_) => Err(format!(
+                "[task] rust_toolchain_policy ({}) must be a path: absolute, or starting with ~/",
+                self.origin_text("task.rust_toolchain_policy")
+            )),
+        }
+    }
+
+    /// Where the value of the dotted `key` came from, as `af config show --origin` says it.
+    pub(crate) fn origin_text(&self, key: &str) -> String {
+        self.origins
+            .get(key)
+            .map(|origin| match (&origin.path, origin.line) {
+                (Some(path), Some(line)) => format!("{} {}:{line}", origin.layer, path.display()),
+                (Some(path), None) => format!("{} {}", origin.layer, path.display()),
+                (None, _) => origin.layer.to_string(),
+            })
+            .unwrap_or_else(|| "?".into())
+    }
+}
+
+/// The environment variable that names the Rust toolchain mapping above every layer; it is
+/// the configuration's `task.rust_toolchain_policy`, its origin `environment`.
+pub(crate) const RUST_TOOLCHAIN_POLICY_ENV: &str = "AF_TASK_RUST_TOOLCHAIN_POLICY_FILE";
+
+/// A path a setting names: absolute, or `~/…` below `HOME`. Anything else says why not.
+pub(crate) fn expand_path(text: &str) -> Result<PathBuf, String> {
+    let path = match text.strip_prefix("~/") {
+        Some(rest) => home()?.join(rest),
+        None => PathBuf::from(text),
+    };
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err("is not a path af can use: write it absolute, or starting with ~/".into())
     }
 }
 
@@ -623,6 +737,27 @@ pub(crate) fn load_rooted(
         );
         merge(&mut effective, Value::Table(overlay));
     }
+    // The variable that named the Rust toolchain mapping before the configuration did stays its
+    // override, above every layer, and `af config show --origin` names it.
+    if let Some((name, raw)) = roots
+        .environment
+        .iter()
+        .find(|(name, value)| name == RUST_TOOLCHAIN_POLICY_ENV && !value.is_empty())
+    {
+        let mut inner = toml::map::Map::new();
+        inner.insert("rust_toolchain_policy".into(), Value::String(raw.clone()));
+        let mut overlay = toml::map::Map::new();
+        overlay.insert("task".into(), Value::Table(inner));
+        origins.insert(
+            "task.rust_toolchain_policy".into(),
+            Origin {
+                layer: "environment",
+                path: Some(PathBuf::from(name)),
+                line: None,
+            },
+        );
+        merge(&mut effective, Value::Table(overlay));
+    }
 
     Ok(Config {
         machine_scope,
@@ -789,17 +924,7 @@ pub(crate) fn show(repo: Option<&Path>, origin: bool, json: bool) -> Result<(), 
         .unwrap_or(0);
     for (key, rendered) in leaves {
         if origin {
-            let note = config
-                .origins
-                .get(&key)
-                .map(|origin| match (&origin.path, origin.line) {
-                    (Some(path), Some(line)) => {
-                        format!("{} {}:{line}", origin.layer, path.display())
-                    }
-                    (Some(path), None) => format!("{} {}", origin.layer, path.display()),
-                    (None, _) => origin.layer.to_string(),
-                })
-                .unwrap_or_else(|| "?".into());
+            let note = config.origin_text(&key);
             let _ = writeln!(out, "{:<width$}   # {note}", format!("{key} = {rendered}"));
         } else {
             let _ = writeln!(out, "{key} = {rendered}");
@@ -1009,10 +1134,15 @@ mod tests {
             effective,
             origins: BTreeMap::new(),
         };
+        let policy = config.storage_policy().unwrap();
+        let MaxBytesSource::Auto { free } = policy.max_bytes_source else {
+            panic!("the built-in budget is auto: {policy:?}");
+        };
         assert_eq!(
-            config.storage_policy().unwrap(),
+            policy,
             StoragePolicy {
-                max_bytes: 20 << 30,
+                max_bytes: auto_max_bytes(free),
+                max_bytes_source: MaxBytesSource::Auto { free },
                 min_free_bytes: 10 << 30,
                 auto_gc: false,
                 keep_days: 14,
@@ -1021,7 +1151,150 @@ mod tests {
                 keep_surveys: 50,
                 keep_worker_transcripts: false,
                 keep_gate_pull_requests: false,
+                sandbox_root: None,
+                build_cache_root: None,
             }
+        );
+    }
+
+    /// The default budget fits one warm key on a host with room for it (finding K18): 20 GiB,
+    /// or 40 GiB when the cache volume has more than 100 GiB free.
+    #[test]
+    fn the_auto_budget_grows_on_a_roomy_host() {
+        assert_eq!(auto_max_bytes(None), 20 << 30);
+        assert_eq!(auto_max_bytes(Some(100 << 30)), 20 << 30);
+        assert_eq!(auto_max_bytes(Some((100 << 30) + 1)), 40 << 30);
+        assert_eq!(auto_max_bytes(Some(1 << 40)), 40 << 30);
+    }
+
+    /// `[storage] sandbox_root` and `build_cache_root` parse as paths, `~/` below HOME, and a
+    /// relative one is refused naming its key (finding T18).
+    #[test]
+    fn storage_roots_parse_as_absolute_paths() {
+        let parse = |text: &str| {
+            let effective: Value = toml::from_str(&format!("{BUILT_IN}\n")).unwrap();
+            let mut effective = effective;
+            merge(&mut effective, toml::from_str(text).unwrap());
+            Config {
+                machine_scope: true,
+                ignored: Vec::new(),
+                files: Vec::new(),
+                toplevel: None,
+                effective,
+                origins: BTreeMap::new(),
+            }
+            .storage_policy()
+        };
+        let policy = parse(
+            "[storage]\nmax_bytes = \"30GiB\"\nsandbox_root = \"/srv/af-sandboxes\"\n\
+             build_cache_root = \"/srv/af-cache\"\n",
+        )
+        .unwrap();
+        assert_eq!(policy.max_bytes, 30 << 30);
+        assert_eq!(policy.max_bytes_source, MaxBytesSource::Set);
+        assert_eq!(
+            policy.sandbox_root.as_deref(),
+            Some(Path::new("/srv/af-sandboxes"))
+        );
+        assert_eq!(
+            policy.build_cache_root.as_deref(),
+            Some(Path::new("/srv/af-cache"))
+        );
+        let refused = parse("[storage]\nsandbox_root = \"relative/dir\"\n").unwrap_err();
+        assert!(
+            refused.starts_with("[storage] sandbox_root = \"relative/dir\"")
+                && refused.contains("absolute"),
+            "{refused}"
+        );
+        let refused = parse("[storage]\nbuild_cache_root = 3\n").unwrap_err();
+        assert!(
+            refused.contains("[storage] build_cache_root must be a path"),
+            "{refused}"
+        );
+    }
+
+    /// `[task] rust_toolchain_policy`: the environment variable above every layer, then the local,
+    /// project, directory, user and system layers, each origin as `af config show --origin`
+    /// names it (finding C1).
+    #[test]
+    fn the_rust_toolchain_policy_comes_from_the_ladder_and_the_variable_overrides_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(root.join("user")).unwrap();
+        let roots = |environment: Vec<(String, String)>| MachineRoots {
+            system: root.join("etc"),
+            user: root.join("user"),
+            environment,
+        };
+        let load = |environment| load_rooted(Some(&repo), false, &roots(environment)).unwrap();
+        assert_eq!(load(Vec::new()).rust_toolchain_policy().unwrap(), None);
+
+        std::fs::write(
+            root.join("user/config.toml"),
+            "[task]\nrust_toolchain_policy = \"/operator/user.toml\"\n",
+        )
+        .unwrap();
+        let user = load(Vec::new());
+        assert_eq!(
+            user.rust_toolchain_policy().unwrap().as_deref(),
+            Some(Path::new("/operator/user.toml"))
+        );
+        assert_eq!(user.origins["task.rust_toolchain_policy"].layer, "user");
+
+        std::fs::create_dir_all(repo.join(".af")).unwrap();
+        std::fs::write(
+            repo.join(".af/af.toml"),
+            "[task]\nrust_toolchain_policy = \"/operator/project.toml\"\n",
+        )
+        .unwrap();
+        let project = load(Vec::new());
+        assert_eq!(
+            project.rust_toolchain_policy().unwrap().as_deref(),
+            Some(Path::new("/operator/project.toml"))
+        );
+        assert_eq!(
+            project.origin_text("task.rust_toolchain_policy"),
+            format!("project {}:2", repo.join(".af/af.toml").display())
+        );
+        // The machine scope never reads the project layer.
+        let machine = load_rooted(Some(&repo), true, &roots(Vec::new())).unwrap();
+        assert_eq!(
+            machine.rust_toolchain_policy().unwrap().as_deref(),
+            Some(Path::new("/operator/user.toml"))
+        );
+
+        let variable = load(vec![(
+            RUST_TOOLCHAIN_POLICY_ENV.to_string(),
+            "/operator/variable.toml".to_string(),
+        )]);
+        assert_eq!(
+            variable.rust_toolchain_policy().unwrap().as_deref(),
+            Some(Path::new("/operator/variable.toml"))
+        );
+        assert_eq!(
+            variable.origin_text("task.rust_toolchain_policy"),
+            format!("environment {RUST_TOOLCHAIN_POLICY_ENV}")
+        );
+        // An empty variable sets nothing.
+        let empty = load(vec![(RUST_TOOLCHAIN_POLICY_ENV.to_string(), String::new())]);
+        assert_eq!(
+            empty.rust_toolchain_policy().unwrap().as_deref(),
+            Some(Path::new("/operator/project.toml"))
+        );
+
+        std::fs::write(
+            repo.join(".af/af.toml"),
+            "[task]\nrust_toolchain_policy = \"mapping.toml\"\n",
+        )
+        .unwrap();
+        let refused = load(Vec::new()).rust_toolchain_policy().unwrap_err();
+        assert!(
+            refused.contains("[task] rust_toolchain_policy = \"mapping.toml\" (project ")
+                && refused.contains("absolute"),
+            "{refused}"
         );
     }
 
@@ -1057,10 +1330,10 @@ mod tests {
         };
         let config = load_rooted(Some(&repo), false, &roots).unwrap();
         let policy = config.storage_policy().unwrap();
-        assert_eq!(
-            policy.max_bytes,
-            20 << 30,
-            "the repository cannot shrink the budget"
+        assert!(
+            matches!(policy.max_bytes_source, MaxBytesSource::Auto { .. })
+                && policy.max_bytes >= 20 << 30,
+            "the repository cannot shrink the budget: {policy:?}"
         );
         assert!(!policy.auto_gc, "the repository cannot turn collection on");
         assert_eq!(policy.keep_days, 3, "the environment is a machine layer");

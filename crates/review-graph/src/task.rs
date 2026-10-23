@@ -49,6 +49,12 @@ pub struct OperatorSignature {
         deserialize_with = "review_core::task::present_option"
     )]
     pub outcome_port: Option<String>,
+    /// Inputs a Pipeline may leave unbound: the advisory reviewers of the captured review
+    /// policy. A review reduce must still bind every other input, so a missing runtime result
+    /// stays typed incomplete evidence; an advisory reviewer no node binds is simply not part of
+    /// that Pipeline's review.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub unbound_allowed: BTreeSet<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -235,6 +241,31 @@ impl CompiledTask {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Every node that consumes `node`'s outputs, directly or through others, by an input or
+    /// a condition: what runs again after `node` does. `node` itself is not in it.
+    pub fn downstream_of(&self, node: &str) -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        let mut pending = vec![node.to_owned()];
+        while let Some(current) = pending.pop() {
+            for (id, candidate) in &self.nodes {
+                if found.contains(id) || id == node {
+                    continue;
+                }
+                let consumes = candidate
+                    .inputs
+                    .values()
+                    .map(|address| &address.node)
+                    .chain(candidate.conditions.iter().map(|c| &c.source.node))
+                    .any(|producer| *producer == current);
+                if consumes {
+                    found.insert(id.clone());
+                    pending.push(id.clone());
+                }
+            }
+        }
+        found
     }
 
     /// Review requires a complete predecessor barrier, including optional input producers.
@@ -1689,7 +1720,10 @@ impl Compiler<'_> {
                             );
                         }
                         if matches!(operator, TaskOperatorV1::ReviewReduce {})
-                            && !bound.keys().eq(signature.contract.inputs.keys())
+                            && signature.contract.inputs.keys().any(|input| {
+                                !bound.contains_key(input)
+                                    && !signature.unbound_allowed.contains(input)
+                            })
                         {
                             return Err(format!(
                                 "{qualified} must bind every configured reviewer and check; missing runtime results remain typed incomplete evidence"
@@ -2073,5 +2107,79 @@ impl CompiledTask {
             }
         }
         Ok(allowances)
+    }
+}
+
+#[cfg(test)]
+mod downstream_tests {
+    use super::*;
+
+    /// `root → check → evaluate → accept`, with `report` beside `check` and `audit` gated by
+    /// `check`'s outcome alone: everything that consumes `check`, through an input or a
+    /// condition, directly or not, runs after it; `report` does not.
+    #[test]
+    fn downstream_follows_inputs_and_conditions_transitively() {
+        let node = |inputs: &[(&str, &str)], conditions: &[&str]| CompiledNode {
+            operator: CompiledOperator::Select,
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+            },
+            inputs: inputs
+                .iter()
+                .map(|(port, from)| {
+                    (
+                        (*port).to_owned(),
+                        Address {
+                            node: (*from).to_owned(),
+                            port: "output".into(),
+                        },
+                    )
+                })
+                .collect(),
+            conditions: conditions
+                .iter()
+                .map(|from| CompiledCondition {
+                    source: Address {
+                        node: (*from).to_owned(),
+                        port: "result".into(),
+                    },
+                    outcome: ReceiptOutcomeV1::Passed,
+                })
+                .collect(),
+        };
+        let graph = CompiledTask {
+            schema: "af.compiled-task/1".into(),
+            nodes: BTreeMap::from([
+                ("root".into(), node(&[], &[])),
+                ("check".into(), node(&[("source", "root")], &[])),
+                ("report".into(), node(&[("source", "root")], &[])),
+                ("evaluate".into(), node(&[("checks", "check")], &[])),
+                ("accept".into(), node(&[("evaluation", "evaluate")], &[])),
+                ("audit".into(), node(&[("source", "report")], &["check"])),
+            ]),
+            order: Vec::new(),
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            coverage: BTreeMap::new(),
+            calls: BTreeMap::new(),
+            slots: BTreeMap::new(),
+            replaced_workers: BTreeMap::new(),
+            max_parallel: 1,
+            allowances: BTreeMap::new(),
+            owned_children: BTreeMap::new(),
+            experimental_slots: BTreeMap::new(),
+            review_integration: None,
+            token_scopes: BTreeMap::new(),
+        };
+        assert_eq!(
+            graph.downstream_of("check"),
+            ["accept", "audit", "evaluate"]
+                .map(str::to_owned)
+                .into_iter()
+                .collect()
+        );
+        assert!(graph.downstream_of("accept").is_empty());
+        assert_eq!(graph.downstream_of("root").len(), 5);
     }
 }

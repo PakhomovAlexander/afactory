@@ -5,6 +5,18 @@ Thanks for helping. This file is the short version of how changes land; `AGENTS.
 holds every design decision. Read the ADR that covers the area you are touching before you
 change it.
 
+## First: check this machine
+
+```sh
+make prereqs
+```
+
+It prints one line per prerequisite, `ok` with what it found or `missing` with the command that
+installs it: python3, git 2.30 or later, the toolchain `rust-toolchain.toml` pins (through
+rustup), cargo-nextest, a C compiler (`cc`), npx (for `markdownlint-cli2`), minisign, and 30 GiB
+free on the volume `target/` builds on. It installs and changes nothing,
+and exits 0 when everything is present, 1 otherwise (`scripts/prereqs.py`, issue #161).
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain (`1.88.0`, with `clippy` and `rustfmt`); `rustup`
@@ -49,6 +61,78 @@ make review-kernel-container-probes
 
 They need a usable Docker daemon and stay outside `make check` because a missing daemon must
 fail loudly there, never skip.
+
+## Flaky tests and the isolation rerun
+
+A gate run reruns the tests that failed in its parallel run before it fails
+([ADR-0196](docs/adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+each failed test runs again on its own, one at a time, with no other test alive. A test that
+passes alone does not fail the step; one that fails both times does, with nextest's exit status.
+More than 25 failed tests are not rerun, and reruns stop after 15 minutes; either way the step
+fails with the whole list. The step's output ends with what happened:
+
+```text
+isolation rerun: 2 failed in the parallel run; each runs again alone
+flaky: af::it task_heavy::heavy_review_cannot_erase_stale_claims
+failed twice: af::it cli_surface::help_topics_and_command_paths
+```
+
+`flaky:` names the tests that failed beside other tests and passed alone, and `failed twice:` the
+ones that are broken. A Task check records the same in its check report, `af/TaskCheckReport@1`,
+beside its receipt: under `checks.<name>.tests`, `flaky` lists each such test with both outcomes
+(`"parallel": "failed", "isolated": "passed"`), `failed` the tests that failed twice,
+`test_threads` the parallel run's thread count and `rerun` what the rerun did (`not_needed`,
+`isolated`, `over_bound`, `not_run`); `checks.<name>.host` holds the 1-minute load average at
+the check's start and end and the CPUs available to af. `af task show TASK_ID` prints
+`check kernel flaky: …` and `check kernel failed twice: …` on their own lines, and
+`check kernel host: load … at start, … at end, … CPUs, … test threads` beside a check that did
+not pass or had flaky tests. A Task whose gate failed ends with
+`next: af task run TASK_ID --retry-gate`, which runs that gate again on the same candidate.
+
+A flaky test is still a defect: fix it at its cause and keep its name. The usual causes are a
+fixture wall or lease a loaded host exceeds (give a fixture whose subject is not a deadline the
+load-safe wall, ADR-0114, or wait on the observable state the test reads instead of sleeping),
+and an assertion on a whole document where one field is under test (assert that field; assert
+that no Attempt's usage is unknown on its own, so a lease lost under load fails with its own
+message). Prove the fix by running the test 20 times in a row under load — with a second
+`cargo build --tests` of another worktree running — through the gate's own scheduling:
+
+```sh
+make test-repeat NEXTEST_FILTER='test(/::heavy_review_cannot_erase_/)'
+# or with any nextest arguments:
+python3 scripts/nextest-gate.py --repeat 20 --profile ci --test-threads 7 \
+  -E 'package(af) & binary(it) & test(/^task_heavy::/)'
+```
+
+`--repeat N` (`NEXTEST_REPEAT` for `make test-repeat`, 20 by default) runs the whole selection N
+times and stops at the first run that fails, naming its failed tests; it never reruns anything.
+
+A test whose assertion depends on wall-clock time cannot be made deterministic: split it into
+the deterministic part, which keeps the name and runs in parallel, and a part that keeps the
+real-time assertions and is listed in the exclusive override of `.config/nextest.toml` with the
+reason beside it (ADR-0124). Nothing else runs while it does. Never widen the budget it asserts.
+
+## Portable fixtures
+
+The gate runs on macOS and on Linux hosts with another umask and other coreutils than yours:
+
+- A fixture that asserts a file mode sets that mode itself (`chmod`, `set_permissions`) instead
+  of taking it from the umask; a host with umask 0077 creates 0700 directories. A test that
+  depends on the umask runs the code under test in a child process with the umask it names.
+- A test about a system tool resolves it by its real path (`realpath $(command -v ls)`) and
+  accepts every prefix the policy under test lists: `/bin/ls` is `/usr/bin/ls` with GNU
+  coreutils and the multicall `/usr/lib/cargo/bin/coreutils` with Rust coreutils.
+- A test that builds Rust for real finds the C linker where rustup's host toolchain does: `CC`,
+  then the sanitized `PATH`, then `~/.local/bin`.
+- The protected harness pin (`python3 -I scripts/performance/cli.py harness-digest --write`)
+  ignores the author's own `HOME` and Cargo state below the tree (`.cargo/.package-cache`,
+  `.cargo/registry/`) and, outside a Git work tree, what the root `.gitignore` ignores
+  (`/target`), so a pin made in a Worker sandbox after a build there equals one made in a
+  checkout. Re-pin whenever you change `Cargo.toml`, `Cargo.lock`, a build script or anything
+  under `scripts/performance/` or `fixtures/performance/`.
+- A test that writes a script and starts it at once writes it through
+  `crate::common::executable`, whose single-threaded writer process keeps the file from being
+  `Text file busy` under `cargo test`, and installs `af` through `common::install_private_af`.
 
 ## Tests and fixtures
 

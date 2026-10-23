@@ -29,6 +29,11 @@ pub fn read_execution_started(
 pub fn is_execution_started(event: &RunEvent) -> bool {
     event.event_type == EventType::TaskExecutionStartedV1
 }
+/// Whether `event` of a Task log is one of its event kinds beside its transitions: a lease's
+/// execution marker (`TaskExecutionStarted@1`) or a gate retry (`TaskGateRetried@1`).
+pub fn is_beside_transitions(event: &RunEvent) -> bool {
+    is_execution_started(event) || super::gate_retry::is_gate_retried(event)
+}
 pub(super) fn encode_execution_started(
     value: &review_core::task::execution_started::TaskExecutionStartedV1,
 ) -> Result<(EventType, serde_json::Value), StoreError> {
@@ -609,7 +614,7 @@ impl EventStore {
                 .replay(&task_run_id(lease.task_id())?)?
                 .into_iter()
                 .find(|event| {
-                    !is_execution_started(event)
+                    !is_beside_transitions(event)
                         && read_task_transition(event)
                             .is_ok_and(|value| value.change == transition.change)
                 })

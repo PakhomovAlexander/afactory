@@ -1714,6 +1714,7 @@ fn start_captured(
         &plan,
         &compiler,
         &state,
+        &options.repo,
     )?;
     let models = model_bindings(&plan, &graph, &adapters)?;
     let domain = ProviderTaskDomain {
@@ -1752,6 +1753,7 @@ fn start_captured(
         if options.plan_only {
             return Ok(());
         }
+        admit_checks(&cas, &authority, &domain, &revision)?;
         store
             .admit_task_plan(&cas, &lease, &trusted)
             .map_err(|e| e.to_string())?;
@@ -2031,10 +2033,11 @@ fn captured_domain(
     plan: &ExecutionPlanV1,
     compiler: &TaskPlanCompiler,
     state: &Path,
+    repo: &Path,
 ) -> Result<Box<dyn TaskDomain>, String> {
     match profile {
         TaskKindProfile::Implementation if authority.review_policy_id.is_none() => Ok(Box::new(
-            domain::code_domain(cas, authority.code_policy_id()?, graph, state)?
+            domain::code_domain(cas, authority.code_policy_id()?, graph, state, repo)?
                 .with_cache_source_resolver(crate::caches::resolve_kind),
         )),
         TaskKindProfile::Review
@@ -2051,9 +2054,8 @@ fn captured_domain(
                         .ok_or("Review Task lost its captured policy")?,
                     graph,
                 )?
-                .with_rust_toolchain_mapping(
-                    std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from),
-                )
+                .with_rust_toolchain_mapping(domain::rust_toolchain_mapping(repo)?)
+                .with_task_build_cache_root(domain::build_cache_root()?)
                 .with_remote_checks(remote)
                 .with_review_task(profile == TaskKindProfile::Review)
                 .with_cache_source_resolver(crate::caches::resolve_kind),
@@ -2129,6 +2131,30 @@ fn execute(
     Ok(())
 }
 
+/// Refuse, before the plan is admitted and before any Attempt, a Task whose captured checks
+/// cannot run on this machine (ADR-0196): a check whose Rust toolchain does not resolve here.
+/// The message starts with the code policy file the refused field is in.
+fn admit_checks(
+    cas: &Cas,
+    authority: &RunAuthority,
+    domain: &dyn TaskDomain,
+    revision: &review_core::task::TaskRevisionV1,
+) -> Result<(), String> {
+    domain.admit_checks(cas, revision).map_err(|reason| {
+        let path = cas
+            .get(&authority.catalog_id)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+            .and_then(|catalog| catalog.get("code_policy")?.as_str().map(str::to_owned))
+            .unwrap_or_else(|| ".af/code-policy.toml".into());
+        format!(
+            "{}: {reason}; nothing ran and nothing was charged",
+            preview::text(&path)
+        )
+    })
+}
+
 fn confirm_current_plan(
     cas: &Cas,
     store: &EventStore,
@@ -2154,6 +2180,7 @@ pub(super) fn run(
     json: bool,
     confirm_plan: Option<&str>,
     execute_now: bool,
+    retry_gate: bool,
 ) -> Result<i32, String> {
     let started = clock()?;
     let (_, state) = state_path(repo, state)?;
@@ -2166,6 +2193,14 @@ pub(super) fn run(
         .task_projection(&cas, id)
         .map_err(|e| e.to_string())?
         .ok_or("Unknown Task")?;
+    // `--retry-gate` reopens only a finished Task whose last failure was a gate; anything else
+    // is refused before a lease is taken or anything is recorded.
+    if retry_gate
+        && let review_store::store::task::gate_retry::GateRetry::Refused(why) =
+            projection.failed_gates(&cas).map_err(|e| e.to_string())?
+    {
+        return Err(format!("Task {id} cannot retry its gate: {why}."));
+    }
     if let Some(expected) = confirm_plan {
         if !review_core::is_digest(expected) || projection.plan_id.as_deref() != Some(expected) {
             return Err(
@@ -2184,7 +2219,7 @@ pub(super) fn run(
         }
         return Err("Confirm the captured plan with --confirm-plan PLAN_ID (or explicitly opt into --execute automation)".into());
     }
-    if matches!(projection.phase, TaskPhaseV1::Finished { .. }) {
+    if matches!(projection.phase, TaskPhaseV1::Finished { .. }) && !retry_gate {
         return present(&cas, &store, id, json, false);
     }
     if projection.plan_id.is_none() {
@@ -2255,6 +2290,7 @@ pub(super) fn run(
         &plan,
         &compiler,
         &state,
+        repo,
     )?;
     let models = model_bindings(&plan, &graph, &adapters)?;
     let domain = ProviderTaskDomain {
@@ -2283,6 +2319,19 @@ pub(super) fn run(
         store
             .recover_task_attempts(&cas, &lease)
             .map_err(|e| e.to_string())?;
+        if retry_gate {
+            let gates = store
+                .retry_task_gate(&cas, &lease, &trusted)
+                .map_err(|e| format!("Task {id} cannot retry its gate: {e}"))?;
+            eprintln!(
+                "retrying gate {} of Task {id} on the same candidate",
+                gates
+                    .iter()
+                    .map(|gate| preview::text(gate))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         if projection
             .waiting_for_domain_publication(&cas)
             .map_err(|e| e.to_string())?
@@ -2292,6 +2341,7 @@ pub(super) fn run(
                 .map_err(|e| e.to_string())?;
         }
         if !projection.admitted {
+            admit_checks(&cas, &authority, &domain, &projection.revision)?;
             store
                 .admit_task_plan(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;
@@ -2644,10 +2694,15 @@ fn present_with_format(
         for line in check_cache_lines(&value) {
             println!("{line}");
         }
+        for line in check_report_lines(cas, &state) {
+            println!("{line}");
+        }
         for line in remote_check_lines(&value) {
             println!("{line}");
         }
-        if let Some(line) = storage_sweep_line(&value) {
+        if let Some(line) =
+            storage_sweep_line(&value).filter(|_| crate::storage::shows_recorded_sweeps())
+        {
             println!("{line}");
         }
         for line in measurement_lines(cas, &state)? {
@@ -2662,6 +2717,27 @@ fn present_with_format(
                     println!("{node}: {message}");
                 }
             }
+        }
+        for retry in &state.gate_retries {
+            println!(
+                "gate retried: {} ran again on the same candidate",
+                retry
+                    .gates
+                    .iter()
+                    .map(|gate| preview::text(&gate.node))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        // A Task that ended at a failed gate says how to run that gate again (ADR-0196).
+        if matches!(
+            state.failed_gates(cas).map_err(|e| e.to_string())?,
+            review_store::store::task::gate_retry::GateRetry::Gates(_)
+        ) {
+            println!(
+                "next: af task run {} --retry-gate",
+                preview::text(&state.task_id)
+            );
         }
         if explain {
             println!(
@@ -3240,6 +3316,137 @@ fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
     lines
 }
 
+/// What the latest check report of each check node says (`af/TaskCheckReport@1`): where a
+/// check stopped, by stage, step and the fix its gate names; the tests that failed in its
+/// parallel run but passed alone (`flaky`), each list on its own line so an operator sees what
+/// nearly failed; the tests that failed twice; and, for a check that did not pass or had flaky
+/// tests, the host's load around it. A report the check wrote but af refused says so.
+fn check_report_lines(cas: &Cas, state: &TaskProjection) -> Vec<String> {
+    use review_core::task::check_report::*;
+    let mut latest = BTreeMap::new();
+    for attempt in state
+        .execution
+        .iter()
+        .flat_map(|execution| execution.attempt_accounting())
+    {
+        for id in &attempt.raw_artifact_ids {
+            let Ok(Some(artifact)) = cas.get_optional_artifact(id) else {
+                continue;
+            };
+            if artifact.artifact_type != TASK_CHECK_REPORT_V1 {
+                continue;
+            }
+            let Ok(report) = serde_json::from_value::<TaskCheckReportV1>(artifact.payload) else {
+                continue;
+            };
+            if report.validate().is_err() {
+                continue;
+            }
+            let node = match &artifact.producer {
+                review_core::Producer::Attempt { node_id, .. } => node_id.clone(),
+                _ => continue,
+            };
+            // The node's latest settled Attempt wins: a retried gate's report, not the failed
+            // one before it.
+            let settled = attempt.settled_unix_ms.unwrap_or(0);
+            if latest
+                .get(&node)
+                .is_none_or(|(earlier, _): &(u64, TaskCheckReportV1)| *earlier <= settled)
+            {
+                latest.insert(node, (settled, report));
+            }
+        }
+    }
+    let mut lines = Vec::new();
+    for (_, report) in latest.values() {
+        let statuses = cas
+            .get_artifact(&report.receipt_id)
+            .ok()
+            .and_then(|receipt| receipt.payload["checks"].as_object().cloned())
+            .unwrap_or_default();
+        for (check, run) in &report.checks {
+            let name = preview::text(check);
+            let passed = statuses
+                .get(check)
+                .and_then(|id| id.as_str())
+                .and_then(|id| cas.get_json(id).ok())
+                .is_some_and(|result| result["status"] == "passed");
+            if run.report == CheckReportStateV1::Refused {
+                lines.push(format!(
+                    "check {name}: its report was refused: {}",
+                    preview::text(run.refusal.as_deref().unwrap_or("unreadable"))
+                ));
+            }
+            if let Some(step) = run.stopped_at() {
+                let then = match &step.fix {
+                    Some(fix) => format!("fix: {}", preview::text(fix)),
+                    None => format!("rerun it with: {}", preview::text(&step.command.join(" "))),
+                };
+                lines.push(format!(
+                    "check {name}: stopped at {} step {} (exit {}); {then}",
+                    step.stage.as_str(),
+                    preview::text(&step.label),
+                    step.exit_code
+                ));
+            }
+            let tests = run.tests.as_ref();
+            let flaky = tests.map_or(&[][..], |tests| tests.flaky.as_slice());
+            if !flaky.is_empty() {
+                lines.push(format!(
+                    "check {name} flaky: {} (failed in the parallel run, passed alone)",
+                    flaky
+                        .iter()
+                        .map(|test| preview::text(&test.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if let Some(tests) = tests.filter(|tests| tests.failed_count > 0) {
+                let more = tests.failed_count as usize - tests.failed.len();
+                let verb = match tests.rerun {
+                    CheckRerunV1::Isolated => "failed twice",
+                    _ => "failed",
+                };
+                lines.push(format!(
+                    "check {name} {verb}: {}{}",
+                    tests
+                        .failed
+                        .iter()
+                        .map(|test| preview::text(test))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    if more > 0 {
+                        format!(" and {more} more")
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+            if !passed || !flaky.is_empty() {
+                let load = |load: &Option<String>| load.clone().unwrap_or_else(|| "unknown".into());
+                let cpus = if run.host.cpus_start == run.host.cpus_end {
+                    format!("{} CPUs", run.host.cpus_end)
+                } else {
+                    format!(
+                        "{} CPUs at start, {} at end",
+                        run.host.cpus_start, run.host.cpus_end
+                    )
+                };
+                lines.push(format!(
+                    "check {name} host: load {} at start, {} at end, {cpus}{}",
+                    load(&run.host.load_1m_start),
+                    load(&run.host.load_1m_end),
+                    tests.map_or(String::new(), |tests| format!(
+                        ", {} test threads",
+                        tests.test_threads
+                    ))
+                ));
+            }
+        }
+    }
+    lines
+}
+
 /// Why a warm directory was removed after its check, and which byte bound acted when one did:
 /// `bound_exceeded max_bytes` for an eviction whose check's result stood, `bound_exceeded
 /// hard_max_bytes` for a check the bound ended (ADR-0135).
@@ -3327,9 +3534,9 @@ fn inspection(
     let mut runtime_attempt_ids = BTreeSet::new();
     let mut decisions = Vec::new();
     for event in events {
-        // A lease's execution marker is its own event kind, not a `TaskTransition@5`: the
-        // history lists the transitions only.
-        if review_store::store::task::is_execution_started(&event) {
+        // A lease's execution marker and a gate retry are their own event kinds, not
+        // `TaskTransition@5`: the history lists the transitions only.
+        if review_store::store::task::is_beside_transitions(&event) {
             continue;
         }
         let transition =

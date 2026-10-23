@@ -156,6 +156,14 @@ impl TaskEnvironment for EmptyTaskEnvironment {
 /// Domain operators retain their own receipt semantics. This interface cannot create an
 /// Attempt, execute a child graph, authorize a plan, or change the parent's allowance.
 pub trait TaskDomain: TaskOperatorHost {
+    /// Refuse, before any Attempt, a captured check this machine cannot run: one whose Rust
+    /// toolchain does not resolve here (ADR-0196). `af` asks once, before it admits the plan,
+    /// so a Task whose gate could only run cold, or not at all, stops before its implementer
+    /// spends anything. The message names the policy field that did not resolve; the default
+    /// admits every check.
+    fn admit_checks(&self, _cas: &Cas, _task: &TaskRevisionV1) -> Result<(), String> {
+        Ok(())
+    }
     fn validate_experiment_preparation(
         &self,
         _cas: &Cas,

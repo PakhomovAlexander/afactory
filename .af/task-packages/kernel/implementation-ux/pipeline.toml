@@ -1,6 +1,6 @@
 schema = "af.pipeline/1"
 name = "kernel/implementation-ux"
-version = "1.0.0"
+version = "1.1.0"
 max_attempts = 16
 max_parallel = 3
 
@@ -99,7 +99,7 @@ allow_local_replacement = true
 independent_from = ["implementer"]
 
 [slots.implementer]
-worker = "kernel/implementer"
+worker = "kernel/implementer-long"
 role = "implement"
 input_type = "af/ImplementationInput@1"
 output_type = "af/ImplementationReport@1"

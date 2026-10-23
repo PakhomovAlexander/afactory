@@ -52,6 +52,7 @@ mod task_developer;
 mod task_document;
 mod task_experiment;
 mod task_file;
+mod task_gate;
 mod task_gc;
 mod task_heavy;
 mod task_human_report;

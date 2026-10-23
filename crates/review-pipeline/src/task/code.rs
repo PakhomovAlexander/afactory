@@ -7,6 +7,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use review_check::{CheckDefinition, CheckResult, CheckRunner, CheckStatus};
 use review_core::PortCardinality;
+use review_core::task::check_report::{
+    CHECK_REPORT_ENV, CheckReportStateV1, MAX_CHECK_REPORT_BYTES, TASK_CHECK_REPORT_V1,
+    TaskCheckHostV1, TaskCheckReportV1, TaskCheckRunV1, parse_check_report, render_load,
+};
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::measurement::{
     ComparisonObjective, MEASUREMENT_COMPARISON_V1, MEASUREMENT_V1, MeasureDefinitionV1,
@@ -214,6 +218,80 @@ pub(super) fn runtime_paths(
         }
     }
     paths
+}
+
+/// One started check's entry in `af/TaskCheckReport@1`: the host's load and CPUs when it
+/// started (`start`) and now that it ended, and what it wrote to `report`, its
+/// `$AF_CHECK_REPORT`. A report af cannot read or does not accept is `refused` with the reason;
+/// the check's own result never depends on it.
+fn check_run(start: (Option<f64>, u32), report: &Path) -> TaskCheckRunV1 {
+    let (load_start, cpus_start) = start;
+    let host = TaskCheckHostV1 {
+        cpus_start,
+        cpus_end: review_process::host::available_cpus(),
+        load_1m_start: load_start.and_then(render_load),
+        load_1m_end: review_process::host::load_average_1m().and_then(render_load),
+    };
+    let refused = |reason: String| TaskCheckRunV1 {
+        host: host.clone(),
+        report: CheckReportStateV1::Refused,
+        refusal: Some(reason.chars().take(1024).collect()),
+        steps: Vec::new(),
+        tests: None,
+    };
+    match read_check_report(report) {
+        Ok(None) => TaskCheckRunV1 {
+            host,
+            report: CheckReportStateV1::Absent,
+            refusal: None,
+            steps: Vec::new(),
+            tests: None,
+        },
+        Ok(Some(bytes)) => match parse_check_report(&bytes) {
+            Ok((steps, tests)) => TaskCheckRunV1 {
+                host,
+                report: CheckReportStateV1::Admitted,
+                refusal: None,
+                steps,
+                tests,
+            },
+            Err(reason) => refused(reason),
+        },
+        Err(reason) => refused(reason),
+    }
+}
+
+/// The bytes of a check's report file: `None` when it wrote none, an error when the path is not
+/// a regular file reached without a link, changed while it was opened, or is over the bound.
+fn read_check_report(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let named = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("the report cannot be inspected: {error}")),
+    };
+    if !named.file_type().is_file() {
+        return Err("the report is not a regular file".into());
+    }
+    if named.len() > MAX_CHECK_REPORT_BYTES {
+        return Err(format!(
+            "the report holds more than {MAX_CHECK_REPORT_BYTES} bytes"
+        ));
+    }
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("the report cannot be opened: {error}"))?;
+    let held = file
+        .metadata()
+        .map_err(|error| format!("the report cannot be inspected: {error}"))?;
+    if (held.dev(), held.ino()) != (named.dev(), named.ino()) || !held.file_type().is_file() {
+        return Err("the report changed while it was opened".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_CHECK_REPORT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("the report cannot be read: {error}"))?;
+    Ok(Some(bytes))
 }
 
 fn native_host_matches(host: &str) -> bool {
@@ -589,6 +667,7 @@ pub fn code_signatures(
     }
     let signature =
         |inputs, outputs, effects, evidence, retains, attempt, outcome_port| OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 { inputs, outputs },
             effects,
             evidence,
@@ -704,6 +783,7 @@ fn measure_signatures(policy: &CodeTaskPolicy) -> BTreeMap<String, OperatorSigna
     }
     let measure =
         |outputs: BTreeMap<String, PipelinePortV1>, wall_ms, outcome_port| OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 {
                 inputs: BTreeMap::from([(
                     "source".into(),
@@ -746,6 +826,7 @@ fn measure_signatures(policy: &CodeTaskPolicy) -> BTreeMap<String, OperatorSigna
         return signatures;
     }
     let compare = OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 {
             inputs: BTreeMap::from([
                 (
@@ -1157,6 +1238,9 @@ impl CodeTaskDomain {
         // and its cache observations, so a reader never has to guess which check an
         // observation belongs to.
         let mut warm_evidence = Vec::new();
+        // What each local check that started was observed doing: the host's load around it and
+        // its own account through `$AF_CHECK_REPORT` (`af/TaskCheckReport@1`).
+        let mut check_runs = BTreeMap::new();
         // Local checks first, in name order; a remote check never executes candidate code on
         // this machine.
         for name in local {
@@ -1224,10 +1308,13 @@ impl CodeTaskDomain {
                 .policy
                 .check_process_wall_ms
                 .map_or(remaining, |limit| limit.min(remaining));
+            // The check may account for itself here: the steps it ran, its tests, its flakes.
+            let report_path = runtime.path().join("check-report.jsonl");
             let runner = runtime.environment().into_iter().fold(
                 CheckRunner::new(cas, sandbox.root())
                     .with_cancellation(cancellation)
-                    .with_timeout(Duration::from_millis(remaining)),
+                    .with_timeout(Duration::from_millis(remaining))
+                    .with_env(CHECK_REPORT_ENV, report_path.display().to_string()),
                 |runner, (key, value)| runner.with_env(key, value),
             );
             let mut runner = rustup
@@ -1395,6 +1482,12 @@ impl CodeTaskDomain {
                 });
             let started = remaining > 0 && refusal.is_none();
             let mut exceeded: Option<Excess> = None;
+            let host_start = started.then(|| {
+                (
+                    review_process::host::load_average_1m(),
+                    review_process::host::available_cpus(),
+                )
+            });
             let (mut result, timing) = if started {
                 let execution = match (
                     session.as_ref(),
@@ -1420,6 +1513,10 @@ impl CodeTaskDomain {
                     }
                     _ => runner.run_observed(definition),
                 };
+                check_runs.insert(
+                    name.clone(),
+                    check_run(host_start.unwrap_or((None, 1)), &report_path),
+                );
                 (
                     execution.result,
                     Some((execution.started_unix_ms, execution.elapsed_ms)),
@@ -1814,6 +1911,25 @@ AF_TOOLCHAIN_SNAPSHOT ",
             )
             .map_err(|e| e.to_string())?
             .0;
+        let mut evidence_ids = Vec::new();
+        if !check_runs.is_empty() {
+            let report = TaskCheckReportV1 {
+                receipt_id: id.clone(),
+                checks: check_runs,
+            };
+            report.validate()?;
+            evidence_ids.push(
+                cas.put_artifact(
+                    TASK_CHECK_REPORT_V1,
+                    invocation_producer(cas, input, Some(attempt))?,
+                    vec![id.clone()],
+                    Some(snapshot_id.clone()),
+                    serde_json::to_value(report).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?
+                .0,
+            );
+        }
         let evidence = |check, spans: Vec<TaskRuntimeSpanV1>, caches| TaskRuntimeEvidenceV1 {
             task_id: attempt.task_id().into(),
             attempt_id: attempt.id().into(),
@@ -1840,7 +1956,6 @@ AF_TOOLCHAIN_SNAPSHOT ",
         if groups.is_empty() && remote_names.is_empty() {
             evidence(None, vec![], vec![]).validate()?;
         }
-        let mut evidence_ids = Vec::with_capacity(groups.len());
         for evidence in groups {
             evidence.validate()?;
             let evidence_id = cas
@@ -2376,7 +2491,130 @@ impl TaskOperatorHost for CodeTaskDomain {
     }
 }
 
+/// The bound of the admission toolchain probe: a loaded host's first `rustc -vV` through a
+/// rustup proxy, not the check's own 30-second bound (ADR-0114). A probe that answers ends when
+/// it answers.
+const ADMISSION_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+
+impl CodeTaskDomain {
+    /// The admission half of [`TaskDomain::admit_checks`]: resolve, on the Task's captured
+    /// source Snapshot, the toolchain a field names for the local checks. A policy with `[warm]`
+    /// build caches over a Snapshot whose `rust-toolchain.toml` (or `rust-toolchain`) pins one
+    /// probes `rustc -vV` and `cargo -vV` exactly as the check's warm layer does, with the
+    /// kernel's rustup home and `RUSTUP_AUTO_INSTALL=0`; a `[rust_toolchain]` with a machine
+    /// mapping checks the mapping and its source `rustc`. A Snapshot that pins nothing names no
+    /// toolchain to refuse: its checks resolve whatever the machine has when they run, and a
+    /// probe that fails then keeps the check cold with its reason. Nothing is copied or built.
+    pub fn admit_toolchains(&self, cas: &Cas, task: &TaskRevisionV1) -> Result<(), String> {
+        let warm = self
+            .policy
+            .warm
+            .as_ref()
+            .filter(|warm| !warm.build_cache.is_empty());
+        let mapped = self
+            .policy
+            .rust_toolchain
+            .as_ref()
+            .zip(self.rust_toolchain_mapping.as_deref());
+        if warm.is_none() && mapped.is_none() {
+            return Ok(());
+        }
+        let Some(source) = task
+            .inputs
+            .values()
+            .find(|input| input.artifact_type == SOURCE_TREE_V1)
+        else {
+            return Ok(());
+        };
+        let Some(first) = self.policy.checks.keys().next() else {
+            return Ok(());
+        };
+        if let Some((request, mapping)) = mapped {
+            machine_toolchain(request, Some(mapping))
+                .and_then(|entry| {
+                    let entry = entry.ok_or("no machine mapping is selected")?;
+                    let mut resolved = request.clone();
+                    resolved.host = entry.host.clone();
+                    verify_private_toolchain(&entry.source, &resolved)
+                })
+                .map_err(|detail| {
+                    format!(
+                        "[rust_toolchain] version = {:?}, host = {:?} of check `{}` does not \
+                         resolve through the machine mapping {}: {detail}; fix the mapping or \
+                         the field and run the Task again",
+                        request.version,
+                        request.host,
+                        request.checks.iter().next().map_or("", String::as_str),
+                        mapping.display()
+                    )
+                })?;
+        }
+        let Some(warm) = warm else {
+            return Ok(());
+        };
+        let (_, _, manifest) = source_snapshot(cas, source)?;
+        let declaration = ToolchainDeclaration::from_manifest(cas, &manifest)?;
+        if declaration.path.is_none() {
+            return Ok(());
+        }
+        let sandbox =
+            Sandbox::materialize(&manifest, cas, Mode::ReadOnly).map_err(|e| e.to_string())?;
+        let runtime = review_sandbox::CheckRuntime::new().map_err(|e| e.to_string())?;
+        let environment: Vec<(String, String)> = CheckRunner::new(cas, sandbox.root())
+            .local_environment()
+            .iter()
+            .cloned()
+            .chain(runtime.environment())
+            .chain(RustupHome::of_kernel().environment())
+            .collect();
+        let probed = super::warm_check::toolchain_identity(
+            sandbox.root(),
+            &environment,
+            &declaration,
+            super::warm_check::ToolchainContext {
+                runtime: Some(runtime.path()),
+                native_digest: None,
+            },
+            None,
+            ADMISSION_PROBE_TIMEOUT,
+        );
+        let kinds = warm
+            .build_cache
+            .iter()
+            .map(|kind| format!("{:?}", kind.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let path = declaration.path.as_deref().unwrap_or("rust-toolchain.toml");
+        let text = String::from_utf8_lossy(&declaration.bytes);
+        let channel = text
+            .lines()
+            .find_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == "channel").then(|| value.trim().trim_matches('"').to_owned())
+            })
+            .unwrap_or_else(|| text.trim().to_owned());
+        // The candidate's bytes reach an operator's terminal: printable and bounded only.
+        let channel: String = channel
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(64)
+            .collect();
+        let pinned = format!("the toolchain `{channel}` its Snapshot's {path} pins");
+        probed.map(drop).map_err(|detail| {
+            format!(
+                "[warm] build_cache = [{kinds}] makes check `{first}` resolve its Rust toolchain \
+                 before it runs, and {pinned} does not resolve on this machine ({detail}); \
+                 install it into the kernel's rustup home with `rustup toolchain install \
+                 {channel}`, or remove the [warm] table, and run the Task again"
+            )
+        })
+    }
+}
+
 impl TaskDomain for CodeTaskDomain {
+    fn admit_checks(&self, cas: &Cas, task: &TaskRevisionV1) -> Result<(), String> {
+        self.admit_toolchains(cas, task)
+    }
     fn assemble_result(
         &self,
         cas: &Cas,

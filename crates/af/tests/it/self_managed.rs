@@ -700,12 +700,15 @@ fn refresh_check_caches_the_latest_and_applies_always() {
     assert!(cache.contains(&format!("latest = \"{newer}\"")), "{cache}");
     assert!(sandbox.default_target().is_none(), "notify never installs");
 
-    // The check above answered for `check_every`; a day later the next one is due.
+    // The check above answered for `check_every`; a day later the next one is due. The cache
+    // counts `check_every` from the last attempt, which that check was too.
     let aged: String = cache
         .lines()
         .map(|line| {
             if line.starts_with("checked_at_epoch = ") {
                 "checked_at_epoch = 1\n".to_string()
+            } else if line.starts_with("attempted_at_epoch = ") {
+                "attempted_at_epoch = 1\n".to_string()
             } else {
                 format!("{line}\n")
             }

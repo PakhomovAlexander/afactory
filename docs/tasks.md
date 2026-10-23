@@ -147,6 +147,33 @@ Task ID is also the delivery confirmation. An unverified Task is evidence, not a
 read `task show`, fix the catalog, check, Worker or goal problem, then start a corrected Task
 under a new Task ID.
 
+## Retry a failed gate
+
+A Task whose last round ended at a failed gate, its check not passing and no reviewer or
+evaluator run after it, ends its `task run` and `task show` output with the command that runs
+that gate again
+([ADR-0196](adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+
+```text
+check kernel: stopped at tests step test (exit 100); rerun it with: python3 scripts/nextest-gate.py --locked --profile ci --test-threads 7
+check kernel failed twice: af::it task_heavy::heavy_review_cannot_erase_stale_claims
+check kernel host: load 61.20 at start, 48.03 at end, 14 CPUs, 7 test threads
+next: af task run pagination-cli --retry-gate
+```
+
+When the failure was the host's rather than the candidate's (a loaded machine, a stale pin you
+have since fixed outside the Snapshot), `af task run TASK_ID --retry-gate` runs the failed check
+again on the same sealed candidate, in a new check Attempt of the same round, under the plan you
+confirmed: nothing is re-planned or re-admitted, no Provider is probed and no new Task is made.
+When the check passes, the Task continues into its review or evaluation as if it had passed the
+first time; when it fails again, it ends at the gate again. `task show` adds `gate retried: NODE
+ran again on the same candidate`, and the Task's accounting keeps the failed check Attempt beside
+the new one. The retry gives the check node one Attempt more than its plan did, so the Task's own
+Attempt, token and wall limits, and its Pipeline's, must still hold it. It is refused, with the
+reason and nothing recorded, for a Task that was verified, delivered, has not finished, or whose
+last failure was not the gate's (its checks passed, or a reviewer or evaluator ran after them),
+and when the plan's approval or deadline has passed or the limits leave no room.
+
 ## Deliver the verified Snapshot
 
 Choose an absent branch and an absent sibling path. The source checkout must still be clean at
@@ -216,7 +243,8 @@ hard_max_bytes = 17179869184  # optional: ends a running check; twice max_bytes 
 
 It grants a check directories that survive it. `cargo_target` becomes the check's
 `CARGO_TARGET_DIR` and `cargo_home` its `CARGO_HOME`, Cargo's registry and git caches. Each is
-`$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/<kind>`, created with mode `0700` and
+`$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/<kind>` (below `[storage]
+build_cache_root` instead when the machine sets it), created with mode `0700` and
 keyed by the repository and by the toolchain the check resolves. That toolchain is the
 Snapshot's `rust-toolchain.toml`, `rustc -vV`, `cargo -vV`, the host triple, the check's
 `PATH`, `LC_ALL`, `TZ` and `RUSTUP_HOME`, and the verified digest of a native toolchain the
@@ -232,6 +260,23 @@ Under `[warm]` a check and its toolchain probe also receive the kernel's rustup 
 `RUSTUP_AUTO_INSTALL=0`. The installed toolchain answers at once, and a toolchain the machine
 lacks is `cold toolchain_unresolved`, never a download into the check's throwaway `HOME`. The
 kernel only passes that path on. It never writes, bounds or removes the rustup home.
+
+That toolchain is resolved once more before the Task's plan is admitted, so before any
+implementer Attempt
+([ADR-0196](adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+when the source Snapshot's `rust-toolchain.toml` pins a toolchain the kernel's rustup home does
+not hold, `af task start --execute` and `af task run` refuse the Task with the code policy file,
+the `[warm] build_cache` field, the pinned toolchain and the probe's answer, and nothing runs or
+is charged. Install it (`rustup toolchain install 1.88.0`) and run the Task again with `af task
+run TASK_ID --confirm-plan PLAN_ID`. A `[rust_toolchain]` request with a machine mapping is
+checked against the mapping the same way. A Snapshot that pins nothing names nothing to refuse.
+
+The machine mapping is configured, not only exported: `[task] rust_toolchain_policy =
+"~/.config/af/rust-toolchain.toml"` in the user's `~/.config/af/config.toml`, or in a project's
+`.af/af.toml`, names the mapping file
+([rust-toolchain.md](task-execution/rust-toolchain.md)), and
+`AF_TASK_RUST_TOOLCHAIN_POLICY_FILE` still overrides every layer for one invocation. `af config
+show --origin` names where it came from.
 
 A declared `caches` kind gives the check an offline `CARGO_HOME` from the machine's cache
 policy, as a Gate's `[gate] caches` do. That directory is materialized beside the check, never
@@ -285,15 +330,52 @@ kernel's `RUSTUP_HOME` and `RUSTUP_AUTO_INSTALL=0`, as Task checks under `[warm]
 private `HOME` never downloads a toolchain; Cargo's registry comes from a Cache Snapshot or the
 check's own `CARGO_HOME`.
 
+## What a check reports
+
+A Task code check also gets `AF_CHECK_REPORT`, a file in its runtime directory where it may
+account for itself
+([ADR-0196](adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+one JSON object per line, each `"schema": "af.check-report/1"`. A `"record": "step"` line names
+one step of the gate, its `stage` (`preflight`, `lint`, `build`, `tests` or `release`), its
+`exit_code`, its `command` and, when the gate names one, the `fix` that repairs what it refuses;
+one `"record": "tests"` line names the test threads, the tests that failed, and those that failed
+in the parallel run and passed alone (`flaky`, with `"parallel": "failed", "isolated":
+"passed"`). This repository's `scripts/ci-step.py` and `scripts/nextest-gate.py` write them.
+
+After the check, af records an `af/TaskCheckReport@1`
+([schema](../schemas/task-check-report-v1.json)) beside its `af/TaskCheckReceipt@1`: for each
+local check that started, the 1-minute load average when it started and ended and the CPUs
+available to af, which af measures itself, and what the check wrote, `admitted`, `absent` when it
+wrote nothing, or `refused` with the reason when its lines are not this contract. A check's own
+account never changes its result; its exit code does. `af task show` prints, per check, where it
+stopped (`check kernel: stopped at preflight step performance-kernel-harness (exit 1); fix:
+python3 -I scripts/performance/cli.py harness-digest --write`), its flaky tests and the tests
+that failed twice, each on its own line, and the host's load beside a check that did not pass or
+had flaky tests.
+
 ## The Storage Budget
 
-af keeps at most `[storage] max_bytes` between runs, 20 GiB by default
-([ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md)). The budget counts warm toolchain
+af keeps at most `[storage] max_bytes` between runs
+([ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md)). The default is `"auto"`: 20 GiB,
+or 40 GiB when the volume holding the warm build keys has more than 100 GiB free. One warm key of
+a Rust workspace like this one is 11-16 GiB, and a 20 GiB budget evicted it after every run, so
+every gate built cold; 40 GiB holds one 16 GiB key with half its size to spare and 16 GiB of
+records beside it. `af storage` says which it chose and why. The budget counts warm toolchain
 keys, warm Workspaces, review campaign Stores, the finished Tasks of every Task Store, Stores
-this release cannot read, and installed versions. When af holds more, the least recently used
-entry goes first. Nothing in use goes — a held lock, a live writer lease, a running `af review
-run`, the default or a pinned version, the running binary — and nothing used within the last
-hour. A finished Task goes through the Store's own collection and keeps its tombstone. Every
+this release cannot read, and installed versions. When af holds more, caches go first (warm
+keys, warm Workspaces, installed versions), then telemetry, then records (review campaigns,
+unreadable Stores, Surveys, finished Tasks), least recently used first within each. Nothing in
+use goes — a held lock, a check holding a warm key, a live writer lease (judged when the sweep
+takes stock, before it plans), a running `af review run`, the default or a pinned version, the
+running binary — and nothing used within the last hour. Nor does the newest warm key of a
+project whose checks used it in the last 7 days, a finished Task younger than `[storage]
+keep_days` (14), a finished Task a registered delivered Workspace was made from (the Task behind
+a delivered branch and its pull request), or a Project Store another release wrote, with or
+without Workspaces (ADR-0158, ADR-0159). When the largest warm key does not fit `max_bytes` with
+half its size to spare, `af storage` and the run say so once: `warm key 16.1 GiB does not fit
+[storage] max_bytes 20.0 GiB: gates run cold whenever the budget must evict it; fix: raise
+max_bytes to ≥ 25 GiB or lower [warm] max_bytes`. A finished Task goes through the Store's own
+collection and keeps its tombstone. Every
 directory is removed through descriptors opened from its configured root (`/` for a Store
 registered elsewhere) without following a link, and only while it is still the directory the
 sweep measured; anything else is left and reported. An installed version is checked again under
@@ -302,8 +384,12 @@ stays.
 
 `af storage` prints what af holds, per kind, against the budget, and the free bytes against
 `[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@4` document.
-After every `af task run` and `af review run` the sweep holds af to `max_bytes`, evicting least
-recently used entries; it does not collect by age unless `[storage] auto_gc = true`. `af storage
+After every `af task run` and `af review run` the sweep holds af to `max_bytes`, evicting in the
+order above; it does not collect by age unless `[storage] auto_gc = true`. A Task command prints
+one line for all its sweeps, and only when they did something: `storage: freed 1.2 GiB (2 warm
+keys)`, with what failed or what is still over the budget after it; `af task run --verbose` and
+`af task start --execute --verbose` print every removal instead, as `af storage prune` does, and
+only they repeat the Task's recorded `storage sweep:` line in a run's output. `af storage
 prune` previews the sweep with collection; `af storage prune --apply` performs it now. It collects
 first: finished Tasks beyond the
 newest `keep_tasks` (20) of each Store, review campaigns beyond the newest `keep_campaigns` (20),
@@ -327,9 +413,15 @@ reclaiming its temporary files, unreferenced blobs and free index pages; `--json
 ([docs/telemetry.md](telemetry.md)).
 
 Below the free-disk floor af does not start a check, a measurement repetition or a Worker
-Attempt. Every volume af works on counts — the one holding its temporary directory and the one
-holding `$XDG_CACHE_HOME` — and a volume whose free bytes cannot be measured refuses too, with
-the measurement error. The check's result is `not_run` with reason `insufficient_disk: …`; a
+Attempt. Every volume af works on counts — the one holding its sandbox root (`[storage]
+sandbox_root`, else the temporary directory, `TMPDIR`), the one holding `$XDG_CACHE_HOME` and the
+one holding `[storage] build_cache_root` when it is set — and a volume whose free bytes cannot be
+measured refuses too, with the measurement error. A refusal names the volume by its mount point
+and file system type, both numbers and what af keeps there: `insufficient_disk: /tmp (tmpfs): 1.9
+GiB (2040109465 bytes) free, floor 10.0 GiB (10737418240 bytes); the sandbox root is /tmp; set
+TMPDIR or [storage] sandbox_root to a volume with room`. A configured `sandbox_root` is where
+every sandbox and check runtime directory of a Task or review run is made, created private when
+it is missing. The check's result is `not_run` with reason `insufficient_disk: …`; a
 measurement fails with reason `insufficient_disk` without starting its command; a Worker Attempt
 is released before it starts and charged nothing, and `af task run` stops with the same message,
 leaving the Task to resume once there is room. `[storage]` is read only from the machine's layers: `/etc/af/config.toml`,

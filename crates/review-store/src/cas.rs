@@ -214,26 +214,40 @@ impl Cas {
             return Ok(digest);
         }
         let dir = final_path.parent().expect("object path has a parent");
-        crate::local_fs::create_private_dir_all(dir)?;
-
-        // The temp name must be unique per call, not per digest: two threads storing the
-        // same bytes would otherwise race on one temp file, and the loser's rename fails.
-        static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let sequence = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let temp_path = dir.join(format!(".tmp-{}-{sequence}", &digest[7..23]));
-        {
-            let mut file = crate::local_fs::private_file_options()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&temp_path)?;
-            file.write_all(bytes)?;
+        // The temp name must be unique per call across every process sharing this Store, not
+        // per digest or per process: two `af task plan` storing the same bytes in the same
+        // second once staged them under one name, so one truncated the other's file and the
+        // loser's rename found nothing (issue #159). A lost race is retried once.
+        match self.publish_object(dir, &final_path, bytes) {
+            Ok(()) => {}
+            Err(_) if self.published_intact(&final_path, &digest, bytes) => {}
+            Err(_) => self.publish_object(dir, &final_path, bytes)?,
         }
-        fs::rename(&temp_path, &final_path)?;
         // Durability is deferred, not skipped: the object is pending until `flush`, and no
         // event may reference it before then.
         self.pending.lock().expect("cas pending").insert(final_path);
         Ok(digest)
+    }
+
+    /// Stage `bytes` under a temporary name no other call or process can hold, private, in `dir`,
+    /// and rename it to `final_path`.
+    fn publish_object(&self, dir: &Path, final_path: &Path, bytes: &[u8]) -> Result<(), CasError> {
+        crate::local_fs::create_private_dir_all(dir)?;
+        // `tempfile` creates the file with `O_EXCL` and mode 0600.
+        let mut temporary = tempfile::Builder::new().prefix(".tmp-").tempfile_in(dir)?;
+        temporary.write_all(bytes)?;
+        temporary
+            .persist(final_path)
+            .map_err(|error| CasError::Io(error.error))?;
+        Ok(())
+    }
+
+    /// Whether another writer already published exactly `bytes` at `final_path`: the race a
+    /// failed publication lost, which leaves the object as this call would have written it.
+    fn published_intact(&self, final_path: &Path, digest: &str, bytes: &[u8]) -> bool {
+        final_path.exists()
+            && with_verify_scratch(|buffer| verify_exact_bytes(final_path, digest, bytes, buffer))
+                .is_ok()
     }
 
     /// Hash a seekable source through caller-owned scratch, then publish it only when its object
@@ -1521,6 +1535,107 @@ mod tests {
             cas.remove_unreachable("sha256:nope"),
             Err(CasError::InvalidDigest(_))
         ));
+    }
+
+    /// The objects both racers of [`two_processes_putting_the_same_objects_never_collide`]
+    /// store, in the same order, so their calls meet on the same digest at the same moment.
+    const RACED_OBJECTS: usize = 400;
+
+    fn raced_object(n: usize) -> Vec<u8> {
+        format!("raced object {n}").into_bytes()
+    }
+
+    /// Store every raced object into the CAS at `root` once `go` exists.
+    fn race_puts(root: &Path, go: &Path) {
+        let cas = Cas::open(root).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !go.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the race never started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        for n in 0..RACED_OBJECTS {
+            if let Err(error) = cas.put(&raced_object(n)) {
+                panic!("put of raced object {n} failed: {error}");
+            }
+        }
+    }
+
+    /// One process of [`two_processes_putting_the_same_objects_never_collide`]; it stores
+    /// nothing unless that test started it.
+    #[test]
+    #[ignore = "one process of two_processes_putting_the_same_objects_never_collide"]
+    fn one_of_two_racing_cas_writers() {
+        if let (Some(root), Some(go)) = (
+            std::env::var_os("AF_CAS_RACE_ROOT"),
+            std::env::var_os("AF_CAS_RACE_GO"),
+        ) {
+            race_puts(Path::new(&root), Path::new(&go));
+        }
+    }
+
+    /// Issue #159: two `af task plan` into one Store in the same second staged the same object
+    /// under one temporary name, a digest prefix and a counter every process starts at zero, so
+    /// one truncated the other's file and the loser's rename failed. Two processes, and two
+    /// threads in this one, store the same 400 objects at once; every put succeeds, every object
+    /// verifies, and no temporary file is left behind.
+    #[test]
+    fn two_processes_putting_the_same_objects_never_collide() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("cas");
+        let go = directory.path().join("go");
+        let test = format!(
+            "{}::one_of_two_racing_cas_writers",
+            module_path!().split_once("::").unwrap().1
+        );
+        let children: Vec<_> = (0..2)
+            .map(|_| {
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &test, "--ignored", "--test-threads", "1"])
+                    .env("AF_CAS_RACE_ROOT", &root)
+                    .env("AF_CAS_RACE_GO", &go)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let (root, go) = (root.clone(), go.clone());
+                std::thread::spawn(move || race_puts(&root, &go))
+            })
+            .collect();
+        fs::write(&go, b"").unwrap();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        for child in children {
+            let output = child.wait_with_output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // A child that selected no test also exits 0: it must report the racer as passed.
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{stdout}{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let cas = Cas::open(&root).unwrap();
+        for n in 0..RACED_OBJECTS {
+            let digest = canonical::blob_content_id(&raced_object(n));
+            assert_eq!(cas.get(&digest).unwrap(), raced_object(n), "object {n}");
+        }
+        let left: Vec<_> = walk(&root.join("objects"))
+            .into_iter()
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".tmp-"))
+            })
+            .collect();
+        assert!(left.is_empty(), "temporary files left behind: {left:?}");
     }
 
     fn walk(root: &Path) -> Vec<PathBuf> {

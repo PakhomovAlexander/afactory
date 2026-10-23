@@ -264,6 +264,7 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
             strategy:"small".into(),pipeline:serde_json::from_value(json!({"name":"fixture/implementation","fallback":"refuse"})).unwrap(),facts:BTreeMap::new(),
         };
         let implement = OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 {
                 inputs: BTreeMap::from([
                     (

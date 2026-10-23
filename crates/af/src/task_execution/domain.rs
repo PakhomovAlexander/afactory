@@ -9,12 +9,34 @@ pub(super) fn code_domain(
     policy_id: &str,
     graph: CompiledTask,
     state: &Path,
+    repo: &Path,
 ) -> Result<CodeTaskDomain, String> {
-    let mapping = std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from);
+    let mapping = rust_toolchain_mapping(repo)?;
     let remote = remote_checks(state, &graph)?;
-    Ok(CodeTaskDomain::captured(cas, policy_id, graph)?
+    let domain = CodeTaskDomain::captured(cas, policy_id, graph)?
         .with_rust_toolchain_mapping(mapping)
-        .with_remote_checks(remote))
+        .with_remote_checks(remote);
+    Ok(match build_cache_root()? {
+        Some(root) => domain.with_task_build_cache_root(root),
+        None => domain,
+    })
+}
+
+/// The operator's Rust toolchain mapping (docs/task-execution/rust-toolchain.md), resolved once
+/// for the domain the coordinator builds: `[task] rust_toolchain_policy` from the configuration
+/// ladder of `repo` (system, user, directory, project `.af/af.toml`, local), with
+/// `AF_TASK_RUST_TOOLCHAIN_POLICY_FILE` above every layer, so the path need not be exported on
+/// every `af task run` (finding C1). `af config show --origin` names where it came from.
+pub(super) fn rust_toolchain_mapping(repo: &Path) -> Result<Option<PathBuf>, String> {
+    crate::config::load(Some(repo))?.rust_toolchain_policy()
+}
+
+/// `[storage] build_cache_root`: where this machine keeps warm build keys, when it moves them
+/// from `$XDG_CACHE_HOME/af/task-build-cache` (finding T18). Machine layers only.
+pub(super) fn build_cache_root() -> Result<Option<PathBuf>, String> {
+    Ok(crate::config::load_machine()?
+        .storage_policy()?
+        .build_cache_root)
 }
 
 /// The machine-local Remote Check configuration (ADR-0140): the operator's mapping, resolved

@@ -182,7 +182,7 @@ fn recorded_rounds(
     let mut seen = BTreeSet::new();
     let mut rounds = Vec::new();
     for event in store.replay(run_id).map_err(|e| e.to_string())? {
-        if review_store::store::task::is_execution_started(&event) {
+        if review_store::store::task::is_beside_transitions(&event) {
             continue;
         }
         let transition =
@@ -514,6 +514,13 @@ fn event_times(
             let marker = review_store::store::task::read_execution_started(&event)
                 .map_err(|e| e.to_string())?;
             events.push((marker.epoch, marker.now_unix_ms, Mark::Other));
+            continue;
+        }
+        // So is a gate retry.
+        if review_store::store::task::gate_retry::is_gate_retried(&event) {
+            let retry = review_store::store::task::gate_retry::read_gate_retried(&event)
+                .map_err(|e| e.to_string())?;
+            events.push((retry.epoch, retry.now_unix_ms, Mark::Other));
             continue;
         }
         let transition =

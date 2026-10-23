@@ -154,8 +154,13 @@ never under --json.";
 const STORAGE: &str = "\
 af keeps a bounded amount of disk between runs (ADR-0144). One budget covers warm build keys,
 warm Workspaces, review campaign Stores, the finished Tasks of every Task Store, Project Stores
-(counted, never evicted; ADR-0158), Stores this release cannot read, and installed versions. When af holds more than the budget, the least
-recently used entry goes first; nothing in use and nothing used within the last hour ever goes.
+(counted, never evicted; ADR-0158), Stores this release cannot read, and installed versions.
+When af holds more than the budget, caches go first (warm keys, warm Workspaces, installed
+versions), then telemetry, then records (review campaigns, unreadable Stores, Surveys, finished
+Tasks), least recently used first within each. Nothing in use goes, and nothing used within the
+last hour; nor the newest warm key of a project checked in the last 7 days, a finished Task
+younger than keep_days or one a delivered Workspace was made from, a Store with a live writer
+lease, or a Project Store another release wrote.
 
   af storage                  what af holds, per kind, against the budget and the free-disk floor
   af storage prune            preview the sweep: collection, then the budget
@@ -165,7 +170,9 @@ The [storage] table, machine layers only (built-in, system, user, AF_STORAGE__<K
 repository's .af/af.toml cannot set it:
 
   [storage]
-  max_bytes = \"20GiB\"          the budget; integer bytes or a number with B, KiB, MiB, GiB, TiB
+  max_bytes = \"auto\"           the budget: 20 GiB, or 40 GiB when the cache volume has more than
+                               100 GiB free (room for one warm key); or integer bytes, or a
+                               number with B, KiB, MiB, GiB, TiB
   min_free_bytes = \"10GiB\"     below this free space on any volume af works on, or when it
                                cannot be measured, checks, measurement repetitions and Worker
                                Attempts are refused with insufficient_disk before any token is
@@ -180,12 +187,22 @@ repository's .af/af.toml cannot set it:
   keep_worker_transcripts = false   keep the history each Claude Worker Attempt and provider
                                     probe leaves in its config dir
   keep_gate_pull_requests = false   leave a finished Task's gate pull request and branches open
+  sandbox_root = \"/srv/af\"     unset by default (TMPDIR): where sandboxes and check runtimes
+                               are made, and so the volume the floor measures for them
+  build_cache_root = \"/srv/c\"  unset by default ($XDG_CACHE_HOME/af/task-build-cache): where
+                               warm build keys live, and the volume the floor measures for them
 
 Every check gets its own empty HOME, TMPDIR, AF_CHECK_SCRATCH and XDG_CACHE_HOME, removed after
 it: write scratch files there, never to /tmp. A Store made with --state is recorded in
 $XDG_STATE_HOME/af/stores.toml so collection reaches it. A Task whose gate leftovers are not
 cleaned up yet is never collected. The sweep that ends `af task run` is recorded on that Task:
-`af task show` prints its `storage sweep:` line.";
+`af task show` prints its `storage sweep:` line. A Task command prints one line for its sweeps,
+`storage: freed 1.2 GiB (2 warm keys)`, and only when they did something; `--verbose` on `af task
+run` and `af task start --execute` prints every line instead. When the largest warm key does not
+fit max_bytes with half its size to spare, `af storage` and the run say so once, with the budget
+that fits. A refusal below the floor names the volume, both numbers and what to move:
+`insufficient_disk: /tmp (tmpfs): 1.9 GiB (…) free, floor 10.0 GiB (…); the sandbox root is
+/tmp; set TMPDIR or [storage] sandbox_root to a volume with room`.";
 
 const TELEMETRY: &str = "\
 Telemetry records what af does while it works, in its own store, never in a Task or Campaign
@@ -447,12 +464,22 @@ Updates — `[self]` in ~/.config/af/config.toml
 
   The check never runs on the hot path. After an eligible command — any but help, --version,
   `af self`, `af config`, completions and the browser — af spawns a detached child that
-  refreshes the cache and exits, with or without a terminal and under --json too. The child holds
-  none of the command's pipes, and never changes its output or exit status. check_every
-  throttles invocations, a failed attempt included: no timer, daemon or service runs between
-  them. Releases come anonymously over HTTPS (curl) from a public repository, through gh only
-  when that is refused. CI, AF_SELF_OFFLINE, update_check = false and auto_update = \"never\"
-  turn the check off. Inside a pinned project the af that dispatches schedules it, once. Only an interactive
+  refreshes the cache and exits, with or without a terminal and under --json too; `af self
+  status` schedules it too when it is due, and `af self status --refresh` runs it at once. The
+  child holds none of the command's pipes, and never changes its output or exit status.
+  check_every throttles invocations, counted from the last attempt, a failed one included: no
+  timer, daemon or service runs between them. Releases come anonymously over HTTPS (curl) from
+  a public repository, through gh only when that is refused; every call is bounded (curl: 5 s to
+  connect, 30 s to list releases; gh: 30 s), and a failure's reason (the HTTP status or curl's
+  error) is said before any `gh auth login` hint. The cache (af/self-check@3) records the last
+  answer, the last attempt and why it failed, which `af self status` prints:
+  `last check: <time> · latest X · last attempt <time> failed: <reason>`. A check that has held
+  latest.lock for over an hour counts as no check, and status names it with `rm <lock>`. A
+  pre-release af asks for pre-releases whatever the channel, and is told `latest stable X ·
+  latest pre-release Y (you run R: af self update --rc)`; a release older than the running one
+  is never shown as simply `latest`. CI, AF_SELF_OFFLINE, update_check = false and auto_update =
+  \"never\" turn the check off; `af self update --check` offline prints `offline: check skipped`
+  and exits 0. Inside a pinned project the af that dispatches schedules it, once. Only an interactive
   run — stderr a terminal, no --json — prints the cached notice, one line on stderr; under a
   pin, the af that dispatches prints it. With `always`, the child installs the newer release
   and retargets the default, unless `af self update` or `rollback` changed it meanwhile; the
@@ -462,7 +489,7 @@ Updates — `[self]` in ~/.config/af/config.toml
   --version never moves the default to a release older than the running one.
 
 Commands
-  af self status | update [--check] | rollback | install V | remove V | prune
+  af self status [--refresh] | update [--check] | rollback | install V | remove V | prune
   af self setup-shell [--write] | uninstall [--purge]
   Update, rollback, remove, prune, and uninstall refuse to touch a binary af did not install.
   uninstall refuses while a background check runs, since it may be installing a release: run

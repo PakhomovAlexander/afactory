@@ -84,6 +84,7 @@ pub fn document_signatures(
         return Err("Document policy has no exact identity".into());
     }
     let signature = |inputs, outputs, evidence, retains, attempt, outcome_port| OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 { inputs, outputs },
         effects: BTreeSet::new(),
         evidence,

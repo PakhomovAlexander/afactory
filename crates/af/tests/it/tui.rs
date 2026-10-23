@@ -491,15 +491,24 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
     let (_temp, root) = temp_root();
     let repo = hub(&root);
     let mut browser = Browser::launch(&repo, &root.join("home"));
-    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
-    let screen = browser.wait_for("project settings", ready);
-    let bar = bar_rows(&screen);
     let folders = [
         "  v providers/",
         "  v workers/",
         "  v pipelines/",
         "  v tasks/",
     ];
+    // Each pane fills its folder when its own discovery answers, after the settings appear; a
+    // loaded host shows the settings first. Wait for the whole screen the test reads.
+    let ready = |screen: &Screen| {
+        let bar = bar_rows(screen);
+        screen.text().contains("SETTINGS  project: hub")
+            && folders
+                .iter()
+                .all(|folder| bar.iter().any(|row| row.starts_with(folder)))
+            && screen.lines()[ROWS - 1].starts_with("NORMAL  hub")
+    };
+    let screen = browser.wait_for("project settings with every folder", ready);
+    let bar = bar_rows(&screen);
     for folder in folders {
         // A folder whose pane is still discovering carries a spinner after its name.
         let listed = bar.iter().any(|row| row.starts_with(folder));
@@ -764,8 +773,21 @@ fn the_user_scope_groups_tasks_by_repository() {
     std::fs::create_dir_all(&plain).unwrap();
     let mut browser = Browser::launch(&plain, &home);
     let grouped = format!("    v {repository}/ (1)");
-    let listed = |screen: &Screen| bar_rows(screen).contains(&grouped);
-    let screen = browser.wait_for("the repository group", listed);
+    // The group appears when the Store is enumerated; its Task's row and progress follow when
+    // that Task's own read answers, later on a loaded host. Wait for the rows the test reads.
+    let listed = |screen: &Screen| {
+        let bar = bar_rows(screen);
+        bar.iter()
+            .position(|row| *row == grouped)
+            .is_some_and(|at| {
+                bar.get(at + 1)
+                    .is_some_and(|row| row == "      v done/ (1)")
+                    && bar
+                        .get(at + 2)
+                        .is_some_and(|row| row == "          pagination~  100%")
+            })
+    };
+    let screen = browser.wait_for("the repository group and its Task", listed);
     let bar = bar_rows(&screen);
     let at = bar.iter().position(|row| *row == grouped).unwrap();
     assert_eq!(bar[at + 1], "      v done/ (1)", "{}", screen.text());

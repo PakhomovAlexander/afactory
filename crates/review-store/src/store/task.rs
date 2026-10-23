@@ -26,6 +26,7 @@ pub mod collection;
 mod delivery;
 pub use delivery::validate_optimization_delivery;
 pub mod execution;
+pub mod gate_retry;
 mod lease;
 pub mod planning;
 mod recording;
@@ -35,7 +36,9 @@ pub mod review_handoff;
 pub mod review_integration;
 mod review_round;
 pub mod review_round_publication;
-pub use review_handoff::{is_execution_started, read_execution_started, read_task_transition};
+pub use review_handoff::{
+    is_beside_transitions, is_execution_started, read_execution_started, read_task_transition,
+};
 mod source;
 
 fn conflict(message: impl Into<String>) -> StoreError {
@@ -354,6 +357,8 @@ pub struct TaskProjection {
     /// The epoch of every lease that began kernel execution of the Task: one execution marker
     /// (`TaskExecutionStarted@1`) each (ADR-0153).
     pub execution_epochs: BTreeSet<u64>,
+    /// Every `af task run --retry-gate` that reopened the Task at its failed gates, in log order.
+    pub gate_retries: Vec<task::gate_retry::TaskGateRetriedV1>,
 }
 
 /// The light optimizer's final DAG node can only know trial accounting. After every Attempt has
@@ -1580,6 +1585,21 @@ impl EventStore {
                     .apply_execution_started(&event, &marker)?;
                 continue;
             }
+            // A gate retry reopens a finished Task at its failed gates (`TaskGateRetried@1`).
+            if gate_retry::is_gate_retried(&event) {
+                let retry = gate_retry::read_gate_retried(&event)?;
+                for id in retry.artifact_refs() {
+                    if verified.insert(id.clone()) {
+                        cas.verify(&id)
+                            .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                    }
+                }
+                state
+                    .as_mut()
+                    .ok_or_else(|| conflict("Task gate retry precedes genesis"))?
+                    .apply_gate_retried(cas, &event, &retry)?;
+                continue;
+            }
             if !matches!(event.event_type, EventType::TaskTransitionV5) {
                 return Err(conflict("Task log contains a foreign event"));
             }
@@ -1645,6 +1665,7 @@ impl EventStore {
                     gate_cleanups: Vec::new(),
                     storage_sweeps: Vec::new(),
                     execution_epochs: BTreeSet::new(),
+                    gate_retries: Vec::new(),
                 });
             } else {
                 return Err(conflict("Task transition precedes genesis"));

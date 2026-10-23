@@ -1249,9 +1249,9 @@ fn main() {
         eprintln!("af: {}", terminal_lines(&error.to_string()));
         std::process::exit(1);
     }
-    let sandbox_sweep = runs_task_work(&command)
-        .then(sweep_stale_sandboxes_in_background)
-        .flatten();
+    // The Storage Budget first: it names the sandbox root (`[storage] sandbox_root`) the stale
+    // sandbox sweep below looks in.
+    storage::set_output(runs_task_work(&command), verbose_sweeps(&command));
     if runs_task_work(&command)
         && let Err(error) = storage::install()
     {
@@ -1264,7 +1264,11 @@ fn main() {
         );
         std::process::exit(1);
     }
+    let sandbox_sweep = runs_task_work(&command)
+        .then(sweep_stale_sandboxes_in_background)
+        .flatten();
     let collects_after = collects_after_run(&command);
+    let task_work = runs_task_work(&command);
     // A command that runs a kernel run records it (ADR-0153); every other command opens no
     // telemetry directory.
     let mut recording =
@@ -1408,7 +1412,9 @@ fn main() {
                     state,
                     json,
                 }),
-                cli::SelfCommand::Status { json } => selfmgmt::status(json).map(|()| 0),
+                cli::SelfCommand::Status { json, refresh } => {
+                    selfmgmt::status(json, refresh).map(|()| 0)
+                }
                 cli::SelfCommand::Update { check, version, rc } => {
                     selfmgmt::update(check, version, rc).map(|()| 0)
                 }
@@ -1573,6 +1579,10 @@ fn main() {
         // Whatever the run's outcome; a failure here is a warning, never the exit status.
         storage::after_run();
     }
+    if task_work {
+        // One line for every sweep the command ran, the floor's and a new warm key's included.
+        storage::flush_summary();
+    }
     let code = match outcome {
         Ok(code) => code,
         Err(error) => {
@@ -1619,6 +1629,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         cli::TaskCommand::Start {
             file,
             execute,
+            verbose: _,
             bindings,
             source_bindings,
             repo,
@@ -1727,6 +1738,8 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             task_id,
             confirm_plan,
             execute,
+            retry_gate,
+            verbose: _,
             inspect,
         } => task_execution::run(
             &task_id,
@@ -1735,6 +1748,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             inspect.json,
             confirm_plan.as_deref(),
             execute,
+            retry_gate,
         ),
         cli::TaskCommand::Output {
             task_id,
@@ -1841,7 +1855,8 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
 }
 
 /// The commands that run Task Workers through the shared Task host take over SIGINT and SIGTERM
-/// so an interrupt stops those Workers before af exits (ADR-0129).
+/// so an interrupt stops those Workers before af exits (ADR-0129); `af self optimize --execute`
+/// runs an Optimization Task's Workers the same way (issue #158).
 fn runs_task_work(command: &cli::Command) -> bool {
     match command {
         cli::Command::Review(namespace) => {
@@ -1852,8 +1867,23 @@ fn runs_task_work(command: &cli::Command) -> bool {
             command,
             cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. }
         ),
+        cli::Command::SelfCmd { command } => {
+            matches!(command, cli::SelfCommand::Optimize { execute: true, .. })
+        }
         _ => false,
     }
+}
+
+/// Whether a Task command asked for every line of its storage sweeps (`--verbose`) instead of
+/// the one summary line.
+fn verbose_sweeps(command: &cli::Command) -> bool {
+    matches!(
+        command,
+        cli::Command::Task {
+            command: cli::TaskCommand::Start { verbose: true, .. }
+                | cli::TaskCommand::Run { verbose: true, .. }
+        }
+    )
 }
 
 /// The kind of kernel run a command runs, when it runs one: it records Telemetry (design §6).
@@ -4358,7 +4388,7 @@ fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<()>> 
                     "af: removed {} stale sandbox director{} left by exited processes under {}",
                     report.removed,
                     if report.removed == 1 { "y" } else { "ies" },
-                    terminal_text(&std::env::temp_dir().display().to_string())
+                    terminal_text(&review_sandbox::sandbox_root().display().to_string())
                 );
             }
         })
@@ -4461,6 +4491,61 @@ mod terminal_text_tests {
 
 #[cfg(test)]
 mod option_tests {
+    /// Every command that runs Task Workers takes over SIGINT and SIGTERM and holds the Storage
+    /// Budget; `af self optimize --execute` is one (issue #158), its preview is not.
+    #[test]
+    fn the_commands_that_run_task_work_are_exactly_these() {
+        use clap::Parser;
+        let table: &[(&[&str], bool, bool)] = &[
+            (&["task", "run", "T"], true, false),
+            (&["task", "run", "T", "--verbose"], true, true),
+            (
+                &["task", "start", "--file", "t.json", "--execute"],
+                true,
+                false,
+            ),
+            (
+                &[
+                    "task",
+                    "start",
+                    "--file",
+                    "t.json",
+                    "--execute",
+                    "--verbose",
+                ],
+                true,
+                true,
+            ),
+            (&["task", "start", "--file", "t.json"], false, false),
+            (&["review", "run", "--campaign", "c"], true, false),
+            (&["provider", "doctor"], true, false),
+            (&["self", "optimize", "--execute"], true, false),
+            (&["self", "optimize"], false, false),
+            (&["self", "status"], false, false),
+            (&["self", "update", "--check"], false, false),
+            (&["storage", "prune", "--apply"], false, false),
+            (&["task", "list"], false, false),
+        ];
+        for (words, runs, verbose) in table {
+            let parsed =
+                crate::cli::Af::try_parse_from(std::iter::once("af").chain(words.iter().copied()))
+                    .unwrap_or_else(|error| panic!("{words:?}: {error}"));
+            let command = parsed.command.unwrap();
+            assert_eq!(super::runs_task_work(&command), *runs, "{words:?}");
+            assert_eq!(
+                super::needs_interrupt_handling(&command),
+                *runs,
+                "{words:?}"
+            );
+            assert_eq!(super::verbose_sweeps(&command), *verbose, "{words:?}");
+        }
+        // --verbose belongs to the run of `af task start`, not to its preview.
+        assert!(
+            crate::cli::Af::try_parse_from(["af", "task", "start", "--file", "t", "--verbose"])
+                .is_err()
+        );
+    }
+
     #[test]
     fn private_login_handles_interrupts_without_starting_task_maintenance() {
         use clap::Parser;

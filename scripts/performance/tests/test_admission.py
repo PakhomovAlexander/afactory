@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
+import sys
 from unittest import mock
 
 from perflab import admission, budget, limits, reference, seeds
@@ -53,11 +55,18 @@ class Clock(object):
 
 class Seeds(TempDir):
     def seed(self, name="seed", files=3):
+        """A writer's seed, with the modes the tests assert set explicitly rather than taken
+        from the process umask: a host whose umask is 0077 creates 0700 directories."""
         root = self.path(name)
         os.makedirs(os.path.join(root, "probe-work", "nested"))
+        for directory in (root, os.path.join(root, "probe-work"),
+                          os.path.join(root, "probe-work", "nested")):
+            os.chmod(directory, 0o755)
         for index in range(files):
-            with open(os.path.join(root, "probe-work", "nested", "f%d" % index), "wb") as out:
+            entry = os.path.join(root, "probe-work", "nested", "f%d" % index)
+            with open(entry, "wb") as out:
                 out.write(b"entry %d\n" % index)
+            os.chmod(entry, 0o644)
         tool = os.path.join(root, "probe-work", "tool")
         with open(tool, "wb") as out:
             out.write(b"#!/bin/sh\n")
@@ -352,6 +361,26 @@ class Seeds(TempDir):
         self.assertEqual(os.stat(directory).st_mode & 0o777, 0o700)
         self.assertEqual(json.loads(json.dumps(sorted(os.listdir(directory)))), ["inner"])
         self.assertEqual(os.stat(inner).st_mode & 0o777, 0o600)
+
+
+class PortableSeeds(TempDir):
+    def test_the_seed_fixtures_pass_under_a_restrictive_umask(self):
+        """A Linux host with umask 0077 failed every seed fixture that took its modes from the
+        umask. The seed tests run again in a child process whose umask is 0077."""
+        lab = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        child = ("import os, sys, unittest\n"
+                 "os.umask(0o077)\n"
+                 "sys.dont_write_bytecode = True\n"
+                 "sys.path.insert(0, %r)\n"
+                 "suite = unittest.defaultTestLoader.loadTestsFromName("
+                 "'tests.test_admission.Seeds')\n"
+                 "result = unittest.TextTestRunner(verbosity=1).run(suite)\n"
+                 "sys.exit(0 if result.wasSuccessful() and result.testsRun else 1)\n" % lab)
+        completed = subprocess.run([sys.executable, "-I", "-c", child], cwd=lab,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
+        output = completed.stdout.decode("utf-8", "replace")
+        self.assertEqual(completed.returncode, 0, output)
+        self.assertIn("OK", output)
 
 
 class Confined(TempDir):

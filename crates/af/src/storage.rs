@@ -46,6 +46,15 @@ use review_telemetry::dirs::{self as telemetry_dirs, Accounted};
 
 const HOUR_MS: u64 = 3_600_000;
 const DAY_MS: u64 = 86_400_000;
+/// How recently a project's checks must have used its newest warm key for the budget to keep it
+/// whatever its size (finding K18).
+const WARM_KEY_KEPT_DAYS: u64 = 7;
+/// Why a Project Store another release wrote is never collected (issue #302).
+pub(crate) const OTHER_RELEASE_PROJECT_STORE: &str =
+    "a Project Store another release wrote is never collected";
+/// Why the newest warm key of a recently checked project is never evicted.
+pub(crate) const NEWEST_WARM_KEY: &str =
+    "the newest warm key of a project checked in the last 7 days";
 /// The lock file `af review run` holds while it runs a campaign, so a sweep never removes it.
 pub(crate) const RUNNING_LOCK: &str = "af-running.lock";
 /// How the outcome of a planned removal that failed begins.
@@ -98,11 +107,20 @@ impl Roots {
         let cache = config::cache_home()?.join("af");
         let state_home = config::state_home()?;
         let state = state_home.join("af");
-        let telemetry = config::load_machine()
-            .and_then(|config| config.telemetry_policy())
-            .ok();
+        let machine = config::load_machine();
+        let telemetry = machine
+            .as_ref()
+            .ok()
+            .and_then(|config| config.telemetry_policy().ok());
+        let build_cache_root = machine
+            .as_ref()
+            .ok()
+            .and_then(|config| config.storage_policy().ok())
+            .and_then(|policy| policy.build_cache_root);
         Ok(Self {
-            warm: cache.join(review_sandbox::task_build_cache::TASK_BUILD_CACHE_DIRECTORY),
+            warm: build_cache_root.unwrap_or_else(|| {
+                cache.join(review_sandbox::task_build_cache::TASK_BUILD_CACHE_DIRECTORY)
+            }),
             workspaces: cache.join("workspaces"),
             campaigns: state.join("review").join("campaigns"),
             local_reviews: state.join("review").join("local"),
@@ -680,13 +698,10 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
     for path in campaigns.into_iter().filter(|path| has_store(path)) {
         match written_by_another_release(&path) {
             Ok(Some(reason)) => unreadable(&mut inventory, roots, &path, reason),
-            // Only the run lock here: a lease is checked again, in full, before a removal.
+            // A Store with a live writer lease is never on the sweep's list: judged here, before
+            // the plan, and checked again, in full, before a removal.
             Ok(None) => measure_into(&mut inventory, roots, Kind::Campaign, &path, |path| {
-                (
-                    newest_store_write(path),
-                    lock_held(&path.join(RUNNING_LOCK))
-                        .then(|| "a running `af review run` holds it".to_string()),
-                )
+                (newest_store_write(path), campaign_in_use(path))
             }),
             Err(reason) => inventory.problems.push(Problem { path, reason }),
         }
@@ -968,52 +983,78 @@ fn unreadable(inventory: &mut Inventory, roots: &Roots, path: &Path, reason: Str
 }
 
 fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
+    let now = now_unix_ms();
     for project in listed(inventory, &roots.warm) {
-        let Some(project_name) = project.file_name().and_then(|name| name.to_str()) else {
+        let first = inventory.entries.len();
+        project_warm_keys(roots, inventory, &project);
+        keep_newest_warm_key(&mut inventory.entries[first..], now);
+    }
+}
+
+/// Keep the newest of one project's warm keys when it was used in the last
+/// [`WARM_KEY_KEPT_DAYS`]: evicting it makes the project's next gate cold, which the budget
+/// never chooses for a project still at work (finding K18). Older keys of the project, and a
+/// project idle longer, are evicted as before.
+fn keep_newest_warm_key(keys: &mut [Entry], now: u64) {
+    if let Some(newest) = keys
+        .iter_mut()
+        .filter(|entry| entry.kind == Kind::WarmKey)
+        .max_by_key(|entry| entry.last_use_unix_ms)
+        && newest.in_use.is_none()
+        && newest
+            .last_use_unix_ms
+            .saturating_add(WARM_KEY_KEPT_DAYS * DAY_MS)
+            > now
+    {
+        newest.in_use = Some(NEWEST_WARM_KEY.into());
+    }
+}
+
+fn project_warm_keys(roots: &Roots, inventory: &mut Inventory, project: &Path) {
+    let Some(project_name) = project.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    if !is_hex_key(project_name) {
+        return;
+    }
+    for key in listed(inventory, project) {
+        let Some(toolchain) = key.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if !is_hex_key(project_name) {
+        if !is_hex_key(toolchain) {
             continue;
         }
-        for key in listed(inventory, &project) {
-            let Some(toolchain) = key.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if !is_hex_key(toolchain) {
-                continue;
-            }
-            let lock = key.join(review_sandbox::KEY_LOCK);
-            let last_use_unix_ms = modified_ms(&lock)
-                .or_else(|| modified_ms(&key))
-                .unwrap_or(0);
-            let in_use = lock_held(&lock).then(|| "a check holds its warm.lock".to_string());
-            let recorded = review_sandbox::recorded_key_size(&roots.warm, project_name, toolchain);
-            let bytes = match recorded {
-                Some(bytes) => Ok(bytes),
-                None => review_sandbox::storage::allocated_bytes(&key),
-            };
-            match bytes {
-                Ok(bytes) => inventory.entries.push(Entry {
-                    kind: Kind::WarmKey,
-                    directory: None,
-                    segment_id: None,
-                    state: None,
-                    identity: review_sandbox::Identity::of(&key).ok(),
-                    found: None,
-                    path: key,
-                    task_id: None,
-                    bytes,
-                    last_use_unix_ms,
-                    in_use,
-                    reason: None,
-                    too_deep: false,
-                    unmeasurable: None,
-                }),
-                Err(error) => inventory.problems.push(Problem {
-                    path: key,
-                    reason: format!("cannot be measured: {error}"),
-                }),
-            }
+        let lock = key.join(review_sandbox::KEY_LOCK);
+        let last_use_unix_ms = modified_ms(&lock)
+            .or_else(|| modified_ms(&key))
+            .unwrap_or(0);
+        let in_use = lock_held(&lock).then(|| "a check holds its warm.lock".to_string());
+        let recorded = review_sandbox::recorded_key_size(&roots.warm, project_name, toolchain);
+        let bytes = match recorded {
+            Some(bytes) => Ok(bytes),
+            None => review_sandbox::storage::allocated_bytes(&key),
+        };
+        match bytes {
+            Ok(bytes) => inventory.entries.push(Entry {
+                kind: Kind::WarmKey,
+                directory: None,
+                segment_id: None,
+                state: None,
+                identity: review_sandbox::Identity::of(&key).ok(),
+                found: None,
+                path: key,
+                task_id: None,
+                bytes,
+                last_use_unix_ms,
+                in_use,
+                reason: None,
+                too_deep: false,
+                unmeasurable: None,
+            }),
+            Err(error) => inventory.problems.push(Problem {
+                path: key,
+                reason: format!("cannot be measured: {error}"),
+            }),
         }
     }
 }
@@ -1022,8 +1063,9 @@ fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
 /// bindings of the Workspaces `af project workspace new` made. Its Surveys are read with it
 /// unless `surveys` is off, past the Store discovery ceiling, which is then reported. The Task Stores below it are
 /// registered and counted on their own, so they are left out of its bytes. It is never evicted:
-/// it indexes the Project's Workspaces, and one another release wrote is kept while it still
-/// holds a Workspace directory, whose Task Store this release may well read.
+/// it indexes the Project's Workspaces. One another release wrote is listed as a Store this
+/// release cannot read and is never collected either, with or without Workspace directories
+/// (ADR-0158, ADR-0159, issue #302): that release reads it again when it next runs.
 fn project_store(
     inventory: &mut Inventory,
     roots: &Roots,
@@ -1042,9 +1084,8 @@ fn project_store(
             if let Some(entry) = inventory.entries.last_mut()
                 && entry.kind == Kind::UnreadableStore
                 && entry.in_use.is_none()
-                && !real_directories(&path.join("workspaces")).is_empty()
             {
-                entry.in_use = Some("it holds Workspace directories".into());
+                entry.in_use = Some(OTHER_RELEASE_PROJECT_STORE.into());
             }
         }
         Ok(None) => {
@@ -1413,6 +1454,10 @@ pub(crate) struct SweepReport {
     /// Removals that failed; the next sweep tries again.
     pub(crate) failures: Vec<String>,
     pub(crate) telemetry: TelemetrySweep,
+    /// Said once when the largest warm key does not fit the budget with room to spare
+    /// ([`warm_fit`]); not part of the prune document.
+    #[serde(skip)]
+    pub(crate) warm_fit: Option<String>,
 }
 
 /// Run the sweep over one snapshot: [`plan::make`] plans the recovery of interrupted Survey
@@ -1453,6 +1498,7 @@ pub(crate) fn sweep(
             changed: Vec::new(),
             problems: Vec::new(),
         },
+        warm_fit: None,
     };
     match drop_gone_telemetry(roots, apply) {
         Ok(dropped) => report.telemetry.registry_dropped = dropped,
@@ -1472,6 +1518,7 @@ pub(crate) fn sweep(
     if stock.total() > policy.max_bytes {
         refine_tasks(roots, &mut stock);
     }
+    report.warm_fit = warm_fit(policy.max_bytes, &stock.entries);
     report.telemetry.total_before = telemetry_total(&stock);
     // What could not be measured is said with the result: a total that fits the budget is only
     // as complete as the inventory behind it.
@@ -1501,11 +1548,19 @@ pub(crate) fn sweep(
             retried.insert(state.clone(), tried);
         }
     }
-    let picks = if collection {
+    // The Tasks a Project's delivered Workspaces were made from: never taken by a sweep, by the
+    // budget or by age, while the Workspace stays registered (finding I9).
+    let delivered: BTreeSet<String> = stock
+        .projects
+        .iter()
+        .flat_map(|(_, look)| look.delivered.iter().cloned())
+        .collect();
+    let mut picks = if collection {
         task_picks(roots, policy, &stock, now, apply, &mut report)
     } else {
         Vec::new()
     };
+    picks.retain(|pick| !delivered.contains(&pick.task_id));
     let mut entries = stock.entries.clone();
     for entry in &mut entries {
         // The sweep that ends a run never takes the Task the run executed.
@@ -1518,6 +1573,7 @@ pub(crate) fn sweep(
             entry.in_use = Some("the Task this run executed".into());
         }
     }
+    keep_delivered(&mut entries, &delivered);
     // Every telemetry directory's model: the plan takes each segment it evicts out of a copy, so
     // a preview takes it out of the directory it was taken from only, and the applied sweep out
     // of this one as each eviction runs.
@@ -1571,6 +1627,24 @@ pub(crate) fn sweep(
         Err(error) => report.failures.push(error),
     }
     report
+}
+
+/// Keep every finished Task a registered delivered Workspace was made from, by its ID: the Task
+/// behind a delivered branch and its pull request is never the budget's (finding I9).
+fn keep_delivered(entries: &mut [Entry], delivered: &BTreeSet<String>) {
+    for entry in entries {
+        if entry.in_use.is_none()
+            && entry.kind == Kind::Task
+            && let Some(task_id) = entry
+                .task_id
+                .as_deref()
+                .filter(|task_id| delivered.contains(*task_id))
+        {
+            entry.in_use = Some(format!(
+                "Task {task_id} is the source of a delivered Workspace"
+            ));
+        }
+    }
 }
 
 /// Every applied sweep, once its plan ran, reclaims in every measured telemetry directory what
@@ -2136,6 +2210,7 @@ pub(crate) fn sweep_telemetry(
             changed: Vec::new(),
             problems: Vec::new(),
         },
+        warm_fit: None,
     };
     match drop_gone_telemetry(roots, apply) {
         Ok(dropped) => report.telemetry.registry_dropped = dropped,
@@ -2553,8 +2628,194 @@ fn remove_directory(
     }
 }
 
-/// Print a sweep's removals and problems to stderr, one line each.
+/// Whether a sweep a Task or review command runs says what it did line by line (`--verbose`):
+/// otherwise it says one summary line when the command ends (finding C14).
+static VERBOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this command runs Task work, whose output a recorded sweep's line would litter.
+static TASK_WORK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How this command says its sweeps: a Task-running command (`task_work`) one summary line, or
+/// every line of each, as `af storage prune` prints them, under `--verbose`.
+pub(crate) fn set_output(task_work: bool, verbose: bool) {
+    TASK_WORK.store(task_work, std::sync::atomic::Ordering::Relaxed);
+    VERBOSE.store(verbose, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether this command's output carries the `storage sweep:` line a Task records: `af task
+/// show` and every other inspection do; a Task-running command only under `--verbose`, since
+/// its one summary line says what its own sweeps did (finding C14).
+pub(crate) fn shows_recorded_sweeps() -> bool {
+    !TASK_WORK.load(std::sync::atomic::Ordering::Relaxed)
+        || VERBOSE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// What the sweeps of one command did, for its one summary line.
+#[derive(Debug, Default)]
+struct Tally {
+    freed: u64,
+    removed: BTreeMap<Kind, u64>,
+    failed: u64,
+    /// The last sweep's total and budget when it ended over the budget, the total `None` when
+    /// it is unknown.
+    over: Option<(Option<u64>, u64)>,
+    warm_fit: Option<String>,
+    swept: bool,
+}
+
+static TALLY: Mutex<Option<Tally>> = Mutex::new(None);
+
+/// A sweep's report, as the command that ran it says it: every line under `--verbose`,
+/// otherwise counted toward the one summary line [`flush_summary`] prints.
 pub(crate) fn report_to_stderr(report: &SweepReport) {
+    if VERBOSE.load(std::sync::atomic::Ordering::Relaxed) {
+        report_lines(report);
+        if let Some(warm_fit) = &report.warm_fit {
+            eprintln!("af storage: warning: {warm_fit}");
+        }
+        return;
+    }
+    let mut tally = TALLY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    tally.get_or_insert_with(Tally::default).add(report);
+}
+
+impl Tally {
+    fn add(&mut self, report: &SweepReport) {
+        self.swept = true;
+        for removal in &report.removals {
+            self.freed = self.freed.saturating_add(removal.bytes);
+            if removal.outcome.is_none() {
+                *self.removed.entry(removal.kind).or_insert(0) += 1;
+            }
+        }
+        let failed_removals = report
+            .removals
+            .iter()
+            .filter(|removal| removal.outcome.is_some())
+            .count();
+        self.failed += (unmarked_failures(report).count() + failed_removals) as u64;
+        self.over = match report.stop {
+            Stop::Fits => None,
+            Stop::NothingEvictable => Some((report.total_after, report.max_bytes)),
+            Stop::Unknown => Some((None, report.max_bytes)),
+        };
+        if self.warm_fit.is_none() {
+            self.warm_fit.clone_from(&report.warm_fit);
+        }
+    }
+}
+
+/// The one line the sweeps of a command left, printed once when it ends, and nothing when they
+/// removed nothing, failed nothing and left af within its budget: `storage: freed 1.2 GiB (2
+/// warm keys)`. A warm key that does not fit the budget is said on a line of its own, once.
+pub(crate) fn flush_summary() {
+    let Some(tally) = TALLY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+    else {
+        return;
+    };
+    if let Some(line) = summary_line(&tally) {
+        eprintln!("{line}");
+    }
+    if let Some(warm_fit) = &tally.warm_fit {
+        eprintln!("storage: warning: {warm_fit}");
+    }
+}
+
+fn summary_line(tally: &Tally) -> Option<String> {
+    if !tally.swept {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if !tally.removed.is_empty() || tally.freed > 0 {
+        let classes: Vec<String> = tally
+            .removed
+            .iter()
+            .map(|(kind, count)| count_of(*kind, *count))
+            .collect();
+        parts.push(if classes.is_empty() {
+            format!("freed {}", human_bytes(tally.freed))
+        } else {
+            format!(
+                "freed {} ({})",
+                human_bytes(tally.freed),
+                classes.join(", ")
+            )
+        });
+    }
+    if tally.failed > 0 {
+        parts.push(format!(
+            "{} removal{} failed",
+            tally.failed,
+            if tally.failed == 1 { "" } else { "s" }
+        ));
+    }
+    match tally.over {
+        Some((Some(total), max_bytes)) => parts.push(format!(
+            "af holds {} of a {} budget and nothing more may go now",
+            human_bytes(total),
+            human_bytes(max_bytes)
+        )),
+        Some((None, _)) => parts.push("what af holds now is unknown".into()),
+        None => {}
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let see = if tally.failed > 0 || tally.over.is_some() {
+        "; see `af storage`"
+    } else {
+        ""
+    };
+    Some(format!("storage: {}{see}", parts.join("; ")))
+}
+
+/// `count` entries of `kind`, as the summary line names what it freed.
+fn count_of(kind: Kind, count: u64) -> String {
+    let (one, many) = match kind {
+        Kind::WarmKey => ("warm key", "warm keys"),
+        Kind::Workspace => ("warm Workspace", "warm Workspaces"),
+        Kind::Campaign => ("review campaign", "review campaigns"),
+        Kind::Task => ("finished Task", "finished Tasks"),
+        Kind::TaskStore => ("Task Store", "Task Stores"),
+        Kind::ProjectStore => ("Project Store", "Project Stores"),
+        Kind::Survey => ("Survey", "Surveys"),
+        Kind::UnreadableStore => ("unreadable Store", "unreadable Stores"),
+        Kind::Version => ("installed version", "installed versions"),
+        Kind::Telemetry => ("telemetry segment", "telemetry segments"),
+        Kind::Claim => ("abandoned removal", "abandoned removals"),
+    };
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+/// When the largest warm key does not fit `max_bytes` with half its size to spare (a check
+/// that rebuilds it, and the rest af keeps): the warning that says so, with the budget that
+/// would. The newest key of a project checked in the last 7 days is kept whatever its size, but
+/// every older key, and every key of a project idle longer, can go (finding K18).
+pub(crate) fn warm_fit(max_bytes: u64, entries: &[Entry]) -> Option<String> {
+    let key = entries
+        .iter()
+        .filter(|entry| entry.kind == Kind::WarmKey)
+        .map(|entry| entry.bytes)
+        .max()?;
+    let needed = key.saturating_add(key / 2);
+    (needed > max_bytes).then(|| {
+        format!(
+            "warm key {} does not fit [storage] max_bytes {}: gates run cold whenever the budget \
+             must evict it; fix: raise max_bytes to ≥ {} GiB or lower [warm] max_bytes",
+            human_bytes(key),
+            human_bytes(max_bytes),
+            needed.div_ceil(1 << 30)
+        )
+    })
+}
+
+/// Print a sweep's removals and problems to stderr, one line each.
+fn report_lines(report: &SweepReport) {
     for removal in &report.removals {
         eprintln!("af storage: {}", removal_line(removal, report.applied));
         if let Some(line) = owned::left_line(&removal.path, &removal.left) {
@@ -2831,7 +3092,7 @@ struct MachineStorage {
 impl review_pipeline::storage::StorageHost for MachineStorage {
     fn ensure_free_disk(&self) -> Result<(), String> {
         let floor = self.policy.min_free_bytes;
-        if judge_floor(&volumes(), floor).is_ok() {
+        if judge_floor(&volumes_of(&self.policy), floor).is_ok() {
             return Ok(());
         }
         // Every time the floor is met: what became evictable since the last one (a check that
@@ -2839,7 +3100,7 @@ impl review_pipeline::storage::StorageHost for MachineStorage {
         // budget, and collection by age only when the operator turned it on; a disk that is
         // full for other reasons is not a licence to delete what af keeps by age.
         report_to_stderr(&sweep(&self.roots, &self.policy, self.policy.auto_gc, true));
-        judge_floor(&volumes(), floor)
+        judge_floor(&volumes_of(&self.policy), floor)
     }
 
     fn before_new_warm_key(&self) {
@@ -2848,18 +3109,22 @@ impl review_pipeline::storage::StorageHost for MachineStorage {
     }
 }
 
-/// The refusal a check or a Worker Attempt carries below the floor: the free bytes, the floor,
-/// `af storage` and the knob.
-pub(crate) fn refusal(free: u64, floor: u64, volume: &Path) -> String {
+/// The refusal a check or a Worker Attempt carries below the floor: the volume by its mount
+/// point and file system type, its free bytes and the floor, what af keeps there and how to
+/// move it, then `af storage` and the knob (finding I17).
+pub(crate) fn refusal(volume: &Volume, free: u64, floor: u64) -> String {
+    let named = match &volume.mount {
+        Some((mount, kind)) => format!("{} ({kind})", mount.display()),
+        None => volume.path.display().to_string(),
+    };
     format!(
-        "{}: {} ({free} bytes) free on the volume of {}, below the free-disk floor of {} \
-         ({floor} bytes); see what af holds with `af storage`, reclaim it with `af storage \
-         prune --apply`, or change the floor with [storage] min_free_bytes \
-         (AF_STORAGE__MIN_FREE_BYTES)",
+        "{}: {named}: {} ({free} bytes) free, floor {} ({floor} bytes); {}; see what af holds \
+         with `af storage`, reclaim it with `af storage prune --apply`, or change the floor with \
+         [storage] min_free_bytes (AF_STORAGE__MIN_FREE_BYTES)",
         review_pipeline::storage::INSUFFICIENT_DISK,
         human_bytes(free),
-        volume.display(),
-        human_bytes(floor)
+        human_bytes(floor),
+        volume.role.fix(&volume.root),
     )
 }
 
@@ -2876,11 +3141,46 @@ fn unmeasured_refusal(floor: u64, errors: &[&str]) -> String {
     )
 }
 
-/// One volume af works on: a path on it and its free bytes, or why they cannot be measured.
+/// What af keeps on a volume the floor measures, and so how a refusal says to make room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Role {
+    /// Sandboxes and check runtime directories: `[storage] sandbox_root`, else `TMPDIR`.
+    Sandbox,
+    /// `$XDG_CACHE_HOME`: warm Workspaces, and warm keys unless `build_cache_root` moves them.
+    Cache,
+    /// `[storage] build_cache_root`: the warm build keys.
+    BuildCache,
+}
+
+impl Role {
+    fn fix(self, root: &Path) -> String {
+        match self {
+            Role::Sandbox => format!(
+                "the sandbox root is {}; set TMPDIR or [storage] sandbox_root to a volume with room",
+                root.display()
+            ),
+            Role::Cache => format!(
+                "the cache home is {}; set XDG_CACHE_HOME to a volume with room, or [storage] \
+                 build_cache_root for the warm build keys",
+                root.display()
+            ),
+            Role::BuildCache => format!(
+                "the build cache root is {}; set [storage] build_cache_root to a volume with room",
+                root.display()
+            ),
+        }
+    }
+}
+
+/// One volume af works on: a path on it and its free bytes, or why they cannot be measured;
+/// what af keeps there, below `root`; and its mount point and file system type when known.
 #[derive(Debug, Clone)]
 pub(crate) struct Volume {
     pub(crate) path: PathBuf,
     pub(crate) free: Result<u64, String>,
+    pub(crate) role: Role,
+    pub(crate) root: PathBuf,
+    pub(crate) mount: Option<(PathBuf, String)>,
 }
 
 /// The floor over every volume af works on: `Ok` only when every one was measured at or above
@@ -2889,16 +3189,16 @@ pub(crate) struct Volume {
 pub(crate) fn judge_floor(volumes: &[Volume], floor: u64) -> Result<(), String> {
     let lowest = volumes
         .iter()
-        .filter_map(|volume| volume.free.as_ref().ok().map(|free| (*free, &volume.path)))
+        .filter_map(|volume| volume.free.as_ref().ok().map(|free| (*free, volume)))
         .min_by_key(|(free, _)| *free);
     let unmeasured: Vec<&str> = volumes
         .iter()
         .filter_map(|volume| volume.free.as_ref().err().map(String::as_str))
         .collect();
-    if let Some((free, path)) = lowest
+    if let Some((free, volume)) = lowest
         && free < floor
     {
-        let mut message = refusal(free, floor, path);
+        let mut message = refusal(volume, free, floor);
         if !unmeasured.is_empty() {
             message.push_str(&format!(
                 "; the free bytes of another volume cannot be measured either ({})",
@@ -2916,42 +3216,60 @@ pub(crate) fn judge_floor(volumes: &[Volume], floor: u64) -> Result<(), String> 
     Ok(())
 }
 
-/// Every volume af works on — the one holding the temporary directory (sandboxes, check
-/// runtimes) and the one holding `$XDG_CACHE_HOME` (warm caches) — each measured.
-pub(crate) fn volumes() -> Vec<Volume> {
-    let mut volumes = vec![measure_volume(&std::env::temp_dir())];
+/// The directory sandboxes and check runtimes are made in under `policy`.
+pub(crate) fn sandbox_root(policy: &StoragePolicy) -> PathBuf {
+    policy
+        .sandbox_root
+        .clone()
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// Every volume af works on under `policy` — the one holding the sandbox root (sandboxes,
+/// check runtimes), the one holding `$XDG_CACHE_HOME` (warm Workspaces and keys) and the one
+/// holding `[storage] build_cache_root` when it is set — each measured.
+pub(crate) fn volumes_of(policy: &StoragePolicy) -> Vec<Volume> {
+    let mut volumes = vec![Volume {
+        role: Role::Sandbox,
+        ..measure_volume(&sandbox_root(policy))
+    }];
     volumes.push(match config::cache_home() {
         Ok(cache) => measure_volume(&cache),
         Err(error) => Volume {
             path: PathBuf::from("$XDG_CACHE_HOME"),
             free: Err(format!("the cache home cannot be named: {error}")),
+            role: Role::Cache,
+            root: PathBuf::from("$XDG_CACHE_HOME"),
+            mount: None,
         },
     });
+    if let Some(root) = &policy.build_cache_root {
+        volumes.push(Volume {
+            role: Role::BuildCache,
+            ..measure_volume(root)
+        });
+    }
     volumes
 }
 
 /// The free bytes of the volume holding `path`. A directory not created yet is measured where
 /// it will be, at its nearest existing ancestor; any other failure is the measurement's.
 pub(crate) fn measure_volume(path: &Path) -> Volume {
+    let unmeasured = |at: &Path, error: std::io::Error| Volume {
+        path: at.to_path_buf(),
+        free: Err(format!("{}: {error}", at.display())),
+        role: Role::Cache,
+        root: path.to_path_buf(),
+        mount: None,
+    };
     let mut existing = path;
     loop {
         match std::fs::metadata(existing) {
             Ok(_) => break,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => match existing.parent() {
                 Some(parent) => existing = parent,
-                None => {
-                    return Volume {
-                        path: path.to_path_buf(),
-                        free: Err(format!("{}: {error}", path.display())),
-                    };
-                }
+                None => return unmeasured(path, error),
             },
-            Err(error) => {
-                return Volume {
-                    path: existing.to_path_buf(),
-                    free: Err(format!("{}: {error}", existing.display())),
-                };
-            }
+            Err(error) => return unmeasured(existing, error),
         }
     }
     let free = match faked_free_bytes() {
@@ -2962,7 +3280,62 @@ pub(crate) fn measure_volume(path: &Path) -> Volume {
     Volume {
         path: existing.to_path_buf(),
         free,
+        role: Role::Cache,
+        root: path.to_path_buf(),
+        mount: mount_of(existing),
     }
+}
+
+/// The mount point of the volume holding the existing `path` (the highest ancestor on the same
+/// device) and its file system type, when they can be found: what a refusal names, since a
+/// small tmpfs `/tmp` beside a roomy disk is the usual cause (finding I17).
+fn mount_of(path: &Path) -> Option<(PathBuf, String)> {
+    use std::os::unix::fs::MetadataExt;
+    let path = std::fs::canonicalize(path).ok()?;
+    let device = std::fs::metadata(&path).ok()?.dev();
+    let mut mount = path.as_path();
+    while let Some(parent) = mount.parent() {
+        if std::fs::metadata(parent).ok()?.dev() != device {
+            break;
+        }
+        mount = parent;
+    }
+    Some((mount.to_path_buf(), file_system_type(&path)?))
+}
+
+#[cfg(target_os = "linux")]
+fn file_system_type(path: &Path) -> Option<String> {
+    // The kernel's magic numbers (statfs(2)), spelled out: musl's libc lacks some of them.
+    const NAMED: [(u64, &str); 6] = [
+        (0x0102_1994, "tmpfs"),
+        (0xef53, "ext4"),
+        (0x5846_5342, "xfs"),
+        (0x9123_683e, "btrfs"),
+        (0x794c_7630, "overlay"),
+        (0x6969, "nfs"),
+    ];
+    // `f_type` is signed on some targets: its low 32 bits are the magic.
+    #[allow(clippy::unnecessary_cast)]
+    let magic = (nix::sys::statfs::statfs(path).ok()?.filesystem_type().0 as u64) & 0xffff_ffff;
+    Some(NAMED.iter().find(|(known, _)| *known == magic).map_or_else(
+        || format!("type {magic:#x}"),
+        |(_, name)| (*name).to_string(),
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn file_system_type(path: &Path) -> Option<String> {
+    Some(
+        nix::sys::statfs::statfs(path)
+            .ok()?
+            .filesystem_type_name()
+            .to_string(),
+    )
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn file_system_type(_path: &Path) -> Option<String> {
+    None
 }
 
 /// Deterministic fixtures fake the free bytes, as a full disk would show them: a number, or
@@ -2985,7 +3358,9 @@ fn faked_free_bytes() -> Option<u64> {
 }
 
 /// Install the Storage Budget for this process's Task and review work. A machine whose
-/// `[storage]` cannot be read runs without it, and says so.
+/// `[storage]` cannot be read runs without it, and says so. A configured `[storage]
+/// sandbox_root` is made, private, when it does not exist, and every sandbox and check runtime
+/// of this process is made below it (finding T18).
 pub(crate) fn install() -> Result<(), String> {
     let host = policy().and_then(|policy| {
         Ok(MachineStorage {
@@ -2993,6 +3368,20 @@ pub(crate) fn install() -> Result<(), String> {
             roots: Roots::current()?,
         })
     })?;
+    if let Some(root) = &host.policy.sandbox_root {
+        if !root.is_dir() {
+            std::fs::create_dir_all(root).map_err(|error| {
+                format!(
+                    "[storage] sandbox_root {} cannot be made: {error}; make it, or set \
+                     sandbox_root to a directory af may write",
+                    root.display()
+                )
+            })?;
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700));
+        }
+        let _ = review_sandbox::set_sandbox_root(root.clone());
+    }
     review_pipeline::storage::install(Arc::new(host));
     Ok(())
 }
@@ -3008,8 +3397,13 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
     // The temporary roots the earlier `<temp>/.tmp*/tree` form lived below, without a trailing
     // separator, as given and resolved.
     let mut temps: Vec<PathBuf> = Vec::new();
-    // The temporary directory af uses now, and `/tmp`, where it lives when TMPDIR is unset.
-    for temp in [std::env::temp_dir(), PathBuf::from("/tmp")] {
+    // The temporary directory af uses now, `/tmp`, where it lives when TMPDIR is unset, and the
+    // sandbox root the operator configured, where Worker Attempts then ran.
+    let configured = policy().ok().and_then(|policy| policy.sandbox_root);
+    for temp in [std::env::temp_dir(), PathBuf::from("/tmp")]
+        .into_iter()
+        .chain(configured)
+    {
         temps.push(temp.components().collect());
         if let Ok(resolved) = temp.canonicalize() {
             temps.push(resolved);
@@ -3202,7 +3596,7 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
     let policy = policy()?;
     let roots = Roots::current()?;
     let stock = inventory(&roots, Detail::Tasks);
-    let volumes = volumes();
+    let volumes = volumes_of(&policy);
     let free = volumes
         .iter()
         .filter_map(|volume| volume.free.as_ref().ok().map(|free| (*free, &volume.path)))
@@ -3320,15 +3714,20 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
         println!("skipped {}: {}", problem.path.display(), problem.reason);
     }
     println!(
-        "total {} of a {} budget ([storage] max_bytes){}",
+        "total {} of a {} budget ({}){}",
         human_bytes(total),
         human_bytes(policy.max_bytes),
+        budget_origin(&policy),
         if total > policy.max_bytes {
-            "; over budget: `af storage prune --apply` evicts the least recently used"
+            "; over budget: `af storage prune --apply` evicts caches first, then records, least \
+             recently used first"
         } else {
             ""
         }
     );
+    if let Some(warm_fit) = warm_fit(policy.max_bytes, &stock.entries) {
+        println!("warning: {warm_fit}");
+    }
     match free {
         Some((free, volume)) => println!(
             "free {} on the volume of {}, floor {} ([storage] min_free_bytes){}",
@@ -3353,6 +3752,27 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
         }
     }
     Ok(0)
+}
+
+/// How the budget was chosen, as `af storage` says it: `[storage] max_bytes` as set, or
+/// `"auto"` and why it is the size it is.
+fn budget_origin(policy: &StoragePolicy) -> String {
+    match policy.max_bytes_source {
+        config::MaxBytesSource::Set => "[storage] max_bytes".into(),
+        config::MaxBytesSource::Auto { free } => format!(
+            "[storage] max_bytes = \"auto\": {} free on the cache volume{}",
+            free.map_or_else(|| "unknown bytes".to_string(), human_bytes),
+            if policy.max_bytes == config::ROOMY_MAX_BYTES {
+                format!(", more than {}", human_bytes(config::ROOMY_FREE_BYTES))
+            } else {
+                format!(
+                    "; {} above {} free",
+                    human_bytes(config::ROOMY_MAX_BYTES),
+                    human_bytes(config::ROOMY_FREE_BYTES)
+                )
+            }
+        ),
+    }
 }
 
 /// `af storage prune [--apply] [--json]`: the sweep with collection on; a preview without

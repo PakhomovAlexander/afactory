@@ -92,18 +92,32 @@ struct SeenPin {
     seen: String,
 }
 
-/// The cached release check's shape. The unversioned shape earlier releases wrote is not read: a
-/// machine with one is due a check, which writes this one (ADR-0145).
-const CHECK_CACHE_SCHEMA: &str = "af/self-check@2";
+/// The cached release check's shape (`schemas/self-check-v3.json`). Version 3 adds the last
+/// attempt, its failure and the newest pre-release; a cache an earlier release wrote, of any
+/// version, is not read: a machine with one is due a check, which writes this one (ADR-0145).
+const CHECK_CACHE_SCHEMA: &str = "af/self-check@3";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckCache {
     schema: String,
+    /// When a check last answered: the release source listed its releases.
     #[serde(default)]
     checked_at_epoch: u64,
+    /// When a check was last attempted, answered or not: `check_every` counts from it, so an
+    /// outage costs one query per `check_every`.
+    #[serde(default)]
+    attempted_at_epoch: u64,
+    /// Why the last attempt failed; none once one succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
+    /// The newest release on the configured channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     latest: Option<String>,
+    /// The newest pre-release, asked for whatever the channel while the running af is a
+    /// pre-release or the channel is `rc`: a pre-release user hears of the next one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    latest_prerelease: Option<String>,
     #[serde(default)]
     channel: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,11 +129,33 @@ impl Default for CheckCache {
         CheckCache {
             schema: CHECK_CACHE_SCHEMA.to_string(),
             checked_at_epoch: 0,
+            attempted_at_epoch: 0,
+            last_error: None,
             latest: None,
+            latest_prerelease: None,
             channel: String::new(),
             auto_updated: None,
         }
     }
+}
+
+/// The bound on what a cache records of a failure, in bytes: one line of a status.
+const MAX_CHECK_ERROR_BYTES: usize = 512;
+
+/// A failure as the cache records it: one line, at most [`MAX_CHECK_ERROR_BYTES`].
+fn check_error(error: &str) -> String {
+    let line: String = error
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    let mut end = line.len().min(MAX_CHECK_ERROR_BYTES);
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    line[..end].to_string()
 }
 
 /// A default a background check activated, for the one notice that announces it: bound to the
@@ -555,6 +591,8 @@ impl ReleaseSource for GithubSource {
     }
 
     fn tags(&self, include_rc: bool) -> Result<Vec<String>, String> {
+        // Why the anonymous route did not answer, said before anything `gh` adds (finding I1).
+        let mut anonymous = None;
         if !self.via_gh.get() {
             let tmp =
                 tempfile::tempdir().map_err(|error| format!("temporary directory: {error}"))?;
@@ -563,13 +601,28 @@ impl ReleaseSource for GithubSource {
                 "https://api.github.com/repos/{}/releases?per_page=100",
                 self.repo
             );
-            match curl_get(&url, &body, true)? {
+            match curl_get(&url, &body, true).map_err(|error| {
+                format!(
+                    "{error} — fix: check the network and retry, or set {OFFLINE_ENV}=1 to skip \
+                     release checks"
+                )
+            })? {
                 Some(200) => {
                     let text = std::fs::read(&body).map_err(|error| error.to_string())?;
                     return api_tags(&text, include_rc);
                 }
-                Some(code) if anonymous_refused(code) => self.via_gh.set(true),
-                None => self.via_gh.set(true),
+                Some(code) if anonymous_refused(code) => {
+                    anonymous = Some(format!(
+                        "the GitHub API answered HTTP {code} to an anonymous listing of the \
+                         releases of {}",
+                        self.repo
+                    ));
+                    self.via_gh.set(true);
+                }
+                None => {
+                    anonymous = Some("curl is not installed".to_string());
+                    self.via_gh.set(true);
+                }
                 Some(code) => {
                     return Err(format!(
                         "the GitHub API answered HTTP {code} listing the releases of {} — fix: retry later",
@@ -578,7 +631,10 @@ impl ReleaseSource for GithubSource {
                 }
             }
         }
-        gh_tags(&self.repo, include_rc)
+        gh_tags(&self.repo, include_rc).map_err(|error| match anonymous {
+            Some(reason) => format!("{reason}; then {error}"),
+            None => error,
+        })
     }
 
     fn fetch(&self, tag: &str, asset: &str, dir: &Path) -> Result<PathBuf, String> {
@@ -615,10 +671,71 @@ impl ReleaseSource for GithubSource {
     }
 }
 
+/// How long `curl` may take to connect, and to answer a releases API listing, retries
+/// included: a release check never stalls on the network (finding S1).
+const CONNECT_TIMEOUT_SECS: u64 = 5;
+const LISTING_MAX_TIME_SECS: u64 = 30;
+/// How long `curl` may take to download one release asset, retries included.
+const DOWNLOAD_MAX_TIME_SECS: u64 = 600;
+/// The deadline of a `gh` call that lists releases; a download through `gh` has the asset's.
+const GH_LISTING_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+/// What af allows a client beyond its own time limit before it ends the client's process group:
+/// a `curl` that ignores `--max-time` is still bounded.
+const CLIENT_SLACK: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The deadline af holds a network client to: `bound`, or in a debug build the milliseconds
+/// `AF_TEST_SELF_NETWORK_DEADLINE_MS` names, so a fixture can prove a stalled client is ended
+/// without waiting half a minute. Production release binaries never read this setting.
+fn client_deadline(bound: std::time::Duration) -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    {
+        if let Some(ms) = std::env::var("AF_TEST_SELF_NETWORK_DEADLINE_MS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+        {
+            return std::time::Duration::from_millis(ms);
+        }
+    }
+    bound
+}
+
+/// Run a network client under `deadline`, its whole process group ended when it passes:
+/// `Ok(None)` when the program is not installed.
+fn bounded_client(
+    command: &mut Command,
+    deadline: std::time::Duration,
+) -> Result<Option<review_process::SupervisedOutput>, String> {
+    let name = command.get_program().to_string_lossy().into_owned();
+    match review_process::run_supervised_with_policy(
+        command,
+        None,
+        client_deadline(deadline),
+        review_process::ExitPolicy::KillProcessGroup,
+    ) {
+        Ok(output) => Ok(Some(output)),
+        Err(review_process::SupervisedError::Spawn(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        Err(review_process::SupervisedError::TimedOut { .. }) => Err(format!(
+            "{name} did not answer within {} s and was stopped",
+            client_deadline(deadline).as_secs_f64().ceil() as u64
+        )),
+        Err(error) => Err(format!("running {name}: {error}")),
+    }
+}
+
 /// What `curl` answered for `url`, the body in `out` (removed unless the answer is 200): the
 /// HTTP status, or `None` when `curl` is not installed. Pinned to HTTPS, redirects included, at
-/// TLS 1.2 or later, as `install.sh` pins it.
+/// TLS 1.2 or later, as `install.sh` pins it, and bounded: 5 s to connect, 30 s for a listing
+/// (600 s for an asset) with every retry, and af ends a `curl` that outlives its own limit.
 fn curl_get(url: &str, out: &Path, api: bool) -> Result<Option<u16>, String> {
+    let max_time = if api {
+        LISTING_MAX_TIME_SECS
+    } else {
+        DOWNLOAD_MAX_TIME_SECS
+    };
     let mut command = Command::new("curl");
     command.args([
         "--proto",
@@ -627,20 +744,30 @@ fn curl_get(url: &str, out: &Path, api: bool) -> Result<Option<u16>, String> {
         "=https",
         "--tlsv1.2",
         "-sSL",
+        "--connect-timeout",
+        &CONNECT_TIMEOUT_SECS.to_string(),
+        "--max-time",
+        &max_time.to_string(),
         "--retry",
         "3",
+        "--retry-max-time",
+        &max_time.to_string(),
         "-w",
         "%{http_code}",
     ]);
     if api {
         command.args(["-H", "Accept: application/vnd.github+json"]);
     }
-    let output = match review_process::reap::output(
-        command.arg("-o").arg(out).arg(url).stdin(Stdio::null()),
-    ) {
-        Ok(output) => output,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("running curl: {error}")),
+    command.arg("-o").arg(out).arg(url).stdin(Stdio::null());
+    // A retry starts within `max_time` and runs at most `max_time` itself.
+    let deadline = std::time::Duration::from_secs(2 * max_time) + CLIENT_SLACK;
+    let output = match bounded_client(&mut command, deadline) {
+        Ok(Some(output)) => output,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            let _ = std::fs::remove_file(out);
+            return Err(format!("curl {url}: {error}"));
+        }
     };
     let code = String::from_utf8_lossy(&output.stdout)
         .trim()
@@ -687,34 +814,39 @@ impl std::fmt::Display for GhError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GhError::Missing => f.write_str(
-                "the release repository is not public and the GitHub CLI is not installed — fix: install gh and run `gh auth login` with an account that can read it",
+                "the GitHub CLI is not installed to ask as a signed-in user — fix: check that [self] source names a public repository and retry, or for one that is not public install gh and run `gh auth login` with an account that can read it",
             ),
             GhError::Failed(text) => f.write_str(text),
         }
     }
 }
 
-/// `gh` with `args`: its output, judged by the caller from this very call.
-fn gh(args: &[&OsStr]) -> Result<std::process::Output, GhError> {
-    review_process::reap::output(Command::new("gh").args(args).stdin(Stdio::null())).map_err(
-        |error| match error.kind() {
-            std::io::ErrorKind::NotFound => GhError::Missing,
-            _ => GhError::Failed(format!("running gh: {error}")),
-        },
-    )
+/// `gh` with `args` under `deadline`: its output, judged by the caller from this very call.
+fn gh(
+    args: &[&OsStr],
+    deadline: std::time::Duration,
+) -> Result<review_process::SupervisedOutput, GhError> {
+    match bounded_client(Command::new("gh").args(args), deadline) {
+        Ok(Some(output)) => Ok(output),
+        Ok(None) => Err(GhError::Missing),
+        Err(error) => Err(GhError::Failed(error)),
+    }
 }
 
 fn gh_tags(repo: &str, include_rc: bool) -> Result<Vec<String>, String> {
-    let output = gh(&[
-        OsStr::new("release"),
-        OsStr::new("list"),
-        OsStr::new("--repo"),
-        OsStr::new(repo),
-        OsStr::new("--limit"),
-        OsStr::new("100"),
-        OsStr::new("--json"),
-        OsStr::new("tagName,isPrerelease,isDraft"),
-    ])
+    let output = gh(
+        &[
+            OsStr::new("release"),
+            OsStr::new("list"),
+            OsStr::new("--repo"),
+            OsStr::new(repo),
+            OsStr::new("--limit"),
+            OsStr::new("100"),
+            OsStr::new("--json"),
+            OsStr::new("tagName,isPrerelease,isDraft"),
+        ],
+        GH_LISTING_DEADLINE,
+    )
     .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(format!(
@@ -741,18 +873,21 @@ fn gh_tags(repo: &str, include_rc: bool) -> Result<Vec<String>, String> {
 }
 
 fn gh_fetch(repo: &str, tag: &str, asset: &str, dir: &Path) -> Result<PathBuf, GhError> {
-    let output = gh(&[
-        OsStr::new("release"),
-        OsStr::new("download"),
-        OsStr::new(tag),
-        OsStr::new("--repo"),
-        OsStr::new(repo),
-        OsStr::new("--pattern"),
-        OsStr::new(asset),
-        OsStr::new("--clobber"),
-        OsStr::new("--dir"),
-        dir.as_os_str(),
-    ])?;
+    let output = gh(
+        &[
+            OsStr::new("release"),
+            OsStr::new("download"),
+            OsStr::new(tag),
+            OsStr::new("--repo"),
+            OsStr::new(repo),
+            OsStr::new("--pattern"),
+            OsStr::new(asset),
+            OsStr::new("--clobber"),
+            OsStr::new("--dir"),
+            dir.as_os_str(),
+        ],
+        std::time::Duration::from_secs(DOWNLOAD_MAX_TIME_SECS) + CLIENT_SLACK,
+    )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr = stderr.trim();
@@ -1941,11 +2076,12 @@ fn checks_enabled(policy: &SelfPolicy) -> bool {
     policy.update_check && policy.auto_update != AutoUpdate::Never
 }
 
-/// Whether the cached check is due at `now`: checks are enabled and the cache is at least
-/// `check_every` old. `check_every` throttles invocations; nothing runs between them.
+/// Whether the cached check is due at `now`: checks are enabled and the last attempt, answered
+/// or not, is at least `check_every` old. `check_every` throttles invocations; nothing runs
+/// between them.
 fn check_due(policy: &SelfPolicy, cache: &CheckCache, now: u64) -> bool {
-    checks_enabled(policy)
-        && now.saturating_sub(cache.checked_at_epoch) >= policy.check_every.as_secs().max(1)
+    let last = cache.checked_at_epoch.max(cache.attempted_at_epoch);
+    checks_enabled(policy) && now.saturating_sub(last) >= policy.check_every.as_secs().max(1)
 }
 
 /// Whether the cached notice may be printed: only to a person at a terminal, and never by a
@@ -2061,17 +2197,67 @@ fn take_notice(paths: &Paths, policy: &SelfPolicy) -> Option<String> {
             "af self: updated the default from {} to {}; new shells run it",
             updated.from, updated.to
         ))
-    } else if let Some(latest) = cache.latest.as_deref().and_then(|v| Version::parse(v).ok())
+    } else if policy.auto_update == AutoUpdate::Notify
         && let Ok(running) = Version::parse(VERSION)
-        && latest > running
-        && policy.auto_update == AutoUpdate::Notify
     {
-        Some(format!(
-            "af {latest} is available (running {VERSION}) — af self update"
-        ))
+        newer_release(&cache, &running).map(|(newer, command)| {
+            format!("af {newer} is available (running {VERSION}) — {command}")
+        })
     } else {
         None
     }
+}
+
+/// The release newer than `running` the cache names, with the command that installs it: the
+/// channel's newest, or for a pre-release user the newest pre-release, through `--rc`.
+fn newer_release(cache: &CheckCache, running: &Version) -> Option<(Version, &'static str)> {
+    let parse = |version: Option<&str>| version.and_then(|version| Version::parse(version).ok());
+    let latest = parse(cache.latest.as_deref());
+    let prerelease = parse(cache.latest_prerelease.as_deref());
+    match (latest, prerelease) {
+        (latest, Some(prerelease))
+            if !running.pre.is_empty()
+                && prerelease > *running
+                && latest.as_ref().is_none_or(|latest| prerelease > *latest) =>
+        {
+            Some((prerelease, "af self update --rc"))
+        }
+        (Some(latest), _) if latest > *running => Some((latest, "af self update")),
+        _ => None,
+    }
+}
+
+/// What a status says of the newest releases for an af running `running`: `latest X` alone only
+/// when X is no older than a stable `running`; otherwise each qualified (`latest stable X`,
+/// `latest pre-release Y`), and the command when a newer pre-release waits for a pre-release
+/// user, so a release older than the one running is never shown as simply the latest.
+fn latest_text(running: &Version, latest: Option<&str>, prerelease: Option<&str>) -> String {
+    let parse = |version: Option<&str>| version.and_then(|version| Version::parse(version).ok());
+    let (latest, prerelease) = (parse(latest), parse(prerelease));
+    let prerelease = prerelease.filter(|pre| latest.as_ref().is_none_or(|latest| pre > latest));
+    if running.pre.is_empty()
+        && prerelease.is_none()
+        && let Some(latest) = &latest
+        && latest >= running
+    {
+        return format!("latest {latest}");
+    }
+    let mut parts = Vec::new();
+    if let Some(latest) = &latest {
+        parts.push(if latest.pre.is_empty() {
+            format!("latest stable {latest}")
+        } else {
+            format!("latest pre-release {latest}")
+        });
+    }
+    if let Some(prerelease) = &prerelease {
+        let mut part = format!("latest pre-release {prerelease}");
+        if prerelease > running {
+            part.push_str(&format!(" (you run {running}: af self update --rc)"));
+        }
+        parts.push(part);
+    }
+    parts.join(" · ")
 }
 
 /// The check lock without waiting: `None` while another detached check holds it.
@@ -2079,7 +2265,63 @@ fn try_lock_check(paths: &Paths) -> Result<Option<std::fs::File>, String> {
     let file = create_check_lock(paths)?;
     let locked =
         rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive).is_ok();
+    if locked {
+        note_lock_holder(&file);
+    }
     Ok(locked.then_some(file))
+}
+
+/// Write into the check lock's file, just taken, when its holder took it: a later process that
+/// finds the lock held can say since when (finding S2). Best effort: the lock is the flock, and
+/// a file without the stamp is judged by its modification time.
+fn note_lock_holder(file: &std::fs::File) {
+    use std::io::{Seek as _, SeekFrom};
+    let mut file = file;
+    let _ = file.set_len(0);
+    let _ = file.seek(SeekFrom::Start(0));
+    let _ = write!(
+        file,
+        "started_at_epoch = {}\npid = {}\n",
+        epoch_now(),
+        std::process::id()
+    );
+}
+
+/// How long a release check may hold the check lock before a status calls it stalled.
+const STALE_CHECK_SECS: u64 = 3600;
+
+/// Since when another process holds the check lock, when one does now: the stamp its holder
+/// wrote, or the file's modification time. The lock is probed without waiting and released at
+/// once; nothing is created.
+fn check_held_since(paths: &Paths) -> Option<u64> {
+    let path = paths.cache_file.with_extension("lock");
+    let file = std::fs::OpenOptions::new().read(true).open(&path).ok()?;
+    if rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockShared).is_ok() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    text.lines()
+        .find_map(|line| line.strip_prefix("started_at_epoch = "))
+        .and_then(|value| value.trim().parse().ok())
+        .or_else(|| {
+            file.metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|age| age.as_secs())
+        })
+}
+
+/// The report a release check stalled for over an hour gets: it is not a check, and the lock
+/// it holds keeps every later one from starting until it goes.
+fn stalled_check(paths: &Paths, since: u64) -> Option<String> {
+    (epoch_now().saturating_sub(since) > STALE_CHECK_SECS).then(|| {
+        format!(
+            "a release check has been running since {}; fix: rm {}",
+            iso(since),
+            paths.cache_file.with_extension("lock").display()
+        )
+    })
 }
 
 /// The check lock's file, created with its directory when missing.
@@ -2151,6 +2393,9 @@ fn try_lock_existing_check(paths: &Paths) -> Result<Option<std::fs::File>, Strin
         .map_err(|error| format!("inspecting {}: {error}", path.display()))?
         .nlink()
         > 0;
+    if linked {
+        note_lock_holder(&file);
+    }
     Ok(linked.then_some(file))
 }
 
@@ -2189,27 +2434,49 @@ pub(crate) fn refresh_check() -> Result<(), String> {
     if !check_due(&policy, &cache, now) {
         return Ok(());
     }
-    // A failed check is an attempt too, whatever failed: the query, the state's write or an
-    // install. The cache records it still under the check lock, so an outage or a state that
-    // cannot be written costs one query per `check_every`, and what the last good query found
-    // stays in the cache.
-    cache.checked_at_epoch = now;
-    let checked = run_check(&paths, &policy, &mut cache);
-    let written = write_cache(&paths, &cache);
+    attempt_check(&paths, &policy, &mut cache, now)
+}
+
+/// One attempt of the release check, under the check lock its caller holds: run it and write
+/// the cache. A failed check is an attempt too, whatever failed: the query, the state's write
+/// or an install. The cache records it still under the check lock, with its reason, so an
+/// outage or a state that cannot be written costs one query per `check_every`, and what the
+/// last good query found stays in the cache.
+fn attempt_check(
+    paths: &Paths,
+    policy: &SelfPolicy,
+    cache: &mut CheckCache,
+    now: u64,
+) -> Result<(), String> {
+    cache.attempted_at_epoch = now;
+    let checked = run_check(paths, policy, cache);
+    cache.last_error = checked.as_ref().err().map(|error| check_error(error));
+    let written = write_cache(paths, cache);
     checked.and(written)
+}
+
+/// Whether this check asks for pre-releases: on the `rc` channel, and whatever the channel
+/// while the running af is itself a pre-release (finding E7).
+fn asks_prereleases(policy: &SelfPolicy) -> bool {
+    policy.channel == Channel::Rc
+        || Version::parse(VERSION).is_ok_and(|running| !running.pre.is_empty())
 }
 
 /// The query, and under `always` the install and the activation, of a check that is due,
 /// recording in `cache` what it found and what it activated. An error leaves in `cache` what
 /// was found before it: never an activation that did not happen.
 fn run_check(paths: &Paths, policy: &SelfPolicy, cache: &mut CheckCache) -> Result<(), String> {
-    let tags = source(policy).tags(policy.channel == Channel::Rc)?;
+    let tags = source(policy).tags(asks_prereleases(policy))?;
     let latest = newest(&tags, policy.channel);
+    cache.checked_at_epoch = epoch_now();
     cache.channel = match policy.channel {
         Channel::Stable => "stable".into(),
         Channel::Rc => "rc".into(),
     };
     cache.latest = latest.as_ref().map(ToString::to_string);
+    cache.latest_prerelease = newest(&tags, Channel::Rc)
+        .filter(|newest| !newest.pre.is_empty())
+        .map(|newest| newest.to_string());
     // The default this check may replace, marked in the same critical section, before an
     // install that may take long: an explicit change made meanwhile is never overwritten.
     let observed = {
@@ -2246,8 +2513,12 @@ fn run_check(paths: &Paths, policy: &SelfPolicy, cache: &mut CheckCache) -> Resu
 // ------------------------------------------------------------------------------------------
 // commands
 
+/// `af self status --json`'s shape (`schemas/self-status-v1.json`).
+const STATUS_SCHEMA: &str = "af/self-status@1";
+
 #[derive(Serialize)]
 struct StatusView {
+    schema: &'static str,
     version: &'static str,
     target: &'static str,
     commit: &'static str,
@@ -2259,8 +2530,16 @@ struct StatusView {
     installed: Vec<String>,
     pin: Option<PinView>,
     pinned_projects: Vec<SeenPin>,
+    /// When a release check last answered.
     last_check: Option<String>,
+    /// When a release check was last attempted, and why it failed when it did.
+    last_attempt: Option<String>,
+    last_error: Option<String>,
+    /// The newest release on the configured channel, and the newest pre-release.
     latest: Option<String>,
+    latest_prerelease: Option<String>,
+    /// Since when a release check has held the check lock, when one has for over an hour.
+    check_stalled_since: Option<String>,
     policy: PolicyView,
     paths: BTreeMap<&'static str, PathBuf>,
 }
@@ -2285,9 +2564,12 @@ struct PolicyView {
     source: String,
 }
 
-pub(crate) fn status(json: bool) -> Result<(), String> {
+pub(crate) fn status(json: bool, refresh: bool) -> Result<(), String> {
     let paths = paths()?;
     let policy = config::load_machine()?.self_policy()?;
+    if refresh {
+        refresh_inline(&paths, &policy);
+    }
     let running = std::env::current_exe().map_err(|error| error.to_string())?;
     let installed_list: Vec<String> = installed_versions(&paths)
         .iter()
@@ -2302,7 +2584,9 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
     let state = read_state(&paths);
     let cache = read_cache(&paths);
     let default = default_version(&paths);
+    let stalled = check_held_since(&paths).filter(|since| stalled_check(&paths, *since).is_some());
     let view = StatusView {
+        schema: STATUS_SCHEMA,
         version: VERSION,
         target: TARGET,
         commit: COMMIT,
@@ -2314,8 +2598,14 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
         installed: installed_list,
         pin,
         pinned_projects: state.pins,
-        last_check: state.last_check,
-        latest: cache.latest,
+        last_check: (cache.checked_at_epoch > 0)
+            .then(|| iso(cache.checked_at_epoch))
+            .or(state.last_check),
+        last_attempt: (cache.attempted_at_epoch > 0).then(|| iso(cache.attempted_at_epoch)),
+        last_error: cache.last_error.clone(),
+        latest: cache.latest.clone(),
+        latest_prerelease: cache.latest_prerelease.clone(),
+        check_stalled_since: stalled.map(iso),
         policy: PolicyView {
             update_check: policy.update_check,
             check_every_secs: policy.check_every.as_secs(),
@@ -2344,6 +2634,7 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
             "{}",
             serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
         );
+        schedule_from_status(&paths, &policy);
         return Ok(());
     }
     println!("af {VERSION} ({TARGET}, {COMMIT})");
@@ -2412,14 +2703,31 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
             view.pinned_projects.len()
         );
     }
+    let latest = Version::parse(VERSION)
+        .map(|running| {
+            latest_text(
+                &running,
+                view.latest.as_deref(),
+                view.latest_prerelease.as_deref(),
+            )
+        })
+        .unwrap_or_default();
     println!(
-        "last check: {}{}",
+        "last check: {}{}{}",
         view.last_check.as_deref().unwrap_or("never"),
-        view.latest
-            .as_deref()
-            .map(|v| format!(" · latest {v}"))
-            .unwrap_or_default()
+        if latest.is_empty() {
+            String::new()
+        } else {
+            format!(" · {latest}")
+        },
+        match (&view.last_attempt, &view.last_error) {
+            (Some(when), Some(error)) => format!(" · last attempt {when} failed: {error}"),
+            _ => String::new(),
+        }
     );
+    if let Some(stalled) = stalled.and_then(|since| stalled_check(&paths, since)) {
+        println!("check:      {stalled}");
+    }
     println!(
         "policy:     auto_update={} channel={} check_every={}s install_pins={} keep_versions={} source={}",
         view.policy.auto_update,
@@ -2429,37 +2737,107 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
         view.policy.keep_versions,
         view.policy.source
     );
+    schedule_from_status(&paths, &policy);
     Ok(())
+}
+
+/// `af self status` is exempt from dispatch, and so from the check every other command
+/// schedules after it: it schedules the detached check itself when one is due, so "last check"
+/// never stands still while only status runs (finding S2). Offline, under CI or with checks
+/// off, it schedules nothing.
+fn schedule_from_status(paths: &Paths, policy: &SelfPolicy) {
+    if offline() || ci() || !checks_enabled(policy) || std::env::var_os(DISPATCHED_ENV).is_some() {
+        return;
+    }
+    schedule_check(paths, policy);
+}
+
+/// `af self status --refresh`: the release check now, in this process, under the check lock,
+/// whether or not it is due; what it found or why it failed goes into the cache the status
+/// then prints. Offline it asks nothing; while another check holds the lock it waits for none.
+/// Either is said on stderr, and the status still prints.
+fn refresh_inline(paths: &Paths, policy: &SelfPolicy) {
+    if offline() {
+        eprintln!("af self: offline ({OFFLINE_ENV}): check skipped");
+        return;
+    }
+    match try_lock_check(paths) {
+        Ok(Some(_check)) => {
+            let mut cache = read_cache(paths);
+            if let Err(error) = attempt_check(paths, policy, &mut cache, epoch_now()) {
+                eprintln!("af self: the release check failed: {error}");
+            }
+        }
+        Ok(None) => eprintln!(
+            "af self: {}",
+            check_held_since(paths)
+                .and_then(|since| stalled_check(paths, since))
+                .unwrap_or_else(|| {
+                    "another release check is running now; `af self status` shows its result \
+                     once it ends"
+                        .to_string()
+                })
+        ),
+        Err(error) => eprintln!("af self: the release check cannot start: {error}"),
+    }
 }
 
 pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(), String> {
     let paths = paths()?;
     let policy = config::load_machine()?.self_policy()?;
+    // `--check` asks the network for nothing offline: it says so and succeeds (finding S2).
+    if check && version.is_none() && offline() {
+        println!("offline: check skipped ({OFFLINE_ENV} is set)");
+        return Ok(());
+    }
     let channel = if rc { Channel::Rc } else { policy.channel };
     let src = source(&policy);
     let explicit = version.is_some();
+    let running = Version::parse(VERSION).map_err(|error| error.to_string())?;
+    // The newest pre-release too, for a pre-release user: what `--check` names for `--rc`.
+    let mut prerelease = None;
     let target = match version {
         Some(version) => Version::parse(version.trim_start_matches('v'))
             .map_err(|error| format!("--version {version}: {error}"))?,
         None => {
-            let latest = newest(&src.tags(channel == Channel::Rc)?, channel)
+            let tags = src.tags(channel == Channel::Rc || (check && !running.pre.is_empty()))?;
+            let latest = newest(&tags, channel)
                 .ok_or_else(|| format!("no release found at {}", src.describe()))?;
+            prerelease = newest(&tags, Channel::Rc).filter(|newest| !newest.pre.is_empty());
             // Only a release the source actually listed is "latest". An explicit
             // `--version` is a request, not a discovery: recording it here made
             // `af self status` report a version that may not exist. The cache is written under
             // the check lock, taken without waiting: a detached check holding it writes its own.
-            if let Ok(Some(_check)) = try_lock_check(&paths) {
-                let mut cache = read_cache(&paths);
-                record_check(&mut cache, &latest);
-                let _ = write_cache(&paths, &cache);
+            match try_lock_check(&paths) {
+                Ok(Some(_check)) => {
+                    let mut cache = read_cache(&paths);
+                    record_check(&mut cache, &latest);
+                    if channel == Channel::Rc || !running.pre.is_empty() {
+                        cache.latest_prerelease = prerelease.as_ref().map(ToString::to_string);
+                    }
+                    let _ = write_cache(&paths, &cache);
+                }
+                _ => {
+                    if let Some(stalled) =
+                        check_held_since(&paths).and_then(|since| stalled_check(&paths, since))
+                    {
+                        eprintln!("af self: {stalled}");
+                    }
+                }
             }
             latest
         }
     };
-    let running = Version::parse(VERSION).map_err(|error| error.to_string())?;
     if check {
         if target > running {
             println!("af {target} is available (running {VERSION})");
+            std::process::exit(10);
+        }
+        if let Some(prerelease) = prerelease.filter(|prerelease| *prerelease > running)
+            && channel != Channel::Rc
+            && !running.pre.is_empty()
+        {
+            println!("af {prerelease} is available (running {VERSION}) — af self update --rc");
             std::process::exit(10);
         }
         println!("af {VERSION} is up to date");
@@ -2487,6 +2865,8 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
 /// Note a completed release check in the cache: when it ran and what it found.
 fn record_check(cache: &mut CheckCache, latest: &Version) {
     cache.checked_at_epoch = epoch_now();
+    cache.attempted_at_epoch = cache.checked_at_epoch;
+    cache.last_error = None;
     cache.latest = Some(latest.to_string());
 }
 
@@ -2925,6 +3305,290 @@ pub(crate) fn print_version(json: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid(schema: &str, document: &serde_json::Value) {
+        let schema: serde_json::Value = serde_json::from_str(schema).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let errors: Vec<String> = validator
+            .iter_errors(document)
+            .map(|error| format!("{error} at {}", error.instance_path()))
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}: {document}");
+    }
+
+    fn version(text: &str) -> Version {
+        Version::parse(text).unwrap()
+    }
+
+    /// Finding E7: a pre-release user hears of the next pre-release, and a release older than
+    /// the one running is never printed as simply `latest`.
+    #[test]
+    fn a_status_qualifies_every_latest_below_or_beside_a_pre_release() {
+        let rc3 = version("0.12.0-rc.3");
+        assert_eq!(
+            latest_text(&rc3, Some("0.11.0"), Some("0.12.0-rc.5")),
+            "latest stable 0.11.0 · latest pre-release 0.12.0-rc.5 (you run 0.12.0-rc.3: af self \
+             update --rc)"
+        );
+        // Nothing newer: both named, no command.
+        assert_eq!(
+            latest_text(&version("0.12.0-rc.5"), Some("0.11.0"), Some("0.12.0-rc.5")),
+            "latest stable 0.11.0 · latest pre-release 0.12.0-rc.5"
+        );
+        // A stable release below the running stable one is qualified too.
+        assert_eq!(
+            latest_text(&version("0.12.1"), Some("0.12.0"), None),
+            "latest stable 0.12.0"
+        );
+        // The plain form only for a stable af at or below the newest stable release.
+        assert_eq!(
+            latest_text(&version("0.11.0"), Some("0.12.0"), None),
+            "latest 0.12.0"
+        );
+        assert_eq!(
+            latest_text(&version("0.12.0"), Some("0.12.0"), None),
+            "latest 0.12.0"
+        );
+        // A pre-release older than the newest stable release is not news.
+        assert_eq!(
+            latest_text(&rc3, Some("0.12.0"), Some("0.12.0-rc.4")),
+            "latest stable 0.12.0"
+        );
+        assert_eq!(latest_text(&rc3, None, None), "");
+        for (running, latest, pre) in [
+            ("0.12.0-rc.3", Some("0.11.0"), Some("0.12.0-rc.5")),
+            ("0.12.1", Some("0.12.0"), None),
+            ("0.13.0-rc.1", Some("0.12.0"), None),
+        ] {
+            let text = latest_text(&version(running), latest, pre);
+            assert!(!text.starts_with("latest 0"), "{running}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_pre_release_user_is_told_of_the_next_pre_release_through_rc() {
+        let cache = |latest: Option<&str>, pre: Option<&str>| CheckCache {
+            latest: latest.map(str::to_string),
+            latest_prerelease: pre.map(str::to_string),
+            ..CheckCache::default()
+        };
+        let rc3 = version("0.12.0-rc.3");
+        assert_eq!(
+            newer_release(&cache(Some("0.11.0"), Some("0.12.0-rc.5")), &rc3),
+            Some((version("0.12.0-rc.5"), "af self update --rc"))
+        );
+        assert_eq!(
+            newer_release(&cache(Some("0.12.0"), Some("0.12.0-rc.5")), &rc3),
+            Some((version("0.12.0"), "af self update"))
+        );
+        assert_eq!(
+            newer_release(&cache(Some("0.11.0"), Some("0.12.0-rc.3")), &rc3),
+            None
+        );
+        // A stable af hears of stable releases only.
+        assert_eq!(
+            newer_release(
+                &cache(Some("0.11.0"), Some("0.12.0-rc.5")),
+                &version("0.11.0")
+            ),
+            None
+        );
+    }
+
+    /// The cache this release writes is `af/self-check@3`, its schema's shape, and a cache of
+    /// version 2 is due a check, never read (ADR-0145).
+    #[test]
+    fn the_check_cache_is_version_3_and_matches_its_schema() {
+        let mut cache = CheckCache {
+            checked_at_epoch: 1_700_000_000,
+            attempted_at_epoch: 1_700_000_100,
+            last_error: Some(check_error(
+                "curl https://api.github.com/x: curl did not answer\nwithin 70 s",
+            )),
+            latest: Some("0.11.0".into()),
+            latest_prerelease: Some("0.12.0-rc.5".into()),
+            channel: "stable".into(),
+            ..CheckCache::default()
+        };
+        cache.auto_updated = Some(AutoUpdated {
+            from: "0.11.0".into(),
+            to: "0.12.0".into(),
+            default: DefaultMark {
+                version: Some("0.12.0".into()),
+                activations: 2,
+                link: Some("1:2:3.000000004".into()),
+            },
+        });
+        let text = toml::to_string_pretty(&cache).unwrap();
+        let value: toml::Value = toml::from_str(&text).unwrap();
+        let schema = include_str!("../../../schemas/self-check-v3.json");
+        valid(schema, &serde_json::to_value(&value).unwrap());
+        valid(
+            schema,
+            &serde_json::to_value(CheckCache::default()).unwrap(),
+        );
+        assert_eq!(
+            cache.last_error.as_deref(),
+            Some("curl https://api.github.com/x: curl did not answer within 70 s")
+        );
+        let back: CheckCache = toml::from_str(&text).unwrap();
+        assert_eq!(back.schema, "af/self-check@3");
+        assert_eq!(back.latest_prerelease.as_deref(), Some("0.12.0-rc.5"));
+        // Version 2 fails closed: its cache is read as none.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            versions: dir.path().join("versions"),
+            bin: dir.path().join("bin/af"),
+            state_file: dir.path().join("self.toml"),
+            cache_file: dir.path().join("latest.toml"),
+        };
+        std::fs::write(
+            &paths.cache_file,
+            "schema = \"af/self-check@2\"\nchecked_at_epoch = 5\nlatest = \"0.11.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(read_cache(&paths).checked_at_epoch, 0);
+        std::fs::write(&paths.cache_file, &text).unwrap();
+        assert_eq!(read_cache(&paths).checked_at_epoch, 1_700_000_000);
+    }
+
+    #[test]
+    fn a_recorded_failure_is_one_bounded_line() {
+        let long = format!("first\nsecond\t{}", "é".repeat(400));
+        let line = check_error(&long);
+        assert!(line.len() <= MAX_CHECK_ERROR_BYTES, "{}", line.len());
+        assert!(line.starts_with("first second é"), "{line}");
+        assert!(!line.chars().any(char::is_control));
+    }
+
+    /// `check_every` counts from the last attempt, answered or not.
+    #[test]
+    fn a_failed_attempt_throttles_the_next_check() {
+        let policy = SelfPolicy {
+            update_check: true,
+            check_every: std::time::Duration::from_secs(100),
+            auto_update: AutoUpdate::Notify,
+            channel: Channel::Stable,
+            install_pins: InstallPins::Ask,
+            keep_versions: 3,
+            source: "owner/repo".into(),
+        };
+        let mut cache = CheckCache {
+            checked_at_epoch: 1_000,
+            ..CheckCache::default()
+        };
+        assert!(check_due(&policy, &cache, 1_200));
+        cache.attempted_at_epoch = 1_150;
+        assert!(!check_due(&policy, &cache, 1_200));
+        assert!(check_due(&policy, &cache, 1_250));
+    }
+
+    /// `af self status --json` is `af/self-status@1`, its schema's shape.
+    #[test]
+    fn the_status_document_matches_its_schema() {
+        let view = StatusView {
+            schema: STATUS_SCHEMA,
+            version: VERSION,
+            target: TARGET,
+            commit: COMMIT,
+            release_key: release_key_source(),
+            running: PathBuf::from("/usr/local/bin/af"),
+            receipt: Some(Receipt {
+                version: "0.11.0".into(),
+                target: TARGET.into(),
+                source: "github:owner/repo".into(),
+                asset: asset_name("0.11.0"),
+                sha256: "0".repeat(64),
+                verified_by: "minisign".into(),
+                installed_at: "2026-10-01T00:00:00Z".into(),
+            }),
+            default: Some("0.11.0".into()),
+            default_status: "managed",
+            installed: vec!["0.11.0".into()],
+            pin: Some(PinView {
+                version: "0.11.0".into(),
+                lock: PathBuf::from("/repo/.af/af.lock"),
+                installed: true,
+                digest: None,
+            }),
+            pinned_projects: vec![SeenPin {
+                lock: PathBuf::from("/repo/.af/af.lock"),
+                version: "0.11.0".into(),
+                seen: "2026-10-01T00:00:00Z".into(),
+            }],
+            last_check: Some(iso(1_700_000_000)),
+            last_attempt: Some(iso(1_700_000_100)),
+            last_error: Some("the GitHub API answered HTTP 404".into()),
+            latest: Some("0.11.0".into()),
+            latest_prerelease: Some("0.12.0-rc.5".into()),
+            check_stalled_since: Some(iso(1_699_000_000)),
+            policy: PolicyView {
+                update_check: true,
+                check_every_secs: 86_400,
+                auto_update: "notify",
+                channel: "stable",
+                install_pins: "ask",
+                keep_versions: 3,
+                source: "owner/repo".into(),
+            },
+            paths: BTreeMap::from([
+                ("versions", PathBuf::from("/d/versions")),
+                ("default", PathBuf::from("/b/af")),
+                ("state", PathBuf::from("/s/self.toml")),
+                ("cache", PathBuf::from("/c/latest.toml")),
+            ]),
+        };
+        let schema = include_str!("../../../schemas/self-status-v1.json");
+        valid(schema, &serde_json::to_value(&view).unwrap());
+        let bare = StatusView {
+            receipt: None,
+            default: None,
+            pin: None,
+            last_check: None,
+            last_attempt: None,
+            last_error: None,
+            latest: None,
+            latest_prerelease: None,
+            check_stalled_since: None,
+            ..view
+        };
+        valid(schema, &serde_json::to_value(&bare).unwrap());
+    }
+
+    /// Finding S2: the holder of the check lock stamps when it took it, and a lock held for over
+    /// an hour is reported with the command that clears it.
+    #[test]
+    fn a_check_lock_held_for_over_an_hour_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            versions: dir.path().join("versions"),
+            bin: dir.path().join("bin/af"),
+            state_file: dir.path().join("self.toml"),
+            cache_file: dir.path().join("self/latest.toml"),
+        };
+        assert_eq!(check_held_since(&paths), None, "no lock file");
+        let held = try_lock_check(&paths).unwrap().expect("free");
+        let stamp = std::fs::read_to_string(paths.cache_file.with_extension("lock")).unwrap();
+        assert!(stamp.starts_with("started_at_epoch = "), "{stamp}");
+        let since = check_held_since(&paths).expect("held");
+        assert!(epoch_now().saturating_sub(since) < 60);
+        assert_eq!(
+            stalled_check(&paths, since),
+            None,
+            "a fresh check is no stall"
+        );
+        let stalled = stalled_check(&paths, epoch_now() - 2 * 3600).unwrap();
+        assert!(
+            stalled.starts_with("a release check has been running since ")
+                && stalled.ends_with(&format!(
+                    "; fix: rm {}",
+                    paths.cache_file.with_extension("lock").display()
+                )),
+            "{stalled}"
+        );
+        drop(held);
+        assert_eq!(check_held_since(&paths), None, "released");
+    }
 
     #[test]
     fn iso_renders_known_instants() {

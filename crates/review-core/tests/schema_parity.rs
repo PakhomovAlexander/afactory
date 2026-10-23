@@ -30,7 +30,9 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 189] = [
+const SCHEMAS: [&str; 191] = [
+    "task-check-report-v1.json",
+    "task-gate-retried-v1.json",
     "project-registered-v1.json",
     "project-brief-v1.json",
     "project-survey-pin-v1.json",
@@ -3806,6 +3808,8 @@ fn retired_warm_set_and_session_contracts_are_refused() {
     assert!(validate_event_payload(EventType::WarmSetSelectedV2, &with_session).is_err());
 }
 
+#[path = "schema_parity/task_check_report.rs"]
+mod task_check_report;
 #[path = "schema_parity/task_usage.rs"]
 mod task_usage;
 #[path = "schema_parity/task_usage_observation.rs"]
