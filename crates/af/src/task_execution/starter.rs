@@ -223,6 +223,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         } else {
             BTreeSet::new()
         },
+        recovery_attempts: None,
     };
     let node = |id: &str, operator, inputs, when| TaskNodeV1 {
         id: id.into(),

@@ -62,6 +62,7 @@ fn pipeline(implement: &OperatorSignature, evaluate: &OperatorSignature) -> Pipe
         max_attempts: 1,
         allow_local_replacement: true,
         independent_from: independent,
+        recovery_attempts: None,
     };
     let node = |id: &str, operator, inputs| TaskNodeV1 {
         id: id.into(),

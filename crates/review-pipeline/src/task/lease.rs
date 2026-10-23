@@ -4,7 +4,10 @@
 //! the exact writer through it on every tick, and renews through it only once the caller's
 //! connection has stayed held into the lease's last reserve, so no single Store operation can
 //! outlast a live writer's lease. That connection waits a bounded time for the database's write
-//! lock, and the reserve is long enough to wait out a lock a Store operation holds.
+//! lock, and the reserve is long enough to wait out a lock a Store operation holds. The
+//! heartbeat runs on its own thread by its own tick, whatever the Worker or the work does; it
+//! renews the 60 s lease once a third of it has passed, and a heartbeat that loses the lease
+//! says so first, so the work records nothing more and a successor settles it (ADR-0197).
 use review_store::{Cas, EventStore, store::task::TaskLease};
 use std::{
     sync::{
@@ -14,10 +17,13 @@ use std::{
     time::Duration,
 };
 
-/// The ADR-0089 heartbeat tick, renewal threshold and lease duration, unchanged.
-const TICK: Duration = Duration::from_secs(1);
-const RENEW_BELOW_MS: u64 = 10_000;
-const LEASE_MS: u64 = 15_000;
+/// The lease a Task writer takes and its heartbeat renews (ADR-0197): 60 s. Renewed once a
+/// third of it has passed, it survives 40 s in which the writer's process gets no CPU at all,
+/// which covers a laptop's wake from a short sleep, App Nap's timer coalescing and a loaded
+/// machine's scheduling delays. A longer lease only delays the takeover after a real crash,
+/// which `af task run` waits out and says so; a lost writer is recovered without being charged
+/// an Attempt either way.
+pub const TASK_LEASE_MS: u64 = 60_000;
 /// A due renewal that still cannot take the shared connection with this much lease left renews
 /// through the heartbeat's own connection instead. Until then it keeps waiting, because a
 /// renewal through the own connection can overtake an append the work is about to make.
@@ -32,6 +38,84 @@ const RETRY: Duration = Duration::from_millis(10);
 /// The first and the longest pause after a renewal through the own connection fails.
 const BACKOFF: Duration = Duration::from_millis(20);
 const MAX_BACKOFF: Duration = Duration::from_millis(200);
+
+/// The first words of every error a failed heartbeat returns: the writer can no longer hold the
+/// Task's lease, so it records nothing more and its successor settles its work (ADR-0197).
+pub const WRITER_LOST: &str = "Task writer lost its lease (writer_lost)";
+
+/// The heartbeat's cadence for one lease length: renewal once a third of the lease has passed
+/// (two thirds remain), the own-connection reserve and the tick. `for_lease(15_000)` is the
+/// cadence ADR-0128 measured; production runs [`LeaseTiming::PRODUCTION`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaseTiming {
+    lease_ms: u64,
+    renew_below_ms: u64,
+    reserve_ms: u64,
+    tick: Duration,
+}
+
+impl LeaseTiming {
+    pub const PRODUCTION: Self = Self::for_lease(TASK_LEASE_MS);
+
+    /// The cadence of a lease of `lease_ms`: renewal with two thirds left, a reserve of at most
+    /// 4 s and a tick of at most 1 s. A lease shorter than 6 s has no room for the reserve
+    /// above its floor, so it is lengthened to 6 s.
+    pub const fn for_lease(lease_ms: u64) -> Self {
+        let lease_ms = if lease_ms < 6_000 { 6_000 } else { lease_ms };
+        let renew_below_ms = lease_ms / 3 * 2;
+        let reserve_ms = if RESERVE_MS < renew_below_ms / 2 {
+            RESERVE_MS
+        } else {
+            renew_below_ms / 2
+        };
+        let tick_ms = if lease_ms / 15 < 1_000 {
+            lease_ms / 15
+        } else {
+            1_000
+        };
+        Self {
+            lease_ms,
+            renew_below_ms,
+            reserve_ms,
+            tick: Duration::from_millis(tick_ms),
+        }
+    }
+
+    pub const fn lease_ms(&self) -> u64 {
+        self.lease_ms
+    }
+
+    /// How long the lease has left when the heartbeat renews it.
+    pub const fn renew_below_ms(&self) -> u64 {
+        self.renew_below_ms
+    }
+}
+
+/// What a heartbeat signals besides its own result: the cancellation it requests when it
+/// fails, the flag that says the writer lost its lease, and its cadence.
+#[derive(Debug, Clone, Copy)]
+pub struct HeartbeatControl<'a> {
+    pub cancellation: Option<&'a AtomicBool>,
+    pub writer_lost: Option<&'a AtomicBool>,
+    pub timing: LeaseTiming,
+}
+
+impl HeartbeatControl<'_> {
+    /// The writer lost its lease: flag it, then request cancellation, so the work sees the loss
+    /// before it sees the cancellation.
+    fn lost(&self) {
+        if let Some(flag) = self.writer_lost {
+            flag.store(true, Ordering::Release);
+        }
+        if let Some(flag) = self.cancellation {
+            flag.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn lost(error: impl std::fmt::Display) -> String {
+    format!("{WRITER_LOST}: {error}")
+}
 
 struct StopHeartbeat<'a>(&'a (Mutex<bool>, Condvar));
 impl Drop for StopHeartbeat<'_> {
@@ -58,11 +142,16 @@ fn now_ms() -> Result<u64, String> {
     review_store::store::task::now().map_err(|e| e.to_string())
 }
 
-fn renew_if_due(store: &mut EventStore, cas: &Cas, lease: &TaskLease) -> Result<(), String> {
+fn renew_if_due(
+    store: &mut EventStore,
+    cas: &Cas,
+    lease: &TaskLease,
+    timing: &LeaseTiming,
+) -> Result<(), String> {
     let lease_until = store.task_lease_state(lease).map_err(|e| e.to_string())?;
-    if lease_until < now_ms()?.saturating_add(RENEW_BELOW_MS) {
+    if lease_until < now_ms()?.saturating_add(timing.renew_below_ms) {
         store
-            .renew_task_lease(cas, lease, LEASE_MS)
+            .renew_task_lease(cas, lease, timing.lease_ms)
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -76,8 +165,9 @@ fn renew_through_own(
     own: &mut EventStore,
     cas: &Cas,
     lease: &TaskLease,
+    timing: &LeaseTiming,
 ) -> Result<Result<(), (String, u64)>, String> {
-    match own.renew_task_lease(cas, lease, LEASE_MS) {
+    match own.renew_task_lease(cas, lease, timing.lease_ms) {
         Ok(_) => Ok(Ok(())),
         Err(error) => {
             let lease_until = own.task_lease_state(lease).map_err(|e| e.to_string())?;
@@ -102,16 +192,40 @@ pub fn with_heartbeat_controlled<T>(
     cancellation: Option<&AtomicBool>,
     work: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
+    with_heartbeat_supervised(
+        store,
+        cas,
+        lease,
+        HeartbeatControl {
+            cancellation,
+            writer_lost: None,
+            timing: LeaseTiming::PRODUCTION,
+        },
+        work,
+    )
+}
+
+/// Run `work` under a heartbeat that renews `lease` on its own thread, by its own clock and
+/// cadence, whatever the work does (ADR-0128, ADR-0197). A heartbeat that cannot keep the lease
+/// flags `writer_lost`, requests cancellation, and returns an error that starts with
+/// [`WRITER_LOST`] and states what the Store observed: its time and the lease's expiry, or the
+/// writer that holds the lease now.
+pub fn with_heartbeat_supervised<T>(
+    store: &Mutex<&mut EventStore>,
+    cas: &Cas,
+    lease: &TaskLease,
+    control: HeartbeatControl<'_>,
+    work: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let timing = control.timing;
     let own = {
         let mut shared = store.lock().expect("Task Store");
         // Enter with a full lease while no work can hold the Store yet. A lease that cannot be
         // read or renewed here is lost authority (ADR-0089): request cancellation and never
         // start the work, however quickly it would have finished before the first tick.
-        if let Err(error) = renew_if_due(&mut shared, cas, lease) {
-            if let Some(flag) = cancellation {
-                flag.store(true, Ordering::Release);
-            }
-            return Err(error);
+        if let Err(error) = renew_if_due(&mut shared, cas, lease, &timing) {
+            control.lost();
+            return Err(lost(error));
         }
         // A Store that cannot be reopened, such as one with no database file, keeps the shared
         // connection as its only path, exactly as before ADR-0128.
@@ -120,89 +234,107 @@ pub fn with_heartbeat_controlled<T>(
     let stopped = (Mutex::new(false), Condvar::new());
     std::thread::scope(|scope| {
         let heartbeat = scope.spawn(|| -> Result<(), String> {
-            // Unwinding is also a failed heartbeat. Request interruption before joining work.
-            struct CancelOnFailure<'a>(Option<&'a AtomicBool>);
+            // Unwinding is also a failed heartbeat. Flag the loss and request interruption
+            // before joining work.
+            struct CancelOnFailure<'a>(Option<HeartbeatControl<'a>>);
             impl Drop for CancelOnFailure<'_> {
                 fn drop(&mut self) {
-                    if let Some(flag) = self.0 {
-                        flag.store(true, Ordering::Release);
+                    if let Some(control) = self.0 {
+                        control.lost();
                     }
                 }
             }
-            let mut failure = CancelOnFailure(cancellation);
-            let Some(mut own) = own else {
-                loop {
-                    if stopped_within(&stopped, TICK) {
-                        failure.0 = None;
-                        return Ok(());
-                    }
-                    renew_if_due(&mut store.lock().expect("Task Store"), cas, lease)?;
-                }
-            };
-            loop {
-                if stopped_within(&stopped, TICK) {
-                    failure.0 = None;
-                    return Ok(());
-                }
-                // Observe the exact writer without waiting for the work's connection, so a
-                // successor or an expiry is seen even while a Store operation is running.
-                let lease_until = own.task_lease_state(lease).map_err(|e| e.to_string())?;
-                if lease_until >= now_ms()?.saturating_add(RENEW_BELOW_MS) {
-                    continue;
-                }
-                let mut lease_until = lease_until;
-                let mut backoff = BACKOFF;
-                let mut last_error = None;
-                while lease_until < now_ms()?.saturating_add(RENEW_BELOW_MS) {
-                    match store.try_lock() {
-                        Ok(mut shared) => {
-                            renew_if_due(&mut shared, cas, lease)?;
-                            break;
-                        }
-                        Err(TryLockError::Poisoned(_)) => {
-                            return Err("Task Store lock is poisoned".into());
-                        }
-                        Err(TryLockError::WouldBlock) => {}
-                    }
-                    let now = now_ms()?;
-                    if lease_until <= now.saturating_add(RESERVE_FLOOR_MS) {
-                        // Too little lease is left for another wait on the write lock to commit
-                        // before expiry: fail while this writer still holds authority.
-                        return Err(last_error.unwrap_or_else(|| {
-                            "Task writer lease could not be renewed before expiry".into()
-                        }));
-                    }
-                    if lease_until > now.saturating_add(RESERVE_MS) {
-                        if stopped_within(&stopped, RETRY) {
-                            failure.0 = None;
+            let mut failure = CancelOnFailure(Some(control));
+            let beat = || -> Result<(), String> {
+                let Some(mut own) = own else {
+                    loop {
+                        if stopped_within(&stopped, timing.tick) {
                             return Ok(());
                         }
-                        continue;
+                        renew_if_due(&mut store.lock().expect("Task Store"), cas, lease, &timing)?;
                     }
-                    // The work's connection is still held. The Store validates and fences this
-                    // renewal exactly as the shared connection's, so lost authority still mints
-                    // nothing.
-                    match renew_through_own(&mut own, cas, lease)? {
-                        Ok(()) => break,
-                        Err((error, fresh)) => {
-                            last_error = Some(error);
-                            lease_until = fresh;
-                        }
-                    }
-                    if stopped_within(&stopped, backoff) {
-                        failure.0 = None;
-                        return Ok(());
-                    }
-                    backoff = (backoff * 2).min(MAX_BACKOFF);
-                }
+                };
+                beat_through_own(store, &mut own, cas, lease, &timing, &stopped)
+            };
+            let result = beat().map_err(lost);
+            if result.is_ok() {
+                failure.0 = None;
             }
+            result
         });
         let stop = StopHeartbeat(&stopped);
         let result = work();
         drop(stop);
         heartbeat
             .join()
-            .map_err(|_| "Task heartbeat panicked".to_string())??;
+            .map_err(|_| lost("Task heartbeat panicked"))??;
         result
     })
+}
+
+/// The heartbeat loop with its own connection: observe every tick through it, renew through
+/// the shared connection when due, and through the own one only in the lease's last reserve.
+/// Returns once the owner stops the heartbeat; an error is lost authority.
+fn beat_through_own(
+    store: &Mutex<&mut EventStore>,
+    own: &mut EventStore,
+    cas: &Cas,
+    lease: &TaskLease,
+    timing: &LeaseTiming,
+    stopped: &(Mutex<bool>, Condvar),
+) -> Result<(), String> {
+    loop {
+        if stopped_within(stopped, timing.tick) {
+            return Ok(());
+        }
+        // Observe the exact writer without waiting for the work's connection, so a
+        // successor or an expiry is seen even while a Store operation is running.
+        let lease_until = own.task_lease_state(lease).map_err(|e| e.to_string())?;
+        if lease_until >= now_ms()?.saturating_add(timing.renew_below_ms) {
+            continue;
+        }
+        let mut lease_until = lease_until;
+        let mut backoff = BACKOFF;
+        let mut last_error = None;
+        while lease_until < now_ms()?.saturating_add(timing.renew_below_ms) {
+            match store.try_lock() {
+                Ok(mut shared) => {
+                    renew_if_due(&mut shared, cas, lease, timing)?;
+                    break;
+                }
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err("Task Store lock is poisoned".into());
+                }
+                Err(TryLockError::WouldBlock) => {}
+            }
+            let now = now_ms()?;
+            if lease_until <= now.saturating_add(RESERVE_FLOOR_MS) {
+                // Too little lease is left for another wait on the write lock to commit
+                // before expiry: fail while this writer still holds authority.
+                return Err(last_error.unwrap_or_else(|| {
+                    "Task writer lease could not be renewed before expiry".into()
+                }));
+            }
+            if lease_until > now.saturating_add(timing.reserve_ms) {
+                if stopped_within(stopped, RETRY) {
+                    return Ok(());
+                }
+                continue;
+            }
+            // The work's connection is still held. The Store validates and fences this
+            // renewal exactly as the shared connection's, so lost authority still mints
+            // nothing.
+            match renew_through_own(own, cas, lease, timing)? {
+                Ok(()) => break,
+                Err((error, fresh)) => {
+                    last_error = Some(error);
+                    lease_until = fresh;
+                }
+            }
+            if stopped_within(stopped, backoff) {
+                return Ok(());
+            }
+            backoff = (backoff * 2).min(MAX_BACKOFF);
+        }
+    }
 }

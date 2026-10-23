@@ -258,7 +258,8 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
         "{text}"
     );
 
-    // The interrupted Attempt is the one failure, of the implementer, with its recorded charge.
+    // The interrupted Attempt is the one failure, of the implementer, with its recorded charge:
+    // abandoned, since its host cancelled it (ADR-0197).
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let projection = store
@@ -271,7 +272,7 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
         .filter(|a| {
             matches!(
                 a.result,
-                Some(review_core::task::execution::TaskAttemptResultV1::Failed { .. })
+                Some(review_core::task::execution::TaskAttemptResultV1::Abandoned { .. })
             )
         })
         .collect();
@@ -627,7 +628,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     // `af task show --json`: the settlement carries the marker and a closed diagnostic.
     let shown = f.cli(&["task", "show", "release-notes"]);
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v11.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v12.json"), &shown);
     assert_eq!(shown["unknown_usage_attempts"], 1, "{shown:#}");
     let settled = shown["execution_records"]
         .as_array()
@@ -660,7 +661,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     assert!(listed.contains("5712 tokens (+1 unknown)"), "{listed}");
     let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
     schemas::valid(
-        &schemas::validator("task-list-entry-v2.json"),
+        &schemas::validator("task-list-entry-v3.json"),
         &listed["tasks"][0],
     );
     assert_eq!(
@@ -772,7 +773,7 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
     assert!(row.contains("collected "), "{row}");
     let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
     let entry = &listed["tasks"][0];
-    schemas::valid(&schemas::validator("task-list-entry-v2.json"), entry);
+    schemas::valid(&schemas::validator("task-list-entry-v3.json"), entry);
     assert_eq!(entry["unknown_usage_attempts"], 1, "{entry:#}");
     assert_eq!(entry["collected"]["unknown_usage_attempts"], 1, "{entry:#}");
     schemas::valid(

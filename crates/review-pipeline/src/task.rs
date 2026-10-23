@@ -181,6 +181,10 @@ pub struct TaskRuntime<'store, 'host> {
     authority: &'host dyn TaskAuthority,
     host: &'host dyn TaskOperatorHost,
     cancellation: Option<&'host AtomicBool>,
+    /// Set by the heartbeat when this writer lost its lease (ADR-0197): the run records nothing
+    /// more, so the successor settles its work as abandoned by a lost writer.
+    writer_lost: AtomicBool,
+    lease_timing: lease::LeaseTiming,
     prepared: Mutex<BTreeMap<String, PreparedTaskAttempt>>,
     pending_outputs: Mutex<BTreeMap<String, (String, Option<String>)>>,
     failures: Mutex<BTreeMap<String, NodeFailureClass>>,
@@ -335,9 +339,9 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         }
         let graph: CompiledTask =
             serde_json::from_value(value.payload).map_err(|e| e.to_string())?;
-        if graph.schema != "af.compiled-task/1" {
-            return Err("Unsupported compiled Task version".into());
-        }
+        graph
+            .validate_schema()
+            .map_err(|error| format!("Unsupported compiled Task version: {error}"))?;
         if let Some(plan_id) = &projection.plan_id {
             telemetry.plan(
                 &load,
@@ -359,6 +363,8 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             authority,
             host,
             cancellation: None,
+            writer_lost: AtomicBool::new(false),
+            lease_timing: lease::LeaseTiming::PRODUCTION,
             prepared: Mutex::new(BTreeMap::new()),
             pending_outputs: Mutex::new(BTreeMap::new()),
             failures: Mutex::new(BTreeMap::new()),
@@ -377,6 +383,27 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     pub fn with_cancellation(mut self, cancellation: &'host AtomicBool) -> Self {
         self.cancellation = Some(cancellation);
         self
+    }
+
+    /// Renew the lease on the cadence of `timing` instead of the production 60 s lease's: for a
+    /// caller that took its lease for another length.
+    pub fn with_lease_timing(mut self, timing: lease::LeaseTiming) -> Self {
+        self.lease_timing = timing;
+        self
+    }
+
+    /// What this run's heartbeats signal: its cancellation, its writer loss, its lease cadence.
+    fn heartbeat_control(&self) -> lease::HeartbeatControl<'_> {
+        lease::HeartbeatControl {
+            cancellation: self.cancellation,
+            writer_lost: Some(&self.writer_lost),
+            timing: self.lease_timing,
+        }
+    }
+
+    /// Whether this run's heartbeat lost the writer lease.
+    pub fn writer_lost(&self) -> bool {
+        self.writer_lost.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The one dispatch entry for every Task node: a cancelled or unresolvable node is
@@ -417,11 +444,11 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         if self.integration.is_some() {
             return Err("Activated Integration runtime can execute only its captured phase".into());
         }
-        let report = lease::with_heartbeat_controlled(
+        let report = lease::with_heartbeat_supervised(
             &self.store,
             self.cas,
             &self.lease,
-            self.cancellation,
+            self.heartbeat_control(),
             || self.graph.run(self),
         )?;
         self.record_run_report(&report)?;
@@ -1041,6 +1068,7 @@ impl TaskRuntime<'_, '_> {
             if attempt.is_none() && (charged != 0 || result.usage_observation.is_some()) {
                 return Err("Pure Task operator reported a paid operation".into());
             }
+            let cancelled = control::check(self.cancellation).is_err();
             if let Err(error) = control::check(self.cancellation) {
                 result.outputs = Err(error);
             }
@@ -1065,10 +1093,28 @@ impl TaskRuntime<'_, '_> {
                 })
             });
             if let Some(attempt) = &attempt {
+                // A writer that lost its lease records nothing more: its successor settles this
+                // Attempt as abandoned by a lost writer, from the usage retained above
+                // (ADR-0197).
+                if self.writer_lost() {
+                    return Err(format!(
+                        "{}: Attempt {} of {} is left for the next writer to settle",
+                        lease::WRITER_LOST,
+                        attempt.id(),
+                        input.node
+                    ));
+                }
                 let conclusion = match &produced {
                     Ok((output_id, _)) => TaskAttemptResultV1::Succeeded {
                         output_id: output_id.clone(),
                     },
+                    // Its host stopped it (SIGINT or SIGTERM): no answer of the Attempt, so it
+                    // is abandoned and counts against the node's recovery allowance, not its
+                    // Attempt limit (ADR-0197).
+                    Err(error) if cancelled => {
+                        let diagnostic_id = self.cas.put_json(&serde_json::json!({"schema":"af.task-diagnostic/1", "error":error, "cause":"host_cancelled"})).map_err(|e| e.to_string())?;
+                        TaskAttemptResultV1::Abandoned { diagnostic_id }
+                    }
                     Err(error) => {
                         let diagnostic_id = self.cas.put_json(&serde_json::json!({"schema":"af.task-diagnostic/1", "error":error})).map_err(|e| e.to_string())?;
                         TaskAttemptResultV1::Failed {

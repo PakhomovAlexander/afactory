@@ -898,6 +898,37 @@
         }
       }
     },
+    "contractV3": {
+      "description": "The contract of af.pipeline/3: its inputs may hold a Project Brief port (ADR-0160), and need not.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputs",
+        "outputs"
+      ],
+      "properties": {
+        "inputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/inputPortV2"
+          },
+          "minProperties": 0
+        },
+        "outputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/outputPort"
+          },
+          "minProperties": 1
+        }
+      }
+    },
     "valueRef": {
       "oneOf": [
         {
@@ -987,6 +1018,62 @@
           "$comment": "Canonical ascending order is required by semantic admission; typed round-trips preserve identity."
         }
       }
+    },
+    "slotV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "worker",
+        "role",
+        "input_type",
+        "output_type",
+        "min_attempts",
+        "max_attempts",
+        "allow_local_replacement",
+        "independent_from"
+      ],
+      "properties": {
+        "worker": {
+          "$ref": "#/$defs/package"
+        },
+        "role": {
+          "$ref": "#/$defs/name"
+        },
+        "input_type": {
+          "$ref": "#/$defs/artifactType"
+        },
+        "output_type": {
+          "$ref": "#/$defs/artifactType"
+        },
+        "min_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "allow_local_replacement": {
+          "type": "boolean"
+        },
+        "independent_from": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/name"
+          },
+          "uniqueItems": true,
+          "minItems": 0,
+          "$comment": "Canonical ascending order is required by semantic admission; typed round-trips preserve identity."
+        },
+        "recovery_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        }
+      },
+      "description": "An af.pipeline/3 Worker slot: an af.pipeline/1 slot that may declare recovery_attempts, how many of its nodes' Attempts may be abandoned (their writer lost, or their host cancelled them) and dispatched again (ADR-0197); absent means one."
     },
     "operator": {
       "oneOf": [
@@ -1595,6 +1682,100 @@
             "$ref": "#/$defs/slot"
           },
           "minProperties": 0
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          },
+          "uniqueItems": true,
+          "minItems": 1,
+          "maxItems": 64
+        },
+        "outputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/valueRef"
+          },
+          "minProperties": 1
+        },
+        "coverage": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/valueRef"
+          },
+          "minProperties": 0
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "max_parallel": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        }
+      }
+    },
+    "pipelineV3": {
+      "description": "af.pipeline/3: a pipeline with a slot that declares recovery_attempts (ADR-0197), whether or not its contract declares a Project Brief port; a pipeline with no slot recovery allowance is af.pipeline/2 when it declares a Brief port and af.pipeline/1 otherwise.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "name",
+        "version",
+        "contract",
+        "accepts",
+        "slots",
+        "nodes",
+        "outputs",
+        "coverage",
+        "max_attempts",
+        "max_parallel"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pipeline/3"
+        },
+        "name": {
+          "$ref": "#/$defs/package"
+        },
+        "version": {
+          "$ref": "#/$defs/text"
+        },
+        "contract": {
+          "$ref": "#/$defs/contractV3"
+        },
+        "accepts": {
+          "$ref": "#/$defs/applicability"
+        },
+        "slots": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/slotV3"
+          },
+          "minProperties": 0,
+          "not": {
+            "additionalProperties": {
+              "not": {
+                "required": [
+                  "recovery_attempts"
+                ]
+              }
+            }
+          },
+          "$comment": "At least one slot declares recovery_attempts: that is what makes a pipeline af.pipeline/3."
         },
         "nodes": {
           "type": "array",

@@ -176,7 +176,7 @@ make it. `fixtures/task-runtime/bound-inputs/` is built that way, and says so.
   Task output — two for a port bound from two — and one `bound <port> <- artifact sha256:…` line
   per exact-artifact binding, and its
   `--json` document carries `input_bindings` — present only when there is a binding, inside the
-  one `af/task-inspection@11` generation. The self-optimizer's AF history adapter reads it as
+  one `af/task-inspection@12` generation. The self-optimizer's AF history adapter reads it as
   provenance that changes no counter.
 - The durable record is one `af/TaskInputBindings@1` artifact referenced from the revision's
   `provenance.input_artifact_ids`, one entry per bound port. A port bound from several outputs
@@ -225,7 +225,7 @@ that re-rooted it first, which is not what this Task's file referenced.
 
 `schemas/task-file-v1.json` gained the optional `inputs` property with the two closed forms;
 `schemas/task-input-bindings-v1.json`, `schemas/task-source-origin-v2.json` and
-`schemas/task-inspection-v11.json` gains the optional `input_bindings` property. The `SCHEMAS` array in
+`schemas/task-inspection-v12.json` gains the optional `input_bindings` property. The `SCHEMAS` array in
 `crates/review-core/tests/schema_parity.rs` and its length constant grew by three, with parity
 tests in `crates/review-core/tests/schema_parity/task_contracts.rs` beside the existing
 Task-contract ones.
@@ -252,7 +252,7 @@ Task-contract ones.
 - Unit, `af::task_execution::preview`: the `IN` annotation and the `BOUND` rows sanitize a
   hostile Task ID, as `display_data_cannot_inject_terminal_actions` already requires, render the
   exact-artifact form, and keep the exact artifact ID off the wrap boundary.
-- Unit, `af::self_optimizer::optimization_adapters`: a real bound `af/task-inspection@11` receipt is
+- Unit, `af::self_optimizer::optimization_adapters`: a real bound `af/task-inspection@12` receipt is
   admitted and its accounting reads exactly as the same receipt at `@11`.
 - Integration, `crates/af/tests/task_input_bindings.rs`: the `fixtures/task-runtime/bound-inputs/`
   repository runs four Tasks in one Store. `chain-base` is an ordinary reviewed implementation
@@ -264,11 +264,11 @@ Task-contract ones.
   that re-rooted tree again by exact artifact: it is carried verbatim, and its delivery refusal
   names the artifact it bound rather than the Task recorded in the origin of the first
   re-rooting. The test asserts the `af task explain` `BOUND` rows, validates both bound documents
-  against `schemas/task-inspection-v11.json`, and checks that `chain-base`'s own document is
+  against `schemas/task-inspection-v12.json`, and checks that `chain-base`'s own document is
   unchanged.
 - Integration, the same file: `successor-issue.json` binds `history` and captures a local issue.
   Changing the issue and running `af task refresh` makes a new revision that still carries the
-  binding record in its provenance, still emits `input_bindings` in its `af/task-inspection@11` document, and
+  binding record in its provenance, still emits `input_bindings` in its `af/task-inspection@12` document, and
   still prints the `BOUND` row and the `bound` line.
 - Unit, `af::providers`: a Claude usage probe whose leader starts a same-group descendant that
   ignores `SIGHUP` and then exits without a limit leaves no descendant behind — the exit is

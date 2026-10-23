@@ -611,10 +611,15 @@ fn telemetry_interrupted_before_an_attempt_keeps_its_ordinal() {
     let mut child = machine
         .command(
             &repo,
-            &[(
-                "AF_TEST_TASK_PAUSE_AFTER_RUN_OPENS",
-                pauses.to_str().unwrap(),
-            )],
+            &[
+                (
+                    "AF_TEST_TASK_PAUSE_AFTER_RUN_OPENS",
+                    pauses.to_str().unwrap(),
+                ),
+                // A fifteen-second lease, so the dead writer's lease expires well inside the
+                // Task's one-minute wall; production leases are 60 s (ADR-0197).
+                ("AF_TEST_TASK_LEASE_MS", "15000"),
+            ],
             &[
                 "task",
                 "start",
@@ -664,7 +669,7 @@ fn telemetry_interrupted_before_an_attempt_keeps_its_ordinal() {
     let resumed = loop {
         let resumed = machine.af(
             &repo,
-            &[],
+            &[("AF_TEST_TASK_LEASE_MS", "15000")],
             &[
                 "task",
                 "run",

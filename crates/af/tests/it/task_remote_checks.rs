@@ -451,7 +451,7 @@ fn a_finished_remote_check_task_closes_its_gate_pull_request_and_deletes_its_bra
     fixture.map("");
     let done = run_remote_task(&fixture, TASK);
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v11.json"),
+        &crate::schemas::validator("task-inspection-v12.json"),
         &done,
     );
     let [cleanup] = done["gate_cleanups"].as_array().unwrap().as_slice() else {

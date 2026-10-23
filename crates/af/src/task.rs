@@ -1753,11 +1753,15 @@ fn print_task_list(
                 "collected {}",
                 review_core::task::collection::collected_time(time)
             ),
-            None => task
-                .pointer("/delivery/outcome/kind")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("not-delivered")
-                .to_owned(),
+            // An interrupted run's Task names its cause and what continues it (ADR-0197).
+            None => match (task["cause"].as_str(), task["next_action"].as_str()) {
+                (Some(cause), Some(next)) => format!("abandoned ({cause}); next: {next}"),
+                _ => task
+                    .pointer("/delivery/outcome/kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("not-delivered")
+                    .to_owned(),
+            },
         };
         let sizes = match task.get("sizes") {
             Some(sizes) => format!(

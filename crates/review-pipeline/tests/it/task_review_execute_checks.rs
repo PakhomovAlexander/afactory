@@ -308,6 +308,7 @@ fn run(case: &'static str) -> Outcome {
                 max_attempts: 1,
                 allow_local_replacement: false,
                 independent_from: BTreeSet::new(),
+                recovery_attempts: None,
             },
         )]),
         nodes: vec![

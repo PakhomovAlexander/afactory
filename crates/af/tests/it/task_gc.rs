@@ -165,7 +165,7 @@ fn keeping_one_collects_the_older_task_and_removes_exactly_the_previewed_bytes()
 
     // Sizes: each Task's own bytes and the bytes it shares — the source Snapshot, at least.
     let sized = json_of(&repo, &state, &["task", "list", "--sizes"], 0);
-    let entries = schemas::validator("task-list-entry-v2.json");
+    let entries = schemas::validator("task-list-entry-v3.json");
     for task in sized["tasks"].as_array().unwrap() {
         schemas::valid(&entries, task);
         assert!(
@@ -426,7 +426,7 @@ fn a_bound_task_is_never_collected_and_the_preview_names_its_binder() {
     );
     assert_eq!(entry(&next, "chain-base")["disposition"]["kind"], "collect");
     let kept = json_of(&repo, &state, &["task", "show", "chain-base"], 0);
-    assert_eq!(kept["schema"], "af/task-inspection@11");
+    assert_eq!(kept["schema"], "af/task-inspection@12");
 }
 
 #[test]

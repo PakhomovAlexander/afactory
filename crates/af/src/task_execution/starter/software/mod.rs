@@ -121,6 +121,7 @@ pub(super) fn slot(
         max_attempts: maximum,
         allow_local_replacement: true,
         independent_from: independent.iter().map(|name| (*name).into()).collect(),
+        recovery_attempts: None,
     }
 }
 pub(super) fn worker_definition(

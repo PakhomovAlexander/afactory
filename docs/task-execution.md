@@ -37,6 +37,12 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   and its cause, never at its reservation or an estimate: it releases its reservation, adds to no
   budget and still counts against the Attempt limits, and every report shows it as unknown
   ([ADR-0143](adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)).
+- An Attempt whose writer was lost or whose run was interrupted is settled as abandoned, charged
+  its reported usage and never its reservation, and counts against its node's recovery
+  allowance, one unless its `af.pipeline/3` slot declares `recovery_attempts`, instead of any
+  Attempt limit; the writer lease is 60 s, renewed by its own heartbeat thread, and the resume
+  says on its first line what it runs again or why it cannot
+  ([ADR-0197](adr/0197-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
 - Result construction determines failed execution before acceptance: passing receipts cannot
   make incomplete work Satisfied, and genuine negative verification remains Unsatisfied with its
   evidence ([ADR-0093](adr/0093-derive-code-task-acceptance-from-execution-and-evidence.md)).
@@ -158,7 +164,8 @@ What it never grants:
 |---|---|
 | Task, Pipeline, plan, result and decision wire contracts | `crates/review-core/src/task/`, [`task-contracts-v1`](../schemas/task-contracts-v1.json), `fixtures/task-contracts/` |
 | Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
-| Inspection and listing | [`task-inspection-v11`](../schemas/task-inspection-v11.json), [`task-list-entry-v2`](../schemas/task-list-entry-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json), [`task-report-v1`](../schemas/task-report-v1.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
+| Inspection and listing | [`task-inspection-v12`](../schemas/task-inspection-v12.json), [`task-list-entry-v3`](../schemas/task-list-entry-v3.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json), [`compiled-task-v2`](../schemas/compiled-task-v2.json), [`task-report-v1`](../schemas/task-report-v1.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
+| Recovery of a lost or interrupted run ([ADR-0197](adr/0197-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)) | `crates/review-pipeline/src/task/lease.rs`, `crates/review-attempt/src/task_budget.rs`, `crates/af/src/task_execution/recovery.rs`, [`pipeline-definition-v3`](../schemas/pipeline-definition-v3.json) |
 | Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
 | Gate evidence and retry ([ADR-0196](adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)) | `crates/review-core/src/task/check_report.rs`, `crates/review-store/src/store/task/gate_retry.rs`, [`task-check-report-v1`](../schemas/task-check-report-v1.json), [`task-gate-retried-v1`](../schemas/task-gate-retried-v1.json) |
 | Store hygiene ([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)) | `crates/review-store/src/store/task/collection.rs`, [`task-collected-v1`](../schemas/task-collected-v1.json), [`task-collected-inspection-v1`](../schemas/task-collected-inspection-v1.json), [`task-gc-v1`](../schemas/task-gc-v1.json) |
@@ -187,6 +194,7 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 - [Experiments](task-execution/experiments.md) — measured baselines and candidates, the deterministic comparison and the evaluator gated on it.
 - [Remote Checks](task-execution/remote-checks.md) — declare a check's `remote` table, map it on one machine, and read the gate pull request's evidence.
 - [Run reports](task-execution/run-reports.md) — scheduler diagnostics and domain publication recovery.
+- [Interrupted runs](task-execution/interrupted-runs.md) — writer loss and interruption, what an abandoned Attempt is charged, the recovery allowance and the resume's first line.
 - [Self-optimizer economics](task-execution/self-optimizer.md) — declared history capture, exact project economics, the bounded candidate experiment and the light optimizer path.
 - [Review report inspection](task-execution/review-report-inspection.md) — exact current Task accounting beside immutable report snapshots.
 - [Campaign Review](task-execution/campaign-review.md) — how `af review run` maps onto the common Task runtime, and the CLI boundaries.

@@ -141,6 +141,29 @@ impl TaskProjection {
     pub fn lease_until_unix_ms(&self) -> u64 {
         self.lease_until
     }
+
+    /// The writer that holds, or last held, the Task's lease, and its epoch.
+    pub fn lease_writer(&self) -> (&str, u64) {
+        (&self.writer, self.epoch)
+    }
+
+    /// Whether the lease is still held at `now_unix_ms`: not released, and not yet expired.
+    /// A held lease may belong to a run that is still working, or to one that died and has
+    /// not expired yet; only expiry tells them apart, so no successor may take it before.
+    pub fn lease_held_at(&self, now_unix_ms: u64) -> bool {
+        now_unix_ms.max(self.last_time) < self.lease_until
+    }
+
+    /// The last time anything was recorded on the Task.
+    pub fn last_recorded_unix_ms(&self) -> u64 {
+        self.last_time
+    }
+
+    /// When the writer before the current lease last recorded anything, and when its lease
+    /// expired or was released.
+    pub fn previous_writer_unix_ms(&self) -> (u64, u64) {
+        self.previous_writer
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -332,6 +355,9 @@ pub struct TaskProjection {
     epoch: u64,
     lease_until: u64,
     last_time: u64,
+    /// The last time the writer before the current lease recorded anything, when a lost writer
+    /// was last seen alive, and the expiry of its lease (ADR-0197).
+    previous_writer: (u64, u64),
     resume_phase: Option<TaskPhaseV1>,
     recording_recovery: Option<recording::RecordingRecovery>,
     recording_report: Option<recording::RecordingRecovery>,
@@ -976,6 +1002,7 @@ impl TaskProjection {
                     "Task lease takeover is premature or has a stale epoch",
                 ));
             }
+            self.previous_writer = (self.last_time, self.lease_until);
             self.writer = transition.writer.clone();
             self.epoch = transition.epoch;
             self.lease_until = lease_until_unix_ms;
@@ -1651,6 +1678,7 @@ impl EventStore {
                     epoch: 1,
                     lease_until: *lease_until_unix_ms,
                     last_time: transition.now_unix_ms,
+                    previous_writer: (transition.now_unix_ms, *lease_until_unix_ms),
                     resume_phase: None,
                     recording_recovery: None,
                     recording_report: None,

@@ -132,7 +132,9 @@ machine slept — is charged 0 and its usage is recorded as unknown, with its ca
 or `unreported`); it is never charged its reservation or an estimate
 ([ADR-0143](adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)). It
 adds nothing to the Task's, a node's or the verification reserve's charged tokens, so only the
-Attempt limits bound repeated failures of this kind. `task list` prints such a Task's tokens as
+Attempt limits bound repeated failures of this kind. An Attempt that was abandoned, its writer
+lost or its run interrupted, is charged what was reported too, never its reservation, and is
+bounded by its node's recovery allowance instead ([below](#resume-an-interrupted-task)). `task list` prints such a Task's tokens as
 `1200 tokens (+1 unknown)` rather than as spend, `task show` adds the line
 `tokens 1200 (+1 unknown: capacity)` naming the causes, and their `--json` documents carry
 `unknown_usage_attempts`. A Claude Attempt whose bound model's safety classifier refused it
@@ -146,6 +148,35 @@ diagnostic ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-mode
 Task ID is also the delivery confirmation. An unverified Task is evidence, not a deliverable:
 read `task show`, fix the catalog, check, Worker or goal problem, then start a corrected Task
 under a new Task ID.
+
+## Resume an interrupted Task
+
+A run that stopped before its Task finished resumes with the same command, `af task run
+TASK_ID`: after Ctrl-C or SIGTERM, after a closed lid or a reboot, after `af` was killed, or after
+it lost its writer lease (the lease the one `af` process recording on a Task holds). The
+interrupted Attempt is settled as *abandoned*: it is charged only the usage its Provider reported
+before it stopped, never its reservation, which goes back to the Task's remaining tokens, and it
+uses none of its node's Attempts. The node runs again, once by default; a slot that declares
+`recovery_attempts` in an `af.pipeline/3` pipeline allows more. The run's first line says what
+it does:
+
+```text
+resuming Task pagination-cli: node root.nodes.implement was interrupted at 17:41:03Z (its writer was lost); settling the lost Attempt and dispatching a new one (1 recovery of 1)
+```
+
+or why it cannot continue, with exit code 1:
+
+```text
+af task: cannot continue Task pagination-cli: node root.nodes.implement lost its writer 2 times (recovery allowance 1); fix: start it again with `af task start --file TASK_FILE` (the Task file it was started from), or allow more with `[slots.implementer] recovery_attempts` in its pipeline (af.pipeline/3)
+```
+
+A killed run holds its 60 s lease until it expires; `af task run` waits that out and says so.
+Until a run resumes it, `af task show` prints `phase abandoned (cause writer_lost)` or `(cause
+host_cancelled)` and `next: af task run TASK_ID`, and `af task list` prints `abandoned (…); next:
+…`; their `--json` documents carry `cause` and `next_action`. On macOS `af task run` keeps the Mac
+from idle-sleeping while it runs (`caffeinate`), and `af task run --verbose` says so. The whole
+contract is in [interrupted runs](task-execution/interrupted-runs.md)
+([ADR-0197](adr/0197-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
 
 ## Retry a failed gate
 

@@ -273,6 +273,31 @@ fn task_run_help_describes_the_retry_of_a_failed_gate() {
     assert!(err(&both).contains("cannot be used with"), "{}", err(&both));
 }
 
+/// `af task run` says how an interrupted run resumes and what `--verbose` adds (ADR-0197), in
+/// `--help` and in `af help task run`.
+#[test]
+fn task_run_help_describes_the_resume_of_an_interrupted_run() {
+    for help in [af(&["task", "run", "--help"]), af(&["help", "task", "run"])] {
+        assert!(help.status.success(), "{}", err(&help));
+        let text = out(&help);
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "--verbose",
+            "Say on stderr how the run keeps the machine awake: the power assertion it holds on \
+             macOS, or why it holds none",
+            "resumes with `af task run TASK_ID`",
+            "It waits for a dead run's lease to expire (at most 60 s)",
+            "charged only the usage its Provider reported",
+            "without using one of the node's Attempts",
+            "unless its slot declares `recovery_attempts`",
+            "the first line says `cannot continue Task TASK_ID` with the count and the fix",
+            "af task run TASK_ID # resume after `interrupted by SIGINT`",
+        ] {
+            assert!(flat.contains(needle), "`{needle}` missing:\n{text}");
+        }
+    }
+}
+
 /// `af provider models` says what it reads, what the list proves, its options and its exit codes,
 /// in `--help`, in `af help provider models` and in its man page (ADR-0148).
 #[test]

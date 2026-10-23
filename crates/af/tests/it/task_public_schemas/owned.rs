@@ -149,7 +149,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
-    valid(&validator("task-inspection-v11.json"), &planned);
+    valid(&validator("task-inspection-v12.json"), &planned);
     let normal = json_output(cli(&repo, &state, &["task", "show", "pagination-cli"]), 0);
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
@@ -289,11 +289,11 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
     };
     let review_before = store.replay("review").unwrap();
     drop(store);
-    let schema = validator("task-inspection-v11.json");
+    let schema = validator("task-inspection-v12.json");
     let shown = json_output(cli(&repo, &state, &["task", "show", TASK]), 0);
     let explained = json_output(cli(&repo, &state, &["task", "explain", TASK]), 0);
     for value in [&shown, &explained] {
-        assert_eq!(value["schema"], "af/task-inspection@11");
+        assert_eq!(value["schema"], "af/task-inspection@12");
         valid(&schema, value);
         assert_eq!(
             value["owned_child_sets"],
@@ -333,7 +333,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         .iter()
         .find(|value| value["task_id"] == TASK)
         .unwrap();
-    valid(&validator("task-list-entry-v2.json"), listed);
+    valid(&validator("task-list-entry-v3.json"), listed);
     assert_eq!(listed["phase"], shown["phase"]);
     assert_eq!(listed["chargeable_tokens"], "0");
     assert_eq!(

@@ -50,6 +50,7 @@ mod issue;
 mod planning;
 mod preview;
 mod provider_admission;
+pub(crate) mod recovery;
 pub(super) mod refresh;
 mod selection;
 pub(crate) mod starter;
@@ -1742,7 +1743,7 @@ fn start_captured(
             // Store's Task of the same file (ADR-0140 derives the gate owner from this
             // transition), so it carries 64 bits from the operating system, not the PID alone.
             &format!("cli-{}-{:016x}", std::process::id(), opening_nonce()),
-            15_000,
+            recovery::lease_ms(),
         )
         .map_err(|e| e.to_string())?;
     let outcome = (|| {
@@ -1813,7 +1814,9 @@ fn release(
         .release_task_lease(cas, lease)
         .map_err(|e| e.to_string());
     match outcome {
-        Err(error) => Err(error),
+        // A writer that lost its lease cannot release it either: it says so, and how to
+        // continue (ADR-0197).
+        Err(error) => Err(recovery::writer_lost(lease.task_id(), &error).unwrap_or(error)),
         Ok(()) => {
             released?;
             Ok(())
@@ -2096,7 +2099,8 @@ fn execute(
 ) -> Result<(), String> {
     let cancellation = std::sync::atomic::AtomicBool::new(false);
     let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?
-        .with_cancellation(&cancellation);
+        .with_cancellation(&cancellation)
+        .with_lease_timing(recovery::timing());
     crate::interrupt::note_task(lease.task_id());
     let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
     // Interrupted work is neither assembled nor finished: the lease is released and the Task
@@ -2309,14 +2313,25 @@ pub(super) fn run(
     )?;
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
-    let lease = store
-        .take_task_lease(&cas, id, &format!("cli-{}", writer_pid()), 15_000)
-        .map_err(|e| e.to_string())?;
+    // A run that died holds its lease until it expires: wait it out rather than refuse
+    // (ADR-0197).
+    let lease = recovery::take_lease(&cas, &mut store, id, &format!("cli-{}", writer_pid()))?;
     let outcome = (|| {
         confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
+        let before = store
+            .task_projection(&cas, id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Unknown Task")?;
         store
             .recover_task_attempts(&cas, &lease)
             .map_err(|e| e.to_string())?;
+        // The first line says which interrupted node runs again, or why the Task cannot
+        // continue.
+        let after = store
+            .task_projection(&cas, id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Unknown Task")?;
+        recovery::announce(id, &before, &after)?;
         if retry_gate {
             let gates = store
                 .retry_task_gate(&cas, &lease, &trusted)
@@ -2431,7 +2446,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
             TaskPhaseV1::Finished { result_id } => Some(artifact(&cas, result_id, TASK_RESULT_V1)?),
             _ => None,
         };
-        Ok(json!({"schema":"af/task-list-entry@2","task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
+        Ok(json!({"schema":"af/task-list-entry@3","task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
             "outcome":result.as_ref().map(|r| &r.domain_conclusion),
             "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()).to_string(),
             "derived_snapshot_id":result.as_ref().and_then(|r| r.outputs.get("snapshot")).and_then(|o| o.snapshot_id.as_ref()),
@@ -2440,6 +2455,12 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
             let unknown = unknown_usage(&task).values().sum::<u64>();
             if unknown > 0 {
                 entry["unknown_usage_attempts"] = json!(unknown);
+            }
+            if let Some(abandoned) = clock()
+                .ok()
+                .and_then(|now| recovery::abandoned(&task, now))
+            {
+                abandoned.record(&mut entry);
             }
             entry
         })
@@ -2662,6 +2683,13 @@ fn present_with_format(
         );
         if let Some(id) = &state.plan_id {
             println!("Plan {id}");
+        }
+        // An interrupted run's Task, with nothing working on it: its cause and what continues
+        // it (ADR-0197).
+        if let Some(abandoned) = recovery::abandoned(&state, clock()?) {
+            for line in abandoned.lines() {
+                println!("{line}");
+            }
         }
         if let Some(line) = unknown_usage_line(&state) {
             println!("{line}");
@@ -3507,11 +3535,14 @@ fn inspection(
         TaskPhaseV1::Finished { result_id } => Some(artifact(cas, result_id, TASK_RESULT_V1)?),
         _ => None,
     };
-    let mut value = json!({"schema":"af/task-inspection@11","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
+    let mut value = json!({"schema":"af/task-inspection@12","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     let unknown = unknown_usage(&state).values().sum::<u64>();
     if unknown > 0 {
         value["unknown_usage_attempts"] = json!(unknown);
+    }
+    if let Some(abandoned) = recovery::abandoned(&state, clock()?) {
+        abandoned.record(&mut value);
     }
     if let Some(selection) = selection::recorded(cas, &state.revision)? {
         value["selection"] = selection;

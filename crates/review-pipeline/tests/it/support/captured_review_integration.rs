@@ -314,8 +314,9 @@ pub fn run_integration_handoff_observed(
     let lease = if delay.is_zero() {
         lease
     } else {
-        // Use the production CLI's 15-second renewable lease, without changing any Task
-        // execution deadline, Attempt allowance or captured Campaign cap.
+        // A 15-second renewable lease on ADR-0128's cadence (the production CLI's before
+        // ADR-0197 lengthened it to 60 s), without changing any Task execution deadline,
+        // Attempt allowance or captured Campaign cap.
         store.release_task_lease(&cas, &lease).unwrap();
         store
             .take_task_lease(&cas, lease.task_id(), "delayed-preparation", 15_000)
@@ -331,8 +332,10 @@ pub fn run_integration_handoff_observed(
     )
     .unwrap();
     let authority = CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
-    let runtime =
-        TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
+    let timing = review_pipeline::task::lease::LeaseTiming::for_lease(15_000);
+    let runtime = TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
+        .unwrap()
+        .with_lease_timing(timing);
     let report = runtime.execute().unwrap();
     assert!(report.complete(), "{report:?}");
     let conclusion = host.publish_recorded_round_conclusion(&cas).unwrap();
@@ -346,7 +349,8 @@ pub fn run_integration_handoff_observed(
         &host,
         &phase,
     )
-    .unwrap();
+    .unwrap()
+    .with_lease_timing(timing);
     let (report_id, report) = phase_runtime.execute_review_integration(&phase).unwrap();
     assert!(report.complete(), "{report:?}");
     // Observed, the atomic integration's transaction first rolls back once, as a failed final
@@ -479,12 +483,22 @@ pub fn run_integration_handoff_observed(
     );
     if !delay.is_zero() {
         let started = std::time::Instant::now();
-        review_pipeline::task::lease::with_heartbeat(&shared, &cas, &lease, || {
-            // Deterministic stand-in for slow Git/CAS/compiler preparation. No Store lock
-            // or paid work is held while the real common lease renewal thread runs.
-            std::thread::sleep(delay);
-            Ok(())
-        })
+        review_pipeline::task::lease::with_heartbeat_supervised(
+            &shared,
+            &cas,
+            &lease,
+            review_pipeline::task::lease::HeartbeatControl {
+                cancellation: None,
+                writer_lost: None,
+                timing,
+            },
+            || {
+                // Deterministic stand-in for slow Git/CAS/compiler preparation. No Store lock
+                // or paid work is held while the real common lease renewal thread runs.
+                std::thread::sleep(delay);
+                Ok(())
+            },
+        )
         .unwrap();
         assert!(started.elapsed() > std::time::Duration::from_secs(15));
         assert!(

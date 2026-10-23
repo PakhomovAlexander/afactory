@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-inspection:11",
-  "title": "Task inspection af/task-inspection@11",
+  "$id": "urn:af:schema:task-inspection:12",
+  "title": "Task inspection af/task-inspection@12",
   "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together.",
   "type": "object",
   "additionalProperties": false,
@@ -19,7 +19,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-inspection@11"
+      "const": "af/task-inspection@12"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
@@ -53,6 +53,15 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 9007199254740991
+    },
+    "cause": {
+      "description": "Present exactly when the Task is abandoned: unfinished, its lease neither held nor renewed, and its last run ended with an Attempt nobody settled or a node whose latest Attempt was abandoned (ADR-0197). `writer_lost`: the run's writer died or lost its lease, and the next writer settles or settled its Attempt; `host_cancelled`: SIGINT or SIGTERM stopped the run. `af task show` prints such a Task as `phase abandoned`; `phase` keeps the phase the Task recorded.",
+      "enum": ["writer_lost", "host_cancelled"]
+    },
+    "next_action": {
+      "description": "The command that continues an abandoned Task, present exactly with `cause`: `af task run TASK_ID`, or `af task start --file TASK_FILE` when the interrupted node used up its recovery allowance.",
+      "type": "string",
+      "minLength": 1
     },
     "selection": {
       "type": "object",
@@ -582,7 +591,15 @@
       }
     },
     "graph": {
-      "$ref": "urn:af:schema:compiled-task:1"
+      "$comment": "af.compiled-task/2 is the graph of an af.pipeline/3 pipeline, whose slots declare recovery_attempts (ADR-0197); every other graph is af.compiled-task/1.",
+      "oneOf": [
+        {
+          "$ref": "urn:af:schema:compiled-task:1"
+        },
+        {
+          "$ref": "urn:af:schema:compiled-task:2"
+        }
+      ]
     },
     "plan": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/executionPlan"
@@ -1217,6 +1234,8 @@
     }
   },
   "dependentRequired": {
+    "cause": ["next_action"],
+    "next_action": ["cause"],
     "graph": [
       "plan"
     ],

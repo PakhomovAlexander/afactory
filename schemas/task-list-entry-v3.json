@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-list-entry:2",
-  "title": "Task list entry af/task-list-entry@2",
+  "$id": "urn:af:schema:task-list-entry:3",
+  "title": "Task list entry af/task-list-entry@3",
   "$comment": "One common Task entry in the CLI list. Unfinished outcome, absent snapshot and absent delivery are explicit nulls. phase/result/delivery identity and charge consistency are checked by Store projection, not by this structural schema.",
   "type": "object",
   "additionalProperties": false,
@@ -15,9 +15,13 @@
     "derived_snapshot_id",
     "delivery"
   ],
+  "dependentRequired": {
+    "cause": ["next_action"],
+    "next_action": ["cause"]
+  },
   "properties": {
     "schema": {
-      "const": "af/task-list-entry@2"
+      "const": "af/task-list-entry@3"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
@@ -47,6 +51,15 @@
       "minimum": 1,
       "maximum": 9007199254740991
     },
+    "cause": {
+      "description": "Present exactly when the Task is abandoned: unfinished, its lease neither held nor renewed, and its last run ended with an Attempt nobody settled or a node whose latest Attempt was abandoned (ADR-0197). `writer_lost`: the run's writer died or lost its lease, and the next writer settles or settled its Attempt; `host_cancelled`: SIGINT or SIGTERM stopped the run. `af task show` prints such a Task as `phase abandoned`; `phase` keeps the phase the Task recorded.",
+      "enum": ["writer_lost", "host_cancelled"]
+    },
+    "next_action": {
+      "description": "The command that continues an abandoned Task, present exactly with `cause`: `af task run TASK_ID`, or `af task start --file TASK_FILE` when the interrupted node used up its recovery allowance.",
+      "type": "string",
+      "minLength": 1
+    },
     "derived_snapshot_id": {
       "anyOf": [
         {
@@ -60,7 +73,7 @@
     "delivery": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:task-inspection:11#/$defs/deliveryReceipt"
+          "$ref": "urn:af:schema:task-inspection:12#/$defs/deliveryReceipt"
         },
         {
           "type": "null"

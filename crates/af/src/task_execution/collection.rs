@@ -245,12 +245,12 @@ fn text(plan: &CollectionPlan, outcome: Option<&CollectionOutcome>) -> String {
     out
 }
 
-/// The `af/task-list-entry@2` of a collected Task: its retained summary, the result its log
+/// The `af/task-list-entry@3` of a collected Task: its retained summary, the result its log
 /// named, and `collected`; nothing artifact-backed. The unknown-usage count is the tombstone's,
 /// so the collected Task still lists `(+N unknown)` (ADR-0143).
 pub(super) fn list_entry(task: &CollectedTask) -> Value {
     let mut entry = json!({
-        "schema": "af/task-list-entry@2",
+        "schema": "af/task-list-entry@3",
         "task_id": task.collected.task_id,
         "kind": task.collected.kind,
         "phase": {"kind": "finished", "result_id": task.result_id},

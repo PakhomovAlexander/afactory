@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 191] = [
+const SCHEMAS: [&str; 193] = [
     "task-check-report-v1.json",
     "task-gate-retried-v1.json",
     "project-registered-v1.json",
@@ -74,7 +74,7 @@ const SCHEMAS: [&str; 191] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v11.json",
+    "task-inspection-v12.json",
     "experiment-execution-plan-v1.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -101,7 +101,8 @@ const SCHEMAS: [&str; 191] = [
     "task-file-v1.json",
     "task-catalog-v2.json",
     "compiled-task-v1.json",
-    "task-list-entry-v2.json",
+    "compiled-task-v2.json",
+    "task-list-entry-v3.json",
     "task-owned-child-set-v1.json",
     "task-token-usage-v3.json",
     "task-usage-observation-v1.json",
@@ -180,6 +181,7 @@ const SCHEMAS: [&str; 191] = [
     "task-phase-v1.json",
     "pipeline-definition-v1.json",
     "pipeline-definition-v2.json",
+    "pipeline-definition-v3.json",
     "execution-plan-v1.json",
     "plan-decision-v1.json",
     "review-history-v1.json",
@@ -4511,3 +4513,5 @@ fn measurements_and_comparisons_match_their_schemas_in_both_directions() {
 mod project_brief;
 #[path = "schema_parity/project_collection.rs"]
 mod project_collection;
+#[path = "schema_parity/recovery_allowance.rs"]
+mod recovery_allowance;

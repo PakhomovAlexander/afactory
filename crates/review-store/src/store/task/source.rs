@@ -235,6 +235,10 @@ impl TaskProjection {
                         plan.preparation.is_some(),
                     )
                     .map_err(conflict)?;
+                execution
+                    .budget
+                    .install_recovery_allowances(&graph.recovery_allowances())
+                    .map_err(conflict)?;
                 execution.graph = graph;
             }
             if plan.preparation.is_some() {
@@ -318,6 +322,7 @@ impl EventStore {
                         time,
                         plan.preparation.is_some(),
                     )?;
+                    budget.install_recovery_allowances(&graph.recovery_allowances())?;
                 }
                 Ok(())
             })();

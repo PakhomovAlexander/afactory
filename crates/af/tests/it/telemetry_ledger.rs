@@ -760,10 +760,10 @@ fn accounting_scenario(
             Some("50")
         );
         assert_eq!(charge(&first).source, "usage_observed");
-        // Recovery charges the reservation, never the lower observation.
+        // Recovery charges the observation, never the reservation (ADR-0197).
         assert_eq!(
             charge(&second).counters.chargeable_tokens.as_deref(),
-            Some("10")
+            Some("3")
         );
         assert_eq!(charge(&second).source, "settled");
         // Abandoned with nothing reported: zero, unknown, lease expired (ADR-0143).

@@ -1297,7 +1297,7 @@ pub(crate) enum TaskCommand {
     },
     /// Run or resume a captured Task using its exact recorded plan and authority
     #[command(
-        after_long_help = "Examples:\n  af task run TASK_ID --confirm-plan PLAN_ID\n  af task run TASK_ID --retry-gate    # after `next: af task run TASK_ID --retry-gate`"
+        after_long_help = "Resuming:\n  A run that stopped before the Task finished (Ctrl-C, SIGTERM, a closed lid, a killed\n  process, a lost writer lease) resumes with `af task run TASK_ID`. It waits for a dead\n  run's lease to expire (at most 60 s), and its first line says what it does: the\n  interrupted node's Attempt is settled as abandoned, charged only the usage its Provider\n  reported, and dispatched again without using one of the node's Attempts, once per node\n  unless its slot declares `recovery_attempts`. When a node has used that allowance, the\n  first line says `cannot continue Task TASK_ID` with the count and the fix.\n  On macOS the run holds a power assertion (caffeinate), so the machine does not idle-sleep.\n\nExamples:\n  af task run TASK_ID --confirm-plan PLAN_ID\n  af task run TASK_ID                 # resume after `interrupted by SIGINT`\n  af task run TASK_ID --retry-gate    # after `next: af task run TASK_ID --retry-gate`"
     )]
     Run {
         task_id: String,
@@ -1313,6 +1313,10 @@ pub(crate) enum TaskCommand {
         /// Task's last failure was not a gate
         #[arg(long, conflicts_with = "confirm_plan")]
         retry_gate: bool,
+        /// Say on stderr how the run keeps the machine awake: the power assertion it holds on
+        /// macOS, or why it holds none
+        #[arg(long)]
+        verbose: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },

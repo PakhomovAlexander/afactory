@@ -168,8 +168,9 @@ cannot be silently omitted or downgraded when a run fails.
 
 Issue #255's reported 11.044 CPU seconds is historical motivation, not a current
 measurement. Its projection, decoding/validation, and serialization spans overlap.
-The laboratory must not add them into a false total. The production 15-second lease
-and 8,388,608-byte CAS envelope cap remain unchanged. Fixture size means serialized
+The laboratory must not add them into a false total. Its 15-second Task lease (the
+production lease until ADR-0197 lengthened that to 60 s) and the 8,388,608-byte CAS envelope
+cap remain unchanged. Fixture size means serialized
 envelope bytes; generation verifies exact sizes and the cap boundary.
 
 Every timed execution also passes an independent oracle. Library results match committed

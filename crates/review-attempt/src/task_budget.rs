@@ -15,6 +15,8 @@ mod scopes;
 pub use scopes::TaskTokenScope;
 mod owned;
 pub use owned::OwnedNodeAllowance;
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,11 +28,53 @@ pub struct NodeAllowance {
     pub verification_attempts: u32,
 }
 
+/// One writer loss or host interruption per node is dispatched again unless its slot declares
+/// otherwise (ADR-0197).
+pub use review_core::task::pipeline::{DEFAULT_RECOVERY_ATTEMPTS, MAX_RECOVERY_ATTEMPTS};
+
 #[derive(Debug, Clone)]
 struct NodeAccount {
     allowance: NodeAllowance,
     begun: u32,
     prepared: u32,
+    /// Begun Attempts settled as abandoned: their writer was lost or their host cancelled them.
+    /// They are counted here instead of against any Attempt limit, and bounded by
+    /// `recovery_allowance` instead.
+    recovered: u32,
+    recovery_allowance: u32,
+}
+
+impl NodeAccount {
+    fn new(allowance: NodeAllowance) -> Self {
+        Self {
+            allowance,
+            begun: 0,
+            prepared: 0,
+            recovered: 0,
+            recovery_allowance: DEFAULT_RECOVERY_ATTEMPTS,
+        }
+    }
+
+    /// Begun Attempts that ran to an answer, a failure included: what the Attempt limits count.
+    fn chargeable(&self) -> u32 {
+        self.begun - self.recovered
+    }
+}
+
+/// One node's recovery state: its abandoned Attempts against the allowance that bounds them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeRecovery {
+    pub chargeable: u32,
+    pub abandoned: u32,
+    pub allowance: u32,
+}
+
+impl NodeRecovery {
+    /// Whether another abandoned Attempt has used up the allowance, so the node cannot be
+    /// dispatched again.
+    pub fn exhausted(&self) -> bool {
+        self.abandoned > self.allowance
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +92,7 @@ struct Held {
     begun: bool,
     settled: Option<u128>,
     released: bool,
+    recovered: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -61,7 +106,10 @@ pub struct TaskBudget {
     call_limits: BTreeMap<String, u32>,
     token_scopes: BTreeMap<String, TaskTokenScope>,
     captured_token_scopes: BTreeMap<String, TaskTokenScope>,
+    /// Chargeable Attempts of graphs this ledger no longer runs.
     retired_attempts: u64,
+    /// Abandoned Attempts of graphs this ledger no longer runs.
+    retired_recovered: u64,
     deferred_verification: bool,
     owned_templates: BTreeMap<String, OwnedNodeAllowance>,
     owned_children: BTreeMap<String, Vec<String>>,
@@ -162,16 +210,7 @@ impl TaskBudget {
             limits,
             nodes: allowances
                 .into_iter()
-                .map(|(name, allowance)| {
-                    (
-                        name,
-                        NodeAccount {
-                            allowance,
-                            begun: 0,
-                            prepared: 0,
-                        },
-                    )
-                })
+                .map(|(name, allowance)| (name, NodeAccount::new(allowance)))
                 .collect(),
             reservations: BTreeMap::new(),
             last_time: 0,
@@ -180,6 +219,7 @@ impl TaskBudget {
             token_scopes: BTreeMap::new(),
             captured_token_scopes: BTreeMap::new(),
             retired_attempts: 0,
+            retired_recovered: 0,
             deferred_verification: false,
             owned_templates: BTreeMap::new(),
             owned_children: BTreeMap::new(),
@@ -208,7 +248,7 @@ impl TaskBudget {
         let mut limits = self.limits.clone();
         limits.tokens = self.tokens.remaining(&BudgetScope::Run).unwrap_or(0);
         limits.max_attempts =
-            u64::from(limits.max_attempts).saturating_sub(self.begun_attempts()) as u32;
+            u64::from(limits.max_attempts).saturating_sub(self.chargeable_attempts()) as u32;
         limits
     }
 
@@ -226,7 +266,7 @@ impl TaskBudget {
                 "Cannot revise a Task budget with pending work or a backwards clock".into(),
             );
         }
-        self.retired_attempts = self.begun_attempts();
+        self.retire();
         self.nodes.clear();
         self.call_limits.clear();
         self.token_scopes.clear();
@@ -283,7 +323,7 @@ impl TaskBudget {
         // Installing a new graph can fail on a retained scope's committed usage. Validate
         // the complete replacement before changing any node credit or active membership.
         let mut candidate = self.clone();
-        candidate.retired_attempts = self.begun_attempts();
+        candidate.retire();
         candidate.nodes = next.nodes;
         candidate.call_limits = next.call_limits;
         candidate.deferred_verification = preparation;
@@ -333,7 +373,7 @@ impl TaskBudget {
         for (name, account) in &self.nodes {
             let requested = u32::from(name == candidate);
             let used = account
-                .begun
+                .chargeable()
                 .checked_add(account.prepared)
                 .and_then(|n| n.checked_add(requested))
                 .ok_or("Task Attempt count overflow")?
@@ -414,7 +454,14 @@ impl TaskBudget {
             .get(node)
             .ok_or_else(|| format!("Unknown Task node {node}"))?;
         let allowance = &account.allowance;
-        if account.begun + account.prepared >= allowance.max_attempts {
+        if account.recovered > account.recovery_allowance {
+            return Err(format!(
+                "Task node {node} exhausted its recovery allowance: {} abandoned Attempts, \
+                 recovery allowance {}",
+                account.recovered, account.recovery_allowance
+            ));
+        }
+        if account.chargeable() + account.prepared >= allowance.max_attempts {
             return Err(format!("Task node {node} exhausted its Attempt limit"));
         }
         let protected = self.protected_after(node)?;
@@ -422,7 +469,7 @@ impl TaskBudget {
             + self
                 .nodes
                 .values()
-                .map(|a| u64::from(a.begun) + u64::from(a.prepared))
+                .map(|a| u64::from(a.chargeable()) + u64::from(a.prepared))
                 .sum::<u64>();
         if used_attempts + 1 + u64::from(protected.attempts) > u64::from(self.limits.max_attempts) {
             return Err("Task Attempt limit protects still-required verification".into());
@@ -437,7 +484,7 @@ impl TaskBudget {
                 .iter()
                 .filter(|(member, _)| within(member, scope))
             {
-                let used = u64::from(account.begun) + u64::from(account.prepared);
+                let used = u64::from(account.chargeable()) + u64::from(account.prepared);
                 occupied = add(occupied, used)?;
                 occupied = add(
                     occupied,
@@ -457,10 +504,15 @@ impl TaskBudget {
         {
             return Err("Task deadline protects still-required verification".into());
         }
-        if add(allowance.tokens_per_attempt, protected.tokens)?
-            > self.tokens.remaining(&BudgetScope::Run).unwrap_or(0)
-        {
-            return Err("Task token limit protects still-required verification".into());
+        let remaining = self.tokens.remaining(&BudgetScope::Run).unwrap_or(0);
+        if add(allowance.tokens_per_attempt, protected.tokens)? > remaining {
+            return Err(format!(
+                "Task token limit protects still-required verification: reservation {} + \
+                 protected verification {} > remaining {}",
+                group(u128::from(allowance.tokens_per_attempt)),
+                group(u128::from(protected.tokens)),
+                group(u128::from(remaining)),
+            ));
         }
         let scopes = self.reservation_scopes(node)?;
         let tokens = self
@@ -482,6 +534,7 @@ impl TaskBudget {
                 begun: false,
                 settled: None,
                 released: false,
+                recovered: false,
             },
         );
         self.last_time = now_unix_ms;
@@ -493,13 +546,43 @@ impl TaskBudget {
             .reservations
             .get_mut(id)
             .ok_or("Unknown Task reservation")?;
-        if held.released
-            || held.settled.is_some()
-            || now_unix_ms < self.last_time
-            || now_unix_ms >= held.public.deadline_unix_ms
-            || self.breached
-        {
-            return Err("Task reservation is not dispatchable".into());
+        let node = &held.public.node;
+        // Each guard names itself and its numbers, so a refusal says which one fired.
+        let refusal = if held.released {
+            Some("it was released before it started".to_string())
+        } else if let Some(charged) = held.settled {
+            Some(format!(
+                "it is already settled, charged {} tokens",
+                group(charged)
+            ))
+        } else if now_unix_ms < self.last_time {
+            Some(format!(
+                "the policy clock moved backwards: now {now_unix_ms} ms < last recorded {} ms",
+                self.last_time
+            ))
+        } else if now_unix_ms >= held.public.deadline_unix_ms {
+            Some(format!(
+                "its Attempt deadline passed: now {now_unix_ms} ms >= deadline {} ms",
+                held.public.deadline_unix_ms
+            ))
+        } else if self.breached {
+            Some(format!(
+                "the Task token budget is breached: charged {} of a {} token limit, reservation \
+                 {} > remaining {}",
+                group(self.tokens.committed(&BudgetScope::Run)),
+                group(u128::from(self.limits.tokens)),
+                group(u128::from(held.public.tokens)),
+                group(u128::from(
+                    self.tokens.remaining(&BudgetScope::Run).unwrap_or(0)
+                )),
+            ))
+        } else {
+            None
+        };
+        if let Some(reason) = refusal {
+            return Err(format!(
+                "Task reservation for node {node} is not dispatchable: {reason}"
+            ));
         }
         if !held.begun {
             let account = self
@@ -565,6 +648,66 @@ impl TaskBudget {
         Ok(())
     }
 
+    /// Record that a settled Attempt was abandoned: its writer was lost or its host cancelled
+    /// it before it answered. It stops counting against its node's, its calls' and the Task's
+    /// Attempt limits and counts against the node's recovery allowance instead; its charge is
+    /// whatever its settlement recorded. Idempotent for the same reservation.
+    pub fn recover(&mut self, id: &str) -> Result<(), String> {
+        let held = self
+            .reservations
+            .get_mut(id)
+            .ok_or("Unknown Task reservation")?;
+        if !held.begun || held.released || held.settled.is_none() {
+            return Err("Only a settled started Task Attempt can be recovered".into());
+        }
+        if !held.recovered {
+            self.nodes
+                .get_mut(&held.public.node)
+                .ok_or("A recovered Task Attempt's node is not in the current graph")?
+                .recovered += 1;
+            held.recovered = true;
+        }
+        Ok(())
+    }
+
+    /// Install the recovery allowance each node's slot declares; every other node keeps
+    /// [`DEFAULT_RECOVERY_ATTEMPTS`].
+    pub fn with_recovery_allowances(
+        mut self,
+        allowances: &BTreeMap<String, u32>,
+    ) -> Result<Self, String> {
+        self.install_recovery_allowances(allowances)?;
+        Ok(self)
+    }
+
+    pub fn install_recovery_allowances(
+        &mut self,
+        allowances: &BTreeMap<String, u32>,
+    ) -> Result<(), String> {
+        for (node, allowance) in allowances {
+            if *allowance > MAX_RECOVERY_ATTEMPTS {
+                return Err(format!(
+                    "Task node {node} declares {allowance} recovery Attempts; at most \
+                     {MAX_RECOVERY_ATTEMPTS} are allowed"
+                ));
+            }
+            self.nodes
+                .get_mut(node)
+                .ok_or_else(|| format!("Unknown Task node {node}"))?
+                .recovery_allowance = *allowance;
+        }
+        Ok(())
+    }
+
+    /// The recovery state of one node of the current graph.
+    pub fn recovery(&self, node: &str) -> Option<NodeRecovery> {
+        self.nodes.get(node).map(|account| NodeRecovery {
+            chargeable: account.chargeable(),
+            abandoned: account.recovered,
+            allowance: account.recovery_allowance,
+        })
+    }
+
     pub fn committed_tokens(&self) -> u128 {
         self.tokens.committed(&BudgetScope::Run)
     }
@@ -604,12 +747,48 @@ impl TaskBudget {
     pub fn reserved_tokens(&self) -> u128 {
         self.tokens.reserved(&BudgetScope::Run)
     }
+    /// Every Attempt that began, abandoned ones included.
     pub fn begun_attempts(&self) -> u64 {
-        self.retired_attempts + self.nodes.values().map(|a| u64::from(a.begun)).sum::<u64>()
+        self.retired_attempts
+            + self.retired_recovered
+            + self.nodes.values().map(|a| u64::from(a.begun)).sum::<u64>()
+    }
+
+    /// The begun Attempts the Attempt limits count: every one except those settled as abandoned.
+    pub fn chargeable_attempts(&self) -> u64 {
+        self.retired_attempts
+            + self
+                .nodes
+                .values()
+                .map(|a| u64::from(a.chargeable()))
+                .sum::<u64>()
+    }
+
+    /// Move the current graph's Attempts into the retired counts before it is replaced.
+    fn retire(&mut self) {
+        self.retired_attempts = self.chargeable_attempts();
+        self.retired_recovered += self
+            .nodes
+            .values()
+            .map(|a| u64::from(a.recovered))
+            .sum::<u64>();
     }
     pub fn breached(&self) -> bool {
         self.breached
     }
+}
+
+/// A token count with thousands separators, as af prints counts to people: `1,500,000`.
+pub fn group(value: u128) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
 }
 
 fn within(node: &str, scope: &str) -> bool {

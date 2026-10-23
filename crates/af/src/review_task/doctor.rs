@@ -21,11 +21,15 @@ pub(crate) fn run(
     let work = {
         let shared = review_store::SharedEventStore::new(&mut *store);
         crate::interrupt::forwarding(&cancellation, || {
-            review_pipeline::task::lease::with_heartbeat_controlled(
+            review_pipeline::task::lease::with_heartbeat_supervised(
                 &shared,
                 cas,
                 &session.lease,
-                Some(&cancellation),
+                review_pipeline::task::lease::HeartbeatControl {
+                    cancellation: Some(&cancellation),
+                    writer_lost: None,
+                    timing: crate::task_execution::recovery::timing(),
+                },
                 || {
                     let captured = &session.captured;
                     let host = CampaignReviewTaskHost::new(
@@ -47,7 +51,8 @@ pub(crate) fn run(
                         &authority,
                         &host,
                     )?
-                    .with_cancellation(&cancellation);
+                    .with_cancellation(&cancellation)
+                    .with_lease_timing(crate::task_execution::recovery::timing());
                     let report = runtime.execute_provider_admissions()?;
                     // Interrupted admissions are not reported as the doctor's outcome (ADR-0129).
                     crate::interrupt::check()?;
