@@ -48,3 +48,12 @@ account independence or guarantee that every role differs from every other role.
 enforces distinct models wherever independence is required, including verification against
 source-writing Workers. Missing, incompatible or unadmitted role bindings must fail closed;
 inconclusive or failed checks and reviews remain inconclusive or failed evidence.
+
+## Planning fixtures
+
+Tests that plan the repository's experiment, report and remote-check pipelines keep the
+committed model Worker identities, contracts and Attempt bounds. Explicit local bindings use
+isolated fake Providers for token-free catalog and identity probes; planning dispatches no
+Worker and reserves zero Attempts. Regression cases require same-model and command-only
+replacements to be refused under the copied repository policy, without changing that policy
+or the generic Provider defaults.

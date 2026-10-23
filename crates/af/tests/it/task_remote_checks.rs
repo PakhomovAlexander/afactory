@@ -852,33 +852,6 @@ fn tree_bytes(directory: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> 
     files
 }
 
-/// A local command Worker standing in for `package` with its exact committed contract, so no
-/// Provider is needed to plan.
-fn local_replacement(repo: &Path, directory: &Path, package: &str, local: &str) -> toml::Value {
-    let target = directory.join(local);
-    task_cli::copy_tree(&repo.join(".af/task-packages").join(package), &target);
-    let manifest = target.join("worker.toml");
-    let mut worker: toml::Value =
-        toml::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
-    worker["name"] = toml::Value::String(local.into());
-    worker["runner"] = toml::from_str(
-        "kind = \"command\"\n[command]\nprogram = \"/usr/bin/python3\"\n\
-         [[command.args]]\nvalue = \"@package/worker.py\"\nprovenance = \"literal\"\n",
-    )
-    .unwrap();
-    worker["signature"]["attempt"]["tokens"] = toml::Value::Integer(0);
-    std::fs::write(&manifest, toml::to_string(&worker).unwrap()).unwrap();
-    std::fs::write(target.join("worker.py"), "raise SystemExit(1)\n").unwrap();
-    let mut pin = toml::map::Map::new();
-    pin.insert("version".into(), worker["version"].clone());
-    pin.insert(
-        "digest".into(),
-        toml::Value::String(review_config::lock::package_digest(local, &target).unwrap()),
-    );
-    pin.insert("path".into(), toml::Value::String(local.into()));
-    toml::Value::Table(pin)
-}
-
 #[test]
 fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_repositorys_policy() {
     let workspace = workspace();
@@ -948,6 +921,8 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
 
     // Each root twin plans against this repository's policy plus the `remote` table, with
     // zero Attempts, and its plan says it publishes to the mapped repository.
+    crate::planning_models::assert_repository_policy(&repo);
+    let providers = crate::planning_models::Providers::new(&root);
     let local = root.join("local");
     std::fs::create_dir_all(&local).unwrap();
     let mut packages = toml::map::Map::new();
@@ -958,7 +933,10 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
         ("kernel/bugs", "local/bugs"),
         ("kernel/correctness", "local/correctness"),
     ] {
-        packages.insert(name.into(), local_replacement(&repo, &local, package, name));
+        packages.insert(
+            name.into(),
+            crate::planning_models::local_replacement(&repo, &local, package, name),
+        );
         let slot = name.trim_start_matches("local/");
         slots.insert(
             format!("root.slots.{slot}"),
@@ -1004,6 +982,13 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
                     .filter(|(name, _)| used(name))
                     .map(|(name, pin)| (name.clone(), pin.clone()))
                     .collect(),
+            ),
+        );
+        bindings.insert(
+            "providers".into(),
+            crate::planning_models::provider_bindings(
+                &local,
+                bindings["packages"].as_table().unwrap(),
             ),
         );
         bindings.insert(
@@ -1057,6 +1042,7 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
         if !bound.is_empty() {
             command.args(["--bindings", bindings_path.to_str().unwrap()]);
         }
+        providers.configure(&mut command);
         let output = command
             .args(["--state", root.join("state").to_str().unwrap(), "--json"])
             .output()
@@ -1065,9 +1051,11 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
+        providers.assert_no_dispatch();
         assert!(output.status.success(), "{pipeline}: {stderr}\n{stdout}");
         let planned: Value = serde_json::from_str(stdout.trim()).unwrap();
         assert_eq!(planned["attempts"], 0, "{pipeline}");
+        crate::planning_models::assert_model_bindings(&planned["plan"], &local, &bindings);
         let authority = &planned["plan"]["authority"];
         assert!(
             authority["allowed_effects"]
