@@ -107,6 +107,7 @@ fn worker(
         name: format!("builtin/{name}"),
         version: "1.0.0".into(),
         signature: OperatorSignature {
+            unbound_allowed: Default::default(),
             retains: outgoing
                 .keys()
                 .map(|port| (port.clone(), incoming.keys().cloned().collect()))

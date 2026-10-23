@@ -2041,3 +2041,38 @@ fn a_planned_container_gone_since_the_inventory_is_a_failed_entry() {
     assert!(outcome.contains("gone since the inventory"), "{outcome}");
     assert_eq!(applied.total_after, Some(applied.total_before));
 }
+
+/// The sweep that ends a run warns about what it failed to do, never about a path the inventory
+/// could not measure: that is a note of `af storage --verbose`.
+#[test]
+fn a_path_the_inventory_could_not_measure_is_no_warning_after_a_run() {
+    let report = SweepReport {
+        applied: true,
+        collection: false,
+        max_bytes: 100,
+        total_before: 10,
+        total_after: Some(10),
+        stop: Stop::Fits,
+        removals: Vec::new(),
+        left: Vec::new(),
+        gate_cleanups: Vec::new(),
+        registry_dropped: Vec::new(),
+        failures: vec![
+            format!("{MEASURING}/tmp/.tmpXYZ/state: event store: no such table: events"),
+            "removing /state/x: permission denied".into(),
+        ],
+        telemetry: TelemetrySweep {
+            max_bytes: None,
+            total_before: 0,
+            total_after: 0,
+            stop: Stop::Fits,
+            reclaimed: Vec::new(),
+            notes: Vec::new(),
+            registry_dropped: Vec::new(),
+            changed: Vec::new(),
+            problems: Vec::new(),
+        },
+    };
+    let warned: Vec<&String> = run_warnings(&report).collect();
+    assert_eq!(warned, ["removing /state/x: permission denied"]);
+}

@@ -36,6 +36,7 @@ fn port(artifact_type: &str, cardinality: review_core::PortCardinality) -> Pipel
 
 pub fn planning_context_signature() -> OperatorSignature {
     OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 {
             inputs: BTreeMap::new(),
             outputs: BTreeMap::from([(

@@ -345,7 +345,7 @@ fn the_report_starter_runs_to_verified_with_three_command_attempts_and_writes_it
             "--port",
             "report",
             "--format",
-            "markdown",
+            "canonical-markdown",
             "--output",
             file.to_str().unwrap(),
         ],

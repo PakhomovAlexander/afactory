@@ -2,9 +2,12 @@
 use std::io::Read;
 use std::path::Path;
 
-pub(super) fn read(path: &Path, max: u64) -> Result<Vec<u8>, String> {
+/// The bytes of the local input `path`, named `what` in every refusal (`cannot open Task file
+/// ticket.json: No such file or directory (os error 2)`), at most `max` of them.
+pub(super) fn read(path: &Path, max: u64, what: &str) -> Result<Vec<u8>, String> {
     use rustix::fs::{Mode, OFlags, open};
     let limit = max.checked_add(1).ok_or("Invalid Task input byte bound")?;
+    let shown = path.display();
     // Explicit local paths retain their existing symlink behavior. Inspect the opened
     // object: a symlink to a FIFO must not block before a Task can be admitted.
     let file: std::fs::File = open(
@@ -12,23 +15,36 @@ pub(super) fn read(path: &Path, max: u64) -> Result<Vec<u8>, String> {
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
         Mode::empty(),
     )
-    .map_err(|_| "Cannot open local Task input")?
+    .map_err(|error| {
+        let error = std::io::Error::from(error);
+        // Spelled out for the Task file, the input people name most, as the troubleshooting
+        // table in docs/README.md quotes it.
+        if what == "Task file" {
+            format!("cannot open Task file {shown}: {error}")
+        } else {
+            format!("cannot open {what} {shown}: {error}")
+        }
+    })?
     .into();
     let metadata = file
         .metadata()
-        .map_err(|_| "Cannot inspect opened Task input")?;
+        .map_err(|error| format!("cannot inspect {what} {shown}: {error}"))?;
     if !metadata.is_file() {
-        return Err("Local Task input must be a regular file".into());
+        return Err(format!("{what} {shown} must be a regular file"));
     }
     if metadata.len() > max {
-        return Err("Local Task input exceeds its byte bound".into());
+        return Err(format!(
+            "{what} {shown} exceeds its byte bound of {max} bytes"
+        ));
     }
     let mut bytes = Vec::new();
     file.take(limit)
         .read_to_end(&mut bytes)
-        .map_err(|_| "Cannot read local Task input")?;
+        .map_err(|error| format!("cannot read {what} {shown}: {error}"))?;
     if bytes.len() as u64 > max {
-        return Err("Local Task input exceeds its byte bound".into());
+        return Err(format!(
+            "{what} {shown} exceeds its byte bound of {max} bytes"
+        ));
     }
     Ok(bytes)
 }
@@ -42,14 +58,22 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("input");
         std::fs::write(&file, b"exact").unwrap();
-        assert_eq!(read(&file, 5).unwrap(), b"exact");
-        assert!(read(&file, 4).unwrap_err().contains("byte bound"));
-        assert!(read(root.path(), 100).unwrap_err().contains("regular file"));
-        assert!(read(&file, u64::MAX).is_err());
+        assert_eq!(read(&file, 5, "Task file").unwrap(), b"exact");
+        assert!(
+            read(&file, 4, "Task file")
+                .unwrap_err()
+                .contains("byte bound")
+        );
+        assert!(
+            read(root.path(), 100, "Task file")
+                .unwrap_err()
+                .contains("regular file")
+        );
+        assert!(read(&file, u64::MAX, "Task file").is_err());
         {
             let link = root.path().join("explicit-link");
             std::os::unix::fs::symlink(&file, &link).unwrap();
-            assert_eq!(read(&link, 5).unwrap(), b"exact");
+            assert_eq!(read(&link, 5, "Task file").unwrap(), b"exact");
         }
     }
 
@@ -59,7 +83,7 @@ mod tests {
             return;
         };
         assert!(
-            read(Path::new(&path), 64)
+            read(Path::new(&path), 64, "Task file")
                 .unwrap_err()
                 .contains("regular file")
         );

@@ -30,7 +30,8 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 189] = [
+const SCHEMAS: [&str; 190] = [
+    "store-writer-v1.json",
     "project-registered-v1.json",
     "project-brief-v1.json",
     "project-survey-pin-v1.json",
@@ -111,7 +112,7 @@ const SCHEMAS: [&str; 189] = [
     "issue-input-v1.json",
     "document-sources-v1.json",
     "document-draft-v1.json",
-    "document-v1.json",
+    "document-v2.json",
     "document-check-receipt-v1.json",
     "document-evaluation-v1.json",
     "document-verification-v1.json",
@@ -4507,3 +4508,5 @@ fn measurements_and_comparisons_match_their_schemas_in_both_directions() {
 mod project_brief;
 #[path = "schema_parity/project_collection.rs"]
 mod project_collection;
+#[path = "schema_parity/store_writer.rs"]
+mod store_writer;

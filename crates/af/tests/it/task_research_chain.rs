@@ -249,7 +249,7 @@ fn ids(port: &Value) -> Vec<String> {
 fn unrecorded(chain: &Chain, task_id: &str) {
     let shown = chain.af(&["task", "show", task_id]);
     assert!(!shown.status.success(), "{}", text(&shown));
-    assert!(text(&shown).contains("was not found"), "{}", text(&shown));
+    assert!(text(&shown).contains(" not found in "), "{}", text(&shown));
 }
 
 #[test]

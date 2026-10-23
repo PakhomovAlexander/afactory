@@ -364,16 +364,30 @@ fn document_contracts_keep_source_data_closed_and_never_use_code_snapshots() {
             .is_err()
     );
     let id = format!("sha256:{}", "1".repeat(64));
-    let document = json!({"schema":"af.document/1","draft_id":id,"sources_id":id,"format":"markdown","text":"# Release notes\n"});
-    assert_valid("document-v1.json", &document);
+    let document = json!({"schema":"af.document/2","draft_id":id,"sources_id":id,"format":"markdown","text":"# Release notes\n"});
+    assert_valid("document-v2.json", &document);
     serde_json::from_value::<DocumentV1>(document.clone())
         .unwrap()
         .validate()
         .unwrap();
+    // The rendering that escaped every ASCII punctuation character fails closed (ADR-0145).
+    let mut earlier = document.clone();
+    earlier["schema"] = json!("af.document/1");
+    assert_invalid(
+        "document-v2.json",
+        &earlier,
+        "the af.document/1 rendering is not read",
+    );
+    assert!(
+        serde_json::from_value::<DocumentV1>(earlier)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
     let mut invalid = document;
     invalid["snapshot_id"] = json!(id);
     assert_invalid(
-        "document-v1.json",
+        "document-v2.json",
         &invalid,
         "a document is not a fabricated code Snapshot",
     );

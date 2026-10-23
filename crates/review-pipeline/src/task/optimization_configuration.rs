@@ -1420,6 +1420,7 @@ mod tests {
 
     fn signature(effects: &[&str]) -> OperatorSignature {
         OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 {
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),

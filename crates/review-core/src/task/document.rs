@@ -10,6 +10,11 @@ pub const DOCUMENT_SOURCES_V1: &str = "af/DocumentSources@1";
 pub const DOCUMENT_DRAFT_V1: &str = "af/DocumentDraft@1";
 pub const DOCUMENT_DRAFT_V2: &str = "af/DocumentDraft@2";
 pub const DOCUMENT_V1: &str = "af/Document@1";
+/// The payload version of a rendered Document: its text is the canonical Markdown of its draft
+/// under the rendering this version names. `af.document/2` escapes only what is Markdown markup
+/// where it stands; a Document of `af.document/1`, every ASCII punctuation character escaped,
+/// fails closed (ADR-0145). The artifact type keeps its name, which committed pipelines bind.
+pub const DOCUMENT_SCHEMA: &str = "af.document/2";
 pub const DOCUMENT_CHECK_RECEIPT_V1: &str = "af/DocumentCheckReceipt@1";
 pub const DOCUMENT_EVALUATION_V1: &str = "af/DocumentEvaluation@1";
 pub const DOCUMENT_VERIFICATION_V1: &str = "af/DocumentVerification@1";
@@ -210,7 +215,7 @@ pub struct DocumentV1 {
 impl DocumentV1 {
     pub fn validate(&self) -> Result<(), String> {
         require(
-            self.schema == "af.document/1"
+            self.schema == DOCUMENT_SCHEMA
                 && is_digest(&self.draft_id)
                 && is_digest(&self.sources_id)
                 && text(&self.text, 1048576),

@@ -533,9 +533,9 @@ fn a_second_task_reuses_the_warm_directory_and_changes_no_snapshot_candidate_out
 
     let shown = show(&fixture, "warm-one");
     assert!(shown.contains("check pagination: "), "{shown}");
-    assert!(shown.contains(" ms, cargo_target cold empty"), "{shown}");
+    assert!(shown.contains(", cargo_target cold empty"), "{shown}");
     let shown = show(&fixture, "warm-two");
-    assert!(shown.contains(" ms, cargo_target warm 4096"), "{shown}");
+    assert!(shown.contains(", cargo_target warm 4.0 KiB"), "{shown}");
 
     let (first_receipt, first_tree) = deliver(&fixture, "warm-one");
     let (second_receipt, second_tree) = deliver(&fixture, "warm-two");
@@ -756,7 +756,7 @@ fn a_check_that_writes_past_the_bound_is_ended_failed_and_its_directory_removed(
     );
     let shown = show(&fixture, "bound-grow");
     assert!(
-        shown.contains("cargo_target cold empty, removed 8192 (bound_exceeded hard_max_bytes)"),
+        shown.contains("cargo_target cold empty, removed 8.0 KiB (bound_exceeded hard_max_bytes)"),
         "{shown}"
     );
 }
@@ -801,7 +801,7 @@ fn a_check_past_only_the_eviction_bound_passes_and_the_next_check_finds_it_remov
     );
     let shown = show(&fixture, "soft-grow");
     assert!(
-        shown.contains("cargo_target cold empty, removed 6144 (bound_exceeded max_bytes)"),
+        shown.contains("cargo_target cold empty, removed 6.0 KiB (bound_exceeded max_bytes)"),
         "{shown}"
     );
 
@@ -843,7 +843,7 @@ fn a_check_that_removes_its_warm_root_fails_as_suspect_with_the_cause_recorded()
     let shown = show(&fixture, "remove-root");
     assert!(shown.contains("check pagination: failed in "), "{shown}");
     assert!(
-        shown.contains("cargo_target cold empty, removed 0 (suspect)"),
+        shown.contains("cargo_target cold empty, removed 0 B (suspect)"),
         "{shown}"
     );
 }
@@ -885,7 +885,7 @@ fn a_check_that_widens_the_toolchain_key_fails_as_suspect_and_the_key_is_emptied
     assert_eq!(result["reason"], "warm_cache_suspect");
     assert!(warm_directories(&fixture).is_empty());
     let shown = show(&fixture, "widen-key");
-    assert!(shown.contains("removed 0 (suspect)"), "{shown}");
+    assert!(shown.contains("removed 0 B (suspect)"), "{shown}");
 }
 
 #[test]
@@ -1160,7 +1160,7 @@ fn both_kinds_are_warm_on_the_second_run_from_the_installed_toolchain() {
     let shown = show(&fixture, "home-two");
     assert!(shown.contains("check pagination: passed in "), "{shown}");
     assert!(
-        shown.contains(" ms, cargo_target warm 4096, cargo_home warm 1024"),
+        shown.contains(", cargo_target warm 4.0 KiB, cargo_home warm 1.0 KiB"),
         "{shown}"
     );
 
@@ -1231,7 +1231,7 @@ fn a_fast_check_that_writes_past_the_bound_fails_and_its_directory_is_removed() 
     let shown = show(&fixture, "fast-grow");
     assert!(shown.contains("check pagination: failed in "), "{shown}");
     assert!(
-        shown.contains("cargo_target cold empty, removed 8192 (bound_exceeded hard_max_bytes)"),
+        shown.contains("cargo_target cold empty, removed 8.0 KiB (bound_exceeded hard_max_bytes)"),
         "{shown}"
     );
 }
@@ -1888,7 +1888,7 @@ fn a_native_toolchain_check_keeps_one_warm_key_across_tasks() {
         "no second key was made"
     );
     let shown = show(&fixture, "native-two");
-    assert!(shown.contains("cargo_target warm 4096"), "{shown}");
+    assert!(shown.contains("cargo_target warm 4.0 KiB"), "{shown}");
 
     // Other toolchain bytes are another verified digest, so another key.
     let changed = native_toolchain(&fixture, "second");

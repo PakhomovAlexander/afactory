@@ -76,7 +76,11 @@ logins and
 cache policy stay in `providers.toml` and `caches.toml` beside it.
 
 `af config show` prints the effective configuration; `--origin` names the file and line each
-value came from; `af config paths` lists every file a layer would read. See `af help layers`.";
+value came from; `af config paths` lists every file a layer would read. See `af help layers`.
+
+Examples:
+  af config show --origin
+  af config paths";
 
 const LAYERS: &str = "\
 Lowest to highest. Tables deep-merge, scalars last-wins, arrays replace.
@@ -96,10 +100,14 @@ that carries one is reported and ignored.
 
 Branch-specific configuration needs no layer: `.af/` is versioned, so the project layer on a
 branch is whatever that branch commits. Each git worktree has its own `.af/` copy and its own
-`af.local.toml`.";
+`af.local.toml`.
 
-const ENVIRONMENT: &str = "\
-  AF_<TABLE>__<KEY>       override one configuration value (highest layer), e.g.
+Examples:
+  af config paths
+  AF_SELF__AUTO_UPDATE=never af config show --origin";
+
+// The first line of a table keeps its indent: a `"\` continuation would strip it.
+const ENVIRONMENT: &str = "  AF_<TABLE>__<KEY>       override one configuration value (highest layer), e.g.
                           AF_TELEMETRY__LEVEL=content for one run
   AF_VERSION              run this installed version regardless of the project's pin
   AF_SELF_OFFLINE=1       never contact a release source: no pin installs, no update checks
@@ -114,10 +122,13 @@ const ENVIRONMENT: &str = "\
   XDG_CACHE_HOME          caches, the release check (~/.cache)
   XDG_BIN_HOME            where the default `af` symlink lives (~/.local/bin)
   NO_COLOR, CLICOLOR_FORCE, EDITOR, CI    honoured as their conventions say
-  HOME                    required; must be absolute";
+  HOME                    required; must be absolute
 
-const EXIT_CODES: &str = "\
-  0    pass — the command succeeded; for `review run`, the Round passed
+Examples:
+  AF_TELEMETRY__LEVEL=metrics af config show --origin
+  AF_SELF_OFFLINE=1 af self status";
+
+const EXIT_CODES: &str = "  0    pass — the command succeeded; for `review run`, the Round passed
   1    error — af could not do what was asked; stderr names the entity, the knob, and the fix
   2    usage — the command line was wrong; only the failing command's usage is printed
   3    fail — the review or evaluation ran to completion and did not pass
@@ -136,7 +147,11 @@ const EXIT_CODES: &str = "\
   7    usage unavailable — `provider status --usage` only: an authenticated Provider's optional
        subscription or quota probe did not answer. Authentication is unaffected
 
-Under --json the same codes apply and the document on stdout carries the typed outcome.";
+Under --json the same codes apply and the document on stdout carries the typed outcome.
+
+Examples:
+  af review plan --policy-rev HEAD --base HEAD --uncommitted; echo \"exit $?\"
+  af help nonsense   # exit 2";
 
 const JSON: &str = "\
 stdout is the result, stderr is progress. With --json every reading command prints exactly one
@@ -149,7 +164,11 @@ stderr still gets one diagnostic line, so discarding stdout never hides a refusa
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
 change bumps the version rather than reinterpreting an old one. Nothing af prints under --json is
 affected by a TTY, colours, or the update check: its notice goes to stderr, only on a TTY, and
-never under --json.";
+never under --json.
+
+Examples:
+  af task list --json
+  af task show nope --json   # exit 1";
 
 const STORAGE: &str = "\
 af keeps a bounded amount of disk between runs (ADR-0144). One budget covers warm build keys,
@@ -157,9 +176,11 @@ warm Workspaces, review campaign Stores, the finished Tasks of every Task Store,
 (counted, never evicted; ADR-0158), Stores this release cannot read, and installed versions. When af holds more than the budget, the least
 recently used entry goes first; nothing in use and nothing used within the last hour ever goes.
 
-  af storage                  what af holds, per kind, against the budget and the free-disk floor
-  af storage prune            preview the sweep: collection, then the budget
-  af storage prune --apply    perform it now (it also runs after every task run and review run)
+Examples:
+  af storage                  # what af holds, per kind, against the budget and the free-disk floor
+  af storage --verbose        # also every path it could not measure, and every Store left alone
+  af storage prune            # preview the sweep: collection, then the budget
+  af storage prune --apply    # perform it now (it also runs after every task and review run)
 
 The [storage] table, machine layers only (built-in, system, user, AF_STORAGE__<KEY>); a
 repository's .af/af.toml cannot set it:
@@ -399,7 +420,11 @@ never evicted as telemetry.
 
 There is no telemetry keep_days: collection by age is [storage] keep_days under [storage]
 auto_gc or an applied prune (af storage prune --apply, af telemetry gc --apply). See
-docs/telemetry.md.";
+docs/telemetry.md.
+
+Examples:
+  af telemetry status
+  AF_TELEMETRY__LEVEL=off af config show --origin";
 
 const SELF_TOPIC: &str = "\
 Layout
@@ -473,4 +498,33 @@ Commands
   unrelated file at the default path is never replaced.
   remove and prune keep the default and every version a project seen on this machine pins,
   read again under the lock every activation holds. A pinned release runs only once its pin is
-  recorded under that lock: when it cannot be, the command fails and says why.";
+  recorded under that lock: when it cannot be, the command fails and says why.
+
+Examples:
+  af self status
+  af self update --check   # exits 10 when a newer release exists";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A topic that is a table starts as one: its first row keeps the indent of the rows below
+    /// it, which a `"\` string continuation would strip.
+    #[test]
+    fn a_tables_first_row_keeps_its_indent() {
+        for (name, _, text) in TOPICS {
+            let mut lines = text.lines();
+            let first = lines.next().unwrap();
+            let second = lines.next().unwrap_or_default();
+            let indented = |line: &str| line.starts_with("  ");
+            if indented(second) && !second.trim_start().starts_with('$') {
+                assert!(
+                    indented(first),
+                    "af help {name}: its first line {first:?} lost the indent of {second:?}"
+                );
+            }
+        }
+        assert!(EXIT_CODES.starts_with("  0    pass"));
+        assert!(ENVIRONMENT.starts_with("  AF_<TABLE>__<KEY>"));
+    }
+}

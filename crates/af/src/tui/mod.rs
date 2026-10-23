@@ -1732,7 +1732,12 @@ fn command_help(path: &[String]) -> String {
     for word in path {
         match current.find_subcommand_mut(word) {
             Some(sub) => current = sub,
-            None => return format!("`{}` is neither a topic nor a command", path.join(" ")),
+            None => {
+                return format!(
+                    "Topic or command {} not found in af help; af --help lists the commands",
+                    path.join(" ")
+                );
+            }
         }
     }
     let name = current.get_name().to_owned();

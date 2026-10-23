@@ -39,6 +39,7 @@ pub mod resolution;
 pub mod reviewer_result;
 pub mod slice;
 pub mod snapshot;
+pub mod store_writer;
 pub mod subject;
 pub mod task;
 pub mod warm;

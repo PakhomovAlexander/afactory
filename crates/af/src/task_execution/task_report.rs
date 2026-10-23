@@ -22,6 +22,9 @@ use review_core::task::verification::{TASK_CHECK_RECEIPT_V1, TaskCheckReceiptV1}
 use review_graph::task::{CompiledNode, CompiledOperator, ReviewOperation};
 use review_store::store::task::execution::TaskAttemptAccounting;
 
+/// What [`entry`] says of an ID the Store does not hold; [`read`] names the Task and Store.
+const NOT_FOUND: &str = "Task not found";
+
 /// The report over `task_ids`, in the order given, from the Store under `state`. An ID the
 /// Store does not hold, or one named twice, is an error that names it.
 pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV1, String> {
@@ -33,7 +36,7 @@ pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV1, St
     }
     let first = task_ids.first().ok_or("name at least one Task")?;
     if !store_present(state)? {
-        return Err(format!("Task `{first}` was not found"));
+        return Err(super::task_not_found(first, state));
     }
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
@@ -41,7 +44,13 @@ pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV1, St
     let mut pipelines: Vec<TaskReportPipelineV1> = Vec::new();
     let mut tasks = Vec::new();
     for id in task_ids {
-        let (task, pipeline) = entry(&cas, &store, id)?;
+        let (task, pipeline) = entry(&cas, &store, id).map_err(|error| {
+            if error == NOT_FOUND {
+                super::task_not_found(id, state)
+            } else {
+                error
+            }
+        })?;
         if let Some(pipeline) = pipeline
             && !pipelines.contains(&pipeline)
         {
@@ -58,7 +67,7 @@ fn entry(
     store: &EventStore,
     id: &str,
 ) -> Result<(TaskReportEntryV1, Option<TaskReportPipelineV1>), String> {
-    let not_found = || format!("Task `{id}` was not found");
+    let not_found = || NOT_FOUND.to_string();
     let run_id = review_store::store::task::task_run_id(id).map_err(|_| not_found())?;
     // A collected Task keeps its retained summary and its event times; its records are gone.
     if let Some(collected) = store.collected_task(id).map_err(|e| e.to_string())? {

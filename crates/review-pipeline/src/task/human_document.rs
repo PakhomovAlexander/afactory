@@ -527,7 +527,7 @@ impl HumanDocument {
         let value = result
             .outputs
             .get(port)
-            .ok_or("Task result has no such output port")?;
+            .ok_or_else(|| port_not_found(task_id, port, result))?;
         if value.cardinality != PortCardinality::One || value.artifact_ids.len() != 1 {
             return Err("Output command requires a single artifact port".into());
         }
@@ -763,7 +763,7 @@ impl HumanDocument {
     /// that were actually recorded for it.
     fn about(&self) -> String {
         let canonical = inert_code(&format!(
-            "af task output {} --port {} --format markdown",
+            "af task output {} --port {} --format canonical-markdown",
             self.task_id, self.port
         ));
         let judged = match &self.review {
@@ -1202,17 +1202,32 @@ fn list(lines: &[&str], open: Option<Run>) -> (String, Option<Run>) {
     (out.join("\n"), levels.first().and_then(|level| level.run))
 }
 
+/// The not-found refusal of an output port, in the shape every not-found refusal takes: the
+/// port, the Task, and the ports its result does have.
+pub fn port_not_found(task_id: &str, port: &str, result: &TaskResultV1) -> String {
+    let ports: Vec<&str> = result.outputs.keys().map(String::as_str).collect();
+    format!(
+        "Output port {port} not found in the result of Task {task_id}; its ports are {}",
+        if ports.is_empty() {
+            "none".to_string()
+        } else {
+            ports.join(", ")
+        }
+    )
+}
+
 /// Line-start characters that begin no block and need no escape.
 const BLOCK_SAFE: &str = "()\"',./?;";
 
 /// Authored text as inline Markdown that renders exactly that text. `start` marks text at the
-/// start of a line, where a block could begin.
-fn inline(text: &str, start: bool) -> String {
+/// start of a line, where a block could begin. The canonical renderer escapes with it too, so
+/// both renderings escape only what is markup where it stands.
+pub(crate) fn inline(text: &str, start: bool) -> String {
     escape(text, start, false)
 }
 
 /// A generated heading's authored text; `#` is escaped so no closing sequence is dropped.
-fn heading(text: &str) -> String {
+pub(crate) fn heading(text: &str) -> String {
     escape(text.trim_matches(PAD), false, true)
 }
 

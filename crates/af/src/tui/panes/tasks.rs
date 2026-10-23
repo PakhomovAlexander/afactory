@@ -61,10 +61,10 @@ fn bounded(text: &str, width: usize, indent: &str) -> Vec<String> {
     rows
 }
 
-/// Whether this release refused the Store because an earlier af release wrote it:
-/// such Stores are listed together, once, rather than as one error each.
+/// Whether this release refused the Store because another af release wrote it: such Stores
+/// are listed together, once, by the releases that wrote them, rather than as one error each.
 fn earlier(store: &Store) -> bool {
-    store.older && store.tasks.is_err()
+    store.release.is_some() && store.tasks.is_err()
 }
 
 /// Where a Task is: its phase, and for a finished Task the acceptance its result records.
@@ -713,9 +713,10 @@ struct Store {
     shown: String,
     repo: Option<String>,
     tasks: Result<Vec<Listed>, String>,
-    /// The event log refused itself as another release's: set where the Store is read, from
-    /// that read's own error, never from text a path could carry.
-    older: bool,
+    /// Who wrote the Store, when its event log refused itself as another release's: set where
+    /// the Store is read, from that read's own error and the Store's writer markers, never from
+    /// text a path could carry.
+    release: Option<review_core::store_writer::StoreProvenance>,
 }
 
 /// An existing directory with entries but no `events.sqlite` holds something the running
@@ -750,15 +751,15 @@ pub(crate) fn not_a_store(dir: &Path) -> Option<String> {
 }
 
 fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) -> Store {
-    let (tasks, older) = match not_a_store(dir) {
-        Some(refusal) => (Err(refusal), false),
+    let (tasks, release) = match not_a_store(dir) {
+        Some(refusal) => (Err(refusal), None),
         None => {
             let listed = task_execution::list_common(dir);
-            let older = matches!(
-                &listed,
-                Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)
-            );
-            (listed, older)
+            let release = listed
+                .as_ref()
+                .err()
+                .and_then(|error| crate::store_release::foreign(dir, error));
+            (listed, release)
         }
     };
     let tasks = tasks.and_then(|entries| {
@@ -803,7 +804,7 @@ fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) 
         shown: shown.to_owned(),
         repo,
         tasks,
-        older,
+        release,
     }
 }
 
@@ -1053,7 +1054,7 @@ fn read(targets: &[Target], opened: Option<(PathBuf, String)>, mut cache: Cache)
 fn refuse(stores: &mut [Store], dir: &Path, task_id: &str, error: &str) {
     for store in stores.iter_mut().filter(|store| store.dir == dir) {
         store.tasks = Err(format!("Task {task_id}: {error}"));
-        store.older = false;
+        store.release = None;
     }
 }
 
@@ -1361,23 +1362,27 @@ impl TasksPane {
                 .shown
                 .rsplit_once('/')
                 .map_or(first.shown.as_str(), |(parent, _)| parent);
-            let (stores, were) = if count == 1 {
-                ("Task Store", "was")
+            // One row for all of them, by the releases that wrote them, with the command that
+            // runs them; short lines, as the main pane is MAIN columns beside the bar.
+            let summary = crate::store_release::summary(
+                earlier_stores
+                    .iter()
+                    .filter_map(|store| store.release.as_ref()),
+                "af",
+            )
+            .unwrap_or_default();
+            for line in bounded(&summary, MAIN, "") {
+                rows.push(Row::painted(line, Paint::Muted));
+            }
+            let (stores, they) = if count == 1 {
+                ("Task Store", "It is")
             } else {
-                ("Task Stores", "were")
+                ("Task Stores", "They are")
             };
-            // Short lines: the main pane is MAIN columns beside the bar.
-            rows.push(Row::painted(
-                format!("{count} {stores} {were} written by an earlier af release, in"),
-                Paint::Muted,
-            ));
+            rows.push(Row::painted(format!("{they} {stores} in"), Paint::Muted));
             for line in bounded(parent, MAIN, "  ") {
                 rows.push(Row::painted(line, Paint::Muted));
             }
-            rows.push(Row::painted(
-                "af reads no other release's state (ADR-0145); move or remove them.",
-                Paint::Muted,
-            ));
             rows.push(Row::blank());
         }
         for store in self.stores.iter().filter(|s| !earlier(s)) {

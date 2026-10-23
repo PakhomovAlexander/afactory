@@ -310,8 +310,8 @@ fn project_help_and_the_workspace_flag_describe_the_commands() {
             "Never: writes inside a checkout, commits, pushes, or removes a Store.",
             "af/project@1",
             "af/error@1",
-            "af project workspace new research --branch agent/research",
-            "af project workspace remove research --delete-worktree",
+            "af project workspace new triage --branch agent/triage",
+            "af project workspace remove triage --delete-worktree",
         ] {
             assert!(text.contains(needle), "`{needle}` missing:\n{text}");
         }
@@ -824,4 +824,43 @@ fn json_errors_are_one_document_on_stdout() {
         "{document}"
     );
     assert_eq!(document["exit_code"], 1);
+}
+
+/// The flags and names this release adds to the surface, each where its command documents it.
+#[test]
+fn the_surface_documents_verbose_storage_canonical_markdown_and_the_provider_list_alias() {
+    let collapsed = |args: &[&str]| {
+        let help = af(args);
+        assert!(help.status.success(), "{args:?}: {}", err(&help));
+        out(&help).split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    let storage = collapsed(&["storage", "--help"]);
+    assert!(
+        storage.contains("--verbose Also name every path that could not be measured and every Store left alone, and why"),
+        "{storage}"
+    );
+    let prune = collapsed(&["storage", "prune", "--help"]);
+    assert!(prune.contains("--verbose"), "{prune}");
+    let output = collapsed(&["task", "output", "--help"]);
+    for format in ["json", "markdown", "canonical-markdown", "human-markdown"] {
+        assert!(
+            output.contains(&format!(" {format} ")),
+            "{format}: {output}"
+        );
+    }
+    assert!(
+        output.contains("An unknown --port is refused with the ports the Task's result has."),
+        "{output}"
+    );
+    let provider = collapsed(&["provider", "status", "--help"]);
+    assert!(
+        provider.contains("`af provider list` is the same command."),
+        "{provider}"
+    );
+    let doctor = collapsed(&["provider", "doctor", "--help"]);
+    assert!(doctor.contains("--campaign <NAME>"), "{doctor}");
+    assert!(!doctor.contains("--file"), "{doctor}");
+    // The pointer for `af review tui` is no command of the namespace.
+    let review = collapsed(&["review", "--help"]);
+    assert!(!review.contains(" tui "), "{review}");
 }

@@ -43,6 +43,35 @@ and `--help` on every namespace and command.
 | [`adr/`](adr/README.md) | The binding decisions, one per file, with the options that were rejected and why. The index in `adr/README.md` lists every one. |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | What each release changed and whether committed `.af/` policy keeps working, needs `af onboard --refresh-lock`, or needs a documented hand edit. |
 
+## Troubleshooting
+
+The messages people meet most, in the words `af` prints them (`…` stands for a path, a name or
+a revision), what each means, and what to do. A test checks that `af` still prints every one.
+
+| Message | Meaning | Fix |
+|---|---|---|
+| `af review plan needs --policy-rev REV, the commit whose committed .af/ governs the review` | A review plan was asked for without saying which commit's `.af/` policy to use. | `af review plan --policy-rev HEAD --base HEAD --uncommitted` |
+| `this repository has no .af/ authority at …` | The policy revision holds no `.af/`: the repository was never onboarded, or the policy is not committed yet. | `af onboard`, then `af onboard --apply`, commit `.af/`, and plan again. |
+| `policy revision … is not a git revision of …` | Git does not know the name given to `--policy-rev`; its own line follows. | Name a commit, branch or tag of that repository, usually `HEAD`. |
+| `-> MISSING; fix: …` | A model Worker of the pipeline has no `--provider NODE=ID` binding; the plan names one to use or how to register one. | Add the `--provider` the line names, or `af provider setup ID --kind KIND --login` first. |
+| `EMPTY — run will refuse` | The diff between the base and the candidate changes no file, and `af review run` refuses an empty diff. | Change files and pass `--uncommitted`, or name other revisions with `--base` and `--candidate`. |
+| `Provider … not found in this machine's Provider registry` | A `--provider NODE=ID` names an ID this machine has not registered. | `af provider status` lists the registry; `af provider setup ID --kind KIND` registers one. |
+| `Node … not found in …` | A `--provider NODE=ID` names a node that is not a model Worker of the pipeline; the message lists the ones it has. | Bind one of the model Workers listed. |
+| `model-backed Worker … requires explicit` | `af review run` was started without a binding for a model Worker. | Add `--provider NODE=ID` for every model Worker `af review plan` lists. |
+| `Task … not found in …` | No Task by that ID is in the Task Store the command read. | `af task list` (with the same `--state` or `--workspace`) lists its Tasks. |
+| `Task Store not found in …` | The command reads a Task Store that does not exist yet. | `af task plan --file FILE` creates it; check `--state` or `--workspace`. |
+| `Campaign … not found in …` | No review Campaign by that name exists on this machine. | `af review campaigns` lists them; `af review run --campaign NAME` starts one. |
+| `cannot open Task file …` | The Task file path cannot be opened; the system's reason follows. | Check the path given to `--file`. |
+| `is not a Task file field; its fields are` | The Task file names a field `af.task-file/1` does not have, often a misspelling. | Rename or remove the field; the message lists the fields a Task file takes. |
+| `must be an integer from` | A Task file value has the wrong shape; the message names its field path and what it holds. | Write the value as the message says, for example a number rather than a string. |
+| `--timeout-secs must be positive` | A zero timeout was given; it is refused before any file is read. | Pass a positive number of seconds, or leave the flag out. |
+| `Store … was written by … (this is af …); fix: AF_VERSION=` | A Store was written by another af release, which this one does not replay (ADR-0145). | Run the command under that release with `AF_VERSION=…`, install it with `af self install …`, or move the project pin with `af onboard --refresh-lock --af …`. |
+| `was written by an older af release (no version marker` | A Store from a release before Stores named their writer. | Finish its work under the release that started it, or remove it with `af storage prune --apply` once idle. |
+| `Stores written by other releases` | A listing met several Stores other releases wrote, counted by release in one row. | Run them under the release named, or `af storage --verbose` to see each. |
+| `could not be measured and` | `af storage` met paths it could not measure, such as a half-made Store a test registered. | `af storage --verbose` names each path and why. |
+| `Output port … not found in the result of Task` | `af task output --port` names a port the Task's result does not have; the message lists the ones it has. | Pass one of the ports listed. |
+| `is not a command; the browser is` | `af review tui` is not a command. | Run `af` alone at a terminal to open the browser. |
+
 ## Reading and writing ADRs
 
 An ADR is numbered (`NNNN-kebab-case-title.md`, the next number after the highest in

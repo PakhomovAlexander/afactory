@@ -81,15 +81,13 @@ pub(crate) fn refresh(
     inspect: &crate::cli::TaskInspectArgs,
 ) -> Result<i32, String> {
     let (repo, state) = state_path(&inspect.repo, inspect.state.as_deref())?;
+    super::require_store(&state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
-    if !state.join("events.sqlite").is_file() {
-        return Err("No common Task Store exists".into());
-    }
     let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     let before = store
         .task_projection(&cas, id)
         .map_err(|e| e.to_string())?
-        .ok_or("Unknown Task")?;
+        .ok_or_else(|| super::task_not_found(id, &state))?;
     if before.lease_until_unix_ms() > clock()? {
         return Err("Task has an active writer; refresh later".into());
     }

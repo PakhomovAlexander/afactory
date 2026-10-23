@@ -54,6 +54,7 @@ pub(super) mod refresh;
 mod selection;
 pub(crate) mod starter;
 mod task_file_home;
+mod task_file_shape;
 pub(super) mod task_report;
 
 pub(super) struct StartOptions {
@@ -395,6 +396,41 @@ fn producer() -> Producer {
         node_id: None,
         operation_id: "capture@1".into(),
     }
+}
+
+/// A Task file, or the refusal that names the field path and the shape it takes.
+fn parse_task_file(path: &Path, bytes: &[u8]) -> Result<TaskFile, String> {
+    parse(path, bytes).map_err(|parser| task_file_shape::refusal(path, bytes, &parser))
+}
+
+/// The refusal of a Task file whose fields parse but do not name a Task: which field, what it
+/// takes, and what it holds.
+fn task_file_identity(path: &Path, file: &TaskFile) -> Result<(), String> {
+    let named = format!("task file {}", path.display());
+    if file.schema != "af.task-file/1" {
+        return Err(format!(
+            "{named}: schema must be \"af.task-file/1\", got {:?}",
+            file.schema
+        ));
+    }
+    if !is_name(&file.task_id) {
+        return Err(format!(
+            "{named}: task_id {:?} is not a Task ID: 1 to 128 ASCII letters, digits, `-` and \
+             `_`, starting with a letter or digit",
+            file.task_id
+        ));
+    }
+    if !is_package_name(&file.kind) {
+        return Err(format!(
+            "{named}: kind {:?} is not a Task kind: names like `software` or `team/report`, \
+             separated by `/`",
+            file.kind
+        ));
+    }
+    if file.goal.trim().is_empty() {
+        return Err(format!("{named}: goal is empty; say what the Task is for"));
+    }
+    Ok(())
 }
 
 fn parse<T: serde::de::DeserializeOwned>(path: &Path, bytes: &[u8]) -> Result<T, String> {
@@ -1008,8 +1044,8 @@ pub(crate) fn plan_tree_preview_at(
     repo: &Path,
     authority: &str,
 ) -> Result<TreePreview, String> {
-    let bytes = input_file::read(file, 16 * 1024 * 1024)?;
-    let task: TaskFile = parse(file, &bytes)?;
+    let bytes = input_file::read(file, 16 * 1024 * 1024, "Task file")?;
+    let task = parse_task_file(file, &bytes)?;
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     let state = scratch.path().join("state");
     let options = StartOptions {
@@ -1056,15 +1092,19 @@ fn start_kind(
     presentation: Presentation,
 ) -> Result<i32, String> {
     let started = clock()?;
-    let bytes = input_file::read(&options.file, 16 * 1024 * 1024)?;
-    let file: TaskFile = parse(&options.file, &bytes)?;
-    if file.schema != "af.task-file/1"
-        || !is_name(&file.task_id)
-        || !is_package_name(&file.kind)
-        || file.goal.trim().is_empty()
-    {
-        return Err("Task file requires schema af.task-file/1, a valid ID, supported kind and nonempty goal".into());
+    // A duration flag is judged before any file is read: a wrong command line is said as such,
+    // whatever the file holds.
+    if options.timeout_secs == Some(0) {
+        return Err(
+            "--timeout-secs must be positive: 0 seconds leaves the Task no time to run".into(),
+        );
     }
+    if let Some(seconds) = options.timeout_secs {
+        seconds.checked_mul(1000).ok_or("Task timeout overflow")?;
+    }
+    let bytes = input_file::read(&options.file, 16 * 1024 * 1024, "Task file")?;
+    let file = parse_task_file(&options.file, &bytes)?;
+    task_file_identity(&options.file, &file)?;
     if let Some(specification) = &file.requirements {
         if specification.is_empty()
             || serde_json::to_vec(specification)
@@ -2157,15 +2197,13 @@ pub(super) fn run(
 ) -> Result<i32, String> {
     let started = clock()?;
     let (_, state) = state_path(repo, state)?;
+    require_store(&state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
-    if !state.join("events.sqlite").is_file() {
-        return Err("No common Task Store exists".into());
-    }
     let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     let projection = store
         .task_projection(&cas, id)
-        .map_err(|e| e.to_string())?
-        .ok_or("Unknown Task")?;
+        .map_err(|e| crate::store_release::explain(&state, e.to_string()))?
+        .ok_or_else(|| task_not_found(id, &state))?;
     if let Some(expected) = confirm_plan {
         if !review_core::is_digest(expected) || projection.plan_id.as_deref() != Some(expected) {
             return Err(
@@ -2318,9 +2356,17 @@ pub(super) fn explain(
     tree: bool,
 ) -> Result<i32, String> {
     let (_, state) = state_path(repo, state)?;
+    require_store(&state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    if store
+        .task_projection(&cas, id)
+        .map_err(|e| crate::store_release::explain(&state, e.to_string()))?
+        .is_none()
+    {
+        return Err(task_not_found(id, &state));
+    }
     if let Some(plan_id) = plan {
         return inspection::explain_plan(&cas, &store, id, plan_id, json, tree);
     }
@@ -2348,6 +2394,64 @@ pub(super) fn show_if_common(id: &str, state: &Path, json: bool) -> Result<bool,
     }
     present(&cas, &store, id, json, false)?;
     Ok(true)
+}
+
+/// The not-found refusal of a Task, in the shape every not-found refusal takes:
+/// `<Thing> <name> not found in <where>; <what exists or the fix>`. The fix lists the Tasks of
+/// the same Store, with the selectors this command was given.
+pub(crate) fn task_not_found(task_id: &str, state: &Path) -> String {
+    let words: Vec<String> = std::env::args().collect();
+    let given = |flag: &str| {
+        words
+            .iter()
+            .position(|word| word == flag)
+            .and_then(|at| words.get(at + 1).cloned())
+            .or_else(|| {
+                words
+                    .iter()
+                    .find_map(|word| word.strip_prefix(&format!("{flag}=")).map(str::to_owned))
+            })
+    };
+    // The Store as the command was told to find it: the path given, the Workspace named, or
+    // this checkout's own.
+    let (place, selector) = if given("--state").is_some() {
+        (
+            format!("the Task Store {}", state.display()),
+            format!(
+                " --state {}",
+                shell_words::quote(&state.display().to_string())
+            ),
+        )
+    } else if let Some(label) = given("--workspace") {
+        (
+            format!("the Task Store of Workspace {}", preview::text(&label)),
+            format!(" --workspace {}", shell_words::quote(&label)),
+        )
+    } else {
+        ("this checkout's Task Store".into(), String::new())
+    };
+    format!(
+        "Task {} not found in {place}; af task list{selector} lists its Tasks",
+        preview::text(task_id)
+    )
+}
+
+/// The not-found refusal of a Task Store, in the shape every not-found refusal takes.
+pub(crate) fn store_not_found(state: &Path) -> String {
+    format!(
+        "Task Store not found in {}; af task plan --file FILE creates it, and af task list \
+         lists the Tasks of the Store this checkout uses",
+        state.display()
+    )
+}
+
+/// Refuse a command that reads a Task Store before anything opens one that is not there.
+pub(crate) fn require_store(state: &Path) -> Result<(), String> {
+    if store_present(state)? {
+        Ok(())
+    } else {
+        Err(store_not_found(state))
+    }
 }
 
 /// Whether a Task state directory holds a Store. Only a missing `events.sqlite` means none;
@@ -3209,9 +3313,15 @@ fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
         };
         let timing = match (span, binding["outcome"].as_str()) {
             (Some(check), Some(outcome)) => {
-                format!("{} in {} ms", preview::text(outcome), check["elapsed_ms"])
+                format!(
+                    "{} in {}",
+                    preview::text(outcome),
+                    crate::human::duration(check["elapsed_ms"].as_u64().unwrap_or(0))
+                )
             }
-            (Some(check), None) => format!("{} ms", check["elapsed_ms"]),
+            (Some(check), None) => {
+                crate::human::duration(check["elapsed_ms"].as_u64().unwrap_or(0))
+            }
             // A remote check ran nothing here: every declared kind was skipped as `remote`
             // (ADR-0140), and its own `remote check` lines say what ran and where.
             (None, outcome)
@@ -3258,18 +3368,25 @@ fn cache_states(caches: &[serde_json::Value]) -> String {
         .map(|cache| {
             let kind = cache["kind"].as_str().unwrap_or_default();
             let (base, reason) = kind.split_once(':').unwrap_or((kind, ""));
-            let bytes = &cache["bytes_available"];
+            let bytes = crate::human::bytes(cache["bytes_available"].as_u64().unwrap_or(0));
+            let available = cache["bytes_available"]
+                .as_u64()
+                .is_some_and(|bytes| bytes > 0);
             let first = seen.insert(base.to_owned());
             let base = preview::text(base);
             let reason = preview::text(reason);
             if cache["eligible"] == true {
-                let state = if bytes.as_u64().is_some_and(|bytes| bytes > 0) {
+                let state = if available {
                     format!("{base} warm {bytes}")
                 } else {
                     format!("{base} cold empty")
                 };
                 match cache["evicted_bytes"].as_u64() {
-                    Some(evicted) => format!("{state}, removed {evicted} ({})", eviction(cache)),
+                    Some(evicted) => format!(
+                        "{state}, removed {} ({})",
+                        crate::human::bytes(evicted),
+                        eviction(cache)
+                    ),
                     None => state,
                 }
             } else {
@@ -3279,7 +3396,11 @@ fn cache_states(caches: &[serde_json::Value]) -> String {
                     format!("{base} removed {bytes} ({reason})")
                 };
                 match cache["evicted_bytes"].as_u64() {
-                    Some(evicted) => format!("{state}, removed {evicted} ({})", eviction(cache)),
+                    Some(evicted) => format!(
+                        "{state}, removed {} ({})",
+                        crate::human::bytes(evicted),
+                        eviction(cache)
+                    ),
                     None => state,
                 }
             }
@@ -3753,7 +3874,7 @@ mod check_cache_line_tests {
         }));
         assert_eq!(
             check_cache_lines(&started),
-            ["check kernel: passed in 812 ms, cargo_target warm 4096, cargo_home cold empty"]
+            ["check kernel: passed in 812 ms, cargo_target warm 4.0 KiB, cargo_home cold empty"]
         );
         let skipped = group(serde_json::json!({
             "check": {"name": "markdownlint", "outcome": "not_run", "rustup_home": "kernel_home"},
