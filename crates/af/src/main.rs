@@ -1259,7 +1259,7 @@ fn main() {
         std::process::exit(code);
     };
     // Still the only thread: every thread started from here inherits the blocked signals. A run
-    // `af task run --detach` started outlives the terminal that started it (ADR-0198).
+    // `af task run --detach` started outlives the terminal that started it (ADR-0202).
     if std::env::var_os(task_execution::runs::DETACHED_ENV).is_some()
         && matches!(
             &command,

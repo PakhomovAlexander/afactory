@@ -1,4 +1,4 @@
-//! A Task's candidate outside the Store (ADR-0198): `af task materialize` makes a Git
+//! A Task's candidate outside the Store (ADR-0202): `af task materialize` makes a Git
 //! worktree's tracked tree equal to a Snapshot the Task recorded — its writes, deletions and
 //! executable bits — and `af task diff` prints the change between two of its Snapshots as `git
 //! diff` would, touching no worktree.

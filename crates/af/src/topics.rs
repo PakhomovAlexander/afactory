@@ -137,7 +137,7 @@ fn task_exit_codes() -> String {
 }
 
 /// `af help agents` is `docs/agents.md`, byte for byte: the page and the binary cannot say
-/// different things (ADR-0198).
+/// different things (ADR-0202).
 const AGENTS: &str = include_str!("../../../docs/agents.md");
 
 /// What the same table says about a captured Snapshot, and the one knob over it.

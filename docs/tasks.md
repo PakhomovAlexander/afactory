@@ -146,7 +146,7 @@ the Task and its plan is admitted, printing its pid, its host and its log (`af/t
 under `--json`). The run has no terminal, survives the shell that started it, and writes its
 output to `runs/ID-N.log` in the Task Store; every run, in a terminal or not, also records its
 process there as `runs/ID-N.json` before it takes the Task
-([ADR-0198](adr/0198-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
+([ADR-0202](adr/0202-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
 
 ```sh
 af task run pagination-cli --confirm-plan PLAN_ID --detach

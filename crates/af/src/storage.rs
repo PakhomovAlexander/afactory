@@ -2112,7 +2112,7 @@ fn collect_tasks(
         let result = match &applied {
             Err(error) => Err(failed(error.clone())),
             Ok(done) if done.tombstoned.contains(&task_id) => {
-                // A collected Task's run records and logs go with it (ADR-0198).
+                // A collected Task's run records and logs go with it (ADR-0202).
                 crate::task_execution::runs::forget(state, &task_id);
                 Ok(done
                     .plan

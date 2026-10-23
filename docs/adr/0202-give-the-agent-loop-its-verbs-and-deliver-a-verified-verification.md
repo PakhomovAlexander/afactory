@@ -1,4 +1,4 @@
-# ADR-0198: Give the agent loop its verbs, and deliver a verified verification
+# ADR-0202: Give the agent loop its verbs, and deliver a verified verification
 
 **Status:** accepted (2026-10-23). Narrows
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery accepts only a

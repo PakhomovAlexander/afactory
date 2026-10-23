@@ -43,7 +43,7 @@ impl TaskDeliveryRecordV1 {
 
 pub const TASK_DELIVERY_PROOF_V1: &str = "af/TaskDeliveryProof@1";
 
-/// Why a verification Task's delivery places another Task's candidate (ADR-0198): the
+/// Why a verification Task's delivery places another Task's candidate (ADR-0202): the
 /// verification Task, of kind `verification`, verified read-only a Snapshot it bound from the
 /// candidate Task's recorded output, and delivery places that candidate on the candidate Task's
 /// committed source. Every delivery record of such a delivery references this proof, so the

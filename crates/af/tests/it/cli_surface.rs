@@ -1222,7 +1222,7 @@ fn the_surface_documents_verbose_storage_canonical_markdown_and_the_provider_lis
     assert!(!review.contains(" tui "), "{review}");
 }
 
-/// The agent loop's verbs (ADR-0198) say what they print, refuse and never do in `--help`, `af
+/// The agent loop's verbs (ADR-0202) say what they print, refuse and never do in `--help`, `af
 /// help agents` is `docs/agents.md` byte for byte, and every `af task` command the page names
 /// is a command whose `--help` documents every flag the page gives it.
 #[test]

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-detached:1",
   "title": "Task detached af/task-detached@1",
-  "$comment": "What `af task run ID --detach --json` prints (ADR-0198): the run it started in the background, its process and host, the log it writes, `runs/<task>-<run>.log` in the Task Store, and the Task's state when the command returned.",
+  "$comment": "What `af task run ID --detach --json` prints (ADR-0202): the run it started in the background, its process and host, the log it writes, `runs/<task>-<run>.log` in the Task Store, and the Task's state when the command returned.",
   "type": "object",
   "additionalProperties": false,
   "required": [

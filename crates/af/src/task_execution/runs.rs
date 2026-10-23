@@ -1,4 +1,4 @@
-//! The processes that run Tasks (ADR-0198): every `af task run` records itself in its Store's
+//! The processes that run Tasks (ADR-0202): every `af task run` records itself in its Store's
 //! `runs/` directory before it takes the Task's lease, `runs/<task>-<run>.json`, and a detached
 //! run writes its log beside it, `runs/<task>-<run>.log`. From those records `af task run
 //! --detach` hands a run to the background, `af task wait` blocks until the Task settles, `af task
@@ -473,7 +473,9 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
     let mut opened = opened;
     let since = std::time::Instant::now();
     let admitted = loop {
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+        if let Some(status) =
+            review_process::reap::try_wait(&mut child).map_err(|e| e.to_string())?
+        {
             // It ended before it went to the background: a refusal, or a Task with nothing
             // left to run. Its log says which.
             let code = status.code().unwrap_or(1);

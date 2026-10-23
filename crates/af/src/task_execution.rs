@@ -2159,7 +2159,7 @@ fn start_captured(
         None => format!("cli-{}-{:016x}", std::process::id(), opening_nonce()),
     };
     // A run records its process before it takes the lease, so `af task cancel` finds it
-    // (ADR-0198); a plan runs nothing to cancel.
+    // (ADR-0202); a plan runs nothing to cancel.
     let _run_record = (!options.plan_only)
         .then(|| runs::begin(&state, &revision.task_id, &writer))
         .transpose()?;
@@ -2796,7 +2796,7 @@ pub(super) fn run(
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
     // The process that takes the lease, recorded before it does, so `af task cancel` finds it
-    // by the lease's writer and `af task wait` knows a run is on its way (ADR-0198).
+    // by the lease's writer and `af task wait` knows a run is on its way (ADR-0202).
     let writer = format!("cli-{}", writer_pid());
     let run_record = runs::begin(&state, id, &writer)?;
     let lease = store
@@ -2836,7 +2836,7 @@ pub(super) fn run(
         }
         // The sweep that ends this run records what it removed on this Task (ADR-0144).
         crate::storage::note_task_run(&state, lease.task_id());
-        // One line per node on stderr while the run waits, and a heartbeat (ADR-0198).
+        // One line per node on stderr while the run waits, and a heartbeat (ADR-0202).
         let _progress = (!quiet).then(|| runs::Progress::start(&state, id, started));
         execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
@@ -2885,7 +2885,7 @@ fn run_log_tail(cas: &Cas, store: &EventStore, id: &str, json: bool) {
         return;
     };
     // The text on stdout already named the failing tests; the state line ends stderr in both
-    // formats, so a run's log always ends with the state and the next command (ADR-0198).
+    // formats, so a run's log always ends with the state and the next command (ADR-0202).
     if json {
         for line in state::failed_gate_tail(id, &view) {
             defer_last_line(line);
@@ -2997,7 +2997,7 @@ pub(super) fn show_if_common(
         }
         return Ok(true);
     }
-    // Who cancelled the run that stopped it, above the `next:` line (ADR-0198).
+    // Who cancelled the run that stopped it, above the `next:` line (ADR-0202).
     if let Some(line) = runs::cancel_line(state, &task) {
         runs::note_for_show(line);
     }
@@ -3006,7 +3006,7 @@ pub(super) fn show_if_common(
 }
 
 /// One Task of the Store `--repo` and `--state` name, opened read-only for a command of the
-/// agent loop that reads it (ADR-0198): refused by name when the Store or the Task is not there,
+/// agent loop that reads it (ADR-0202): refused by name when the Store or the Task is not there,
 /// and when the Task was collected, whose records are gone.
 pub(super) struct OpenedTask {
     pub(super) state: PathBuf,

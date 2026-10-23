@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-cancel-request:1",
   "title": "Task cancel request af/task-cancel-request@1",
-  "$comment": "A request to cancel one run: `runs/<task>-<run>.cancel.json`, written by `af task cancel` before it signals the run's process (ADR-0198). `epoch` and `writer` are those of the lease the run held, so the Task's state is `abandoned/cancelled/host_cancelled` exactly for the run it stopped; `requester` is who asked.",
+  "$comment": "A request to cancel one run: `runs/<task>-<run>.cancel.json`, written by `af task cancel` before it signals the run's process (ADR-0202). `epoch` and `writer` are those of the lease the run held, so the Task's state is `abandoned/cancelled/host_cancelled` exactly for the run it stopped; `requester` is who asked.",
   "type": "object",
   "additionalProperties": false,
   "required": [

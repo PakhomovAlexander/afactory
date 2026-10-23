@@ -368,5 +368,5 @@ future readers need.
   candidate](0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
 - [0197 — Detect Provider logins, and register them through
   `add`](0197-detect-provider-logins-and-register-them-through-add.md)
-- [0198 — Give the agent loop its verbs, and deliver a verified
-  verification](0198-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)
+- [0202 — Give the agent loop its verbs, and deliver a verified
+  verification](0202-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)

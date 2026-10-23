@@ -1,4 +1,4 @@
-//! `af task findings` (ADR-0198): the review findings of a Task's last (or Nth) review round,
+//! `af task findings` (ADR-0202): the review findings of a Task's last (or Nth) review round,
 //! per reviewer — each with its severity, confidence, title, location, the quoted evidence and
 //! the proposed fix — then the evaluator's verdict and its reason. Text is grouped by severity;
 //! `--json` prints one `af/task-findings@1` document. Read-only: it reads what `af task report`

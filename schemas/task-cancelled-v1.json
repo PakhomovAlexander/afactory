@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-cancelled:1",
   "title": "Task cancelled af/task-cancelled@1",
-  "$comment": "What `af task cancel ID --json` prints (ADR-0198): the cancel request it recorded before it signalled the run's process, and the state the Task is left in, resumable with `af task run ID`.",
+  "$comment": "What `af task cancel ID --json` prints (ADR-0202): the cancel request it recorded before it signalled the run's process, and the state the Task is left in, resumable with `af task run ID`.",
   "type": "object",
   "additionalProperties": false,
   "required": [

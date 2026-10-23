@@ -19,7 +19,7 @@ pub(super) struct CommonDelivery {
     optimization_adoption: Option<OptimizationAdoptionContext>,
     prepared_delivery_record_id: Option<String>,
     /// The `af/TaskDeliveryProof@1` every record of a verification Task's delivery references
-    /// (ADR-0198).
+    /// (ADR-0202).
     proof_id: Option<String>,
 }
 
@@ -354,7 +354,7 @@ fn bound_source_refusal(bound: &review_source_git::task::TaskSourceBoundFromV1) 
     format!("{head}, so {remedy}")
 }
 
-/// The one exception to exact source ancestry (ADR-0198): a verified Task of kind
+/// The one exception to exact source ancestry (ADR-0202): a verified Task of kind
 /// `verification` that bound its `source` from another Task's recorded candidate and left it
 /// unchanged proves that candidate. Its delivery places the candidate on the candidate Task's
 /// own committed source, exactly as that Task's delivery would, and every record names both
