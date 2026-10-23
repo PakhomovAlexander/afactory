@@ -480,7 +480,8 @@ struct EventTimes {
 /// What one Task event says about the run its writer lease belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mark {
-    /// The command executed new work: an Attempt started.
+    /// The command executed new work: an Attempt started, or `af task run --retry-gate`
+    /// reopened a failed gate to start one.
     Work,
     /// The command refreshed the Task's source (`af task refresh`): never a run.
     Refresh,
@@ -521,11 +522,12 @@ fn event_times(
             events.push((marker.epoch, marker.now_unix_ms, Mark::Other));
             continue;
         }
-        // So is a gate retry.
+        // A gate retry reopened the finished Task to start a check Attempt on the same
+        // candidate (ADR-0196): `af task run --retry-gate` is a run, as `af task run` is.
         if review_store::store::task::gate_retry::is_gate_retried(&event) {
             let retry = review_store::store::task::gate_retry::read_gate_retried(&event)
                 .map_err(|e| e.to_string())?;
-            events.push((retry.epoch, retry.now_unix_ms, Mark::Other));
+            events.push((retry.epoch, retry.now_unix_ms, Mark::Work));
             continue;
         }
         let transition =
@@ -549,10 +551,12 @@ fn event_times(
 }
 
 /// The runs among `(epoch, time, mark)` events in log order. A run is an epoch in which an
-/// Attempt started and that did not refresh the source, so an `af task run` (or `af task start
-/// --execute`) that began work counts, and an `af task refresh` that only recovered pending
-/// Attempts, or a resume that only published settled results, does not; its span runs from the
-/// epoch's first event to its last. Wall time runs from the first event to the last.
+/// Attempt started, or a failed gate was retried, and that did not refresh the source, so an
+/// `af task run` (or `af task start --execute`, or `af task run --retry-gate`) that began work
+/// counts, and an `af task refresh` that only recovered pending Attempts, a resume that only
+/// published settled results, or the lease a Storage Budget sweep took to record itself, does
+/// not; its span runs from the epoch's first event to its last. Wall time runs from the first
+/// event to the last.
 fn tally_runs(events: &[(u64, u64, Mark)]) -> Option<EventTimes> {
     let first = events.iter().map(|(_, time, _)| *time).min()?;
     let last = events.iter().map(|(_, time, _)| *time).max()?;

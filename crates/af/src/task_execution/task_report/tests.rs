@@ -832,6 +832,40 @@ fn a_refresh_that_recovers_a_pending_attempt_is_not_a_run() {
     assert_eq!(tally_runs(&[]), None);
 }
 
+/// `af task start --execute` (epoch 1) ends at a failed gate, `af task run --retry-gate` (epoch
+/// 2) runs that gate again on the same candidate and continues into review, and a Storage
+/// Budget sweep (epoch 3) records itself under its own lease. The retry is a run, even before
+/// its check Attempt started; the sweep is not.
+#[test]
+fn a_retried_gate_is_a_run_and_a_sweep_is_not() {
+    let events = [
+        (1, 1_000, Mark::Other),
+        (1, 1_010, Mark::Work),
+        (1, 1_400, Mark::Other),
+        (2, 9_000, Mark::Other),
+        (2, 9_010, Mark::Work),
+        (2, 9_020, Mark::Work),
+        (2, 9_800, Mark::Other),
+        (3, 9_900, Mark::Other),
+        (3, 9_950, Mark::Other),
+    ];
+    assert_eq!(
+        tally_runs(&events),
+        Some(EventTimes {
+            runs: 2,
+            wall_ms: 8_950,
+            active_ms: 400 + 800,
+        })
+    );
+    // A retry whose writer died before its check Attempt started still ran the command.
+    let retried_only = [
+        (1, 1_000, Mark::Work),
+        (2, 5_000, Mark::Other),
+        (2, 5_100, Mark::Work),
+    ];
+    assert_eq!(tally_runs(&retried_only).unwrap().runs, 2);
+}
+
 /// Issue #191: only a started Attempt makes a lease a run. `af task start --execute` (epoch 1)
 /// starts and settles every Attempt, and its writer dies before publishing; `af task run`
 /// (epoch 2) resumes after all Attempts finished, publishes the selected results and finishes

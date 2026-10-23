@@ -2841,6 +2841,31 @@ pub(super) fn run(
     Ok(code)
 }
 
+/// The run log's last lines on stderr, held until the command's housekeeping has said what it
+/// did: `main` prints them ([`print_last_lines`]) after the stale sandbox sweep and the Storage
+/// Budget sweep that end a run, so the Task's state stays the last line however late those
+/// report.
+static LAST_LINES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn defer_last_line(line: String) {
+    LAST_LINES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(line);
+}
+
+/// Print the run log's last lines this command held back, once, on stderr.
+pub(crate) fn print_last_lines() {
+    let lines = std::mem::take(
+        &mut *LAST_LINES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    for line in lines {
+        eprintln!("{line}");
+    }
+}
+
 /// The run log's last lines under `--json`, on stderr beside the document on stdout: the failing
 /// tests of a failed gate and the Task's state with the next command, as the text output ends.
 /// Best effort: a Store that cannot be read prints nothing more.
@@ -2852,9 +2877,9 @@ fn run_log_tail(cas: &Cas, store: &EventStore, id: &str, json: bool) {
         return;
     };
     for line in state::failed_gate_tail(id, &view) {
-        eprintln!("{line}");
+        defer_last_line(line);
     }
-    eprintln!("{}", state_line(id, &view));
+    defer_last_line(state_line(id, &view));
 }
 
 /// The run log's last line: the Task's state and the next command.
@@ -2874,7 +2899,7 @@ fn state_note(cas: &Cas, store: &EventStore, id: &str, code: i32) {
         return;
     }
     if let Ok(Inspection { view, .. }) = inspection(cas, store, id, false, None) {
-        eprintln!("{}", state_line(id, &view));
+        defer_last_line(state_line(id, &view));
     }
 }
 
@@ -3993,12 +4018,13 @@ fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
     lines
 }
 
-/// What the latest check report of each check node says (`af/TaskCheckReport@1`): where a
-/// check stopped, by stage, step and the fix its gate names; the tests that failed in its
-/// parallel run but passed alone (`flaky`), each list on its own line so an operator sees what
-/// nearly failed; the tests that failed twice; and, for a check that did not pass or had flaky
-/// tests, the host's load around it. A report the check wrote but af refused says so.
-fn check_report_lines(cas: &Cas, state: &TaskProjection) -> Vec<String> {
+/// Each check node's latest `af/TaskCheckReport@1`, with its artifact ID, by node ID: the
+/// report of the node's latest settled Attempt, so a retried gate's report, not the failed one
+/// before it. A report that does not decode or validate is skipped, as it was never admitted.
+fn latest_check_reports(
+    cas: &Cas,
+    state: &TaskProjection,
+) -> BTreeMap<String, (String, review_core::task::check_report::TaskCheckReportV1)> {
     use review_core::task::check_report::*;
     let mut latest = BTreeMap::new();
     for attempt in state
@@ -4028,14 +4054,29 @@ fn check_report_lines(cas: &Cas, state: &TaskProjection) -> Vec<String> {
             let settled = attempt.settled_unix_ms.unwrap_or(0);
             if latest
                 .get(&node)
-                .is_none_or(|(earlier, _): &(u64, TaskCheckReportV1)| *earlier <= settled)
+                .is_none_or(|(earlier, _, _): &(u64, String, TaskCheckReportV1)| {
+                    *earlier <= settled
+                })
             {
-                latest.insert(node, (settled, report));
+                latest.insert(node, (settled, id.clone(), report));
             }
         }
     }
+    latest
+        .into_iter()
+        .map(|(node, (_, id, report))| (node, (id, report)))
+        .collect()
+}
+
+/// What the latest check report of each check node says (`af/TaskCheckReport@1`): where a
+/// check stopped, by stage, step and the fix its gate names; the tests that failed in its
+/// parallel run but passed alone (`flaky`), each list on its own line so an operator sees what
+/// nearly failed; the tests that failed twice; and, for a check that did not pass or had flaky
+/// tests, the host's load around it. A report the check wrote but af refused says so.
+fn check_report_lines(cas: &Cas, state: &TaskProjection) -> Vec<String> {
+    use review_core::task::check_report::*;
     let mut lines = Vec::new();
-    for (_, report) in latest.values() {
+    for (_, report) in latest_check_reports(cas, state).values() {
         let statuses = cas
             .get_artifact(&report.receipt_id)
             .ok()
@@ -4212,6 +4253,19 @@ fn inspection(
     });
     if let Some(gate) = &view.gate {
         value["gate"] = serde_json::to_value(gate).map_err(|e| e.to_string())?;
+        // The gate's evidence the text prints beside the state (ADR-0196): each check node's
+        // latest check report, and every retry of a failed gate.
+        let reports = latest_check_reports(cas, &state);
+        if !reports.is_empty() {
+            value["gate"]["check_reports"] =
+                json!(reports
+                .iter()
+                .map(|(node, (id, report))| json!({"node":node,"artifact_id":id,"record":report}))
+                .collect::<Vec<_>>());
+        }
+        if !state.gate_retries.is_empty() {
+            value["gate"]["retries"] = json!(state.gate_retries);
+        }
     }
     if !view.failures.is_empty() {
         value["failures"] = state::failures_value(&view);

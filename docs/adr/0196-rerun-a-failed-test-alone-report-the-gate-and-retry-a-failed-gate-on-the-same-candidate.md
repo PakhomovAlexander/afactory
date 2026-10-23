@@ -83,8 +83,15 @@ generator captured the author sandbox's `$HOME/.cargo/.package-cache`.
    deadline has passed, or the Task's or call's Attempt, token or wall limits leave no room for
    the new Attempt, with that reason, so a reopened Task can always run. It refuses a Task that
    was verified or delivered, whose last failure was not a gate, whose gate is followed by owned
-   children, an experiment or an Integration, or that runs a captured Campaign Review Round. The
-   run log of a Task that ended at a failed gate ends with `next: af task run ID --retry-gate`.
+   children, an experiment or an Integration, or that runs a captured Campaign Review Round. A
+   Task that ended at a failed gate is `finished/gate_failed/CAUSE` in the one Task state every
+   rendering prints (`af help task-states`), and its one `next:` line is `af task run ID
+   --retry-gate` exactly when these rules would reopen it, otherwise `af task show ID --checks`:
+   the state never names a command the kernel refuses for the reasons above. The check report
+   lines and `gate retried: NODE ran again on the same candidate` are text beside that state, and
+   `af task show --json` (`af/task-inspection@12`) carries the same facts under `gate`
+   (`check_reports`, `retries`). A `--retry-gate` run is a run of the Task for `af task report`,
+   as it starts a check Attempt; an `af task refresh` is not.
 4. **Toolchains are resolved at admission.** Before a plan is admitted, and so before any
    implementer Attempt, af resolves on the Task's captured source Snapshot the toolchain a field
    names for its local checks: under `[warm]` build caches, the toolchain the Snapshot's

@@ -1622,7 +1622,8 @@ const NO_WARM_DOCUMENTS: &str = include_str!("../fixtures/task-warm/no-warm-docu
 /// deadline and every identity derived from it, an Attempt ULID, a writer pid, a fixture path —
 /// becomes `<run:N>`, N its first appearance, and the two runs must pair such values one to
 /// one, so every equality between them survives. Host timings are masked first, because two
-/// runs can agree on a duration by chance.
+/// runs can agree on a duration by chance; so are the host's load and CPUs a check report
+/// records (ADR-0196), which two runs share by chance and two machines need not.
 #[derive(Default)]
 struct RunIndependent {
     first: std::collections::BTreeMap<String, usize>,
@@ -1649,6 +1650,9 @@ impl RunIndependent {
                 Value::Array(a.iter().zip(b).map(|(a, b)| self.pair(a, b, key)).collect())
             }
             _ if key.ends_with("_unix_ms") || key == "elapsed_ms" => Value::String("<ms>".into()),
+            _ if key.starts_with("load_1m_") || key.starts_with("cpus_") => {
+                Value::String("<host>".into())
+            }
             _ if first == second => first.clone(),
             _ => {
                 let next = self.first.len();

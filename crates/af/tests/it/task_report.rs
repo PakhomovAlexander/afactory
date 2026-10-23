@@ -130,6 +130,23 @@ fn run(repo: &Path, state: &Path, args: &[&str], code: i32) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+/// `document` without what the Storage Budget sweep that ends a run records on the Task after
+/// the run printed it (ADR-0144): its `storage_sweeps` and the transitions of its own short
+/// lease. The sweep records only when it removed something, which depends on the machine, not on
+/// the Task; a replay's document includes it and the run's own could not.
+fn without_storage_sweeps(mut document: Value) -> Value {
+    let object = document.as_object_mut().unwrap();
+    object.remove("storage_sweeps");
+    if let Some(history) = object.get_mut("history").and_then(Value::as_array_mut) {
+        history.retain(|entry| {
+            !entry["transition"]["writer"]
+                .as_str()
+                .is_some_and(|writer| writer.starts_with("af-storage-sweep-"))
+        });
+    }
+    document
+}
+
 pub(crate) fn start(repo: &Path, state: &Path, code: i32) -> Value {
     let done = run(
         repo,
@@ -414,8 +431,8 @@ fn the_report_starter_runs_to_verified_with_three_command_attempts_and_writes_it
     assert_eq!(String::from_utf8_lossy(&branches.stdout).trim(), "* main");
     // Replay spends nothing and reports the same result.
     assert_eq!(
-        run(&repo, &state, &["task", "run", "--execute", TASK], 0),
-        done
+        without_storage_sweeps(run(&repo, &state, &["task", "run", "--execute", TASK], 0)),
+        without_storage_sweeps(done)
     );
 }
 
@@ -465,8 +482,8 @@ fn a_citation_that_does_not_name_a_text_line_fails_report_check_before_the_verif
             "{case}"
         );
         assert_eq!(
-            run(&repo, &state, &["task", "run", "--execute", TASK], 3),
-            done,
+            without_storage_sweeps(run(&repo, &state, &["task", "run", "--execute", TASK], 3)),
+            without_storage_sweeps(done),
             "{case}"
         );
     }
@@ -557,8 +574,8 @@ fn a_negative_verdict_stays_unsatisfied() {
         review_core::task::pipeline::ReceiptOutcomeV1::Failed
     );
     assert_eq!(
-        run(&repo, &state, &["task", "run", "--execute", TASK], 3),
-        done
+        without_storage_sweeps(run(&repo, &state, &["task", "run", "--execute", TASK], 3)),
+        without_storage_sweeps(done)
     );
     let shown = af(
         &repo,

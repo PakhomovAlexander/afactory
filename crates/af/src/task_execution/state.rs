@@ -20,6 +20,7 @@ use review_core::task::usage::TaskUnknownUsageCauseV1;
 use review_core::task::verification::{TASK_CHECK_RECEIPT_V1, TaskCheckReceiptV1};
 use review_graph::task::{CompiledOperator, ReviewOperation};
 use review_store::store::task::execution::TaskAttemptAccounting;
+use review_store::store::task::gate_retry::GateRetry;
 
 /// The schema of `af task show ID --checks --json`.
 pub(crate) const TASK_CHECKS_V1: &str = "af/task-checks@1";
@@ -248,24 +249,24 @@ fn finished(
             verified
         });
     }
-    let ended = |cause: TaskCauseV1| {
-        TaskStateV1::ended(
+    let ended = |cause: TaskCauseV1| -> Result<TaskStateV1, String> {
+        Ok(TaskStateV1::ended(
             phase,
             cause.outcome().unwrap_or(TaskOutcomeV1::Exhausted),
             Some(cause),
         )
-        .with_next(next_action(cas, state, cause))
+        .with_next(next_action(cas, state, cause)?))
     };
     // The last gate failing decides: what came after it never ran on a passing tree.
     if let (Some(gate), Some(checks)) = (
         gate.filter(|g| g.status != TaskGateStatusV1::Passed),
         checks,
     ) {
-        return Ok(ended(gate_cause(checks, gate)));
+        return ended(gate_cause(checks, gate));
     }
     // Findings a review recorded are its verdict, whatever else failed beside it.
     if concluded && reviewed_with_findings(cas, state)? {
-        return Ok(ended(TaskCauseV1::ReviewerFindings));
+        return ended(TaskCauseV1::ReviewerFindings);
     }
     // The first node that failed on its own decides; a node that only missed another's receipt
     // follows from it.
@@ -276,18 +277,22 @@ fn finished(
     } else {
         planning_cause(cas, state).unwrap_or(TaskCauseV1::Budget)
     };
-    Ok(ended(cause))
+    ended(cause)
 }
 
-/// The one command a person runs after a Task ended with `cause`.
-fn next_action(cas: &Cas, state: &TaskProjection, cause: TaskCauseV1) -> String {
+/// The one command a person runs after a Task ended with `cause`. After a failed gate it is
+/// `--retry-gate` exactly when the kernel would run that gate again
+/// ([`TaskProjection::failed_gates`]), so the state never names a command the kernel refuses;
+/// otherwise the gate's last check receipt.
+fn next_action(cas: &Cas, state: &TaskProjection, cause: TaskCauseV1) -> Result<String, String> {
     let id = &state.task_id;
-    match cause {
+    Ok(match cause {
         TaskCauseV1::ReviewerFindings => format!("af task findings {id}"),
-        TaskCauseV1::CheckFailed | TaskCauseV1::CheckFlakyThenFailed => {
-            format!("af task run {id} --retry-gate")
+        TaskCauseV1::CheckFailed
+        | TaskCauseV1::CheckFlakyThenFailed
+        | TaskCauseV1::PreflightFailed => {
+            gate_next_action(id, &state.failed_gates(cas).map_err(|e| e.to_string())?)
         }
-        TaskCauseV1::PreflightFailed => format!("af task show {id} --checks"),
         TaskCauseV1::ProviderNetwork
         | TaskCauseV1::ProviderCapacity
         | TaskCauseV1::ProviderTimeout => "af provider status".into(),
@@ -305,6 +310,15 @@ fn next_action(cas: &Cas, state: &TaskProjection, cause: TaskCauseV1) -> String 
         | TaskCauseV1::MalformedReply
         | TaskCauseV1::ModelRefused
         | TaskCauseV1::Collected => format!("af task show {id}"),
+    })
+}
+
+/// The next command after a failed gate: `--retry-gate` when the kernel runs it again, else the
+/// gate's last check receipt.
+fn gate_next_action(id: &str, retry: &GateRetry) -> String {
+    match retry {
+        GateRetry::Gates(_) => format!("af task run {id} --retry-gate"),
+        GateRetry::Refused(_) => format!("af task show {id} --checks"),
     }
 }
 
@@ -1198,6 +1212,24 @@ mod tests {
         assert_eq!(of, TaskCauseV1::PreflightFailed);
         let (passed, _) = cause(view(vec![check("passed", &[], &[], None)]));
         assert_eq!(passed.status, TaskGateStatusV1::Passed);
+    }
+
+    /// A failed gate names `--retry-gate` only when the kernel would run it again; one it
+    /// refuses (an evaluator ran after it, say) names its check receipt instead, never a command
+    /// the kernel then refuses.
+    #[test]
+    fn a_failed_gate_names_retry_only_when_the_kernel_retries_it() {
+        assert_eq!(
+            gate_next_action("t", &GateRetry::Gates(vec!["root.nodes.check".into()])),
+            "af task run t --retry-gate"
+        );
+        assert_eq!(
+            gate_next_action(
+                "t",
+                &GateRetry::Refused("a reviewer or evaluator ran after its failed gate".into())
+            ),
+            "af task show t --checks"
+        );
     }
 
     #[test]

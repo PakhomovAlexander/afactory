@@ -942,8 +942,11 @@ fn refresh_once_the_lease_expires(af: &dyn Fn(&[&str]) -> Command) {
     }
 }
 
-/// The interrupted Task's writer leases in order: (epoch, first event, last event, refreshed
-/// the source, recorded an execution).
+/// The interrupted Task's writer leases, one per command that wrote it, in order: (epoch, first
+/// event, last event, refreshed the source, recorded an execution). The short lease the Storage
+/// Budget sweep after a run takes to record what it removed on the Task (ADR-0144) is
+/// housekeeping, not a command's: it exists only when that sweep removed something, and `af task
+/// report` counts it as neither a run nor active time.
 fn writer_leases(store: &EventStore) -> Vec<(u64, u64, u64, bool, bool)> {
     use review_core::task::event::TaskChangeV1;
     let run_id = review_store::store::task::task_run_id(task_interrupt::TASK).unwrap();
@@ -951,17 +954,22 @@ fn writer_leases(store: &EventStore) -> Vec<(u64, u64, u64, bool, bool)> {
     for event in store.replay(&run_id).unwrap() {
         // A lease's execution marker is an event of its epoch that neither refreshes nor
         // records an execution.
-        let (epoch, time, change) = if review_store::store::task::is_execution_started(&event) {
-            let marker = review_store::store::task::read_execution_started(&event).unwrap();
-            (marker.epoch, marker.now_unix_ms, None)
-        } else {
-            let transition = review_store::store::task::read_task_transition(&event).unwrap();
-            (
-                transition.epoch,
-                transition.now_unix_ms,
-                Some(transition.change),
-            )
-        };
+        let (writer, epoch, time, change) =
+            if review_store::store::task::is_execution_started(&event) {
+                let marker = review_store::store::task::read_execution_started(&event).unwrap();
+                (marker.writer, marker.epoch, marker.now_unix_ms, None)
+            } else {
+                let transition = review_store::store::task::read_task_transition(&event).unwrap();
+                (
+                    transition.writer,
+                    transition.epoch,
+                    transition.now_unix_ms,
+                    Some(transition.change),
+                )
+            };
+        if writer.starts_with("af-storage-sweep-") {
+            continue;
+        }
         let index = match epochs.iter().position(|e| e.0 == epoch) {
             Some(index) => index,
             None => {
