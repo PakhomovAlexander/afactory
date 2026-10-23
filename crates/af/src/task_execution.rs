@@ -38,19 +38,23 @@ use review_store::{Cas, EventStore, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 mod bindings;
+pub(super) mod candidate;
 pub(crate) mod catalog;
 pub(crate) mod collection;
 pub(super) mod developer;
 pub(crate) mod domain;
 pub(super) mod export;
+pub(super) mod findings;
 mod input_bindings;
 mod input_file;
 mod inspection;
 mod issue;
 mod planning;
+pub(super) mod pr_body;
 mod preview;
 mod provider_admission;
 pub(super) mod refresh;
+pub(crate) mod runs;
 mod selection;
 pub(crate) mod starter;
 pub(crate) mod state;
@@ -2147,28 +2151,26 @@ fn start_captured(
     )?;
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
+    let writer = match &replace {
+        Some(_) => format!("cli-{}", writer_pid()),
+        // The opening writer is what makes one Store's Task distinguishable from another
+        // Store's Task of the same file (ADR-0140 derives the gate owner from this transition),
+        // so it carries 64 bits from the operating system, not the PID alone.
+        None => format!("cli-{}-{:016x}", std::process::id(), opening_nonce()),
+    };
+    // A run records its process before it takes the lease, so `af task cancel` finds it
+    // (ADR-0198); a plan runs nothing to cancel.
+    let _run_record = (!options.plan_only)
+        .then(|| runs::begin(&state, &revision.task_id, &writer))
+        .transpose()?;
     let lease = match &replace {
         // The unstarted Task keeps its log: its next revision and plan replace the recorded
         // ones in one barrier, as a source refresh does.
         Some(_) => store
-            .take_task_lease(
-                &cas,
-                &revision.task_id,
-                &format!("cli-{}", writer_pid()),
-                15_000,
-            )
+            .take_task_lease(&cas, &revision.task_id, &writer, 15_000)
             .map_err(|e| e.to_string())?,
         None => store
-            .open_task(
-                &cas,
-                &revision_id,
-                // The opening writer is what makes one Store's Task distinguishable from
-                // another Store's Task of the same file (ADR-0140 derives the gate owner from
-                // this transition), so it carries 64 bits from the operating system, not the PID
-                // alone.
-                &format!("cli-{}-{:016x}", std::process::id(), opening_nonce()),
-                15_000,
-            )
+            .open_task(&cas, &revision_id, &writer, 15_000)
             .map_err(|e| e.to_string())?,
     };
     let outcome = (|| {
@@ -2637,6 +2639,7 @@ fn confirm_current_plan(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     id: &str,
     repo: &Path,
@@ -2645,6 +2648,7 @@ pub(super) fn run(
     confirm_plan: Option<&str>,
     execute_now: bool,
     retry_gate: bool,
+    quiet: bool,
 ) -> Result<i32, String> {
     let started = clock()?;
     let (_, state) = state_path(repo, state)?;
@@ -2791,8 +2795,12 @@ pub(super) fn run(
     )?;
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
+    // The process that takes the lease, recorded before it does, so `af task cancel` finds it
+    // by the lease's writer and `af task wait` knows a run is on its way (ADR-0198).
+    let writer = format!("cli-{}", writer_pid());
+    let run_record = runs::begin(&state, id, &writer)?;
     let lease = store
-        .take_task_lease(&cas, id, &format!("cli-{}", writer_pid()), 15_000)
+        .take_task_lease(&cas, id, &writer, 15_000)
         .map_err(|e| e.to_string())?;
     let outcome = (|| {
         confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
@@ -2828,9 +2836,12 @@ pub(super) fn run(
         }
         // The sweep that ends this run records what it removed on this Task (ADR-0144).
         crate::storage::note_task_run(&state, lease.task_id());
+        // One line per node on stderr while the run waits, and a heartbeat (ADR-0198).
+        let _progress = (!quiet).then(|| runs::Progress::start(&state, id, started));
         execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
     })();
+    drop(run_record);
     let released = release(&cas, &mut store, &lease, outcome);
     // Whatever the outcome, a model the bound one did not answer for is named on stderr
     // (ADR-0147).
@@ -2870,20 +2881,21 @@ pub(crate) fn print_last_lines() {
 /// tests of a failed gate and the Task's state with the next command, as the text output ends.
 /// Best effort: a Store that cannot be read prints nothing more.
 fn run_log_tail(cas: &Cas, store: &EventStore, id: &str, json: bool) {
-    if !json {
-        return;
-    }
     let Ok(Inspection { view, .. }) = inspection(cas, store, id, false, None) else {
         return;
     };
-    for line in state::failed_gate_tail(id, &view) {
-        defer_last_line(line);
+    // The text on stdout already named the failing tests; the state line ends stderr in both
+    // formats, so a run's log always ends with the state and the next command (ADR-0198).
+    if json {
+        for line in state::failed_gate_tail(id, &view) {
+            defer_last_line(line);
+        }
     }
     defer_last_line(state_line(id, &view));
 }
 
 /// The run log's last line: the Task's state and the next command.
-fn state_line(id: &str, view: &state::TaskView) -> String {
+pub(super) fn state_line(id: &str, view: &state::TaskView) -> String {
     format!(
         "Task {id}: {}; next: {}",
         view.state.label(),
@@ -2967,13 +2979,9 @@ pub(super) fn show_if_common(
         collection::present(&collected, json)?;
         return Ok(true);
     }
-    if store
-        .task_projection(&cas, id)
-        .map_err(|e| e.to_string())?
-        .is_none()
-    {
+    let Some(task) = store.task_projection(&cas, id).map_err(|e| e.to_string())? else {
         return Ok(false);
-    }
+    };
     if checks {
         let Inspection { view, .. } = inspection(&cas, &store, id, false, None)?;
         if json {
@@ -2989,8 +2997,82 @@ pub(super) fn show_if_common(
         }
         return Ok(true);
     }
+    // Who cancelled the run that stopped it, above the `next:` line (ADR-0198).
+    if let Some(line) = runs::cancel_line(state, &task) {
+        runs::note_for_show(line);
+    }
     present(&cas, &store, id, json, false)?;
     Ok(true)
+}
+
+/// One Task of the Store `--repo` and `--state` name, opened read-only for a command of the
+/// agent loop that reads it (ADR-0198): refused by name when the Store or the Task is not there,
+/// and when the Task was collected, whose records are gone.
+pub(super) struct OpenedTask {
+    pub(super) state: PathBuf,
+    pub(super) cas: Cas,
+    pub(super) store: EventStore,
+    pub(super) task: TaskProjection,
+}
+
+pub(super) fn open_task(id: &str, repo: &Path, state: Option<&Path>) -> Result<OpenedTask, String> {
+    if !is_name(id) {
+        return Err(format!(
+            "`{}`: a Task ID is 1 to 128 ASCII letters, digits, `-` or `_`, starting with a \
+             letter or digit; `af task list` lists the Tasks",
+            preview::text(id)
+        ));
+    }
+    let (_, state) = state_path(repo, state)?;
+    require_store(&state)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    if store
+        .collected_task(id)
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err(format!(
+            "Task `{id}` was collected: its Snapshots and records are no longer kept, only its \
+             summary; `af task show {id}` prints it"
+        ));
+    }
+    let task = store
+        .task_projection(&cas, id)
+        .map_err(|e| crate::store_release::explain(&state, e.to_string()))?
+        .ok_or_else(|| task_not_found(&state, id))?;
+    Ok(OpenedTask {
+        state,
+        cas,
+        store,
+        task,
+    })
+}
+
+impl OpenedTask {
+    /// The Task's recorded result and the state every rendering prints, read again now.
+    pub(super) fn view(&self) -> Result<(Option<TaskResultV1>, state::TaskView), String> {
+        let result: Option<TaskResultV1> = match &self.task.phase {
+            TaskPhaseV1::Finished { result_id } => {
+                Some(artifact(&self.cas, result_id, TASK_RESULT_V1)?)
+            }
+            _ => None,
+        };
+        let cancelled = runs::cancelled_epoch(Some(&self.state), &self.task);
+        let view = state::view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled)?;
+        Ok((result, view))
+    }
+
+    /// Project the Task again from the Store, for a command that watches it change.
+    pub(super) fn refresh(&mut self) -> Result<(), String> {
+        self.task = self
+            .store
+            .task_projection(&self.cas, &self.task.task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| task_not_found(&self.state, &self.task.task_id))?;
+        Ok(())
+    }
 }
 
 /// The not-found refusal of a Task, in the shape every not-found refusal takes:
@@ -3120,7 +3202,8 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
             _ => None,
         };
         // The same state `af task show` prints, from the same derivation.
-        let view = state::view(&cas, &task, result.as_ref(), now)?;
+        let cancelled = runs::cancelled_epoch(Some(state), &task);
+        let view = state::view(&cas, &task, result.as_ref(), now, cancelled)?;
         Ok(json!({"schema":TASK_LIST_ENTRY_V3,"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
             "state":view.state,
             "round":review_round(&task),
@@ -3479,6 +3562,7 @@ fn show_lines(
     }
     lines.extend(state::failed_gate_tail(&state.task_id, view));
     lines.extend(state::failure_lines(view));
+    lines.extend(runs::take_show_notes());
     lines.push(format!(
         "next: {}",
         view.state.next_action.as_deref().unwrap_or("none")
@@ -4241,7 +4325,9 @@ fn inspection(
         _ => None,
     };
     // One state model for every rendering of this Task: `list`, `show`, `report` and `run`.
-    let view = state::view(cas, &state, result.as_ref(), clock()?)?;
+    let store_dir = store.database_path();
+    let cancelled = runs::cancelled_epoch(store_dir.as_deref().and_then(Path::parent), &state);
+    let view = state::view(cas, &state, result.as_ref(), clock()?, cancelled)?;
     let mut value = json!({"schema":TASK_INSPECTION_V12,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     // The wall clock starts at the first admission: the wall the Task has, when its clock

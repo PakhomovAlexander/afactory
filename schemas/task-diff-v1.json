@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-diff:1",
+  "title": "Task diff af/task-diff@1",
+  "$comment": "What `af task diff ID --json` prints (ADR-0198): the two Snapshots the change runs between — the Task's source or `--base`, and its candidate or `--snapshot` — every file that differs with its status and its added and deleted lines (null for a binary file), and the unified diff `git diff` prints for the same two trees. Touches no worktree.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "base_snapshot_id",
+    "snapshot_id",
+    "files",
+    "patch"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-diff@1"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "base_snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/file"
+      }
+    },
+    "patch": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status",
+        "old_path",
+        "added",
+        "deleted"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "added",
+            "deleted",
+            "modified",
+            "renamed",
+            "type_changed"
+          ]
+        },
+        "old_path": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "added": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deleted": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "renamed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "old_path": {
+                "type": "string"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "old_path": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

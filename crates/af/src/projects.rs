@@ -942,7 +942,13 @@ pub(crate) fn resolve_task_workspace(
         | T::List { inspect, .. }
         | T::Gc { inspect, .. }
         | T::Show { inspect, .. }
-        | T::Report { inspect, .. } => Some((
+        | T::Report { inspect, .. }
+        | T::Wait { inspect, .. }
+        | T::Status { inspect, .. }
+        | T::Cancel { inspect, .. }
+        | T::Findings { inspect, .. }
+        | T::Materialize { inspect, .. }
+        | T::Diff { inspect, .. } => Some((
             inspect.repo.as_path(),
             &mut inspect.workspace,
             &mut inspect.state,

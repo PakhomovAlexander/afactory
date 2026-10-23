@@ -109,7 +109,11 @@ review corpora belong in consuming repositories, not here.
   Snapshot. It creates only a new local branch/worktree after explicit Task-ID confirmation,
   persists recovery state, and never commits, pushes, opens a PR, invokes a remote, or overwrites
   an existing branch or path
-  ([ADR-0031](docs/adr/0031-deliver-verified-tasks-to-new-local-worktrees.md)).
+  ([ADR-0031](docs/adr/0031-deliver-verified-tasks-to-new-local-worktrees.md)). Its one exception:
+  a verified read-only `verification` Task of another Task's recorded candidate delivers that
+  candidate on the other Task's committed source, recording both Tasks; `af task materialize`
+  writes an unverified candidate only under `--allow-unverified`
+  ([ADR-0198](docs/adr/0198-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
 - Publishing is a human action, with one operator-authorized exception: for a check a Task
   pipeline's check node lists in `remote_checks`, the kernel pushes exactly the two branches
   `af-gate/<task-id>/base` and `af-gate/<task-id>/head`, built from Task Snapshots, and opens one

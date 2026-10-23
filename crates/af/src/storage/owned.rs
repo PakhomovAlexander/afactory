@@ -35,16 +35,18 @@ const EVENT_LOG: [&str; 4] = [
 ];
 
 /// Every name af itself creates directly in a Store directory, exactly: the event log and its
-/// SQLite files, the CAS, the Git home (`task.rs`), the owner marker, the run lock
-/// ([`super::RUNNING_LOCK`]), and the Task delivery lock database with its SQLite files
-/// (`task.rs`). Nothing else af writes there.
-const AF_ENTRIES: [&str; 12] = [
+/// SQLite files, the CAS, the Git home (`task.rs`), the run records and detached logs of `af
+/// task run` (`runs`, ADR-0198), the owner marker, the run lock ([`super::RUNNING_LOCK`]), and
+/// the Task delivery lock database with its SQLite files (`task.rs`). Nothing else af writes
+/// there.
+const AF_ENTRIES: [&str; 13] = [
     EVENT_LOG[0],
     EVENT_LOG[1],
     EVENT_LOG[2],
     EVENT_LOG[3],
     "cas",
     "git-home",
+    "runs",
     MARKER,
     super::RUNNING_LOCK,
     "task-delivery-lock.sqlite",
@@ -432,6 +434,7 @@ mod tests {
             "events.sqlite-shm",
             "cas",
             "git-home",
+            "runs",
             "events.sqlite-journal",
             "af-running.lock",
             "task-delivery-lock.sqlite",

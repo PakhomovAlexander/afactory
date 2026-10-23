@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-materialized:1",
+  "title": "Task materialized af/task-materialized@1",
+  "$comment": "What `af task materialize ID --into DIR --json` prints (ADR-0198): the Snapshot written into the worktree DIR, whether it is the Task's verified result (an unverified one is written only under `--allow-unverified`), and the paths, in the Snapshot's spelling, it wrote (new, or changed in content or kind), deleted, and changed only in their executable bit; then the next commands.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "snapshot_id",
+    "verified",
+    "into",
+    "written",
+    "deleted",
+    "mode",
+    "next"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-materialized@1"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "verified": {
+      "type": "boolean"
+    },
+    "into": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "pattern": "\\S"
+    },
+    "written": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "deleted": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "mode": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "next": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 65536,
+        "pattern": "\\S"
+      }
+    }
+  }
+}

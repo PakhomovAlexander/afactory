@@ -1221,3 +1221,179 @@ fn the_surface_documents_verbose_storage_canonical_markdown_and_the_provider_lis
     let review = collapsed(&["review", "--help"]);
     assert!(!review.contains(" tui "), "{review}");
 }
+
+/// The agent loop's verbs (ADR-0198) say what they print, refuse and never do in `--help`, `af
+/// help agents` is `docs/agents.md` byte for byte, and every `af task` command the page names
+/// is a command whose `--help` documents every flag the page gives it.
+#[test]
+fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
+    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (command, needles) in [
+        (
+            &["task", "findings", "--help"][..],
+            &[
+                "--round <N>",
+                "af/task-findings@1",
+                "severity, confidence, title, location, the quoted evidence",
+                "evaluator's verdict",
+                "Never:",
+                "af task findings TASK_ID",
+            ][..],
+        ),
+        (
+            &["task", "materialize", "--help"],
+            &[
+                "--into <DIR>",
+                "--snapshot <SHA>",
+                "--allow-unverified",
+                "--force",
+                "unverified candidate: review it before merging",
+                "af/task-materialized@1",
+                "Never: commits",
+            ],
+        ),
+        (
+            &["task", "diff", "--help"],
+            &[
+                "--snapshot <SHA>",
+                "--base <SHA>",
+                "--stat",
+                "--name-only",
+                "af/task-diff@1",
+                "Never: touches a worktree",
+            ],
+        ),
+        (
+            &["task", "cancel", "--help"],
+            &[
+                "only that recorded pid is signalled",
+                "another host is refused with its pid and host",
+                "abandoned/cancelled/host_cancelled",
+                "af/task-cancelled@1",
+            ],
+        ),
+        (
+            &["task", "wait", "--help"],
+            &["--timeout <S>", "exits 124", "af/task-status@1"],
+        ),
+        (
+            &["task", "status", "--help"],
+            &["af/task-status@1", "without waiting"],
+        ),
+        (
+            &["task", "run", "--help"],
+            &[
+                "--detach",
+                "--quiet",
+                "af/task-detached@1",
+                "every 5 minutes a heartbeat",
+                "runs/<TASK_ID>-<N>.log",
+                "stderr's last line is always the Task's state",
+            ],
+        ),
+        (
+            &["task", "report", "--help"],
+            &[
+                "--pr-body",
+                "--template <FILE>",
+                "<!-- af-pr-lines:v1 -->",
+                "gh pr create --body-file",
+                "scripts/check-pr-report.py accepts it",
+            ],
+        ),
+        (
+            &["task", "deliver", "--help"],
+            &[
+                "kind `verification`",
+                "the delivery records both Tasks",
+                "af task materialize TASK_ID --into DIR --allow-unverified",
+            ],
+        ),
+    ] {
+        let help = af(command);
+        assert!(help.status.success(), "{command:?}: {}", err(&help));
+        let text = flat(&out(&help));
+        for needle in needles {
+            assert!(
+                text.contains(&flat(needle)),
+                "{command:?} lacks `{needle}`:\n{}",
+                out(&help)
+            );
+        }
+    }
+    let task = out(&af(&["task", "--help"]));
+    for verb in [
+        "findings",
+        "materialize",
+        "diff",
+        "cancel",
+        "wait",
+        "status",
+    ] {
+        assert!(
+            task.lines()
+                .any(|line| line.trim_start().starts_with(&format!("{verb} "))),
+            "{verb}: {task}"
+        );
+    }
+    for (args, code) in [
+        (&["task", "diff", "t", "--stat", "--json"][..], 2),
+        (&["task", "diff", "t", "--stat", "--name-only"], 2),
+        (&["task", "report", "t", "--template", "x.md"], 2),
+        (&["task", "findings", "t", "--round", "0"], 2),
+        (&["task", "wait", "t", "--timeout", "0"], 2),
+        (&["task", "materialize", "t"], 2),
+    ] {
+        assert_eq!(af(args).status.code(), Some(code), "{args:?}");
+    }
+
+    // `af help agents` is the page, and the page names only commands and flags af has.
+    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let page = std::fs::read_to_string(workspace.join("docs/agents.md")).unwrap();
+    let topic = af(&["help", "agents"]);
+    assert!(topic.status.success(), "{}", err(&topic));
+    assert!(out(&topic).contains(page.trim_end()), "{}", out(&topic));
+    let listed = af(&["help", "nonsense"]);
+    assert!(err(&listed).contains("agents"), "{}", err(&listed));
+    assert!(out(&af(&["--help"])).contains("agents"));
+    let mut named = 0;
+    for span in page.split('`').skip(1).step_by(2) {
+        let words: Vec<&str> = span.split_whitespace().collect();
+        if words.first() != Some(&"af") {
+            continue;
+        }
+        let help = match (words.get(1), words.get(2)) {
+            // The namespace itself, named in prose, and a line `af task run` prints.
+            (Some(&"task"), None) => continue,
+            (Some(&"task"), Some(verb)) if verb.ends_with(':') => continue,
+            (Some(&"task"), Some(verb)) => af(&["task", verb, "--help"]),
+            (Some(&"help"), Some(topic)) => af(&["help", topic]),
+            _ => panic!("docs/agents.md names `{span}`, which is not an af task command"),
+        };
+        assert!(help.status.success(), "`{span}`: {}", err(&help));
+        for flag in words.iter().filter(|word| word.starts_with("--")) {
+            assert!(
+                out(&help).contains(flag),
+                "`{span}`: {flag} is not in its help:\n{}",
+                out(&help)
+            );
+        }
+        named += 1;
+    }
+    assert!(named >= 15, "only {named} commands named");
+    let json = out(&af(&["help", "json"]));
+    for document in [
+        "af/task-findings@1",
+        "af/task-diff@1",
+        "af/task-materialized@1",
+        "af/task-status@1",
+        "af/task-detached@1",
+        "af/task-cancelled@1",
+    ] {
+        assert!(json.contains(document), "{document}:\n{json}");
+        assert!(page.contains(document), "docs/agents.md lacks {document}");
+    }
+    assert!(out(&af(&["help", "exit-codes"])).contains("124"));
+}

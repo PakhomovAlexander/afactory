@@ -67,7 +67,7 @@ and journaled.
 
 Namespaces:
   review     plan, run, and work a review Campaign
-  task       start, inspect, and deliver an implement Task
+  task       run, follow, inspect, and deliver Tasks (`af help agents` for the loop)
   project    show this repository's Project and manage its Workspaces
   catalog    capture shared Pipeline, Worker and Task-kind packages from Git
   provider   inspect and preflight the configured model providers
@@ -76,7 +76,7 @@ Namespaces:
   self       optimize the current project, or manage af installations
 
 `af help <topic>` explains config, layers, environment, exit-codes, json, providers, task-states, \
-and self. `af` alone \
+agents, and self. `af` alone \
 at a terminal opens a read-first browser over this scope's settings, providers and pipelines.";
 
 const AF_AFTER_HELP: &str = "\
@@ -226,17 +226,20 @@ the deterministic project gate. Do not start another Campaign. Use `--heavy` onl
 explicitly requests convergence review, and repeat that explicit mode when resuming it."
     )]
     Onboard(OnboardArgs),
-    /// Start, inspect, and deliver an implement Task
+    /// Run, follow, inspect, and deliver Tasks
     #[command(
         subcommand_required = true,
         arg_required_else_help = true,
-        long_about = "Start, inspect, and deliver an implement Task.\n\n\
+        long_about = "Run, follow, inspect, and deliver Tasks.\n\n\
 A Task file (`--file`) names the Task's ID, kind, goal and limits. The Pipeline and Worker \
 packages it runs are pinned in the committed `.af/task-catalog.toml`; `af catalog init --profile software \
 --destination DIR` creates a new starter directory with a working catalog and runnable Task \
 files. The Task runs over a captured source Snapshot and ends at a verified or unverified \
 derived Snapshot. Nothing is written back to the repository unless you `deliver` it, to a new \
-local branch and worktree, after confirming the Task ID.",
+local branch and worktree, after confirming the Task ID, or `materialize` it into a worktree \
+you name.\n\nAn agent's loop — plan, run or run in the background, read the state, the \
+findings and the diff, run another round, deliver, describe the pull request — is `af help \
+agents`.",
         after_long_help = "Examples:\n  \
 af task plan --file ../ticket.json   # needs: a Task file (af catalog init writes starters)\n  \
 af task run TASK_ID --confirm-plan PLAN_ID   # needs: a planned Task and the plan ID it printed\n  \
@@ -1668,9 +1671,24 @@ af task output TASK_ID --port report --format canonical-markdown --output report
         inspect: TaskInspectArgs,
     },
     /// Run or resume a captured Task using its exact recorded plan and authority
-    #[command(after_long_help = "Examples:\n  \
+    #[command(
+        long_about = "Run or resume a captured Task using its exact recorded plan and \
+authority.\n\nWhile it waits it prints on stderr one line per node that starts or finishes, with \
+the time since the run started and the tokens charged so far, and every 5 minutes a heartbeat \
+(`af task run: implement running 23 min, 412k tokens, host load 11.2`); --quiet keeps them \
+back. stderr's last line is always the Task's state and the next command: `Task ID: \
+phase/outcome/cause; next: COMMAND` (`af help task-states`).\n\n--detach starts the same run \
+in the background and returns once it holds the Task and its plan is admitted, printing its pid \
+and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@1` under --json). \
+The run has no terminal, survives the shell that started it, and is the same process a \
+foreground run is; `af task wait`, `af task status` and `af task cancel` follow it. Every run \
+records its process in the Store, `runs/<TASK_ID>-<N>.json`, before it takes the Task.",
+        after_long_help = "Examples:\n  \
 af task run TASK_ID --confirm-plan PLAN_ID   # needs: a planned Task and the plan ID it printed\n  \
-af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --retry-gate")]
+af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --retry-gate\n  \
+af task run TASK_ID --execute --detach   # needs: a planned Task\n  \
+af task run TASK_ID --execute --quiet --json   # needs: a planned Task"
+    )]
     Run {
         task_id: String,
         /// Confirm the exact plan shown by plan/start/explain; stale identities refuse
@@ -1689,6 +1707,159 @@ af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --re
         /// line (`storage: freed 1.2 GiB (2 warm keys)`)
         #[arg(long)]
         verbose: bool,
+        /// Run in the background: return once the run holds the Task, with its pid and log
+        #[arg(long)]
+        detach: bool,
+        /// Print no progress lines or heartbeat on stderr; the last line still follows
+        #[arg(long)]
+        quiet: bool,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Block until a Task settles, then exit with its exit code
+    #[command(
+        long_about = "Block until a Task settles — no writer holds it and no run of this host \
+is starting — then print its status line (`af/task-status@1` under --json) and exit with the \
+Task's exit code: its outcome's (`af help exit-codes`), 4 for a Task that waits for a person. \
+With --timeout S it gives up after S seconds, prints the status so far and exits 124. A \
+planned Task with no run in progress is refused (exit 1): there is nothing to wait for.\n\n\
+Never: starts, resumes or changes a Task.",
+        after_long_help = "Examples:\n  \
+af task wait TASK_ID   # needs: a Task af task run --detach started\n  \
+af task wait TASK_ID --timeout 600 --json   # needs: a running Task"
+    )]
+    Wait {
+        /// Task id
+        task_id: String,
+        /// Give up after S seconds and exit 124
+        #[arg(long, value_name = "S", value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: Option<u64>,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Print one line: a Task's state, current node, elapsed time and tokens so far
+    #[command(
+        long_about = "Print one line about a Task, now, without waiting: its state \
+(phase/outcome/cause, `af help task-states`), the node whose Attempt runs, the time since its \
+clock started, the tokens charged so far, the run that holds it (run number, pid and host) and \
+who cancelled it, then the next command. --json prints one `af/task-status@1` document. Exits \
+0: the state is data.",
+        after_long_help = "Examples:\n  \
+af task status TASK_ID   # needs: a Task\n  \
+af task status TASK_ID --json   # needs: a Task"
+    )]
+    Status {
+        /// Task id
+        task_id: String,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Stop a running Task's `af task run` and its Worker processes; the Task stays resumable
+    #[command(
+        long_about = "Stop the `af task run` that holds a Task, and with it the Task's Worker \
+processes, which that run stops as it does on Ctrl-C. The process is the one the Task's writer \
+lease names, found in the Store's run records (`runs/<TASK_ID>-<N>.json`) by the lease's \
+writer: only that recorded pid is signalled (SIGTERM, and once more after 60 s), never a \
+process found by its name. A writer on another host is refused with its pid and host.\n\n\
+The request is recorded first, with who asked (`runs/<TASK_ID>-<N>.cancel.json`), so the Task \
+shows `abandoned/cancelled/host_cancelled` and `af task show` names the requester. The Task \
+stays resumable: `af task run TASK_ID` continues it. --json prints one `af/task-cancelled@1` \
+document. A Task no writer holds is refused (exit 1).",
+        after_long_help = "Examples:\n  \
+af task cancel TASK_ID   # needs: a running Task\n  \
+af task cancel TASK_ID --json   # needs: a running Task"
+    )]
+    Cancel {
+        /// Task id
+        task_id: String,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Print the review findings of a Task's last (or Nth) review round and the evaluator's verdict
+    #[command(
+        long_about = "Print the review findings of a Task's last review round, or of the Nth \
+with --round N: per reviewer, each finding with its severity, confidence, title, location, the \
+quoted evidence and the reviewer's proposed fix, grouped by severity; then the evaluator's \
+verdict and its reason, and the next command. A round whose reduce step did not run shows each \
+reviewer's reports as recorded, not gathered. A Task that recorded no review round says so, \
+with the state it reached.\n\n--json prints one `af/task-findings@1` document. Exits 0 once \
+it read the Store.\n\nNever: dispatches a Worker, contacts a Provider or writes the Store.",
+        after_long_help = "Examples:\n  \
+af task findings TASK_ID   # needs: a reviewed Task\n  \
+af task findings TASK_ID --round 1 --json   # needs: a reviewed Task"
+    )]
+    Findings {
+        /// Task id
+        task_id: String,
+        /// The Nth recorded review round instead of the last (1 is the first)
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+        round: Option<u64>,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Make a Git worktree's tracked tree equal to a Task's candidate Snapshot
+    #[command(
+        long_about = "Make the tracked tree of the Git worktree DIR equal to a Task's candidate \
+Snapshot: its result's Snapshot, or the last one a node of its plan sealed, or the one --snapshot \
+names (one the Task recorded; `af task diff` shows them). Files are written, deleted and given \
+their executable bit; untracked files the Snapshot does not name stay. Then it prints the \
+Snapshot, how many paths it wrote, deleted and changed only in mode, and the next commands \
+(`af/task-materialized@1` under --json).\n\nRefused: a DIR with uncommitted changes, unless \
+--force; a candidate the Task did not verify, unless --allow-unverified, which then says \
+`unverified candidate: review it before merging`.\n\nNever: commits, stages, pushes, \
+contacts a remote or writes the Store. `af task deliver` keeps its stricter contract: a \
+verified Task, onto a new branch and worktree.",
+        after_long_help = "Examples:\n  \
+af task materialize TASK_ID --into ../review-wt   # needs: a verified Task and a worktree\n  \
+# needs: a reviewed Task and a clean worktree at ../review-wt\n  \
+af task materialize TASK_ID --into ../review-wt --allow-unverified --json"
+    )]
+    Materialize {
+        /// Task id
+        task_id: String,
+        /// A Snapshot the Task recorded, instead of its candidate
+        #[arg(long, value_name = "SHA")]
+        snapshot: Option<String>,
+        /// The top of the Git worktree to write
+        #[arg(long, value_name = "DIR")]
+        into: PathBuf,
+        /// Write a candidate the Task did not verify
+        #[arg(long)]
+        allow_unverified: bool,
+        /// Write even when DIR has uncommitted changes, overwriting them
+        #[arg(long)]
+        force: bool,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Print a Task's change as a unified diff, touching no worktree
+    #[command(
+        long_about = "Print the change from a Task's base Snapshot (its source, or --base) to its \
+candidate (its result's Snapshot, the last one a node sealed, or --snapshot) as the unified diff \
+`git diff` prints for the same two trees, renames detected; --stat and --name-only print what \
+`git diff` prints with them. Both Snapshots must be ones the Task recorded. --json prints one \
+`af/task-diff@1` document: the files with their status and line counts, and the patch.\n\n\
+Never: touches a worktree, writes the Store or contacts a remote.",
+        after_long_help = "Examples:\n  \
+af task diff TASK_ID   # needs: a Task with a candidate\n  \
+af task diff TASK_ID --stat   # needs: a Task with a candidate\n  \
+af task diff TASK_ID --json | jq '.files[].path'   # needs: a Task with a candidate"
+    )]
+    Diff {
+        /// Task id
+        task_id: String,
+        /// The Snapshot to show instead of the candidate
+        #[arg(long, value_name = "SHA")]
+        snapshot: Option<String>,
+        /// The Snapshot to diff from instead of the Task's source
+        #[arg(long, value_name = "SHA")]
+        base: Option<String>,
+        /// Only the diffstat
+        #[arg(long, conflicts_with_all = ["name_only", "json"])]
+        stat: bool,
+        /// Only the changed paths
+        #[arg(long, conflicts_with = "json")]
+        name_only: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
@@ -1720,8 +1891,12 @@ af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --re
         long_about = "Deliver a verified Task's derived Snapshot to a new local branch and \
 worktree.\n\nThe target must be a clean repository at the Task's recorded source Snapshot; the \
 branch and the worktree path must both be absent. Durable, idempotent, locally verified before \
-it is reported complete.\n\nNever: mutates the current checkout, commits on your behalf, pushes, \
-opens a pull request, or contacts a remote.",
+it is reported complete.\n\nA verified Task of kind `verification` whose source it bound from \
+another Task's candidate (`inputs.source = {task, port}`) and left unchanged delivers that \
+candidate on the other Task's committed source, and the delivery records both Tasks. A \
+candidate no Task verified is never delivered: `af task materialize TASK_ID --into DIR \
+--allow-unverified` writes it into a worktree you choose.\n\nNever: mutates the current \
+checkout, commits on your behalf, pushes, opens a pull request, or contacts a remote.",
         after_long_help = "Examples:\n  \
 # needs: a verified Task\n  \
 af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID \\\n    \
@@ -1848,16 +2023,30 @@ description, between these two lines:\n\n  <!-- af-task-report:v1 -->\n  \
 appear in the order given, numbered as rounds. Active time is the sum of the Task's runs, the \
 writer leases that started an Attempt, so waiting between runs is not counted; wall time runs \
 from its first to its last recorded event. A figure the Store does not record is shown as \
-unknown.\n\nNever: dispatches a \
+unknown.\n\n--pr-body prints the whole pull request description instead, which `gh pr create \
+--body-file` takes unchanged: the template (--template, or the checkout's \
+.github/PULL_REQUEST_TEMPLATE.md) with this block between its markers, and the lines added \
+block, between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->`, that the checkout's \
+scripts/pr-lines.py prints when it has one; without a template, the two blocks under their \
+headings. scripts/check-pr-report.py accepts it.\n\nNever: dispatches a \
 Worker, contacts a Provider, writes the Store or changes a Task. Providers appear only as kind \
 and model; no Provider label, path, credential, prompt or Worker output is printed.",
         after_long_help = "Examples:\n  af task report pagination-cli   # needs: Task pagination-cli\n  \
-af task report implement-x verify-x --json   # needs: Tasks implement-x and verify-x"
+af task report implement-x verify-x --json   # needs: Tasks implement-x and verify-x\n  \
+# needs: Tasks implement-x and verify-x\n  \
+af task report implement-x verify-x --pr-body > body.md && gh pr create --body-file body.md"
     )]
     Report {
         /// Task ids, reported in this order
         #[arg(value_name = "TASK_ID", required = true)]
         task_ids: Vec<String>,
+        /// Print the whole pull request description: the template with this block, and the
+        /// lines added block `scripts/pr-lines.py` prints when the checkout has the script
+        #[arg(long, conflicts_with = "json")]
+        pr_body: bool,
+        /// The pull request template [default: .github/PULL_REQUEST_TEMPLATE.md of --repo]
+        #[arg(long, value_name = "FILE", requires = "pr_body")]
+        template: Option<PathBuf>,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },

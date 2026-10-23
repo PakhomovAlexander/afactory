@@ -96,12 +96,16 @@ pub(crate) struct StoppedStep {
     pub(crate) exit_code: i64,
 }
 
-/// The state of an uncollected Task at `now`.
+/// The state of an uncollected Task at `now`. `cancelled` is the lease epoch of the run an
+/// `af task cancel` request stopped, when the Store's `runs/` directory records one: a Task
+/// that stopped under that very lease was cancelled by a person, `host_cancelled`, whatever its
+/// last Attempt was doing when the signal came.
 pub(crate) fn view(
     cas: &Cas,
     state: &TaskProjection,
     result: Option<&TaskResultV1>,
     now: u64,
+    cancelled: Option<u64>,
 ) -> Result<TaskView, String> {
     let checks = last_checks(cas, state)?;
     let gate = checks.as_ref().map(gate_of);
@@ -115,7 +119,7 @@ pub(crate) fn view(
         _ if !state.admitted => TaskStatePhaseV1::Planned,
         // A run that ended on a node's own failure without finishing waits for a person (a
         // signed decision, say); one that was interrupted or lost its writer was abandoned.
-        _ if abandoned_cause(cas, state) != TaskCauseV1::HostCancelled
+        _ if abandoned_cause(cas, state, cancelled) != TaskCauseV1::HostCancelled
             && failures.iter().any(|f| f.cause.is_some()) =>
         {
             TaskStatePhaseV1::Waiting
@@ -145,7 +149,7 @@ pub(crate) fn view(
         TaskStatePhaseV1::Abandoned => TaskStateV1::ended(
             phase,
             TaskOutcomeV1::Cancelled,
-            Some(abandoned_cause(cas, state)),
+            Some(abandoned_cause(cas, state, cancelled)),
         )
         .with_next(format!("af task run {id}")),
         TaskStatePhaseV1::Finished => {
@@ -193,10 +197,13 @@ pub(crate) fn started(state: &TaskProjection) -> bool {
             .is_some_and(|execution| execution.budget.begun_attempts() > 0)
 }
 
-/// Why a Task that ran stopped before it finished: an interrupt, as its last Attempt's usage
-/// or diagnostic records it, or a writer that lost its lease (the default when nothing says
-/// more).
-fn abandoned_cause(cas: &Cas, state: &TaskProjection) -> TaskCauseV1 {
+/// Why a Task that ran stopped before it finished: an `af task cancel` of its last lease, an
+/// interrupt, as its last Attempt's usage or diagnostic records it, or a writer that lost its
+/// lease (the default when nothing says more).
+fn abandoned_cause(cas: &Cas, state: &TaskProjection, cancelled: Option<u64>) -> TaskCauseV1 {
+    if cancelled == Some(state.lease_epoch()) {
+        return TaskCauseV1::HostCancelled;
+    }
     let mut attempts = state
         .execution
         .iter()

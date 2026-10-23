@@ -132,6 +132,39 @@ delivery once there is one. `task show` adds the plan, the checks, each failed n
 command; `--json` adds exact Snapshot IDs and the append-only event history. Both accept `--json`
 ([Task states](#task-states)).
 
+## Follow a run
+
+While `af task run` waits it prints on stderr one line per node that starts or finishes, with the
+time since the run started and the tokens charged so far (`af task run: implement finished (2 min
+elapsed, 41k tokens so far)`), and every 5 minutes a heartbeat (`af task run: implement running 23
+min, 412k tokens, host load 11.2`); `--quiet` keeps them back. stderr's last line is always the
+Task's state and next command, `Task ID: phase/outcome/cause; next: COMMAND`, in text as under
+`--json`.
+
+`af task run ID --detach` runs the same command in the background and returns once that run holds
+the Task and its plan is admitted, printing its pid, its host and its log (`af/task-detached@1`
+under `--json`). The run has no terminal, survives the shell that started it, and writes its
+output to `runs/ID-N.log` in the Task Store; every run, in a terminal or not, also records its
+process there as `runs/ID-N.json` before it takes the Task
+([ADR-0198](adr/0198-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
+
+```sh
+af task run pagination-cli --confirm-plan PLAN_ID --detach
+af task status pagination-cli
+af task wait pagination-cli --timeout 3600
+af task cancel pagination-cli
+```
+
+`af task status ID` prints one line at once: the state, the node whose Attempt runs, the time since
+the Task's clock started, the tokens so far and the run that holds it. `af task wait ID` blocks
+until the Task settles and exits with its exit code, or with 124 when `--timeout S` passes first;
+both print `af/task-status@1` under `--json`. `af task cancel ID` stops the `af task run` the Task's
+writer lease names: it finds the process by the lease's writer in the run records, refuses one of
+another host with its pid and host, records who asked in `runs/ID-N.cancel.json`, and signals that
+recorded pid only, which stops its Worker processes as Ctrl-C does. The Task is then
+`abandoned/cancelled/host_cancelled`, `af task show` names who cancelled it, and `af task run ID`
+resumes it. [docs/agents.md](agents.md) walks the whole loop as an agent runs it.
+
 ## Task states
 
 Every `af task` command that shows a Task prints one state for it, in text and under `--json`
@@ -273,6 +306,30 @@ reason and nothing recorded, for a Task that was verified, delivered, has not fi
 last failure was not the gate's (its checks passed, or a reviewer or evaluator ran after them),
 and when the plan's approval or deadline has passed or the limits leave no room.
 
+## Look at a candidate
+
+`af task findings ID` prints the Task's last review round: per reviewer, each finding with its
+severity, confidence, title, location, the quoted evidence and the proposed fix, grouped by
+severity, then the evaluator's verdict and its reason; `--round N` reads an earlier round, and
+`--json` prints `af/task-findings@1`. `af task diff ID` prints the candidate's change against the
+Task's source as the unified diff `git diff` prints for the same trees, without touching any
+worktree; `--stat` and `--name-only` print its summary, `--snapshot` and `--base` pick two
+Snapshots the Task recorded, and `--json` prints `af/task-diff@1`.
+
+`af task materialize ID --into DIR` makes the tracked tree of the Git worktree `DIR` equal to the
+candidate, with its writes, deletions and executable bits, and prints what it changed and
+`next: git -C DIR status; af task report ID` (`af/task-materialized@1` under `--json`). It refuses
+a `DIR` with uncommitted changes unless `--force`, and a candidate the Task did not verify unless
+`--allow-unverified`, which then says `unverified candidate: review it before merging`. It never
+commits or stages; `git -C DIR status` shows the change, ready for a person to commit.
+
+```sh
+af task findings pagination-cli
+af task diff pagination-cli --stat
+git worktree add ../pagination-review HEAD
+af task materialize pagination-cli --into ../pagination-review
+```
+
 ## Deliver the verified Snapshot
 
 Choose an absent branch and an absent sibling path. The source checkout must still be clean at
@@ -312,6 +369,15 @@ PY
 Alternatively, accept that the resulting commit differs from the verified Snapshot. Then inspect
 and test the delivered worktree. It is deliberately uncommitted: committing, pushing and opening
 a pull request remain human actions using the repository's normal Git controls.
+
+A candidate verified in a second Task is delivered through that Task. A verified Task of kind
+`verification` whose source it bound from another Task's candidate,
+`"inputs": {"source": {"task": "pagination-cli", "port": "snapshot"}}`, and left unchanged,
+delivers that candidate on the other Task's committed source: `af task deliver VERIFY_ID …` checks
+the other Task as its own delivery would, and every delivery record names both Tasks through an
+`af/TaskDeliveryProof@1`. Every other delivery still requires the Task's own Snapshot to descend
+exactly from its source; a refusal names `af task materialize`, which writes a candidate into a
+worktree of your choosing instead.
 
 ## Repeating and recovering a delivery
 
@@ -626,11 +692,18 @@ times in milliseconds, the `pipelines` with their steps, and each Task's `round`
 `detail` and `findings`;
 an unknown figure is absent there.
 
+`af task report TASK_ID... --pr-body` prints the whole pull request description instead, which
+`gh pr create --body-file` takes unchanged: the repository's `.github/PULL_REQUEST_TEMPLATE.md`
+(or `--template FILE`) with this block between its markers, and the lines added block that the
+checkout's `scripts/pr-lines.py` prints between `<!-- af-pr-lines:v1 -->` and
+`<!-- /af-pr-lines -->` when the checkout has the script. `scripts/check-pr-report.py --body`
+accepts it as it is.
+
 ## Troubleshooting
 
 | Symptom | Meaning and action |
 |---|---|
-| `only a verified Task can be delivered` | Inspect the Task's checks and evaluator, then start a corrected Task. |
+| `only a verified Task can be delivered` | Inspect the Task's findings (`af task findings ID`), checks and evaluator, then start a corrected Task; `af task materialize ID --into DIR --allow-unverified` writes the candidate where you can look at it. |
 | `HEAD no longer equals the Task source revision` | Return the source checkout to the recorded commit or start a Task from the new commit. |
 | `worktree is not clean` or `staged changes` | Preserve or commit the operator's work elsewhere, then retry from an exact clean source. |
 | branch/path already exists | Choose a new absent target; Afactory never overwrites either one. |

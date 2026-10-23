@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-run-process:1",
+  "title": "Task run process af/task-run-process@1",
+  "$comment": "One process that runs a Task: `runs/<task>-<run>.json` in its Store, written by `af task run` (and `af task start --execute`) before it takes the Task's lease (ADR-0198). `writer` is the lease's writer, by which `af task cancel` finds the process; `pid` and `host` say which process to stop, and where. A detached run (`af task run --detach`) names its log, `runs/<task>-<run>.log`; any other has none. A record of another version is not read.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "run",
+    "pid",
+    "host",
+    "writer",
+    "started_unix_ms",
+    "detached",
+    "log"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-run-process@1"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "run": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "host": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "\\S"
+    },
+    "writer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "\\S"
+    },
+    "started_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "detached": {
+      "type": "boolean"
+    },
+    "log": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "detached": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "log": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "pattern": "\\S"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "log": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

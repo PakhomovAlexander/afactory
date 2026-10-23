@@ -59,6 +59,17 @@ pub(crate) fn install() -> Result<(), String> {
     Ok(())
 }
 
+/// Keep the terminal's hangup away from this process for the rest of its life: a run `af task
+/// run --detach` started in the background outlives the shell that started it (ADR-0198). Call
+/// from the main thread before it starts any other thread. A blocked SIGHUP stays pending and is
+/// never taken; children start with an empty mask, so Workers keep the default.
+pub(crate) fn ignore_hangup() -> Result<(), String> {
+    let mut set = SigSet::empty();
+    set.add(Signal::SIGHUP);
+    set.thread_block()
+        .map_err(|error| format!("blocking the hangup signal: {error}"))
+}
+
 fn receive(signal: Signal) {
     let first = {
         let mut state = state();
