@@ -179,7 +179,7 @@ fn keeping_one_collects_the_older_task_and_removes_exactly_the_previewed_bytes()
     }
     assert!(sized["store"]["objects"].as_u64().unwrap() > 0);
     let listed = text(&repo, &state, &["task", "list", "--sizes"]);
-    assert!(listed.contains("bytes exclusive"), "{listed}");
+    assert!(listed.contains(" exclusive, "), "{listed}");
     assert!(listed.contains("Store: "), "{listed}");
     let plain = json_of(&repo, &state, &["task", "list"], 0);
     assert!(

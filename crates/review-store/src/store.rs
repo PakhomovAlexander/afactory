@@ -21,6 +21,7 @@ use crate::cas::{Cas, CasError};
 mod attempt_wall;
 pub mod observer;
 pub mod task;
+pub mod writers;
 
 /// Read a non-negative SQLite integer column as `u64`.
 ///
@@ -494,6 +495,13 @@ impl EventStore {
                  PRIMARY KEY (run_id, attempt_id)
              );",
         )?;
+        conn.execute_batch(writers::CREATE)?;
+        writers::record(
+            &conn,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX)),
+        );
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),

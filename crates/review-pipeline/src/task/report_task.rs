@@ -556,7 +556,7 @@ impl ReportTaskDomain {
             (id, empty)
         };
         Ok(DocumentV1 {
-            schema: "af.document/1".into(),
+            schema: review_core::task::document::DOCUMENT_SCHEMA.into(),
             draft_id: draft_id.into(),
             sources_id,
             format: DocumentFormatV1::Markdown,

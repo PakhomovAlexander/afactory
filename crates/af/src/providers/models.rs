@@ -717,15 +717,13 @@ fn selected_specs(specs: Vec<ProviderSpec>, ids: &[String]) -> Result<Vec<Provid
     if !ids.is_empty() {
         let mut selected = Vec::new();
         for id in ids {
-            let spec = specs
-                .iter()
-                .find(|spec| &spec.id == id)
-                .ok_or_else(|| {
-                    format!(
-                        "provider `{}` is not listed; `af provider status` lists the Providers af knows",
-                        hint::shown(id)
-                    )
-                })?;
+            let spec = specs.iter().find(|spec| &spec.id == id).ok_or_else(|| {
+                format!(
+                    "Provider {} not found in this machine's Provider registry or its \
+                         discovered contexts; af provider status lists the Providers af knows",
+                    hint::shown(id)
+                )
+            })?;
             if !selected
                 .iter()
                 .any(|known: &ProviderSpec| known.id == spec.id)

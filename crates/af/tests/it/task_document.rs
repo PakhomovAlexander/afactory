@@ -158,7 +158,7 @@ fn document_starter_runs_without_credentials_code_artifacts_or_code_checks_and_r
             "--port",
             "document",
             "--format",
-            "markdown",
+            "canonical-markdown",
             "--output",
             file.to_str().unwrap(),
         ],
@@ -175,7 +175,7 @@ fn document_starter_runs_without_credentials_code_artifacts_or_code_checks_and_r
             "--port",
             "document",
             "--format",
-            "markdown",
+            "canonical-markdown",
             "--output",
         ])
         .arg(&file)

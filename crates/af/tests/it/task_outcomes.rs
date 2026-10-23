@@ -799,7 +799,7 @@ fn not_found_errors_name_the_task_the_store_and_what_it_holds() {
         assert_eq!(missing.status.code(), Some(1), "{args:?}");
         assert!(
             err(&missing).contains(&format!(
-                "Task `nope` not found in Store {state} (1 Task there: pagination-cli); `af task list --state {state}` lists them"
+                "Task nope not found in the Task Store {state} (1 Task there: pagination-cli); af task list --state {state} lists its Tasks"
             )),
             "{args:?}: {}",
             err(&missing)

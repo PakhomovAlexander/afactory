@@ -1144,7 +1144,11 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
         dir: PathBuf::from(format!("/home/me/.local/state/af/task/local/{name}")),
         shown: format!("~/.local/state/af/task/local/{name}"),
         repo: Some(name.to_owned()),
-        older: matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)),
+        release:
+            matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
+                .then(|| {
+                    review_core::store_writer::StoreProvenance::OtherReleases(vec!["0.11.0".into()])
+                }),
         tasks,
     };
     let mut pane = TasksPane {
@@ -1171,14 +1175,15 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
     pane.rebuild();
     let rows: Vec<String> = pane.rows.iter().map(Row::text).collect();
     assert_eq!(
-        rows[2..5],
+        rows[2..6],
         [
-            "2 Task Stores were written by an earlier af release, in",
+            "2 Stores written by other releases: af 0.11.0 (2); run them with",
+            "AF_VERSION=0.11.0 af",
+            "They are Task Stores in",
             "  ~/.local/state/af/task/local",
-            "af reads no other release's state (ADR-0145); move or remove them.",
         ]
     );
-    assert!(rows[2..5].iter().all(|row| row.len() <= MAIN), "{rows:#?}");
+    assert!(rows[2..6].iter().all(|row| row.len() <= MAIN), "{rows:#?}");
     let at = rows
         .iter()
         .position(|row| row == "~/.local/state/af/task/local/0000000000000002:")
@@ -1193,7 +1198,7 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
     );
     assert_eq!(
         rows.iter()
-            .filter(|row| row.contains("earlier af release"))
+            .filter(|row| row.contains("written by other releases"))
             .count(),
         1
     );
@@ -1209,7 +1214,11 @@ fn a_long_state_path_keeps_every_row_within_the_pane() {
         dir: PathBuf::from(format!("{root}/{name}")),
         shown: format!("{root}/{name}"),
         repo: Some(name.to_owned()),
-        older: matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)),
+        release:
+            matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
+                .then(|| {
+                    review_core::store_writer::StoreProvenance::OtherReleases(vec!["0.11.0".into()])
+                }),
         tasks,
     };
     let old = format!(
@@ -1266,4 +1275,71 @@ fn a_path_holding_the_marker_is_not_an_old_store() {
     };
     assert!(why.contains("link to nothing"), "{why}");
     assert!(!earlier(&store));
+}
+
+/// A Task Store this release cannot replay: its log holds an event type no release of today
+/// writes, and its writer marker names `release`, or none when `None` (written before markers).
+fn foreign_store(dir: &Path, release: Option<&str>) {
+    std::fs::create_dir_all(dir.join("cas/objects")).unwrap();
+    let path = dir.join("events.sqlite");
+    drop(review_store::EventStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "DELETE FROM store_writers;
+         INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs,
+                             payload)
+         VALUES ('task:t-1', 0, 'e', 'TaskTransition@9', '1970-01-01T00:00:00Z', '[]', '{}');",
+    )
+    .unwrap();
+    if let Some(release) = release {
+        conn.execute(
+            "INSERT INTO store_writers (af_version, record) VALUES (?1, '{}')",
+            [release],
+        )
+        .unwrap();
+    }
+}
+
+/// Stores another release wrote, read from disk as the browser reads them: each is named by
+/// the release its marker names, or as an older one without a marker, and the pane lists them
+/// in one row with the command that runs them.
+#[test]
+fn stores_other_releases_wrote_are_named_by_their_writer_marker() {
+    let temp = tempfile::tempdir().unwrap();
+    let newer = temp.path().join("1111111111111111");
+    let unmarked = temp.path().join("2222222222222222");
+    foreign_store(&newer, Some("99.1.0"));
+    foreign_store(&unmarked, None);
+    let mut cache = Cache::default();
+    let read = |dir: &Path, cache: &mut Cache| read_store(dir, "shown/x", None, cache);
+    let newer_store = read(&newer, &mut cache);
+    assert_eq!(
+        newer_store.release,
+        Some(review_core::store_writer::StoreProvenance::OtherReleases(
+            vec!["99.1.0".into()]
+        ))
+    );
+    let unmarked_store = read(&unmarked, &mut cache);
+    assert_eq!(
+        unmarked_store.release,
+        Some(review_core::store_writer::StoreProvenance::Unmarked)
+    );
+    let mut pane = TasksPane {
+        title: "TASKS  user".to_owned(),
+        stores: vec![newer_store, unmarked_store],
+        ..TasksPane::default()
+    };
+    pane.rebuild();
+    let rows: Vec<String> = pane.rows.iter().map(Row::text).collect();
+    let joined = rows.join(" ");
+    assert!(
+        joined.contains(
+            "2 Stores written by other releases: af 99.1.0 (1), an older af release with no \
+             version marker (1); run them with AF_VERSION=99.1.0 af"
+        ),
+        "{rows:#?}"
+    );
+    assert!(!joined.contains("TaskTransition@9"), "{rows:#?}");
+    let labels: Vec<String> = pane.items().into_iter().map(|item| item.label).collect();
+    assert_eq!(labels, ["! 2 old Stores"]);
 }

@@ -213,32 +213,24 @@ pub(crate) fn write_output(
     json: bool,
 ) -> Result<i32, String> {
     let (_, state) = state_path(repo, state)?;
-    if !store_present(&state)? {
-        return Err(task_not_found(&state, id));
-    }
+    super::require_store(&state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     let task = store
         .task_projection(&cas, id)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::store_release::explain(&state, e.to_string()))?
         .ok_or_else(|| task_not_found(&state, id))?;
     let TaskPhaseV1::Finished { result_id } = &task.phase else {
-        return Err("Task has no finished result to export".into());
+        return Err(format!(
+            "Task {id} has no finished result to write yet; af task show {id} says where it is"
+        ));
     };
     let result: TaskResultV1 = artifact(&cas, result_id, TASK_RESULT_V1)?;
-    let value = result.outputs.get(port).ok_or_else(|| {
-        format!(
-            "Task {id} has no such output port {}; ports: {}",
-            preview::text(port),
-            result
-                .outputs
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    })?;
+    let value = result
+        .outputs
+        .get(port)
+        .ok_or_else(|| review_pipeline::task::human_document::port_not_found(id, port, &result))?;
     if value.cardinality != PortCardinality::One || value.artifact_ids.len() != 1 {
         return Err("Output command requires a single artifact port".into());
     }
@@ -256,16 +248,40 @@ pub(crate) fn write_output(
     }
     let bytes = match format {
         "json" => serde_json::to_vec_pretty(&artifact).map_err(|e| e.to_string())?,
+        // A Document or report is written for a person: the presentation of ADR-0151. The bytes
+        // the checks and the reviewer judged are `canonical-markdown`.
+        "markdown" | review_pipeline::task::human_document::HUMAN_MARKDOWN
+            if artifact.artifact_type == review_core::task::document::DOCUMENT_V1 =>
+        {
+            let revision: review_core::task::TaskRevisionV1 = super::artifact(
+                &cas,
+                &result.task_revision_id,
+                review_core::task::TASK_REVISION_V1,
+            )?;
+            review_pipeline::task::human_document::human_markdown(
+                &cas, id, port, &result, &revision,
+            )?
+            .into_bytes()
+        }
+        "canonical-markdown" => {
+            if artifact.artifact_type != review_core::task::document::DOCUMENT_V1 {
+                return Err(format!(
+                    "--format canonical-markdown writes the recorded text of a Document or \
+                     report (af/Document@1); port {port} holds {}: write it with --format \
+                     markdown or --format json",
+                    artifact.artifact_type
+                ));
+            }
+            let document: review_core::task::document::DocumentV1 =
+                serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+            document.validate()?;
+            document.text.into_bytes()
+        }
         "markdown" => {
             if artifact.artifact_type == review_core::task::optimization::OPTIMIZATION_REPORT_V1 {
                 let report: review_core::task::optimization::OptimizationReportV1 =
                     serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                 report.render_markdown()?.into_bytes()
-            } else if artifact.artifact_type == review_core::task::document::DOCUMENT_V1 {
-                let document: review_core::task::document::DocumentV1 =
-                    serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
-                document.validate()?;
-                document.text.into_bytes()
             } else if artifact.artifact_type
                 == review_core::task::measurement::MEASUREMENT_COMPARISON_V1
             {
@@ -280,17 +296,13 @@ pub(crate) fn write_output(
             }
         }
         // A derived presentation of the recorded Document, never a recorded or reviewed
-        // artifact itself (ADR-0151).
+        // artifact itself (ADR-0151): only a Document has one.
         review_pipeline::task::human_document::HUMAN_MARKDOWN => {
-            let revision: review_core::task::TaskRevisionV1 = super::artifact(
-                &cas,
-                &result.task_revision_id,
-                review_core::task::TASK_REVISION_V1,
-            )?;
-            review_pipeline::task::human_document::human_markdown(
-                &cas, id, port, &result, &revision,
-            )?
-            .into_bytes()
+            return Err(format!(
+                "Human Markdown presents only a Document or report (af/Document@1); port {port} \
+                 holds {}. Write it with --format markdown or --format json",
+                artifact.artifact_type
+            ));
         }
         _ => return Err("Unsupported output format".into()),
     };

@@ -487,17 +487,42 @@ fn xdg(name: &str, fallback: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// `path` with its longest existing prefix resolved, and the rest as given: the directory a
+/// root names, whatever links lead to it. A HOME under a symlinked directory (macOS `/tmp`, a
+/// home on another volume) then gives the roots af keeps state in without a link in them, so
+/// the Storage Budget, which never follows one, measures and removes beneath them instead of
+/// skipping them.
+pub(crate) fn canonical_root(path: &Path) -> PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut suffix = Vec::new();
+    loop {
+        if let Ok(mut resolved) = std::fs::canonicalize(&existing) {
+            for component in suffix.into_iter().rev() {
+                resolved.push(component);
+            }
+            return resolved;
+        }
+        match existing.file_name() {
+            Some(name) => {
+                suffix.push(name.to_os_string());
+                existing.pop();
+            }
+            None => return path.to_path_buf(),
+        }
+    }
+}
+
 pub(crate) fn config_home() -> Result<PathBuf, String> {
-    xdg("XDG_CONFIG_HOME", ".config")
+    xdg("XDG_CONFIG_HOME", ".config").map(|path| canonical_root(&path))
 }
 pub(crate) fn state_home() -> Result<PathBuf, String> {
-    xdg("XDG_STATE_HOME", ".local/state")
+    xdg("XDG_STATE_HOME", ".local/state").map(|path| canonical_root(&path))
 }
 pub(crate) fn data_home() -> Result<PathBuf, String> {
-    xdg("XDG_DATA_HOME", ".local/share")
+    xdg("XDG_DATA_HOME", ".local/share").map(|path| canonical_root(&path))
 }
 pub(crate) fn cache_home() -> Result<PathBuf, String> {
-    xdg("XDG_CACHE_HOME", ".cache")
+    xdg("XDG_CACHE_HOME", ".cache").map(|path| canonical_root(&path))
 }
 pub(crate) fn bin_home() -> Result<PathBuf, String> {
     xdg("XDG_BIN_HOME", ".local/bin")

@@ -53,13 +53,12 @@ fn local_workers(
     options: &Options,
     loaded: &review_config::Loaded,
 ) -> Result<LocalWorkers, String> {
-    for node in options.provider_bindings.keys() {
-        if !loaded.packages().contains_key(node) {
-            return Err(format!(
-                "--provider {node} must name a captured packaged Model Worker"
-            ));
-        }
-    }
+    // The refusals `af review plan` gives, in the same words.
+    super::authority::check_provider_bindings(
+        options,
+        loaded,
+        &options.pipeline.to_string_lossy(),
+    )?;
     // First pass, token-free: every captured reviewer's binding passes the static rules, in node
     // order, before any Provider CLI starts (ADR-0147, ADR-0148).
     let mut executions = BTreeMap::new();

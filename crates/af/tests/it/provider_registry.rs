@@ -1498,8 +1498,8 @@ fn remove_refuses_what_is_not_a_registry_entry() {
     assert_eq!(output.status.code(), Some(1));
     let error = stderr(&output);
     assert!(
-        error.contains("provider `codex-main` is not registered")
-            && error.contains("does not exist"),
+        error.contains("Provider `codex-main` not found in the Provider registry")
+            && error.contains("which does not exist"),
         "{error}"
     );
     let config = empty.path().join("config/af");
@@ -1509,18 +1509,15 @@ fn remove_refuses_what_is_not_a_registry_entry() {
     let root = tempfile::tempdir().unwrap();
     let (path, registry) = commented_registry(root.path(), &["codex-main"]);
     for (ids, refusal) in [
-        (
-            &["codex-other"][..],
-            "provider `codex-other` is not registered in",
-        ),
+        (&["codex-other"][..], "Provider `codex-other` not found in"),
         // One unknown ID refuses the whole command: the registered one stays.
         (
             &["codex-main", "codex-other"],
-            "provider `codex-other` is not registered in",
+            "Provider `codex-other` not found in",
         ),
         (
             &["codex-other", "codex-third"],
-            "providers `codex-other`, `codex-third` are not registered in",
+            "Providers `codex-other`, `codex-third` not found in",
         ),
         // Status lists an ambient label, but no registry entry stands behind it.
         (

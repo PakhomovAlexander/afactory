@@ -36,6 +36,7 @@ mod authority;
 mod caches;
 mod cli;
 mod config;
+mod human;
 mod interrupt;
 mod model_check;
 mod model_failures;
@@ -51,6 +52,7 @@ mod review_task;
 mod self_optimizer;
 mod selfmgmt;
 mod storage;
+mod store_release;
 mod task;
 mod task_execution;
 mod telemetry;
@@ -120,13 +122,15 @@ impl Options {
     }
 }
 
+/// The state root, its existing prefix resolved (`config::canonical_root`), so every Store af
+/// keeps beneath it is named and measured without a link in its path.
 fn xdg_state_root() -> Result<PathBuf, String> {
     if let Some(configured) = std::env::var_os("XDG_STATE_HOME") {
         let configured = PathBuf::from(configured);
         if !configured.is_absolute() {
             return Err("XDG_STATE_HOME must be absolute".to_string());
         }
-        return Ok(configured);
+        return Ok(config::canonical_root(&configured));
     }
     let user_home =
         std::env::var_os("HOME").ok_or("HOME is not set and XDG_STATE_HOME is absent")?;
@@ -134,7 +138,7 @@ fn xdg_state_root() -> Result<PathBuf, String> {
     if !user_home.is_absolute() {
         return Err("HOME must be absolute".to_string());
     }
-    Ok(user_home.join(".local/state"))
+    Ok(config::canonical_root(&user_home.join(".local/state")))
 }
 
 /// Where Campaign state lives when `--state` and `--state-root` are omitted.
@@ -872,16 +876,18 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             print_render(&run_options(args, "review render")).map(|()| 0)
         }
         R::Ledger { selector, long } => print_ledger(&LedgerOptions {
-            state: selector.state,
-            campaign: selector.campaign,
+            state: selector.state.clone(),
+            campaign: selector.campaign.clone(),
             long,
         })
+        .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
         R::Show { selector, key } => show(&ShowOptions {
-            state: selector.state,
-            campaign: selector.campaign,
+            state: selector.state.clone(),
+            campaign: selector.campaign.clone(),
             key,
         })
+        .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
         R::Export {
             selector,
@@ -897,15 +903,23 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
         })
         .map(|()| 0),
         R::Report { selector, format } => print_report(&ReportOptions {
-            state: selector.state,
-            campaign: selector.campaign,
+            state: selector.state.clone(),
+            campaign: selector.campaign.clone(),
             format: match format {
                 cli::ReportFormatArg::Md => ReportFormat::Markdown,
                 cli::ReportFormatArg::Text => ReportFormat::Text,
                 cli::ReportFormatArg::Json => ReportFormat::Json,
             },
         })
+        .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
+        R::Tui => {
+            eprintln!(
+                "error: `af review tui` is not a command; the browser is `af` alone, at a \
+                 terminal\n  try: af"
+            );
+            Ok(2)
+        }
         R::Gc {
             state_root,
             older_than,
@@ -1136,7 +1150,7 @@ fn help_command(words: &[String]) -> Result<i32, String> {
             None => {
                 let topics: Vec<&str> = topics::TOPICS.iter().map(|(name, _, _)| *name).collect();
                 eprintln!(
-                    "error: `{}` is neither a topic nor a command\n  topics: {}\n  try: af --help",
+                    "error: Topic or command {} not found in af help; topics: {}\n  try: af --help",
                     terminal_text(&words.join(" ")),
                     topics.join(", ")
                 );
@@ -1434,14 +1448,18 @@ fn main() {
                 cli::SelfCommand::RefreshCheck => selfmgmt::refresh_check().map(|()| 0),
             },
         ),
-        cli::Command::Storage { json, command } => (
+        cli::Command::Storage {
+            json,
+            verbose,
+            command,
+        } => (
             "af storage",
             match command {
-                None => storage::show(json),
+                None => storage::show(json, verbose),
                 Some(cli::StorageCommand::Prune {
                     apply,
                     json: prune_json,
-                }) => storage::prune(apply, json || prune_json),
+                }) => storage::prune(apply, json || prune_json, verbose),
             },
         ),
         cli::Command::Telemetry { command } => match command {
@@ -2078,12 +2096,7 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
         },
         cli::ProviderCommand::Recover => providers::recover().map(|()| 0),
         cli::ProviderCommand::Doctor(args) => {
-            if args.task_file.is_some() {
-                let refusal = "Task Provider admission does not use the Campaign doctor adapter";
-                Err(refusal.into())
-            } else {
-                provider_doctor(&run_options(args, "provider doctor"))
-            }
+            provider_doctor(&run_options(args.into(), "provider doctor"))
         }
     }
 }
@@ -2208,19 +2221,30 @@ fn print_plan(options: &Options) -> Result<(), String> {
         terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
         terminal_text(resolved["candidate_snapshot_id"].as_str().unwrap_or("?"))
     );
+    let empty = plan["subject"]["empty"].as_bool() == Some(true);
     println!(
-        "subject  {} ({} paths, {} patch bytes{})",
+        "subject  {} ({} paths, {} patch{})",
         terminal_text(plan["subject"]["kind"].as_str().unwrap_or("?")),
         plan["subject"]["changed_paths"]
             .as_array()
             .map_or(0, Vec::len),
-        plan["subject"]["patch_bytes"].as_u64().unwrap_or(0),
-        if plan["subject"]["empty"].as_bool() == Some(true) {
+        human::bytes(plan["subject"]["patch_bytes"].as_u64().unwrap_or(0)),
+        if empty {
             "; EMPTY — run will refuse"
         } else {
             ""
         }
     );
+    if empty {
+        // What is empty, and the selectors that would fill it.
+        println!(
+            "  empty  the diff from base {} to candidate {} changes no file; change files and \
+             review them with --uncommitted, or name other revisions with --base REV and \
+             --candidate REV",
+            terminal_text(selectors["base"].as_str().unwrap_or("?")),
+            terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
+        );
+    }
     for path in plan["subject"]["changed_paths"]
         .as_array()
         .into_iter()
@@ -2334,8 +2358,9 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 continue;
             };
             println!(
-                "input    {} {bytes} bytes (about {} tokens){}",
+                "input    {} {} (about {} tokens){}",
                 terminal_text(reservation["node"].as_str().unwrap_or("?")),
+                human::bytes(bytes),
                 reservation["input_tokens"].as_u64().unwrap_or(0),
                 if reservation["fits"].as_bool() == Some(false) {
                     " — EXCEEDS its Attempt cap; run will refuse"
@@ -2346,15 +2371,49 @@ fn print_plan(options: &Options) -> Result<(), String> {
         }
     }
     println!(
-        "provider admission  {} tokens, {} ms per capability (new capture; resume retains captured cost)",
-        plan["provider_admission"]["tokens"], plan["provider_admission"]["wall_ms"]
+        "provider admission  {} tokens, {} per capability (new capture; resume retains captured cost)",
+        plan["provider_admission"]["tokens"],
+        human::duration(plan["provider_admission"]["wall_ms"].as_u64().unwrap_or(0))
     );
+    // A missing binding names its fix: a registered Provider of the Worker's kind, or how to
+    // register one when this machine has none.
+    let registered = providers::registered()
+        .map(|(ids, _)| ids)
+        .unwrap_or_default();
+    let candidate = |kind: &str| {
+        registered
+            .iter()
+            .find(|(_, registered_kind)| *registered_kind == kind)
+            .map(|(id, _)| id.clone())
+    };
+    let mut missing = Vec::new();
     for provider in plan["providers"].as_array().into_iter().flatten() {
-        println!(
-            "provider {} -> {}",
-            terminal_text(provider["node"].as_str().unwrap_or("?")),
-            terminal_text(provider["binding"].as_str().unwrap_or("MISSING"))
-        );
+        let node = provider["node"].as_str().unwrap_or("?");
+        let kind = provider["runner"].as_str().unwrap_or("?");
+        match provider["binding"].as_str() {
+            Some(binding) => println!(
+                "provider {} -> {}",
+                terminal_text(node),
+                terminal_text(binding)
+            ),
+            None if provider["required"] == true => {
+                let fix = match candidate(kind) {
+                    Some(id) => format!("--provider {node}={id}"),
+                    None => format!(
+                        "no {kind} Provider is registered: af provider status lists what this \
+                         machine has, af provider setup {kind}-main --kind {kind} --login \
+                         registers one"
+                    ),
+                };
+                println!(
+                    "provider {} -> MISSING; fix: {}",
+                    terminal_text(node),
+                    terminal_text(&fix)
+                );
+                missing.push((node.to_string(), candidate(kind)));
+            }
+            None => println!("provider {} -> MISSING", terminal_text(node)),
+        }
     }
     for line in &models {
         println!("{}", terminal_text(line));
@@ -2372,7 +2431,61 @@ fn print_plan(options: &Options) -> Result<(), String> {
     } else {
         println!("effects  no state, Gates, Provider calls, Workers, or token spend");
     }
+    let unfit = plan["pipeline"]["inputs_fit"].as_bool() == Some(false);
+    println!(
+        "next:    {}",
+        terminal_text(&plan_next_step(empty, unfit, &missing))
+    );
     Ok(())
+}
+
+/// What `af review plan` tells a person to do next: the exact `af review run` command when the
+/// plan is what run admits, else the first thing that keeps it from running.
+fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]) -> String {
+    let words: Vec<String> = std::env::args().skip(1).collect();
+    let rerun = |subcommand: &str, extra: &[String]| {
+        let mut command = vec!["af".to_string()];
+        let mut replaced = false;
+        for word in &words {
+            if !replaced && word == "plan" {
+                command.push(subcommand.to_string());
+                replaced = true;
+            } else if word != "--json" {
+                command.push(word.clone());
+            }
+        }
+        command.extend(extra.iter().cloned());
+        shell_words::join(command)
+    };
+    if empty {
+        return format!(
+            "change files first; the diff is empty and af review run refuses it. Then: {}",
+            rerun("plan", &[])
+        );
+    }
+    if unfit {
+        return "narrow the Subject (a smaller --base REV to --candidate REV range) or raise the \
+                Worker's budget.attempt, then plan again"
+            .into();
+    }
+    if !missing.is_empty() {
+        if missing.iter().all(|(_, id)| id.is_some()) {
+            let flags: Vec<String> = missing
+                .iter()
+                .flat_map(|(node, id)| {
+                    [
+                        "--provider".to_string(),
+                        format!("{node}={}", id.as_deref().unwrap_or_default()),
+                    ]
+                })
+                .collect();
+            return rerun("plan", &flags);
+        }
+        return "register a Provider for each model Worker (af provider setup ID --kind KIND \
+                --login), then bind each with --provider NODE=ID"
+            .into();
+    }
+    rerun("run", &[])
 }
 
 /// One progress line of `af review run`: findings, nodes and reasons a reviewer or the
@@ -2386,29 +2499,43 @@ fn run_progress(options: &Options, arguments: fmt::Arguments<'_>) {
     }
 }
 
-fn open_campaign_store(state: &Path) -> Result<EventStore, String> {
+/// The not-found refusal of a Campaign, in the shape every not-found refusal takes:
+/// `<Thing> <name> not found in <where>; <what exists or the fix>`.
+fn campaign_not_found(campaign: &str, state: &Path) -> String {
+    format!(
+        "Campaign {} not found in {}; af review campaigns lists the Campaigns, and af review run \
+         --campaign {} starts it",
+        terminal_text(campaign),
+        state.display(),
+        shell_words::quote(campaign)
+    )
+}
+
+fn open_campaign_store(state: &Path, campaign: &str) -> Result<EventStore, String> {
     if !state.join("events.sqlite").exists() {
-        return Err(format!(
-            "no campaign state at {}; a campaign starts with `af review run --campaign`",
-            state.display()
-        ));
+        return Err(campaign_not_found(campaign, state));
     }
     EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())
 }
 
-fn open_campaign_store_read_only(state: &Path) -> Result<EventStore, String> {
+fn open_campaign_store_read_only(state: &Path, campaign: &str) -> Result<EventStore, String> {
     if !state.join("events.sqlite").exists() {
-        return Err(format!(
-            "no campaign state at {}; a campaign starts with `af review run --campaign`",
-            state.display()
-        ));
+        return Err(campaign_not_found(campaign, state));
     }
     EventStore::open_read_only(state.join("events.sqlite")).map_err(|error| error.to_string())
 }
 
+/// A Campaign command's error, with the refusal named when another release wrote its Store.
+fn explain_campaign(selector: &cli::CampaignSelector, error: String) -> String {
+    match campaign_state(&selector.state, &selector.campaign) {
+        Ok(state) => store_release::explain(&state, error),
+        Err(_) => error,
+    }
+}
+
 fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store_read_only(&state)?;
+    let store = open_campaign_store_read_only(&state, &options.campaign)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let ledger = LedgerProjection::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?
@@ -2604,7 +2731,7 @@ fn proposal_links_finding(
 
 fn export_proposal(options: &ExportOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store_read_only(&state)?;
+    let store = open_campaign_store_read_only(&state, &options.campaign)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let proposals = campaign_proposals(&store, &cas, &run_id)?;
@@ -2659,7 +2786,7 @@ fn export_proposal(options: &ExportOptions) -> Result<(), String> {
 
 fn show(options: &ShowOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store(&state)?;
+    let store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let ledger = LedgerProjection::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?
@@ -2785,6 +2912,10 @@ struct CampaignListView {
 struct CampaignProblemView {
     directory: String,
     reason: String,
+    /// Who wrote the Campaign's Store, when another release did: the text lists such Campaigns
+    /// in one row; the document keeps one problem each, its reason the named refusal.
+    #[serde(skip)]
+    release: Option<review_core::store_writer::StoreProvenance>,
 }
 
 struct CampaignEnumeration {
@@ -2926,6 +3057,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
                     reason: format!("reading entry metadata: {error}"),
+                    release: None,
                 });
                 continue;
             }
@@ -2935,6 +3067,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 directory: directory_lossy,
                 reason: "state-root entry is a symlink; Campaign enumeration does not follow it"
                     .to_string(),
+                release: None,
             });
             continue;
         }
@@ -2949,6 +3082,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
                     reason: format!("reading events.sqlite metadata: {error}"),
+                    release: None,
                 });
                 continue;
             }
@@ -2959,6 +3093,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 reason:
                     "events.sqlite is not a real regular file beneath the Campaign state directory"
                         .to_string(),
+                release: None,
             });
             continue;
         }
@@ -2968,6 +3103,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
                     reason,
+                    release: None,
                 });
                 continue;
             }
@@ -2980,15 +3116,17 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                     state.display(),
                     root.display()
                 ),
+                release: None,
             });
             continue;
         }
-        let store = match open_campaign_store_read_only(&state) {
+        let store = match EventStore::open_read_only(state.join("events.sqlite")) {
             Ok(store) => store,
-            Err(reason) => {
+            Err(error) => {
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
-                    reason,
+                    reason: error.to_string(),
+                    release: None,
                 });
                 continue;
             }
@@ -2999,6 +3137,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
                     reason: error.to_string(),
+                    release: None,
                 });
                 continue;
             }
@@ -3013,6 +3152,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                     "state contains {} campaign runs; each enumerated directory must contain exactly one",
                     run_ids.len()
                 ),
+                release: None,
             });
             continue;
         }
@@ -3025,6 +3165,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
             problems.push(CampaignProblemView {
                 directory: directory_lossy,
                 reason,
+                release: None,
             });
             continue;
         }
@@ -3035,6 +3176,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
                     reason: "Campaign state directory name is not valid UTF-8".to_string(),
+                    release: None,
                 });
                 continue;
             }
@@ -3045,6 +3187,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 reason: format!(
                     "campaign {label:?} state directory must be its opaque ID `{id}` or its label"
                 ),
+                release: None,
             });
             continue;
         }
@@ -3064,7 +3207,11 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
         ) {
             Ok(campaign) => campaign,
             Err(reason) => {
-                problems.push(CampaignProblemView { directory, reason });
+                problems.push(CampaignProblemView {
+                    directory,
+                    reason,
+                    release: None,
+                });
                 continue;
             }
         };
@@ -3075,6 +3222,14 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
             .cmp(&right.label)
             .then_with(|| left.id.cmp(&right.id))
     });
+    // A Campaign another release wrote is named by its writer, with the fix (ADR-0145).
+    for problem in &mut problems {
+        let state = root.join(&problem.directory);
+        if let Some(provenance) = store_release::foreign(&state, &problem.reason) {
+            problem.reason = store_release::refusal(&state, &provenance, "af review campaigns");
+            problem.release = Some(provenance);
+        }
+    }
     Ok(CampaignEnumeration {
         campaigns,
         problems,
@@ -3234,12 +3389,24 @@ fn print_campaigns_text(view: &CampaignListView) {
         }
     }
     println!("Problems: {}", view.problems.len());
-    for problem in &view.problems {
+    for problem in view
+        .problems
+        .iter()
+        .filter(|problem| problem.release.is_none())
+    {
         println!(
             "  {}: {}",
             terminal_text(&problem.directory),
             terminal_text(&problem.reason)
         );
+    }
+    if let Some(row) = store_release::summary(
+        view.problems
+            .iter()
+            .filter_map(|problem| problem.release.as_ref()),
+        "af review campaigns",
+    ) {
+        println!("  {}", terminal_text(&row));
     }
 }
 
@@ -3385,16 +3552,7 @@ fn wall_spans_ms(rows: impl IntoIterator<Item = ((u32, u32), (u64, u64))>) -> Op
 }
 
 fn human_duration(ms: u64) -> String {
-    let seconds = ms / 1000;
-    if ms < 1000 {
-        format!("{ms}ms")
-    } else if seconds < 60 {
-        format!("{seconds}s")
-    } else if seconds < 3600 {
-        format!("{}m{:02}s", seconds / 60, seconds % 60)
-    } else {
-        format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60)
-    }
+    human::duration(ms)
 }
 
 /// Whether any pinned reviewer policy keeps a Warm Workspace (`warm = { workspace = "rebase" }`).
@@ -3440,7 +3598,7 @@ fn attempt_warm_suffix(warm: Option<&AttemptWarmView>) -> String {
 
 fn print_report(options: &ReportOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store_read_only(&state)?;
+    let store = open_campaign_store_read_only(&state, &options.campaign)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let view = read_report_view(&store, &cas, &options.campaign)?;
     match options.format {
@@ -3918,7 +4076,7 @@ fn print_scope_authority_warnings(ledger: &Ledger) {
 
 fn resolve(options: &ResolveOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
@@ -3963,7 +4121,7 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
 
 fn attest_change(options: &AttestChangeOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?;
@@ -3985,7 +4143,7 @@ fn attest_change(options: &AttestChangeOptions) -> Result<(), String> {
 
 fn verify_fix(options: &VerifyFixOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?;
@@ -4015,7 +4173,7 @@ fn verify_fix(options: &VerifyFixOptions) -> Result<(), String> {
 
 fn challenge_resolution(options: &ChallengeResolutionOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?;
@@ -4037,7 +4195,7 @@ fn challenge_resolution(options: &ChallengeResolutionOptions) -> Result<(), Stri
 
 fn advance_policy_time(options: &PolicyTimeOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?;
@@ -4058,7 +4216,7 @@ fn advance_policy_time(options: &PolicyTimeOptions) -> Result<(), String> {
 
 fn group(options: &GroupOptions, undo: bool) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
@@ -4094,7 +4252,7 @@ fn operator_actor(configured: Option<&str>) -> Result<String, String> {
 
 fn add_evidence(options: &EvidenceAddOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let mut file = std::fs::File::open(&options.file)
         .map_err(|error| format!("opening Evidence {}: {error}", options.file.display()))?;
@@ -4120,7 +4278,7 @@ fn add_evidence(options: &EvidenceAddOptions) -> Result<(), String> {
 
 fn satisfy_evidence(options: &EvidenceSatisfyOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
@@ -4163,7 +4321,7 @@ fn satisfy_evidence(options: &EvidenceSatisfyOptions) -> Result<(), String> {
 
 fn waive_demand(options: &DemandWaiveOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;

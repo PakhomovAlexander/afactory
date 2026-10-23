@@ -881,7 +881,7 @@ fn report_chain_citing(
     }
     let draft_id = put(&cas, DOCUMENT_DRAFT_V2, vec![], snapshot, &draft);
     let document = DocumentV1 {
-        schema: "af.document/1".into(),
+        schema: review_core::task::document::DOCUMENT_SCHEMA.into(),
         draft_id: draft_id.clone(),
         sources_id: sources_id.clone(),
         format: DocumentFormatV1::Markdown,
@@ -1132,7 +1132,7 @@ fn document_chain(evaluation: Option<ReceiptOutcomeV1>, broken: Break) -> Chain 
     };
     let draft_id = put(&cas, DOCUMENT_DRAFT_V1, vec![], None, &draft);
     let document = DocumentV1 {
-        schema: "af.document/1".into(),
+        schema: review_core::task::document::DOCUMENT_SCHEMA.into(),
         draft_id: draft_id.clone(),
         sources_id: sources_id.clone(),
         format: DocumentFormatV1::Markdown,
@@ -1293,7 +1293,7 @@ const ABOUT: &str = "About this file: a readable presentation of the report outp
                      report-task, made from the draft and sources that render exactly to its \
                      recorded report.";
 const CANONICAL: &str = "the canonical report, which af task output report-task --port report \
-                         --format markdown writes, not this layout.";
+                         --format canonical-markdown writes, not this layout.";
 
 #[test]
 fn a_verified_report_shows_its_result_review_and_only_safe_source_links() {
@@ -1348,14 +1348,13 @@ fn a_verified_report_shows_its_result_review_and_only_safe_source_links() {
     assert!(!markdown.contains("sha256:"), "{markdown}");
     assert!(!markdown.contains("af/Document"), "{markdown}");
     assert!(!markdown.contains("schema"), "{markdown}");
-    // The canonical report is untouched: it still escapes every punctuation character.
+    // The canonical report escapes only markup (`af.document/2`): a path and its punctuation
+    // read as written there too.
     let document: DocumentV1 =
         serde_json::from_value(chain.cas.get_artifact(&chain.document_id).unwrap().payload)
             .unwrap();
     assert!(
-        document
-            .text
-            .contains("crates\\/af\\/src\\/cli\\.rs\\:1163\\."),
+        document.text.contains("crates/af/src/cli.rs:1163."),
         "{}",
         document.text
     );
@@ -1539,7 +1538,7 @@ fn stale_or_unrelated_evidence_is_never_attached() {
         about(&parsed),
         format!(
             "{ABOUT} No recorded checks or review judge this output; af task output report-task \
-             --port report --format markdown writes its canonical report."
+             --port report --format canonical-markdown writes its canonical report."
         )
     );
     // A receipt that is an output but not counted evidence is not shown either.
@@ -1691,7 +1690,7 @@ fn a_verified_document_shows_its_review_and_every_broken_link_refuses() {
         assert!(leaves.contains(&leaf), "{leaf:?} in\n{markdown}");
     }
     assert!(
-        about(&leaves).ends_with("The automated checks and the independent reviewer judged the canonical report, which af task output report-task --port document --format markdown writes, not this layout."),
+        about(&leaves).ends_with("The automated checks and the independent reviewer judged the canonical report, which af task output report-task --port document --format canonical-markdown writes, not this layout."),
         "{markdown}"
     );
     assert!(!markdown.contains("sha256:"), "{markdown}");
@@ -1745,5 +1744,15 @@ fn a_document_that_does_not_render_from_its_draft_or_another_type_is_refused() {
     assert!(
         error.contains("--format markdown or --format json"),
         "{error}"
+    );
+    // An unknown port is named, with the ports the result does have.
+    let error = human_markdown(&chain.cas, TASK, "nope", &chain.result, &chain.task).unwrap_err();
+    let ports: Vec<&str> = chain.result.outputs.keys().map(String::as_str).collect();
+    assert_eq!(
+        error,
+        format!(
+            "Output port nope not found in the result of Task {TASK}; its ports are {}",
+            ports.join(", ")
+        )
     );
 }

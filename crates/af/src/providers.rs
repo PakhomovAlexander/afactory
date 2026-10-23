@@ -212,6 +212,27 @@ struct ProviderSpec {
     source: String,
 }
 
+/// The Providers a registry declares, as `(id, kind)`, and where the registry is.
+pub(crate) type Registered = (Vec<(String, &'static str)>, Option<PathBuf>);
+
+/// The Providers the machine-local registry declares, as `(id, kind)` in registry order, and
+/// where the registry is: what a binding may name. Read only; no CLI is started. A registry
+/// that cannot be read is the error its warning names.
+pub(crate) fn registered() -> Result<Registered, String> {
+    let (specs, path, warning) = load_specs();
+    if let Some(warning) = warning {
+        return Err(warning);
+    }
+    Ok((
+        specs
+            .into_iter()
+            .filter(|spec| spec.registry_declared)
+            .map(|spec| (spec.id, spec.kind.name()))
+            .collect(),
+        path,
+    ))
+}
+
 pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> ProviderInventory {
     let (specs, registry, warning) = load_specs();
     // The ID each row's one `af provider setup … --login` fix names: a registered Provider's own,
@@ -2311,7 +2332,7 @@ fn remove_from_registry_locked(
     missing.retain(|id| !removed.iter().any(|entry| entry.id == *id));
     if !missing.is_empty() {
         return Err(format!(
-            "{} in {}; nothing was removed",
+            "{} in {}; nothing was removed, and af provider status lists the registry",
             not_registered(&missing),
             path.display()
         ));
@@ -2332,17 +2353,20 @@ fn remove_from_registry_locked(
 
 fn no_registry(path: &Path, ids: &BTreeSet<&str>) -> String {
     format!(
-        "{}: provider registry {} does not exist",
+        "{} in the Provider registry {}, which does not exist; af provider setup ID --kind \
+         KIND registers a Provider",
         not_registered(ids),
         path.display()
     )
 }
 
+/// The not-found refusal of registry entries, in the shape every not-found refusal takes:
+/// `<Thing> <name> not found in <where>; <what exists or the fix>`; the caller adds where.
 fn not_registered(ids: &BTreeSet<&str>) -> String {
     if ids.len() == 1 {
-        format!("provider {} is not registered", quoted(ids))
+        format!("Provider {} not found", quoted(ids))
     } else {
-        format!("providers {} are not registered", quoted(ids))
+        format!("Providers {} not found", quoted(ids))
     }
 }
 

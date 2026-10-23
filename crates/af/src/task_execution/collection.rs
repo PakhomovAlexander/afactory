@@ -15,6 +15,7 @@ use review_store::{Cas, EventStore};
 use serde_json::{Value, json};
 
 use super::{state_path, store_present};
+use crate::human;
 
 const DAY_MS: u64 = 86_400_000;
 
@@ -29,7 +30,10 @@ pub(crate) fn gc(
 ) -> Result<i32, String> {
     let (_, state) = state_path(repo, state)?;
     if !store_present(&state)? {
-        return Err(format!("Task state {} holds no Store", state.display()));
+        return Err(format!(
+            "{}; nothing to collect",
+            super::store_not_found(&state)
+        ));
     }
     let older_than_ms = older_than_days
         .checked_mul(DAY_MS)
@@ -191,13 +195,16 @@ fn disposition(value: &CollectionDisposition, keep: usize, older_than_ms: u64) -
 }
 
 fn text(plan: &CollectionPlan, outcome: Option<&CollectionOutcome>) -> String {
+    // Sizes in units and times in the local zone; `--json` keeps the bytes and Unix times.
     let mut out = format!(
-        "Store: {} objects, {} bytes ({} bytes unreachable)\n",
-        plan.totals.objects, plan.totals.bytes, plan.totals.unreachable_bytes
+        "Store: {} objects, {} ({} unreachable)\n",
+        plan.totals.objects,
+        human::bytes(plan.totals.bytes),
+        human::bytes(plan.totals.unreachable_bytes)
     );
     for task in &plan.tasks {
         let bytes = if task.disposition.collects() {
-            format!("  {} bytes", task.collected_bytes)
+            format!("  {}", human::bytes(task.collected_bytes))
         } else {
             String::new()
         };
@@ -205,26 +212,27 @@ fn text(plan: &CollectionPlan, outcome: Option<&CollectionOutcome>) -> String {
             "{}  {}  last event {}{bytes}\n",
             task.task_id,
             disposition(&task.disposition, plan.keep, plan.older_than_ms),
-            collected_time(task.last_event_unix_ms),
+            human::local_time(task.last_event_unix_ms),
         ));
     }
     for task in &plan.collected {
         out.push_str(&format!(
             "{}  collected {}\n",
             task.collected.task_id,
-            collected_time(task.collected.collected_unix_ms)
+            human::local_time(task.collected.collected_unix_ms)
         ));
     }
     for (task_id, until) in &plan.live_writers {
         out.push_str(&format!(
             "live writer: {task_id} holds its lease until {}; --apply is refused until it ends\n",
-            collected_time(*until)
+            human::local_time(*until)
         ));
     }
     match outcome {
         None => out.push_str(&format!(
-            "Would reclaim {} objects, {} bytes. Nothing was written; run with --apply to collect.\n",
-            plan.reclaimable_objects, plan.reclaimable_bytes
+            "Would reclaim {} objects, {}. Nothing was written; run with --apply to collect.\n",
+            plan.reclaimable_objects,
+            human::bytes(plan.reclaimable_bytes)
         )),
         Some(outcome) => {
             if outcome.tombstoned.is_empty() {
@@ -234,8 +242,9 @@ fn text(plan: &CollectionPlan, outcome: Option<&CollectionOutcome>) -> String {
             }
             if outcome.swept {
                 out.push_str(&format!(
-                    "Removed {} objects, {} bytes.\n",
-                    outcome.removed_objects, outcome.removed_bytes
+                    "Removed {} objects, {}.\n",
+                    outcome.removed_objects,
+                    human::bytes(outcome.removed_bytes)
                 ));
             } else {
                 out.push_str("The sweep did not run; the next `af task gc --apply` finishes it.\n");

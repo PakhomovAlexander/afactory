@@ -44,9 +44,7 @@ pub(crate) fn run(
 ) -> Result<i32, String> {
     let destination = catalog::absent_destination(repo, destination)?;
     let (_, state_path) = state_path(repo, state)?;
-    if !store_present(&state_path)? {
-        return Err(task_not_found(&state_path, id));
-    }
+    super::require_store(&state_path)?;
     let cas = Cas::open_existing(state_path.join("cas")).map_err(|e| e.to_string())?;
     let store =
         EventStore::open_read_only(state_path.join("events.sqlite")).map_err(|e| e.to_string())?;

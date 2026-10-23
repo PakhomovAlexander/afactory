@@ -382,10 +382,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         ));
     }
     if !state.join("events.sqlite").is_file() {
-        return Err(super::task_execution::task_not_found(
-            &state,
-            &options.task_id,
-        ));
+        return Err(super::task_execution::store_not_found(&state));
     }
     // A separate SQLite write transaction is an OS-released process lock. Prepared delivery
     // events remain durable in the Task database while an exact concurrent command is refused;
@@ -564,13 +561,14 @@ pub(super) fn observe_adoption(
     let repository = std::fs::canonicalize(repo)
         .map_err(|error| format!("opening repository {}: {error}", repo.display()))?;
     let state = resolve_task_state(&explicit_state.cloned(), &repository)?;
+    super::task_execution::require_store(&state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
     let mut store = review_store::EventStore::open(state.join("events.sqlite"))
         .map_err(|error| error.to_string())?;
     let task = store
         .task_projection(&cas, task_id)
         .map_err(|error| error.to_string())?
-        .ok_or("Unknown Task")?;
+        .ok_or_else(|| super::task_execution::task_not_found(&state, task_id))?;
     let delivery_record_id = task
         .deliveries
         .iter()
@@ -954,7 +952,8 @@ pub(super) fn list(options: InspectOptions, sizes: bool) -> Result<(), String> {
     let repository = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
-    let mut tasks = super::task_execution::list_common(&state)?;
+    let mut tasks = super::task_execution::list_common(&state)
+        .map_err(|error| super::store_release::explain(&state, error))?;
     let store = if sizes {
         // Each uncollected Task's CAS bytes, from the same walk `af task gc` sweeps by
         // (ADR-0135). A collected Task reaches nothing. The rows and the walk are two reads: a
@@ -1006,7 +1005,9 @@ pub(super) fn show(options: InspectOptions, checks: bool) -> Result<(), String> 
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
     let task_id = options.task_id.as_deref().expect("validated by parser");
-    if super::task_execution::show_if_common(task_id, &state, options.json, checks)? {
+    if super::task_execution::show_if_common(task_id, &state, options.json, checks)
+        .map_err(|error| super::store_release::explain(&state, error))?
+    {
         return Ok(());
     }
     Err(super::task_execution::task_not_found(&state, task_id))
@@ -1021,7 +1022,8 @@ pub(super) fn report(options: InspectOptions, task_ids: &[String]) -> Result<(),
     let repository = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
-    let report = super::task_execution::task_report::read(&state, task_ids)?;
+    let report = super::task_execution::task_report::read(&state, task_ids)
+        .map_err(|error| super::store_release::explain(&state, error))?;
     if options.json {
         println!(
             "{}",
@@ -1780,10 +1782,7 @@ fn print_task_list(
         };
         // Delivery is shown only once there is one; a collected Task says when it went.
         let mut extra = match task["collected"]["collected_unix_ms"].as_u64() {
-            Some(time) => format!(
-                "  collected {}",
-                review_core::task::collection::collected_time(time)
-            ),
+            Some(time) => format!("  collected {}", crate::human::local_time(time)),
             None => task
                 .pointer("/delivery/outcome/kind")
                 .and_then(serde_json::Value::as_str)
@@ -1792,8 +1791,9 @@ fn print_task_list(
         };
         if let Some(sizes) = task.get("sizes") {
             extra.push_str(&format!(
-                "  {} bytes exclusive, {} shared",
-                sizes["exclusive_bytes"], sizes["shared_bytes"]
+                "  {} exclusive, {} shared",
+                crate::human::bytes(sizes["exclusive_bytes"].as_u64().unwrap_or(0)),
+                crate::human::bytes(sizes["shared_bytes"].as_u64().unwrap_or(0))
             ));
         }
         rows.push([
@@ -1834,8 +1834,10 @@ fn print_task_list(
     }
     if let Some(store) = store {
         println!(
-            "Store: {} objects, {} bytes ({} bytes unreachable)",
-            store["objects"], store["bytes"], store["unreachable_bytes"]
+            "Store: {} objects, {} ({} unreachable)",
+            store["objects"],
+            crate::human::bytes(store["bytes"].as_u64().unwrap_or(0)),
+            crate::human::bytes(store["unreachable_bytes"].as_u64().unwrap_or(0))
         );
     }
     Ok(())

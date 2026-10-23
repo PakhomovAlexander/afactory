@@ -1500,10 +1500,7 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
             "nothing but the error is printed"
         );
         let said = String::from_utf8_lossy(&refused.stderr);
-        assert!(
-            said.contains("Task `missing-task` not found in Store "),
-            "{said}"
-        );
+        assert!(said.contains("Task missing-task not found in "), "{said}");
     }
     let twice = report(&repo, &state, &["gc-older", "gc-older"], false);
     assert_eq!(twice.status.code(), Some(1));
@@ -1511,10 +1508,7 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
     let empty = tempfile::tempdir().unwrap();
     let none = report(&repo, empty.path(), &["gc-older"], false);
     assert_eq!(none.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&none.stderr)
-            .contains("Task `gc-older` not found: there is no Task Store at ")
-    );
+    assert!(String::from_utf8_lossy(&none.stderr).contains("Task gc-older not found in "));
 
     // A collected Task keeps its row from the tombstone: its Attempts are unknown, not zero.
     let collected = crate::common::af()

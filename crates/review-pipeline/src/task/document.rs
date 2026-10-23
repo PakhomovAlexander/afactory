@@ -166,17 +166,30 @@ pub fn document_signatures(
     ]))
 }
 
-/// Escape authored plain text. Only this renderer emits Markdown link syntax, from captured
-/// source locations that pass the fixed grammar below. Rendering never fetches a URL.
+/// Authored plain text as Markdown that reads back as exactly that text, each line placed where
+/// a block could begin: only a character that is markup where it stands is escaped (`*`, `\\`,
+/// a backtick, `[`, `]`, `<`, `|`, `~`, `$`, `_` outside a word, `&` before an entity, a
+/// block marker at a line's start), and a word a GFM autolink could claim is an inert code
+/// span. Ordinary punctuation, paths and non-ASCII text are written as authored
+/// (`af.document/2`). Only this renderer emits Markdown link syntax, from captured source
+/// locations that pass the fixed grammar below. Rendering never fetches a URL.
 fn markdown_text(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    for c in text.chars() {
-        if c.is_ascii_punctuation() {
-            result.push('\\');
-        }
-        result.push(c);
-    }
-    result
+    text.split('\n')
+        .map(|line| super::human_document::inline(line, true))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A title or heading's authored text, escaped as [`markdown_text`] and `#` too, so no closing
+/// sequence of the heading is dropped.
+fn markdown_heading(text: &str) -> String {
+    super::human_document::heading(text)
+}
+
+/// Authored text inside a line the renderer began: escaped as [`markdown_text`], but no block
+/// can begin here.
+fn markdown_inline(text: &str) -> String {
+    super::human_document::inline(text, false)
 }
 
 pub fn safe_source_location(uri: &str) -> bool {
@@ -247,11 +260,11 @@ pub(crate) fn render_validated<'a>(
     draft: &DocumentDraftV1,
     source: impl Fn(&str) -> Option<&'a DocumentSourceV1>,
 ) -> Result<String, String> {
-    let mut rendered = format!("# {}\n", markdown_text(&draft.title));
+    let mut rendered = format!("# {}\n", markdown_heading(&draft.title));
     for section in &draft.sections {
         rendered.push_str(&format!(
             "\n## {}\n\n{}\n",
-            markdown_text(&section.heading),
+            markdown_heading(&section.heading),
             markdown_text(&section.body)
         ));
     }
@@ -264,17 +277,17 @@ pub(crate) fn render_validated<'a>(
         if safe_source_location(&source.uri) && source.uri.starts_with("https://") {
             rendered.push_str(&format!(
                 "\n- [{}](<{}>) — revision {}\n",
-                markdown_text(&source.title),
+                markdown_inline(&source.title),
                 source.uri,
-                markdown_text(&source.revision)
+                markdown_inline(&source.revision)
             ));
         } else {
             // Invalid/unsupported links stay inert text; checks decide whether they can pass.
             rendered.push_str(&format!(
                 "\n- {} — {} — revision {}\n",
                 markdown_text(&source.title),
-                markdown_text(&source.uri),
-                markdown_text(&source.revision)
+                markdown_inline(&source.uri),
+                markdown_inline(&source.revision)
             ));
         }
     }
@@ -434,7 +447,7 @@ impl DocumentTaskDomain {
         let draft = read(cas, draft_id, DOCUMENT_DRAFT_V1)?;
         let sources = read(cas, sources_id, DOCUMENT_SOURCES_V1)?;
         Ok(DocumentV1 {
-            schema: "af.document/1".into(),
+            schema: review_core::task::document::DOCUMENT_SCHEMA.into(),
             draft_id: draft_id.into(),
             sources_id: sources_id.into(),
             format: DocumentFormatV1::Markdown,
@@ -1002,5 +1015,218 @@ impl TaskDomain for DocumentTaskDomain {
             return Err("Document result changed its evidence-derived acceptance".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use comrak::nodes::{AstNode, NodeValue};
+
+    /// CommonMark with the GFM extensions and GitHub's math, autolinks relaxed: what a reader's
+    /// viewer may parse the canonical text as.
+    fn options() -> comrak::Options<'static> {
+        let mut options = comrak::Options::default();
+        options.extension.strikethrough = true;
+        options.extension.table = true;
+        options.extension.autolink = true;
+        options.extension.tasklist = true;
+        options.extension.footnotes = true;
+        options.extension.alerts = true;
+        options.extension.math_dollars = true;
+        options.extension.math_code = true;
+        options.parse.relaxed_autolinks = true;
+        options
+    }
+
+    fn text<'a>(node: &'a AstNode<'a>) -> String {
+        let mut out = String::new();
+        for child in node.descendants().skip(1) {
+            match &child.data.borrow().value {
+                NodeValue::Text(text) => out.push_str(text),
+                NodeValue::Code(code) => out.push_str(&code.literal),
+                NodeValue::SoftBreak => out.push('\n'),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// The blocks a parser reads from `markdown`: headings and paragraphs (`li` inside a list
+    /// item) with their text. A link to anything but `links`, emphasis, HTML, a quote, a table
+    /// or any other structure panics with its kind.
+    fn blocks(markdown: &str, links: &[&str]) -> Vec<(String, String)> {
+        let arena = comrak::Arena::new();
+        let root = comrak::parse_document(&arena, markdown, &options());
+        let mut out = Vec::new();
+        for node in root.descendants() {
+            let value = node.data.borrow().value.clone();
+            match value {
+                NodeValue::Document
+                | NodeValue::List(_)
+                | NodeValue::Item(_)
+                | NodeValue::Text(_)
+                | NodeValue::Code(_)
+                | NodeValue::SoftBreak => {}
+                NodeValue::Paragraph => {
+                    let item = node
+                        .parent()
+                        .is_some_and(|p| matches!(p.data.borrow().value, NodeValue::Item(_)));
+                    out.push((if item { "li" } else { "p" }.into(), text(node)));
+                }
+                NodeValue::Heading(heading) => {
+                    out.push((format!("h{}", heading.level), text(node)));
+                }
+                NodeValue::Link(link) if links.contains(&link.url.as_str()) => {}
+                other => panic!("{other:?} in\n{markdown}"),
+            }
+        }
+        out
+    }
+
+    fn block(kind: &str, text: &str) -> (String, String) {
+        (kind.into(), text.into())
+    }
+
+    fn draft(title: &str, heading: &str, body: &str, citations: &[&str]) -> DocumentDraftV1 {
+        DocumentDraftV1 {
+            schema: "af.document-draft/1".into(),
+            title: title.into(),
+            sections: vec![DocumentSectionV1 {
+                heading: heading.into(),
+                body: body.into(),
+            }],
+            citations: citations.iter().map(|name| name.to_string()).collect(),
+        }
+    }
+
+    fn sources(entries: &[(&str, &str, &str, &str)]) -> DocumentSourcesV1 {
+        DocumentSourcesV1 {
+            schema: "af.document-sources/1".into(),
+            sources: entries
+                .iter()
+                .map(|(name, title, uri, revision)| {
+                    (
+                        name.to_string(),
+                        DocumentSourceV1 {
+                            title: title.to_string(),
+                            uri: uri.to_string(),
+                            revision: revision.to_string(),
+                            text: "captured".into(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// Every ASCII punctuation character, alone and in the places Markdown gives it meaning.
+    const PUNCTUATION: &str = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+
+    #[test]
+    fn plain_punctuation_is_written_as_authored() {
+        let body = "See crates/af/src/cli.rs:1163, v1.2.3 (stable) - it's done; 50% ok? \
+                    \"quoted\" a+b=c {x} ^ snake_case_name";
+        let rendered = render_document(
+            &draft("Notes", "Findings", body, &[]),
+            &sources(&[("unused", "u", "repo:a.md", "r")]),
+        )
+        .unwrap();
+        assert!(rendered.contains(body), "{rendered}");
+        assert_eq!(
+            blocks(&rendered, &[]),
+            [
+                block("h1", "Notes"),
+                block("h2", "Findings"),
+                block("p", body)
+            ]
+        );
+    }
+
+    #[test]
+    fn every_punctuation_character_reads_back_as_its_text_wherever_it_stands() {
+        let lines = [
+            PUNCTUATION.to_string(),
+            format!("text {PUNCTUATION} text"),
+            "# not a heading".into(),
+            "- not an item".into(),
+            "+ not an item".into(),
+            "* not an item".into(),
+            "1. not an item".into(),
+            "2) not an item".into(),
+            "> not a quote".into(),
+            "===".into(),
+            "---".into(),
+            "```rust".into(),
+            "~~~".into(),
+            "| a | b |".into(),
+            "|---|---|".into(),
+            "*emphasis* _emphasis_ **strong** ~~struck~~ `code` $x$".into(),
+            "[link](https://example.com) ![image](x.png) <b>html</b> &amp; &copy;".into(),
+            "https://example.com www.example.com mail@example.com \\\\ \\*".into(),
+            "[^note] [!WARNING]".into(),
+        ];
+        for line in &lines {
+            let title = line.lines().next().unwrap();
+            let rendered = render_document(
+                &draft(title, title, line, &["source"]),
+                &sources(&[("source", line, "repo:docs/a.md", line)]),
+            )
+            .unwrap();
+            assert_eq!(
+                blocks(&rendered, &[]),
+                [
+                    block("h1", title.trim()),
+                    block("h2", title.trim()),
+                    block("p", line.trim()),
+                    block("h2", "Sources"),
+                    block(
+                        "li",
+                        &format!(
+                            "{} — repo:docs/a.md — revision {}",
+                            line.trim(),
+                            line.trim()
+                        )
+                    ),
+                ],
+                "{line:?} rendered as\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_captured_https_source_is_the_only_link() {
+        let uri = "https://spec.commonmark.org/0.31.2/";
+        let rendered = render_document(
+            &draft("T", "H", "Body [x](https://evil.example)", &["spec"]),
+            &sources(&[("spec", "CommonMark *spec*", uri, "0.31.2")]),
+        )
+        .unwrap();
+        assert!(
+            rendered.contains(&format!(
+                "[CommonMark \\*spec\\*](<{uri}>) — revision 0.31.2"
+            )),
+            "{rendered}"
+        );
+        assert_eq!(
+            blocks(&rendered, &[uri]).last().unwrap(),
+            &block("li", "CommonMark *spec* — revision 0.31.2")
+        );
+    }
+
+    #[test]
+    fn the_rendering_is_deterministic_and_versioned() {
+        let document = draft("Title.", "Heading (one)", "Body - text.", &[]);
+        let captured = sources(&[("unused", "u", "repo:a.md", "r")]);
+        let first = render_document(&document, &captured).unwrap();
+        assert_eq!(first, render_document(&document, &captured).unwrap());
+        assert_eq!(
+            first, "# Title.\n\n## Heading (one)\n\nBody - text.\n",
+            "af.document/2 escapes no plain punctuation"
+        );
+        assert_eq!(
+            review_core::task::document::DOCUMENT_SCHEMA,
+            "af.document/2"
+        );
     }
 }

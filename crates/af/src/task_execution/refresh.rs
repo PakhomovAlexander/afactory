@@ -81,9 +81,7 @@ pub(crate) fn refresh(
     inspect: &crate::cli::TaskInspectArgs,
 ) -> Result<i32, String> {
     let (repo, state) = state_path(&inspect.repo, inspect.state.as_deref())?;
-    if !store_present(&state)? {
-        return Err(task_not_found(&state, id));
-    }
+    super::require_store(&state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     let before = store

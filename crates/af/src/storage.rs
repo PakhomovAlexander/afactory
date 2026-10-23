@@ -59,6 +59,8 @@ pub(crate) const NEWEST_WARM_KEY: &str =
 pub(crate) const RUNNING_LOCK: &str = "af-running.lock";
 /// How the outcome of a planned removal that failed begins.
 pub(crate) const FAILED: &str = "failed: ";
+/// How a sweep's note of a path the inventory could not measure begins.
+const MEASURING: &str = "measuring ";
 
 pub(crate) fn now_unix_ms() -> u64 {
     SystemTime::now()
@@ -592,14 +594,19 @@ fn unreadable_in_use(state: &Path) -> Option<String> {
         .map(|path| format!("its lock {} is held", path.display()))
 }
 
-/// Why a Store at `state` cannot be read by this release, when another release wrote it.
-fn written_by_another_release(state: &Path) -> Result<Option<String>, String> {
+/// Why a Store at `state` cannot be read by this release, when another release wrote it: the
+/// unknown type, and the release its writer marker names with the fix, as `command` reruns it.
+fn written_by_another_release(state: &Path, command: &str) -> Result<Option<String>, String> {
     let store = EventStore::open_read_only(state.join("events.sqlite"))
         .map_err(|error| error.to_string())?;
     match store.unknown_event_type() {
-        Ok(Some(kind)) => Ok(Some(format!(
-            "unknown event type {kind}; {}",
-            review_core::event::ANOTHER_RELEASE
+        Ok(Some(kind)) => Ok(Some(named_writer(
+            state,
+            format!(
+                "unknown event type {kind}; {}",
+                review_core::event::ANOTHER_RELEASE
+            ),
+            command,
         ))),
         Ok(None) => Ok(None),
         Err(error)
@@ -607,10 +614,30 @@ fn written_by_another_release(state: &Path) -> Result<Option<String>, String> {
                 .to_string()
                 .contains(review_core::event::ANOTHER_RELEASE) =>
         {
-            Ok(Some(error.to_string()))
+            Ok(Some(named_writer(state, error.to_string(), command)))
         }
         Err(error) => Err(error.to_string()),
     }
+}
+
+/// `why` this release refused the Store at `state`, followed by the release that wrote it and
+/// the fix when its markers name one.
+fn named_writer(state: &Path, why: String, command: &str) -> String {
+    match crate::store_release::foreign(state, &why) {
+        Some(provenance) => format!(
+            "{why}; {}",
+            crate::store_release::refusal(state, &provenance, command)
+        ),
+        None => why,
+    }
+}
+
+/// The command that lists a Task Store's Tasks, for the fix of a refusal.
+fn task_list_command(state: &Path) -> String {
+    format!(
+        "af task list --state {}",
+        shell_words::quote(&state.display().to_string())
+    )
 }
 
 fn has_store(path: &Path) -> bool {
@@ -696,7 +723,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         );
     }
     for path in campaigns.into_iter().filter(|path| has_store(path)) {
-        match written_by_another_release(&path) {
+        match written_by_another_release(&path, "af review campaigns") {
             Ok(Some(reason)) => unreadable(&mut inventory, roots, &path, reason),
             // A Store with a live writer lease is never on the sweep's list: judged here, before
             // the plan, and checked again, in full, before a removal.
@@ -707,7 +734,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         }
     }
     for path in tasks.into_iter().filter(|path| has_store(path)) {
-        match written_by_another_release(&path) {
+        match written_by_another_release(&path, &task_list_command(&path)) {
             Ok(Some(reason)) => unreadable(&mut inventory, roots, &path, reason),
             Ok(None) if detail == Detail::Tasks => task_store(&mut inventory, roots, &path),
             Ok(None) => {
@@ -1078,7 +1105,7 @@ fn project_store(
         .map(|workspace| workspace.join("state"))
         .filter(|state| state.is_dir())
         .collect();
-    match written_by_another_release(path) {
+    match written_by_another_release(path, "af project show") {
         Ok(Some(reason)) => {
             unreadable(inventory, roots, path, reason);
             if let Some(entry) = inventory.entries.last_mut()
@@ -1154,6 +1181,14 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
         });
     let plan = match plan {
         Ok(plan) => plan,
+        // A log whose events have another release's shapes, its markers naming that release
+        // (or none, from before markers): a Store this release cannot read, like one whose
+        // types it does not know.
+        Err(reason) if crate::store_release::foreign(state, &reason).is_some() => {
+            let reason = named_writer(state, reason, &task_list_command(state));
+            unreadable(inventory, roots, state, reason);
+            return;
+        }
         Err(reason) => {
             // Its Tasks cannot be told apart, but its bytes are still on disk: counted, kept
             // whole (nothing in it can be collected Task by Task), and reported.
@@ -1523,7 +1558,7 @@ pub(crate) fn sweep(
     // What could not be measured is said with the result: a total that fits the budget is only
     // as complete as the inventory behind it.
     for problem in &stock.problems {
-        let line = format!("measuring {}: {}", problem.path.display(), problem.reason);
+        let line = format!("{MEASURING}{}: {}", problem.path.display(), problem.reason);
         if !report.failures.contains(&line) {
             report.failures.push(line);
         }
@@ -2831,7 +2866,7 @@ fn report_lines(report: &SweepReport) {
             cleanup.task_id, cleanup.summary
         );
     }
-    for failure in unmarked_failures(report) {
+    for failure in run_warnings(report) {
         eprintln!("af storage: warning: {failure}");
     }
     match report.stop {
@@ -3587,12 +3622,10 @@ pub(crate) fn human_bytes(bytes: u64) -> String {
     }
 }
 
-fn iso(unix_ms: u64) -> String {
-    review_core::task::collection::collected_time(unix_ms)
-}
-
-/// `af storage [--json]`: what af holds, per kind, against the budget and the floor.
-pub(crate) fn show(json_output: bool) -> Result<i32, String> {
+/// `af storage [--json] [--verbose]`: what af holds, per kind, against the budget and the floor.
+/// The Stores other releases wrote are one row, and what could not be measured one count; with
+/// `--verbose` each is named.
+pub(crate) fn show(json_output: bool, verbose: bool) -> Result<i32, String> {
     let policy = policy()?;
     let roots = Roots::current()?;
     let stock = inventory(&roots, Detail::Tasks);
@@ -3658,17 +3691,22 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
         );
         return Ok(0);
     }
+    // Times in the local zone, to the minute; `--json` keeps the Unix milliseconds.
     println!(
-        "{:<20} {:>7} {:>10}  {:<20}  {:<20}",
+        "{:<20} {:>7} {:>10}  {:<22}  {:<22}",
         "KIND", "ENTRIES", "BYTES", "OLDEST USE", "NEWEST USE"
     );
     for kind in Kind::ALL {
         let of: Vec<&(&Entry, Option<&Path>)> =
             listed.iter().filter(|(e, _)| e.kind == kind).collect();
         let bytes = counted(&of);
-        let when = |value: Option<u64>| value.filter(|ms| *ms > 0).map_or("-".to_string(), iso);
+        let when = |value: Option<u64>| {
+            value
+                .filter(|ms| *ms > 0)
+                .map_or("-".to_string(), crate::human::local_time)
+        };
         println!(
-            "{:<20} {:>7} {:>10}  {:<20}  {:<20}",
+            "{:<20} {:>7} {:>10}  {:<22}  {:<22}",
             kind.label(),
             of.len(),
             human_bytes(bytes),
@@ -3686,16 +3724,34 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
             );
         }
     }
+    // The Stores other releases wrote are one row, by release, with the command that runs them;
+    // `--verbose` names each with its own refusal. Any other unreadable Store is named alone.
+    let mut foreign = Vec::new();
     for entry in stock
         .entries
         .iter()
         .filter(|entry| entry.kind == Kind::UnreadableStore)
     {
+        let reason = entry.reason.as_deref().unwrap_or("cannot be read");
+        let provenance = crate::store_release::foreign(&entry.path, reason);
+        if provenance.is_none() || verbose {
+            println!(
+                "unreadable Store {} ({}): {}",
+                entry.path.display(),
+                human_bytes(entry.bytes),
+                reason
+            );
+        }
+        foreign.extend(provenance);
+    }
+    if let Some(row) = crate::store_release::summary(&foreign, "af task list --state DIR") {
         println!(
-            "unreadable Store {} ({}): {}",
-            entry.path.display(),
-            human_bytes(entry.bytes),
-            entry.reason.as_deref().unwrap_or("cannot be read")
+            "{row}{}",
+            if verbose {
+                ""
+            } else {
+                "; af storage --verbose names each"
+            }
         );
     }
     for entry in stock
@@ -3710,8 +3766,30 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
             entry.reason.as_deref().unwrap_or("overlapping")
         );
     }
-    for problem in &stock.problems {
-        println!("skipped {}: {}", problem.path.display(), problem.reason);
+    if verbose {
+        for problem in &stock.problems {
+            println!("skipped {}: {}", problem.path.display(), problem.reason);
+        }
+    } else if !stock.problems.is_empty() {
+        println!(
+            "{} {} could not be measured and {} left alone; af storage --verbose names {}",
+            stock.problems.len(),
+            if stock.problems.len() == 1 {
+                "path"
+            } else {
+                "paths"
+            },
+            if stock.problems.len() == 1 {
+                "is"
+            } else {
+                "are"
+            },
+            if stock.problems.len() == 1 {
+                "it"
+            } else {
+                "them"
+            },
+        );
     }
     println!(
         "total {} of a {} budget ({}){}",
@@ -3775,9 +3853,9 @@ fn budget_origin(policy: &StoragePolicy) -> String {
     }
 }
 
-/// `af storage prune [--apply] [--json]`: the sweep with collection on; a preview without
-/// `--apply`.
-pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
+/// `af storage prune [--apply] [--json] [--verbose]`: the sweep with collection on; a preview
+/// without `--apply`. What the inventory could not measure is one count unless `--verbose`.
+pub(crate) fn prune(apply: bool, json_output: bool, verbose: bool) -> Result<i32, String> {
     let policy = policy()?;
     let roots = Roots::current()?;
     let report = sweep(&roots, &policy, true, apply);
@@ -3819,8 +3897,18 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
             cleanup.task_id, cleanup.summary
         );
     }
-    for failure in unmarked_failures(&report) {
+    let unmeasured = unmarked_failures(&report)
+        .filter(|failure| is_measuring(failure))
+        .count();
+    for failure in unmarked_failures(&report).filter(|failure| verbose || !is_measuring(failure)) {
         println!("failed: {failure}");
+    }
+    if unmeasured > 0 && !verbose {
+        println!(
+            "{unmeasured} {} could not be measured; af storage prune --verbose names {}",
+            if unmeasured == 1 { "path" } else { "paths" },
+            if unmeasured == 1 { "it" } else { "them" },
+        );
     }
     println!(
         "{} → {} of a {} budget; {}{}",
@@ -3948,6 +4036,18 @@ fn removal_line(removal: &Removal, applied: bool) -> String {
 }
 
 /// The failures a removal's line does not already say.
+/// The failures the sweep that ends a run warns about. What the inventory could not measure is
+/// a note of `af storage --verbose`, not a warning after every run: a registered Store a test
+/// left half made, or one another tool holds, is no failure of this sweep.
+fn run_warnings(report: &SweepReport) -> impl Iterator<Item = &String> {
+    unmarked_failures(report).filter(|failure| !is_measuring(failure))
+}
+
+/// Whether a sweep failure is the inventory's note that a path could not be measured.
+fn is_measuring(failure: &str) -> bool {
+    failure.starts_with(MEASURING)
+}
+
 fn unmarked_failures(report: &SweepReport) -> impl Iterator<Item = &String> {
     report.failures.iter().filter(|failure| {
         !report.removals.iter().any(|removal| {
