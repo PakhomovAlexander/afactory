@@ -235,6 +235,15 @@ impl Gate {
     fn cas(&self) -> Cas {
         Cas::open(self.state.join("cas")).unwrap()
     }
+
+    /// `command` as af prints it for this fixture: with the `--state` every command here is
+    /// given, as typed.
+    fn next(&self, command: &str) -> String {
+        format!(
+            "{command} --state {}",
+            shell_words::quote(self.state.to_str().unwrap())
+        )
+    }
 }
 
 /// Every artifact of `kind` in the Store, in no particular order.
@@ -597,7 +606,7 @@ fn a_failed_gate_without_an_attempt_left_never_advertises_a_retry() {
     assert_eq!(code, 5, "{stderr}\n{stdout}");
     assert_eq!(
         agreed_next(&fixture, &[], "no-room"),
-        "af task show no-room --checks"
+        fixture.next("af task show no-room --checks")
     );
     let before = fixture.show_json("no-room");
     fixture.fail_preflight(false);
@@ -625,13 +634,13 @@ fn a_failed_gate_past_its_deadline_never_advertises_a_retry() {
     assert_eq!(code, 5, "{stderr}\n{stdout}");
     assert_eq!(
         agreed_next(&fixture, &[], "late-gate"),
-        "af task run late-gate --retry-gate"
+        fixture.next("af task run late-gate --retry-gate")
     );
     // 2100-01-01, long after any deadline the fixture's Task file sets.
     let late = [("AF_TEST_CLOCK_FIXED_MS", "4102444800000")];
     assert_eq!(
         agreed_next(&fixture, &late, "late-gate"),
-        "af task show late-gate --checks"
+        fixture.next("af task show late-gate --checks")
     );
     let (code, stdout, stderr) =
         fixture.af_env(&late, &["task", "run", "late-gate", "--retry-gate"]);
@@ -826,7 +835,7 @@ fn a_failed_gate_beside_a_failed_paid_node_is_not_retried() {
         if side_fails {
             assert_eq!(
                 next,
-                format!("af task show {task_id} --checks"),
+                fixture.next(&format!("af task show {task_id} --checks")),
                 "{:#}",
                 fixture.show_json(task_id)
             );
@@ -839,7 +848,10 @@ fn a_failed_gate_beside_a_failed_paid_node_is_not_retried() {
                 "{stderr}"
             );
         } else {
-            assert_eq!(next, format!("af task run {task_id} --retry-gate"));
+            assert_eq!(
+                next,
+                fixture.next(&format!("af task run {task_id} --retry-gate"))
+            );
             assert_ne!(code, 1, "the retry ran: {stderr}\n{stdout}");
             assert!(
                 stderr.contains(&format!("retrying gate root.nodes.check of Task {task_id}")),

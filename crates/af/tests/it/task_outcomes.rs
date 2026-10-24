@@ -397,7 +397,9 @@ fn printed_next_commands_carry_the_selectors_and_run_as_printed() {
     };
     let run = selected(&["task", "start", "--file", "ticket.json", "--execute"]);
     assert_eq!(run.status.code(), Some(5), "{}", err(&run));
-    let next = format!("af task run {TASK} --retry-gate --repo repo --state state");
+    // The fixture's Task file leaves no Attempt for a new check, so the failed gate names its
+    // checks, not a retry the kernel would refuse.
+    let next = format!("af task show {TASK} --checks --repo repo --state state");
     assert_eq!(
         out(&run).lines().last(),
         Some(format!("next: {next}").as_str())
@@ -427,18 +429,18 @@ fn printed_next_commands_carry_the_selectors_and_run_as_printed() {
         serde_json::from_slice(&selected(&["task", "report", TASK, "--json"]).stdout).unwrap();
     assert_eq!(
         reported["tasks"][0]["state"]["next_action"],
-        format!("af task run {TASK} --retry-gate")
+        format!("af task show {TASK} --checks")
     );
-    // Run as printed, the retry reaches the Task in that Store; without the selectors the same
-    // words would look in this directory's default Store, which holds no such Task.
-    let retried = run_printed(root, &next_words(&next));
-    let said = err(&retried);
-    assert!(!said.contains("not found"), "{said}");
+    // Run as printed, the command reaches the Task in that Store; without the selectors the
+    // same words would look in this directory's default Store, which holds no such Task.
+    let checked = run_printed(root, &next_words(&next));
+    assert!(checked.status.success(), "{}", err(&checked));
     assert!(
-        retried.status.code() == Some(5) || said.contains(&format!("Task {TASK} cannot retry")),
-        "{said}"
+        out(&checked).contains("check pagination"),
+        "{}",
+        out(&checked)
     );
-    let bare = next_words(&format!("af task run {TASK} --retry-gate --repo repo"));
+    let bare = next_words(&format!("af task show {TASK} --checks --repo repo"));
     let lost = run_printed(root, &bare);
     assert_eq!(lost.status.code(), Some(1));
     assert!(err(&lost).contains("not found"), "{}", err(&lost));

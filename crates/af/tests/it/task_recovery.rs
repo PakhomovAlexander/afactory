@@ -587,7 +587,14 @@ fn a_second_sigterm_names_the_next_command_the_task_state_names() {
     let message = error["error"].as_str().unwrap();
     let shown = abandoned_inspection(&f);
     let next = shown["state"]["next_action"].as_str().unwrap();
-    assert_eq!(next, "af task start --file TASK_FILE", "{shown:#}");
+    assert_eq!(
+        next,
+        format!(
+            "af task start --file TASK_FILE --state {}",
+            shell_words::quote(f.state.to_str().unwrap())
+        ),
+        "{shown:#}"
+    );
     assert!(message.contains(&format!("`{next}`")), "{message}");
     assert!(
         !message.contains(&format!("resume it with `af task run {TASK}`")),

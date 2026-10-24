@@ -2794,7 +2794,7 @@ fn execute(
         if let Ok(projection) = runtime.projection()
             && let Some(next) = recovery::interrupted_next(&projection)
         {
-            crate::interrupt::note_next(next);
+            crate::interrupt::note_next(with_selectors(&next));
         }
         crate::interrupt::check()?;
     }

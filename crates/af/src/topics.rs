@@ -403,7 +403,7 @@ The Task documents, each named by its `schema`:
                                        planning_diagnostic.required_limits and .reserves
 
 af/task-inspection@13, af/task-collected-inspection@2, af/task-checks@2, each
-af/task-list-entry@3, af/task-report@2, af/task-findings@1, af/task-status@1, af/task-detached@1
+af/task-list-entry@3, af/task-report@2, af/task-findings@1, af/task-status@1, af/task-detached@2
 and af/task-cancelled@1 carry the Task's `state` (`af help task-states`), its `next_action`
 carrying the selectors the command was given (a report, pasted into a pull request, names no
 Store path); the diff, the materialized candidate and the refused selection describe no Task

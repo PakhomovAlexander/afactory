@@ -884,7 +884,7 @@ fn the_pr_body_is_the_template_with_both_blocks_and_the_checker_accepts_it() {
         "the command to run again, with a base: {said}"
     );
     for line in said.lines() {
-        assert!(line.chars().count() <= 100, "{line}");
+        assert!(crate::common::fits_or_unbreakable(line, 100), "{line}");
     }
     git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
     let body = expect(

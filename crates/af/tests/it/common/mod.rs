@@ -549,6 +549,22 @@ pub fn err(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// Whether a printed `line` keeps to `width` columns, or is one unbreakable unit on a line of
+/// its own: a path or a word, or a `--flag value` pair, indented and continued with ` \`. A
+/// path wider than the terminal (a long `TMPDIR`) cannot be broken without breaking the copied
+/// command, so af gives it a line to itself instead.
+pub fn fits_or_unbreakable(line: &str, width: usize) -> bool {
+    if line.chars().count() <= width {
+        return true;
+    }
+    let unit = line.trim().trim_end_matches('\\').trim_end();
+    match shell_words::split(unit).as_deref() {
+        Ok([_]) => true,
+        Ok([flag, _]) => flag.starts_with("--"),
+        _ => false,
+    }
+}
+
 /// An empty directory in `parent` (created when absent) named as a removal of process `pid`
 /// claims it, `.af-removing-<pid>-<device>-<inode>`, binding its own device and inode: a claim
 /// af can prove it made (ADR-0144), unlike a name that is only claim-shaped.

@@ -2111,15 +2111,17 @@ fn exit_interrupted(
 ) -> ! {
     let code = interrupt::exit_code(signal);
     // The same next command `af task show --json` names: `af task run ID` only while the
-    // interrupted node has a recovery left (ADR-0200).
+    // interrupted node has a recovery left (ADR-0200). Either carries the Store selectors this
+    // command was given.
     let resume = match (interrupt::noted_task(), interrupt::noted_next()) {
         (Some(id), Some(next)) => format!(
             "a node of Task {id} used up its recovery allowance, so `af task run {id}` cannot \
              continue it; start it again with `{next}` (the Task file it was started from)"
         ),
         (Some(id), None) => format!(
-            "resume it with `af task run {id}`, which dispatches the interrupted node again \
-             without using one of its Attempts"
+            "resume it with `{}`, which dispatches the interrupted node again without using \
+             one of its Attempts",
+            task_execution::with_selectors(&format!("af task run {id}"))
         ),
         (None, _) => "run the same command again to resume it".into(),
     };
@@ -5422,8 +5424,16 @@ mod option_tests {
         };
         let utc = |unix_ms: u64| crate::human::utc_time(unix_ms)[5..].to_owned();
         let text = campaigns_text(&empty, &root, true, &utc);
+        // A root wider than the terminal (a long `TMPDIR`) is one unbreakable word: it keeps a
+        // line of its own, alone or as the value of its `--state`.
         for line in text.lines() {
-            assert!(line.chars().count() <= 100, "{line}");
+            let unit = line.trim().trim_end_matches('\\').trim_end();
+            let alone = match shell_words::split(unit).as_deref() {
+                Ok([_]) => true,
+                Ok([flag, _]) => flag.starts_with("--"),
+                _ => false,
+            };
+            assert!(line.chars().count() <= 100 || alone, "{line}");
         }
         let lines: Vec<&str> = text.lines().collect();
         // The sentence on one line where the root fits, else the root on a line of its own.

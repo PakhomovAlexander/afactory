@@ -310,17 +310,19 @@ impl Abandoned {
     }
 }
 
-/// The message of a run whose heartbeat lost the writer lease, or None for any other error.
+/// The message of a run whose heartbeat lost the writer lease, or None for any other error. Its
+/// `af task run` carries the Store selectors this command was given.
 pub(super) fn writer_lost(id: &str, error: &str) -> Option<String> {
     let detail = error.strip_prefix(WRITER_LOST)?;
     let detail = detail.trim_start_matches(':').trim();
+    let id = preview::text(id);
     Some(format!(
         "Task {id} lost its writer lease (writer_lost: {detail}); its Worker processes were \
-         stopped and nothing more was recorded. To continue, run `af task run {id}`: it waits \
-         for the lease to expire (at most {} s), settles the lost Attempt without charging its \
-         reservation, and dispatches it again",
+         stopped and nothing more was recorded. To continue, run `{}`: it waits for the lease \
+         to expire (at most {} s), settles the lost Attempt without charging its reservation, \
+         and dispatches it again",
+        super::with_selectors(&format!("af task run {id}")),
         lease_ms().div_ceil(1_000),
-        id = preview::text(id),
     ))
 }
 

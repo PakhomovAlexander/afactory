@@ -25,7 +25,9 @@ af task: Task pagination-cli lost its writer lease (writer_lost: Task writer lea
 ```
 
 The times are what the Store observed: its clock, the lease's expiry and the last event the
-writer recorded.
+writer recorded. Given `--repo`, `--state` or `--workspace`, this command, and the one a run
+stopped by SIGINT or SIGTERM names, carry them as typed, so it runs as printed against the same
+Store.
 
 ## The lease
 
