@@ -693,10 +693,13 @@ fn a_pending_gate_retry_keeps_the_gate_evidence() {
     }
     // The writer dies with its whole process group, before the new check publishes.
     let group = i32::try_from(child.id()).unwrap();
-    Command::new("kill")
-        .args(["-KILL", &format!("-{group}")])
+    // `--` first: procps kill (Linux) reads a bare `-PGID` after `-KILL` as another option and
+    // signals nothing, exiting 0.
+    let killed = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{group}")])
         .status()
         .unwrap();
+    assert!(killed.success(), "kill -KILL -- -{group}: {killed}");
     child.wait().unwrap();
     std::fs::remove_file(&hang).unwrap();
 

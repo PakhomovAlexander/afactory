@@ -257,7 +257,8 @@ echo "  af self setup-shell --write   completions + man pages"
 case ":$PATH:" in
   *":$BIN:"*) ;;
   *)
-    case "${SHELL##*/}" in
+    login_shell=${SHELL:-}   # unset in containers, CI runners and cron, and `set -u` is on
+    case "${login_shell##*/}" in
       fish) echo "  fish_add_path $BIN   # af is not on PATH yet" ;;
       zsh) echo "  export PATH=\"$BIN:\$PATH\"   # add to ~/.zshrc: af is not on PATH yet" ;;
       bash) echo "  export PATH=\"$BIN:\$PATH\"   # add to ~/.bashrc: af is not on PATH yet" ;;

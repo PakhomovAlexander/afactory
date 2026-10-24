@@ -197,8 +197,11 @@ test -z "$(git remote)"
     assert!(text.contains("correctness"), "{text}");
     assert!(text.contains("architecture"), "{text}");
     let doctor = std::fs::read_to_string(root.path().join("doctor.txt")).unwrap();
-    assert!(doctor.contains("validates"), "{doctor}");
-    assert!(doctor.contains("Gate check runs make"), "{doctor}");
+    // The rows wrap at 100 columns, where depends on the temporary path's length: read the
+    // words, not the lines.
+    let words = doctor.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(words.contains("validates"), "{doctor}");
+    assert!(words.contains("Gate check runs make"), "{doctor}");
 }
 
 /// The README's first Task, run as written on the software starter: token-free command Workers

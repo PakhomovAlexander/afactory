@@ -669,11 +669,14 @@ fn an_identity_probe_that_answers_malformed_is_sent_again_and_then_fails_as_the_
     };
     assert_eq!(silences, &[ProbeSilenceV1::Malformed; 3]);
     let diagnostic = refused.diagnostic(ProviderKind::Claude, identity.probe_wall);
+    // Where the host's load can be read (Linux always), the count is followed by it: "3× on a
+    // host with load 2; the account …".
     assert!(
-        diagnostic.starts_with(
-            "identity recheck: probe answered malformed 3×; the account was not verified as \
-             changed"
-        ),
+        diagnostic.starts_with("identity recheck: probe answered malformed 3×"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("; the account was not verified as changed"),
         "{diagnostic}"
     );
 }
