@@ -94,6 +94,18 @@ document has a `kind@version` (ADR-0145).
    null when the check is `ok`, and a problem no single command fixes has a null `fix` and a
    `hint` that says what to do. The shell check's fix names the shell `$SHELL` names (`af self
    setup-shell --shell zsh --write`), or the `SHELL` placeholder with the choices in its hint.
+   *Amended by the GA third fix round:* a fix is offered only when running it can clear the
+   check, never when the error the check reported would stop it. A `.af/` that does not validate
+   (which `af onboard` would stop on), a machine `config.toml` that does not load (which `af
+   config show`, `af self` and `af storage` would stop on) and an unreadable Provider registry
+   have a null `fix` and a hint naming the file, the parse error's line and `af doctor` (`--repo
+   PATH` for the project) to check again; another check's fix that would run one of those
+   commands moves into its hint, after the file to correct first. The PATH fix is the line for
+   the shell `$SHELL` names, the directory in that shell's single quotes so nothing in it is
+   expanded: `export PATH='DIR':"$PATH"` for bash, zsh and sh, `fish_add_path 'DIR'`, `set paths =
+   ['DIR' $@paths]` for elvish and `$env:PATH = 'DIR' + [IO.Path]::PathSeparator + $env:PATH` for
+   pwsh; another shell, or a directory no PATH entry can hold, has a null `fix` and a hint naming
+   the directory. `af self setup-shell --write` leaves PATH alone and is never the PATH fix.
    Version 1, whose `fix` mixed commands and prose, is neither printed nor read. It never calls a
    model, logs in, installs or writes a file; it is exempt from pin dispatch and schedules no
    update check. The processes it starts are version checks, the

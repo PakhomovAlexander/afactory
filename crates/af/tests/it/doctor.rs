@@ -377,8 +377,8 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
     std::fs::create_dir_all(&home).unwrap();
     let bin = home.join(".local/bin");
     let squeeze = |text: &str| text.split_whitespace().collect::<String>();
-    // The PATH fix is one shell word, printed whole on its own line even where it is wider.
-    let export = format!("export PATH=\"{}:$PATH\"", bin.display());
+    // The zsh PATH fix is one line, printed whole even where it is wider than one.
+    let export = format!("export PATH='{}':\"$PATH\"", bin.display());
     for columns in [100, 80] {
         let wide = columns.to_string();
         let output = machine.doctor_at(&home, &work, &[], None, &[("COLUMNS", &wide)]);
@@ -399,8 +399,12 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
             flat.contains(&format!("{}isnotonPATH", bin.display())),
             "{columns}\n{text}"
         );
+        // Without $SHELL no line is written for an unknown shell: the hint names the directory.
         assert!(
-            flat.contains(&format!("exportPATH=\"{}:$PATH\"", bin.display())),
+            flat.contains(&squeeze(&format!(
+                "hint: put {} first on PATH",
+                bin.display()
+            ))),
             "{columns}\n{text}"
         );
         // The receipt path is printed canonical; its tail below the machine root is the same.
@@ -674,19 +678,52 @@ fn every_fix_of_a_machine_where_every_check_fails_is_a_command() {
         "brew install curl && brew install minisign && brew install gh",
         "{failing}"
     );
+    // GA third fix item 3: `af onboard` would stop on the same parse error, so the project check
+    // has no fix; its hint names the file, the line and the command that checks again.
     let project = check(&failing, "project");
     assert_eq!(project["status"], "fail", "{failing}");
-    assert_eq!(
-        project["fix"],
-        format!(
-            "af onboard --repo {}",
-            shell_words::quote(&canonical(&repo))
-        )
-        .as_str(),
+    assert_eq!(project["fix"], serde_json::Value::Null, "{failing}");
+    let hint = project["hint"].as_str().unwrap();
+    let quoted = shell_words::quote(&canonical(&repo)).into_owned();
+    assert!(
+        hint.starts_with(&format!(
+            "correct {}/.af/af.toml line 1 by hand (",
+            canonical(&repo)
+        )),
+        "{hint}"
+    );
+    assert!(
+        hint.ends_with(&format!("then recheck: af doctor --repo {quoted}")),
+        "{hint}"
+    );
+    // The unreadable config and registry: no command clears them, and every fix that would run
+    // `af self` waits for the config.
+    for id in ["update", "storage", "providers", "binary"] {
+        assert_eq!(
+            check(&failing, id)["fix"],
+            serde_json::Value::Null,
+            "{id}: {failing}"
+        );
+    }
+    assert!(
+        check(&failing, "storage")["hint"]
+            .as_str()
+            .unwrap()
+            .contains("/home/.config/af/config.toml line 1 by hand"),
         "{failing}"
     );
-    assert_eq!(
-        project["hint"], "it names the file and the fix",
+    assert!(
+        check(&failing, "providers")["hint"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("correct {} line 1 by hand", registry.display())),
+        "{failing}"
+    );
+    assert!(
+        check(&failing, "binary")["hint"]
+            .as_str()
+            .unwrap()
+            .contains("which stops this fix; then run: af self install "),
         "{failing}"
     );
     assert_fixes_are_commands(&failing);
@@ -713,6 +750,283 @@ fn every_fix_of_a_machine_where_every_check_fails_is_a_command() {
     assert_eq!(check(&bare, "project")["fix"], "af doctor --repo DIR");
     assert_fixes_are_commands(&bare);
     assert_eq!(machine.snapshot(), before);
+
+    // Each fix still offered runs, in this fixture, without the error its check reported or any
+    // other the unreadable files hold.
+    let broken = [repo.join(".af/af.toml"), config, registry];
+    let fixed = run_fixes(&machine, &failing, &repo, &bin, &envs, &broken);
+    assert!(fixed >= 2, "the shell and tools fixes ran: {failing}");
+}
+
+/// Run every fix `document` still offers, in `dir` on `machine` with `path` and `envs`, and
+/// assert that none fails with the error its check reported or names one of `broken`, the
+/// fixture's unreadable files: a fix is offered only when running it can clear its check. An
+/// `af` command runs through the private-home helper; a `brew` or `apt-get` line runs only when
+/// `path` holds the fixture's own fake one. Returns how many commands ran.
+fn run_fixes(
+    machine: &Machine,
+    document: &serde_json::Value,
+    dir: &Path,
+    path: &Path,
+    envs: &[(&str, &str)],
+    broken: &[PathBuf],
+) -> usize {
+    let home = machine.path("home");
+    let mut ran = 0;
+    for check in document["checks"].as_array().unwrap() {
+        let Some(fix) = check["fix"].as_str() else {
+            continue;
+        };
+        let reported = check["detail"].as_str().unwrap();
+        let words = shell_words::split(fix).unwrap();
+        for command in words.split(|word| word == "&&") {
+            let command: Vec<String> = command
+                .iter()
+                .map(|word| {
+                    if word == "SHELL" {
+                        "zsh".into()
+                    } else {
+                        word.clone()
+                    }
+                })
+                .collect();
+            let output = if command[0] == "af" {
+                crate::common::af()
+                    .args(&command[1..])
+                    .current_dir(dir)
+                    .env("HOME", &home)
+                    .env("XDG_CONFIG_HOME", home.join(".config"))
+                    .env("XDG_STATE_HOME", home.join(".local/state"))
+                    .env("XDG_CACHE_HOME", home.join(".cache"))
+                    .env("XDG_DATA_HOME", home.join(".local/share"))
+                    .env("XDG_BIN_HOME", home.join(".local/bin"))
+                    .env("PATH", path)
+                    .env_remove("SHELL")
+                    .env_remove("CLAUDE_CONFIG_DIR")
+                    .env_remove("CODEX_HOME")
+                    .envs(envs.iter().copied())
+                    .stdin(std::process::Stdio::null())
+                    .output()
+                    .unwrap()
+            } else if path.join(&command[0]).is_file() {
+                Command::new(path.join(&command[0]))
+                    .args(&command[1..])
+                    .env("PATH", path)
+                    .output()
+                    .unwrap()
+            } else {
+                continue;
+            };
+            ran += 1;
+            let said = format!("{}{}", out(&output), err(&output));
+            if !output.status.success() {
+                let core = reported.rsplit(": ").next().unwrap_or(reported);
+                assert!(
+                    !said.contains(core),
+                    "`{fix}` fails as {check} did:\n{said}"
+                );
+            }
+            for file in broken {
+                for spelled in [file.display().to_string(), canonical_or(file)] {
+                    assert!(
+                        !said.contains(&spelled),
+                        "`{fix}` stops on {spelled}:\n{said}"
+                    );
+                }
+            }
+        }
+    }
+    ran
+}
+
+/// `path` canonical when it exists, else as given.
+fn canonical_or(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
+/// A repository whose `.af/` validates, onboarded in `machine`'s private home, with a Worker
+/// that needs a claude Provider.
+fn onboarded(machine: &Machine) -> PathBuf {
+    let repo = machine.path("work/onboarded");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let home = machine.path("home");
+    let output = crate::common::af()
+        .args([
+            "onboard",
+            "--apply",
+            "--gate",
+            "check=git --version",
+            "--runner",
+            "claude",
+        ])
+        .current_dir(&repo)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", err(&output));
+    repo
+}
+
+/// GA third fix item 3, one check kind at a time: a fix is offered only when running it can
+/// clear its check, never when the error the check reported would stop it. Each case breaks one
+/// file, reads the check's hint (the file, the parse error's line, the command that checks
+/// again), proves the command it no longer offers stops on that error, and runs every fix it
+/// still offers without it.
+#[test]
+fn no_fix_is_offered_that_the_reported_error_would_stop() {
+    let machine = Machine::new();
+    let repo = onboarded(&machine);
+    let home = machine.path("home");
+    // git for the repository, a fake brew so no tools fix installs anything.
+    let bin = machine.path("tools-path");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(on_path("git"), bin.join("git")).unwrap();
+    std::fs::write(bin.join("brew"), "#!/bin/sh\nexit 0\n").unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(bin.join("brew"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let registry = machine.path("providers.toml");
+    let registry_env = registry.to_str().unwrap().to_owned();
+    let envs = [("AF_PROVIDERS_FILE", registry_env.as_str())];
+    let doctor =
+        || document(&machine.doctor_at(&home, &repo, &["--json"], Some(bin.as_os_str()), &envs));
+    let quoted = shell_words::quote(&canonical(&repo)).into_owned();
+    let run = |args: &[&str]| -> String {
+        let output = crate::common::af()
+            .args(args)
+            .current_dir(&repo)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_STATE_HOME", home.join(".local/state"))
+            .env("XDG_CACHE_HOME", home.join(".cache"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
+            .envs(envs.iter().copied())
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "af {args:?} ran");
+        err(&output)
+    };
+
+    // The project: each `.af/` file `af onboard` reads, broken in turn.
+    for file in [".af/af.toml", ".af/af.lock", ".af/pipelines/review.toml"] {
+        let path = repo.join(file);
+        let kept = std::fs::read(&path).unwrap();
+        std::fs::write(&path, [kept.as_slice(), b"\nbroken = [\n"].concat()).unwrap();
+        let line = String::from_utf8_lossy(&kept).lines().count() + 2;
+        let document = doctor();
+        let project = check(&document, "project");
+        assert_eq!(project["status"], "fail", "{file}: {document}");
+        assert_eq!(
+            project["fix"],
+            serde_json::Value::Null,
+            "{file}: {document}"
+        );
+        let hint = project["hint"].as_str().unwrap();
+        assert!(
+            hint.starts_with(&format!(
+                "correct {}/{file} line {line} by hand (",
+                canonical(&repo)
+            )),
+            "{file}: {hint}"
+        );
+        assert!(
+            hint.ends_with(&format!("then recheck: af doctor --repo {quoted}")),
+            "{hint}"
+        );
+        // The command the check used to offer stops on that very error.
+        let said = run(&["onboard", "--repo", &canonical(&repo)]);
+        assert!(said.contains("TOML parse error"), "{file}: {said}");
+        run_fixes(&machine, &document, &repo, &bin, &envs, &[path.clone()]);
+        std::fs::write(&path, kept).unwrap();
+    }
+
+    // The machine configuration: the update and storage checks name it; the binary's
+    // `af self install` waits for it.
+    let config = home.join(".config/af/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "[storage]\nmax_bytes = [\n").unwrap();
+    let document = doctor();
+    for id in ["update", "storage", "binary"] {
+        let row = check(&document, id);
+        assert_eq!(row["fix"], serde_json::Value::Null, "{id}: {document}");
+        let hint = row["hint"].as_str().unwrap();
+        assert!(
+            hint.contains(&format!("{} line 2 by hand (", canonical(&config))),
+            "{hint}"
+        );
+    }
+    assert!(
+        check(&document, "storage")["hint"]
+            .as_str()
+            .unwrap()
+            .ends_with("then recheck: af doctor"),
+        "{document}"
+    );
+    for args in [
+        &["config", "show", "--origin"][..],
+        &["self", "install", "0.1.0"],
+    ] {
+        let said = run(args);
+        assert!(said.contains(&canonical(&config)), "af {args:?}: {said}");
+    }
+    run_fixes(&machine, &document, &repo, &bin, &envs, &[config.clone()]);
+    std::fs::remove_file(&config).unwrap();
+
+    // The Provider registry: the providers check names it; the project's `af provider detect
+    // --apply`, which the reviewer's missing Provider would offer, waits for it.
+    std::fs::write(&registry, "version = 1\n[[providers]\n").unwrap();
+    let document = doctor();
+    let providers = check(&document, "providers");
+    assert_eq!(providers["fix"], serde_json::Value::Null, "{document}");
+    assert!(
+        providers["hint"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("correct {} line 2 by hand (", registry.display())),
+        "{document}"
+    );
+    let project = check(&document, "project");
+    assert_eq!(project["fix"], serde_json::Value::Null, "{document}");
+    assert!(
+        project["hint"]
+            .as_str()
+            .unwrap()
+            .contains("which stops this fix; then run: af provider detect --apply"),
+        "{document}"
+    );
+    let said = run(&["provider", "detect", "--apply"]);
+    assert!(said.contains(&registry_env), "{said}");
+    run_fixes(&machine, &document, &repo, &bin, &envs, &[registry.clone()]);
+
+    // `af doctor --help`, the command's contract, states the rule.
+    let help = crate::common::af()
+        .args(["doctor", "--help"])
+        .output()
+        .unwrap();
+    let flat = out(&help).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("A fix is offered only when running it can clear the check"),
+        "{flat}"
+    );
+
+    // With the registry gone the same project check offers the command again: it can clear it.
+    std::fs::remove_file(&registry).unwrap();
+    let document = doctor();
+    assert_eq!(
+        check(&document, "project")["fix"],
+        "af provider detect --apply",
+        "{document}"
+    );
+    run_fixes(&machine, &document, &repo, &bin, &envs, &[]);
 }
 
 /// `path` as git names its top level: canonical, without a trailing `/`.

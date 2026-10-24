@@ -14,8 +14,11 @@
   continuation (`af task run NEW --from TASK --round N`) hands its implementer that verdict, not
   the verdict of another round that reviewed the same Snapshot.
 - `af task report --pr-body` refuses a lines added block that `scripts/pr-lines.py` printed
-  incomplete, without its end marker after the begin marker or its `**Lines added: …**` title,
-  with exit 1 and a message naming what is missing.
+  and `scripts/check-pr-report.py` would refuse, with exit 1 and a message naming what is
+  missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the
+  header `| Directory | Added | Share |`, its separator and at least one directory row, each
+  directory once, or `**Lines added: none**` alone, then the end marker; `af task report --help`
+  and `docs/tasks.md` say the same.
 - `af help start` binds its review command to the Providers registered on this machine, as
   `af onboard` binds them, and prints `PROVIDER` with the reason when none is registered; the
   README shows the placeholder form and says that `af onboard` prints the exact command.
@@ -41,10 +44,28 @@
   neither printed nor read), each check with `fix` and `hint`, and the text prints a `hint:` line
   under the fix. The shell check names the shell `$SHELL` names (`af self setup-shell --shell zsh
   --write`), or `--shell SHELL` with the choices in its hint; the project check's fix is `af
-  onboard --repo PATH`, its hint says it is a token-free preview; the PATH fix is the `export` or
-  `fish_add_path` line, its hint where it belongs. A problem no single command fixes (no known
-  package manager, Spotlight indexing, an unreadable lock) has a null `fix` and a hint that says
-  what to do ([ADR-0204](docs/adr/0204-make-the-first-run-say-what-to-do-next.md), amended).
+  onboard --repo PATH`, its hint says it is a token-free preview; the PATH fix is the line for
+  the shell `$SHELL` names, its hint where it belongs. A problem no single command fixes (no
+  known package manager, Spotlight indexing, an unreadable lock) has a null `fix` and a hint that
+  says what to do ([ADR-0204](docs/adr/0204-make-the-first-run-say-what-to-do-next.md), amended).
+- `af doctor`'s PATH fix runs in the user's own shell and keeps the directory literal: `export
+  PATH='DIR':"$PATH"` for bash, zsh and sh (a `'` written `'\''`), `fish_add_path 'DIR'` for
+  fish, `set paths = ['DIR' $@paths]` for elvish and `$env:PATH = 'DIR' +
+  [IO.Path]::PathSeparator + $env:PATH` for pwsh, each in that shell's single quotes, so a `$`,
+  `"`, backquote or `$(…)` in the directory is never expanded when the line is pasted. Another
+  shell, or a directory with a `:` or a control character, gets a null `fix` and a hint naming
+  the directory. `af self setup-shell --write` writes completions and man pages and leaves PATH
+  alone, so it is never the PATH fix.
+- `af doctor` offers a fix only when running it can clear the check, never when the error the
+  check reported would stop it. A `.af/` that does not validate (`af onboard` would stop on it),
+  a machine `config.toml` that does not load (`af config show`, `af self` and `af storage` would
+  stop on it) and an unreadable Provider registry have a null `fix` and a hint naming the file,
+  the parse error's line and `af doctor` (with `--repo PATH` for the project) to check again;
+  another check's fix that would run one of those commands moves into its hint, after the file
+  to correct first. A `.af/` that does not validate is shown by its error's first line.
+- Binding a continuation's source checks the referenced output's artifact, not only its port: the
+  `af/SourceTree@1` the port names must hold the Snapshot the port names, and the bound one, or
+  the binding is refused with `af/error@1` and nothing is recorded.
 - The pseudo-terminal test helpers pass the test process's `TMPDIR` (and, for `af provider
   detect`'s, the fixture's home and XDG directories) to the child they start after clearing its
   environment, so the tests pass in a sandbox whose `TMPDIR` is private.

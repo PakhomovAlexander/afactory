@@ -446,7 +446,11 @@ source <(af completions bash)"
 what is missing, each with the one command that fixes it.\n\n\
 Checks, each `ok`, `warn` or `fail`. A problem's `fix:` is the one command that fixes it, as a \
 shell runs it, and its `hint:` says what the command cannot: a placeholder's choices (SHELL, DIR), \
-a step to take first. A problem no one command fixes has only a hint.\n\n\
+a step to take first. A fix is offered only when running it can clear the check: a problem no one \
+command fixes, or whose command a file that does not load would stop (an `.af/` file, the machine \
+config.toml, the Provider registry), has only a hint, naming the file and the parse error's line. \
+The PATH fix is the line for the shell $SHELL names, the directory quoted so nothing in it is \
+expanded.\n\n\
   binary     the running af, its version, install receipt and how it was verified, the default link\n\
   path       the default link's directory on PATH, and whether `af` on PATH is that link\n\
   shell      completions and man pages for $SHELL\n\
@@ -2279,8 +2283,10 @@ block, between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->`, that the c
 scripts/pr-lines.py prints when it has one (counted from --base REF, origin/main by default); \
 without a template, the two blocks under their headings. scripts/check-pr-report.py accepts it. \
 When the checkout has scripts/pr-lines.py and it cannot print its block, nothing is printed and \
-the command exits 1; so does a block it printed incomplete (no end marker after the begin \
-marker, or no `**Lines added: …**` title first inside), naming what is missing.\n\nNever: dispatches a \
+the command exits 1; so does a block scripts/check-pr-report.py would refuse, naming what is \
+missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the \
+header `| Directory | Added | Share |`, its separator and at least one directory row, each \
+directory once, or `**Lines added: none**` alone, then the end marker.\n\nNever: dispatches a \
 Worker, contacts a Provider, writes the Store or changes a Task. Providers appear only as kind \
 and model; no Provider label, path, credential, prompt or Worker output is printed.",
         after_long_help = "Examples:\n  af task report pagination-cli   # needs: Task pagination-cli\n  \

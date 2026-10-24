@@ -874,9 +874,11 @@ an unknown figure is absent there.
 checkout's `scripts/pr-lines.py` prints between `<!-- af-pr-lines:v1 -->` and
 `<!-- /af-pr-lines -->` when the checkout has the script, counted from `--base REF` (origin/main
 by default). A checkout without the script keeps the template's block as it is; one whose script
-cannot print its block gets no body, and the command exits 1 naming `--base REF`; a block it
-prints incomplete (no end marker after the begin marker, or no `**Lines added: …**` title first
-inside) gets no body either, and the exit 1 names what is missing.
+cannot print its block gets no body, and the command exits 1 naming `--base REF`; a block
+`scripts/check-pr-report.py` would refuse gets no body either, and the exit 1 names what is
+missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the
+header `| Directory | Added | Share |`, its separator and at least one directory row, each
+directory once, or `**Lines added: none**` alone, then the end marker.
 `scripts/check-pr-report.py --body` accepts it as it is.
 
 ## Troubleshooting
