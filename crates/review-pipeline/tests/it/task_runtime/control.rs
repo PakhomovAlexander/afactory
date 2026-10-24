@@ -232,7 +232,7 @@ fn unix_ms() -> u64 {
 }
 
 /// The cadence ADR-0128 measured these cases under: a 15 s lease renewed with 10 s left, a 4 s
-/// reserve and a 1 s tick. Production renews a 60 s lease on the same rule (ADR-0203).
+/// reserve and a 1 s tick. Production renews a 60 s lease on the same rule (ADR-0209).
 fn adr_0128(cancellation: &AtomicBool) -> review_pipeline::task::lease::HeartbeatControl<'_> {
     let timing = review_pipeline::task::lease::LeaseTiming::for_lease(15_000);
     assert_eq!(timing.renew_below_ms(), 10_000);
@@ -602,7 +602,7 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
     assert_eq!(execution.budget.begun_attempts(), 1);
     assert_eq!(execution.budget.committed_tokens(), 7);
     assert!(!execution.outputs.contains_key("root.nodes.write"));
-    // Its host cancelled it: abandoned, with the spend it reported (ADR-0203).
+    // Its host cancelled it: abandoned, with the spend it reported (ADR-0209).
     let row = &execution.attempt_accounting()[0];
     assert!(matches!(
         row.result,
@@ -614,7 +614,7 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
     );
 }
 
-/// Item 1 of ADR-0203: the heartbeat renews on its own thread, by its own clock, however long
+/// Item 1 of ADR-0209: the heartbeat renews on its own thread, by its own clock, however long
 /// the work blocks. Here the work blocks the main loop and every Store write, holding the shared
 /// connection for three lease lengths; the lease is renewed throughout and nothing is cancelled.
 #[test]
@@ -656,7 +656,7 @@ fn a_writer_keeps_its_lease_while_its_work_blocks_for_three_lease_lengths() {
     assert!(!writer_lost.load(Ordering::Acquire));
 }
 
-/// Item 1 of ADR-0203: a writer whose renewal cannot complete stops its Worker at once, before
+/// Item 1 of ADR-0209: a writer whose renewal cannot complete stops its Worker at once, before
 /// one lease length has passed since its lease was last renewed, says it lost its writer, and
 /// settles nothing: the successor settles the Attempt as abandoned by a lost writer, with the
 /// lost writer's last record and its lease's expiry.

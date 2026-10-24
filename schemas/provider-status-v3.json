@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:provider-status:3",
   "title": "Provider status@3",
-  "$comment": "The machine-readable result of `af provider status`: what the machine-local registry declares and what one bounded authentication check per context concluded. Registration, authentication, usability and usage are four independent axes. `usability` is never `usable`: status does not dispatch, so only the charged `af provider doctor` can prove end-to-end usability, and this document may claim at most `usable_or_untested`. Usage is probed only when `--usage` is passed, and an `unavailable` usage probe never changes `auth`. `installation_failed` means the Provider's official CLI cannot start — it is missing, not executable, or exits non-zero on its own version check — so nothing about the login could be learned. `incompatible` means the CLI starts but its help page does not declare every option af's invocation passes, so af will not dispatch to it whatever its login is (ADR-0146): authentication success never implies invocation compatibility. The CLI's own error line, detected version, suggested fix and the missing options are reported only on stderr and in the human table. Deliberately absent, in every state: account email, organization or account identity, plan-holder identity, credentials, OAuth URLs or authorization codes, and Provider-authored text of any kind — quota windows carry only the numbers af derived, never the Provider's own labels, and `registry.warning` is af-authored. Version 3 adds `found_unregistered`, the auth directories a names-only scan found that no row lists (the line `found but not registered: … → af provider detect` of the table), with `next_action` `af provider detect` whenever it is not empty, and per quota window `reset_reported`, false when the Provider does not report when the window resets (`resets_at_unix` is then null); version 2 is neither printed nor read.",
+  "$comment": "The machine-readable result of `af provider status`: what the machine-local registry declares and what one bounded authentication check per context concluded. Registration, authentication, usability and usage are four independent axes. `usability` is never `usable`: status does not dispatch, so only the charged `af provider doctor` can prove end-to-end usability, and this document may claim at most `usable_or_untested`. Usage is probed only when `--usage` is passed, and an `unavailable` usage probe never changes `auth`. `installation_failed` means the Provider's official CLI cannot start — it is missing, not executable, or exits non-zero on its own version check — so nothing about the login could be learned. `incompatible` means the CLI starts but its help page does not declare every option af's invocation passes, so af will not dispatch to it whatever its login is (ADR-0146): authentication success never implies invocation compatibility. The CLI's own error line, detected version, suggested fix and the missing options are reported only on stderr and in the human table. Deliberately absent, in every state: account email, organization or account identity, plan-holder identity, credentials, OAuth URLs or authorization codes, and Provider-authored text of any kind — quota windows carry only the numbers af derived, never the Provider's own labels, and `registry.warning` is af-authored. Disabled Providers are not probed: disabled_until is an absolute Unix timestamp including nanoseconds, auth is not_probed, usability is unusable and enable_command names the immediate recovery action. Version 3 also adds `found_unregistered`, the auth directories a names-only scan found that no row lists (the line `found but not registered: … → af provider detect` of the table), with `next_action` `af provider detect` whenever it is not empty, and per quota window `reset_reported`, false when the Provider does not report when the window resets (`resets_at_unix` is then null); version 2 is neither printed nor read.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -67,13 +67,14 @@
           "auth",
           "credential",
           "usability",
-          "usage"
+          "usage",
+          "disabled_until",
+          "enable_command"
         ],
         "properties": {
           "id": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 64
+            "minLength": 1
           },
           "kind": {
             "enum": [
@@ -223,6 +224,40 @@
                 }
               }
             ]
+          },
+          "disabled_until": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "unix_seconds",
+                  "nanoseconds"
+                ],
+                "properties": {
+                  "unix_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 18446744073709551615
+                  },
+                  "nanoseconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 999999999
+                  }
+                }
+              }
+            ]
+          },
+          "enable_command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^af provider enable [A-Za-z0-9][A-Za-z0-9_-]*$"
           }
         },
         "allOf": [
@@ -279,6 +314,48 @@
                       ]
                     }
                   }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "disabled_until": {
+                  "type": "object"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "auth": {
+                  "const": "not_probed"
+                },
+                "usability": {
+                  "const": "unusable"
+                },
+                "credential": {
+                  "const": "none"
+                },
+                "enable_command": {
+                  "type": "string"
+                },
+                "usage": {
+                  "properties": {
+                    "state": {
+                      "const": "not_applicable"
+                    },
+                    "windows": {
+                      "maxItems": 0
+                    }
+                  }
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "enable_command": {
+                  "type": "null"
                 }
               }
             }

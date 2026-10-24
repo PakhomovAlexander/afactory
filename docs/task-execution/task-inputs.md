@@ -53,7 +53,7 @@ A report Task reading an experiment binds all three kinds of port:
 Any root input the selected Pipeline declares is bindable, except `requirements`, `base`,
 `continuation` and `findings`, which are refused by name; a continuation fills `findings` from
 the continued Task's review round (`"continue"` or `af task run NEW --from TASK`,
-[ADR-0206](../adr/0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
+[ADR-0212](../adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
 At resolution the selected Pipeline is the one the
 Task file names in `pipeline`; when it names none, every captured Pipeline accepting the Task's
 kind is consulted and must declare the port alike, or the refusal asks for the Pipeline to be
@@ -137,7 +137,7 @@ Only an admitted source reaches the branch below, which depends on one property 
   names the referenced Task, result, port and artifact under `bound_from`, and deliberately
   carries no `source_revision`. The named output must hold the bound Snapshot itself, or the
   binding is refused; a continuation of an earlier review round names the `af/TaskOutput@1`
-  record that published that round's candidate in place of the result (ADR-0206). A new `af/SourceTree@1` envelope is published for the re-rooted
+  record that published that round's candidate in place of the result (ADR-0212). A new `af/SourceTree@1` envelope is published for the re-rooted
   Snapshot, and the resolved port carries that new artifact ID with the re-rooted Snapshot ID.
 - **Already re-rooted** — a parentless Snapshot with a generation-2 origin, referenced again — is
   carried verbatim; nothing is re-rooted twice, and delivery refuses as for the first re-rooting.

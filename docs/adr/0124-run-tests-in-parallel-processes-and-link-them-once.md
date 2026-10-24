@@ -4,7 +4,7 @@
 [ADR-0107](0107-share-release-validation-and-overlap-builds.md): the clause that kept Cargo's
 sequential test runner as the gate and nextest as an opt-in experiment, and the four-thread
 bound it fixed for every machine. Superseded in part by
-[ADR-0199](0199-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md):
+[ADR-0205](0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md):
 a test that fails in the parallel run and passes alone is reported flaky and does not fail the
 gate.
 

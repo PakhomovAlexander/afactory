@@ -26,7 +26,7 @@ if mode == 'warm':
     if not os.path.exists(built):
         open(built, 'wb').write(b'x' * 4096)
 if mode == 'cargo':
-    # ADR-0201 through the real measure operator, every repetition and A -> B -> A. Sources
+    # ADR-0207 through the real measure operator, every repetition and A -> B -> A. Sources
     # are stamped by content: each source group (a Cargo package directory, or the root) carries
     # one stamp, none in the future, and a group whose content the key did not build last is
     # stamped after every product. Only the binary below proves which Snapshot was built.

@@ -1,7 +1,7 @@
 - The gate reruns the tests that failed in its parallel run once each, alone, before it fails: a
   test that passes alone is printed `flaky:` and no longer fails the step; one that fails twice
   does, as before. More than 25 failed tests, or 15 minutes of reruns, fail with the whole list
-  ([ADR-0199](docs/adr/0199-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)).
+  ([ADR-0205](docs/adr/0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)).
   `make test-repeat` (`scripts/nextest-gate.py --repeat N`) runs a selection N times in a row to
   prove a flake fixed.
 - Every Task check records `af/TaskCheckReport@1` beside its receipt: the host's 1-minute load

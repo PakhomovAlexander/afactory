@@ -602,7 +602,7 @@ fn status_answer(email: &str, method: &str) -> String {
     )
 }
 
-/// ADR-0202, issue #289: an identity probe that times out proves nothing, so the recheck sends it
+/// ADR-0208, issue #289: an identity probe that times out proves nothing, so the recheck sends it
 /// again, three probes in all within the Attempt's wall, and then fails as the environment's
 /// failure — never as an account change.
 #[test]
@@ -703,7 +703,7 @@ fn another_account_still_fails_the_recheck_as_an_account_change() {
     );
 }
 
-/// ADR-0202, the auto-update rule: a CLI that updated itself — a new version, the same account,
+/// ADR-0208, the auto-update rule: a CLI that updated itself — a new version, the same account,
 /// its method spelled `oauth` where the capture spelled `claude.ai` — passes the recheck. The
 /// update is one Provider event, and the capture follows the new version, so it is recorded once.
 #[test]

@@ -2,7 +2,7 @@
   included), `af task start --execute` and `af task explain` exit 5 for it, while `af task show`,
   `list`, `report`, `status` and `findings` exit 0 once they read the Store (`af help exit-codes`),
   and its one `next:` line is `af task run ID --retry-gate` only when the kernel would run that
-  gate again on the same candidate; otherwise it is `af task show ID --checks` (ADR-0199).
+  gate again on the same candidate; otherwise it is `af task show ID --checks` (ADR-0205).
   `af task show ID --json` carries the gate's check reports (`gate.check_reports`, each check node's latest `af/TaskCheckReport@1`) and its retries
   (`gate.retries`, every `TaskGateRetried@1`) in `af/task-inspection@13`; `af task report` counts
   each `af task run ID --retry-gate` as a run of the Task and an `af task refresh` as none. The

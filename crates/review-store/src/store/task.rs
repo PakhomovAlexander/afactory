@@ -80,7 +80,7 @@ pub fn now() -> Result<u64, StoreError> {
 /// Task file's `inputs` table produced (ADR-0117), and the `af/ProjectBriefCapture@1` and
 /// `af/ProjectBriefReceipt@1` records of its Project Briefs (ADR-0160), and a continuation's
 /// `af/TaskReviewFindings@1`, the `af/TaskReadFirst@1` record and a declared `af/TaskBase@1`
-/// (ADR-0206). Nothing else is
+/// (ADR-0212). Nothing else is
 /// preserved, so a revision whose adapter recorded some other observation keeps byte for byte
 /// the list it had.
 ///
@@ -103,7 +103,7 @@ pub fn revision_provenance_inputs(cas: &Cas, revision: &TaskRevisionV1) -> Vec<S
                 TASK_INPUT_BINDINGS_V1,
                 review_core::task::project_brief::PROJECT_BRIEF_CAPTURE_V1,
                 review_core::task::project_brief::PROJECT_BRIEF_RECEIPT_V1,
-                // A continuation's findings and a Task's read-first record (ADR-0206).
+                // A continuation's findings and a Task's read-first record (ADR-0212).
                 review_core::task::findings::TASK_REVIEW_FINDINGS_V1,
                 review_core::task::findings::TASK_READ_FIRST_V1,
                 review_core::task::findings::TASK_BASE_V1,
@@ -419,7 +419,7 @@ pub struct TaskProjection {
     lease_until: u64,
     last_time: u64,
     /// The last time the writer before the current lease recorded anything, when a lost writer
-    /// was last seen alive, and the expiry of its lease (ADR-0203).
+    /// was last seen alive, and the expiry of its lease (ADR-0209).
     previous_writer: (u64, u64),
     resume_phase: Option<TaskPhaseV1>,
     recording_recovery: Option<recording::RecordingRecovery>,
@@ -455,7 +455,7 @@ pub struct TaskProjection {
     clock_started_unix_ms: Option<u64>,
     /// What started Attempts did about their Provider without failing, in log order: retry
     /// waits, re-asks, identity re-probes and refreshes, alternate admission probes
-    /// (`TaskProviderEvent@1`, ADR-0202).
+    /// (`TaskProviderEvent@1`, ADR-0208).
     pub provider_events: Vec<task::provider_event::TaskProviderEventV1>,
 }
 
@@ -1036,7 +1036,7 @@ impl TaskProjection {
         Ok(())
     }
 
-    /// Apply what a started Attempt did about its Provider (`TaskProviderEvent@1`, ADR-0202):
+    /// Apply what a started Attempt did about its Provider (`TaskProviderEvent@1`, ADR-0208):
     /// the next event of the log, by the current lease, at a time not before the last recorded,
     /// for an Attempt of that node that has started and not settled. It changes no charge,
     /// reservation, deadline or result.
@@ -2100,7 +2100,7 @@ impl EventStore {
     }
 
     /// Record what the started Attempt `attempt_id` of `node` did about its Provider
-    /// (`TaskProviderEvent@1`, ADR-0202): its own event of the Task's log, by `lease`, stamped at
+    /// (`TaskProviderEvent@1`, ADR-0208): its own event of the Task's log, by `lease`, stamped at
     /// the lease's time. It grants nothing; it is refused for an Attempt that has not started, has
     /// settled or belongs to another node, and on a finished Task.
     pub fn record_task_provider_event(

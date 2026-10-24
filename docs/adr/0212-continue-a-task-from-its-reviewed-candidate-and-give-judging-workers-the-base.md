@@ -1,4 +1,4 @@
-# ADR-0206: Continue a Task from its reviewed candidate, and give judging Workers the base
+# ADR-0212: Continue a Task from its reviewed candidate, and give judging Workers the base
 
 **Status:** accepted (2026-10-23). Extends
 [ADR-0117](0117-bind-task-inputs-to-recorded-task-outputs.md) (a continuation binds its source as

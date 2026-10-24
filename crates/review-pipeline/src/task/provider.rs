@@ -138,7 +138,7 @@ impl ProviderTaskDomain<'_> {
         );
         // The classifier refused the probe itself: that says nothing about the account, so the
         // alternate wording is sent once in the same Attempt, its usage added to the first's
-        // (ADR-0202). A second refusal fails the admission with both refusals named.
+        // (ADR-0208). A second refusal fails the admission with both refusals named.
         if returned.native_failure == Some(NativeFailureKind::ModelRefused)
             && returned.usage_observation.is_none()
             && let Some(remaining) = timeout

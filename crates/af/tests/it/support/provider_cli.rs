@@ -144,7 +144,7 @@ pub fn with_probe(script: &str) -> String {
             format!("'{}'", probe.trim_end_matches('\n'))
         }
     };
-    // The alternate probe af sends once after a refused one (ADR-0202), by its own word.
+    // The alternate probe af sends once after a refused one (ADR-0208), by its own word.
     script
         .replace(
             "ALTERNATE_PROBE",

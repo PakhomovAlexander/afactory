@@ -84,6 +84,8 @@ fn environment(home: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
         ("XDG_STATE_HOME", home.join("state").into_os_string()),
         ("XDG_DATA_HOME", home.join("data").into_os_string()),
         ("XDG_CACHE_HOME", home.join("cache").into_os_string()),
+        // Cleared-environment PTY children still need the runner's writable scratch root.
+        ("TMPDIR", std::env::temp_dir().into_os_string()),
         ("AF_SELF_OFFLINE", "1".into()),
         ("NO_COLOR", "1".into()),
         ("TERM", "xterm-256color".into()),
@@ -429,7 +431,7 @@ impl Browser {
 }
 
 /// A machine that has registered a Provider, as every case here but the first run expects, so
-/// the browser opens on the settings (ADR-0204). The Provider is a `codex` context whose CLI is a
+/// the browser opens on the settings (ADR-0210). The Provider is a `codex` context whose CLI is a
 /// fake that is not logged in, first on the returned `PATH`, so discovery is quick and the same
 /// on every machine. A test that wrote its own registry keeps it.
 fn registered_machine(home: &Path) -> String {
@@ -555,7 +557,8 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
         "  v tasks/",
     ];
     // Each pane fills its folder when its own discovery answers, after the settings appear; a
-    // loaded host shows the settings first. Wait for the whole screen the test reads.
+    // loaded host shows the settings first. PTY reads can also end midway through a frame:
+    // wait for the whole screen the test reads, statusbar included.
     let ready = |screen: &Screen| {
         let bar = bar_rows(screen);
         screen.text().contains("SETTINGS  project: hub")
@@ -583,7 +586,7 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
 }
 
 /// A first run: with no Provider registered the browser opens on the Providers pane, whose
-/// first row says how to register one (ADR-0204).
+/// first row says how to register one (ADR-0210).
 #[test]
 fn bare_af_with_no_provider_registered_opens_on_the_providers_pane() {
     let (_temp, root) = temp_root();

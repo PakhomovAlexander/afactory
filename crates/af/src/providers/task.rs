@@ -256,7 +256,7 @@ impl TaskProviderIdentity {
     /// The executable is the one this identity names: every invocation runs that absolute path,
     /// so it must still be there. What `PATH` resolves to now is not compared. A native client
     /// that updates itself repoints its launcher at a new version file (ADR-0126): the version it
-    /// reports then is read again, and an update alone is recorded, never refused (ADR-0202).
+    /// reports then is read again, and an update alone is recorded, never refused (ADR-0208).
     /// What the recheck did about the Provider without refusing is returned as Task events, with
     /// the executable and CLI version the capture follows from then on.
     fn check_current(
@@ -265,6 +265,7 @@ impl TaskProviderIdentity {
         cancelled: &AtomicBool,
     ) -> Result<Rechecked, Recheck> {
         check_task_probe_control(Some(deadline), cancelled).map_err(|_| Recheck::NotCurrent)?;
+        availability::check(&self.spec).map_err(Recheck::Unavailable)?;
         let current = configured_spec(&self.spec.id).map_err(|_| Recheck::NotCurrent)?;
         if current.kind != self.spec.kind
             || current.auth_dir != self.spec.auth_dir
@@ -288,7 +289,7 @@ impl TaskProviderIdentity {
     ) -> Result<Rechecked, Recheck> {
         let mut rechecked = Rechecked::default();
         // A probe that proves nothing either way is sent again within the Attempt's wall:
-        // silence on a busy host is never an account change (ADR-0202).
+        // silence on a busy host is never an account change (ADR-0208).
         let mut silences = Vec::new();
         loop {
             let probe_deadline = self
@@ -390,6 +391,8 @@ struct Rechecked {
 
 /// Why the recheck before a private send refused it.
 enum Recheck {
+    /// The Provider is disabled on this machine (ADR-0199); nothing was sent.
+    Unavailable(String),
     /// The local authority the identity was captured under changed: the registry entry, the
     /// executable, `PATH`, `HOME` or `USER`.
     NotCurrent,
@@ -427,6 +430,7 @@ impl Recheck {
             ProviderKind::Codex => "Codex",
         };
         match self {
+            Recheck::Unavailable(reason) => reason.clone(),
             Recheck::NotCurrent => concat!(
                 "Captured Task Provider identity is no longer current: its registry entry, ",
                 "executable, PATH, HOME or USER changed since the plan; run `af task plan` again"
@@ -678,8 +682,9 @@ impl CurrentTaskProviderAdapter {
     /// refusal to report.
     fn current_or_installed(
         &self,
-    ) -> Result<(TaskProviderIdentity, Arc<dyn WorkerModelAdapter>), &'static str> {
+    ) -> Result<(TaskProviderIdentity, Arc<dyn WorkerModelAdapter>), String> {
         let mut current = self.current.lock().expect("Task Provider adapter");
+        availability::check(&current.0.spec)?;
         if !is_executable(&current.0.program) {
             let mut identity = current.0.clone();
             identity.program = (self.resolve)(identity.spec.kind.command()).ok_or(concat!(
@@ -771,7 +776,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             // Named apart from an identity change: the Provider's client cannot be run at all.
             let (identity, native) = match self.current_or_installed() {
                 Ok(current) => current,
-                Err(reason) => return refuse(reason),
+                Err(reason) => return refuse(&reason),
             };
             // Raw status/account output and filesystem diagnostics remain local, never Worker
             // evidence. A CLI that cannot start is named as the environment failure it is, so
@@ -779,12 +784,13 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             // retry feedback.
             let rechecked = match identity.check_current(deadline, cancelled) {
                 Ok(rechecked) => rechecked,
+                Err(Recheck::Unavailable(reason)) => return refuse(&reason),
                 Err(_) if !is_executable(&identity.program) => continue,
                 Err(recheck) => {
                     let mut returned =
                         refuse(&recheck.diagnostic(identity.spec.kind, identity.probe_wall));
                     // A CLI that cannot serve and a probe that proved nothing are the host's
-                    // failure, never an account change (ADR-0202).
+                    // failure, never an account change (ADR-0208).
                     if matches!(
                         recheck,
                         Recheck::CliCannotServe(_) | Recheck::Unverified { .. }
@@ -801,6 +807,9 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return refused();
             };
+            if let Err(reason) = availability::check(&identity.spec) {
+                return refuse(&reason);
+            }
             let mut returned = match native.invoke_started(
                 cas,
                 workdir,

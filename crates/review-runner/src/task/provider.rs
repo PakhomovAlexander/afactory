@@ -12,7 +12,7 @@ it only verifies that this account can run the bound model. No file needs to be 
 tool needs to be used. Reply with exactly: OK\n";
 
 /// The admission probe sent once more, in other words, when the bound model's safety
-/// classifier refused [`PROBE_INPUT`] itself (ADR-0202): a refusal of a 196-byte probe says
+/// classifier refused [`PROBE_INPUT`] itself (ADR-0208): a refusal of a 196-byte probe says
 /// nothing about the account, so the Task is not lost to it. Its expected reply is `OK` too.
 pub const PROBE_INPUT_ALTERNATE: &[u8] = b"Automated readiness check from af, a developer \
 tool, before a coding task starts: confirm this session can answer. Nothing needs to be read, \

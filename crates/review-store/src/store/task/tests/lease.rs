@@ -720,7 +720,7 @@ fn a_gate_cleanup_is_recorded_for_a_task_that_stopped_before_it_finished() {
     assert_eq!(state.phase, phase);
 }
 
-/// ADR-0202: a Provider event is its own event of the Task log, and only for an Attempt that has
+/// ADR-0208: a Provider event is its own event of the Task log, and only for an Attempt that has
 /// started and not settled, on the node it names: an event for a reserved but unstarted Attempt,
 /// for another node or for no Attempt at all is refused, and nothing is appended.
 #[test]

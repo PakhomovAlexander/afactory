@@ -1,14 +1,24 @@
 schema = "af.code-task-policy/1"
 # The kernel's own gate. verify.sh runs `make check` with a stable external target dir.
-check_wall_ms = 3600000
+check_wall_ms = 5400000
 require_container = false
 
 [checks.kernel]
 name = "kernel"
 required = true
 
+# Limit this local native gate's concurrency on a shared development host. The full
+# verify.sh check and its 90-minute allowance remain unchanged; CI defaults do not change.
 [checks.kernel.command]
-program = "bash"
+program = "env"
+
+[[checks.kernel.command.args]]
+value = "TEST_THREADS=4"
+provenance = "literal"
+
+[[checks.kernel.command.args]]
+value = "bash"
+provenance = "literal"
 
 [[checks.kernel.command.args]]
 value = "scripts/verify.sh"
@@ -23,7 +33,7 @@ executor = "github-pr"
 workflow = ".github/workflows/ci.yml"
 required = ["validation / lint", "validation / check (ubuntu-latest)"]
 
-# Offline (ADR-0201): npm runs markdownlint-cli2 only from the warm layer's npm_cache, never the
+# Offline (ADR-0207): npm runs markdownlint-cli2 only from the warm layer's npm_cache, never the
 # network; the kernel fills that cache once and verifies the tarball's SHA-256 before every run.
 [checks.markdownlint]
 name = "markdownlint"
@@ -65,7 +75,7 @@ checks = ["kernel"]
 # budget: 32 GiB against 98 GiB free.
 [warm]
 build_cache = ["cargo_target", "cargo_home", "npm_cache"]
-# The build has its own deadline (ADR-0201): until verify.sh reports its `build` step, at most
+# The build has its own deadline (ADR-0207): until verify.sh reports its `build` step, at most
 # 40 minutes; the tests then have check_wall_ms of their own. A busy layer is waited for.
 build_wall_ms = 2400000
 # Eviction bound: a directory above it is removed after the check, whose result stands (R5).

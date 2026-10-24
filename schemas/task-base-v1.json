@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-base:1",
   "title": "TaskBase af/TaskBase@1",
-  "$comment": "The tree before the change a Task's judging Workers read read-only at ../base, when its Task file names it with `\"base\": {\"commit\": \"<sha>\"}` (ADR-0206). The commit as Git resolved it and the Snapshot captured from it at plan time. Referenced from TaskRevisionV1.provenance.input_artifact_ids; absent, the source Snapshot's recorded base is used.",
+  "$comment": "The tree before the change a Task's judging Workers read read-only at ../base, when its Task file names it with `\"base\": {\"commit\": \"<sha>\"}` (ADR-0212). The commit as Git resolved it and the Snapshot captured from it at plan time. Referenced from TaskRevisionV1.provenance.input_artifact_ids; absent, the source Snapshot's recorded base is used.",
   "type": "object",
   "additionalProperties": false,
   "required": [

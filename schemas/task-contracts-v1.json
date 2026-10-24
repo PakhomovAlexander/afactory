@@ -1073,7 +1073,7 @@
           "maximum": 8
         }
       },
-      "description": "An af.pipeline/3 Worker slot: an af.pipeline/1 slot that may declare recovery_attempts, how many of its nodes' Attempts may be abandoned (their writer lost, or their host cancelled them) and dispatched again (ADR-0203); absent means one."
+      "description": "An af.pipeline/3 Worker slot: an af.pipeline/1 slot that may declare recovery_attempts, how many of its nodes' Attempts may be abandoned (their writer lost, or their host cancelled them) and dispatched again (ADR-0209); absent means one."
     },
     "operator": {
       "oneOf": [
@@ -1725,7 +1725,7 @@
       }
     },
     "pipelineV3": {
-      "description": "af.pipeline/3: a pipeline with a slot that declares recovery_attempts (ADR-0203), whether or not its contract declares a Project Brief port; a pipeline with no slot recovery allowance is af.pipeline/2 when it declares a Brief port and af.pipeline/1 otherwise.",
+      "description": "af.pipeline/3: a pipeline with a slot that declares recovery_attempts (ADR-0209), whether or not its contract declares a Project Brief port; a pipeline with no slot recovery allowance is af.pipeline/2 when it declares a Brief port and af.pipeline/1 otherwise.",
       "type": "object",
       "additionalProperties": false,
       "required": [

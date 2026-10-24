@@ -40,7 +40,7 @@ pub const KEY_LOCK: &str = "warm.lock";
 /// below it, where every entry is the key's to count and remove.
 const SIZE_SUFFIX: &str = ".size";
 
-/// The suffix of a key's sources record, `<project>/<toolchain>.sources` (ADR-0201): what the
+/// The suffix of a key's sources record, `<project>/<toolchain>.sources` (ADR-0207): what the
 /// key last built, by source group. Beside the key for the same reason as the size record.
 const SOURCES_SUFFIX: &str = ".sources";
 
@@ -553,7 +553,7 @@ impl TaskBuildCacheKeyLock {
         Ok(())
     }
 
-    /// The bytes of the key's sources record (ADR-0201), when there is one this holder can read
+    /// The bytes of the key's sources record (ADR-0207), when there is one this holder can read
     /// in full: a missing, oversized or unreadable record is `None`, and the key's sources then
     /// count as unknown, which is always safe.
     pub fn read_sources(&self) -> Option<Vec<u8>> {
@@ -656,7 +656,7 @@ impl TaskBuildCacheKeyLock {
 
 /// Copy the `kind` directory of `<root>/<project>/<toolchain>` into `destination`, which must
 /// not exist yet, for a check that found the key busy and may build in a private copy
-/// (`[warm] clone_when_busy`, ADR-0201): each regular file is cloned (`clonefile` on APFS, a
+/// (`[warm] clone_when_busy`, ADR-0207): each regular file is cloned (`clonefile` on APFS, a
 /// reflink on btrfs and XFS) or else copied, with its modification time, and every directory
 /// is made private. Links and special files are left out; the key's own records never come
 /// along. Nothing below the key is written. The copy stops, and fails, when `keep_going`

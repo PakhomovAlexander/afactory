@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:compiled-task:2",
   "title": "CompiledTask@1 (af.compiled-task/2)",
-  "$comment": "Captured compiler output, not user-granted pipeline authority. Admission recompiles from exact captured artifacts and compares the complete graph. DAG/order, address and slot references, semantic contracts, scope membership and joint resource bounds require that compiler/budget validation. Optional default maps remain optional for frozen payloads. Compiled Worker slot references and independent_from edges are qualified addresses, unlike local Pipeline declarations; root-input output ports may be empty. Version 2 is the graph of a pipeline with a slot that declares recovery_attempts (af.pipeline/3, ADR-0203): its compiled slots may carry the allowance, and at least one does; a graph without one is af.compiled-task/1.",
+  "$comment": "Captured compiler output, not user-granted pipeline authority. Admission recompiles from exact captured artifacts and compares the complete graph. DAG/order, address and slot references, semantic contracts, scope membership and joint resource bounds require that compiler/budget validation. Optional default maps remain optional for frozen payloads. Compiled Worker slot references and independent_from edges are qualified addresses, unlike local Pipeline declarations; root-input output ports may be empty. Version 2 is the graph of a pipeline with a slot that declares recovery_attempts (af.pipeline/3, ADR-0209): its compiled slots may carry the allowance, and at least one does; a graph without one is af.compiled-task/1.",
   "type": "object",
   "additionalProperties": false,
   "required": [

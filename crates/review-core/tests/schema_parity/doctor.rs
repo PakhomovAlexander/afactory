@@ -1,4 +1,4 @@
-//! `af doctor --json` (`af/doctor@2`, ADR-0204).
+//! `af doctor --json` (`af/doctor@2`, ADR-0210).
 //!
 //! It carries no Rust type: the binary builds it from what it reads of the machine. The schema is
 //! the contract, and these cases pin both halves of it: the checks an agent may branch on, and

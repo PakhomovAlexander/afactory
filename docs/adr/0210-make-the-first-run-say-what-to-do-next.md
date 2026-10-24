@@ -1,4 +1,4 @@
-# ADR-0204: Make the first run say what to do next
+# ADR-0210: Make the first run say what to do next
 
 **Status:** accepted (2026-10-23).
 

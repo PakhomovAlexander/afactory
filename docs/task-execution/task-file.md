@@ -94,7 +94,7 @@ NEW --from TASK`: the candidate is the new source and the round's findings the i
 `findings` input, and `af task show NEW` prints `continues TASK round N`. A Task file may also
 leave `limits` and `pipeline` to `[task.defaults]` of `.af/af.toml` and point its Worker at files
 to read first with `context` ([Continue a reviewed Task](../tasks.md#continue-a-reviewed-task),
-[ADR-0206](../adr/0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
+[ADR-0212](../adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
 
 Exact plan inspection accepts only a plan recorded in the selected Task's history. It emits
 `af/task-plan-inspection@1`, including the original revision, compiled graph, bindings and

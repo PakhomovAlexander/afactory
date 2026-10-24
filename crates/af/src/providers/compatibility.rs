@@ -128,6 +128,7 @@ pub(super) fn check_invocation(
     cancelled: &AtomicBool,
     attempt_deadline: Option<Instant>,
 ) -> Result<(), CliRefusal> {
+    availability::check(spec).map_err(CliRefusal::Unchecked)?;
     let invocation = invocation(spec.kind);
     let timeout = probe_timeout(match spec.kind {
         ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,

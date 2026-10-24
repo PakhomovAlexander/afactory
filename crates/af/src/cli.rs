@@ -1224,6 +1224,23 @@ conflict stopped --apply.",
         #[arg(long)]
         identity: bool,
     },
+    /// Disable a registered Provider locally until a wall-clock expiry, without probing it
+    #[command(
+        long_about = "Disable a registered Provider on this machine without probing it.\n\n--for accepts a positive integer with s, m, h or d (maximum 30d). Expiry survives restarts. New probes and private sends are refused; already-running calls may finish. Older pinned releases do not honor this state.",
+        after_long_help = "Example:\n  af provider disable claude-personal --for 2d"
+    )]
+    Disable {
+        /// The registered Provider ID to disable
+        id: String,
+        /// How long: a positive integer with s, m, h or d (at most 30d)
+        #[arg(long = "for", value_name = "DURATION")]
+        duration: String,
+    },
+    /// Enable a Provider or clear a removed Provider's disable entry, without probing it
+    Enable {
+        /// The Provider ID to enable, or a removed one whose disable entry to clear
+        id: String,
+    },
     /// Show the provider registry and each harness login, without a model call
     #[command(
         alias = "list",
@@ -1850,7 +1867,7 @@ The run has no terminal, survives the shell that started it, and is the same pro
 foreground run is; `af task wait`, `af task status` and `af task cancel` follow it. Every run \
 records its process in the Store, `runs/<TASK_ID>-<N>.json`, before it takes the Task.\n\n\
 --from TASK plans NEW_ID as a new Task that continues the finished Task TASK from its reviewed \
-candidate (ADR-0206): the candidate Snapshot of its last review round (--round N for another) is \
+candidate (ADR-0212): the candidate Snapshot of its last review round (--round N for another) is \
 the new source, that round's reviewer findings and evaluator verdict are the implementer's \
 `findings` input, --goal FILE replaces the goal, and TASK's Task file is the rest. Without \
 --execute it prints the plan for --confirm-plan, as `af task plan` does; --from runs in the \

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:seal-ignored:1",
   "title": "af.seal-ignored/1",
-  "description": "What sealing left out of a candidate (ADR-0201): the paths a Worker added that the project's ignore rules exclude, read from the sealed tree (the kernel defaults `__pycache__/`, `*.pyc`, `/target/` and `node_modules/`, every `.gitignore`, then `.af/seal-ignore`; a `!` rule stages a path back). A path the parent Snapshot held is never left out. Referenced from the `af/CandidateTree@1` envelope beside its Manifest, and recorded only when something was left out. `ignored` names at most 1000 paths, sorted; `ignored_count` is the whole number.",
+  "description": "What sealing left out of a candidate (ADR-0207): the paths a Worker added that the project's ignore rules exclude, read from the sealed tree (the kernel defaults `__pycache__/`, `*.pyc`, `/target/` and `node_modules/`, every `.gitignore`, then `.af/seal-ignore`; a `!` rule stages a path back). A path the parent Snapshot held is never left out. Referenced from the `af/CandidateTree@1` envelope beside its Manifest, and recorded only when something was left out. `ignored` names at most 1000 paths, sorted; `ignored_count` is the whole number.",
   "type": "object",
   "additionalProperties": false,
   "required": [

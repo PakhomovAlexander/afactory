@@ -124,7 +124,7 @@ review corpora belong in consuming repositories, not here.
   a verified read-only `verification` Task of another Task's recorded candidate delivers that
   candidate on the other Task's committed source, recording both Tasks; `af task materialize`
   writes an unverified candidate only under `--allow-unverified`
-  ([ADR-0205](docs/adr/0205-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
+  ([ADR-0211](docs/adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
 - Publishing is a human action, with one operator-authorized exception: for a check a Task
   pipeline's check node lists in `remote_checks`, the kernel pushes exactly the two branches
   `af-gate/<task-id>/base` and `af-gate/<task-id>/head`, built from Task Snapshots, and opens one

@@ -510,7 +510,7 @@ fn clones_from_a_template_isolate_their_writes() {
     assert_eq!(sealed_a.mutations.modified, vec![path.to_string()]);
 }
 
-/// The base sibling (ADR-0206): the tree before the change is materialized read-only beside the
+/// The base sibling (ADR-0212): the tree before the change is materialized read-only beside the
 /// sandbox's own, with a document next to both; neither is part of what the sandbox seals, and
 /// the whole directory goes with the handle.
 #[test]
@@ -558,7 +558,7 @@ fn the_base_beside_the_tree_is_read_only_unsealed_and_removed_with_the_sandbox()
     assert!(sealed.unchanged(), "{:?}", sealed.mutations);
 }
 
-/// Issue #160 and ADR-0201: a tree holding a tracked `.pyc`, generated `.pyc` files and a FIFO.
+/// Issue #160 and ADR-0207: a tree holding a tracked `.pyc`, generated `.pyc` files and a FIFO.
 /// The FIFO is refused by name and never opened; without it, the generated files are listed as
 /// ignored and left out of the candidate, while the tracked one stays.
 #[test]

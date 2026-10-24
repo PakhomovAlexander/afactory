@@ -126,7 +126,7 @@ pub(super) fn prepare_session(
             }.into());
         }
         let captured = restore(options, cas, store, &state, &prepared, &engine)?;
-        // A run that died holds its lease until it expires: wait it out (ADR-0203).
+        // A run that died holds its lease until it expires: wait it out (ADR-0209).
         let lease = crate::task_execution::recovery::take_lease(cas, store, &id, &writer())?;
         let admitted = store
             .recover_task_attempts(cas, &lease)

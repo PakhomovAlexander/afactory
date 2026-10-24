@@ -1,4 +1,4 @@
-//! The content rule of a warm layer (ADR-0201, issue #266): a Cargo target is reused only for
+//! The content rule of a warm layer (ADR-0207, issue #266): a Cargo target is reused only for
 //! source groups whose content the layer last built.
 //!
 //! A Snapshot's files fall into groups: each Cargo package directory (a directory holding a

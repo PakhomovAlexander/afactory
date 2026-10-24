@@ -1664,7 +1664,7 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
             (first, argv.get(command_index + 1).map(String::as_str)),
             (
                 Some("provider"),
-                Some("detect" | "setup" | "remove" | "recover" | "auth")
+                Some("detect" | "setup" | "remove" | "recover" | "auth" | "disable" | "enable")
             ) | (Some("catalog"), Some("digest"))
         )
         || argv
@@ -5138,6 +5138,20 @@ mod tests {
             "af",
             "provider",
             "remove",
+            "codex-main"
+        ])));
+        assert!(exempt_from_dispatch(&argv(&[
+            "af",
+            "provider",
+            "disable",
+            "codex-main",
+            "--for",
+            "2d"
+        ])));
+        assert!(exempt_from_dispatch(&argv(&[
+            "af",
+            "provider",
+            "enable",
             "codex-main"
         ])));
         assert!(!exempt_from_dispatch(&argv(&["af", "provider", "status"])));

@@ -1,7 +1,7 @@
 # ADR-0143: Charge zero and record unknown usage when no usage is reported
 
 **Status:** accepted (2026-10-06); superseded in part by
-[ADR-0203](0203-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md): an
+[ADR-0209](0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md): an
 abandoned Attempt is charged its reported usage without the reservation floor, and counts
 against its node's recovery allowance instead of the Attempt limits. Supersedes in part
 [ADR-0049](0049-run-task-workers-through-shared-durable-attempts.md): the rule that started work

@@ -1020,7 +1020,7 @@ fn reply(drafts: Vec<serde_json::Value>) -> review_runner::task::WorkerReply {
     }
 }
 
-/// ADR-0202, issue #167: an author's draft is validated for shape before it is sealed — exactly
+/// ADR-0208, issue #167: an author's draft is validated for shape before it is sealed — exactly
 /// one draft, a draft its version admits, every required section by its exact heading — each
 /// check failing once here with the line that says what to change; a draft that passes them all
 /// is admitted. Size and citations stay the report check's, after sealing (ADR-0133).

@@ -19,7 +19,7 @@ pub(super) struct CommonDelivery {
     optimization_adoption: Option<OptimizationAdoptionContext>,
     prepared_delivery_record_id: Option<String>,
     /// The `af/TaskDeliveryProof@1` every record of a verification Task's delivery references
-    /// (ADR-0205).
+    /// (ADR-0211).
     proof_id: Option<String>,
 }
 
@@ -356,7 +356,7 @@ fn bound_source_refusal(bound: &review_source_git::task::TaskSourceBoundFromV1) 
 
 /// Whether a verification Task left the Snapshot it verified unchanged: its output is that
 /// Snapshot itself, by identity. Another Snapshot with the same tree is not the one its checks
-/// and Workers ran on, so it proves nothing about the candidate (ADR-0205).
+/// and Workers ran on, so it proves nothing about the candidate (ADR-0211).
 fn left_unchanged(
     source_snapshot_id: &str,
     derived_snapshot_id: &str,
@@ -366,7 +366,7 @@ fn left_unchanged(
     derived_snapshot_id == source_snapshot_id && derived_content == source_content
 }
 
-/// The one exception to exact source ancestry (ADR-0205): a verified Task of kind
+/// The one exception to exact source ancestry (ADR-0211): a verified Task of kind
 /// `verification` that bound its `source` from another Task's recorded candidate and left it
 /// unchanged proves that candidate. Its delivery places the candidate on the candidate Task's
 /// own committed source, exactly as that Task's delivery would, and every record names both
@@ -703,7 +703,7 @@ mod heartbeat_tests {
 mod verified_candidate_tests {
     use super::*;
 
-    /// The ADR-0205 exception holds only for the very Snapshot the verification Task verified:
+    /// The ADR-0211 exception holds only for the very Snapshot the verification Task verified:
     /// a different Snapshot with identical content is refused, and so is a changed tree.
     #[test]
     fn only_the_verified_snapshot_itself_proves_the_candidate() {

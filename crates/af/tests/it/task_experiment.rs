@@ -1449,9 +1449,9 @@ fn repository_experiment_plan(workers: PlanningWorkers) {
                 "tokens": 3_000_000,
                 "max_attempts": 8,
                 "wall_ms": 36_000_000,
-                // The checks node holds the build deadline beside the check wall (ADR-0201):
-                // 40 + 60 minutes, then the evaluator and one admission.
-                "verification": {"tokens": 400_000, "attempts": 3, "wall_ms": 9_000_000}
+                // The checks node holds the build deadline beside the check wall (ADR-0207):
+                // 40 + 90 minutes (ADR-0201), then the evaluator and one admission.
+                "verification": {"tokens": 400_000, "attempts": 3, "wall_ms": 10_800_000}
             }
         }))
         .unwrap(),

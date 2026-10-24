@@ -48,6 +48,7 @@
 //! superseded `af/storage@2`, `af/storage@3` and `af/storage-prune@1` to `@3` are refused.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -127,7 +128,10 @@ impl Machine {
         assert_eq!(
             output.status.code(),
             Some(code),
-            "af {args:?}\n{stdout}\n{stderr}"
+            "af {args:?}: status {:?}, raw {}, Unix signal {:?}\n{stdout}\n{stderr}",
+            output.status,
+            output.status.into_raw(),
+            output.status.signal()
         );
         (stdout, stderr)
     }

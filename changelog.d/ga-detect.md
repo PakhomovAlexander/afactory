@@ -10,4 +10,4 @@
   moved to `$XDG_STATE_HOME/af/locks`; each status row names one `setup … --login` fix
   (`--verbose` adds the CLI's own login command); `af help providers` explains the order of first
   use; and the Codex private-host login accepts the device prompt of codex-cli releases after
-  0.159.2 (#305) ([ADR-0200](docs/adr/0200-detect-provider-logins-and-register-them-through-add.md)).
+  0.159.2 (#305) ([ADR-0206](docs/adr/0206-detect-provider-logins-and-register-them-through-add.md)).

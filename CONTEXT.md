@@ -230,7 +230,7 @@ not create Campaign Resolution authority. Later discovery can reopen a previousl
 A new Task planned from a finished reviewed one (`af task run NEW --from TASK`, or a Task file's
 `continue`): its source is the candidate a review round of TASK reviewed, and its implementer
 receives that round's findings as one typed `af/TaskReviewFindings@1` input. It records the lineage and
-carries no acceptance, verification or budget of the Task it continues (ADR-0206).
+carries no acceptance, verification or budget of the Task it continues (ADR-0212).
 _Avoid_: **Task Review Continuation** — that is repair evidence inside one Review; "follow-up
 Task" with the findings pasted into its goal.
 
@@ -238,7 +238,7 @@ Task" with the findings pasted into its goal.
 The tree before the change, materialized read-only beside a judging Worker's own tree at
 `../base`, with `../diff-subject.json` (`af/diff-subject@1`) listing each changed path and its
 digest on each side. Context for a reviewer, evaluator or verifier, never a port and never sealed
-back (ADR-0206).
+back (ADR-0212).
 
 **Captured Issue Source**:
 An exact read-only observation of ticket fields, with raw source, per-field value and normalized
@@ -653,7 +653,7 @@ revoked epoch is quarantined — recorded, charged, and unable to reach the Find
 is *abandoned* when its Writer was lost or its host cancelled it (SIGINT, SIGTERM): it is charged
 the usage its Provider reported, never its reservation, and counts against its node's Recovery
 Allowance instead of its Attempt limits
-([ADR-0203](docs/adr/0203-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
+([ADR-0209](docs/adr/0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
 _Avoid_: treating a fenced Attempt as a free retry; it spent tokens and the budget knows.
 
 **Writer**:

@@ -368,19 +368,30 @@ future readers need.
   label](0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)
 - [0197 — Validate on one latest stable Python](0197-validate-on-one-latest-stable-python.md)
 - [0198 — Opt this repository into distinct-model Worker independence](0198-opt-this-repository-into-distinct-model-worker-independence.md)
-- [0199 — Rerun a failed test alone, report the gate, and retry a failed gate on the same
-  candidate](0199-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
-- [0200 — Detect Provider logins, and register them through
-  `add`](0200-detect-provider-logins-and-register-them-through-add.md)
-- [0201 — Key warm check layers by content, lock them, split the build deadline, and seal without
-  generated files](0201-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)
-- [0202 — Recover an Attempt from a transient Provider failure and a reply that does not
-  parse](0202-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)
-- [0203 — Recover a lost or interrupted Attempt without charging its
-  reservation](0203-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)
-- [0204 — Make the first run say what to do
-  next](0204-make-the-first-run-say-what-to-do-next.md)
-- [0205 — Give the agent loop its verbs, and deliver a verified
-  verification](0205-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)
-- [0206 — Continue a Task from its reviewed candidate, and give judging Workers the
-  base](0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)
+- [0199 — Disable Providers until a machine-local expiry](0199-disable-providers-until-a-machine-local-expiry.md)
+- [0200 — Preserve the Provider ID domain and clear orphaned
+  disables](0200-preserve-provider-id-domain-and-clear-orphaned-disables.md)
+- [0201 — Admit explicit ninety-minute checks and isolate Command catalog
+  fixtures](0201-admit-explicit-ninety-minute-checks-and-isolate-command-catalog-fixtures.md)
+- [0202 — Wait for complete fixture evidence and diagnose guarded
+  failures](0202-wait-for-complete-fixture-evidence-and-diagnose-guarded-failures.md)
+- [0203 — Isolate targeted starter repair and retain native exit
+  status](0203-isolate-targeted-starter-repair-and-retain-native-exit-status.md)
+- [0204 — Preserve model authority in repository planning
+  fixtures](0204-preserve-model-authority-in-repository-planning-fixtures.md)
+- [0205 — Rerun a failed test alone, report the gate, and retry a failed gate on the same
+  candidate](0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
+- [0206 — Detect Provider logins, and register them through
+  `add`](0206-detect-provider-logins-and-register-them-through-add.md)
+- [0207 — Key warm check layers by content, lock them, split the build deadline, and seal without
+  generated files](0207-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)
+- [0208 — Recover an Attempt from a transient Provider failure and a reply that does not
+  parse](0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)
+- [0209 — Recover a lost or interrupted Attempt without charging its
+  reservation](0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)
+- [0210 — Make the first run say what to do
+  next](0210-make-the-first-run-say-what-to-do-next.md)
+- [0211 — Give the agent loop its verbs, and deliver a verified
+  verification](0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)
+- [0212 — Continue a Task from its reviewed candidate, and give judging Workers the
+  base](0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)

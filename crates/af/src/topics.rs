@@ -227,7 +227,7 @@ once they read the Store: the state they print is data, not their outcome.",
 }
 
 /// `af help agents` is `docs/agents.md`, byte for byte: the page and the binary cannot say
-/// different things (ADR-0205).
+/// different things (ADR-0211).
 const AGENTS: &str = include_str!("../../../docs/agents.md");
 
 /// What the same table says about a captured Snapshot, and the one knob over it.

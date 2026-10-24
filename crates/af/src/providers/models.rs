@@ -172,6 +172,9 @@ fn probe_all(
 /// Read one Provider's catalog: the CLI is located, its invocation checked when `check_cli`
 /// asks, then its harness asked.
 fn probe_spec(spec: &ProviderSpec, cancelled: &AtomicBool, check_cli: bool) -> CatalogOutcome {
+    if let Err(error) = availability::check(spec) {
+        return CatalogOutcome::Unavailable(error);
+    }
     let program = match locate_cli(spec) {
         Ok(program) => program,
         Err(failure) => return CatalogOutcome::CliRefused(failure.message()),
@@ -457,6 +460,7 @@ fn claude_catalog(
     cancelled: &AtomicBool,
 ) -> Result<CatalogReport, String> {
     // Removed, with what the CLI kept for it, once the session has exited (ADR-0144).
+    availability::check(spec)?;
     let directory = ProbeDirectory::new(spec)?;
     let mut command = Command::new(program);
     command.args(CLAUDE_CATALOG_ARGS);

@@ -1,7 +1,7 @@
 # continue
 
 A reviewed Task continued from its candidate, for
-[ADR-0206](../../../docs/adr/0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md) and
+[ADR-0212](../../../docs/adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md) and
 `crates/af/tests/it/task_continue.rs`:
 
 - `first.json` — a reviewed implementation on `fixture/implementation`. Its implementer writes

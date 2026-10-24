@@ -1523,7 +1523,7 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
             );
             assert!(request.get("task").is_none());
             // Call 0 does not parse; call 1 is its re-ask in the same Attempt and does not parse
-            // either; call 2 is the next Attempt, with typed retry feedback only (ADR-0202).
+            // either; call 2 is the next Attempt, with typed retry feedback only (ADR-0208).
             let call = self.0.fetch_add(1, Ordering::SeqCst);
             assert_eq!(
                 request["feedback"].as_array().unwrap().len(),

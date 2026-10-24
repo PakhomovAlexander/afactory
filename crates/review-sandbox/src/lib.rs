@@ -182,7 +182,7 @@ pub struct Sandbox {
     /// still runs.
     _dir: Option<tempfile::TempDir>,
     /// The base attached beside the tree, as attached: what sealing verifies the Worker left
-    /// unchanged (ADR-0206).
+    /// unchanged (ADR-0212).
     attached: std::sync::Mutex<Option<AttachedBase>>,
 }
 
@@ -525,7 +525,7 @@ impl Sandbox {
     }
 
     /// [`Self::refresh_source_mtimes`], except that a file for which `kept` names a time gets
-    /// exactly that time back (ADR-0201): the stamp a warm layer's sources record holds for a
+    /// exactly that time back (ADR-0207): the stamp a warm layer's sources record holds for a
     /// group whose content it built. Every other regular file gets one current stamp, newer
     /// than `after`, which the result returns for the record.
     pub fn refresh_source_mtimes_keyed(
@@ -551,7 +551,7 @@ impl Sandbox {
     }
 
     /// Materialize `manifest` read-only as `base/`, the sibling of this sandbox's `tree/`, and
-    /// write each of `beside` read-only next to both (ADR-0206). A Worker that judges a change
+    /// write each of `beside` read-only next to both (ADR-0212). A Worker that judges a change
     /// reads the tree before it at `../base` and the change's paths in `../diff-subject.json`;
     /// neither is under the root, so neither is sealed back or counted as an edit. Only a
     /// sandbox that owns its temporary directory has a sibling to write.

@@ -316,7 +316,7 @@ impl WorkerContract {
             );
             feedback_values.push(value);
             // The typed receipt an admitted feedback names, such as a draft validation, is the
-            // retry's guidance too: rendered from the feedback's own references (ADR-0202).
+            // retry's guidance too: rendered from the feedback's own references (ADR-0208).
             for evidence in feedback_evidence(cas, id)? {
                 manifest.record(
                     "feedback",
@@ -463,7 +463,7 @@ fn worker_value(cas: &Cas, id: &str) -> Result<WorkerValue, String> {
 
 /// What one native call learned beyond its reply: whether its failure was transient, so the
 /// kernel may call again within the same Attempt, and the facts it did about its Provider that
-/// the kernel records as typed Task events (ADR-0202). Neither changes the Attempt's charge.
+/// the kernel records as typed Task events (ADR-0208). Neither changes the Attempt's charge.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CallNotes {
     /// The call failed for a reason the same input may get past after a wait.
@@ -625,7 +625,7 @@ impl ModelWorkerReturn {
 /// A reply that does not parse is read once more tolerantly — the first balanced JSON object of
 /// a reply that carries prose around it — and, failing that, the same Worker is asked once more
 /// within the same Attempt: its deadline, its `reserved_tokens` and its cancellation, with the
-/// parse error and the offending excerpt as one more feedback value (ADR-0202). Both replies are
+/// parse error and the offending excerpt as one more feedback value (ADR-0208). Both replies are
 /// kept as raw evidence and named in the diagnostic.
 #[allow(clippy::too_many_arguments)]
 pub fn invoke_model(
@@ -820,7 +820,7 @@ mod request_tests {
         assert!(rendered.len() > sum);
     }
 
-    /// ADR-0202: an admitted retry feedback that names a draft validation receipt carries it to
+    /// ADR-0208: an admitted retry feedback that names a draft validation receipt carries it to
     /// the retried Worker beside itself; a reference of any other type does not travel.
     #[test]
     fn a_feedbacks_typed_receipt_is_rendered_beside_it() {

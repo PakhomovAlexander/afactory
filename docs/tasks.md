@@ -99,7 +99,7 @@ this table. Without `pipeline`, planning
 ### Short goals, context and project defaults
 
 Only `task_id`, `kind` and `goal` are required; `schema` defaults to `af.task-file/1`
-([ADR-0206](adr/0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md),
+([ADR-0212](adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md),
 `af help task-file`). What a Task file omits comes from `[task.defaults]` of `.af/af.toml` in the
 committed Authority Snapshot: `limits`, `pipeline` and its `fallback`. A field the Task file names
 wins whole, and the default Pipeline applies only to a Task of a kind it accepts. `af task plan`
@@ -189,7 +189,7 @@ run: the command exits 4 with `admitted: false` and `af task status ID` as the n
 run has no terminal, survives the shell that started it, and writes its
 output to `runs/ID-N.log` in the Task Store; every run, in a terminal or not, also records its
 process there as `runs/ID-N.json` before it takes the Task
-([ADR-0205](adr/0205-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
+([ADR-0211](adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
 
 ```sh
 af task run pagination-cli --confirm-plan PLAN_ID --detach
@@ -358,14 +358,14 @@ at T`, and the next command is `af task run TASK_ID`, or `af task start --file T
 node used up its recovery allowance; under `--json` that is the `state` object. On macOS `af task run` keeps the Mac
 from idle-sleeping while it runs (`caffeinate`), and `af task run --verbose` says so. The whole
 contract is in [interrupted runs](task-execution/interrupted-runs.md)
-([ADR-0203](adr/0203-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
+([ADR-0209](adr/0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
 
 ## Retry a failed gate
 
 A Task whose last round ended at a failed gate, its check not passing and no reviewer or
 evaluator run after it, ends its `task run` and `task show` output with the command that runs
 that gate again
-([ADR-0199](adr/0199-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+([ADR-0205](adr/0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
 
 ```text
 check kernel: stopped at tests step test (exit 100); rerun it with: python3 scripts/nextest-gate.py --locked --profile ci --test-threads 7
@@ -418,7 +418,7 @@ af task materialize pagination-cli --into ../pagination-review
 
 A Task that ended `changes_requested` holds a reviewed candidate and the findings against it.
 `af task run NEW --from TASK` plans a new Task from TASK's own captured Task file
-([ADR-0206](adr/0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)):
+([ADR-0212](adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)):
 
 - its source is the candidate TASK's last review round reviewed (`--round N` names another), bound
   as a Snapshot exactly as an `inputs.source` binding of a derived tree is, not the base; its
@@ -459,7 +459,7 @@ base, and its Workers get neither file.
 ### What an Attempt survives
 
 One call of an Attempt can fail and the Attempt still succeed
-([ADR-0202](adr/0202-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)).
+([ADR-0208](adr/0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)).
 Everything below happens inside the Attempt's own wall and token reservation; the calls' usage
 adds up, and nothing is reset or refunded.
 
@@ -597,7 +597,7 @@ kernel only passes that path on. It never writes, bounds or removes the rustup h
 
 That toolchain is resolved once more before the Task's plan is admitted, so before any
 implementer Attempt
-([ADR-0199](adr/0199-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+([ADR-0205](adr/0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
 when the source Snapshot's `rust-toolchain.toml` pins a toolchain the kernel's rustup home does
 not hold, `af task start --execute` and `af task run` refuse the Task with the code policy file,
 the `[warm] build_cache` field, the pinned toolchain and the probe's answer, and nothing runs or
@@ -668,7 +668,7 @@ check's own `CARGO_HOME`.
 
 A Task code check also gets `AF_CHECK_REPORT`, a file in its runtime directory where it may
 account for itself
-([ADR-0199](adr/0199-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+([ADR-0205](adr/0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
 one JSON object per line, each `"schema": "af.check-report/1"`. A `"record": "step"` line names
 one step of the gate, its `stage` (`preflight`, `lint`, `build`, `tests` or `release`), its
 `exit_code`, its `command` and, when the gate names one, the `fix` that repairs what it refuses;

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-diff:1",
   "title": "Task diff af/task-diff@1",
-  "$comment": "What `af task diff ID --json` prints (ADR-0205): the two Snapshots the change runs between — the Task's source or `--base`, and its candidate or `--snapshot` — every file that differs with its status and its added and deleted lines (null for a binary file), and the unified diff `git diff` prints for the same two trees. Touches no worktree.",
+  "$comment": "What `af task diff ID --json` prints (ADR-0211): the two Snapshots the change runs between — the Task's source or `--base`, and its candidate or `--snapshot` — every file that differs with its status and its added and deleted lines (null for a binary file), and the unified diff `git diff` prints for the same two trees. Touches no worktree.",
   "type": "object",
   "additionalProperties": false,
   "required": [

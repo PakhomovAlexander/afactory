@@ -1,4 +1,4 @@
-//! A Task file's `context` and the project's `.af/rules.md` (ADR-0206): what the Worker reads
+//! A Task file's `context` and the project's `.af/rules.md` (ADR-0212): what the Worker reads
 //! before the goal, bound by digest.
 //!
 //! A short goal may point at what it needs instead of carrying it: `"context":

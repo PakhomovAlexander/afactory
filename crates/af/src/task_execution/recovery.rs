@@ -1,4 +1,4 @@
-//! Resuming a Task whose run was lost or interrupted (ADR-0203). `af task run` waits out a
+//! Resuming a Task whose run was lost or interrupted (ADR-0209). `af task run` waits out a
 //! dead run's lease instead of refusing it, says on its first line what it does with the
 //! interrupted node or why it cannot continue, and the Task's state (`af help task-states`)
 //! reads `abandoned` with its cause and the command that continues it.

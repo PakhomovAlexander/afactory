@@ -155,7 +155,7 @@ fn a_refused_admission_starts_no_business_worker() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     let (node, charged, failed) = &rows[0];
     assert!(node.starts_with("root.providers.admit"), "{node}");
-    // The refused probe and its alternate wording, sent once in the same Attempt (ADR-0202),
+    // The refused probe and its alternate wording, sent once in the same Attempt (ADR-0208),
     // both refused and both charged; no business Worker starts.
     assert_eq!(*charged, 26);
     assert!(failed);

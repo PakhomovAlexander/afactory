@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:warm-holder:1",
   "title": "af.warm-holder/1",
-  "description": "The process holding a Warm Check Cache key's lock, written beside the key as `<project>/<toolchain>.holder` once the lock is taken and removed before it is released (ADR-0201). A check that waits for the key prints `waiting for warm layer <key> held by <command> <pid> since <time>` from it every 60 seconds.",
+  "description": "The process holding a Warm Check Cache key's lock, written beside the key as `<project>/<toolchain>.holder` once the lock is taken and removed before it is released (ADR-0207). A check that waits for the key prints `waiting for warm layer <key> held by <command> <pid> since <time>` from it every 60 seconds.",
   "type": "object",
   "additionalProperties": false,
   "required": [

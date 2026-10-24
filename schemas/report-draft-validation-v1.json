@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:report-draft-validation:1",
   "title": "af/ReportDraftValidation@1",
-  "description": "What the kernel found when it validated a report author's draft for shape before sealing it (ADR-0202): one result per check (`one_draft`, `sets`, `required_sections`), the report policy it judged against verbatim, and one line per failure. A failed validation refuses the reply and travels with the author's retry feedback; the report's size and citations are judged by the report check after sealing.",
+  "description": "What the kernel found when it validated a report author's draft for shape before sealing it (ADR-0208): one result per check (`one_draft`, `sets`, `required_sections`), the report policy it judged against verbatim, and one line per failure. A failed validation refuses the reply and travels with the author's retry feedback; the report's size and citations are judged by the report check after sealing.",
   "type": "object",
   "additionalProperties": false,
   "required": [

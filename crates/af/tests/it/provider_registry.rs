@@ -73,6 +73,8 @@ fn in_terminal(
         command.arg(argument);
     }
     command.env_clear();
+    // Preserve the test runner's writable scratch root in a restricted Task sandbox.
+    command.env("TMPDIR", std::env::temp_dir());
     command.cwd("/");
     // The parent's TMPDIR, unless the caller names its own: the system default is forbidden in
     // a sandbox whose TMPDIR is private.
@@ -122,6 +124,7 @@ fn in_terminal_answering(
         command.arg(argument);
     }
     command.env_clear();
+    command.env("TMPDIR", std::env::temp_dir());
     command.cwd("/");
     // The parent's TMPDIR, unless the caller names its own: the system default is forbidden in
     // a sandbox whose TMPDIR is private.
@@ -666,7 +669,7 @@ exit 64
         0o700
     );
     // The auth-context lock lives in af's state, below the home's `.local/state`, never in the
-    // auth directory (ADR-0200).
+    // auth directory (ADR-0206).
     assert!(!auth.join(".af-codex-setup.lock").exists());
     let locks = root.path().join(".local/state/af/locks");
     assert_eq!(

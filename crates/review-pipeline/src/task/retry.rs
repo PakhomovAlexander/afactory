@@ -1,4 +1,4 @@
-//! The policy of the in-Attempt retry after a transient Provider failure (ADR-0202): a network
+//! The policy of the in-Attempt retry after a transient Provider failure (ADR-0208): a network
 //! failure, a model at capacity, a timeout, or a native exit without output. The Provider's own
 //! `Retry-After` is honoured; otherwise the first wait is 60 s and each later one doubles. An
 //! Attempt retries at most [`MAX_PROVIDER_RETRIES`] times and waits at most ten minutes in all,

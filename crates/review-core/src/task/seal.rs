@@ -1,4 +1,4 @@
-//! What sealing left out of a candidate (ADR-0201), `af.seal-ignored/1`: the paths a Worker
+//! What sealing left out of a candidate (ADR-0207), `af.seal-ignored/1`: the paths a Worker
 //! added that the project's ignore rules exclude (`.gitignore`, `.af/seal-ignore` and the
 //! kernel defaults). The record is referenced from the `af/CandidateTree@1` envelope it belongs
 //! to, beside the candidate's Manifest, and only when something was left out.

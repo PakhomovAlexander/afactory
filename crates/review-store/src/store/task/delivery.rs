@@ -498,7 +498,7 @@ impl TaskProjection {
             ));
         }
         // A verification Task's delivery of another Task's candidate references the proof that
-        // names both (ADR-0205); a proof always names this Task and its result.
+        // names both (ADR-0211); a proof always names this Task and its result.
         let envelope = cas
             .get_artifact(id)
             .map_err(|error| StoreError::Artifact(error.to_string()))?;

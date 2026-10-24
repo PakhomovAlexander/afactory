@@ -1,7 +1,7 @@
 # ADR-0161: Refresh native check source mtimes before reusing a Cargo target
 
 **Status:** proposed (2026-10-21); superseded in part on 2026-10-23 by
-[ADR-0201](0201-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md):
+[ADR-0207](0207-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md):
 only the source groups whose content the held target did not build are stamped now.
 
 ## Context

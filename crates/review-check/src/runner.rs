@@ -42,7 +42,7 @@ pub struct CheckDefinition {
         deserialize_with = "review_core::task::present_option"
     )]
     pub remote: Option<RemoteCheckV1>,
-    /// The check runs without network (ADR-0201): npm reads only its cache, which a Task check
+    /// The check runs without network (ADR-0207): npm reads only its cache, which a Task check
     /// finds in the warm layer's `npm_cache` directory, and every proxy variable names a closed
     /// local port. Absent or `false`, a definition serializes exactly as it did before.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

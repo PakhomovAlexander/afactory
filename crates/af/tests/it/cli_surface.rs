@@ -313,7 +313,7 @@ fn task_report_help_and_man_page_describe_the_command() {
     assert!(page.contains("Never"), "{page}");
 }
 
-/// `af task run --retry-gate` (ADR-0199) says what it runs again, on what, and when it refuses,
+/// `af task run --retry-gate` (ADR-0205) says what it runs again, on what, and when it refuses,
 /// in `--help` and in `af help task run`, and conflicts with `--confirm-plan`.
 #[test]
 fn task_run_help_describes_the_retry_of_a_failed_gate() {
@@ -383,7 +383,7 @@ fn self_status_and_update_help_describe_the_release_check() {
     }
 }
 
-/// `af task run` says how an interrupted run resumes and what `--verbose` adds (ADR-0203), in
+/// `af task run` says how an interrupted run resumes and what `--verbose` adds (ADR-0209), in
 /// `--help` and in `af help task run`.
 #[test]
 fn task_run_help_describes_the_resume_of_an_interrupted_run() {
@@ -485,7 +485,7 @@ fn provider_models_help_and_man_page_describe_the_command() {
 /// `af provider detect` says what it scans, what it never reads, what `--apply` writes, its ID
 /// rule and its exit codes, in `--help`, in `af help provider detect` and in its man page; `af
 /// help providers` explains the registry and the commands in the order of first use; and the
-/// `add`, `setup` and `status` changes of ADR-0200 are in their own help (ADR-0146).
+/// `add`, `setup` and `status` changes of ADR-0206 are in their own help (ADR-0146).
 #[test]
 fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
     for help in [
@@ -1274,7 +1274,7 @@ fn the_surface_documents_verbose_storage_canonical_markdown_and_the_provider_lis
 }
 
 /// Bare `af` without a terminal keeps its usage on stderr and exit 2, after two first-run lines
-/// (ADR-0204).
+/// (ADR-0210).
 #[test]
 fn bare_af_without_a_terminal_prints_the_first_run_hints() {
     let bare = crate::common::af()
@@ -1299,7 +1299,7 @@ fn bare_af_without_a_terminal_prints_the_first_run_hints() {
 
 /// `af --help` opens with what af is and the four steps, lists the commands once in the order a
 /// first run needs them, and every topic it names resolves; `af help` lists every topic once
-/// with the registry's description (ADR-0146, ADR-0204).
+/// with the registry's description (ADR-0146, ADR-0210).
 #[test]
 fn root_help_has_one_command_list_and_every_named_topic_resolves() {
     let help = out(&af(&["--help"]));
@@ -1425,7 +1425,7 @@ fn root_help_has_one_command_list_and_every_named_topic_resolves() {
     }
 }
 
-/// The agent loop's verbs (ADR-0205) say what they print, refuse and never do in `--help`, `af
+/// The agent loop's verbs (ADR-0211) say what they print, refuse and never do in `--help`, `af
 /// help agents` is `docs/agents.md` byte for byte, and every `af task` command the page names
 /// is a command whose `--help` documents every flag the page gives it.
 #[test]
@@ -1640,7 +1640,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
     assert!(out(&af(&["help", "exit-codes"])).contains("124"));
 }
 
-/// `af task run NEW --from TASK` (ADR-0206) says what it plans and from what in `--help` and in
+/// `af task run NEW --from TASK` (ADR-0212) says what it plans and from what in `--help` and in
 /// `af help task run`; `--round`, `--goal` and `--bindings` need `--from`, which conflicts with
 /// `--confirm-plan` and `--detach`; and `af help task-file` describes defaults, context and
 /// continuation.

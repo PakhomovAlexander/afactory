@@ -171,7 +171,7 @@ impl DeclaredPorts {
 
     /// Whether the selected Pipeline takes `port` as `artifact_type` one: `false` when no
     /// consulted Pipeline declares it, and a refusal when only some do or one declares it
-    /// another way, so a continuation's findings never decide the Pipeline (ADR-0206).
+    /// another way, so a continuation's findings never decide the Pipeline (ADR-0212).
     pub(super) fn declares(&self, port: &str, artifact_type: &str) -> Result<bool, String> {
         if !self.ports.contains_key(port) {
             return Ok(false);
@@ -455,7 +455,7 @@ fn admitted_source(cas: &Cas, recorded: &ArtifactInputV1) -> Result<AdmittedSour
 
 /// The Snapshot the output `task` references holds: its `port` of the Task's result
 /// (`af/TaskResult@1`) or, for a continuation of an earlier round, of the `af/TaskOutput@1`
-/// record that published the round's candidate (ADR-0206).
+/// record that published the round's candidate (ADR-0212).
 ///
 /// The port's metadata is a claim about its artifact, so the claim is checked against the
 /// artifact: the port names exactly one `af/SourceTree@1`, and that envelope's payload and

@@ -760,7 +760,7 @@ fn accounting_scenario(
             Some("50")
         );
         assert_eq!(charge(&first).source, "usage_observed");
-        // Recovery charges the observation, never the reservation (ADR-0203).
+        // Recovery charges the observation, never the reservation (ADR-0209).
         assert_eq!(
             charge(&second).counters.chargeable_tokens.as_deref(),
             Some("3")

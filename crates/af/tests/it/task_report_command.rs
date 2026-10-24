@@ -263,7 +263,7 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
     );
 
     // The interrupted Attempt is the one failure, of the implementer, with its recorded charge:
-    // abandoned, since its host cancelled it (ADR-0203).
+    // abandoned, since its host cancelled it (ADR-0209).
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     let projection = store
@@ -732,7 +732,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
 }
 
 /// ADR-0143 after `af task gc --apply`: the author's first Codex Attempt fails at capacity with
-/// no usage report — its first call and the three it retries within the Attempt (ADR-0202) — and
+/// no usage report — its first call and the three it retries within the Attempt (ADR-0208) — and
 /// the next Attempt succeeds, so the Task completes with one Attempt whose usage is unknown.
 /// Collected, its tombstone keeps that count, and `af task list`, `af task show` and `af task
 /// report` still show `(+1 unknown)` beside the tokens, never a bare charge; the report block
@@ -2016,7 +2016,7 @@ fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
     assert_block_is_checked(&reversed);
 }
 
-/// Two Tasks planned from one base whose candidates both add `docs/adr/0199-*.md`: the report
+/// Two Tasks planned from one base whose candidates both add `docs/adr/0205-*.md`: the report
 /// over both warns on stderr, naming the number and both Tasks; over one of them, it does not.
 #[test]
 fn a_report_warns_when_two_candidates_take_the_same_adr_number() {
@@ -2028,7 +2028,7 @@ fn a_report_warns_when_two_candidates_take_the_same_adr_number() {
     assert_eq!(script.matches(marker).count(), 1, "{script}");
     let adr = "import os\nname='second' if 'again' in json.dumps(request) else 'first'\n\
                os.makedirs('docs/adr', exist_ok=True)\n\
-               open('docs/adr/0199-%s.md' % name,'w').write('# 196\\n')\n";
+               open('docs/adr/0205-%s.md' % name,'w').write('# 196\\n')\n";
     std::fs::write(
         &worker,
         script.replacen(marker, &format!("{adr}{marker}"), 1),
@@ -2068,18 +2068,18 @@ fn a_report_warns_when_two_candidates_take_the_same_adr_number() {
     let flat = said.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         flat.contains(
-            "af task report: warning: ADR 0199 is added by 2 Tasks: gc-older (docs/adr/0199-"
+            "af task report: warning: ADR 0205 is added by 2 Tasks: gc-older (docs/adr/0205-"
         ),
         "{said}"
     );
-    assert!(flat.contains(", gc-newer (docs/adr/0199-"), "{said}");
+    assert!(flat.contains(", gc-newer (docs/adr/0205-"), "{said}");
     for line in said.lines() {
         assert!(line.chars().count() <= 100, "{line}");
     }
     // The same warning under --json, beside the one document on stdout.
     let json = report(&repo, &state, &["gc-older", "gc-newer"], true);
     serde_json::from_str::<Value>(&stdout(&json)).unwrap();
-    assert!(String::from_utf8_lossy(&json.stderr).contains("ADR 0199"));
+    assert!(String::from_utf8_lossy(&json.stderr).contains("ADR 0205"));
     // One Task alone takes no number from another.
     let alone = report(&repo, &state, &["gc-older"], false);
     stdout(&alone);

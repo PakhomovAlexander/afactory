@@ -1,4 +1,4 @@
-//! The agent-facing `af/provider-detect@3` document (ADR-0200).
+//! The agent-facing `af/provider-detect@3` document (ADR-0206).
 //!
 //! Like the other Provider onboarding documents it carries no Rust type: `af provider detect`
 //! builds it from what the machine's CLIs and directories said. The schema is the contract, and

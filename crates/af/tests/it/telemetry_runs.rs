@@ -617,7 +617,7 @@ fn telemetry_interrupted_before_an_attempt_keeps_its_ordinal() {
                     pauses.to_str().unwrap(),
                 ),
                 // A fifteen-second lease, so the dead writer's lease expires well inside the
-                // Task's one-minute wall; production leases are 60 s (ADR-0203).
+                // Task's one-minute wall; production leases are 60 s (ADR-0209).
                 ("AF_TEST_TASK_LEASE_MS", "15000"),
             ],
             &[

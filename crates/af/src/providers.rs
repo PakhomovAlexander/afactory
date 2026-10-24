@@ -40,6 +40,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 
 pub mod auth_handoff;
+pub mod availability;
 mod compatibility;
 pub mod detect;
 mod installation;
@@ -100,7 +101,7 @@ const INSTALLATION_FAILED: &str = "installation failed";
 /// `incompatible` in JSON (ADR-0146).
 const INCOMPATIBLE: &str = "incompatible";
 /// The status a context gets when it is absent or holds no login marker, so af did not ask its CLI
-/// about it: that CLI would create files there (ADR-0200). `not_probed` in JSON.
+/// about it: that CLI would create files there (ADR-0206). `not_probed` in JSON.
 const UNMARKED: &str = "not probed";
 
 static CLAUDE_USAGE_CACHE: OnceLock<Mutex<BTreeMap<ClaudeUsageCacheKey, CachedClaudeUsage>>> =
@@ -124,6 +125,7 @@ pub struct ProviderStatus {
     pub limits: Vec<ProviderLimit>,
     pub usage: UsageState,
     pub detail: String,
+    pub(crate) disabled_until: Option<availability::Expiry>,
 }
 
 #[derive(Clone)]
@@ -286,7 +288,7 @@ pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> Provid
 /// the operator has set up the logins they use, and the default directory is one they do not.
 /// Before one is registered, the row and its `setup … --login` fix are how a new machine starts,
 /// and a default context with a login stays, since it is a login the operator may register
-/// (ADR-0141). A default context left unprobed because it holds no login marker (ADR-0200) is one
+/// (ADR-0141). A default context left unprobed because it holds no login marker (ADR-0206) is one
 /// with no login too.
 fn drop_unused_ambient_contexts(providers: &mut Vec<ProviderStatus>) {
     let registered: BTreeSet<String> = providers
@@ -528,7 +530,7 @@ pub(crate) struct RegistryRead {
 }
 
 /// The auth directories a names-only scan finds (the selector variables', the CLIs' defaults and
-/// the sibling names, ADR-0200) that none of `named` is: the one scan `af provider status`,
+/// the sibling names, ADR-0206) that none of `named` is: the one scan `af provider status`,
 /// `af doctor` and `af onboard` list as found but not registered. No marker is read and nothing
 /// is probed.
 pub(crate) fn unregistered_dirs<'a>(named: impl IntoIterator<Item = &'a Path>) -> Vec<PathBuf> {
@@ -594,7 +596,7 @@ const NEXT_AFTER_REGISTERING: &str =
     "next: af onboard (in a repository) · af provider status lists every Provider";
 
 /// The auth directories the status table names as found but not registered: those the shared
-/// names-only scan finds that no row lists, registered or ambient (ADR-0200).
+/// names-only scan finds that no row lists, registered or ambient (ADR-0206).
 fn found_unregistered(inventory: &ProviderInventory) -> Vec<PathBuf> {
     unregistered_dirs(
         inventory
@@ -606,7 +608,7 @@ fn found_unregistered(inventory: &ProviderInventory) -> Vec<PathBuf> {
 
 fn print_status_table(inventory: &ProviderInventory, usage: UsageProbe, verbose: bool) {
     // What else is on this machine comes from a names-only scan: no marker is read and nothing
-    // is probed (ADR-0200).
+    // is probed (ADR-0206).
     let found = found_unregistered(inventory);
     if inventory.providers.is_empty() {
         for line in detect::install_guidance() {
@@ -739,6 +741,8 @@ fn status_provider(provider: &ProviderStatus) -> serde_json::Value {
         "auth": auth_state_name(&provider.status),
         "credential": credential_name(&provider.kind, &provider.auth_type),
         "usability": usability_name(&provider.status),
+        "disabled_until": provider.disabled_until,
+        "enable_command": provider.disabled_until.map(|_| format!("af provider enable {}", provider.id)),
         "usage": {
             "state": provider.usage.name(),
             "windows": windows,
@@ -753,7 +757,7 @@ fn auth_state_name(status: &str) -> &'static str {
         "unavailable" => "unavailable",
         INSTALLATION_FAILED => "installation_failed",
         INCOMPATIBLE => "incompatible",
-        "not probed" => "not_probed",
+        "not probed" | "disabled" => "not_probed",
         _ => "unknown",
     }
 }
@@ -773,7 +777,9 @@ fn credential_name(kind: &str, auth_type: &str) -> &'static str {
 pub(crate) fn usability_name(status: &str) -> &'static str {
     match status {
         "authenticated" => "usable_or_untested",
-        "not authenticated" | "unavailable" | INSTALLATION_FAILED | INCOMPATIBLE => "unusable",
+        "not authenticated" | "unavailable" | "disabled" | INSTALLATION_FAILED | INCOMPATIBLE => {
+            "unusable"
+        }
         _ => "unknown",
     }
 }
@@ -794,7 +800,7 @@ pub(crate) fn available_provider_id(kind: &str, ids: &BTreeSet<String>) -> Strin
 ///
 /// The context is probed first, exactly as `af provider setup` probes it, and a context the
 /// Provider CLI does not report authenticated is refused: a registry entry nobody can use only
-/// moves the failure to the first Task. `unverified` skips that probe and says so (ADR-0200).
+/// moves the failure to the first Task. `unverified` skips that probe and says so (ADR-0206).
 pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>, unverified: bool) -> Result<i32, String> {
     validate_explicit_id(id)?;
     let kind = ProviderKind::parse(kind)?;
@@ -1022,10 +1028,11 @@ pub fn setup(
     json: bool,
 ) -> Result<i32, String> {
     validate_explicit_id(id)?;
+    availability::check_id(id)?;
     let kind = ProviderKind::parse(kind)?;
     let path = registry_path()?.ok_or("no provider registry path is available")?;
     // A login needs a home, so only `--login` creates a missing directory; without it a typo
-    // would leave an empty directory behind (ADR-0200).
+    // would leave an empty directory behind (ADR-0206).
     let missing = if login {
         MissingAuthDir::Create
     } else {
@@ -1898,7 +1905,7 @@ fn open_lock_at(
 ///
 /// It lives in af's own state, `$XDG_STATE_HOME/af/locks/<kind>-<sha256 of the canonical auth
 /// directory>`, never in the auth directory: that directory belongs to the Provider CLI, and a
-/// setup that found nothing to do must leave it as it was (ADR-0200).
+/// setup that found nothing to do must leave it as it was (ADR-0206).
 fn auth_context_lock(kind: ProviderKind, auth_dir: &Path) -> Result<BoundDirectoryLock, String> {
     auth_context_lock_in(&auth_lock_root()?, kind, auth_dir, || {})
 }
@@ -2097,6 +2104,7 @@ impl From<String> for AuthenticationProbe {
 }
 
 fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe> {
+    availability::check(spec)?;
     if let Some(auth_dir) = spec.auth_dir.as_deref() {
         validate_private_auth_directory(auth_dir)?;
     }
@@ -2157,6 +2165,7 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe
 /// neither reads, parses, stores nor re-emits anything that login prints — the child inherits
 /// these standard streams, which the caller has already proven are an interactive terminal.
 fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
+    availability::check(spec)?;
     let program = resolve_program(spec.kind.command())
         .ok_or_else(|| format!("{} is not on PATH", spec.kind.command()))?;
     let auth_dir = spec
@@ -2570,7 +2579,7 @@ fn registry_lock_controlled(
             lock_path.display()
         )
     })?;
-    if !metadata.is_file() {
+    if !metadata.is_file() || metadata.nlink() != 1 {
         return Err(format!(
             "provider registry lock {} must be a regular file",
             lock_path.display()
@@ -4085,6 +4094,18 @@ fn probe_provider(
     cancelled: &AtomicBool,
     usage: UsageProbe,
 ) -> ProviderStatus {
+    match availability::until(&spec.id) {
+        Ok(Some(expiry)) => {
+            let mut status = unprobed_status(&spec);
+            status.status = "disabled".into();
+            status.disabled_until = Some(expiry);
+            status.detail = expiry.diagnostic(&spec.id);
+            status.usage = UsageState::NotApplicable;
+            return status;
+        }
+        Err(error) => return unavailable_status(&spec, &error),
+        Ok(None) => {}
+    }
     if spec
         .auth_dir
         .as_ref()
@@ -4238,6 +4259,7 @@ fn probe_checked(
         }
     }
     let status = ProviderStatus {
+        disabled_until: None,
         id: spec.id,
         kind: spec.kind.name().to_string(),
         auth_context: spec
@@ -4259,6 +4281,7 @@ fn probe_checked(
 /// The placeholder a cancelled refresh leaves behind: never probed, never a claim about auth.
 fn unprobed_status(spec: &ProviderSpec) -> ProviderStatus {
     ProviderStatus {
+        disabled_until: None,
         id: spec.id.clone(),
         kind: spec.kind.name().to_string(),
         auth_context: spec
@@ -4278,6 +4301,7 @@ fn unprobed_status(spec: &ProviderSpec) -> ProviderStatus {
 
 fn unavailable_status(spec: &ProviderSpec, detail: &str) -> ProviderStatus {
     ProviderStatus {
+        disabled_until: None,
         id: spec.id.clone(),
         kind: spec.kind.name().to_string(),
         auth_context: spec
@@ -4301,6 +4325,7 @@ fn installation_failed_status(
     failure: &CliInstallationFailure,
 ) -> ProviderStatus {
     ProviderStatus {
+        disabled_until: None,
         status: INSTALLATION_FAILED.to_string(),
         detail: failure.message(),
         ..unavailable_status(spec, "")
@@ -4324,6 +4349,7 @@ fn incompatible_status(
     incompatibility: &CliIncompatibility,
 ) -> ProviderStatus {
     ProviderStatus {
+        disabled_until: None,
         status: INCOMPATIBLE.to_string(),
         detail: incompatibility.message(),
         ..unavailable_status(spec, "")
@@ -4436,6 +4462,7 @@ fn probe_claude_weekly_limits(
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 
+    availability::check(spec)?;
     let reader_slot = ClaudeReaderSlot::acquire()?;
     // An af-owned working directory, dropped after the child below has exited: the CLI keys its
     // project history by working directory, and this one's history is removed with it.
@@ -5003,6 +5030,7 @@ fn probe_codex_request_observed(
     attempt_deadline: Option<Instant>,
     observed: &mut AppServerProbe,
 ) -> Result<serde_json::Value, String> {
+    availability::check(spec)?;
     check_task_probe_control(attempt_deadline, cancelled)?;
     let method = request
         .map(|request| {
@@ -5380,7 +5408,7 @@ fn normalize_codex_plan(value: &str) -> Option<&'static str> {
     }
 }
 
-fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
+fn registered_spec(provider_id: &str) -> Result<ProviderSpec, String> {
     let (specs, _, warning) = load_specs();
     let spec = specs
         .into_iter()
@@ -5392,6 +5420,12 @@ fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
                 )
             })
         })?;
+    Ok(spec)
+}
+
+fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
+    let spec = registered_spec(provider_id)?;
+    availability::check(&spec)?;
     let auth_dir = spec
         .auth_dir
         .as_deref()
@@ -5482,7 +5516,7 @@ fn canonical_setup_command(spec: &ProviderSpec, setup_id: &str) -> String {
     command
 }
 
-/// A context af did not probe because it is absent or holds no login marker (ADR-0200): never
+/// A context af did not probe because it is absent or holds no login marker (ADR-0206): never
 /// a claim about a login, and the setup line that would give it one.
 fn unmarked_status(spec: &ProviderSpec, setup_id: &str, reason: &str) -> ProviderStatus {
     ProviderStatus {
@@ -5557,6 +5591,7 @@ fn run_probe_capped(
     attempt_deadline: Option<Instant>,
     cap: Option<Duration>,
 ) -> Result<ProbeOutput, String> {
+    availability::check(spec)?;
     check_task_probe_control(attempt_deadline, cancelled)?;
     // Removed, with what a Claude CLI kept for it, once the probe has exited (ADR-0144).
     let directory = ProbeDirectory::new(spec)?;
@@ -7718,6 +7753,7 @@ auth_dir = "{}"
     fn a_logged_out_default_context_is_left_out_once_its_kind_is_registered() {
         fn status(id: &str, kind: &str, ambient: bool, status: &str) -> ProviderStatus {
             ProviderStatus {
+                disabled_until: None,
                 id: id.to_string(),
                 kind: kind.to_string(),
                 auth_context: "-".to_string(),
@@ -7764,6 +7800,7 @@ auth_dir = "{}"
     fn logged_out_rows_point_at_logged_in_siblings_of_the_same_kind() {
         fn row(id: &str, kind: &str, context: &str, status: &str, plan: &str) -> ProviderStatus {
             ProviderStatus {
+                disabled_until: None,
                 id: id.to_string(),
                 kind: kind.to_string(),
                 auth_context: context.to_string(),

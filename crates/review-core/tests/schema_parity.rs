@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 225] = [
+const SCHEMAS: [&str; 226] = [
     "error-v1.json",
     "task-findings-v1.json",
     "task-materialized-v1.json",
@@ -86,6 +86,7 @@ const SCHEMAS: [&str; 225] = [
     "task-input-bindings-v1.json",
     "task-source-origin-v2.json",
     "provider-status-v3.json",
+    "provider-disables-v1.json",
     "provider-setup-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -4560,7 +4561,7 @@ mod project_collection;
 #[path = "schema_parity/store_writer.rs"]
 mod store_writer;
 
-/// ADR-0202 and ADR-0145: `af/TaskProviderEvent@1` is its own event kind of the Task log,
+/// ADR-0208 and ADR-0145: `af/TaskProviderEvent@1` is its own event kind of the Task log,
 /// `TaskProviderEvent@1`, naming its lease, Attempt and node and referencing no artifact. Every
 /// event kind it carries is accepted by the schema and the typed contract alike, and the same
 /// forgeries are refused by both.
@@ -4668,7 +4669,7 @@ fn a_provider_event_is_its_own_task_log_event() {
     );
 }
 
-/// ADR-0202: the re-ask a model Worker receives for a typed reply that did not parse, and the
+/// ADR-0208: the re-ask a model Worker receives for a typed reply that did not parse, and the
 /// draft validation a report author's retry feedback carries, are versioned closed shapes: the
 /// schemas and the typed contracts accept and refuse the same values.
 #[test]

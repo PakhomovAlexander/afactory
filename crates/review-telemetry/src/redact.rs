@@ -229,7 +229,7 @@ pub fn carries_auth_material(bytes: &[u8]) -> bool {
 }
 
 /// The documentation hosts of the two Providers. A refusal or an error that links its own
-/// documentation carries no credential for that link (ADR-0202): the host alone is never a
+/// documentation carries no credential for that link (ADR-0208): the host alone is never a
 /// reason to withhold the capture. The same host on a login, OAuth, device or key path still is.
 const DOCUMENTATION_HOSTS: [&str; 4] = [
     "platform.claude.com",
@@ -1209,9 +1209,9 @@ pub const KERNEL_PAYLOAD_IDENTITIES: [(&str, &[&str]); 11] = [
         "af/TaskRetryFeedback@1",
         &["attempt_id", "contract_id", "compiler/proposal_id"],
     ),
-    // worker-reply-reask-v1.json (ADR-0202)
+    // worker-reply-reask-v1.json (ADR-0208)
     ("af/WorkerReplyReask@1", &["raw_reply_id"]),
-    // report-draft-validation-v1.json (ADR-0202): no identity position
+    // report-draft-validation-v1.json (ADR-0208): no identity position
     ("af/ReportDraftValidation@1", &[]),
     // task-review-assignment-v1.json
     (

@@ -695,6 +695,7 @@ pub fn begin(
     // This owner holds the challenge and the code in memory, and its native login inherits the
     // core limit.
     protect_login_memory()?;
+    super::availability::check_id(id)?;
     let spec = resolve(id, kind, auth, true)?;
     let auth = spec.auth_dir.as_deref().expect("explicit auth context");
     let storage = Storage::open(auth, spec.kind, true)?;

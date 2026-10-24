@@ -1,4 +1,4 @@
-# ADR-0201: Key warm check layers by content, lock them, split the build deadline, and seal without generated files
+# ADR-0207: Key warm check layers by content, lock them, split the build deadline, and seal without generated files
 
 **Status:** accepted (2026-10-23). Package P10 of the GA polish campaign. Amends
 [ADR-0131](0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md) (the warm layer's
@@ -6,7 +6,7 @@ lock wait, a third kind and the evidence it records) and supersedes the "every s
 now" rule of
 [ADR-0161](0161-refresh-native-check-source-mtimes-before-reusing-cargo-target.md). Keeps
 [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md) (the Storage Budget) and
-[ADR-0199](0199-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
+[ADR-0205](0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
 (the check report a gate writes to `$AF_CHECK_REPORT`).
 
 ## Context
@@ -41,7 +41,7 @@ the sealer treated anything that was not a directory or a link as a file, so a F
    a running gate. A check now waits for the layer until its deadline, or, opted in, builds in a
    private copy.
 5. **One deadline for build and tests.** Rejected for the reason above; a second deadline needs
-   the gate to say where its build ends, which the ADR-0199 report already does.
+   the gate to say where its build ends, which the ADR-0205 report already does.
 6. **Vendor the markdownlint tarball.** Rejected: dependencies would have to be vendored too. The
    npm cache is filled once and verified instead.
 7. **Read only `.gitignore` while sealing.** Rejected: a project that commits no `.gitignore` for

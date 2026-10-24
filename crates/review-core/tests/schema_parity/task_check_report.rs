@@ -1,4 +1,4 @@
-//! `af/TaskCheckReport@1` and `TaskGateRetried@1` (ADR-0199): a fully populated value of each
+//! `af/TaskCheckReport@1` and `TaskGateRetried@1` (ADR-0205): a fully populated value of each
 //! is valid against its schema and the Rust validator and round-trips; every shape either side
 //! refuses the other refuses too. The check report is the receipt companion that records the
 //! host's load and CPUs around a check, its test threads, its steps by stage and its flaky

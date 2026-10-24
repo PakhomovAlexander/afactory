@@ -54,7 +54,7 @@ struct RecordedAttempt {
     /// reported 0 tokens: whether usage is known is its own fact, never read from the charge
     /// (ADR-0143).
     usage_observed: bool,
-    /// Why this Attempt was settled as abandoned, read from who settled it (ADR-0203).
+    /// Why this Attempt was settled as abandoned, read from who settled it (ADR-0209).
     abandoned: Option<TaskAbandonCause>,
     /// When abandoned work stopped: its own writer's settlement, or the last time its lost
     /// writer recorded anything.
@@ -68,7 +68,7 @@ impl RecordedAttempt {
 }
 
 /// Why an Attempt was abandoned, read from the writer epoch that recorded its settlement
-/// (ADR-0203): a later writer settles an Attempt whose writer was lost (its process died, or
+/// (ADR-0209): a later writer settles an Attempt whose writer was lost (its process died, or
 /// its lease expired or was taken), and the writer that started an Attempt settles it as
 /// abandoned only when its host cancelled it (SIGINT or SIGTERM). Neither is an answer of the
 /// Attempt, so neither counts against an Attempt limit.
@@ -138,7 +138,7 @@ pub struct TaskAttemptAccounting {
     /// zero (ADR-0143). None for every Attempt whose usage is known, including one a later
     /// observation reported after it settled, even one that reported 0 tokens.
     pub unknown_usage: Option<task::usage::TaskUnknownUsageCauseV1>,
-    /// Why this Attempt was abandoned, when it was (ADR-0203). An abandoned Attempt counts
+    /// Why this Attempt was abandoned, when it was (ADR-0209). An abandoned Attempt counts
     /// against its node's recovery allowance, not against any Attempt limit.
     pub abandoned: Option<TaskAbandonCause>,
 }
@@ -666,7 +666,7 @@ impl TaskExecutionProjection {
     }
 
     /// The recovery state of every node of the current graph that has abandoned Attempts,
-    /// in node order (ADR-0203).
+    /// in node order (ADR-0209).
     pub fn recoveries(&self) -> Vec<TaskNodeRecovery> {
         let mut nodes: BTreeMap<&str, TaskNodeRecovery> = BTreeMap::new();
         for attempt in self.attempts.values() {
@@ -1290,7 +1290,7 @@ impl TaskProjection {
                     execution.verify_output(cas, &out)?;
                 }
                 // An abandoned Attempt is charged what it was observed to use, never its
-                // reservation (ADR-0203), and `settle_exact` refuses a charge below an
+                // reservation (ADR-0209), and `settle_exact` refuses a charge below an
                 // observation. Below its reservation it must say how it knows: a usage report,
                 // or the unknown-usage marker of an Attempt that reported nothing (ADR-0143).
                 if matches!(result, TaskAttemptResultV1::Abandoned { .. })
@@ -1320,7 +1320,7 @@ impl TaskProjection {
                     .charge_exact(&AttemptId(attempt_id.clone()), charge)
                     .map_err(conflict)?;
                 // Abandoned work is no answer of its Attempt: it leaves the Attempt limits and
-                // counts against the node's recovery allowance instead (ADR-0203).
+                // counts against the node's recovery allowance instead (ADR-0209).
                 let abandoned =
                     matches!(result, TaskAttemptResultV1::Abandoned { .. }).then(|| {
                         if attempt.prepared_epoch == self.epoch {
@@ -1418,7 +1418,7 @@ impl TaskProjection {
 impl EventStore {
     /// Recover a previous writer's pending work before new dispatch. Started work is settled
     /// as abandoned by a lost writer and charged its observed usage, or zero with its usage
-    /// unknown (ADR-0143, ADR-0203); only a durable prepare with no start record may release
+    /// unknown (ADR-0143, ADR-0209); only a durable prepare with no start record may release
     /// its credit.
     pub fn recover_task_attempts(
         &mut self,
@@ -1490,7 +1490,7 @@ impl EventStore {
                     .unwrap_or(0)
                     .max(ledger_charge);
                 // The lost writer's last record and its lease's expiry, against the time its
-                // successor observed the loss (ADR-0203).
+                // successor observed the loss (ADR-0209).
                 let diagnostic_id = cas
                     .put_json(&json!({
                         "schema": "af.task-diagnostic/1",
@@ -1545,7 +1545,7 @@ impl EventStore {
                 TaskExecutionRecordV1::Settled {
                     attempt_id: id.clone(),
                     // What the Provider reported before the loss, never the reservation; the
-                    // reservation is released by the settlement (ADR-0203).
+                    // reservation is released by the settlement (ADR-0209).
                     charged_tokens: if reported { observed } else { 0 },
                     result: TaskAttemptResultV1::Abandoned { diagnostic_id },
                     raw_artifact_ids,

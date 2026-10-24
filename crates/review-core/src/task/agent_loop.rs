@@ -1,4 +1,4 @@
-//! The agent loop's documents (ADR-0205): what `af task findings`, `af task materialize`, `af
+//! The agent loop's documents (ADR-0211): what `af task findings`, `af task materialize`, `af
 //! task diff`, `af task status`, `af task run --detach` and `af task cancel` print under
 //! `--json`, and the two records a run of `af task run` leaves in its Store's `runs/` directory:
 //! the process that runs it, and a request to cancel it.

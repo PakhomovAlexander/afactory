@@ -24,7 +24,7 @@
   the registry lock, and leaves a login whose CLI is off `PATH` unregistered with the PATH line
   (exit 4). A conflict names `conflict_with` and suggests the retry with a free ID. The closing
   `next:` line follows the outcome, and `--kind claude` gives no Codex advice
-  ([ADR-0200](../docs/adr/0200-detect-provider-logins-and-register-them-through-add.md)).
+  ([ADR-0206](../docs/adr/0206-detect-provider-logins-and-register-them-through-add.md)).
 - `af provider status --json` prints `af/provider-status@3`, with `found_unregistered` and
   `next_action`. `af doctor` and `af onboard` list the same directories from the same scan. A
   quota window without a reset time says `Claude does not report when this window resets`

@@ -111,7 +111,7 @@ fn added_adrs(opened: &OpenedTask) -> Result<Vec<(String, String)>, String> {
         .collect())
 }
 
-/// The number of an ADR file, `docs/adr/0199-a-title.md`: four digits, a dash and a name.
+/// The number of an ADR file, `docs/adr/0205-a-title.md`: four digits, a dash and a name.
 fn adr_number(path: &str) -> Option<String> {
     let name = path.strip_prefix("docs/adr/")?;
     let (number, rest) = name.split_at_checked(4)?;
@@ -246,7 +246,7 @@ fn entry(
 }
 
 /// The detail a report row prints beside the state: the state's own summary, then, for a
-/// continued Task, the Task and round it continues (ADR-0206), so a chain of continuations reads
+/// continued Task, the Task and round it continues (ADR-0212), so a chain of continuations reads
 /// as one in the report.
 fn report_detail(
     cas: &Cas,
@@ -284,7 +284,7 @@ pub(super) fn recorded_rounds(
 
 /// The ID of every artifact of `artifact_type` an execution record of the Task published, in
 /// log order and each once: a continuation reads a round's findings and the evaluator's verdict
-/// this way (ADR-0206).
+/// this way (ADR-0212).
 pub(super) fn recorded_outputs(
     cas: &Cas,
     store: &EventStore,
@@ -314,7 +314,7 @@ pub(super) fn recorded_outputs(
 /// record published after that round and before the next one, `None` for a round no verdict
 /// followed. Read from the Task log in order, as the rounds are, so neither a later round on the
 /// same Snapshot nor the outputs `af task refresh` cleared lends a round another round's verdict:
-/// `af task findings --round N` and a continuation from round N both read it (ADR-0206).
+/// `af task findings --round N` and a continuation from round N both read it (ADR-0212).
 pub(super) fn round_evaluations(
     cas: &Cas,
     store: &EventStore,
@@ -357,7 +357,7 @@ pub(super) fn round_evaluations(
 
 /// The first `af/TaskOutput@1` an execution record of the Task published, in log order, with an
 /// `af/SourceTree@1` port that holds `snapshot_id`: the record's ID and the port's name, the
-/// durable output a continuation of a round on that Snapshot references (ADR-0206). `None` when
+/// durable output a continuation of a round on that Snapshot references (ADR-0212). `None` when
 /// no published output holds it.
 pub(super) fn output_holding(
     cas: &Cas,
@@ -721,7 +721,7 @@ fn event_times(
             continue;
         }
         // A gate retry reopened the finished Task to start a check Attempt on the same
-        // candidate (ADR-0199): `af task run --retry-gate` is a run, as `af task run` is.
+        // candidate (ADR-0205): `af task run --retry-gate` is a run, as `af task run` is.
         if review_store::store::task::gate_retry::is_gate_retried(&event) {
             let retry = review_store::store::task::gate_retry::read_gate_retried(&event)
                 .map_err(|e| e.to_string())?;

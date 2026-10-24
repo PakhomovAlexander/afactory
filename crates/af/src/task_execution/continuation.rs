@@ -1,4 +1,4 @@
-//! Continuing a reviewed Task (ADR-0206): `af task run NEW --from TASK [--round N]`, or a Task
+//! Continuing a reviewed Task (ADR-0212): `af task run NEW --from TASK [--round N]`, or a Task
 //! file's `continue` table.
 //!
 //! Resolution happens once, at plan time, from the `--state` Store alone, like an `inputs`

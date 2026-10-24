@@ -410,7 +410,7 @@ fn planning_uses_the_persisted_artifact_type_contract() {
     }
 }
 
-/// ADR-0202: the nodes that run first — a Task's Provider admissions — resolve before any other
+/// ADR-0208: the nodes that run first — a Task's Provider admissions — resolve before any other
 /// node starts, even one that sorts before them and depends on nothing; when one of them fails,
 /// no other node runs at all. Without them the plan order decides, as it always did.
 #[test]

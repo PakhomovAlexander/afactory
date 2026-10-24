@@ -6,7 +6,7 @@
 //! artifact: every report of the continued review round's selected reviewer results and the
 //! evaluator's verdict, each under a stable ID the implementer answers by. The artifact is typed input data,
 //! never authority: no acceptance, verification or budget crosses the Task boundary through it
-//! (ADR-0206). `af/TaskReadFirst@1` names, by content digest, the standing rules and the context
+//! (ADR-0212). `af/TaskReadFirst@1` names, by content digest, the standing rules and the context
 //! files a Task file points at, so a changed file is a changed plan.
 
 use std::collections::BTreeSet;

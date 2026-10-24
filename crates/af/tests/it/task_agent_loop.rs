@@ -1,4 +1,4 @@
-//! The agent loop's verbs end to end (ADR-0205), over Stores the CLI fixture pipelines build:
+//! The agent loop's verbs end to end (ADR-0211), over Stores the CLI fixture pipelines build:
 //! `af task findings` over a reviewed Task whose reviewer reports two findings; `af task
 //! materialize` and `af task diff` over a candidate that adds, deletes and changes the mode of
 //! files; delivering a verified verification Task of another Task's retained candidate; `af task

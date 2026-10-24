@@ -1,5 +1,5 @@
 //! `af/diff-subject@1`: the change a verifying Worker judges, as the paths it touched with their
-//! content before and after (ADR-0206).
+//! content before and after (ADR-0212).
 //!
 //! A Worker that judges a candidate without writing it — a reviewer, an evaluator, a verifier —
 //! gets the tree before the change beside its own, read-only, at `../base`, and this document

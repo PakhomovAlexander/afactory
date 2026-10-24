@@ -601,7 +601,7 @@ fn a_warm_check_runs_on_sources_stamped_after_the_build_it_reuses() {
         }
         std::thread::sleep(std::time::Duration::from_secs(3));
         // A holder that builds another Snapshot first removes the key's sources record, as the
-        // kernel does (ADR-0201): the waiting check then finds no record and stamps every
+        // kernel does (ADR-0207): the waiting check then finds no record and stamps every
         // source group after what the holder built.
         let key = target.parent().unwrap();
         let sources = key.parent().unwrap().join(format!(
@@ -1193,7 +1193,7 @@ fn both_kinds_are_warm_on_the_second_run_from_the_installed_toolchain() {
 
 /// The implementer of `fixture` replaced by one that also removes the kernel's rustup home, as
 /// a machine whose rustup home went away while a Task ran: the toolchain resolved when the plan
-/// was admitted (ADR-0199) and no longer does when the check probes it.
+/// was admitted (ADR-0205) and no longer does when the check probes it.
 fn removing_the_rustup_home_while_it_runs(fixture: &Fixture) {
     let implementer = fixture.repo.join(".af/task-packages/fixture/implementer");
     std::fs::write(
@@ -1228,7 +1228,7 @@ fn without_a_rustup_home_the_probe_fails_and_the_check_runs_cold_with_its_reason
         false,
         Some("build_cache = [\"cargo_target\"]"),
     ));
-    // Admission resolves the toolchain while the rustup home is there (ADR-0199); the check
+    // Admission resolves the toolchain while the rustup home is there (ADR-0205); the check
     // runs after the implementer removed it.
     removing_the_rustup_home_while_it_runs(&fixture);
     let outcome = start(&fixture, "no-rustup", 0);
@@ -1250,7 +1250,7 @@ fn without_a_rustup_home_the_probe_fails_and_the_check_runs_cold_with_its_reason
 }
 
 /// A check whose toolchain does not resolve on this machine is refused before the plan is
-/// admitted (ADR-0199): before the implementer runs, with the policy file and the field in the
+/// admitted (ADR-0205): before the implementer runs, with the policy file and the field in the
 /// message, and nothing charged. Here once with no rustup home at all, once with a Snapshot
 /// that pins a toolchain the rustup home does not hold.
 #[test]
@@ -1637,7 +1637,7 @@ const NO_WARM_DOCUMENTS: &str = include_str!("../fixtures/task-warm/no-warm-docu
 /// one, so every equality between them survives. Host timings are masked first, because two
 /// runs can agree on a duration by chance: the inspection's `clock/wall_ms` among them, the
 /// time between the Task's opening and its deadline; so are the host's load and CPUs a check
-/// report records (ADR-0199), which two runs share by chance and two machines need not.
+/// report records (ADR-0205), which two runs share by chance and two machines need not.
 #[derive(Default)]
 struct RunIndependent {
     first: std::collections::BTreeMap<String, usize>,
@@ -2175,7 +2175,7 @@ fn a_check_gets_four_private_directories_that_are_gone_after_it() {
 }
 
 /// A check that reports its build step after a second, then runs its "tests" for a second and
-/// a half, and leaves one build product (ADR-0201).
+/// a half, and leaves one build product (ADR-0207).
 const PHASED: &str = "import json, os, time\n\
 time.sleep(1.2)\n\
 step = {'schema': 'af.check-report/1', 'record': 'step', 'label': 'test-build', 'stage': 'build', 'exit_code': 0, 'command': ['true']}\n\
@@ -2248,7 +2248,7 @@ fn without_digits(text: &str) -> String {
     out
 }
 
-/// ADR-0201, items 3 and 6: a warm check with a declared build deadline records its layer and
+/// ADR-0207, items 3 and 6: a warm check with a declared build deadline records its layer and
 /// both phases beside its receipt; `af task show --checks` prints them, and the same content
 /// the second time starts warm with every source group fresh.
 #[test]
@@ -2308,7 +2308,7 @@ fn a_warm_check_records_its_layer_and_both_phases_and_show_checks_prints_them() 
     );
 }
 
-/// ADR-0201, item 3: a layer evicted under a running build is named as the cause, with its
+/// ADR-0207, item 3: a layer evicted under a running build is named as the cause, with its
 /// phase, its evictor and its time, in the result's reason and in the layer record.
 #[test]
 fn a_layer_evicted_during_the_build_names_the_sweep_as_the_cause() {
@@ -2338,7 +2338,7 @@ fn a_layer_evicted_during_the_build_names_the_sweep_as_the_cause() {
 }
 
 /// The check of an offline policy: npm reads only its cache, every proxy names a closed port,
-/// and an attempt to reach the registry fails at once (ADR-0201, item 4).
+/// and an attempt to reach the registry fails at once (ADR-0207, item 4).
 const OFFLINE: &str = "import os, urllib.request\n\
 assert os.environ['npm_config_offline'] == 'true'\n\
 for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):\n    assert os.environ[name] == 'http://127.0.0.1:9', name\n\
@@ -2350,7 +2350,7 @@ if not os.path.islink(link):\n    os.symlink('../tool/cli.js', link)\n\
 try:\n    urllib.request.urlopen('http://registry.npmjs.org/', timeout=10)\n    raise SystemExit('the network was reachable')\n\
 except OSError:\n    pass\n";
 
-/// ADR-0201, item 4: an offline check runs with `HTTP_PROXY` on a dead port and passes on a
+/// ADR-0207, item 4: an offline check runs with `HTTP_PROXY` on a dead port and passes on a
 /// pinned package its npm cache holds; the cache is filled once, by `npm exec` with the
 /// network, and a cached tarball whose bytes differ from the pin is refused before the check.
 #[test]

@@ -59,6 +59,14 @@ path = "junit.xml"
 #   load-safe timeout): twelve threads start /bin/sh together 24 times, and every short command
 #   must answer inside its 100 ms timeout, every command be done within 2 s and the whole run
 #   within 10 s. On the loaded gate a shell that answers took longer than 100 ms to start.
+# - heavy_starter_repair_uses_current_evidence: the same eleven-Attempt shape, with 5 s
+#   Workers and a 15 s heartbeat lease. It passed alone in 30.38 s but took 92.2 s in the
+#   full gate and exhausted resources at repair verification. Hold the suite's threads as
+#   the heavy-review fixtures do; this is suite exclusivity, not machine isolation (ADR-0202).
+# - targeted_starter_repair_uses_current_evidence: the same 5 s Python Workers and 15 s
+#   heartbeat lease. It passed alone in 19.385 s but took 27.888 s in the full gate and
+#   exhausted resources at repair verification. Preserve those budgets and execute it with
+#   the suite's threads held, alongside heavy starter repair (ADR-0203).
 # - guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness: the
 #   kernel compares the measured command's real elapsed_ms, building included, and requires a
 #   10% improvement of the candidate over a baseline slowed by 1.5 s inside the timed operation;
@@ -75,6 +83,8 @@ test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/authority_instances_at_both_package_sizes_pass_the_oracle$/)
 | test(/::heavy_review_cannot_erase_stale_claims$/)
 | test(/::heavy_review_cannot_erase_rediscovered_claims$/)
+| test(/::heavy_starter_repair_uses_current_evidence$/)
+| test(/::targeted_starter_repair_uses_current_evidence$/)
 | test(/::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness$/)
 | test(/concurrent_short_commands_complete_within_their_real_time_bounds$/)
 '''

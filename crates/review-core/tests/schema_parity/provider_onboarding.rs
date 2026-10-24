@@ -20,6 +20,8 @@ fn status() -> Value {
             "id": "codex-main",
             "kind": "codex",
             "registered": true,
+            "disabled_until": null,
+            "enable_command": null,
             "auth_context": "/home/o/.codex",
             "auth": "authenticated",
             "credential": "subscription",
@@ -85,6 +87,8 @@ fn status_states_are_stable_and_independent() {
         "id": "codex-ambient",
         "kind": "codex",
         "registered": false,
+        "disabled_until": null,
+        "enable_command": null,
         "auth_context": null,
         "auth": "not_authenticated",
         "credential": "none",
@@ -472,4 +476,28 @@ fn setup_never_carries_oauth_credential_or_provider_output() {
         &leaked_action,
         "OAuth material beside the next action",
     );
+}
+
+#[test]
+fn disabled_status_has_exact_expiry_and_enable_action_without_auth_or_usage_claims() {
+    let mut disabled = status();
+    disabled["providers"][0]["auth"] = json!("not_probed");
+    disabled["providers"][0]["credential"] = json!("none");
+    disabled["providers"][0]["usability"] = json!("unusable");
+    disabled["providers"][0]["usage"]["state"] = json!("not_applicable");
+    disabled["providers"][0]["disabled_until"] =
+        json!({"unix_seconds": 1800000000, "nanoseconds": 123456789});
+    disabled["providers"][0]["enable_command"] = json!("af provider enable codex-main");
+    assert_valid("provider-status-v3.json", &disabled);
+    for (path, value) in [
+        ("/schema", json!("af/provider-status@2")),
+        ("/providers/0/auth", json!("authenticated")),
+        ("/providers/0/enable_command", json!(null)),
+        ("/providers/0/disabled_until/nanoseconds", json!(1000000000)),
+        ("/providers/0/usage/state", json!("available")),
+    ] {
+        let mut invalid = disabled.clone();
+        *invalid.pointer_mut(path).unwrap() = value;
+        assert_invalid("provider-status-v3.json", &invalid, path);
+    }
 }

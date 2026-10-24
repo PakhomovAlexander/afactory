@@ -163,7 +163,7 @@ struct TaskFile {
     verification: Option<FileVerification>,
     #[serde(default)]
     facts: BTreeMap<String, TaskFactV1>,
-    /// Absent, the project's `[task.defaults] limits` of `.af/af.toml` fill it in (ADR-0206).
+    /// Absent, the project's `[task.defaults] limits` of `.af/af.toml` fill it in (ADR-0212).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -171,7 +171,7 @@ struct TaskFile {
     )]
     limits: Option<FileLimits>,
     /// Continue a recorded Task from its reviewed candidate: that round's candidate Snapshot is
-    /// the source and its findings the `findings` port (ADR-0206). Absent by default, and absent
+    /// the source and its findings the `findings` port (ADR-0212). Absent by default, and absent
     /// on round-trip, so a Task file without it keeps its exact revision and plan.
     #[serde(
         rename = "continue",
@@ -181,11 +181,11 @@ struct TaskFile {
     )]
     continue_from: Option<continuation::ContinueRefV1>,
     /// Files the Worker reads first, captured by digest from the tree the Task reads, each a
-    /// repository path with an optional `#section` (ADR-0206).
+    /// repository path with an optional `#section` (ADR-0212).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     context: Vec<String>,
     /// The tree before the change the Task's judging Workers read at `../base`; absent, the
-    /// source Snapshot's recorded base (ADR-0206).
+    /// source Snapshot's recorded base (ADR-0212).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1571,7 +1571,7 @@ fn start_bytes(
     {
         return Err("af review --file requires a Review Task profile".into());
     }
-    // What the Task file leaves to the project's `[task.defaults]` (ADR-0206), filled in from
+    // What the Task file leaves to the project's `[task.defaults]` (ADR-0212), filled in from
     // the Authority Snapshot before anything is recorded, and judged as a stated limit is.
     let project_defaults = defaults::captured(&cas, &policy_source.manifest)?;
     let filled = defaults::apply(
@@ -1695,7 +1695,7 @@ fn start_captured(
     }
     // A continuation is resolved from this Store too, before anything is recorded: the
     // reviewed candidate becomes the source and the round's findings the `findings` port, which
-    // the selected Pipeline must take, or the implementer would never read them (ADR-0206).
+    // the selected Pipeline must take, or the implementer would never read them (ADR-0212).
     let continued = file
         .continue_from
         .as_ref()
@@ -2377,7 +2377,7 @@ fn start_captured(
         None => format!("cli-{}-{:016x}", std::process::id(), opening_nonce()),
     };
     // A run records its process before it takes the lease, so `af task cancel` finds it
-    // (ADR-0205); a plan runs nothing to cancel.
+    // (ADR-0211); a plan runs nothing to cancel.
     let _run_record = (!options.plan_only)
         .then(|| runs::begin(&state, &revision.task_id, &writer))
         .transpose()?;
@@ -2482,7 +2482,7 @@ fn release(
         .map_err(|e| e.to_string());
     match outcome {
         // A writer that lost its lease cannot release it either: it says so, and how to
-        // continue (ADR-0203).
+        // continue (ADR-0209).
         Err(error) => Err(recovery::writer_lost(lease.task_id(), &error).unwrap_or(error)),
         Ok(()) => {
             released?;
@@ -2789,7 +2789,7 @@ fn execute(
     let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
     // Interrupted work is neither assembled nor finished: the lease is released and the Task
     // stays resumable with `af task run` (ADR-0129), unless a node used up its recovery
-    // allowance, whose next command the interrupt then names (ADR-0203).
+    // allowance, whose next command the interrupt then names (ADR-0209).
     if crate::interrupt::check().is_err() {
         if let Ok(projection) = runtime.projection()
             && let Some(next) = recovery::interrupted_next(&projection)
@@ -2827,7 +2827,7 @@ fn execute(
 }
 
 /// Refuse, before the plan is admitted and before any Attempt, a Task whose captured checks
-/// cannot run on this machine (ADR-0199): a check whose Rust toolchain does not resolve here.
+/// cannot run on this machine (ADR-0205): a check whose Rust toolchain does not resolve here.
 /// The message starts with the code policy file the refused field is in.
 fn admit_checks(
     cas: &Cas,
@@ -2919,7 +2919,7 @@ fn unreadable_goal(options: &ContinueOptions, path: &Path, error: String) -> Str
     )
 }
 
-/// `af task run NEW --from TASK [--round N] [--goal FILE]` (ADR-0206): plan, and with
+/// `af task run NEW --from TASK [--round N] [--goal FILE]` (ADR-0212): plan, and with
 /// `--execute` run, a new Task from the finished Task's own captured Task file with a
 /// `continue` table, so its source is the reviewed candidate and its implementer reads the
 /// round's findings. Without `--execute` it plans, exactly as `af task plan` does, and the plan
@@ -3146,11 +3146,11 @@ pub(super) fn run(
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
     // The process that takes the lease, recorded before it does, so `af task cancel` finds it
-    // by the lease's writer and `af task wait` knows a run is on its way (ADR-0205).
+    // by the lease's writer and `af task wait` knows a run is on its way (ADR-0211).
     let writer = format!("cli-{}", writer_pid());
     let run_record = runs::begin(&state, id, &writer)?;
     // A run that died holds its lease until it expires: wait it out rather than refuse
-    // (ADR-0203).
+    // (ADR-0209).
     let lease = recovery::take_lease(&cas, &mut store, id, &writer)?;
     let outcome = (|| {
         confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
@@ -3169,7 +3169,7 @@ pub(super) fn run(
             .ok_or("Unknown Task")?;
         recovery::announce(id, &before, &after)?;
         // After the resume's line: the first line says what the run does with an interrupted
-        // node (ADR-0203).
+        // node (ADR-0209).
         eprintln!(
             "af task run: Task {id} {}",
             state::deadline_line(deadline, clock()?)
@@ -3203,7 +3203,7 @@ pub(super) fn run(
         }
         // The sweep that ends this run records what it removed on this Task (ADR-0144).
         crate::storage::note_task_run(&state, lease.task_id());
-        // One line per node on stderr while the run waits, and a heartbeat (ADR-0205).
+        // One line per node on stderr while the run waits, and a heartbeat (ADR-0211).
         let _progress = (!quiet).then(|| runs::Progress::start(&state, id, started));
         execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
@@ -3275,7 +3275,7 @@ impl Presented {
     /// The run log's last lines: under `--json`, on stderr beside the document on stdout, the
     /// failing tests of a failed gate (the text on stdout already named them); in both
     /// formats the state line, so a run's log always ends with the state and the next command
-    /// (ADR-0205).
+    /// (ADR-0211).
     pub(super) fn tail(&self, json: bool) {
         if json {
             for line in &self.gate_tail {
@@ -3377,7 +3377,7 @@ pub(super) fn show_if_common(
         }
         return Ok(true);
     }
-    // Who cancelled the run that stopped it, above the `next:` line (ADR-0205).
+    // Who cancelled the run that stopped it, above the `next:` line (ADR-0211).
     if let Some(line) = runs::cancel_line(state, &task) {
         runs::note_for_show(line);
     }
@@ -3386,7 +3386,7 @@ pub(super) fn show_if_common(
 }
 
 /// One Task of the Store `--repo` and `--state` name, opened read-only for a command of the
-/// agent loop that reads it (ADR-0205): refused by name when the Store or the Task is not there,
+/// agent loop that reads it (ADR-0211): refused by name when the Store or the Task is not there,
 /// and when the Task was collected, whose records are gone.
 pub(super) struct OpenedTask {
     pub(super) state: PathBuf,
@@ -3989,7 +3989,7 @@ fn show_lines(
     } else if view.state.phase == review_core::task::state::TaskStatePhaseV1::Abandoned
         && let Some(abandoned) = recovery::abandoned(state, clock()?)
     {
-        // The interrupted node of an abandoned Task, and when it stopped (ADR-0203).
+        // The interrupted node of an abandoned Task, and when it stopped (ADR-0209).
         lines.push(format!("why: {}", abandoned.why()));
     }
     if let Some(id) = &state.plan_id {
@@ -4039,7 +4039,7 @@ fn show_lines(
                 .join(", ")
         ));
     }
-    // A running Attempt's Provider wait or re-ask (ADR-0202); a settled one's diagnostic,
+    // A running Attempt's Provider wait or re-ask (ADR-0208); a settled one's diagnostic,
     // printed by the failure lines, carries its retry history.
     lines.extend(provider_event_lines(state));
     lines.extend(state::failed_gate_tail(&state.task_id, view));
@@ -4052,7 +4052,7 @@ fn show_lines(
     Ok(lines)
 }
 
-/// One line per running Attempt that recorded a Provider event (ADR-0202), from its latest:
+/// One line per running Attempt that recorded a Provider event (ADR-0208), from its latest:
 /// `NODE: waiting 120 s for capacity (retry 2 of 3)` while the wait lasts, then
 /// `NODE: retry 2 of 3 after capacity is running`. A settled Attempt prints none: its
 /// diagnostic carries its retry history.
@@ -4815,7 +4815,7 @@ fn cache_states(caches: &[serde_json::Value]) -> String {
                 }
             } else {
                 let state = if reason == "cloned" {
-                    // A private copy of a busy layer (ADR-0201): warm with the holder's build.
+                    // A private copy of a busy layer (ADR-0207): warm with the holder's build.
                     format!("{base} copied {bytes} (layer busy)")
                 } else if first {
                     format!("{base} cold {reason}")
@@ -4867,7 +4867,7 @@ fn inspection(
     });
     if let Some(gate) = &view.gate {
         value["gate"] = serde_json::to_value(gate).map_err(|e| e.to_string())?;
-        // The gate's evidence the text prints beside the state (ADR-0199): each check node's
+        // The gate's evidence the text prints beside the state (ADR-0205): each check node's
         // latest check report, and every retry of a failed gate.
         let reports = latest_check_reports(cas, &state);
         if !reports.is_empty() {
@@ -5139,7 +5139,7 @@ fn inspection(
     if let Some(record) = &bindings {
         value["input_bindings"] = serde_json::to_value(record).map_err(|e| e.to_string())?;
     }
-    // The lineage of a continued Task (ADR-0206), read from its revision's provenance.
+    // The lineage of a continued Task (ADR-0212), read from its revision's provenance.
     if let Some((findings_id, record)) = continuation::recorded(cas, &state.revision)? {
         value["continues"] = continuation::inspection_value(&findings_id, &record);
     }

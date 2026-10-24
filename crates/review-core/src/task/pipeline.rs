@@ -22,7 +22,7 @@ where
 }
 
 /// The version a pipeline declares in `schema`. Each pipeline has exactly one: `af.pipeline/3`
-/// is the shape with a slot that declares `recovery_attempts` (ADR-0203), whether or not its
+/// is the shape with a slot that declares `recovery_attempts` (ADR-0209), whether or not its
 /// contract also declares a Project Brief port; `af.pipeline/2` is the shape whose contract
 /// declares a Project Brief port and whose slots declare no recovery allowance (ADR-0160); and
 /// every other pipeline is `af.pipeline/1`, which declares neither. So no pipeline has two
@@ -41,7 +41,7 @@ pub enum PipelineSchema {
 /// How many abandoned Attempts a node recovers from when its slot declares no
 /// `recovery_attempts`: an Attempt whose writer was lost or whose host cancelled it is settled
 /// as abandoned and the node is dispatched again once; a second loss stops the Task
-/// (ADR-0203).
+/// (ADR-0209).
 pub const DEFAULT_RECOVERY_ATTEMPTS: u32 = 1;
 /// The most abandoned Attempts a slot may declare it recovers from.
 pub const MAX_RECOVERY_ATTEMPTS: u32 = 8;
@@ -207,7 +207,7 @@ pub struct WorkerSlotV1 {
     pub independent_from: BTreeSet<String>,
     /// How many of this slot's Attempts may be abandoned, by a lost writer or a host
     /// cancellation, and dispatched again; absent means [`DEFAULT_RECOVERY_ATTEMPTS`]. Only an
-    /// `af.pipeline/3` slot declares it (ADR-0203).
+    /// `af.pipeline/3` slot declares it (ADR-0209).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -401,7 +401,7 @@ impl PipelineDefinitionV1 {
     }
 
     /// The version rule of ADR-0145 applied to the Brief port (ADR-0160) and the recovery
-    /// allowance (ADR-0203): a slot's `recovery_attempts` is `af.pipeline/3`'s alone, the Brief
+    /// allowance (ADR-0209): a slot's `recovery_attempts` is `af.pipeline/3`'s alone, the Brief
     /// port is `af.pipeline/2`'s and `af.pipeline/3`'s, and each version is the shape of a
     /// pipeline that declares what it adds.
     fn validate_version(&self) -> Result<(), String> {

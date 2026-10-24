@@ -1282,7 +1282,7 @@ fn uninstall_leaves_a_default_path_that_is_not_afs_link() {
 }
 
 /// `setup-shell --write` ends with what is left to do for that shell, `--remove` takes back
-/// exactly what it wrote, and without `$SHELL` it names every supported shell (ADR-0204).
+/// exactly what it wrote, and without `$SHELL` it names every supported shell (ADR-0210).
 #[test]
 fn setup_shell_ends_with_the_truth_and_removes_what_it_wrote() {
     let sandbox = Sandbox::new();
@@ -1343,7 +1343,7 @@ fn setup_shell_ends_with_the_truth_and_removes_what_it_wrote() {
 }
 
 /// `af self uninstall` names the completion files and man pages it leaves, with the command
-/// that removes them; `--purge` removes them too (ADR-0204).
+/// that removes them; `--purge` removes them too (ADR-0210).
 #[test]
 fn uninstall_names_the_shell_files_it_leaves_and_purge_removes_them() {
     let sandbox = Sandbox::new();

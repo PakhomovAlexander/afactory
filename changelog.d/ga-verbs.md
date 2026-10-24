@@ -1,5 +1,5 @@
 - The agent loop's verbs
-  ([ADR-0205](docs/adr/0205-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)):
+  ([ADR-0211](docs/adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)):
   `af task findings ID [--round N]` prints a review round's findings per reviewer — severity,
   confidence, title, location, evidence and fix, grouped by severity — and the evaluator's
   verdict (`af/task-findings@1`); `af task diff ID` prints a candidate's change as `git diff`

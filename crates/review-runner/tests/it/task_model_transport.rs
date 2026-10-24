@@ -116,7 +116,7 @@ impl WorkerModelAdapter for NativeModel<'_> {
         assert!(std::ptr::eq(cas, &self.fixture.cas));
         assert_eq!(workdir, self.fixture.directory.path());
         // The exact captured context, or once its re-ask: that request with one more feedback
-        // value naming why the reply did not parse (ADR-0202).
+        // value naming why the reply did not parse (ADR-0208).
         if input != self.fixture.input {
             let request: serde_json::Value = serde_json::from_slice(&input).unwrap();
             let mut original: serde_json::Value =

@@ -1,5 +1,5 @@
 - An Attempt survives one failed call inside its own wall and token reservation
-  ([ADR-0202](docs/adr/0202-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)):
+  ([ADR-0208](docs/adr/0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)):
   a typed reply that does not parse is read tolerantly and then re-asked once, with both replies
   kept and named (#283); Codex typed calls pass their reply contract as `--output-schema` (#33);
   a network, capacity, timeout or silent-exit failure is waited out and retried up to three

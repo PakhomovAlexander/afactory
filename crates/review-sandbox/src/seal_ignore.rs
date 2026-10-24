@@ -1,4 +1,4 @@
-//! What sealing leaves out of a candidate (ADR-0201): the files the project's own ignore rules
+//! What sealing leaves out of a candidate (ADR-0207): the files the project's own ignore rules
 //! exclude, which a Worker's test run or build generated (`__pycache__/`, `*.pyc`, `/target/`,
 //! `node_modules/`) and nobody meant to deliver.
 //!

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-detached:2",
   "title": "Task detached af/task-detached@2",
-  "$comment": "What `af task run ID --detach --json` prints (ADR-0205): the run it started in the background, its process and host, the log it writes, `runs/<task>-<run>.log` in the Task Store, whether that run was admitted (it holds the Task's lease and its plan is admitted), the Task's state when the command returned, and the command to run next: `af task wait ID` for an admitted run, `af task status ID` for one still starting, the Task's own next command or null for a run that ended. Version 2 adds `admitted` and `next_action`; version 1 claimed a run that was still starting.",
+  "$comment": "What `af task run ID --detach --json` prints (ADR-0211): the run it started in the background, its process and host, the log it writes, `runs/<task>-<run>.log` in the Task Store, whether that run was admitted (it holds the Task's lease and its plan is admitted), the Task's state when the command returned, and the command to run next: `af task wait ID` for an admitted run, `af task status ID` for one still starting, the Task's own next command or null for a run that ended. Version 2 adds `admitted` and `next_action`; version 1 claimed a run that was still starting.",
   "type": "object",
   "additionalProperties": false,
   "required": [

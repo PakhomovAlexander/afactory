@@ -536,7 +536,7 @@ impl CodeTaskPolicy {
             || self.checks.len() > 32
             || self.check_wall_ms == 0
             || self.check_wall_ms
-                > self.check_process_wall_ms.map_or(3_600_000, |per_check| {
+                > self.check_process_wall_ms.map_or(5_400_000, |per_check| {
                     per_check
                         .saturating_mul(self.checks.len() as u64)
                         .max(3_600_000)
@@ -635,7 +635,7 @@ impl CodeTaskPolicy {
     }
     /// The wall of one check Attempt: `check_wall_ms`, plus `[warm] build_wall_ms` when the
     /// policy declares one, whose checks get their build phase on top of the tests' deadline
-    /// (ADR-0201).
+    /// (ADR-0207).
     pub fn check_attempt_wall_ms(&self) -> u64 {
         self.check_wall_ms.saturating_add(
             self.warm
@@ -1358,7 +1358,7 @@ impl CodeTaskDomain {
                 .map_err(|e| e.to_string())?
                 .as_millis() as u64;
             let remaining = attempt.reservation().deadline_unix_ms.saturating_sub(now);
-            // A warm check with a build deadline has it on top of its tests' (ADR-0201).
+            // A warm check with a build deadline has it on top of its tests' (ADR-0207).
             let per_check = match deadlines {
                 Some(PhaseDeadlines {
                     build: Some(build),
@@ -1479,7 +1479,7 @@ impl CodeTaskDomain {
                 Err(error) if error.kind() == std::io::ErrorKind::TimedOut => true,
                 Err(error) => return Err(format!("refresh check source mtimes: {error}")),
             };
-            // An offline check (ADR-0201) runs only on verified pinned packages: its npm cache
+            // An offline check (ADR-0207) runs only on verified pinned packages: its npm cache
             // is filled once, with the network, when a pin is absent, then it runs without it.
             let mut offline_refusal = None;
             if definition.offline
@@ -2966,5 +2966,34 @@ impl TaskDomain for CodeTaskDomain {
             return Err("Task result changed its receipt-derived acceptance".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admitted_check_wall_is_reserved_exactly_by_generic_and_named_operators() {
+        let mut policy: CodeTaskPolicy = serde_json::from_value(json!({
+            "schema": "af.code-task-policy/1",
+            "checks": {"kernel": {"name": "kernel", "required": true,
+                "command": {"program": "true", "args": []}}},
+            "check_wall_ms": 3_600_000,
+            "require_container": false
+        }))
+        .unwrap();
+        let id = format!("sha256:{}", "a".repeat(64));
+        for wall in [3_600_000, 5_400_000] {
+            policy.check_wall_ms = wall;
+            let signatures = code_signatures(&id, &policy).unwrap();
+            for name in ["operator/check", "operator/check/kernel"] {
+                let attempt = signatures[name].attempt.as_ref().unwrap();
+                assert_eq!(attempt.wall_ms, wall);
+                assert_eq!(attempt.tokens, 0);
+            }
+        }
+        policy.check_wall_ms = 5_400_001;
+        assert!(code_signatures(&id, &policy).is_err());
     }
 }

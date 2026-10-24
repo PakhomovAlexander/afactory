@@ -7,7 +7,7 @@
   actions are typed fields: `install`, one `{kind, command, docs}` per kind whose CLI was not
   found, and `next_action`, the scan to run again with its own `--kind`, `--dir`, `--id` and
   `--all` when no CLI was found
-  ([ADR-0200](docs/adr/0200-detect-provider-logins-and-register-them-through-add.md),
+  ([ADR-0206](docs/adr/0206-detect-provider-logins-and-register-them-through-add.md),
   amended).
 - `af task findings ID --round N` shows round N's own evaluator verdict, the one the Task log
   recorded after that round, instead of the last one the current execution holds, and a
@@ -37,7 +37,7 @@
   record that published the candidate, not TASK's result when the result holds a later Snapshot.
   A round whose candidate no recorded output holds is refused with `af/error@1`, and binding a
   source refuses any reference whose output holds a Snapshot other than the bound one
-  ([ADR-0206](docs/adr/0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md),
+  ([ADR-0212](docs/adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md),
   amended).
 - `af doctor`'s fixes are commands a shell runs as given, and what a command cannot say moves to a
   new hint: `af doctor --json` prints `af/doctor@2` (`schemas/doctor-v2.json`; version 1 is
@@ -47,7 +47,7 @@
   onboard --repo PATH`, its hint says it is a token-free preview; the PATH fix is the line for
   the shell `$SHELL` names, its hint where it belongs. A problem no single command fixes (no
   known package manager, Spotlight indexing, an unreadable lock) has a null `fix` and a hint that
-  says what to do ([ADR-0204](docs/adr/0204-make-the-first-run-say-what-to-do-next.md), amended).
+  says what to do ([ADR-0210](docs/adr/0210-make-the-first-run-say-what-to-do-next.md), amended).
 - `af doctor`'s PATH fix runs in the user's own shell and keeps the directory literal: `export
   PATH='DIR':"$PATH"` for bash, zsh and sh (a `'` written `'\''`), `fish_add_path 'DIR'` for
   fish, `set paths = ['DIR' $@paths]` for elvish and `$env:PATH = 'DIR' +

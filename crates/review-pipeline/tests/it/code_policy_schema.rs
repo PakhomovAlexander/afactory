@@ -38,6 +38,63 @@ fn rust_accepts(value: &Value) -> bool {
 }
 
 #[test]
+fn ninety_minute_checks_preserve_explicit_process_and_aggregate_bounds() {
+    let schema = validator();
+    for wall in [1, 3_600_000, 5_400_000] {
+        let mut value = policy(None, false);
+        value["check_wall_ms"] = json!(wall);
+        let parsed: CodeTaskPolicy = serde_json::from_value(value.clone()).unwrap();
+        parsed.validate().unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+        assert!(schema.is_valid(&value));
+    }
+    for wall in [0, 5_400_001, u64::MAX] {
+        let mut value = policy(None, false);
+        value["check_wall_ms"] = json!(wall);
+        assert!(!rust_accepts(&value), "{value}");
+        assert!(!schema.is_valid(&value), "{value}");
+    }
+    let mut value = policy(None, false);
+    value["check_wall_ms"] = json!(5_400_000);
+    value["unexpected"] = json!(true);
+    assert!(!rust_accepts(&value));
+    assert!(!schema.is_valid(&value));
+    value.as_object_mut().unwrap().remove("unexpected");
+    value["check_process_wall_ms"] = json!(3_600_000);
+    assert!(
+        !rust_accepts(&value),
+        "one explicitly capped process still has a 60m aggregate"
+    );
+    let mut second = value["checks"]["kernel"].clone();
+    second["name"] = json!("second");
+    value["checks"]["second"] = second;
+    for wall in [5_400_000, 5_400_001, 7_200_000] {
+        value["check_wall_ms"] = json!(wall);
+        assert!(rust_accepts(&value), "{value}");
+        assert!(schema.is_valid(&value), "{value}");
+    }
+    value["check_wall_ms"] = json!(7_200_001);
+    assert!(!rust_accepts(&value));
+    value["check_wall_ms"] = json!(5_400_000);
+    for process in [0, 3_600_001] {
+        value["check_process_wall_ms"] = json!(process);
+        assert!(!rust_accepts(&value));
+        assert!(!schema.is_valid(&value));
+    }
+    value["check_wall_ms"] = json!(99);
+    value["check_process_wall_ms"] = json!(100);
+    assert!(
+        !rust_accepts(&value),
+        "a process cap cannot exceed the Attempt wall"
+    );
+    // The explicit branch retains its existing 60m floor even for tiny per-process caps.
+    value["check_wall_ms"] = json!(3_600_000);
+    assert!(rust_accepts(&value));
+    value["check_wall_ms"] = json!(3_600_001);
+    assert!(!rust_accepts(&value));
+}
+
+#[test]
 fn accepted_policies_round_trip_through_the_schema() {
     let schema = validator();
     for warm in [
@@ -374,7 +431,7 @@ fn offline_policy(check: Value, warm: Option<Value>) -> Value {
     value
 }
 
-/// An offline check (ADR-0201) needs the warm `npm_cache`, and only it pins npm packages, each
+/// An offline check (ADR-0207) needs the warm `npm_cache`, and only it pins npm packages, each
 /// an exact version and a SHA-256; both sides refuse the same shapes.
 #[test]
 fn offline_checks_and_their_npm_pins_round_trip_and_refuse_alike() {
@@ -424,7 +481,7 @@ fn offline_checks_and_their_npm_pins_round_trip_and_refuse_alike() {
 
 /// This repository's own `.af/code-policy.toml` loads and validates, and its markdownlint
 /// check runs offline from the warm `npm_cache` with `markdownlint-cli2` pinned by SHA-256
-/// (ADR-0201).
+/// (ADR-0207).
 #[test]
 fn this_repositorys_markdownlint_check_runs_offline_on_a_pinned_package() {
     let root = std::env::var_os("AF_WORKSPACE_ROOT")
@@ -456,7 +513,8 @@ fn this_repositorys_markdownlint_check_runs_offline_on_a_pinned_package() {
             .contains(&review_pipeline::task::warm_check::WarmBuildCacheKind::NpmCache)
     );
     assert_eq!(warm.build_wall_ms(), Some(2_400_000));
-    assert_eq!(policy.check_attempt_wall_ms(), 6_000_000);
+    // The build's 40 minutes, then the tests' own 90 (ADR-0201).
+    assert_eq!(policy.check_attempt_wall_ms(), 7_800_000);
     assert!(
         !policy.checks["kernel"].offline,
         "the kernel gate keeps its network"

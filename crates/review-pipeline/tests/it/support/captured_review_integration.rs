@@ -272,7 +272,7 @@ pub fn run_integration_handoff() -> tempfile::TempDir {
 }
 
 /// The lease a delayed handoff holds. The heartbeat renews every lease once a third of it has
-/// passed (ADR-0203), production's 60 s lease and this one alike; 15 s lets a preparation
+/// passed (ADR-0209), production's 60 s lease and this one alike; 15 s lets a preparation
 /// outlast the lease without a minute-long test.
 pub const DELAYED_LEASE_MS: u64 = 15_000;
 

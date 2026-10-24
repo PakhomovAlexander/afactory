@@ -5,7 +5,7 @@
 //! fixes it, exactly as a shell runs it, and a hint with whatever else the operator needs to know:
 //! a placeholder's choices, a step to take first. Nothing here calls a model, logs in, installs or writes a file: the only processes it
 //! starts are version checks, the Provider status probe and one anonymous HTTPS request to the
-//! release source while update checks are on (ADR-0204). The charged end-to-end Provider check
+//! release source while update checks are on (ADR-0210). The charged end-to-end Provider check
 //! stays `af provider doctor`.
 
 use std::path::{Path, PathBuf};
@@ -1286,7 +1286,7 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
             hint,
         );
     }
-    // The same names-only scan `af provider status` and `af onboard` list (ADR-0200).
+    // The same names-only scan `af provider status` and `af onboard` list (ADR-0206).
     let found: Vec<String> = registry
         .unregistered
         .iter()

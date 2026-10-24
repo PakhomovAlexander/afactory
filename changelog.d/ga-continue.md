@@ -6,7 +6,7 @@
   show` prints `continues TASK round N`, `--json` carries `continues` in
   `af/task-inspection@13` (`@12` is no longer written or read), and `af task report` names it in
   the row
-  ([ADR-0206](docs/adr/0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
+  ([ADR-0212](docs/adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
 - The kernel's `kernel/implementer` and `kernel/implementer-long` take the optional `findings`
   input and list each finding by ID as `fixed`, `disputed` or `out of scope`;
   `kernel/implementation-reviewed`, `kernel/implementation-ux` and `kernel/review-light` declare

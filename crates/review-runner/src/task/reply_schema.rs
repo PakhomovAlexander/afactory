@@ -1,5 +1,5 @@
 //! The native output schema of a typed Worker request, derived from the request's own captured
-//! output schemas (ADR-0103, ADR-0202). Every adapter that constrains a typed reply natively
+//! output schemas (ADR-0103, ADR-0208). Every adapter that constrains a typed reply natively
 //! builds it here, so the two cannot drift: Claude Code receives [`transport`] inline as
 //! `--json-schema`; Codex receives [`strict`] as the `--output-schema` file.
 //!

@@ -928,7 +928,7 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
         planned["plan"]["authority"]["allowed_effects"],
         json!(["execute-checks", "read-source"])
     );
-    // The verifier has two Attempts (ADR-0202, issue #283): a reply that fails twice in one
+    // The verifier has two Attempts (ADR-0208, issue #283): a reply that fails twice in one
     // Attempt still gets a second Attempt with typed feedback. The author keeps its two.
     let allowances = &planned["graph"]["allowances"];
     for node in ["root.nodes.verify", "root.nodes.author"] {

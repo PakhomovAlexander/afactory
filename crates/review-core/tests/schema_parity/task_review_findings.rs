@@ -1,4 +1,4 @@
-//! `af/TaskReviewFindings@1` and `af/TaskReadFirst@1` (ADR-0206): the Rust types and the schemas
+//! `af/TaskReviewFindings@1` and `af/TaskReadFirst@1` (ADR-0212): the Rust types and the schemas
 //! accept and refuse the same documents.
 
 use super::{assert_invalid, assert_valid};

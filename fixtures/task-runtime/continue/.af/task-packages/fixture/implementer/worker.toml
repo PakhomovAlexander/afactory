@@ -26,7 +26,7 @@ covers = []
 [signature.contract.inputs.source.affinity]
 kind = "unbound"
 
-# Optional: the findings of the Task this one continues (ADR-0206).
+# Optional: the findings of the Task this one continues (ADR-0212).
 [signature.contract.inputs.findings]
 artifact_type = "af/TaskReviewFindings@1"
 cardinality = "one"
