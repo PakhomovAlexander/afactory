@@ -158,6 +158,13 @@ pub(crate) fn exhausted_any(state: &TaskProjection) -> bool {
     !exhausted(state).is_empty()
 }
 
+/// The next command of an interrupted Task when it is not `af task run ID`: the one its
+/// abandoned state names (`af task show --json`'s `next_action`) once a node used up its
+/// recovery allowance, which `af task run` refuses.
+pub(crate) fn interrupted_next(state: &TaskProjection) -> Option<String> {
+    exhausted_any(state).then(|| format!("af task start --file {}", super::state::TASK_FILE))
+}
+
 /// Every node without an output whose abandoned Attempts used up its recovery allowance.
 fn exhausted(state: &TaskProjection) -> Vec<TaskNodeRecovery> {
     let Some(execution) = state.execution.as_ref() else {
@@ -224,22 +231,25 @@ pub(super) fn announce(
             recovery.abandoned(),
             recovery.allowance
         );
-        if orphaned.contains(&recovery.node) {
-            eprintln!(
+        let line = if orphaned.contains(&recovery.node) {
+            format!(
                 "resuming Task {}: node {} was interrupted at {at} (its writer was lost); \
                  settling the lost Attempt and dispatching a new one ({count})",
                 preview::text(id),
                 preview::text(&recovery.node),
-            );
+            )
         } else {
-            eprintln!(
+            format!(
                 "resuming Task {}: node {} was interrupted at {at}; dispatching a new Attempt \
                  ({count})",
                 preview::text(id),
                 preview::text(&recovery.node),
-            );
-        }
+            )
+        };
+        eprintln!("{}", crate::power::wrapped(&line));
     }
+    // What `--verbose` says about the power assertion comes after the resume's line.
+    crate::power::say();
     Ok(())
 }
 

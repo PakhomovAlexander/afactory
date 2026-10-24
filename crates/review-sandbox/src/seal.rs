@@ -17,7 +17,7 @@ use review_source_git::{
 };
 use review_store::Cas;
 
-use crate::{Sandbox, ensure_directory_mode, restore_writable_dirs};
+use crate::{AttachedBase, Sandbox, ensure_directory_mode, restore_writable_dirs};
 
 /// What a node changed in its sandbox, relative to the snapshot it was given.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -196,7 +196,17 @@ impl Drop for CleanupDir {
 }
 
 pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
+    let attached = sandbox.take_attached();
     let (root, baseline, dir) = sandbox.into_parts();
+    // The base a judging Worker compared against is outside the tree, so the tree's diff
+    // cannot see a change to it; it is compared with what was attached instead (ADR-0203).
+    if let Some(attached) = &attached
+        && let Err(error) = verify_attached(dir.path(), attached)
+    {
+        restore_writable_dirs(&root);
+        restore_writable_dirs(&dir.path().join("base"));
+        return Err(error);
+    }
     let (final_manifest, mutations) = match scan_and_diff(&root, baseline.as_ref()) {
         Ok(result) => result,
         Err(error) => {
@@ -213,6 +223,50 @@ pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
         mutations,
         _cleanup: CleanupDir { dir: Some(dir) },
     })
+}
+
+/// Refuse a base, or a file beside it, that differs from what was attached: the Worker that
+/// read it changed the evidence it judged by. The error names what changed.
+fn verify_attached(dir: &Path, attached: &AttachedBase) -> Result<(), std::io::Error> {
+    let changed = |what: String| {
+        std::io::Error::other(format!(
+            "the read-only base beside the tree was changed ({what}); a judging Worker may not \
+             change the tree it compares against, so this Attempt's result is refused"
+        ))
+    };
+    let now = crate::entry_stats(&dir.join("base"))
+        .map_err(|error| changed(format!("../base cannot be read again: {error}")))?;
+    let name = |path: &Path| format!("../base/{}", path.display());
+    let mut paths: Vec<String> = attached
+        .stats
+        .iter()
+        .filter_map(|(path, stat)| match now.get(path) {
+            None => Some(format!("deleted {}", name(path))),
+            Some(current) if current != stat => Some(format!("modified {}", name(path))),
+            Some(_) => None,
+        })
+        .chain(
+            now.keys()
+                .filter(|path| !attached.stats.contains_key(*path))
+                .map(|path| format!("added {}", name(path))),
+        )
+        .collect();
+    paths.sort();
+    // A changed file changes its directory's times too; name the file, not only the directory.
+    paths.sort_by_key(|path| path.ends_with("../base/"));
+    if let Some(first) = paths.first() {
+        return Err(changed(if paths.len() > 1 {
+            format!("{first} and {} more", paths.len() - 1)
+        } else {
+            first.clone()
+        }));
+    }
+    for (name, bytes) in &attached.beside {
+        if std::fs::read(dir.join(name)).ok().as_deref() != Some(bytes.as_slice()) {
+            return Err(changed(format!("modified ../{name}")));
+        }
+    }
+    Ok(())
 }
 
 /// Walk the sealed tree and diff it against the baseline in one pass — reading and hashing

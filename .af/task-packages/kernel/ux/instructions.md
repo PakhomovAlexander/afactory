@@ -50,6 +50,17 @@ source-only review.
 - The Task requirements payload names the change, its deliverables and its acceptance. Judge
   that scope.
 
+## The base and the Diff Subject
+
+Your `tree/` is the source you judge, read-only. When the kernel recorded the base the candidate
+was made from, two files sit beside it, outside the tree: `../base` is that base Snapshot's tree,
+read-only, and `../diff-subject.json` (`af/diff-subject@1`) names both Snapshots and every path
+whose content or mode differs, with the content digest on each side. Use them to check a
+before/after claim: take the changed paths from `../diff-subject.json` and compare
+`../base/PATH` with `PATH`, instead of reconstructing the base from the goal or the history.
+Neither is there when the Task recorded no base, or when the Worker runs in a container that
+mounts only its tree; then judge the tree alone and say so where a claim needs the base.
+
 ## Reply
 
 Return the reply envelope the request describes with one `result` payload holding exactly

@@ -812,7 +812,10 @@ fn a_check_past_only_the_eviction_bound_passes_and_the_next_check_finds_it_remov
     );
     let shown = show(&fixture, "soft-grow");
     assert!(
-        shown.contains("cargo_target cold empty, removed 6.0 KiB (bound_exceeded max_bytes)"),
+        shown.contains(
+            "cargo_target cold empty, removed 6.0 KiB (bound_exceeded max_bytes); the next check \
+             runs cold"
+        ),
         "{shown}"
     );
 

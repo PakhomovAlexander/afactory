@@ -966,6 +966,10 @@ impl TaskRuntime<'_, '_> {
             let started = SystemTime::now();
             let timer = Instant::now();
             let mut result = self.execute_attempt(input, attempt.as_ref());
+            // A Worker that missed its wall is named by its slot, not as Review's reviewer.
+            if let (Err(error), Some(slot)) = (&mut result.outputs, slot.as_deref()) {
+                *error = review_runner::model::name_timed_out_worker(error, slot);
+            }
             let refused_input = result.refused_input;
             // The kernel's accounting of the Attempt's usage, one `af.usage.account` span.
             let usage_span = if attempt.is_some() {
@@ -975,6 +979,7 @@ impl TaskRuntime<'_, '_> {
             };
             let accounting = usage_span.enter();
             let mut charge_incomplete = false;
+            let mut charge_floor: Option<u128> = None;
             if let Some(attempt) = &attempt {
                 // Capture known charge before output CAS admission: a crash during output or
                 // diagnostic publication must not hide an already reported Provider overrun.
@@ -1012,15 +1017,17 @@ impl TaskRuntime<'_, '_> {
                             .and_then(|o| o.reported_usage.as_ref())
                             .map(|u| u.chargeable_tokens.get()),
                     )
-                    // Reported but incomplete counters keep the reservation floor; an
-                    // observation without any counter is no report (ADR-0143).
-                    .chain(
-                        observation
-                            .as_ref()
-                            .filter(|o| !o.charge_complete && o.reported_usage.is_some())
-                            .map(|_| u128::from(attempt.reservation().tokens)),
-                    )
                     .max();
+                // Reported but incomplete counters keep the reservation floor at settlement; an
+                // observation without any counter is no report (ADR-0143). The floor is not
+                // usage: the wall record and the usage observation below keep what was
+                // observed, so an Attempt abandoned meanwhile is charged only that (ADR-0200).
+                if observation
+                    .as_ref()
+                    .is_some_and(|o| !o.charge_complete && o.reported_usage.is_some())
+                {
+                    charge_floor = Some(u128::from(attempt.reservation().tokens));
+                }
                 result.charged_tokens = charge;
                 let wall = review_store::TaskAttemptWall {
                     run_id: task_run_id(self.lease.task_id()).map_err(|e| e.to_string())?,
@@ -1070,6 +1077,9 @@ impl TaskRuntime<'_, '_> {
                     if !observation.charge_complete {
                         charge_incomplete = true;
                         refuse_billing(&mut result.outputs, INCOMPLETE_BILLING);
+                        if observation.reported_usage.is_some() {
+                            charge_floor = Some(u128::from(attempt.reservation().tokens));
+                        }
                     }
                     let id = review_store::store::task::execution::usage_observation::capture_task_usage_observation(
                         self.cas, Producer::Attempt { run_id: wall.run_id.clone(), node_id: input.node.clone(), attempt_id: attempt.id().into() },
@@ -1140,7 +1150,7 @@ impl TaskRuntime<'_, '_> {
                         .unwrap_or(Cause::Unreported),
                 }
             });
-            let charged = known.unwrap_or(0);
+            let mut charged = known.unwrap_or(0);
             drop(accounting);
             crate::telemetry::usage_account_end(
                 &usage_span,
@@ -1211,6 +1221,33 @@ impl TaskRuntime<'_, '_> {
                         }
                     }
                 };
+                // An Attempt that answered, or failed on its own, is charged at least the
+                // reservation its incomplete counters keep; an abandoned one only what it was
+                // observed to use, and its reservation returns to the Task (ADR-0200).
+                let abandoned = matches!(conclusion, TaskAttemptResultV1::Abandoned { .. });
+                if !abandoned
+                    && unknown_usage.is_none()
+                    && let Some(floor) = charge_floor.filter(|floor| *floor > charged)
+                {
+                    let mut usage = result
+                        .usage_id
+                        .as_deref()
+                        .map(|id| review_runner::task::usage::read_task_usage_exact(self.cas, id))
+                        .transpose()?
+                        .unwrap_or_default();
+                    usage.chargeable_tokens = floor.into();
+                    result.usage_id = Some(review_runner::task::usage::persist_task_usage_exact(
+                        self.cas,
+                        Producer::Attempt {
+                            run_id: task_run_id(self.lease.task_id()).map_err(|e| e.to_string())?,
+                            node_id: input.node.clone(),
+                            attempt_id: attempt.id().into(),
+                        },
+                        attempt.context_id(),
+                        &usage,
+                    )?);
+                    charged = floor;
+                }
                 let settlement = self
                     .store
                     .lock()

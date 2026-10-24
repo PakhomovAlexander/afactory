@@ -354,6 +354,18 @@ fn bound_source_refusal(bound: &review_source_git::task::TaskSourceBoundFromV1) 
     format!("{head}, so {remedy}")
 }
 
+/// Whether a verification Task left the Snapshot it verified unchanged: its output is that
+/// Snapshot itself, by identity. Another Snapshot with the same tree is not the one its checks
+/// and Workers ran on, so it proves nothing about the candidate (ADR-0202).
+fn left_unchanged(
+    source_snapshot_id: &str,
+    derived_snapshot_id: &str,
+    source_content: &str,
+    derived_content: &str,
+) -> bool {
+    derived_snapshot_id == source_snapshot_id && derived_content == source_content
+}
+
 /// The one exception to exact source ancestry (ADR-0202): a verified Task of kind
 /// `verification` that bound its `source` from another Task's recorded candidate and left it
 /// unchanged proves that candidate. Its delivery places the candidate on the candidate Task's
@@ -379,7 +391,12 @@ fn verified_candidate(
     let materialize = format!(
         "`af task materialize {id} --into DIR` writes its Snapshot into a worktree you choose"
     );
-    if derived.content_digest != source.content_digest {
+    if !left_unchanged(
+        source_snapshot_id,
+        derived_snapshot_id,
+        &source.content_digest,
+        &derived.content_digest,
+    ) {
         return Err(format!(
             "Task {id} is a verification Task that changed the tree it verified, so it proves no \
              candidate and its Snapshot has no ancestry to deliver; {materialize}"
@@ -679,5 +696,20 @@ mod heartbeat_tests {
             prefix,
             "ticks cannot acquire or renew another writer"
         );
+    }
+}
+
+#[cfg(test)]
+mod verified_candidate_tests {
+    use super::*;
+
+    /// The ADR-0202 exception holds only for the very Snapshot the verification Task verified:
+    /// a different Snapshot with identical content is refused, and so is a changed tree.
+    #[test]
+    fn only_the_verified_snapshot_itself_proves_the_candidate() {
+        let id = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+        assert!(left_unchanged(&id('1'), &id('1'), &id('c'), &id('c')));
+        assert!(!left_unchanged(&id('1'), &id('2'), &id('c'), &id('c')));
+        assert!(!left_unchanged(&id('1'), &id('1'), &id('c'), &id('d')));
     }
 }

@@ -265,6 +265,17 @@ impl Consumer {
     fn explain(&self, outcome: &Value) -> String {
         let cas = self.cas();
         let mut out = format!("result: {}\n", outcome["result"]);
+        // The Task's own account, which names each failed node and its first error line.
+        if let Some(task) = outcome["task_id"].as_str() {
+            let (_, shown, _) = self.af(&[
+                "task",
+                "show",
+                task,
+                "--state",
+                self.state.to_str().unwrap(),
+            ]);
+            out.push_str(&format!("show: {shown}\n"));
+        }
         for port in ["baseline", "candidate", "comparison"] {
             let Some(id) = outcome["result"]["outputs"][port]["artifact_ids"][0].as_str() else {
                 out.push_str(&format!("{port}: absent\n"));

@@ -47,9 +47,53 @@ impl Drop for Held {
     }
 }
 
-/// Hold the assertion for the rest of this command, and say so once under `verbose`. A
-/// `caffeinate` that cannot start is no reason to refuse the work: the lease and the recovery of
-/// a lost writer still hold, so af says so under `verbose` and runs on.
+/// What `hold` has to say under `verbose`, until [`say`] prints it: after the run's first line,
+/// which says what the run does with an interrupted node (ADR-0200).
+static NOTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The widest line af prints here; a longer one continues on lines indented by two spaces.
+const COLUMNS: usize = 100;
+
+/// `text` wrapped at word boundaries to [`COLUMNS`], each continuation line indented by two
+/// spaces. A single word longer than a line stays whole.
+pub(crate) fn wrapped(text: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split(' ').filter(|word| !word.is_empty()) {
+        let indent = if lines.is_empty() { "" } else { "  " };
+        if !line.is_empty() && indent.len() + line.len() + 1 + word.len() > COLUMNS {
+            lines.push(format!("{indent}{line}"));
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    let indent = if lines.is_empty() { "" } else { "  " };
+    lines.push(format!("{indent}{line}"));
+    lines.join("\n")
+}
+
+/// Print, once, what [`hold`] noted under `verbose`.
+pub(crate) fn say() {
+    let note = NOTE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(note) = note {
+        eprintln!("{note}");
+    }
+}
+
+fn note(text: String) {
+    *NOTE.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(wrapped(&text));
+}
+
+/// Hold the assertion for the rest of this command, and note it under `verbose`, for [`say`]
+/// to print after the run's first line. A `caffeinate` that cannot start is no reason to refuse
+/// the work: the lease and the recovery of a lost writer still hold, so af says so under
+/// `verbose` and runs on.
 pub(crate) fn hold(verbose: bool) -> Option<Held> {
     let pid = std::process::id();
     let caffeinate = Path::new(CAFFEINATE);
@@ -68,22 +112,22 @@ pub(crate) fn hold(verbose: bool) -> Option<Held> {
     match started {
         Ok(child) => {
             if verbose {
-                eprintln!(
+                note(format!(
                     "af: holding a power assertion while this Task runs ({} {}): the Mac does \
                      not idle-sleep, nor sleep on AC power",
                     request.program.display(),
                     request.args.join(" ")
-                );
+                ));
             }
             Some(Held(child))
         }
         Err(error) => {
             if verbose {
-                eprintln!(
+                note(format!(
                     "af: no power assertion ({} could not start: {error}); a sleep longer than \
                      the Task's lease ends this run, and `af task run TASK_ID` resumes it",
                     request.program.display()
-                );
+                ));
             }
             None
         }
@@ -93,6 +137,22 @@ pub(crate) fn hold(verbose: bool) -> Option<Held> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The power line and the resume line, as long as they get, fit in 100 columns.
+    #[test]
+    fn long_lines_wrap_at_100_columns_with_an_indent() {
+        let text = "af: holding a power assertion while this Task runs (/usr/bin/caffeinate -i \
+                    -s -w 68588): the Mac does not idle-sleep, nor sleep on AC power";
+        let lines = wrapped(text);
+        assert_eq!(
+            lines,
+            "af: holding a power assertion while this Task runs (/usr/bin/caffeinate -i -s -w \
+             68588): the Mac\n  does not idle-sleep, nor sleep on AC power"
+        );
+        assert!(lines.lines().all(|line| line.len() <= COLUMNS));
+        assert_eq!(lines.split_whitespace().collect::<Vec<_>>().join(" "), text);
+        assert_eq!(super::wrapped("short"), "short");
+    }
 
     #[test]
     fn macos_requests_caffeinate_for_this_process_and_every_other_system_requests_nothing() {

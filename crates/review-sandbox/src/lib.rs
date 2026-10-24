@@ -81,6 +81,7 @@ pub use workspace::{
     workspace_id, workspace_in_use,
 };
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -180,6 +181,23 @@ pub struct Sandbox {
     /// [`Sandbox::into_parts`] and [`Sandbox::preserve`] can move it out while the `Drop` below
     /// still runs.
     _dir: Option<tempfile::TempDir>,
+    /// The base attached beside the tree, as attached: what sealing verifies the Worker left
+    /// unchanged (ADR-0203).
+    attached: std::sync::Mutex<Option<AttachedBase>>,
+}
+
+/// The base tree and the files beside it as [`Sandbox::attach_base`] wrote them. Their
+/// read-only modes stop an accidental write, not an owner who restores write permission:
+/// sealing compares both with this record and refuses a sandbox whose base changed.
+pub(crate) struct AttachedBase {
+    /// Every entry under `base/` as attached, by its path below it: its inode, size, mode and
+    /// modification and change times. A write, a `chmod`, a rename or a removal changes one of
+    /// them, and comparing them costs one `stat` per entry instead of hashing the tree again.
+    pub(crate) stats: BTreeMap<PathBuf, EntryStat>,
+    pub(crate) beside: Vec<(String, Vec<u8>)>,
+    /// The template the base was cloned from, kept alive while this sandbox lives so another
+    /// judge of the same change can clone it too.
+    _template: Option<Arc<SandboxTemplate>>,
 }
 
 impl Drop for Sandbox {
@@ -397,6 +415,16 @@ impl SandboxTemplate {
         })
     }
 
+    /// Where the template's tree is, read-only to every clone of it.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The tree the template holds.
+    pub fn manifest(&self) -> &Manifest {
+        self.manifest.as_ref()
+    }
+
     /// A template at a stable root this handle does not own. Only the workspace module builds
     /// one, after it verified that `root` holds exactly `manifest`.
     pub(crate) fn at_stable_root(manifest: Manifest, root: PathBuf) -> SandboxTemplate {
@@ -428,6 +456,7 @@ impl Sandbox {
             isolation: Isolation::None,
             baseline: Arc::new(manifest.clone()),
             _dir: Some(dir),
+            attached: std::sync::Mutex::new(None),
         };
         if mode == Mode::ReadOnly {
             sandbox.apply_read_only()?;
@@ -460,6 +489,7 @@ impl Sandbox {
             isolation,
             baseline: Arc::clone(&template.manifest),
             _dir: Some(dir),
+            attached: std::sync::Mutex::new(None),
         };
         if mode == Mode::ReadOnly {
             apply_directories_read_only(cloned_directories)?;
@@ -531,6 +561,34 @@ impl Sandbox {
         cas: &Cas,
         beside: &[(&str, &[u8])],
     ) -> std::io::Result<PathBuf> {
+        self.attach(manifest, beside, None, |base| {
+            materialize(manifest, cas, base).map_err(std::io::Error::other)
+        })
+    }
+
+    /// [`Self::attach_base`] from a materialized `template` of the base: a copy-on-write clone
+    /// of it, so a second judge of the same change does not build the base tree again. The
+    /// sandbox keeps the template alive until it is sealed or dropped.
+    pub fn attach_base_template(
+        &self,
+        template: &Arc<SandboxTemplate>,
+        beside: &[(&str, &[u8])],
+    ) -> std::io::Result<PathBuf> {
+        self.attach(
+            template.manifest.as_ref(),
+            beside,
+            Some(Arc::clone(template)),
+            |base| clone_tree(&template.root, base, Mode::ReadOnly).map(|_| ()),
+        )
+    }
+
+    fn attach(
+        &self,
+        manifest: &Manifest,
+        beside: &[(&str, &[u8])],
+        template: Option<Arc<SandboxTemplate>>,
+        place: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<PathBuf> {
         let dir = self
             ._dir
             .as_ref()
@@ -542,16 +600,67 @@ impl Sandbox {
                 "a file beside the tree is one plain name",
             ));
         }
+        let mut attached = self
+            .attached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if attached.is_some() {
+            return Err(std::io::Error::other("the sandbox already has its base"));
+        }
         let base = dir.path().join("base");
-        materialize(manifest, cas, &base).map_err(std::io::Error::other)?;
+        place(&base)?;
         apply_tree_read_only(&base)?;
         for (name, bytes) in beside {
             let path = dir.path().join(name);
             std::fs::write(&path, bytes)?;
             std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o444))?;
         }
+        let _ = manifest;
+        *attached = Some(AttachedBase {
+            stats: entry_stats(&base)?,
+            beside: beside
+                .iter()
+                .map(|(name, bytes)| ((*name).to_owned(), bytes.to_vec()))
+                .collect(),
+            _template: template,
+        });
         Ok(base)
     }
+}
+
+/// What [`AttachedBase`] keeps of one entry: inode, device, size, mode, and the modification
+/// and change times in nanoseconds.
+pub(crate) type EntryStat = (u64, u64, u64, u32, i128, i128);
+
+/// [`EntryStat`] of every entry under `root`, `root` itself as the empty path, links not
+/// followed.
+pub(crate) fn entry_stats(root: &Path) -> std::io::Result<BTreeMap<PathBuf, EntryStat>> {
+    use std::os::unix::fs::MetadataExt;
+    let stat = |metadata: &std::fs::Metadata| -> EntryStat {
+        (
+            metadata.ino(),
+            metadata.dev(),
+            metadata.size(),
+            metadata.mode(),
+            i128::from(metadata.mtime()) * 1_000_000_000 + i128::from(metadata.mtime_nsec()),
+            i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec()),
+        )
+    };
+    let mut stats = BTreeMap::new();
+    stats.insert(PathBuf::new(), stat(&std::fs::symlink_metadata(root)?));
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        for entry in std::fs::read_dir(root.join(&relative))? {
+            let entry = entry?;
+            let path = relative.join(entry.file_name());
+            let metadata = std::fs::symlink_metadata(entry.path())?;
+            if metadata.is_dir() {
+                pending.push(path.clone());
+            }
+            stats.insert(path, stat(&metadata));
+        }
+    }
+    Ok(stats)
 }
 
 /// Make every file under `root` read-only, then every directory, `root` included.
@@ -606,6 +715,14 @@ impl Sandbox {
         }
         // The emptied handle drops as a no-op: no tree to make writable, no `TempDir` to remove.
         root
+    }
+
+    /// The base attached beside the tree, taken out of the handle for sealing.
+    pub(crate) fn take_attached(&self) -> Option<AttachedBase> {
+        self.attached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 
     pub(crate) fn into_parts(mut self) -> (PathBuf, Arc<Manifest>, tempfile::TempDir) {

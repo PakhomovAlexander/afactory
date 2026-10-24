@@ -720,14 +720,17 @@ impl ReviewTaskDomain {
         let mut selected = BTreeMap::new();
         let mut missing = BTreeSet::new();
         for (name, requirement) in &self.policy.reviewers {
-            if !input.inputs.contains_key(name) {
-                let declared = self.graph.nodes[&input.node].inputs.contains_key(name);
-                if !declared && *requirement == DemandRequirement::Advisory {
-                    // Not part of this Pipeline's review (see `unbound_allowed`).
+            match reviewer_presence(
+                *requirement,
+                self.graph.nodes[&input.node].inputs.contains_key(name),
+                input.inputs.contains_key(name),
+            ) {
+                ReviewerPresence::NotInThisReview => continue,
+                ReviewerPresence::Missing => {
+                    missing.insert(name.clone());
                     continue;
                 }
-                missing.insert(name.clone());
-                continue;
+                ReviewerPresence::Answered => {}
             }
             let (id, stage): (_, serde_json::Value) = self.value(cas, input, name, RESULT_TYPE)?;
             let stage = crate::reviewer_stage_output(stage)?;
@@ -1331,9 +1334,87 @@ impl TaskDomain for ReviewTaskDomain {
     }
 }
 
+/// Where a policy reviewer stands in one reduce invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewerPresence {
+    /// Its result arrived.
+    Answered,
+    /// The Round lacks it: its result never arrived, or it is required and the Pipeline never
+    /// bound it.
+    Missing,
+    /// An advisory reviewer the Pipeline never bound (`unbound_allowed`): not part of this
+    /// review, so never missing.
+    NotInThisReview,
+}
+
+/// Where reviewer `requirement` stands when the reducer `declared` its input and its result
+/// `arrived`: only an advisory reviewer may be absent without being missing, and only when the
+/// Pipeline never bound it; a bound one whose result never arrived is missing.
+fn reviewer_presence(
+    requirement: DemandRequirement,
+    declared: bool,
+    arrived: bool,
+) -> ReviewerPresence {
+    if arrived {
+        ReviewerPresence::Answered
+    } else if !declared && requirement == DemandRequirement::Advisory {
+        ReviewerPresence::NotInThisReview
+    } else {
+        ReviewerPresence::Missing
+    }
+}
+
 #[cfg(test)]
 mod advisory_reviewer_tests {
     use super::*;
+
+    /// The reduce's runtime reduction: an unbound advisory `uix` is left out of `missing`, a
+    /// bound advisory `uix` whose result never arrived stays in it, and so does every required
+    /// reviewer without a result, bound or not.
+    #[test]
+    fn the_reduce_leaves_only_an_unbound_advisory_reviewer_out_of_missing() {
+        use DemandRequirement::{Advisory, Required};
+        fn missing(
+            reviewers: &[(&'static str, DemandRequirement, bool, bool)],
+        ) -> Vec<&'static str> {
+            reviewers
+                .iter()
+                .filter(|(_, requirement, declared, arrived)| {
+                    reviewer_presence(*requirement, *declared, *arrived)
+                        == ReviewerPresence::Missing
+                })
+                .map(|(name, ..)| *name)
+                .collect()
+        }
+        assert_eq!(
+            missing(&[
+                ("bugs", Required, true, true),
+                ("correctness", Required, true, true),
+                ("uix", Advisory, false, false),
+            ]),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            missing(&[
+                ("bugs", Required, true, true),
+                ("correctness", Required, true, true),
+                ("uix", Advisory, true, false),
+            ]),
+            ["uix"]
+        );
+        assert_eq!(
+            missing(&[
+                ("bugs", Required, false, false),
+                ("correctness", Required, true, false),
+                ("uix", Advisory, true, true),
+            ]),
+            ["bugs", "correctness"]
+        );
+        assert_eq!(
+            reviewer_presence(Advisory, false, false),
+            ReviewerPresence::NotInThisReview
+        );
+    }
 
     fn policy_with(reviewers: &[(&str, DemandRequirement)]) -> ReviewTaskPolicy {
         ReviewTaskPolicy {

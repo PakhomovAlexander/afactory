@@ -230,16 +230,22 @@ impl Cas {
     }
 
     /// Stage `bytes` under a temporary name no other call or process can hold, private, in `dir`,
-    /// and rename it to `final_path`.
+    /// and move it to `final_path` only while that path is absent. An object another writer
+    /// published meanwhile keeps its directory entry, which may already be durable and
+    /// referenced: it is verified to hold exactly `bytes` and accepted, never replaced.
     fn publish_object(&self, dir: &Path, final_path: &Path, bytes: &[u8]) -> Result<(), CasError> {
         crate::local_fs::create_private_dir_all(dir)?;
         // `tempfile` creates the file with `O_EXCL` and mode 0600.
         let mut temporary = tempfile::Builder::new().prefix(".tmp-").tempfile_in(dir)?;
         temporary.write_all(bytes)?;
-        temporary
-            .persist(final_path)
-            .map_err(|error| CasError::Io(error.error))?;
-        Ok(())
+        match temporary.persist_noclobber(final_path) {
+            Ok(_) => Ok(()),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let digest = canonical::blob_content_id(bytes);
+                with_verify_scratch(|buffer| verify_exact_bytes(final_path, &digest, bytes, buffer))
+            }
+            Err(error) => Err(CasError::Io(error.error)),
+        }
     }
 
     /// Whether another writer already published exactly `bytes` at `final_path`: the race a
@@ -329,15 +335,18 @@ impl Cas {
         buffer: &mut [u8],
     ) -> Result<(String, u64), CasError> {
         let final_path = self.path_for(&digest);
-        if final_path.exists() {
-            return self.accept_existing_streamed_object(digest, size, final_path, buffer);
-        }
         crate::local_fs::create_private_dir_all(
             final_path.parent().expect("object path has a parent"),
         )?;
-        temporary
-            .persist(&final_path)
-            .map_err(|error| CasError::Io(error.error))?;
+        // The move happens only while the object is absent: one another writer published
+        // (before this call or racing it) keeps its directory entry, verified, never replaced.
+        match temporary.persist_noclobber(&final_path) {
+            Ok(_) => {}
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return self.accept_existing_streamed_object(digest, size, final_path, buffer);
+            }
+            Err(error) => return Err(CasError::Io(error.error)),
+        }
         self.pending.lock().expect("cas pending").insert(final_path);
         Ok((digest, size))
     }
@@ -1028,6 +1037,46 @@ fn sync_concurrently<'p>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another writer publishes the object between this call's existence check and its move:
+    /// the publication keeps that writer's directory entry (the same inode), verifies its bytes
+    /// and succeeds, in both the buffered and the streamed path; a different object there is
+    /// refused, never replaced.
+    #[test]
+    fn publication_never_replaces_an_object_another_writer_published() {
+        use std::os::unix::fs::MetadataExt;
+        let (_dir, cas) = cas();
+        let bytes = b"published once".as_slice();
+        let digest = canonical::blob_content_id(bytes);
+        let final_path = cas.path_for(&digest);
+        let shard = final_path.parent().unwrap().to_path_buf();
+        crate::local_fs::create_private_dir_all(&shard).unwrap();
+        fs::write(&final_path, bytes).unwrap();
+        let inode = fs::metadata(&final_path).unwrap().ino();
+        cas.publish_object(&shard, &final_path, bytes).unwrap();
+        assert_eq!(fs::metadata(&final_path).unwrap().ino(), inode);
+
+        let mut temporary = tempfile::NamedTempFile::new_in(&shard).unwrap();
+        temporary.write_all(bytes).unwrap();
+        let mut buffer = vec![0; 64];
+        let size = bytes.len() as u64;
+        assert_eq!(
+            cas.publish_streamed_object(temporary, digest.clone(), size, &mut buffer)
+                .unwrap(),
+            (digest.clone(), size)
+        );
+        assert_eq!(fs::metadata(&final_path).unwrap().ino(), inode);
+        assert_eq!(fs::read(&final_path).unwrap(), bytes);
+
+        fs::write(&final_path, b"other bytes").unwrap();
+        let inode = fs::metadata(&final_path).unwrap().ino();
+        assert!(matches!(
+            cas.publish_object(&shard, &final_path, bytes),
+            Err(CasError::Corrupt { .. })
+        ));
+        assert_eq!(fs::metadata(&final_path).unwrap().ino(), inode);
+        assert_eq!(fs::read(&final_path).unwrap(), b"other bytes");
+    }
 
     #[test]
     fn typed_read_retains_exact_identity_and_rechecks_replaced_bytes() {

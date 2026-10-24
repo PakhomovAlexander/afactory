@@ -29,6 +29,7 @@ mod requirements;
 mod validation;
 pub use local::LocalTaskPackage;
 pub use validation::CapturedTaskPlanValidator;
+
 #[cfg(test)]
 mod tests;
 
@@ -1018,17 +1019,17 @@ impl TaskPlanCompiler {
         let remaining = limits.deadline_unix_ms.saturating_sub(now_unix_ms);
         // Bound mandatory non-verifier time along the dependency path; independent Workers
         // may overlap. Verification keeps its separately protected aggregate allocation.
+        let path = graph.mandatory_path()?;
         let required = graph
             .mandatory_path_wall_ms()?
             .checked_add(limits.verification.wall_ms)
             .ok_or("Task wall reservation overflow")?;
         if now_unix_ms >= limits.deadline_unix_ms || remaining < required {
-            reasons.push(format!(
-                "Remaining Task deadline cannot protect verification and declared Attempts: it \
-                 needs wall_ms >= {required} (the longest path of mandatory Attempts {} + the \
-                 verification reserve {}) and the Task has {remaining}",
-                required - limits.verification.wall_ms,
-                limits.verification.wall_ms
+            reasons.push(deadline_refusal(
+                &path,
+                limits.verification.wall_ms,
+                required,
+                remaining,
             ));
         }
         Ok(reasons)
@@ -1275,4 +1276,28 @@ impl TaskPlanCompiler {
         }
         Ok(expected.generated_origins)
     }
+}
+
+/// The deadline refusal of a Task whose remaining wall cannot hold the longest path of
+/// mandatory Attempts and the verification reserve: each node on that path with `1 × its
+/// Attempt's wall`, the reserve, their total and the Task's wall, so the numbers add up.
+fn deadline_refusal(
+    path: &[(String, u64)],
+    verification_ms: u64,
+    required: u64,
+    remaining: u64,
+) -> String {
+    let attempts = if path.is_empty() {
+        "no mandatory Attempt".to_owned()
+    } else {
+        path.iter()
+            .map(|(node, wall)| format!("{node} 1 × {wall}"))
+            .collect::<Vec<_>>()
+            .join(" + ")
+    };
+    format!(
+        "Remaining Task deadline cannot protect verification and declared Attempts: it needs \
+         wall_ms >= {required} = the longest path of mandatory Attempts ({attempts}) + the \
+         verification reserve {verification_ms}, and the Task has {remaining}"
+    )
 }

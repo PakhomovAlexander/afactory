@@ -599,6 +599,18 @@ impl TaskExecutionProjection {
         })
     }
 
+    /// Whether any of `nodes` that a plan pays for started an Attempt and published no output:
+    /// a reviewer or evaluator that ran and failed.
+    pub(super) fn failed_attempts_of(&self, nodes: &BTreeSet<String>) -> bool {
+        self.attempts.values().any(|attempt| {
+            let node = &attempt.reservation.node;
+            nodes.contains(node)
+                && self.graph.allowances.contains_key(node)
+                && !attempt.released
+                && !self.outputs.contains_key(node)
+        })
+    }
+
     pub fn pending_attempts(&self) -> Vec<String> {
         self.attempts
             .iter()
@@ -1039,7 +1051,7 @@ impl TaskProjection {
                     attempt,
                     *charged_tokens,
                     raw_artifact_ids,
-                    false,
+                    usage_observation::ObservedCharge::Observation,
                 )?;
                 execution
                     .budget
@@ -1252,7 +1264,13 @@ impl TaskProjection {
                     &attempt,
                     *charged_tokens,
                     raw_artifact_ids,
-                    unknown_usage.is_some(),
+                    if matches!(result, TaskAttemptResultV1::Abandoned { .. }) {
+                        usage_observation::ObservedCharge::Abandoned
+                    } else {
+                        usage_observation::ObservedCharge::Settlement {
+                            unknown_usage: unknown_usage.is_some(),
+                        }
+                    },
                 )?;
                 if let TaskAttemptResultV1::Succeeded { output_id } = result {
                     let out = output(cas, output_id)?;

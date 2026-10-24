@@ -4,22 +4,46 @@
 use std::time::Duration;
 
 /// The host's 1-minute load average, or `None` when it reports none: Linux's `/proc/loadavg`,
-/// macOS's `vm.loadavg` through `/usr/sbin/sysctl`, nothing elsewhere.
+/// macOS's `vm.loadavg` through `/usr/sbin/sysctl`, else through `/usr/bin/uptime`, nothing
+/// elsewhere.
+///
+/// A sandboxed macOS Worker may not look `vm.loadavg` up by name (`sysctl` answers `Operation
+/// not permitted`), while `getloadavg(3)`, which reads it by number, is allowed. The workspace
+/// forbids `unsafe`, so the call is not made here directly: `uptime` makes it.
 pub fn load_average_1m() -> Option<f64> {
-    let text = if cfg!(target_os = "linux") {
-        std::fs::read_to_string("/proc/loadavg").ok()?
+    if cfg!(target_os = "linux") {
+        first_load(&std::fs::read_to_string("/proc/loadavg").ok()?)
     } else if cfg!(target_os = "macos") {
-        let mut command = std::process::Command::new("/usr/sbin/sysctl");
-        command.args(["-n", "vm.loadavg"]).env_clear();
-        let output = crate::run_supervised(&mut command, None, Duration::from_secs(5)).ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        String::from_utf8(output.stdout).ok()?
+        host_output("/usr/sbin/sysctl", &["-n", "vm.loadavg"])
+            .and_then(|text| first_load(&text))
+            .or_else(|| uptime_load(&host_output("/usr/bin/uptime", &[])?))
     } else {
+        None
+    }
+}
+
+/// What `program` prints with `args`, in a cleared environment, when it exits 0 within 5 s.
+fn host_output(program: &str, args: &[&str]) -> Option<String> {
+    let mut command = std::process::Command::new(program);
+    command.args(args).env_clear();
+    let output = crate::run_supervised(&mut command, None, Duration::from_secs(5)).ok()?;
+    if !output.status.success() {
         return None;
-    };
-    first_load(&text)
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+/// The 1-minute load `uptime` prints after `load averages:` (macOS) or `load average:`
+/// (`… load averages: 1.52 1.58 1.59`).
+fn uptime_load(text: &str) -> Option<f64> {
+    let (_, loads) = text.rsplit_once("load average")?;
+    let loads = loads.trim_start_matches('s').strip_prefix(':')?;
+    let load: f64 = loads
+        .split([' ', ','])
+        .find(|field| !field.is_empty())?
+        .parse()
+        .ok()?;
+    (load.is_finite() && load >= 0.0).then_some(load)
 }
 
 /// This host's name, as `hostname` prints it: Linux's `/proc/sys/kernel/hostname`, `/bin/hostname`
@@ -69,6 +93,21 @@ mod tests {
         assert!(available_cpus() >= 1);
         let load = load_average_1m().expect("macOS and Linux report a load average");
         assert!(load >= 0.0 && load.is_finite());
+    }
+
+    /// `uptime`'s spellings on macOS and Linux, and what is not a load.
+    #[test]
+    fn uptime_names_the_one_minute_load() {
+        assert_eq!(
+            uptime_load(" 4:05  up 14 days,  7:30, 4 users, load averages: 31.69 22.52 20.89\n"),
+            Some(31.69)
+        );
+        assert_eq!(
+            uptime_load(" 10:01:02 up 3 days,  1 user,  load average: 0.52, 0.58, 0.59\n"),
+            Some(0.52)
+        );
+        assert_eq!(uptime_load("load averages: -1 0 0"), None);
+        assert_eq!(uptime_load("up 3 days"), None);
     }
 
     #[test]

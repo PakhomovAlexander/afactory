@@ -223,9 +223,20 @@ fn invalid_or_incomplete_packages_fail_closed() {
     copy(&source, &floating);
     let manifest = floating.join("worker.toml");
     let text = std::fs::read_to_string(&manifest).unwrap();
+    // Whatever release the package is at, its version cut to `major.minor`.
+    let version = text
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap();
+    let floating_version = version.rsplit_once('.').unwrap().0;
     std::fs::write(
         &manifest,
-        text.replace("version = \"1.4.0\"", "version = \"1.4\""),
+        text.replacen(
+            &format!("version = \"{version}\""),
+            &format!("version = \"{floating_version}\""),
+            1,
+        ),
     )
     .unwrap();
     refuses(&floating, "is not one exact major.minor.patch release");

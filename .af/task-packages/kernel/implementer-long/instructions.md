@@ -15,6 +15,9 @@ same gates and a failure there ends the Task:
 3. The tests of every crate you touched, with `--workspace` selection
    (`cargo test --workspace --lib`, `cargo test --workspace --test <stem>`), never `-p`.
 4. `npx --yes markdownlint-cli2@0.22.1 <each Markdown file you changed>`
+5. Run the full suite as the last step; no edit after it: `cargo nextest run --workspace`, every
+   test and no filter. A fix after it means running it again; a candidate sealed after an edit
+   the full suite never saw is a candidate nobody verified.
 
 Build output and caches stay where the tools put them: anything added under a top-level name the
 repository did not have (`target/`, `.cache/`) and any new top-level dotfile are discarded as
@@ -60,6 +63,7 @@ the Task captured.
 
 Return the reply envelope the request describes. The `report` payload's `summary` states what
 you changed, which tests and fixtures you added, and any deliverable you could not complete
-and why. When a `findings` input is present, the summary also lists every finding by its `id`
+and why. It ends with one line about that last full run, `last full run at <commit/time>; edits
+after it: none`, with the run's summary line. When a `findings` input is present, the summary also lists every finding by its `id`
 as `fixed`, `disputed` or `out of scope`, each with one line of reason. Be exact; the evaluator
 reads only this summary, the sealed tree and the check receipts.

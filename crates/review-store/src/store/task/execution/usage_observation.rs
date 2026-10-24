@@ -25,6 +25,19 @@ pub fn capture_task_usage_observation(
     .map_err(|error| StoreError::Artifact(error.to_string()))
 }
 
+/// What a record with a native usage observation charges, by what it settles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ObservedCharge {
+    /// A `UsageObserved` record: the usage seen so far, never below the counters it reports.
+    Observation,
+    /// A settlement the Attempt's own answer or failure ended: incomplete reported counters
+    /// keep the reservation floor.
+    Settlement { unknown_usage: bool },
+    /// An abandoned Attempt's settlement: charged what was observed, never its reservation
+    /// (ADR-0200).
+    Abandoned,
+}
+
 pub(super) fn validate(
     cas: &Cas,
     task_id: &str,
@@ -32,7 +45,7 @@ pub(super) fn validate(
     attempt: &RecordedAttempt,
     charged_tokens: u128,
     raw_artifact_ids: &[String],
-    unknown_usage: bool,
+    charge: ObservedCharge,
 ) -> Result<(), StoreError> {
     let mut seen = false;
     for id in raw_artifact_ids {
@@ -65,16 +78,22 @@ pub(super) fn validate(
             ));
         }
         // An incomplete observation that reported no counter at all is no usage report: such
-        // an Attempt settles as unknown usage at zero (ADR-0143). One that reported any counter
-        // keeps the reservation floor.
-        let unreported = unknown_usage && observation.reported_usage.is_none();
+        // an Attempt settles as unknown usage at zero (ADR-0143). A settlement of one that
+        // reported any counter keeps the reservation floor, unless the Attempt was abandoned:
+        // that is charged what was observed (ADR-0200). An observation is no settlement.
+        let floor = match charge {
+            ObservedCharge::Settlement { unknown_usage } => {
+                !(unknown_usage && observation.reported_usage.is_none())
+            }
+            ObservedCharge::Observation | ObservedCharge::Abandoned => false,
+        };
         if charged_tokens
             < observation
                 .reported_usage
                 .as_ref()
                 .map_or(0, |u| u.chargeable_tokens.get())
             || (!observation.charge_complete
-                && !unreported
+                && floor
                 && charged_tokens < u128::from(attempt.reservation.tokens))
         {
             return Err(conflict(

@@ -231,3 +231,155 @@ fn abandoned_work_below_its_reservation_needs_a_usage_report_or_the_marker() {
     assert_eq!(row.abandoned, Some(TaskAbandonCause::HostCancelled));
     assert_eq!(row.charged_tokens, 0);
 }
+
+/// A native observation of 3 tokens with `charge_complete: false`, against the Attempt's larger
+/// reservation, as the runtime retains it before settlement: the wall record keeps the observed
+/// usage beside the observation.
+fn observe_incomplete(f: &mut Fixture, lease: &TaskLease, attempt: &PreparedTaskAttempt) -> String {
+    let observation = task::usage::TaskUsageObservationV1 {
+        reported_usage: Some(task::usage::TaskTokenUsageV3::charge_only(3)),
+        charge_complete: false,
+    };
+    let run_id = task_run_id(lease.task_id()).unwrap();
+    f.store
+        .record_task_attempt_wall_with_observation(
+            &crate::TaskAttemptWall {
+                run_id: run_id.clone(),
+                attempt_id: attempt.id().into(),
+                node_id: NODE.into(),
+                round: 0,
+                epoch: u32::try_from(lease.epoch).unwrap(),
+                started_unix_ms: now().unwrap(),
+                elapsed_ms: 1,
+                usage: Some(task::usage::TaskTokenUsageV3::charge_only(3)),
+            },
+            &observation,
+        )
+        .unwrap();
+    execution::usage_observation::capture_task_usage_observation(
+        &f.cas,
+        review_core::Producer::Attempt {
+            run_id,
+            node_id: NODE.into(),
+            attempt_id: attempt.id().into(),
+        },
+        attempt.context_id(),
+        &observation,
+    )
+    .unwrap()
+}
+
+/// ADR-0200 item 4 with a native observation: an Attempt whose Provider reported 3 tokens
+/// without completing its counters is charged exactly 3 when its host cancels it and when its
+/// writer is lost, and the rest of its reservation returns to the Task; settled by its own
+/// failure instead, the same counters still keep the reservation floor.
+#[test]
+fn abandoned_attempts_with_incomplete_native_usage_are_charged_what_was_observed() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "writer-1", 3_000)
+        .unwrap();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    f.record_execution_inputs(&lease);
+    let limit = f.state().revision.limits.tokens;
+
+    // Writer loss: the successor settles the Attempt from the retained wall and observation.
+    let lost = start(&mut f, &lease, "lost");
+    assert!(u128::from(lost.reservation().tokens) > 3);
+    observe_incomplete(&mut f, &lease, &lost);
+    let second = take_over(&mut f, &lease, "writer-2");
+    let state = f.state();
+    let execution = state.execution.as_ref().unwrap();
+    let row = execution
+        .attempt_accounting()
+        .into_iter()
+        .find(|row| row.attempt_id == lost.id())
+        .unwrap();
+    assert_eq!(row.abandoned, Some(TaskAbandonCause::WriterLost));
+    assert_eq!(row.charged_tokens, 3);
+    assert_eq!(execution.budget.committed_tokens(), 3);
+    assert_eq!(execution.budget.reserved_tokens(), 0);
+    assert_eq!(execution.budget.remaining_limits().tokens, limit - 3);
+
+    // Host cancellation: the Attempt's own writer settles it abandoned at the observed 3.
+    let cancelled = start(&mut f, &second, "cancelled");
+    let observation_id = observe_incomplete(&mut f, &second, &cancelled);
+    let diagnostic_id = f
+        .cas
+        .put_json(&json!({"schema":"af.task-diagnostic/1","cause":"host_cancelled"}))
+        .unwrap();
+    let usage_id = f.cas.put_json(&json!({"provider":"partial"})).unwrap();
+    f.store
+        .settle_task_attempt(
+            &f.cas,
+            &second,
+            TaskExecutionRecordV1::Settled {
+                attempt_id: cancelled.id().into(),
+                charged_tokens: 3,
+                result: TaskAttemptResultV1::Abandoned { diagnostic_id },
+                raw_artifact_ids: vec![observation_id.clone()],
+                usage_id: Some(usage_id.clone()),
+                unknown_usage: None,
+            },
+            &f.authority,
+        )
+        .unwrap();
+    f.store = EventStore::open(&f.path).unwrap();
+    let state = f.state();
+    let execution = state.execution.as_ref().unwrap();
+    let row = execution
+        .attempt_accounting()
+        .into_iter()
+        .find(|row| row.attempt_id == cancelled.id())
+        .unwrap();
+    assert_eq!(row.abandoned, Some(TaskAbandonCause::HostCancelled));
+    assert_eq!(row.charged_tokens, 3);
+    assert_eq!(execution.budget.committed_tokens(), 6);
+    assert_eq!(execution.budget.remaining_limits().tokens, limit - 6);
+}
+
+/// The reservation floor of incomplete counters still binds an Attempt its own failure ended:
+/// settled below its reservation it is refused, at its reservation it is admitted.
+#[test]
+fn a_failed_attempt_with_incomplete_native_usage_keeps_the_reservation_floor() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f.open();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    f.record_execution_inputs(&lease);
+    let attempt = start(&mut f, &lease, "failed");
+    let reserved = u128::from(attempt.reservation().tokens);
+    let observation_id = observe_incomplete(&mut f, &lease, &attempt);
+    let diagnostic_id = f.cas.put_json(&json!({"failure":"fixture"})).unwrap();
+    let settle = |charged_tokens| TaskExecutionRecordV1::Settled {
+        attempt_id: attempt.id().into(),
+        charged_tokens,
+        result: TaskAttemptResultV1::Failed {
+            diagnostic_id: diagnostic_id.clone(),
+            feedback_id: None,
+        },
+        raw_artifact_ids: vec![observation_id.clone()],
+        usage_id: None,
+        unknown_usage: None,
+    };
+    let refused = f
+        .store
+        .settle_task_attempt(&f.cas, &lease, settle(3), &f.authority)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("incomplete native observation floor"),
+        "{refused}"
+    );
+    f.store
+        .settle_task_attempt(&f.cas, &lease, settle(reserved), &f.authority)
+        .unwrap();
+    let row = f.state().execution.unwrap().attempt_accounting().remove(0);
+    assert_eq!(row.charged_tokens, reserved);
+}

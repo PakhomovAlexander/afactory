@@ -11,7 +11,8 @@ use serde_json::{Value, json};
 use crate::task_cli;
 
 /// A Task-runtime fixture whose check is `gate.py`, a gate that writes its own account to
-/// `$AF_CHECK_REPORT`. While `<root>/fail-preflight` exists it stops at a preflight step with
+/// `$AF_CHECK_REPORT`. While `<root>/hang-check` exists it waits (a minute at most) before it
+/// does anything. While `<root>/fail-preflight` exists it stops at a preflight step with
 /// its fix and exits 1; otherwise it runs the real pagination check and reports one test that
 /// failed in its parallel run and passed alone. With `evaluator_passes` false the evaluator,
 /// which runs only after a passing gate, rejects the candidate.
@@ -35,6 +36,11 @@ def step(label, stage, code, fix=None):
     if fix:
         record['fix'] = fix
     line(record)
+import time
+waited = 0
+while os.path.exists(HANG) and waited < 600:
+    time.sleep(0.1)
+    waited += 1
 if os.path.exists(FLAG):
     step('performance-kernel-harness', 'preflight', 1,
          'python3 -I scripts/performance/cli.py harness-digest --write')
@@ -79,11 +85,46 @@ fn repin_all(repo: &Path) {
 
 /// The checked-in Task-runtime `fixture` whose `pagination` check is [`GATE`]; see [`Gate`].
 fn gate(root: &Path, fixture: &str, task_id: &str, evaluator_passes: bool) -> Gate {
+    gate_with(root, fixture, task_id, evaluator_passes, true)
+}
+
+/// [`gate`], with the Task file's spare Attempt for a retried check only when `spare_attempt`.
+fn gate_with(
+    root: &Path,
+    fixture: &str,
+    task_id: &str,
+    evaluator_passes: bool,
+    spare_attempt: bool,
+) -> Gate {
+    gate_edited(
+        root,
+        fixture,
+        task_id,
+        evaluator_passes,
+        spare_attempt,
+        &|_| {},
+    )
+}
+
+/// [`gate_with`], with `edit` applied to the fixture's repository before its packages are
+/// pinned and committed.
+fn gate_edited(
+    root: &Path,
+    fixture: &str,
+    task_id: &str,
+    evaluator_passes: bool,
+    spare_attempt: bool,
+    edit: &dyn Fn(&Path),
+) -> Gate {
     let (repo, state) = task_cli::fixture_named(root, fixture);
     let flag = root.join("fail-preflight");
     std::fs::write(
         repo.join("gate.py"),
-        format!("FLAG = {:?}\n{GATE}", flag.display().to_string()),
+        format!(
+            "FLAG = {:?}\nHANG = {:?}\n{GATE}",
+            flag.display().to_string(),
+            root.join("hang-check").display().to_string()
+        ),
     )
     .unwrap();
     std::fs::write(
@@ -122,6 +163,7 @@ fn gate(root: &Path, fixture: &str, task_id: &str, evaluator_passes: bool) -> Ga
         )
         .unwrap();
     }
+    edit(&repo);
     repin_all(&repo);
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "gate fixture"]);
@@ -132,7 +174,7 @@ fn gate(root: &Path, fixture: &str, task_id: &str, evaluator_passes: bool) -> Ga
         serde_json::from_slice(&std::fs::read(repo.join("ticket.json")).unwrap()).unwrap();
     ticket["task_id"] = json!(task_id);
     let attempts = ticket["limits"]["max_attempts"].as_u64().unwrap();
-    ticket["limits"]["max_attempts"] = json!(attempts + 1);
+    ticket["limits"]["max_attempts"] = json!(attempts + u64::from(spare_attempt));
     task_cli::load_safe_limits(&mut ticket["limits"]);
     let path = root.join("ticket.json");
     std::fs::write(&path, serde_json::to_vec(&ticket).unwrap()).unwrap();
@@ -146,8 +188,13 @@ fn gate(root: &Path, fixture: &str, task_id: &str, evaluator_passes: bool) -> Ga
 
 impl Gate {
     fn af(&self, args: &[&str]) -> (i32, String, String) {
+        self.af_env(&[], args)
+    }
+
+    fn af_env(&self, env: &[(&str, &str)], args: &[&str]) -> (i32, String, String) {
         let output = crate::common::af()
             .current_dir(&self.repo)
+            .envs(env.iter().copied())
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .args(args)
             .args(["--state", self.state.to_str().unwrap()])
@@ -490,4 +537,306 @@ fn a_retried_gate_continues_into_the_review_it_skipped() {
     let receipts = artifacts(&fixture.cas(), &fixture.state, "af/TaskCheckReceipt@1");
     assert_eq!(receipts.len(), 2, "{receipts:?}");
     assert_eq!(receipts[0]["snapshot_id"], receipts[1]["snapshot_id"]);
+}
+
+/// Every rendering's next command for `task_id`: `show` and `list`, as text and JSON. They
+/// must agree; the one command is returned.
+fn agreed_next(fixture: &Gate, env: &[(&str, &str)], task_id: &str) -> String {
+    let (code, shown, stderr) = fixture.af_env(env, &["task", "show", task_id, "--json"]);
+    assert_eq!(code, 0, "{stderr}\n{shown}");
+    let shown: Value = serde_json::from_str(shown.trim()).unwrap();
+    let next = shown["state"]["next_action"].as_str().unwrap().to_owned();
+    let (code, listed, stderr) = fixture.af_env(env, &["task", "list", "--json"]);
+    assert_eq!(code, 0, "{stderr}\n{listed}");
+    let listed: Value = serde_json::from_str(listed.trim()).unwrap();
+    let entry = listed["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["task_id"] == task_id)
+        .unwrap();
+    assert_eq!(
+        entry["state"], shown["state"],
+        "list --json and show --json"
+    );
+    let (code, text, stderr) = fixture.af_env(env, &["task", "show", task_id]);
+    assert_eq!(code, 0, "{stderr}\n{text}");
+    assert_eq!(
+        text.lines().last(),
+        Some(format!("next: {next}").as_str()),
+        "{text}"
+    );
+    let (code, list, stderr) = fixture.af_env(env, &["task", "list"]);
+    assert_eq!(code, 0, "{stderr}\n{list}");
+    let row = list.lines().find(|line| line.starts_with(task_id)).unwrap();
+    assert_eq!(
+        row.split_whitespace().last(),
+        next.split_whitespace().nth(2),
+        "{list}"
+    );
+    next
+}
+
+/// A failed gate whose Task has no Attempt left for a new check is not retryable: every
+/// rendering names the gate's checks instead of `--retry-gate`, and `--retry-gate` refuses with
+/// the limit that stops it and records nothing.
+#[test]
+fn a_failed_gate_without_an_attempt_left_never_advertises_a_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = gate_with(directory.path(), "pagination", "no-room", true, false);
+    fixture.fail_preflight(true);
+    let (code, stdout, stderr) = fixture.start();
+    assert_eq!(code, 5, "{stderr}\n{stdout}");
+    assert_eq!(
+        agreed_next(&fixture, &[], "no-room"),
+        "af task show no-room --checks"
+    );
+    let before = fixture.show_json("no-room");
+    fixture.fail_preflight(false);
+    let (code, stdout, stderr) = fixture.af(&["task", "run", "no-room", "--retry-gate"]);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(
+        stderr.contains(
+            "Task no-room cannot retry its gate: the Task's limits leave no Attempt for \
+             root.nodes.check (Task Attempt limit protects still-required verification)"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(fixture.show_json("no-room"), before, "nothing was recorded");
+}
+
+/// A failed gate whose Task deadline passed is not retryable either: on the Store's clock past
+/// the deadline every rendering names the gate's checks and `--retry-gate` refuses, naming the
+/// deadline; on the current clock the same Task advertises the retry the kernel runs.
+#[test]
+fn a_failed_gate_past_its_deadline_never_advertises_a_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = gate(directory.path(), "pagination", "late-gate", true);
+    fixture.fail_preflight(true);
+    let (code, stdout, stderr) = fixture.start();
+    assert_eq!(code, 5, "{stderr}\n{stdout}");
+    assert_eq!(
+        agreed_next(&fixture, &[], "late-gate"),
+        "af task run late-gate --retry-gate"
+    );
+    // 2100-01-01, long after any deadline the fixture's Task file sets.
+    let late = [("AF_TEST_CLOCK_FIXED_MS", "4102444800000")];
+    assert_eq!(
+        agreed_next(&fixture, &late, "late-gate"),
+        "af task show late-gate --checks"
+    );
+    let (code, stdout, stderr) =
+        fixture.af_env(&late, &["task", "run", "late-gate", "--retry-gate"]);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(
+        stderr.contains("Task late-gate cannot retry its gate: its deadline passed"),
+        "{stderr}"
+    );
+}
+
+/// A retrying writer that dies after `TaskGateRetried@1` and before the new check publishes
+/// leaves the gate's evidence in place: `--json` still has `gate`, with the superseded
+/// receipt's checks and the pending retry, and the text prints the same check and retry.
+#[test]
+fn a_pending_gate_retry_keeps_the_gate_evidence() {
+    use std::os::unix::process::CommandExt;
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = gate(directory.path(), "pagination", "pending-retry", true);
+    fixture.fail_preflight(true);
+    let (code, stdout, stderr) = fixture.start();
+    assert_eq!(code, 5, "{stderr}\n{stdout}");
+    let before = fixture.show_json("pending-retry");
+    assert_eq!(before["gate"]["status"], "failed", "{before:#}");
+
+    let hang = fixture.root.join("hang-check");
+    std::fs::write(&hang, b"").unwrap();
+    let log = fixture.root.join("retry.stderr");
+    let mut child = crate::common::af()
+        .current_dir(&fixture.repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .args(["task", "run", "pending-retry", "--retry-gate", "--state"])
+        .arg(&fixture.state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    while !std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .contains("retrying gate root.nodes.check")
+    {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(120),
+            "{}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        assert!(child.try_wait().unwrap().is_none(), "the retry ended early");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // The writer dies with its whole process group, before the new check publishes.
+    let group = i32::try_from(child.id()).unwrap();
+    Command::new("kill")
+        .args(["-KILL", &format!("-{group}")])
+        .status()
+        .unwrap();
+    child.wait().unwrap();
+    std::fs::remove_file(&hang).unwrap();
+
+    let pending = fixture.show_json("pending-retry");
+    let gate = &pending["gate"];
+    assert_eq!(gate["status"], before["gate"]["status"], "{pending:#}");
+    assert_eq!(
+        gate["check_reports"], before["gate"]["check_reports"],
+        "the superseded receipt's report: {pending:#}"
+    );
+    let [retry] = gate["retries"].as_array().unwrap().as_slice() else {
+        panic!("one pending retry: {pending:#}");
+    };
+    assert_eq!(retry["gates"][0]["node"], "root.nodes.check");
+    let (code, text, stderr) = fixture.af(&["task", "show", "pending-retry"]);
+    assert_eq!(code, 0, "{stderr}\n{text}");
+    assert!(
+        text.lines()
+            .any(|line| line == "gate retried: root.nodes.check ran again on the same candidate"),
+        "{text}"
+    );
+    assert!(
+        text.lines().any(|line| line
+            == "check pagination: stopped at preflight step performance-kernel-harness \
+                (exit 1); fix: python3 -I scripts/performance/cli.py harness-digest --write"),
+        "{text}"
+    );
+}
+
+/// A paid `side` Worker that reads the sealed candidate beside the check, with no edge to it:
+/// its package is the evaluator's without the check receipt, run as a plain `worker` node, and
+/// it fails while `<root>/fail-side` exists. Its node feeds nothing, so a gate retry would keep
+/// its Attempt.
+fn add_side_worker(root: &Path, repo: &Path) {
+    let packages = repo.join(".af/task-packages/fixture");
+    let side = packages.join("side");
+    std::fs::create_dir_all(side.join("outputs")).unwrap();
+    let schema = "outputs/result.schema.json";
+    std::fs::copy(packages.join("evaluator").join(schema), side.join(schema)).unwrap();
+    let mut input: Value = serde_json::from_slice(
+        &std::fs::read(packages.join("evaluator/input.schema.json")).unwrap(),
+    )
+    .unwrap();
+    input["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("checks");
+    input["required"] = json!(["requirements", "source"]);
+    std::fs::write(side.join("input.schema.json"), input.to_string()).unwrap();
+    let mut manifest: toml::Value =
+        toml::from_str(&std::fs::read_to_string(packages.join("evaluator/worker.toml")).unwrap())
+            .unwrap();
+    manifest["name"] = toml::Value::String("fixture/side".into());
+    let signature = manifest["signature"].as_table_mut().unwrap();
+    signature["contract"]["inputs"]
+        .as_table_mut()
+        .unwrap()
+        .remove("checks");
+    signature["retains"]["result"] = toml::Value::Array(vec!["requirements".into()]);
+    std::fs::write(
+        side.join("worker.toml"),
+        toml::to_string(&manifest).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        side.join("worker.py"),
+        format!(
+            "import json,os,sys\njson.load(sys.stdin)\nif os.path.exists({:?}):\n    \
+             sys.exit('the side Worker fails')\nprint(json.dumps({{'schema':'af.worker-reply/1',\
+             'outputs':{{'result':[{{'outcome':'passed','reason':'side'}}]}}}}))\n",
+            root.join("fail-side").display().to_string()
+        ),
+    )
+    .unwrap();
+    let path = packages.join("implementation/pipeline.toml");
+    let mut pipeline: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let slots = pipeline["slots"].as_table_mut().unwrap();
+    let mut slot = slots["evaluator"].clone();
+    slot["worker"] = toml::Value::String("fixture/side".into());
+    slots.insert("side".into(), slot);
+    let node: toml::Value = toml::from_str(
+        "id = \"side\"\n[operator]\nop = \"worker\"\nslot = \"side\"\n\
+         [inputs.requirements]\nkind = \"input\"\nport = \"requirements\"\n\
+         [inputs.source]\nkind = \"node\"\nnode = \"seal\"\nport = \"snapshot\"\n",
+    )
+    .unwrap();
+    pipeline["nodes"].as_array_mut().unwrap().push(node);
+    let attempts = pipeline["max_attempts"].as_integer().unwrap();
+    pipeline["max_attempts"] = toml::Value::Integer(attempts + 1);
+    std::fs::write(&path, toml::to_string(&pipeline).unwrap()).unwrap();
+    let path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut pin = catalog["packages"]["fixture/evaluator"].clone();
+    pin["path"] = toml::Value::String(".af/task-packages/fixture/side".into());
+    catalog["packages"]
+        .as_table_mut()
+        .unwrap()
+        .insert("fixture/side".into(), pin);
+    std::fs::write(&path, toml::to_string(&catalog).unwrap()).unwrap();
+}
+
+/// A paid Worker that ran beside a failed gate and failed too keeps its failure across a gate
+/// retry, which reopens only the gate's branch: the retry is refused and never advertised. The
+/// same pipeline whose side Worker passed and whose check alone failed is retried.
+#[test]
+fn a_failed_gate_beside_a_failed_paid_node_is_not_retried() {
+    for side_fails in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let task_id = if side_fails {
+            "side-failed"
+        } else {
+            "side-passed"
+        };
+        let fixture = gate_edited(&root, "pagination", task_id, true, true, &|repo| {
+            add_side_worker(&root, repo)
+        });
+        // One more verifier, so one more Attempt and one more in the verification reserve.
+        let mut ticket: Value =
+            serde_json::from_slice(&std::fs::read(&fixture.ticket).unwrap()).unwrap();
+        for limit in ["/limits/max_attempts", "/limits/verification/attempts"] {
+            let value = ticket.pointer_mut(limit).unwrap();
+            *value = json!(value.as_u64().unwrap() + 1);
+        }
+        std::fs::write(&fixture.ticket, serde_json::to_vec(&ticket).unwrap()).unwrap();
+        if side_fails {
+            std::fs::write(root.join("fail-side"), b"").unwrap();
+        }
+        fixture.fail_preflight(true);
+        let (code, stdout, stderr) = fixture.start();
+        assert_eq!(code, 5, "{task_id}: {stderr}\n{stdout}");
+        let next = agreed_next(&fixture, &[], task_id);
+        let (code, stdout, stderr) = fixture.af(&["task", "run", task_id, "--retry-gate"]);
+        if side_fails {
+            assert_eq!(
+                next,
+                format!("af task show {task_id} --checks"),
+                "{:#}",
+                fixture.show_json(task_id)
+            );
+            assert_eq!(code, 1, "{stdout}");
+            assert!(
+                stderr.contains(&format!(
+                    "Task {task_id} cannot retry its gate: a paid node ran beside its failed \
+                     gate, so its last failure was not the gate's alone"
+                )),
+                "{stderr}"
+            );
+        } else {
+            assert_eq!(next, format!("af task run {task_id} --retry-gate"));
+            assert_ne!(code, 1, "the retry ran: {stderr}\n{stdout}");
+            assert!(
+                stderr.contains(&format!("retrying gate root.nodes.check of Task {task_id}")),
+                "{stderr}"
+            );
+        }
+    }
 }

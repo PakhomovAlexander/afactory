@@ -1,6 +1,6 @@
 schema = "af.pipeline/1"
 name = "kernel/implementation-reviewed-remote"
-version = "1.3.0"
+version = "1.4.0"
 max_attempts = 16
 max_parallel = 2
 

@@ -627,7 +627,19 @@ impl CompiledTask {
     /// The longest dependency path of mandatory non-verifier wall time: independent Workers may
     /// overlap, and verification keeps its separately protected aggregate allocation.
     pub fn mandatory_path_wall_ms(&self) -> Result<u64, String> {
-        let mut path_wall: BTreeMap<String, u64> = BTreeMap::new();
+        Ok(self
+            .mandatory_path()?
+            .iter()
+            .map(|(_, wall)| *wall)
+            .sum::<u64>())
+    }
+
+    /// The nodes of [`Self::mandatory_path_wall_ms`]'s longest path that hold mandatory
+    /// Attempts, in path order, each with the wall of its one Attempt on that path: what a
+    /// deadline refusal lists so its numbers add up.
+    pub fn mandatory_path(&self) -> Result<Vec<(String, u64)>, String> {
+        // Each node's longest path wall, its own Attempt's wall and the predecessor on it.
+        let mut path_wall: BTreeMap<String, (u64, u64, Option<String>)> = BTreeMap::new();
         for name in &self.order {
             let node = &self.nodes[name];
             let prior = node
@@ -639,10 +651,8 @@ impl CompiledTask {
                         .iter()
                         .map(|condition| &condition.source.node),
                 )
-                .filter_map(|source| path_wall.get(source))
-                .copied()
-                .max()
-                .unwrap_or(0);
+                .filter_map(|source| path_wall.get(source).map(|(wall, ..)| (*wall, source)))
+                .max_by_key(|(wall, _)| *wall);
             let own = self
                 .allowances
                 .get(name)
@@ -656,12 +666,35 @@ impl CompiledTask {
                     })
                 })
                 .map_or(0, |a| a.wall_ms_per_attempt);
+            let (before, previous) = prior.map_or((0, None), |(wall, source)| (wall, Some(source)));
             path_wall.insert(
                 name.clone(),
-                prior.checked_add(own).ok_or("Task wall path overflow")?,
+                (
+                    before.checked_add(own).ok_or("Task wall path overflow")?,
+                    own,
+                    previous.cloned(),
+                ),
             );
         }
-        Ok(path_wall.values().copied().max().unwrap_or(0))
+        // The first node in graph order among those with the longest wall, then back along it.
+        let mut last = None;
+        for name in &self.order {
+            let wall = path_wall[name].0;
+            if last.as_ref().is_none_or(|(longest, _)| wall > *longest) {
+                last = Some((wall, name.clone()));
+            }
+        }
+        let mut path = Vec::new();
+        let mut next = last.map(|(_, name)| name);
+        while let Some(name) = next {
+            let (_, own, previous) = &path_wall[&name];
+            if *own > 0 {
+                path.push((name.clone(), *own));
+            }
+            next = previous.clone();
+        }
+        path.reverse();
+        Ok(path)
     }
 
     /// The smallest limits at least `limits` (and `wall_ms`, the wall the Task has when it runs)

@@ -153,7 +153,7 @@ fn until_the_worker_runs(f: &Fixture, args: &[&str]) -> (Running, Vec<i32>) {
 }
 
 /// SIGTERM to af mid-Attempt: af stops its Worker, settles the Attempt and exits 143.
-fn sigterm(f: &Fixture, args: &[&str]) {
+fn sigterm(f: &Fixture, args: &[&str]) -> std::process::Output {
     let (mut running, _) = until_the_worker_runs(f, args);
     let child = running.af.take().unwrap();
     nix::sys::signal::kill(
@@ -169,6 +169,7 @@ fn sigterm(f: &Fixture, args: &[&str]) {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    out
 }
 
 /// SIGKILL to af mid-Attempt, as a closed lid, a reboot or a killed launcher ends it: nothing
@@ -208,12 +209,17 @@ fn abandoned_inspection(f: &Fixture) -> Value {
     }
 }
 
+/// The first line of stderr, with the lines that continue it (indented by two spaces) joined
+/// back: af wraps a line longer than 100 columns.
 fn first_line(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stderr)
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_owned()
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut lines = stderr.lines();
+    let mut first = lines.next().unwrap_or_default().to_owned();
+    for line in lines.take_while(|line| line.starts_with("  ")) {
+        first.push(' ');
+        first.push_str(line.trim_start());
+    }
+    first
 }
 
 /// `resuming Task X: node N was interrupted at 17:41:03Z<rest>`, with any time of day.
@@ -377,9 +383,31 @@ fn a_sigterm_resume_dispatches_the_interrupted_node_again() {
     assert_eq!(shown["state"]["phase"], "abandoned", "{shown:#}");
     assert_eq!(shown["state"]["cause"], "host_cancelled", "{shown:#}");
     assert_eq!(shown["state"]["next_action"], format!("af task run {TASK}"));
+    // The headline says so in show and list alike, never `planned` (C1 item 19).
+    let text = af(&f, &["task", "show", TASK]).output().unwrap();
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert_eq!(
+        text.lines().next(),
+        Some(format!("Task {TASK}: abandoned/cancelled/host_cancelled").as_str()),
+        "{text}"
+    );
+    let listed = af(&f, &["task", "list"]).output().unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    let row = listed.lines().find(|line| line.starts_with(TASK)).unwrap();
+    assert_eq!(
+        row.split_whitespace().nth(1),
+        Some("abandoned/cancelled/host_cancelled"),
+        "{listed}"
+    );
+    let listed = json(&af(&f, &["task", "list", "--json"]).output().unwrap());
+    assert_eq!(listed["tasks"][0]["state"], shown["state"], "{listed:#}");
 
     std::fs::write(&f.resume, b"").unwrap();
-    let resumed = af(&f, &["task", "run", TASK, "--json"]).output().unwrap();
+    // Under `--verbose` the resume's line still comes first, and the power assertion's after
+    // it; every line fits in 100 columns.
+    let resumed = af(&f, &["task", "run", TASK, "--verbose", "--json"])
+        .output()
+        .unwrap();
     let value = json(&resumed);
     assert_eq!(resumed.status.code(), Some(0), "{value:#}");
     assert_eq!(value["result"]["acceptance"], "satisfied", "{value:#}");
@@ -387,6 +415,25 @@ fn a_sigterm_resume_dispatches_the_interrupted_node_again() {
         &first_line(&resumed),
         "Z; dispatching a new Attempt (1 recovery of 1)",
     );
+    let stderr = String::from_utf8_lossy(&resumed.stderr);
+    assert!(
+        stderr
+            .lines()
+            .take_while(|line| !line.starts_with("af task run: "))
+            .all(|line| line.chars().count() <= 100),
+        "{stderr}"
+    );
+    if cfg!(target_os = "macos") {
+        let power = stderr
+            .lines()
+            .position(|line| line.starts_with("af: holding a power assertion"))
+            .unwrap_or_else(|| panic!("{stderr}"));
+        let resume = stderr
+            .lines()
+            .position(|line| line.starts_with("resuming Task"))
+            .unwrap();
+        assert!(resume < power, "{stderr}");
+    }
     let task = projection(&f);
     let recovery = task
         .execution
@@ -494,5 +541,36 @@ fn a_declared_recovery_allowance_dispatches_the_node_again_as_often_as_it_allows
     assert_eq!(
         (recovery.chargeable, recovery.abandoned, recovery.allowance),
         (1, 2, 2)
+    );
+}
+
+/// Interrupted a second time, the node has used its one recovery: the interruption's
+/// `af/error@1` names the next command `af task show --json` names, never `af task run ID`,
+/// which would refuse.
+#[test]
+fn a_second_sigterm_names_the_next_command_the_task_state_names() {
+    let f = fixture(None);
+    sigterm(
+        &f,
+        &[
+            "task",
+            "start",
+            "--file",
+            "ticket.json",
+            "--execute",
+            "--json",
+        ],
+    );
+    let second = sigterm(&f, &["task", "run", TASK, "--json"]);
+    let error = json(&second);
+    assert_eq!(error["schema"], "af/error@1", "{error:#}");
+    let message = error["error"].as_str().unwrap();
+    let shown = abandoned_inspection(&f);
+    let next = shown["state"]["next_action"].as_str().unwrap();
+    assert_eq!(next, "af task start --file TASK_FILE", "{shown:#}");
+    assert!(message.contains(&format!("`{next}`")), "{message}");
+    assert!(
+        !message.contains(&format!("resume it with `af task run {TASK}`")),
+        "{message}"
     );
 }

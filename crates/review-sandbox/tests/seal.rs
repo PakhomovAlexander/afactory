@@ -4,7 +4,7 @@ mod common;
 
 use common::fixture_repo;
 use review_check::{Arg, CheckDefinition, CheckRunner, Command};
-use review_sandbox::{Mode, Sandbox};
+use review_sandbox::{Mode, Sandbox, SandboxTemplate};
 use review_source_git::{Capture, Entry, EntryKind, Manifest};
 
 fn sandbox_of(mode: Mode) -> (tempfile::TempDir, Sandbox, review_store::Cas) {
@@ -635,4 +635,77 @@ fn sealing_refuses_a_fifo_by_name_and_leaves_generated_files_out_but_keeps_track
         ],
         "a tracked file is sealed whatever the rules say"
     );
+}
+
+/// A Worker owns the files of its sandbox, so a read-only base only stops an accidental write:
+/// one that restores write permission and edits the base, or the diff subject beside it, has
+/// its sandbox refused at seal, naming what changed. A base attached from a template is
+/// checked the same way and leaves the template untouched.
+#[test]
+fn a_base_the_worker_changed_is_refused_at_seal() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let cas = review_store::Cas::open(directory.path().join("cas")).unwrap();
+    let entry = |path: &str, bytes: &[u8]| Entry {
+        path: path.into(),
+        kind: EntryKind::File,
+        content: cas.put(bytes).unwrap(),
+        size: bytes.len() as u64,
+    };
+    let base = Manifest::new(vec![entry("src/lib.rs", b"fn before() {}\n")]).unwrap();
+    let tree = Manifest::new(vec![entry("src/lib.rs", b"fn after() {}\n")]).unwrap();
+    let edit = |at: &std::path::Path| {
+        let file = at.join("src/lib.rs");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(&file, b"fn rewritten() {}\n").unwrap();
+    };
+
+    let sandbox = Sandbox::materialize(&tree, &cas, Mode::ReadOnly).unwrap();
+    let at = sandbox
+        .attach_base(&base, &cas, &[("diff-subject.json", b"{}")])
+        .unwrap();
+    edit(&at);
+    let refused = sandbox.seal().err().expect("a changed base is refused");
+    assert!(
+        refused.to_string().contains(
+            "the read-only base beside the tree was changed (modified ../base/src/lib.rs)"
+        ),
+        "{refused}"
+    );
+
+    let sandbox = Sandbox::materialize(&tree, &cas, Mode::EphemeralWrite).unwrap();
+    sandbox
+        .attach_base(&base, &cas, &[("diff-subject.json", b"{}")])
+        .unwrap();
+    let subject = sandbox.root().join("../diff-subject.json");
+    std::fs::set_permissions(&subject, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::write(&subject, b"{\"changes\":[]}").unwrap();
+    let refused = sandbox
+        .seal()
+        .err()
+        .expect("a changed diff subject is refused");
+    assert!(
+        refused
+            .to_string()
+            .contains("(modified ../diff-subject.json)"),
+        "{refused}"
+    );
+
+    let template = std::sync::Arc::new(SandboxTemplate::materialize(&base, &cas).unwrap());
+    let sandbox = Sandbox::materialize(&tree, &cas, Mode::ReadOnly).unwrap();
+    let at = sandbox.attach_base_template(&template, &[]).unwrap();
+    assert_eq!(
+        std::fs::read(at.join("src/lib.rs")).unwrap(),
+        b"fn before() {}\n"
+    );
+    edit(&at);
+    assert!(sandbox.seal().is_err(), "a changed cloned base is refused");
+    assert_eq!(
+        std::fs::read(template.root().join("src/lib.rs")).unwrap(),
+        b"fn before() {}\n",
+        "the template is untouched"
+    );
+    let sandbox = Sandbox::materialize(&tree, &cas, Mode::ReadOnly).unwrap();
+    sandbox.attach_base_template(&template, &[]).unwrap();
+    assert!(sandbox.seal().unwrap().unchanged());
 }

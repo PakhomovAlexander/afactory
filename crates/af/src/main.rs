@@ -2099,12 +2099,18 @@ fn exit_interrupted(
     error: Option<String>,
 ) -> ! {
     let code = interrupt::exit_code(signal);
-    let resume = match interrupt::noted_task() {
-        Some(id) => format!(
+    // The same next command `af task show --json` names: `af task run ID` only while the
+    // interrupted node has a recovery left (ADR-0200).
+    let resume = match (interrupt::noted_task(), interrupt::noted_next()) {
+        (Some(id), Some(next)) => format!(
+            "a node of Task {id} used up its recovery allowance, so `af task run {id}` cannot \
+             continue it; start it again with `{next}` (the Task file it was started from)"
+        ),
+        (Some(id), None) => format!(
             "resume it with `af task run {id}`, which dispatches the interrupted node again \
              without using one of its Attempts"
         ),
-        None => "run the same command again to resume it".into(),
+        (None, _) => "run the same command again to resume it".into(),
     };
     let message = if argv.get(1).is_some_and(|s| s == "provider")
         && argv.get(2).is_some_and(|s| s == "auth")

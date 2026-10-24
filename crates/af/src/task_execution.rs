@@ -2763,8 +2763,16 @@ fn execute(
     crate::interrupt::note_task(lease.task_id());
     let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
     // Interrupted work is neither assembled nor finished: the lease is released and the Task
-    // stays resumable with `af task run` (ADR-0129).
-    crate::interrupt::check()?;
+    // stays resumable with `af task run` (ADR-0129), unless a node used up its recovery
+    // allowance, whose next command the interrupt then names (ADR-0200).
+    if crate::interrupt::check().is_err() {
+        if let Ok(projection) = runtime.projection()
+            && let Some(next) = recovery::interrupted_next(&projection)
+        {
+            crate::interrupt::note_next(next);
+        }
+        crate::interrupt::check()?;
+    }
     // So is work the free-disk floor stopped before a Worker started (ADR-0144).
     if let Some(refusal) = runtime.disk_refusal() {
         return Err(refusal);
@@ -2941,8 +2949,12 @@ pub(super) fn run(
     // `--retry-gate` reopens only a finished Task whose last failure was a gate; anything else
     // is refused before a lease is taken or anything is recorded.
     if retry_gate
-        && let review_store::store::task::gate_retry::GateRetry::Refused(why) =
-            projection.failed_gates(&cas).map_err(|e| e.to_string())?
+        && let review_store::store::task::gate_retry::GateRetry::Refused(why) = projection
+            .failed_gates(
+                &cas,
+                review_store::store::task::now().map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?
     {
         return Err(format!("Task {id} cannot retry its gate: {why}."));
     }
@@ -4626,7 +4638,7 @@ fn cache_states(caches: &[serde_json::Value]) -> String {
                 };
                 match cache["evicted_bytes"].as_u64() {
                     Some(evicted) => format!(
-                        "{state}, removed {} ({})",
+                        "{state}, removed {} ({}); the next check runs cold",
                         crate::human::bytes(evicted),
                         eviction(cache)
                     ),
@@ -4643,7 +4655,7 @@ fn cache_states(caches: &[serde_json::Value]) -> String {
                 };
                 match cache["evicted_bytes"].as_u64() {
                     Some(evicted) => format!(
-                        "{state}, removed {} ({})",
+                        "{state}, removed {} ({}); the next check runs cold",
                         crate::human::bytes(evicted),
                         eviction(cache)
                     ),
@@ -5402,5 +5414,30 @@ mod remote_check_line_tests {
         assert_ne!(first, second);
         let writer = format!("cli-{}-{first:016x}", std::process::id());
         assert!(review_core::task::is_name(&writer), "{writer}");
+    }
+}
+
+#[cfg(test)]
+mod eviction_tests {
+    use super::*;
+
+    /// A warm target of 19 GB evicted after its check under a 16 GiB `max_bytes`: the check's
+    /// line says what was removed, why, and that the next check runs cold.
+    #[test]
+    fn an_evicted_warm_target_says_the_next_check_runs_cold() {
+        let cache = json!({
+            "kind": "cargo_target",
+            "eligible": true,
+            "bytes_available": 19_156_177_306u64,
+            "evicted_bytes": 19_156_177_306u64,
+            "evicted_reason": "bound_exceeded",
+            "bound": "max_bytes",
+        });
+        let line = cache_states(&[cache]);
+        assert!(line.starts_with("cargo_target warm "), "{line}");
+        assert!(
+            line.ends_with("(bound_exceeded max_bytes); the next check runs cold"),
+            "{line}"
+        );
     }
 }

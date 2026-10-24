@@ -199,7 +199,9 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             name: "gate_failed",
             setup: failing_check,
             label: "finished/gate_failed/check_failed",
-            next: "af task run pagination-cli --retry-gate",
+            // The fixture's limits hold no Attempt for a new check, so the retry the kernel
+            // would refuse is never named; the gate's checks are.
+            next: "af task show pagination-cli --checks",
             code: 5,
         },
         Case {
@@ -364,7 +366,7 @@ check pagination: failed: 2 failing tests
   FAIL alpha::one
   FAIL beta::two
   stderr of check pagination: sha256:<id>
-next: af task run pagination-cli --retry-gate"
+next: af task show pagination-cli --checks"
     );
     let checks = fixture.af(&["task", "show", TASK, "--checks"]);
     assert!(checks.status.success(), "{}", err(&checks));
@@ -380,7 +382,7 @@ check pagination: failed (exit 1) in <ms> ms, cold (no warm cache)
   stderr sha256:<id>, last 2 lines:
             FAIL [   0.004s] af::it alpha::one
          TIMEOUT [  60.000s] af::it beta::two
-next: af task run pagination-cli --retry-gate
+next: af task show pagination-cli --checks
 "
     );
     let document = fixture.json(&["task", "show", TASK, "--checks"]);
@@ -413,7 +415,7 @@ next: af task run pagination-cli --retry-gate
     // A command that exits with the outcome's code while its result goes to stdout says why on
     // stderr too: a non-zero exit never leaves stderr silent.
     let state_line = format!(
-        "Task {TASK}: finished/gate_failed/check_failed; next: af task run {TASK} --retry-gate"
+        "Task {TASK}: finished/gate_failed/check_failed; next: af task show {TASK} --checks"
     );
     for args in [
         &["task", "explain", TASK][..],

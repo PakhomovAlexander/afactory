@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "kernel/implementer-long"
-version = "1.1.0"
+version = "1.2.0"
 
 [signature]
 effects = ["write-source", "execute-checks"]

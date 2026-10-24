@@ -152,13 +152,18 @@ def main():
             '[package]', 'name="gate-store-regression"', 'version="0.1.0"',
             'edition="2021"', '']))
         (repo / 'src/lib.rs').write_text(LIB)
+        # The children's temporary directory is a private one under `base`: under a managed
+        # sandbox the platform default (`/var/folders/...`) is not writable, and rustc and
+        # cargo fail to create their temporary files without a writable TMPDIR.
         env = {'PATH': os.environ['PATH'], 'LC_ALL': 'C', 'TZ': 'UTC',
-               'HOME': str(base / 'home'), 'XDG_CACHE_HOME': str(base / 'cache')}
+               'HOME': str(base / 'home'), 'XDG_CACHE_HOME': str(base / 'cache'),
+               'TMPDIR': str(base / 'tmp')}
         # Keep HOME/cache isolated without hiding the installed pinned toolchain
         # from rustup proxies. No ambient compiler flags or wrappers are inherited.
         for name, default in [('RUSTUP_HOME', '.rustup'), ('CARGO_HOME', '.cargo')]:
             env[name] = os.environ.get(name, str(Path.home() / default))
         Path(env['HOME']).mkdir()
+        Path(env['TMPDIR']).mkdir()
         assert run(['cargo', 'generate-lockfile', '--offline'], repo, env).returncode == 0
         paths = [repo, *repo.rglob('*')]
         try:

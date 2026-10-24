@@ -17,11 +17,13 @@ pub(crate) const INTERRUPTED: &str = "Task execution was interrupted";
 struct State {
     signal: Option<Signal>,
     task: Option<String>,
+    next: Option<String>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
     signal: None,
     task: None,
+    next: None,
 });
 static CHANGED: Condvar = Condvar::new();
 
@@ -131,6 +133,17 @@ pub(crate) fn note_task(id: &str) {
 /// The common Task noted by this command, if any.
 pub(crate) fn noted_task() -> Option<String> {
     state().task.clone()
+}
+
+/// Name the command that continues the noted Task after the interrupt, when it is not
+/// `af task run ID`: the next command its state names once it was interrupted.
+pub(crate) fn note_next(command: String) {
+    state().next = Some(command);
+}
+
+/// The command [`note_next`] named, if any.
+pub(crate) fn noted_next() -> Option<String> {
+    state().next.clone()
 }
 
 /// Run `work` with an interrupt forwarded to its execution's cancellation flag. The flag is

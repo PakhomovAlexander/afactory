@@ -40,11 +40,15 @@ pub enum GateRetry {
 }
 
 impl TaskProjection {
-    /// The check nodes `--retry-gate` would run again: each whose published check receipt did
-    /// not pass, after which no paid node started an Attempt, and that does not itself follow
-    /// another such check. A refusal when the Task is not finished, was satisfied or delivered,
-    /// or its last failure was not a gate.
-    pub fn failed_gates(&self, cas: &Cas) -> Result<GateRetry, StoreError> {
+    /// The check nodes `--retry-gate` would run again at `now_unix_ms`: each whose published
+    /// check receipt did not pass, after which no paid node started an Attempt, and that does
+    /// not itself follow another such check. A refusal when the Task is not finished, was
+    /// satisfied or delivered, its last failure was not a gate alone (a paid node ran after or
+    /// beside it), or the retry would not be admitted at `now_unix_ms`: the plan's approval or
+    /// the Task's deadline expired, or its limits leave no Attempt for a gate. Inspection and
+    /// the retry itself ask the same question, so a printed `--retry-gate` is one the kernel
+    /// runs.
+    pub fn failed_gates(&self, cas: &Cas, now_unix_ms: u64) -> Result<GateRetry, StoreError> {
         let refused = |why: &str| Ok(GateRetry::Refused(why.into()));
         let TaskPhaseV1::Finished { result_id } = &self.phase else {
             return refused("it has not finished; `af task run` continues it");
@@ -112,6 +116,27 @@ impl TaskProjection {
                      was not the gate's alone; --retry-gate runs only a failed check again",
                 );
             }
+            // A paid node that neither feeds nor follows the gate (it consumed the same
+            // candidate beside the check) keeps its Attempt across a retry, which reopens only
+            // the gate's branch: when it failed, its failure survives the retry, so the last
+            // failure was not the gate's alone.
+            let beside: BTreeSet<String> = execution
+                .graph
+                .order
+                .iter()
+                .filter(|node| {
+                    *node != gate
+                        && !after.contains(*node)
+                        && !execution.graph.downstream_of(node).contains(gate)
+                })
+                .cloned()
+                .collect();
+            if execution.failed_attempts_of(&beside) {
+                return refused(
+                    "a paid node ran beside its failed gate, so its last failure was not the \
+                     gate's alone; --retry-gate runs only a failed check again",
+                );
+            }
             if after.iter().chain([gate]).any(|node| {
                 execution.graph.owned_children.contains_key(node)
                     || execution.graph.experimental_slots.contains_key(node)
@@ -129,7 +154,53 @@ impl TaskProjection {
                 "it runs a captured Campaign Review Round, which --retry-gate does not reopen",
             );
         }
+        if let Some(why) = self.retry_admission(cas, execution, &gates, now_unix_ms)? {
+            return Ok(GateRetry::Refused(why));
+        }
         Ok(GateRetry::Gates(gates))
+    }
+
+    /// Why a retry of `gates` would not be admitted at `now`, the checks
+    /// [`Self::apply_gate_retried`] makes before it reopens anything: an admitted plan whose
+    /// approval and deadline still hold, and a budget with one more Attempt for each gate.
+    fn retry_admission(
+        &self,
+        cas: &Cas,
+        execution: &execution::TaskExecutionProjection,
+        gates: &[String],
+        now: u64,
+    ) -> Result<Option<String>, StoreError> {
+        if !self.admitted {
+            return Ok(Some("its plan is not admitted".into()));
+        }
+        let time = now.max(self.last_time);
+        if self.check_plan_decision(cas, time).is_err() {
+            return Ok(Some(
+                "its plan approval expired or was revoked; plan it again with \
+                 `af task plan --file TASK_FILE --fit`"
+                    .into(),
+            ));
+        }
+        if time >= self.deadline_at(time) {
+            return Ok(Some(
+                "its deadline passed; plan it again with \
+                 `af task plan --file TASK_FILE --fit`"
+                    .into(),
+            ));
+        }
+        let mut budget = execution.budget.clone();
+        for gate in gates {
+            budget.allow_retry(gate).map_err(conflict)?;
+        }
+        for gate in gates {
+            if let Err(error) = budget.prepare(gate, time) {
+                return Ok(Some(format!(
+                    "the Task's limits leave no Attempt for {gate} ({error}); plan it again \
+                     with `af task plan --file TASK_FILE --fit`"
+                )));
+            }
+        }
+        Ok(None)
     }
 
     /// Apply `TaskGateRetried@1`: the next event of the log, by the current lease, naming exactly
@@ -167,7 +238,7 @@ impl TaskProjection {
         if !self.admitted {
             return Err(conflict("A gate retry needs an admitted plan"));
         }
-        match self.failed_gates(cas)? {
+        match self.failed_gates(cas, time)? {
             GateRetry::Gates(gates)
                 if gates.iter().eq(retry.gates.iter().map(|gate| &gate.node)) => {}
             GateRetry::Gates(_) => {
@@ -229,7 +300,7 @@ impl EventStore {
         let mut state = self
             .task_projection(cas, &lease.task_id)?
             .ok_or_else(|| conflict("Unknown Task"))?;
-        let gates = match state.failed_gates(cas)? {
+        let gates = match state.failed_gates(cas, now()?)? {
             GateRetry::Gates(gates) => gates,
             GateRetry::Refused(why) => {
                 return Err(conflict(format!(

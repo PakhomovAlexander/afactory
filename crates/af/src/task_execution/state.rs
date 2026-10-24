@@ -316,8 +316,9 @@ fn finished(
 }
 
 /// The one command a person runs after a Task ended with `cause`. After a failed gate it is
-/// `--retry-gate` exactly when the kernel would run that gate again
-/// ([`TaskProjection::failed_gates`]), so the state never names a command the kernel refuses;
+/// `--retry-gate` exactly when the kernel would run that gate again now
+/// ([`TaskProjection::failed_gates`]: its approval, deadline and budget included, read on the
+/// Store's clock that stamps a retry), so the state never names a command the kernel refuses;
 /// otherwise the gate's last check receipt.
 fn next_action(cas: &Cas, state: &TaskProjection, cause: TaskCauseV1) -> Result<String, String> {
     let id = &state.task_id;
@@ -326,7 +327,11 @@ fn next_action(cas: &Cas, state: &TaskProjection, cause: TaskCauseV1) -> Result<
         TaskCauseV1::CheckFailed
         | TaskCauseV1::CheckFlakyThenFailed
         | TaskCauseV1::PreflightFailed => {
-            gate_next_action(id, &state.failed_gates(cas).map_err(|e| e.to_string())?)
+            let now = review_store::store::task::now().map_err(|e| e.to_string())?;
+            gate_next_action(
+                id,
+                &state.failed_gates(cas, now).map_err(|e| e.to_string())?,
+            )
         }
         TaskCauseV1::ProviderNetwork
         | TaskCauseV1::ProviderCapacity
@@ -707,8 +712,27 @@ fn last_checks(cas: &Cas, state: &TaskProjection) -> Result<Option<ChecksView>, 
     };
     let mut found = None;
     for node in &execution.graph.order {
-        let Some((output_id, output)) = execution.outputs.get(node) else {
-            continue;
+        // A gate whose retry is pending lost its published output to `TaskGateRetried@1`; until
+        // the new check publishes, the receipt the retry superseded is still the gate's last.
+        let retried = || {
+            state
+                .gate_retries
+                .iter()
+                .rev()
+                .flat_map(|retry| &retry.gates)
+                .find(|gate| gate.node == *node)
+                .map(|gate| gate.output_id.clone())
+        };
+        let (output_id, output) = match execution.outputs.get(node) {
+            Some((id, output)) => (id.clone(), output.clone()),
+            None => match retried() {
+                Some(id) => {
+                    let output: review_core::task::execution::TaskOutputV1 =
+                        artifact(cas, &id, review_core::task::execution::TASK_OUTPUT_V1)?;
+                    (id, output)
+                }
+                None => continue,
+            },
         };
         for port in output.outputs.values() {
             if port.artifact_type == TASK_CHECK_RECEIPT_V1
