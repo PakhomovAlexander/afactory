@@ -888,6 +888,8 @@ fn the_pr_body_is_the_template_with_both_blocks_and_the_checker_accepts_it() {
     }
     // GA final fix item 3: a script that prints only the begin marker gets no body either; the
     // refusal names the end marker it lacks.
+    // The copy keeps the workspace file's mode, read-only in a sealed gate tree: replace it.
+    std::fs::remove_file(repo.join("scripts/pr-lines.py")).unwrap();
     std::fs::write(
         repo.join("scripts/pr-lines.py"),
         "print('<!-- af-pr-lines:v1 -->')\n",
