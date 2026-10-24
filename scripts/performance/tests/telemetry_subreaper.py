@@ -13,6 +13,8 @@ import sys
 import time
 from unittest import mock
 
+# Filename launches (ancestor and inner) must import this source without PYTHONPATH or cwd.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from perflab import telemetryexec
 
 

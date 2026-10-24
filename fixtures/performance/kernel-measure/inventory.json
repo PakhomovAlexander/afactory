@@ -2487,8 +2487,8 @@
   },
   {
    "path": "scripts/performance/tests/telemetry_subreaper.py",
-   "sha256": "sha256:adff5570dcef867f2795ebb116c01bce222f5be335d0a8b9daef077b5d361228",
-   "size": 8513
+   "sha256": "sha256:63ec5b083076023a30908ebb2fdb1dda79a36c712640ca4492a549205a0c7107",
+   "size": 8685
   },
   {
    "path": "scripts/performance/tests/test_activation.py",
@@ -2657,8 +2657,8 @@
   },
   {
    "path": "scripts/performance/tests/test_telemetry_exec.py",
-   "sha256": "sha256:30b3af01e8af15ccdeb543711ae4eb2f77f33d1468eba5be8719397abc88790c",
-   "size": 29623
+   "sha256": "sha256:9000cc04c7e8e84cead1058267c4ac6cb6a35f5246e47817e474161bce04208c",
+   "size": 29776
   },
   {
    "path": "scripts/performance/tests/test_telemetry_lab.py",
@@ -2691,7 +2691,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:aec0df5ae40099c55e282e99b9364feb79ead7810a5f778de581a697e5f715b7",
+ "harness_digest": "sha256:42c31ae5f7771f779f8372ef9e71fc1b28e4a4c62a3a0017569ab8719c8b0166",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

@@ -360,12 +360,14 @@ class LocalEvidence(TempDir):
 @unittest.skipUnless(sys.platform == "linux", "Linux ancestor subreaper regression")
 class AncestorSubreaper(TempDir):
     def run_helper(self, mode):
-        helper = os.path.join(os.path.dirname(__file__), "telemetry_subreaper.py")
+        helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telemetry_subreaper.py")
         env = dict(os.environ, HOME=self.tmp, XDG_CONFIG_HOME=self.tmp,
                    XDG_CACHE_HOME=self.tmp, XDG_STATE_HOME=self.tmp, XDG_DATA_HOME=self.tmp)
+        # Exercise both helper launches without the test runner's import path or cwd.
+        env.pop("PYTHONPATH", None)
         started = time.monotonic()
         result = subprocess.run([sys.executable, helper, "ancestor", self.tmp, mode],
-                                env=env, capture_output=True, timeout=30)
+                                env=env, cwd=self.tmp, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertLess(len(result.stdout), 8192)
         return json.loads(result.stdout), time.monotonic() - started
