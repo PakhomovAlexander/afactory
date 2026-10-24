@@ -64,7 +64,7 @@ command that registers it; `--apply` runs those commands
 ```sh
 af provider detect              # what is here; writes nothing
 af provider detect --apply      # register every logged-in directory not registered yet
-af provider detect --json       # the same scan, as af/provider-detect@1
+af provider detect --json       # the same scan, as af/provider-detect@2
 ```
 
 On a machine whose `CLAUDE_CONFIG_DIR` is `~/.config/claude-personal`, with logins in
@@ -125,14 +125,20 @@ What it looks at:
 - **Markers, by name only.** A Claude directory holds `.claude.json`, `.credentials.json` or
   `settings.json`; a Codex directory holds `auth.json` or `config.toml`. af examines those names
   with `fstatat` below a descriptor opened with `O_NOFOLLOW` and never opens a file under the
-  directory. A directory with none is listed `empty` and not probed, because a CLI asked about a
+  directory. A directory that cannot be listed (one that grants search but not read) has each
+  marker checked by its path instead and is probed; its row says `listing unreadable`, never
+  `empty`. A directory with none is listed `empty` and not probed, because a CLI asked about a
   directory creates files there (`codex login status` creates its home on first contact);
   `--all` probes it anyway. A directory that is a symlink, is not owned by you or is writable by
   group or others is listed `unsafe (not probed)` with the reason and, for permissions, the
   `chmod` that fixes it: the same rules `setup` and `add` apply. `--dir` needs `--kind` when the
   markers do not say which CLI the directory belongs to.
 - **The probe** is `af provider status`'s: the capability check once per binary, then one bounded,
-  token-free login check per directory, at most four at a time, in the probe environment. LOGIN
+  token-free login check per directory, at most four at a time, in the probe environment, each
+  cut at 10 seconds whatever the kind. A row whose login is not known says why: in the table as
+  `unavailable: provider status probe timed out after 10 seconds`, and in the document as
+  `auth_cause` (`timeout`, `unstartable`, `incompatible`, `unparsable`, `output_too_large`,
+  `cancelled`, `unchecked`, `other`) with `auth_detail`, af's own words for it. LOGIN
   shows the plan or method — `Claude Max (claude.ai)`, `ChatGPT`, `API key`, `not logged in` —
   never an email or an organization. The Codex plan is not part of that check's answer, so it
   reads `ChatGPT` and `plan: unknown`. `--identity` adds the account label the CLI reported, under
@@ -141,9 +147,18 @@ What it looks at:
 `--apply` registers, in table order, every row whose LOGIN is authenticated and REGISTERED AS is
 `-`, through the same locked, atomic publication and safety checks as `af provider add`, and
 prints each line it ran. It never logs in, never creates a directory, and never touches a row
-that is not logged in: it prints that row's `af provider setup … --login` line instead. A
-registry conflict stops it at that row with exit 5; the rows before it stay registered. The
-IDs:
+that is not logged in: it prints that row's `af provider setup … --login` line instead. A row
+the scan read as registered is checked again under the registry lock: one whose entry was
+removed since is registered again, never reported `already registered`. A login whose CLI was
+found only off `PATH` is not registered, because `af provider status` and Tasks look on `PATH`
+only: its suggestion is the PATH line (`fix_path`), `--apply` leaves it `skipped_cli_off_path`
+and exits 4, and the closing line is that PATH line. A registry conflict stops it at that row
+with exit 5; the rows before it stay registered. The row names the ID it met
+(`applied.conflict_with`) and suggests the retry that works, `af provider detect --dir D --id
+OTHER --apply` with the first free ID (`retry_apply`), which the message and the closing `next:`
+line repeat. A registry that cannot be read (malformed, unreadable or mid-transaction) makes
+every row's `registration` `unknown` and its REGISTERED AS column `unknown`, its note is printed
+with every scan, and `--apply` refuses with exit 1 before it scans. The IDs:
 
 | Directory | ID |
 |---|---|
@@ -156,14 +171,18 @@ IDs:
 With nothing found, the output is the install guidance — `npm install -g
 @anthropic-ai/claude-code` or `curl -fsSL https://claude.ai/install.sh | bash`, `npm install -g
 @openai/codex` or `brew install codex`, the directories searched and `then run: af provider
-detect` — under exit 0. `af provider status` prints the same guidance when no CLI is on `PATH`
-and nothing is registered, and with nothing registered it names what a names-only scan found:
-`found but not registered: ~/.config/claude-work, ~/.codex-acme (not probed) → af provider
-detect`.
+detect` — under exit 0, with `applied` true in the document when `--apply` was given. `af
+provider status` prints the same guidance when no CLI is on `PATH` and nothing is registered, and
+it names what a names-only scan found that no row lists: `found but not registered:
+~/.config/claude-work, ~/.codex-acme (not probed) → af provider detect`, which its document
+carries as `found_unregistered` with `next_action` `af provider detect`. `af doctor` and `af
+onboard` list the same directories from the same scan.
 
-Exit codes: 0 the scan completed, 1 unclassified failure, 2 usage error (as one `af/error@1`
-document under `--json`), 4 a found CLI cannot start or is incompatible (the rows are still
-printed), 5 a registry conflict stopped `--apply`. Never 3 and never 6: detect starts no login.
+Exit codes: 0 the scan completed, 1 unclassified failure, an `--apply` refused for an unreadable
+registry among them, 2 usage error (both as one `af/error@1` document under `--json`), 4 a found
+CLI cannot start or is incompatible, or a login was left unregistered because its CLI is off
+`PATH` (the rows are still printed), 5 a registry conflict stopped `--apply`. Never 3 and never
+6: detect starts no login.
 
 ## Onboarding a Provider
 
@@ -255,7 +274,7 @@ Enter runs it.
 
 ```sh
 af provider status                 # fast: the registry, the CLI capability check and one authentication check per context
-af provider status --json          # the same, as af/provider-status@2
+af provider status --json          # the same, as af/provider-status@3
 af provider status --usage         # additionally probe subscription and quota windows
 af provider doctor --campaign NAME --provider correctness=codex-main
 ```
@@ -273,6 +292,10 @@ only when a row is authenticated. It reports four independent axes:
 | `auth` | `authenticated`, `not_authenticated`, `unknown`, `unavailable`, `installation_failed`, `incompatible`, `not_probed` | what the Provider CLI said about this auth directory; `installation_failed` means the CLI cannot start, so it said nothing; `incompatible` means it starts but does not accept af's invocation, so its login was not asked about; `not_probed` means the directory is absent or holds no login marker, so the CLI was not asked |
 | `usability` | `usable_or_untested`, `unusable`, `unknown` | status never claims `usable`: only `af provider doctor` dispatches and can prove it |
 | `usage.state` | `not_requested`, `not_applicable`, `unsupported`, `available`, `unavailable` | the optional plan and quota axis |
+
+A quota window whose reset time the Provider does not report says so in its name, `Claude does
+not report when this window resets`, and its document window has `resets_at_unix: null` with
+`reset_reported: false`.
 
 Usage is separate on purpose. A subscription probe can time out, be unsupported for an API-key
 context, or be missing entirely — none of which says anything about whether the Provider is
@@ -534,8 +557,8 @@ discards stdout still shows the operator what happened.
 | 6 | authentication failed; for `add`, a context that is not logged in | `setup`, `add` |
 | 7 | optional usage unavailable; a model catalog unavailable | `status --usage`; `models` |
 
-The versioned documents are [`provider-detect-v1.json`](../schemas/provider-detect-v1.json),
-[`provider-status-v2.json`](../schemas/provider-status-v2.json),
+The versioned documents are [`provider-detect-v2.json`](../schemas/provider-detect-v2.json),
+[`provider-status-v3.json`](../schemas/provider-status-v3.json),
 [`provider-setup-v1.json`](../schemas/provider-setup-v1.json) and
 [`provider-models-v1.json`](../schemas/provider-models-v1.json). They are closed vocabularies; the
 models document carries model IDs, aliases, effort levels and bounded display names only. None

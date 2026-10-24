@@ -354,7 +354,7 @@ Errors under --json are one document on stdout with an `error` field and the sam
 command that classifies its own outcomes — `af provider status` and `af provider setup` — prints
 its own versioned document instead, carrying that exit code and an af-authored `diagnostic`;
 stderr still gets one diagnostic line, so discarding stdout never hides a refusal. The Provider
-documents are af/provider-detect@1 (`af provider detect`), af/provider-status@2,
+documents are af/provider-detect@2 (`af provider detect`), af/provider-status@3,
 af/provider-setup@1 and af/provider-models@1; none carries an account, a credential or the
 Provider CLI's own words.
 

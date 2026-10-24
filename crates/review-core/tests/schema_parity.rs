@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 223] = [
+const SCHEMAS: [&str; 224] = [
     "task-findings-v1.json",
     "task-materialized-v1.json",
     "task-diff-v1.json",
@@ -57,7 +57,7 @@ const SCHEMAS: [&str; 223] = [
     "task-collected-inspection-v2.json",
     "task-list-v3.json",
     "task-checks-v2.json",
-    "provider-detect-v1.json",
+    "provider-detect-v2.json",
     "store-writer-v1.json",
     "doctor-v1.json",
     "project-registered-v1.json",
@@ -73,6 +73,7 @@ const SCHEMAS: [&str; 223] = [
     "project-history-v2.json",
     "project-workspace-registered-v1.json",
     "project-workspace-removed-v1.json",
+    "project-workspace-delivered-v1.json",
     "project-v1.json",
     "project-workspaces-v1.json",
     "task-report-v2.json",
@@ -83,7 +84,7 @@ const SCHEMAS: [&str; 223] = [
     "measurement-comparison-v1.json",
     "task-input-bindings-v1.json",
     "task-source-origin-v2.json",
-    "provider-status-v2.json",
+    "provider-status-v3.json",
     "provider-setup-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",

@@ -161,7 +161,7 @@ fn storage_document(output: &Output) -> serde_json::Value {
     assert!(output.status.success(), "{}", err(output));
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {}", out(output)));
-    assert_eq!(document["schema"], "af/storage@4");
+    assert_eq!(document["schema"], "af/storage@5");
     document
 }
 
@@ -504,7 +504,7 @@ fn a_cached_notice_reaches_a_terminal_but_never_a_json_run() {
     assert!(!stdout.contains("is available"), "{stdout}");
     let document: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {stdout}"));
-    assert_eq!(document["schema"], "af/storage@4");
+    assert_eq!(document["schema"], "af/storage@5");
 
     assert_eq!(scheduled(&sandbox), 0, "a fresh cache is not refreshed");
 }
@@ -1707,8 +1707,15 @@ fn a_release_check_stalled_for_over_an_hour_is_reported_and_is_no_check() {
     assert!(out(&status).contains(&expected), "{}", out(&status));
     let json = headless(&sandbox, af_binary(), &home, &["self", "status", "--json"]);
     let document: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
-    crate::schemas::valid(&crate::schemas::validator("self-status-v1.json"), &document);
+    crate::schemas::valid(&crate::schemas::validator("self-status-v2.json"), &document);
     assert_eq!(document["check_stalled_since"], iso(since));
+    // The lock and the command that clears it are fields, the same as the text's fix.
+    let canonical = std::fs::canonicalize(&lock_path).unwrap();
+    assert_eq!(document["check_lock"], canonical.display().to_string());
+    assert_eq!(
+        document["next_action"],
+        format!("rm {}", canonical.display())
+    );
 
     let check = headless(&sandbox, af_binary(), &home, &["self", "update", "--check"]);
     assert_eq!(check.status.code(), Some(10), "{}", err(&check));
@@ -1798,8 +1805,8 @@ fn status_shows_a_failed_attempt_and_schedules_or_refreshes_the_check() {
     let status = headless(&sandbox, af_binary(), &home, &["self", "status", "--json"]);
     assert!(status.status.success(), "{}", err(&status));
     let document: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    crate::schemas::valid(&crate::schemas::validator("self-status-v1.json"), &document);
-    assert_eq!(document["schema"], "af/self-status@1");
+    crate::schemas::valid(&crate::schemas::validator("self-status-v2.json"), &document);
+    assert_eq!(document["schema"], "af/self-status@2");
     assert_eq!(scheduled(&sandbox), 1, "a due check is scheduled by status");
     // Offline, neither.
     let offline = sandbox
@@ -1878,6 +1885,83 @@ fn a_pre_release_user_hears_of_the_next_pre_release() {
         )),
         "{stderr}"
     );
+}
+
+/// C3 item 5: an explicit `af self update --check` that fails is recorded as the last attempt
+/// with its cause, as a detached check's is, so status shows it.
+#[test]
+fn a_failed_explicit_check_is_recorded_as_the_last_attempt() {
+    let sandbox = Sandbox::new();
+    let home = sandbox.path("home");
+    std::fs::remove_dir(sandbox.path("releases")).unwrap();
+    let check = headless(&sandbox, af_binary(), &home, &["self", "update", "--check"]);
+    assert_eq!(check.status.code(), Some(1), "{}", err(&check));
+    let status = headless(&sandbox, af_binary(), &home, &["self", "status", "--json"]);
+    assert!(status.status.success(), "{}", err(&status));
+    let document: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("self-status-v2.json"), &document);
+    assert!(document["last_attempt"].is_string(), "{document}");
+    let cause = document["last_error"].as_str().unwrap_or_default();
+    assert!(cause.starts_with("reading "), "{document}");
+    assert!(document["last_check"].is_null(), "{document}");
+    let shown = headless(&sandbox, af_binary(), &home, &["self", "status"]);
+    let line = out(&shown)
+        .lines()
+        .find(|line| line.starts_with("last check: "))
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        line.starts_with("last check: never · last attempt ")
+            && line.contains(&format!(" failed: {cause}")),
+        "{line}"
+    );
+}
+
+/// C3 item 4: on the stable channel, an explicit `--check --rc` records the pre-release it found
+/// as `latest_prerelease` only: `latest` stays the stable channel's newest, the cache names the
+/// stable channel, and status still names the install command.
+#[test]
+fn an_explicit_rc_check_on_the_stable_channel_keeps_the_stable_latest() {
+    let running = semver::Version::parse(VERSION).unwrap();
+    let sandbox = Sandbox::new();
+    let home = sandbox.path("home");
+    write(&config_file(&sandbox), "[self]\nchannel = \"stable\"\n");
+    let stable = format!("{}.{}.0", running.major, running.minor.saturating_sub(1));
+    let next = format!("{}.{}.0-rc.999", running.major, running.minor + 1);
+    for version in [&stable, &next] {
+        std::fs::create_dir_all(sandbox.release_dir(version)).unwrap();
+    }
+    let check = headless(
+        &sandbox,
+        af_binary(),
+        &home,
+        &["self", "update", "--check", "--rc"],
+    );
+    assert_eq!(check.status.code(), Some(10), "{}", err(&check));
+    let cache = std::fs::read_to_string(cache_file(&sandbox)).unwrap();
+    assert!(cache.contains(&format!("latest = \"{stable}\"")), "{cache}");
+    assert!(
+        cache.contains(&format!("latest_prerelease = \"{next}\"")),
+        "{cache}"
+    );
+    assert!(cache.contains("channel = \"stable\""), "{cache}");
+    let shown = headless(&sandbox, af_binary(), &home, &["self", "status"]);
+    assert!(
+        out(&shown).contains(&format!(
+            "latest pre-release {next} (you run {VERSION}: af self update --rc)"
+        )),
+        "{}",
+        out(&shown)
+    );
+    assert!(
+        !out(&shown).contains(&format!("latest pre-release {next} ·")),
+        "{}",
+        out(&shown)
+    );
+    let status = headless(&sandbox, af_binary(), &home, &["self", "status", "--json"]);
+    let document: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(document["latest"], stable.as_str(), "{document}");
+    assert_eq!(document["next_action"], "af self update --rc", "{document}");
 }
 
 /// Finding S2: `af self update --check` honours AF_SELF_OFFLINE: it asks nothing, says so and

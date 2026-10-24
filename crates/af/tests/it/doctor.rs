@@ -288,3 +288,60 @@ fn a_repository_without_af_is_told_to_onboard() {
     );
     assert_eq!(machine.snapshot(), before);
 }
+
+/// C3 item 22: a release check whose last attempt failed, or one stalled on its lock, makes
+/// the update row a warning naming the cause and the fix, as `af self status` does.
+#[test]
+fn the_update_row_warns_of_a_failed_or_stalled_release_check() {
+    let machine = Machine::new();
+    let work = machine.path("work");
+    let cache = machine.path("home/.cache/af/self/latest.toml");
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    std::fs::write(
+        &cache,
+        "schema = \"af/self-check@3\"\nchecked_at_epoch = 1\nattempted_at_epoch = 86400\n\
+         last_error = \"reading /releases: No such file or directory\"\nchannel = \"stable\"\n",
+    )
+    .unwrap();
+    let failed = document(&machine.doctor(&work, &["--json"], None));
+    let update = check(&failed, "update");
+    assert_eq!(update["status"], "warn", "{update}");
+    assert!(
+        update["detail"].as_str().unwrap().starts_with(
+            "last attempt 1970-01-02T00:00:00Z failed: reading /releases: No such file or \
+             directory"
+        ),
+        "{update}"
+    );
+    assert_eq!(
+        update["fix"],
+        "af self status --refresh (runs the release check again now)"
+    );
+
+    // A check that has held the lock for two hours: the row says so, and how to clear it.
+    let lock = cache.with_extension("lock");
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 2 * 3600;
+    std::fs::write(&lock, format!("started_at_epoch = {since}\npid = 1\n")).unwrap();
+    let held = std::fs::File::open(&lock).unwrap();
+    rustix::fs::flock(&held, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    let stalled = document(&machine.doctor(&work, &["--json"], None));
+    let update = check(&stalled, "update");
+    assert_eq!(update["status"], "warn", "{update}");
+    assert!(
+        update["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("a release check has been running since "),
+        "{update}"
+    );
+    let fix = update["fix"].as_str().unwrap();
+    assert!(
+        fix.starts_with("rm ") && fix.ends_with("af/self/latest.lock"),
+        "{update}"
+    );
+    drop(held);
+}

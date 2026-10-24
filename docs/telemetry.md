@@ -847,8 +847,8 @@ document
 ## Telemetry in the Storage Budget
 
 Every byte of every regular file beneath every registered telemetry directory is counted once in
-`af storage` as the kind `telemetry` (`af/storage@4`,
-[`schemas/storage-v4.json`](../schemas/storage-v4.json)), whatever the current level or `dir`,
+`af storage` as the kind `telemetry` (`af/storage@5`,
+[`schemas/storage-v5.json`](../schemas/storage-v5.json)), whatever the current level or `dir`,
 Telemetry `off` included, by the rule every kind is measured by — the allocated bytes of regular
 files, a hard-linked file once, directories and links nothing (ADR-0159 clause 13):
 

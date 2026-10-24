@@ -140,10 +140,22 @@ A release older than the running one is always qualified (`latest stable 0.12.0`
 0.12.1), never shown as simply the latest. The notice after commands names the same command: `af
 0.12.0-rc.5 is available (running 0.12.0-rc.3) — af self update --rc`.
 
-`af self status --json` prints one `af/self-status@1` document
-([schema](../schemas/self-status-v1.json)) with `last_check`, `last_attempt`, `last_error`,
-`latest`, `latest_prerelease` and `check_stalled_since` beside the installation, the pin and
-the policy.
+`af self status --json` prints one `af/self-status@2` document
+([schema](../schemas/self-status-v2.json)) with `last_check`, `last_attempt`, `last_error`,
+`latest`, `latest_prerelease`, `check_stalled_since`, `check_lock` and `next_action` beside the
+installation, the pin and the policy. `next_action` is the command the text names: `rm` of the
+lock file for a check that has held it over an hour, else `af self update --rc` while a newer
+pre-release is known. A check that fails, `af self update --check` included, is recorded as the
+last attempt with its cause, and `af doctor` warns about it and about a stalled check with the
+same fix. `latest` always names the newest release of the configured `[self] channel`: an
+explicit `--check --rc` on the stable channel records what it found as `latest_prerelease` only.
+
+## macOS: Spotlight and Gatekeeper
+
+On macOS, `af doctor` warns in its `storage` row when Spotlight indexes the warm build cache,
+the warm Workspaces or the sandbox root, which every gate writes thousands of files to. The fix,
+Spotlight's Search Privacy or roots named `*.noindex`, and the Gatekeeper exemption for your
+terminal are in [the troubleshooting section](README.md#macos-spotlight-and-gatekeeper).
 
 ## Shell completions and man pages
 

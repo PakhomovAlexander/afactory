@@ -394,6 +394,18 @@ fn update() -> Check {
             _ => false,
         }
     });
+    // A stalled check and a failed one are said the way `af self status` says them, with the
+    // same fix.
+    if let Some((said, fix)) = &facts.stalled {
+        return Check::warn("update", format!("{said}; {checked}; {policy_text}"), fix);
+    }
+    if let Some((when, error)) = &facts.failed {
+        return Check::warn(
+            "update",
+            format!("last attempt {when} failed: {error}; {checked}; {policy_text}"),
+            "af self status --refresh (runs the release check again now)",
+        );
+    }
     if let Some(latest) = newer {
         return Check::warn(
             "update",
@@ -652,20 +664,11 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
             "af provider status names the problem; fix or move the registry file",
         );
     }
+    // The same names-only scan `af provider status` and `af onboard` list (ADR-0197).
     let found: Vec<String> = registry
-        .candidates
+        .unregistered
         .iter()
-        .map(|candidate| match &candidate.auth_dir {
-            Some(dir) if dir.is_dir() => {
-                format!("a {} login at {}", candidate.kind, dir.display())
-            }
-            Some(dir) => format!(
-                "the {} CLI (no login at {} yet)",
-                candidate.kind,
-                dir.display()
-            ),
-            None => format!("the {} CLI", candidate.kind),
-        })
+        .map(|dir| crate::providers::detect::display_path(dir))
         .collect();
     let found_text = if found.is_empty() {
         String::new()
@@ -798,7 +801,108 @@ fn storage(installation: &Result<selfmgmt::Installation, String>) -> Check {
             "af self status (any af self command recovers them)",
         );
     }
+    let roots = crate::storage::Roots::current()
+        .map(|roots| vec![roots.warm, roots.workspaces])
+        .unwrap_or_default()
+        .into_iter()
+        .chain([crate::storage::sandbox_root(&policy)])
+        .collect::<Vec<_>>();
+    if cfg!(target_os = "macos") {
+        let indexed = spotlight_indexed(&roots, Path::new(MDUTIL), &|path| {
+            crate::storage::measure_volume(path)
+                .mount
+                .map_or_else(|| path.to_path_buf(), |(mount, _)| mount)
+        });
+        if !indexed.is_empty() {
+            return spotlight_warning(detail, &indexed);
+        }
+    }
     Check::ok("storage", detail)
+}
+
+/// macOS's Spotlight tool, asked only for a root's indexing status.
+const MDUTIL: &str = "/usr/bin/mdutil";
+
+/// How long `mdutil -s` may take for one root before it counts as unknown, not indexed.
+const MDUTIL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Where Spotlight never indexes: the per-user temporary directories below `/var/folders`.
+const UNINDEXED: [&str; 2] = ["/var/folders", "/private/var/folders"];
+
+/// The roots af's builds and sandboxes write to that Spotlight indexes: `mdutil -s` says
+/// indexing is enabled on the volume holding one (`volume_of` names it: `mdutil` answers for
+/// volumes only), and no component of its path is named `*.noindex`, which Spotlight skips, nor
+/// is it below `/var/folders`. Every build writes thousands of files there, and indexing them,
+/// with Gatekeeper's scan of each new binary, costs cores on every gate. A root that does not
+/// exist yet is asked about at its nearest existing ancestor; one `mdutil` cannot answer for is
+/// left out.
+fn spotlight_indexed(
+    roots: &[PathBuf],
+    mdutil: &Path,
+    volume_of: &dyn Fn(&Path) -> PathBuf,
+) -> Vec<PathBuf> {
+    let roots: Vec<PathBuf> = roots
+        .iter()
+        .filter(|root| !UNINDEXED.iter().any(|dir| root.starts_with(dir)))
+        .cloned()
+        .collect();
+    indexed_among(&roots, mdutil, volume_of)
+}
+
+/// [`spotlight_indexed`] over roots none of which is below a directory Spotlight never indexes.
+fn indexed_among(
+    roots: &[PathBuf],
+    mdutil: &Path,
+    volume_of: &dyn Fn(&Path) -> PathBuf,
+) -> Vec<PathBuf> {
+    let mut indexed = Vec::new();
+    for root in roots {
+        let excluded = root.components().any(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(|name| name.to_ascii_lowercase().ends_with(".noindex"))
+        });
+        if excluded || indexed.contains(root) {
+            continue;
+        }
+        let Some(existing) = root.ancestors().find(|path| path.exists()) else {
+            continue;
+        };
+        if mdutil_says_indexed(mdutil, &volume_of(existing)) {
+            indexed.push(root.clone());
+        }
+    }
+    indexed
+}
+
+/// Whether `mdutil -s PATH` reports indexing enabled, within [`MDUTIL_TIMEOUT`], supervised and
+/// reaped by `review-process` (ADR-0026).
+fn mdutil_says_indexed(mdutil: &Path, path: &Path) -> bool {
+    let mut command = std::process::Command::new(mdutil);
+    command.arg("-s").arg(path);
+    review_process::run_supervised(&mut command, None, MDUTIL_TIMEOUT)
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("Indexing enabled"))
+}
+
+/// The storage row when Spotlight indexes af's build and sandbox roots: a warning naming them,
+/// whose fix excludes them.
+fn spotlight_warning(mut detail: String, indexed: &[PathBuf]) -> Check {
+    let named: Vec<String> = indexed
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect();
+    detail.push_str(&format!(
+        "; Spotlight indexes {}, which every build and sandbox writes to",
+        named.join(", ")
+    ));
+    Check::warn(
+        "storage",
+        detail,
+        "add them in System Settings > Spotlight > Search Privacy, or point [storage] \
+         build_cache_root and sandbox_root at directories named *.noindex (docs/README.md, \
+         macOS)",
+    )
 }
 
 fn project(
@@ -929,6 +1033,63 @@ fn same_file(found: &Path, link: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// C3 item 29: a root `mdutil -s` reports indexed is named, one named `*.noindex` is never
+    /// asked about, and a tool that cannot answer reports nothing.
+    #[test]
+    fn spotlight_indexed_roots_are_named_with_their_fix() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let asked = directory.path().join("asked");
+        let mdutil = directory.path().join("mdutil");
+        let script = r#"#!/bin/sh
+echo "$2" >> "$ASKED"
+case "$2" in
+  */off*) printf '%s:\n\tIndexing disabled.\n' "$2" ;;
+  *) printf '%s:\n\tIndexing enabled.\n' "$2" ;;
+esac
+"#;
+        std::fs::write(
+            &mdutil,
+            script.replace("\"$ASKED\"", &format!("'{}'", asked.display())),
+        )
+        .unwrap();
+        std::fs::set_permissions(&mdutil, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let on = directory.path().join("on/cache");
+        let off = directory.path().join("off/cache");
+        let skipped = directory.path().join("builds.noindex/cache");
+        for root in [&on, &off, &skipped] {
+            std::fs::create_dir_all(root).unwrap();
+        }
+        let absent = directory.path().join("on/not-yet/sandboxes");
+        let roots = [on.clone(), off.clone(), skipped.clone(), absent.clone()];
+        let itself = |path: &Path| path.to_path_buf();
+        // `$TMPDIR` is below `/var/folders`, which Spotlight never indexes: the roots here are
+        // judged as if they were elsewhere.
+        assert_eq!(
+            indexed_among(&roots, &mdutil, &itself),
+            [on.clone(), absent]
+        );
+        let asked = std::fs::read_to_string(&asked).unwrap();
+        assert!(!asked.contains(".noindex"), "{asked}");
+        assert!(
+            asked.contains("/on/not-yet\n") || asked.contains("/on\n"),
+            "{asked}"
+        );
+        // A tool that is missing answers nothing.
+        assert!(indexed_among(&roots, &directory.path().join("missing"), &itself).is_empty());
+        // The per-user temporary directories are never indexed, so never asked about.
+        let temporary = [PathBuf::from("/private/var/folders/xy/T/af-sandboxes")];
+        assert!(spotlight_indexed(&temporary, &mdutil, &itself).is_empty());
+        let check = spotlight_warning("af keeps 1 B".into(), &[on.clone()]);
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check
+                .detail
+                .contains(&format!("Spotlight indexes {}", on.display()))
+        );
+        assert!(check.fix.unwrap().contains("Search Privacy"));
+    }
 
     #[test]
     fn git_versions_parse_with_vendor_suffixes() {

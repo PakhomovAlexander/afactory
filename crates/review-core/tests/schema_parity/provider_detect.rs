@@ -1,4 +1,4 @@
-//! The agent-facing `af/provider-detect@1` document (ADR-0197).
+//! The agent-facing `af/provider-detect@2` document (ADR-0197).
 //!
 //! Like the other Provider onboarding documents it carries no Rust type: `af provider detect`
 //! builds it from what the machine's CLIs and directories said. The schema is the contract, and
@@ -9,7 +9,7 @@
 use super::{assert_invalid, assert_valid};
 use serde_json::{Value, json};
 
-const SCHEMA: &str = "provider-detect-v1.json";
+const SCHEMA: &str = "provider-detect-v2.json";
 
 fn row(dir: &str, source: &str, auth: &str) -> Value {
     let authenticated = auth == "authenticated";
@@ -20,9 +20,13 @@ fn row(dir: &str, source: &str, auth: &str) -> Value {
         "markers": [".claude.json"],
         "safe": true,
         "auth": auth,
+        "auth_cause": null,
+        "auth_detail": null,
         "auth_method": if authenticated { "oauth" } else { "none" },
         "plan": if authenticated { "max" } else { "unknown" },
+        "registration": "unregistered",
         "registered_as": null,
+        "listing_unreadable": false,
         "suggested": if authenticated {
             json!({
                 "action": "register",
@@ -42,7 +46,7 @@ fn row(dir: &str, source: &str, auth: &str) -> Value {
 
 fn scan() -> Value {
     json!({
-        "schema": "af/provider-detect@1",
+        "schema": "af/provider-detect@2",
         "exit_code": 0,
         "applied": false,
         "binaries": [{
@@ -63,9 +67,13 @@ fn scan() -> Value {
                 "markers": [],
                 "safe": true,
                 "auth": "not_probed",
+                "auth_cause": null,
+                "auth_detail": null,
                 "auth_method": "unknown",
                 "plan": "unknown",
+                "registration": "unregistered",
                 "registered_as": null,
+                "listing_unreadable": false,
                 "suggested": {"action": "probe", "id": null, "command": "af provider detect --all"},
                 "applied": null,
             },
@@ -78,8 +86,9 @@ fn applied() -> Value {
     let mut applied = scan();
     applied["applied"] = json!(true);
     applied["candidates"][0]["applied"] =
-        json!({"id": "claude-main", "result": "skipped_not_authenticated"});
-    applied["candidates"][1]["applied"] = json!({"id": "claude-work", "result": "registered"});
+        json!({"id": "claude-main", "result": "skipped_not_authenticated", "conflict_with": null});
+    applied["candidates"][1]["applied"] =
+        json!({"id": "claude-work", "result": "registered", "conflict_with": null});
     applied
 }
 
@@ -97,8 +106,17 @@ fn scans_and_applications_are_valid() {
     let mut conflict = applied();
     conflict["exit_code"] = json!(5);
     conflict["candidates"][1]["applied"] =
-        json!({"id": "claude-work", "result": "registry_conflict"});
+        json!({"id": "claude-work", "result": "registry_conflict", "conflict_with": "claude-work"});
+    conflict["candidates"][1]["suggested"] = json!({
+        "action": "retry_apply",
+        "id": "claude-work-2",
+        "command": "af provider detect --dir /home/o/.config/claude-work --id claude-work-2 --apply",
+    });
     assert_valid(SCHEMA, &conflict);
+    // The retry the conflict suggests is never the command that just failed.
+    let mut same = conflict.clone();
+    same["candidates"][1]["suggested"] = scan()["candidates"][1]["suggested"].clone();
+    assert_invalid(SCHEMA, &same, "a conflict suggesting the add that failed");
 
     let mut broken = scan();
     broken["exit_code"] = json!(4);
@@ -110,9 +128,13 @@ fn scans_and_applications_are_valid() {
         "markers": ["settings.json"],
         "safe": true,
         "auth": "incompatible",
+        "auth_cause": "incompatible",
+        "auth_detail": null,
         "auth_method": "unknown",
         "plan": "unknown",
+        "registration": "unregistered",
         "registered_as": null,
+        "listing_unreadable": false,
         "suggested": {
             "action": "fix_cli",
             "id": null,
@@ -125,6 +147,7 @@ fn scans_and_applications_are_valid() {
     let mut registered = scan();
     registered["candidates"][1]["source"] = json!("registry");
     registered["candidates"][1]["registered_as"] = json!("claude-work");
+    registered["candidates"][1]["registration"] = json!("registered");
     registered["candidates"][1]["suggested"] =
         json!({"action": "none", "id": null, "command": null});
     assert_valid(SCHEMA, &registered);
@@ -199,7 +222,7 @@ fn identities_raw_text_and_unearned_outcomes_are_unrepresentable() {
             "an outcome without --apply",
             Box::new(|d| {
                 d["candidates"][1]["applied"] =
-                    json!({"id": "claude-work", "result": "registered"});
+                    json!({"id": "claude-work", "result": "registered", "conflict_with": null});
             }),
         ),
         (
@@ -207,16 +230,42 @@ fn identities_raw_text_and_unearned_outcomes_are_unrepresentable() {
             Box::new(|d| {
                 d["applied"] = json!(true);
                 d["candidates"][0]["applied"] =
-                    json!({"id": "claude-main", "result": "registered"});
+                    json!({"id": "claude-main", "result": "registered", "conflict_with": null});
             }),
         ),
         (
             "an authenticated row skipped as logged out",
             Box::new(|d| {
                 d["applied"] = json!(true);
-                d["candidates"][1]["applied"] =
-                    json!({"id": "claude-work", "result": "skipped_not_authenticated"});
+                d["candidates"][1]["applied"] = json!({
+                    "id": "claude-work",
+                    "result": "skipped_not_authenticated",
+                    "conflict_with": null,
+                });
             }),
+        ),
+        (
+            "a registered_as beside an unknown registration",
+            Box::new(|d| {
+                d["candidates"][1]["registration"] = json!("unknown");
+                d["candidates"][1]["registered_as"] = json!("claude-work");
+            }),
+        ),
+        (
+            "an unavailable login without its cause",
+            Box::new(|d| {
+                d["candidates"][1]["auth"] = json!("unavailable");
+                d["candidates"][1]["auth_method"] = json!("unknown");
+                d["candidates"][1]["plan"] = json!("unknown");
+            }),
+        ),
+        (
+            "a cause for an answered login",
+            Box::new(|d| d["candidates"][1]["auth_cause"] = json!("timeout")),
+        ),
+        (
+            "the superseded version",
+            Box::new(|d| d["schema"] = json!("af/provider-detect@1")),
         ),
         (
             "an authenticated unregistered row not offered",
@@ -274,7 +323,7 @@ fn identities_raw_text_and_unearned_outcomes_are_unrepresentable() {
         ),
         (
             "another document's schema",
-            Box::new(|d| d["schema"] = json!("af/provider-status@2")),
+            Box::new(|d| d["schema"] = json!("af/provider-status@3")),
         ),
     ];
     for (why, change) in cases {
@@ -282,4 +331,52 @@ fn identities_raw_text_and_unearned_outcomes_are_unrepresentable() {
         change(&mut document);
         assert_invalid(SCHEMA, &document, why);
     }
+}
+
+/// Version 2: an unavailable login carries its cause; an unreadable registry makes every row's
+/// registration unknown; a login whose CLI is off `PATH` is left unregistered under exit 4 with
+/// the PATH fix.
+#[test]
+fn causes_unknown_registrations_and_off_path_logins_are_stated() {
+    let mut unavailable = scan();
+    unavailable["candidates"][1]["auth"] = json!("unavailable");
+    unavailable["candidates"][1]["auth_method"] = json!("unknown");
+    unavailable["candidates"][1]["plan"] = json!("unknown");
+    unavailable["candidates"][1]["auth_cause"] = json!("timeout");
+    unavailable["candidates"][1]["auth_detail"] =
+        json!("provider status probe timed out after 10 seconds");
+    unavailable["candidates"][1]["suggested"] =
+        json!({"action": "retry", "id": null, "command": "af provider detect"});
+    assert_valid(SCHEMA, &unavailable);
+
+    // A registry that cannot be read: every row's registration is unknown, no ID is offered.
+    let mut unknown = scan();
+    for row in unknown["candidates"].as_array_mut().unwrap() {
+        row["registration"] = json!("unknown");
+    }
+    unknown["candidates"][1]["suggested"] =
+        json!({"action": "fix_registry", "id": null, "command": "af provider status"});
+    assert_valid(SCHEMA, &unknown);
+    let mut refused = unknown.clone();
+    refused["exit_code"] = json!(1);
+    assert_invalid(SCHEMA, &refused, "a refusal is an af/error@1 document");
+
+    let mut off_path = scan();
+    off_path["exit_code"] = json!(4);
+    off_path["applied"] = json!(true);
+    off_path["candidates"][1]["suggested"] = json!({
+        "action": "fix_path",
+        "id": "claude-work",
+        "command": "export PATH=\"$HOME/.local/bin:$PATH\"",
+    });
+    off_path["candidates"][1]["applied"] =
+        json!({"id": "claude-work", "result": "skipped_cli_off_path", "conflict_with": null});
+    assert_valid(SCHEMA, &off_path);
+    let mut quiet = off_path.clone();
+    quiet["exit_code"] = json!(0);
+    assert_invalid(SCHEMA, &quiet, "a login left off PATH under exit 0");
+
+    let mut listed = scan();
+    listed["candidates"][1]["listing_unreadable"] = json!(true);
+    assert_valid(SCHEMA, &listed);
 }

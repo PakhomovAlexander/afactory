@@ -359,7 +359,7 @@ fn self_status_and_update_help_describe_the_release_check() {
             "last attempt <time> failed: <reason>",
             "af self update --rc",
             "status schedules the detached check",
-            "af/self-status@1",
+            "af/self-status@2",
         ] {
             assert!(flat.contains(needle), "`{needle}` missing:\n{flat}");
         }
@@ -513,8 +513,11 @@ fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
             "A registry conflict stops it at that row with exit 5; the rows before it stay registered",
             "~/.config/claude-work is claude-work, ~/.codex-gridgain is codex-gridgain",
             "*-ambient is never generated",
-            "af/provider-detect@1",
-            "Exit codes: 0 the scan completed, 1 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible (the rows are still printed), 5 a registry conflict stopped --apply.",
+            "af/provider-detect@2",
+            "Exit codes: 0 the scan completed, 1 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login was left unregistered because its CLI is off PATH (the rows are still printed), 5 a registry conflict stopped --apply.",
+            "never registers a login whose CLI is off PATH",
+            "the row suggests the retry with a free ID",
+            "A registry that cannot be read refuses --apply (exit 1)",
             "af provider detect --apply",
         ] {
             assert!(text.contains(needle), "`{needle}` missing:\n{text}");
@@ -554,7 +557,7 @@ fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
     ] {
         assert!(text.contains(needle), "`{needle}` missing:\n{text}");
     }
-    assert!(out(&af(&["help", "json"])).contains("af/provider-detect@1"));
+    assert!(out(&af(&["help", "json"])).contains("af/provider-detect@2"));
     assert!(out(&af(&["help"])).contains("providers"));
 
     let add = out(&af(&["provider", "add", "--help"]))

@@ -272,7 +272,7 @@ fn documents_redact_identity_and_provider_output() {
         &["provider", "status", "--json", "--usage"],
     );
     let reported = document(&status);
-    valid("provider-status-v2.json", &reported);
+    valid("provider-status-v3.json", &reported);
 
     for rendered in [out(&setup), out(&status)] {
         for leaked in [
@@ -496,7 +496,7 @@ exit 64
     let fast = run(&["provider", "status", "--json"]);
     assert_eq!(code(&fast), 0, "{}", err(&fast));
     let reported = document(&fast);
-    valid("provider-status-v2.json", &reported);
+    valid("provider-status-v3.json", &reported);
     assert_eq!(reported["usage_requested"], false);
     let provider = reported["providers"][0].clone();
     assert_eq!(provider["id"], "codex-main");
@@ -511,7 +511,7 @@ exit 64
     let probed = run(&["provider", "status", "--json", "--usage"]);
     assert_eq!(code(&probed), 7, "{}", err(&probed));
     let reported = document(&probed);
-    valid("provider-status-v2.json", &reported);
+    valid("provider-status-v3.json", &reported);
     assert_eq!(reported["usage_requested"], true);
     assert_eq!(reported["exit_code"], 7);
     let provider = reported["providers"][0].clone();

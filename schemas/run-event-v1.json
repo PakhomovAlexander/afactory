@@ -79,6 +79,7 @@
         "ProjectRegistered@1",
         "WorkspaceRegistered@1",
         "WorkspaceRemoved@1",
+        "WorkspaceDelivered@1",
         "SurveyRecorded@1",
         "SurveyFailed@1",
         "SurveyCollected@1"
@@ -612,6 +613,25 @@
         "properties": {
           "payload": {
             "$ref": "urn:af:schema:project-workspace-removed:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "WorkspaceDelivered@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-workspace-delivered:1"
           }
         }
       }

@@ -19,6 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 GIB = 1 << 30
 MIN_GIT = (2, 30)
 MIN_FREE_GIB = 30
+# The report's width: a longer line wraps, its continuation indented under the first.
+WIDTH = 100
 
 
 def run(argv, env):
@@ -58,6 +60,45 @@ def free_volume(target):
     return path
 
 
+def short(path, env):
+    """`path` with `$HOME` or `$TMPDIR`, whichever holds it more closely, spelled as such, so a
+    report line stays readable."""
+    text = str(path)
+    best = None
+    for name, spelled in (("TMPDIR", "$TMPDIR"), ("HOME", "~")):
+        root = env.get(name, "").rstrip("/")
+        if not root:
+            continue
+        for form in {root, str(Path(root).resolve())}:
+            if (text == form or text.startswith(form + "/")) and \
+                    (best is None or len(form) > len(best[0])):
+                best = (form, spelled)
+    return best[1] + text[len(best[0]):] if best else text
+
+
+def wrapped(line, indent):
+    """`line` as lines of at most `WIDTH` columns, broken at spaces, each continuation indented
+    by `indent` spaces; a word longer than a continuation line (a deep path) is cut into pieces
+    that fit."""
+    room = WIDTH - indent
+    words = []
+    for word in line.split(" "):
+        while len(word) > room:
+            words.append(word[:room])
+            word = word[room:]
+        words.append(word)
+    lines, current = [], ""
+    for word in words:
+        candidate = f"{current} {word}" if current.strip() else f"{current}{word}"
+        if current.strip() and len(candidate) > WIDTH:
+            lines.append(current)
+            current = " " * indent + word
+        else:
+            current = candidate
+    lines.append(current)
+    return lines
+
+
 def checks(env, toolchain_file, target, min_free_gib):
     """Every check, in order: (name, passed, what was found or why not, how to fix it)."""
     which = lambda tool: shutil.which(tool, path=env.get("PATH", ""))
@@ -77,17 +118,32 @@ def checks(env, toolchain_file, target, min_free_gib):
                                        if macos() else " (apt install git, dnf install git)")))
 
     channel, components = toolchain(toolchain_file)
-    listed = (tool := which("rustup")) and run([tool, "toolchain", "list"], env)
+    rustup = which("rustup")
+    listed = rustup and run([rustup, "toolchain", "list"], env)
     pinned = bool(listed and channel and any(
         line.split()[0].startswith(channel) for line in listed.splitlines() if line.strip()))
+    # The pinned components too: a toolchain without clippy or rustfmt fails `make check`.
+    absent = []
+    if pinned and components:
+        installed = run([rustup, "component", "list", "--installed", "--toolchain", channel],
+                        env) or ""
+        names = [line.split()[0] for line in installed.splitlines() if line.strip()]
+        absent = [component for component in components
+                  if not any(name == component or name.startswith(component + "-")
+                             for name in names)]
     install = f"rustup toolchain install {channel}"
     if components:
         install += " --component " + " --component ".join(components)
-    results.append((
-        "rust", pinned,
-        f"rustup holds the pinned {channel}" if pinned else
-        (f"rustup holds no {channel} ({toolchain_file.name})" if listed else "rustup not on PATH"),
-        install if listed else "install rustup (https://rustup.rs), then " + install))
+    if absent:
+        found = f"rustup holds {channel} without {', '.join(absent)}"
+        fix = (f"rustup component add --toolchain {channel} " + " ".join(absent))
+    elif pinned:
+        found, fix = f"rustup holds the pinned {channel}", install
+    elif listed:
+        found, fix = f"rustup holds no {channel} ({toolchain_file.name})", install
+    else:
+        found, fix = "rustup not on PATH", "install rustup (https://rustup.rs), then " + install
+    results.append(("rust", pinned and not absent, found, fix))
 
     nextest = (tool := which("cargo-nextest")) and run([tool, "nextest", "--version"], env)
     results.append(("cargo-nextest", bool(nextest),
@@ -113,7 +169,7 @@ def checks(env, toolchain_file, target, min_free_gib):
     try:
         free = shutil.disk_usage(volume).free
         enough = free >= min_free_gib * GIB
-        said = f"{free / GIB:.1f} GiB free on the volume of {volume}"
+        said = f"{free / GIB:.1f} GiB free on the volume of {short(volume, env)}"
     except OSError as error:
         enough, said = False, f"{volume}: {error}"
     results.append(("disk", enough, said,
@@ -132,11 +188,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     results = checks(dict(os.environ), args.toolchain_file, args.target, args.min_free_gib)
     width = max(len(name) for name, *_ in results)
+    indent = 9 + width + 2
     for name, passed, found, fix in results:
-        if passed:
-            print(f"ok       {name:<{width}}  {found}")
-        else:
-            print(f"missing  {name:<{width}}  {found} — fix: {fix}")
+        line = (f"ok       {name:<{width}}  {found}" if passed
+                else f"missing  {name:<{width}}  {found} — fix: {fix}")
+        for part in wrapped(line, indent):
+            print(part)
     failed = [name for name, passed, *_ in results if not passed]
     if failed:
         print(f"{len(failed)} of {len(results)} prerequisites missing: {', '.join(failed)}")

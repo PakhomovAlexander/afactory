@@ -1247,8 +1247,8 @@ pub(crate) struct Look {
     pub(crate) left: Vec<Left>,
     /// What cannot be judged, with why: a failure of the sweep.
     pub(crate) refused: Vec<(PathBuf, String)>,
-    /// The labels of its delivered Workspaces still registered, each the ID of the Task
-    /// `af task deliver` made it from: a Task the budget never takes (finding I9).
+    /// The Tasks its delivered Workspaces still registered were made from, by the ID each
+    /// `WorkspaceDelivered@1` records: Tasks the budget never takes (finding I9).
     pub(crate) delivered: BTreeSet<String>,
 }
 
@@ -1528,6 +1528,25 @@ pub(crate) fn look(store: &Path) -> Result<Look, String> {
     look_within(store, Discovery::current())
 }
 
+/// The Tasks a Project Store's delivered Workspaces still registered were made from, by the ID
+/// each `WorkspaceDelivered@1` records: its whole log read once without its lock and without
+/// the Store discovery ceilings, so a Project Store beyond them still keeps its delivered Tasks
+/// (finding I9). `Err` when the log cannot be read: then the sweep collects no finished Task.
+pub(crate) fn delivered_of(store: &Path) -> Result<BTreeSet<String>, String> {
+    let events = EventStore::open_read_only(store.join("events.sqlite"))
+        .and_then(|events| events.replay(RUN_ID))
+        .map_err(|error| error.to_string())?;
+    Ok(delivered_tasks(&Log::fold(&events)?))
+}
+
+/// The source Tasks of the delivered Workspaces `log` registers.
+fn delivered_tasks(log: &Log) -> BTreeSet<String> {
+    log.workspaces
+        .values()
+        .filter_map(|workspace| workspace.delivered_task().map(str::to_string))
+        .collect()
+}
+
 /// [`look`] with its log read under `discovery`'s row ceilings, both runs through one budget:
 /// a log beyond one is the error, naming the ceiling, and nothing of the Store is planned.
 fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
@@ -1556,14 +1575,7 @@ fn look_within(store: &Path, discovery: Discovery) -> Result<Look, String> {
     let collected: BTreeSet<String> = order.iter().cloned().collect();
     let mut look = Look {
         held: lock_available(store).err(),
-        delivered: log
-            .workspaces
-            .values()
-            .filter(|workspace| {
-                workspace.origin == review_core::project::WorkspaceOriginV1::Delivered
-            })
-            .map(|workspace| workspace.label.clone())
-            .collect(),
+        delivered: delivered_tasks(&log),
         ..Look::default()
     };
     let cas = open_cas(store);

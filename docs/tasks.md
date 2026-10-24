@@ -705,7 +705,13 @@ the lock `af self` holds while it changes the default or a pin, so one that beca
 stays.
 
 `af storage` prints what af holds, per kind, against the budget, and the free bytes against
-`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@4` document.
+`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@5` document,
+whose `volumes` name each root the floor measures (`sandbox`, `cache`, `build_cache`) with its
+volume, free bytes, `below_floor` and `next_action`, and whose `unreadable_store` entries carry
+the `writer_release` their markers name and the `next_action` that reads them. While a Project
+Store cannot be read, a sweep collects no finished Task, since any could be the source of one of
+its delivered Workspaces, and it names that Project Store; a campaign whose writer leases cannot
+be read is in use.
 After every `af task run` and `af review run` the sweep holds af to `max_bytes`, evicting in the
 order above; it does not collect by age unless `[storage] auto_gc = true`. A Task command prints
 one line for all its sweeps, and only when they did something: `storage: freed 1.2 GiB (2 warm

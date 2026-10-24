@@ -62,6 +62,9 @@ const MAX_PROVIDER_LIMITS: usize = 16;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const CLAUDE_STRUCTURAL_TIMEOUT: Duration = Duration::from_secs(30);
 const CLAUDE_USAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long `af provider detect` waits for any one directory's authentication probe, whatever
+/// the kind: a scan of every login on a machine must not wait a CLI's full structural timeout.
+const DETECT_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLAUDE_USAGE_CACHE_TTL: Duration = Duration::from_secs(60);
 /// The largest value `AF_TEST_PROVIDER_PROBE_TIMEOUT_MS` is honored at, ten minutes.
 #[cfg(debug_assertions)]
@@ -421,8 +424,9 @@ pub(crate) fn ambient_selector(kind: &str) -> (&'static str, &'static str) {
 
 /// How an ambient candidate of `kind` came to be listed and how to make it go, as the browser
 /// shows it under the candidate's row: found through the variable that points the CLI at its
-/// directory when `selector_set`, else in the CLI's default directory; `af provider add`
-/// registers it, and unsetting the variable stops the listing (ADR-0141).
+/// directory when `selector_set`, else in the CLI's default directory. The row is listed while
+/// the CLI is on `PATH` and its directory is not registered, so `af provider add` is what makes
+/// it go; unsetting the variable only lists the default directory instead (ADR-0141).
 pub(crate) fn ambient_explanation(
     kind: &str,
     selector_set: bool,
@@ -437,7 +441,7 @@ pub(crate) fn ambient_explanation(
     }];
     lines.push(format!("  register it: af provider add {id} --kind {kind}"));
     if selector_set {
-        lines.push(format!("  or stop listing it: unset {selector}"));
+        lines.push(format!("  unsetting {selector} lists {default} instead"));
     }
     lines
 }
@@ -518,6 +522,24 @@ pub(crate) struct RegistryRead {
     /// Ambient candidates: a CLI on PATH whose default or `CLAUDE_CONFIG_DIR`/`CODEX_HOME`
     /// login directory no registry entry names.
     pub(crate) candidates: Vec<Declared>,
+    /// The auth directories found on this machine that no registry entry names, by
+    /// [`unregistered_dirs`]: what status, doctor and onboarding list as found but not registered.
+    pub(crate) unregistered: Vec<PathBuf>,
+}
+
+/// The auth directories a names-only scan finds (the selector variables', the CLIs' defaults and
+/// the sibling names, ADR-0197) that none of `named` is: the one scan `af provider status`,
+/// `af doctor` and `af onboard` list as found but not registered. No marker is read and nothing
+/// is probed.
+pub(crate) fn unregistered_dirs<'a>(named: impl IntoIterator<Item = &'a Path>) -> Vec<PathBuf> {
+    let named: BTreeSet<PathBuf> = named
+        .into_iter()
+        .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
+        .collect();
+    detect::names_only_scan()
+        .into_iter()
+        .filter(|dir| !named.contains(dir))
+        .collect()
 }
 
 impl RegistryRead {
@@ -547,11 +569,17 @@ pub(crate) fn read_registry_entries() -> RegistryRead {
             candidates.push(declared);
         }
     }
+    let unregistered = unregistered_dirs(
+        registered
+            .iter()
+            .filter_map(|entry: &Declared| entry.auth_dir.as_deref()),
+    );
     RegistryRead {
         path,
         warning,
         registered,
         candidates,
+        unregistered,
     }
 }
 
@@ -565,26 +593,21 @@ pub(crate) fn probed_statuses() -> Vec<ProviderStatus> {
 const NEXT_AFTER_REGISTERING: &str =
     "next: af onboard (in a repository) · af provider status lists every Provider";
 
-fn print_status_table(inventory: &ProviderInventory, usage: UsageProbe, verbose: bool) {
-    // A machine with no registry entry learns what else is there from a names-only scan: no
-    // marker is read and nothing is probed (ADR-0197).
-    let unregistered = !inventory
-        .providers
-        .iter()
-        .any(|provider| !is_ambient_candidate(provider));
-    let found = if unregistered {
-        let listed: BTreeSet<PathBuf> = inventory
+/// The auth directories the status table names as found but not registered: those the shared
+/// names-only scan finds that no row lists, registered or ambient (ADR-0197).
+fn found_unregistered(inventory: &ProviderInventory) -> Vec<PathBuf> {
+    unregistered_dirs(
+        inventory
             .providers
             .iter()
-            .map(|provider| PathBuf::from(&provider.auth_context))
-            .collect();
-        detect::names_only_scan()
-            .into_iter()
-            .filter(|dir| !listed.contains(dir))
-            .collect()
-    } else {
-        Vec::new()
-    };
+            .map(|provider| Path::new(provider.auth_context.as_str())),
+    )
+}
+
+fn print_status_table(inventory: &ProviderInventory, usage: UsageProbe, verbose: bool) {
+    // What else is on this machine comes from a names-only scan: no marker is read and nothing
+    // is probed (ADR-0197).
+    let found = found_unregistered(inventory);
     if inventory.providers.is_empty() {
         for line in detect::install_guidance() {
             println!("{line}");
@@ -598,7 +621,7 @@ fn print_status_table(inventory: &ProviderInventory, usage: UsageProbe, verbose:
         ambient |= is_ambient_candidate(provider);
         println!("{}", status_table_row(provider));
         for limit in &provider.limits {
-            println!("  limit  {}", format_limit(limit));
+            println!("  limit  {}", format_limit_of(&provider.kind, limit));
         }
         if !provider.detail.is_empty() {
             println!("  note   {}", provider.detail);
@@ -672,8 +695,12 @@ fn status_document(
         .registry
         .as_ref()
         .map(|path| path.display().to_string());
+    let found: Vec<String> = found_unregistered(inventory)
+        .iter()
+        .map(|dir| dir.display().to_string())
+        .collect();
     serde_json::json!({
-        "schema": "af/provider-status@2",
+        "schema": "af/provider-status@3",
         "exit_code": exit_code,
         "usage_requested": usage == UsageProbe::Probe,
         "registry": {
@@ -681,6 +708,8 @@ fn status_document(
             "warning": inventory.warning,
         },
         "providers": providers,
+        "next_action": (!found.is_empty()).then_some("af provider detect"),
+        "found_unregistered": found,
     })
 }
 
@@ -699,6 +728,7 @@ fn status_provider(provider: &ProviderStatus) -> serde_json::Value {
             "window_minutes": limit.window_minutes,
             "used_percent": limit.used_percent,
             "resets_at_unix": limit.resets_at,
+            "reset_reported": limit.resets_at.is_some(),
         }));
     }
     serde_json::json!({
@@ -3545,6 +3575,26 @@ fn same_file(path: &Path, file: &File) -> std::io::Result<bool> {
     Ok(path.dev() == file.dev() && path.ino() == file.ino())
 }
 
+/// One limit as `af provider status` prints it: a window whose reset time the Provider does not
+/// report says so in the Provider's own name (`Claude does not report when this window resets`),
+/// never as a bare "reset unavailable".
+fn format_limit_of(kind: &str, limit: &ProviderLimit) -> String {
+    let reset = limit.resets_at.map(format_reset).unwrap_or_else(|| {
+        let provider = match kind {
+            "claude" => "Claude",
+            "codex" => "Codex",
+            _ => "the Provider",
+        };
+        format!("{provider} does not report when this window resets")
+    });
+    format!(
+        "{}: {}% used, {}% left, {reset}",
+        limit.name,
+        limit.used_percent,
+        100_u8.saturating_sub(limit.used_percent)
+    )
+}
+
 pub fn format_limit(limit: &ProviderLimit) -> String {
     let reset = limit
         .resets_at
@@ -4063,13 +4113,24 @@ fn probe_provider(
     if let Err(refusal) = check_invocation(&program, &spec, &probe_path, cancelled, None) {
         return refused_status(&spec, refusal);
     }
-    probe_checked(&program, spec, setup_id, &probe_path, cancelled, usage).0
+    probe_checked(
+        &program,
+        spec,
+        setup_id,
+        &probe_path,
+        cancelled,
+        usage,
+        None,
+    )
+    .0
 }
 
 /// The authentication probe of one context whose CLI `program` already passed the capability
 /// check, and the probe's raw answer, which only `af provider detect` reads further (for the
 /// plan and, under `--identity`, the account label). `af provider status` and `detect` share it,
 /// so both say the same thing about the same directory.
+/// `cap`, when given, bounds the authentication probe below its kind's own timeout: `af provider
+/// detect` asks every directory within [`DETECT_PROBE_TIMEOUT`].
 fn probe_checked(
     program: &Path,
     spec: ProviderSpec,
@@ -4077,9 +4138,10 @@ fn probe_checked(
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
     usage: UsageProbe,
+    cap: Option<Duration>,
 ) -> (ProviderStatus, String) {
     let program = program.to_path_buf();
-    let output = match run_probe(&program, &spec, probe_path, cancelled) {
+    let output = match run_probe_capped(&program, &spec, probe_path, cancelled, None, cap) {
         Ok(output) => output,
         Err(error) => {
             if !probe_gave_up(&error)
@@ -5482,6 +5544,19 @@ fn run_probe_before(
     cancelled: &AtomicBool,
     attempt_deadline: Option<Instant>,
 ) -> Result<ProbeOutput, String> {
+    run_probe_capped(program, spec, probe_path, cancelled, attempt_deadline, None)
+}
+
+/// The authentication probe, bounded by its kind's timeout, by `cap` when that is shorter, and by
+/// an Attempt's deadline; a timeout names the bound that ended it.
+fn run_probe_capped(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    attempt_deadline: Option<Instant>,
+    cap: Option<Duration>,
+) -> Result<ProbeOutput, String> {
     check_task_probe_control(attempt_deadline, cancelled)?;
     // Removed, with what a Claude CLI kept for it, once the probe has exited (ADR-0144).
     let directory = ProbeDirectory::new(spec)?;
@@ -5516,6 +5591,7 @@ fn run_probe_before(
         ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
         ProviderKind::Codex => PROBE_TIMEOUT,
     });
+    let timeout = cap.map_or(timeout, |cap| timeout.min(cap));
     let deadline = Instant::now() + timeout;
     let deadline = attempt_deadline.map_or(deadline, |limit| deadline.min(limit));
     let status = loop {
@@ -6781,6 +6857,44 @@ auth_dir = "{}"
         assert_eq!(
             format_limit(limit),
             "Claude all models 1w: 88% used, 12% left, reset unavailable"
+        );
+        // `af provider status` names who does not report the reset (C3 item 26).
+        assert_eq!(
+            format_limit_of("claude", limit),
+            "Claude all models 1w: 88% used, 12% left, Claude does not report when this window \
+             resets"
+        );
+    }
+
+    /// C3 item 26: the status document says whether a window's reset was reported at all.
+    #[test]
+    fn a_window_without_a_reset_time_is_not_reported_in_the_document() {
+        let window = |resets_at| ProviderLimit {
+            name: "weekly".into(),
+            window_minutes: Some(10_080),
+            used_percent: 68,
+            resets_at,
+        };
+        let mut provider = unavailable_status(
+            &ProviderSpec {
+                id: "codex-main".into(),
+                kind: ProviderKind::Codex,
+                auth_dir: None,
+                explicit_selector: false,
+                registry_declared: true,
+                source: "registry".into(),
+            },
+            "",
+        );
+        provider.limits = vec![window(None), window(Some(1_800_000_000))];
+        let document = status_provider(&provider);
+        let windows = &document["usage"]["windows"];
+        assert_eq!(windows[0]["resets_at_unix"], serde_json::Value::Null);
+        assert_eq!(windows[0]["reset_reported"], false);
+        assert_eq!(windows[1]["reset_reported"], true);
+        assert_eq!(
+            format_limit_of("codex", &provider.limits[0]),
+            "weekly: 68% used, 32% left, Codex does not report when this window resets"
         );
     }
 

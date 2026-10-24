@@ -107,6 +107,9 @@ struct Candidate {
     /// The owner, mode and symlink rules `setup` applies, as the reason it fails them.
     safety: Result<(), String>,
     registered_as: Option<String>,
+    /// Why the directory could not be listed, when it could not: its markers were then checked
+    /// by name, one path each, and it is probed all the same.
+    listing: Option<String>,
 }
 
 impl Candidate {
@@ -202,6 +205,9 @@ enum Applied {
     AlreadyRegistered,
     RegistryConflict,
     SkippedNotAuthenticated,
+    /// Its CLI is off `PATH`, where `af provider status` and Task admission do not look: a
+    /// registration would name a Provider af cannot run.
+    SkippedCliOffPath,
 }
 
 impl Applied {
@@ -211,6 +217,7 @@ impl Applied {
             Self::AlreadyRegistered => "already_registered",
             Self::RegistryConflict => "registry_conflict",
             Self::SkippedNotAuthenticated => "skipped_not_authenticated",
+            Self::SkippedCliOffPath => "skipped_cli_off_path",
         }
     }
 }
@@ -227,8 +234,29 @@ struct Row {
     account: Option<String>,
     /// Why the row says what it says, for the human report only: it may quote the CLI.
     note: Option<String>,
+    /// Why the login is not known, in af's closed vocabulary (`timeout`, `unstartable`, …), and
+    /// af's own words for it: what the document carries in place of `note`.
+    cause: Option<&'static str>,
+    detail: Option<String>,
     suggested: Suggested,
-    applied: Option<(String, Applied)>,
+    applied: Option<Apply>,
+}
+
+/// What `--apply` did with a row, and the registered ID a conflict met.
+struct Apply {
+    id: String,
+    result: Applied,
+    conflict_with: Option<String>,
+}
+
+impl Apply {
+    fn new(id: String, result: Applied) -> Self {
+        Self {
+            id,
+            result,
+            conflict_with: None,
+        }
+    }
 }
 
 /// A usage error af reports itself: exit 2, and under `--json` the error document.
@@ -276,26 +304,46 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
     }
     let home = home_dir();
     let mut notes = Vec::new();
+    // A registry that cannot be read (malformed, unreadable, mid-transaction) is unknown, never
+    // empty: no row says whether it is registered, `--apply` refuses, and every output says why.
+    let mut registry_unknown = None;
     let (registry, registry_specs) = match registry_path() {
-        Ok(Some(path)) => match read_registry(&path).and_then(|text| {
-            text.map(|text| parse_registry(&text, &path))
-                .transpose()
-                .map(Option::unwrap_or_default)
+        Ok(Some(path)) => match ensure_no_registry_transaction(&path).and_then(|()| {
+            read_registry(&path).and_then(|text| {
+                text.map(|text| parse_registry(&text, &path))
+                    .transpose()
+                    .map(Option::unwrap_or_default)
+            })
         }) {
             Ok(specs) => (Some(path), specs),
             Err(error) => {
                 notes.push(format!(
-                    "the provider registry could not be read, so no row says what is registered: {error}"
+                    "the provider registry could not be read, so whether each directory is \
+                     registered is unknown and --apply registers nothing: {error}; af provider \
+                     status names the problem"
                 ));
+                registry_unknown = Some(error);
                 (Some(path), Vec::new())
             }
         },
         Ok(None) => (None, Vec::new()),
         Err(error) => {
             notes.push(format!("no provider registry path is available: {error}"));
+            registry_unknown = Some(error);
             (None, Vec::new())
         }
     };
+    // `--apply` chooses IDs and registers against the registry: one that cannot be read refuses
+    // it before anything is scanned (exit 1; `af/error@1` under `--json`).
+    if options.apply
+        && let Some(error) = &registry_unknown
+    {
+        return Err(format!(
+            "--apply registered nothing: the provider registry cannot be read ({error}); fix or \
+             move the file (af provider status names the problem), then run af provider detect \
+             --apply again"
+        ));
+    }
 
     // Candidates: explicit first, so a directory typed and also found keeps `explicit`.
     let mut candidates = Vec::new();
@@ -394,25 +442,28 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
         .collect();
     let unsupported = find_unsupported();
     if binaries.is_empty() && candidates.is_empty() {
+        let code = EXIT_OK;
         if options.json {
-            println!(
-                "{}",
-                document(
-                    0,
-                    false,
-                    &binaries,
-                    &unsupported,
-                    &[],
-                    &guidance_notes(&kinds)
-                )
-            );
+            let mut all = notes.clone();
+            all.extend(guidance_notes(&kinds));
+            let shape = Shape {
+                code,
+                applied: options.apply,
+                registry_unknown: registry_unknown.is_some(),
+            };
+            println!("{}", document(shape, &binaries, &unsupported, &[], &all));
         } else {
             for line in install_guidance_for(&kinds, home.as_deref()) {
                 println!("{line}");
             }
             print_unsupported(&unsupported, home.as_deref());
+            for note in &notes {
+                for line in wrap(&format!("note: {note}"), "") {
+                    println!("{line}");
+                }
+            }
         }
-        return Ok(EXIT_OK);
+        return Ok(code);
     }
 
     let cancelled = AtomicBool::new(false);
@@ -432,7 +483,13 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
     }
     let registry_ids: BTreeSet<String> =
         registry_specs.iter().map(|spec| spec.id.clone()).collect();
-    suggest(&mut rows, &binaries, &registry_ids, home.as_deref());
+    suggest(
+        &mut rows,
+        &binaries,
+        &registry_ids,
+        registry_unknown.is_some(),
+        home.as_deref(),
+    );
 
     // What the scan itself could not use is said under the table too; the rest of the notes
     // repeat lines the human report already prints.
@@ -466,7 +523,13 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
     };
 
     if !options.json {
-        print_table(&rows, identity, home.as_deref());
+        print_table(
+            &rows,
+            &kinds,
+            identity,
+            registry_unknown.is_some(),
+            home.as_deref(),
+        );
         if !scan_notes.is_empty() {
             println!();
             for note in &scan_notes {
@@ -475,22 +538,36 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
                 }
             }
         }
-        print_binaries(&binaries, home.as_deref());
+        print_binaries(&binaries, &kinds, home.as_deref());
         print_unsupported(&unsupported, home.as_deref());
     }
     if options.apply {
         let path = registry.ok_or("no provider registry path is available")?;
-        if apply(&mut rows, &path, options.json, home.as_deref())? {
+        let end = apply(
+            &mut rows,
+            &path,
+            options.json,
+            home.as_deref(),
+            &registry_ids,
+        )?;
+        if end.conflict {
             code = EXIT_REGISTRY_CONFLICT;
+        } else if end.off_path && code == EXIT_OK {
+            code = EXIT_PROVIDER_CLI_MISSING;
         }
     }
     if options.json {
+        let shape = Shape {
+            code,
+            applied: options.apply,
+            registry_unknown: registry_unknown.is_some(),
+        };
         println!(
             "{}",
-            document(code, options.apply, &binaries, &unsupported, &rows, &notes)
+            document(shape, &binaries, &unsupported, &rows, &notes)
         );
     } else {
-        print_closing(&rows, options.apply);
+        print_closing(&rows, options.apply, code, &binaries, home.as_deref());
     }
     Ok(code)
 }
@@ -552,6 +629,10 @@ pub(super) fn unmarked_context(spec: &ProviderSpec) -> Option<String> {
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return Some(format!("{} does not exist", auth_dir.display()));
         }
+        // A directory that grants search but not read: its markers by name, as detect does.
+        Err(error) if error.kind() == ErrorKind::PermissionDenied => {
+            markers_found(auth_dir, names).0
+        }
         Err(error) => {
             return Some(format!(
                 "{} cannot be inspected: {error}",
@@ -594,10 +675,10 @@ fn candidate(
     explicit_id: Option<String>,
 ) -> Candidate {
     let canonical = fs::canonicalize(&named).ok();
-    let markers = canonical
-        .as_deref()
-        .and_then(|path| markers_in(path, marker_names(kind)).ok())
-        .unwrap_or_default();
+    let (markers, listing) = match canonical.as_deref() {
+        Some(path) => markers_found(path, marker_names(kind)),
+        None => (Vec::new(), None),
+    };
     let safety = match (fs::symlink_metadata(&named), canonical.as_deref()) {
         (Err(error), _) if error.kind() == ErrorKind::NotFound => {
             Err(format!("{} does not exist", named.display()))
@@ -620,6 +701,34 @@ fn candidate(
         markers,
         safety,
         registered_as: None,
+        listing,
+    }
+}
+
+/// The marker names in `dir`, by [`markers_in`]; when the directory cannot be opened for
+/// listing (a mode that grants search but not read), each name is examined by its path instead,
+/// without following a link, and the second value says why. Never an empty directory for one
+/// that could not be listed.
+fn markers_found(dir: &Path, names: &[&'static str]) -> (Vec<&'static str>, Option<String>) {
+    match markers_in(dir, names) {
+        Ok(markers) => (markers, None),
+        Err(error) => {
+            let markers = names
+                .iter()
+                .copied()
+                .filter(|name| {
+                    fs::symlink_metadata(dir.join(name)).is_ok_and(|meta| {
+                        meta.file_type().is_file() || meta.file_type().is_symlink()
+                    })
+                })
+                .collect();
+            (
+                markers,
+                Some(format!(
+                    "listing unreadable ({error}); its login markers were checked by name"
+                )),
+            )
+        }
     }
 }
 
@@ -839,9 +948,16 @@ fn find_unsupported() -> Vec<Unsupported> {
 
 /// A probe environment that names no auth directory: for an unsupported CLI's `--version`.
 fn neutral_spec() -> ProviderSpec {
+    neutral_spec_of(ProviderKind::Codex)
+}
+
+/// A probe environment of `kind` that names no auth directory: what a CLI of that kind is
+/// checked in when no private scratch directory can be made, so a Claude CLI is never checked
+/// against Codex's capabilities.
+fn neutral_spec_of(kind: ProviderKind) -> ProviderSpec {
     ProviderSpec {
         id: "detect".to_string(),
-        kind: ProviderKind::Codex,
+        kind,
         auth_dir: None,
         explicit_selector: false,
         registry_declared: false,
@@ -954,7 +1070,15 @@ fn probe_all(
                     let program = binary.path.clone();
                     let probe_path = &probe_path;
                     scope.spawn(move || {
-                        probe_checked(&program, spec, "", probe_path, cancelled, UsageProbe::Skip)
+                        probe_checked(
+                            &program,
+                            spec,
+                            "",
+                            probe_path,
+                            cancelled,
+                            UsageProbe::Skip,
+                            Some(probe_timeout(DETECT_PROBE_TIMEOUT)),
+                        )
                     })
                 })
                 .collect();
@@ -989,6 +1113,16 @@ fn probe_all(
                 ),
                 None => ("unknown", "unknown", None),
             };
+            let (cause, detail) = match &extras {
+                Some((status, _)) => probe_cause(auth, &status.detail),
+                None => unprobed_cause(auth, candidate.kind, &binaries),
+            };
+            // A directory that could not be listed says so beside whatever its probe said.
+            let note = match (&candidate.listing, note) {
+                (Some(listing), Some(note)) => Some(format!("{listing}; {note}")),
+                (Some(listing), None) => Some(listing.clone()),
+                (None, note) => note,
+            };
             Row {
                 candidate,
                 auth,
@@ -997,6 +1131,8 @@ fn probe_all(
                 plan,
                 account,
                 note,
+                cause,
+                detail,
                 suggested: Suggested::none(),
                 applied: None,
             }
@@ -1016,6 +1152,51 @@ fn probe_all(
     (binaries, rows)
 }
 
+/// Why a probed row's login is not known, in af's closed vocabulary, and af's own words for it
+/// when they quote no CLI: `timeout`, `unstartable`, `output_too_large`, `unparsable`,
+/// `cancelled`, `incompatible` or `other`. `None` for a login the probe answered.
+fn probe_cause(auth: Auth, detail: &str) -> (Option<&'static str>, Option<String>) {
+    let own = || (!detail.is_empty()).then(|| detail.to_string());
+    match auth {
+        Auth::Authenticated | Auth::NotAuthenticated | Auth::NotProbed => (None, None),
+        // The answer was not one af understands; it may quote the CLI, so only the cause.
+        Auth::Unknown => (Some("unparsable"), None),
+        // The CLI's own error line goes to stderr and the table, never into the document.
+        Auth::InstallationFailed => (Some("unstartable"), None),
+        Auth::Incompatible => (Some("incompatible"), None),
+        Auth::Unavailable if detail.contains("timed out after") => (Some("timeout"), own()),
+        Auth::Unavailable if detail.starts_with("cannot start provider status probe") => {
+            (Some("unstartable"), own())
+        }
+        Auth::Unavailable if detail.contains("output exceeds") => (Some("output_too_large"), own()),
+        Auth::Unavailable if detail.contains("not UTF-8") => (Some("unparsable"), own()),
+        Auth::Unavailable if detail.contains("cancelled") => (Some("cancelled"), own()),
+        Auth::Unavailable => (Some("other"), own()),
+    }
+}
+
+/// Why a row that got no probe has no login state, from its CLI's capability check: `unchecked`
+/// when af could not tell whether the CLI accepts its invocation, with af's reason.
+fn unprobed_cause(
+    auth: Auth,
+    kind: ProviderKind,
+    binaries: &[Binary],
+) -> (Option<&'static str>, Option<String>) {
+    match auth {
+        Auth::Incompatible => (Some("incompatible"), None),
+        Auth::InstallationFailed => (Some("unstartable"), None),
+        Auth::Unavailable => (
+            Some("unchecked"),
+            binaries
+                .iter()
+                .find(|binary| binary.kind == kind)
+                .and_then(|binary| binary.refusal.as_ref())
+                .map(|(_, reason)| reason.clone()),
+        ),
+        _ => (None, None),
+    }
+}
+
 fn clone_candidate(candidate: &Candidate) -> Candidate {
     Candidate {
         kind: candidate.kind,
@@ -1026,6 +1207,7 @@ fn clone_candidate(candidate: &Candidate) -> Candidate {
         markers: candidate.markers.clone(),
         safety: candidate.safety.clone(),
         registered_as: candidate.registered_as.clone(),
+        listing: candidate.listing.clone(),
     }
 }
 
@@ -1037,10 +1219,7 @@ fn check_binary(
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
 ) {
-    let spec = match auth_dir {
-        Some(auth_dir) => probe_spec(binary.kind, auth_dir),
-        None => neutral_spec(),
-    };
+    let spec = capability_spec(binary.kind, auth_dir);
     binary.version = match version_check(&binary.path, &spec, probe_path, cancelled, None) {
         VersionCheck::Reported(Some(line)) => version_token(&line),
         _ => None,
@@ -1059,6 +1238,15 @@ fn check_binary(
             binary.compatible = None;
             binary.refusal = Some(("unavailable".to_string(), reason));
         }
+    }
+}
+
+/// The environment a CLI of `kind` is checked in: `auth_dir`'s, or with none (no private scratch
+/// directory could be made) its own kind's without one, never another kind's capabilities.
+fn capability_spec(kind: ProviderKind, auth_dir: Option<&Path>) -> ProviderSpec {
+    match auth_dir {
+        Some(auth_dir) => probe_spec(kind, auth_dir),
+        None => neutral_spec_of(kind),
     }
 }
 
@@ -1311,7 +1499,7 @@ fn tilde(path: &Path, home: Option<&Path>) -> String {
 }
 
 /// A directory as af prints it to a person: `~/…` below `HOME`.
-pub(super) fn display_path(path: &Path) -> String {
+pub(crate) fn display_path(path: &Path) -> String {
     tilde(path, home_dir().as_deref())
 }
 
@@ -1371,6 +1559,7 @@ fn suggest(
     rows: &mut [Row],
     binaries: &[Binary],
     registry_ids: &BTreeSet<String>,
+    registry_unknown: bool,
     home: Option<&Path>,
 ) {
     let mut taken = registry_ids.clone();
@@ -1409,6 +1598,33 @@ fn suggest(
             },
             (_, _, Err(_)) => Suggested::none(),
             (Auth::Authenticated, Some(_), _) => Suggested::none(),
+            // Whether it is registered is unknown: no ID can be chosen, and the registry first.
+            (Auth::Authenticated, None, _) if registry_unknown => Suggested {
+                action: "fix_registry",
+                id: None,
+                command: Some("af provider status".to_string()),
+                display: Some("af provider status".to_string()),
+            },
+            // A login whose CLI is off `PATH` cannot be used once registered: the PATH first.
+            (Auth::Authenticated, None, _)
+                if binaries
+                    .iter()
+                    .any(|binary| binary.kind == kind && !binary.on_path) =>
+            {
+                let binary = binaries
+                    .iter()
+                    .find(|binary| binary.kind == kind)
+                    .expect("the CLI of this kind was found");
+                let fix = path_fix(&binary.path, home);
+                let id = id();
+                taken.insert(id.clone());
+                Suggested {
+                    action: "fix_path",
+                    id: Some(id),
+                    command: Some(fix.clone()),
+                    display: Some(fix),
+                }
+            }
             (Auth::Authenticated, None, _) => {
                 let id = id();
                 taken.insert(id.clone());
@@ -1463,114 +1679,291 @@ fn suggest(
     }
 }
 
+/// How `--apply` ended, beyond the rows it registered.
+#[derive(Default)]
+struct ApplyEnd {
+    /// A registry conflict stopped it at a row; the rows before that one stay published.
+    conflict: bool,
+    /// A logged-in row was left unregistered because its CLI is off `PATH`.
+    off_path: bool,
+}
+
 /// `--apply`: register every authenticated, unregistered row in table order through `add`'s
-/// locked, atomic publication and safety checks, printing each line it ran. A logged-out row is
-/// never touched; its `setup … --login` line is printed instead. `Ok(true)` when a registry
-/// conflict stopped it; the rows before that one stay published.
+/// locked, atomic publication and safety checks, printing each line it ran. A row the scan read
+/// as registered is checked again under the registry lock: an entry removed since is registered
+/// again (a logged-in row) or said to be gone, never reported as still there. A logged-out row is
+/// never touched; its `setup … --login` line is printed instead. A logged-in row whose CLI is
+/// off `PATH` is not registered: neither `af provider status` nor a Task could run it.
 fn apply(
     rows: &mut [Row],
     registry: &Path,
     json: bool,
     home: Option<&Path>,
-) -> Result<bool, String> {
+    registry_ids: &BTreeSet<String>,
+) -> Result<ApplyEnd, String> {
     let say = |line: String| {
         if !json {
-            println!("{line}");
+            for line in wrap(&line, "") {
+                println!("{line}");
+            }
         }
     };
     if !json {
         println!();
     }
+    let mut end = ApplyEnd::default();
     let mut registered = Vec::new();
     for index in 0..rows.len() {
         let row = &mut rows[index];
-        let candidate = &row.candidate;
-        if let Some(id) = &candidate.registered_as {
-            row.applied = Some((id.clone(), Applied::AlreadyRegistered));
+        let kind = row.candidate.kind;
+        let path = row.candidate.path().to_path_buf();
+        let was_registered = row.candidate.registered_as.clone();
+        if row.auth == Auth::Authenticated && row.suggested.action == "fix_path" {
+            let id = row
+                .suggested
+                .id
+                .clone()
+                .unwrap_or_else(|| kind.name().to_string());
+            row.applied = Some(Apply::new(id, Applied::SkippedCliOffPath));
+            end.off_path = true;
             say(format!(
-                "already registered: {id} ({})",
-                tilde(candidate.path(), home)
+                "not registered: {}: its {} CLI is off PATH, so neither af provider status nor a \
+                 Task could run it; fix: {}, then run af provider detect --apply",
+                tilde(&path, home),
+                kind.name(),
+                row.suggested.display.clone().unwrap_or_default()
             ));
             continue;
         }
-        match (row.auth, row.suggested.id.clone()) {
-            (Auth::Authenticated, Some(id)) => {
-                let kind = candidate.kind;
-                let line = row.suggested.display.clone().unwrap_or_default();
-                let outcome = validate_explicit_id(&id)
-                    .and_then(|()| {
-                        resolve_auth_dir(kind, Some(candidate.path()), MissingAuthDir::Inspect)
-                    })
-                    .and_then(|auth_dir| {
-                        add_to_registry_inner(registry, &id, kind, &auth_dir, true)
+        let id = match (&was_registered, &row.suggested.id) {
+            (Some(id), _) => Some(id.clone()),
+            (None, Some(id)) if row.auth == Auth::Authenticated => Some(id.clone()),
+            _ => None,
+        };
+        if row.auth == Auth::Authenticated
+            && row.candidate.safety.is_ok()
+            && let Some(id) = id
+        {
+            let line = match &was_registered {
+                Some(_) => format!(
+                    "af provider add {} --kind {} --auth-dir {}",
+                    shell_words::quote(&id),
+                    kind.name(),
+                    tilde(&path, home)
+                ),
+                None => row.suggested.display.clone().unwrap_or_default(),
+            };
+            let outcome = validate_explicit_id(&id)
+                .and_then(|()| resolve_auth_dir(kind, Some(&path), MissingAuthDir::Inspect))
+                .and_then(|auth_dir| add_to_registry_inner(registry, &id, kind, &auth_dir, true));
+            match outcome {
+                Ok(RegistryAdd::Added(_)) => {
+                    row.applied = Some(Apply::new(id.clone(), Applied::Registered));
+                    registered.push(id);
+                    say(match was_registered {
+                        Some(_) => format!("registered again, its entry was gone: {line}"),
+                        None => format!("registered: {line}"),
                     });
-                match outcome {
-                    Ok(RegistryAdd::Added(_)) => {
-                        row.applied = Some((id.clone(), Applied::Registered));
-                        registered.push(id);
-                        say(format!("registered: {line}"));
-                    }
-                    Ok(RegistryAdd::AlreadyPresent) => {
-                        row.applied = Some((id.clone(), Applied::AlreadyRegistered));
-                        say(format!("already registered: {line}"));
-                    }
-                    Ok(RegistryAdd::Conflict(conflict)) => {
-                        row.applied = Some((id, Applied::RegistryConflict));
-                        let later = rows[index + 1..]
-                            .iter()
-                            .filter(|row| {
-                                row.auth == Auth::Authenticated
-                                    && row.candidate.registered_as.is_none()
-                            })
-                            .count();
-                        let message = format!(
-                            "registry conflict at {line}: {conflict}; stopped here, so {later} \
-                             later login{} {} not registered; choose another ID with --dir {} \
-                             --id ID",
-                            if later == 1 { "" } else { "s" },
-                            if later == 1 { "was" } else { "were" },
-                            tilde(rows[index].candidate.path(), home)
-                        );
-                        if !json {
-                            for line in wrap(&message, "") {
-                                println!("{line}");
-                            }
-                        }
-                        eprintln!("af provider detect: {message}");
-                        return Ok(true);
-                    }
-                    Err(error) => {
-                        let before = if registered.is_empty() {
-                            "nothing was registered before it".to_string()
-                        } else {
-                            format!("registered before it: {}", registered.join(", "))
-                        };
-                        return Err(format!("{line} failed: {error}; {before}"));
-                    }
+                }
+                Ok(RegistryAdd::AlreadyPresent) => {
+                    row.applied = Some(Apply::new(id.clone(), Applied::AlreadyRegistered));
+                    say(format!("already registered: {id} ({})", tilde(&path, home)));
+                }
+                Ok(RegistryAdd::Conflict(conflict)) => {
+                    let taken = registry_holding(registry, kind, &path, &id);
+                    conflicted(
+                        rows,
+                        index,
+                        (id, conflict, taken),
+                        registry,
+                        json,
+                        home,
+                        registry_ids,
+                    );
+                    end.conflict = true;
+                    return Ok(end);
+                }
+                Err(error) => {
+                    let before = if registered.is_empty() {
+                        "nothing was registered before it".to_string()
+                    } else {
+                        format!("registered before it: {}", registered.join(", "))
+                    };
+                    return Err(format!("{line} failed: {error}; {before}"));
                 }
             }
-            (Auth::NotAuthenticated, Some(id)) => {
-                row.applied = Some((id, Applied::SkippedNotAuthenticated));
-                say(format!(
-                    "not logged in, so not registered: {}; run this yourself at a private terminal:",
-                    tilde(candidate.path(), home)
-                ));
-                say(format!(
-                    "  {}",
-                    row.suggested.display.clone().unwrap_or_default()
-                ));
+            continue;
+        }
+        if let Some(id) = &was_registered {
+            match registered_now(registry, kind, &path)? {
+                Some(now) => {
+                    row.applied = Some(Apply::new(now.clone(), Applied::AlreadyRegistered));
+                    say(format!(
+                        "already registered: {now} ({})",
+                        tilde(&path, home)
+                    ));
+                    continue;
+                }
+                None => {
+                    row.candidate.registered_as = None;
+                    say(format!(
+                        "no longer registered: {id} ({}) was removed since the scan",
+                        tilde(&path, home)
+                    ));
+                }
             }
-            _ => {}
+        }
+        if let (Auth::NotAuthenticated, Some(id)) = (row.auth, row.suggested.id.clone()) {
+            row.applied = Some(Apply::new(id, Applied::SkippedNotAuthenticated));
+            say(format!(
+                "not logged in, so not registered: {}; run this yourself at a private terminal:",
+                tilde(&path, home)
+            ));
+            if !json {
+                println!("  {}", row.suggested.display.clone().unwrap_or_default());
+            }
         }
     }
-    Ok(false)
+    Ok(end)
 }
 
-/// One `af/provider-detect@1` document: closed states, af's own labels and paths, never an
+/// The registry entry of `kind` whose auth directory is `path`, read under the registry lock:
+/// what `--apply` checks again before it says a row is registered.
+fn registered_now(
+    registry: &Path,
+    kind: ProviderKind,
+    path: &Path,
+) -> Result<Option<String>, String> {
+    let _lock = registry_lock(registry)?;
+    let specs = match read_registry(registry)? {
+        Some(text) => parse_registry(&text, registry)?,
+        None => Vec::new(),
+    };
+    Ok(specs
+        .into_iter()
+        .find(|spec| spec.kind == kind && spec.auth_dir.as_deref() == Some(path))
+        .map(|spec| spec.id))
+}
+
+/// The registered ID a conflict at `id` for `path` met: `id` itself when another directory
+/// holds it, the ID `path` is registered under otherwise, none when the registry is full or
+/// cannot be read now.
+fn registry_holding(registry: &Path, kind: ProviderKind, path: &Path, id: &str) -> Option<String> {
+    let _lock = registry_lock(registry).ok()?;
+    let specs = parse_registry(&read_registry(registry).ok()??, registry).ok()?;
+    if specs.iter().any(|spec| spec.id == id) {
+        return Some(id.to_string());
+    }
+    specs
+        .into_iter()
+        .find(|spec| spec.kind == kind && spec.auth_dir.as_deref() == Some(path))
+        .map(|spec| spec.id)
+}
+
+/// A registry conflict at row `index`: the row says what it met (`conflict_with`) and suggests
+/// the retry that works, `af provider detect --dir D --id OTHER --apply` with the first ID nothing
+/// holds, or `af provider status` when the directory is registered under another ID meanwhile;
+/// the message says how many later logins it left.
+fn conflicted(
+    rows: &mut [Row],
+    index: usize,
+    (id, conflict, taken): (String, String, Option<String>),
+    registry: &Path,
+    json: bool,
+    home: Option<&Path>,
+    registry_ids: &BTreeSet<String>,
+) {
+    let later = rows[index + 1..]
+        .iter()
+        .filter(|row| row.auth == Auth::Authenticated && row.candidate.registered_as.is_none())
+        .count();
+    let mut held: BTreeSet<String> = registry_ids.clone();
+    held.extend(rows.iter().filter_map(|row| row.suggested.id.clone()));
+    if let Ok(Some(text)) = read_registry(registry)
+        && let Ok(specs) = parse_registry(&text, registry)
+    {
+        held.extend(specs.into_iter().map(|spec| spec.id));
+    }
+    held.insert(id.clone());
+    let row = &mut rows[index];
+    let path = row.candidate.path().to_path_buf();
+    let retry = match &taken {
+        Some(holder) if *holder != id => {
+            row.suggested = Suggested {
+                action: "none",
+                id: None,
+                command: Some("af provider status".to_string()),
+                display: Some("af provider status".to_string()),
+            };
+            format!("it is registered as {holder} now; af provider status lists it")
+        }
+        Some(_) => {
+            let other = unique_id(&id, &held);
+            let retry = |spelled: String| {
+                format!(
+                    "af provider detect --dir {spelled} --id {} --apply",
+                    shell_words::quote(&other)
+                )
+            };
+            row.suggested = Suggested {
+                action: "retry_apply",
+                id: Some(other.clone()),
+                command: Some(retry(quoted(&path))),
+                display: Some(retry(tilde(&path, home))),
+            };
+            format!(
+                "choose another ID: {}",
+                row.suggested.display.as_deref().unwrap_or_default()
+            )
+        }
+        None => {
+            row.suggested = Suggested {
+                action: "none",
+                id: None,
+                command: Some("af provider status".to_string()),
+                display: Some("af provider status".to_string()),
+            };
+            "af provider status lists the registry".to_string()
+        }
+    };
+    let line = format!(
+        "af provider add {} --kind {} --auth-dir {}",
+        shell_words::quote(&id),
+        row.candidate.kind.name(),
+        tilde(&path, home)
+    );
+    row.applied = Some(Apply {
+        id,
+        result: Applied::RegistryConflict,
+        conflict_with: taken,
+    });
+    let message = format!(
+        "registry conflict at {line}: {conflict}; stopped here, so {later} later login{} {} not \
+         registered; {retry}",
+        if later == 1 { "" } else { "s" },
+        if later == 1 { "was" } else { "were" },
+    );
+    if !json {
+        for line in wrap(&message, "") {
+            println!("{line}");
+        }
+    }
+    eprintln!("af provider detect: {message}");
+}
+
+/// What a whole `af/provider-detect@2` document says beside its rows.
+struct Shape {
+    code: i32,
+    /// Whether `--apply` was given, whatever it found to do.
+    applied: bool,
+    /// Whether the registry could not be read, so no row's registration is known.
+    registry_unknown: bool,
+}
+
+/// One `af/provider-detect@2` document: closed states, af's own labels and paths, never an
 /// email, an organization, a credential or the CLI's words.
 fn document(
-    code: i32,
-    applied: bool,
+    shape: Shape,
     binaries: &[Binary],
     unsupported: &[Unsupported],
     rows: &[Row],
@@ -1609,25 +2002,34 @@ fn document(
                 "markers": candidate.markers,
                 "safe": candidate.safety.is_ok(),
                 "auth": row.auth.name(),
+                "auth_cause": row.cause,
+                "auth_detail": row.detail,
                 "auth_method": row.auth_method,
                 "plan": row.plan,
+                "registration": match (&candidate.registered_as, shape.registry_unknown) {
+                    (Some(_), _) => "registered",
+                    (None, true) => "unknown",
+                    (None, false) => "unregistered",
+                },
                 "registered_as": candidate.registered_as,
+                "listing_unreadable": candidate.listing.is_some(),
                 "suggested": {
                     "action": row.suggested.action,
                     "id": row.suggested.id,
                     "command": row.suggested.command,
                 },
-                "applied": row.applied.as_ref().map(|(id, result)| serde_json::json!({
-                    "id": id,
-                    "result": result.name(),
+                "applied": row.applied.as_ref().map(|applied| serde_json::json!({
+                    "id": applied.id,
+                    "result": applied.result.name(),
+                    "conflict_with": applied.conflict_with,
                 })),
             })
         })
         .collect();
     serde_json::json!({
-        "schema": "af/provider-detect@1",
-        "exit_code": code,
-        "applied": applied,
+        "schema": "af/provider-detect@2",
+        "exit_code": shape.code,
+        "applied": shape.applied,
         "binaries": binaries,
         "unsupported": unsupported,
         "candidates": candidates,
@@ -1690,11 +2092,19 @@ fn table_line(columns: [&str; 6]) -> String {
     .to_string()
 }
 
-fn print_table(rows: &[Row], identity: bool, home: Option<&Path>) {
+fn print_table(
+    rows: &[Row],
+    kinds: &[ProviderKind],
+    identity: bool,
+    registry_unknown: bool,
+    home: Option<&Path>,
+) {
     if rows.is_empty() {
         println!("No auth directory was found. Log in to a new one at a private terminal:");
-        println!("  af provider setup claude-main --kind claude --login");
-        println!("  af provider setup codex-main --kind codex --login");
+        for kind in kinds {
+            let kind = kind.name();
+            println!("  af provider setup {kind}-main --kind {kind} --login");
+        }
         return;
     }
     println!(
@@ -1718,7 +2128,10 @@ fn print_table(rows: &[Row], identity: bool, home: Option<&Path>) {
                 &dir,
                 candidate.source.name(),
                 &row.login,
-                candidate.registered_as.as_deref().unwrap_or("-"),
+                candidate
+                    .registered_as
+                    .as_deref()
+                    .unwrap_or(if registry_unknown { "unknown" } else { "-" }),
                 row.suggested.id.as_deref().unwrap_or("-"),
             ])
         );
@@ -1744,7 +2157,7 @@ fn print_table(rows: &[Row], identity: bool, home: Option<&Path>) {
     }
 }
 
-fn print_binaries(binaries: &[Binary], home: Option<&Path>) {
+fn print_binaries(binaries: &[Binary], kinds: &[ProviderKind], home: Option<&Path>) {
     println!();
     let found: Vec<String> = binaries
         .iter()
@@ -1781,7 +2194,7 @@ fn print_binaries(binaries: &[Binary], home: Option<&Path>) {
             println!("    fix: {}", upgrade_command(binary.kind));
         }
     }
-    for kind in [ProviderKind::Claude, ProviderKind::Codex] {
+    for kind in kinds.iter().copied() {
         if !binaries.is_empty() && !binaries.iter().any(|binary| binary.kind == kind) {
             let [first, second] = install_commands(kind);
             println!("  {} not found: {first}", kind.name());
@@ -1801,7 +2214,7 @@ fn print_unsupported(unsupported: &[Unsupported], home: Option<&Path>) {
     }
 }
 
-fn print_closing(rows: &[Row], applied: bool) {
+fn print_closing(rows: &[Row], applied: bool, code: i32, binaries: &[Binary], home: Option<&Path>) {
     let lines: Vec<&str> = rows
         .iter()
         .filter(|row| row.suggested.display.is_some())
@@ -1825,7 +2238,35 @@ fn print_closing(rows: &[Row], applied: bool) {
         }
     }
     println!();
-    if applied {
+    // The one next step follows the outcome: the retry after a conflict, the CLI's fix after
+    // exit 4, `af provider status` only after an apply that succeeded.
+    let conflict = rows
+        .iter()
+        .find(|row| {
+            row.applied
+                .as_ref()
+                .is_some_and(|applied| applied.result == Applied::RegistryConflict)
+        })
+        .and_then(|row| row.suggested.display.clone());
+    let cli_fix = binaries
+        .iter()
+        .find(|binary| binary.compatible == Some(false))
+        .map(|binary| upgrade_command(binary.kind).to_string())
+        .or_else(|| {
+            binaries
+                .iter()
+                .find(|binary| !binary.on_path)
+                .map(|binary| path_fix(&binary.path, home))
+        });
+    if code == EXIT_REGISTRY_CONFLICT
+        && let Some(retry) = conflict
+    {
+        println!("next: {retry}");
+    } else if code == EXIT_PROVIDER_CLI_MISSING
+        && let Some(fix) = cli_fix
+    {
+        println!("next: {fix}");
+    } else if applied {
         println!("next: af provider status");
     } else {
         let waiting = rows
@@ -1952,6 +2393,99 @@ mod tests {
 
     fn found(kind: ProviderKind, path: &Path, source: Source) -> Candidate {
         candidate(kind, path.to_path_buf(), source, None)
+    }
+
+    fn row(candidate: Candidate, auth: Auth) -> Row {
+        Row {
+            candidate,
+            auth,
+            login: String::new(),
+            auth_method: "unknown",
+            plan: "unknown",
+            account: None,
+            note: None,
+            cause: None,
+            detail: None,
+            suggested: Suggested::none(),
+            applied: None,
+        }
+    }
+
+    /// C3 item 9: a row the scan read as registered is checked again under the registry lock.
+    /// An entry removed since is registered again for a logged-in row, and never reported as
+    /// still there for one that is not; a present entry is `already_registered`.
+    #[test]
+    fn apply_checks_a_registered_row_again_under_the_registry_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(root.path()).unwrap();
+        let dir = home.join("claude-work");
+        private(&dir);
+        fs::write(dir.join(".claude.json"), "{}").unwrap();
+        let config = home.join("config");
+        private(&config);
+        let registry = config.join("providers.toml");
+        let scanned = || {
+            let mut candidate = found(ProviderKind::Claude, &dir, Source::Registry);
+            candidate.registered_as = Some("claude-work".into());
+            candidate
+        };
+        // The entry the scan read is gone: the logged-in row is registered again.
+        let mut rows = vec![row(scanned(), Auth::Authenticated)];
+        let end = apply(&mut rows, &registry, true, Some(&home), &BTreeSet::new()).unwrap();
+        assert!(!end.conflict && !end.off_path);
+        let applied = rows[0].applied.as_ref().unwrap();
+        assert_eq!(applied.id, "claude-work");
+        assert_eq!(applied.result, Applied::Registered);
+        // It is there now: already registered, as the locked read found it.
+        let mut rows = vec![row(scanned(), Auth::Authenticated)];
+        apply(&mut rows, &registry, true, Some(&home), &BTreeSet::new()).unwrap();
+        assert_eq!(
+            rows[0].applied.as_ref().unwrap().result,
+            Applied::AlreadyRegistered
+        );
+        let mut rows = vec![row(scanned(), Auth::NotAuthenticated)];
+        apply(&mut rows, &registry, true, Some(&home), &BTreeSet::new()).unwrap();
+        assert_eq!(
+            rows[0].applied.as_ref().unwrap().result,
+            Applied::AlreadyRegistered
+        );
+        // Removed again: a logged-out row is no longer called registered.
+        fs::write(&registry, "version = 1\n").unwrap();
+        let mut rows = vec![row(scanned(), Auth::NotAuthenticated)];
+        apply(&mut rows, &registry, true, Some(&home), &BTreeSet::new()).unwrap();
+        assert!(rows[0].applied.is_none());
+        assert_eq!(rows[0].candidate.registered_as, None);
+    }
+
+    /// C3 item 17: with no scratch directory, each CLI is checked with its own kind's spec.
+    #[test]
+    fn a_cli_without_a_scratch_directory_is_checked_as_its_own_kind() {
+        for kind in [ProviderKind::Claude, ProviderKind::Codex] {
+            let spec = capability_spec(kind, None);
+            assert_eq!(spec.kind, kind);
+            assert_eq!(spec.auth_dir, None);
+            let dir = Path::new("/scratch");
+            assert_eq!(
+                capability_spec(kind, Some(dir)).auth_dir.as_deref(),
+                Some(dir)
+            );
+        }
+    }
+
+    /// C3 item 8: a directory that cannot be listed has its markers checked by name, and says so.
+    #[test]
+    fn an_unlistable_directory_has_its_markers_checked_by_name() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("claude-work");
+        private(&dir);
+        fs::write(dir.join(".claude.json"), "{}").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o100)).unwrap();
+        let (markers, listing) = markers_found(&dir, CLAUDE_MARKERS);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(markers, [".claude.json"]);
+        assert!(listing.unwrap().starts_with("listing unreadable"));
+        let (markers, listing) = markers_found(&dir, CLAUDE_MARKERS);
+        assert_eq!((markers, listing), (vec![".claude.json"], None));
     }
 
     #[test]

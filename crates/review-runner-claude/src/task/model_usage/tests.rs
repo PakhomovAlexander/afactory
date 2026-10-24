@@ -623,3 +623,53 @@ fn an_all_zero_foreign_entry_is_explicitly_unused() {
     assert!(result.observation.is_none());
     assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 3212);
 }
+
+/// C3 item 27: a reply that is the account's usage-limit refusal (an empty `modelUsage`, since
+/// no model ran) says the limit is reached and when it resets, with the words that make its
+/// cause `provider_capacity`; the map's bound text stays for a truly malformed map.
+#[test]
+fn a_usage_limit_reply_says_the_limit_is_reached_and_when_it_resets() {
+    let reply = |result: &str| {
+        json!({"type":"result","subtype":"success","is_error":true,"result":result,
+            "usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,
+                "cache_read_input_tokens":0},
+            "modelUsage":{}})
+    };
+    let cases = [
+        (
+            "Claude AI usage limit reached|1793016000",
+            "the Claude account's usage limit is reached; it resets at 2026-10-26T12:00:00Z (rate \
+             limit)",
+        ),
+        (
+            "You've hit your limit \u{b7} resets 3pm (Europe/Berlin)",
+            "the Claude account's usage limit is reached; it resets at 3pm (Europe/Berlin) (rate \
+             limit)",
+        ),
+        (
+            "5-hour limit reached",
+            "the Claude account's usage limit is reached; reset time not reported (rate limit)",
+        ),
+    ];
+    for (result, said) in cases {
+        let accounting = account(Some(&reply(result)), OPUS, None);
+        let error = accounting.error.unwrap();
+        assert_eq!(error, said);
+        assert!(!error.contains("finite nonempty model bound"));
+        assert!(!accounting.switched);
+        assert!(!accounting.observation.unwrap().charge_complete);
+        assert_eq!(
+            review_core::task::state::TaskCauseV1::of_diagnostic(&error),
+            Some(review_core::task::state::TaskCauseV1::ProviderCapacity),
+            "{error}"
+        );
+    }
+    // An empty map in a reply that is no usage-limit refusal is still the malformed map it was.
+    let mut malformed = reply("done");
+    malformed["is_error"] = json!(false);
+    let error = account(Some(&malformed), OPUS, None).error.unwrap();
+    assert_eq!(
+        error,
+        "Claude model usage exceeds its finite nonempty model bound"
+    );
+}

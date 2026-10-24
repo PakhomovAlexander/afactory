@@ -163,7 +163,7 @@ fn storage_and_campaigns_list_other_releases_stores_in_one_row() {
 
     // The document keeps its shape: one entry each, its reason naming the writer.
     let document: Value = serde_json::from_slice(&af(&["storage", "--json"]).stdout).unwrap();
-    assert_eq!(document["schema"], "af/storage@4");
+    assert_eq!(document["schema"], "af/storage@5");
     let reasons: Vec<&str> = document["entries"]
         .as_array()
         .unwrap()
@@ -177,6 +177,36 @@ fn storage_and_campaigns_list_other_releases_stores_in_one_row() {
             .iter()
             .all(|reason| reason.contains("TaskTransition@9") && reason.contains("fix:")),
         "{reasons:?}"
+    );
+    // The writer and the next command are fields of their own, from the Store's provenance.
+    crate::schemas::valid(&crate::schemas::validator("storage-v5.json"), &document);
+    let mut fixes: Vec<(Value, Value)> = document["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "unreadable_store")
+        .map(|entry| {
+            (
+                entry["writer_release"].clone(),
+                entry["next_action"].clone(),
+            )
+        })
+        .collect();
+    fixes.sort_by_key(|(release, _)| release.to_string());
+    let rerun = |name: &str| {
+        Value::from(format!(
+            "AF_VERSION=99.1.0 af task list --state {}",
+            tasks.join(name).display()
+        ))
+    };
+    assert_eq!(
+        fixes,
+        [
+            (Value::from("99.1.0"), rerun("aaaaaaaaaaaaaaaa")),
+            (Value::from("99.1.0"), rerun("bbbbbbbbbbbbbbbb")),
+            (Value::Null, Value::from("af storage prune --apply")),
+        ],
+        "{document}"
     );
 
     // A Campaign another release wrote: one row in `af review campaigns` as well.

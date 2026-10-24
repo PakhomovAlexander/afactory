@@ -108,6 +108,8 @@ pub enum EventType {
     WorkspaceRegisteredV1,
     #[serde(rename = "WorkspaceRemoved@1")]
     WorkspaceRemovedV1,
+    #[serde(rename = "WorkspaceDelivered@1")]
+    WorkspaceDeliveredV1,
     #[serde(rename = "SurveyRecorded@1")]
     SurveyRecordedV1,
     #[serde(rename = "SurveyFailed@1")]
@@ -117,7 +119,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 51] = [
+    pub const ALL: [Self; 52] = [
         Self::TaskTransitionV5,
         Self::TaskExecutionStartedV1,
         Self::TaskGateRetriedV1,
@@ -166,6 +168,7 @@ impl EventType {
         Self::ProjectRegisteredV1,
         Self::WorkspaceRegisteredV1,
         Self::WorkspaceRemovedV1,
+        Self::WorkspaceDeliveredV1,
         Self::SurveyRecordedV1,
         Self::SurveyFailedV1,
         Self::SurveyCollectedV1,
@@ -221,6 +224,7 @@ impl EventType {
             Self::ProjectRegisteredV1 => "ProjectRegistered@1",
             Self::WorkspaceRegisteredV1 => "WorkspaceRegistered@1",
             Self::WorkspaceRemovedV1 => "WorkspaceRemoved@1",
+            Self::WorkspaceDeliveredV1 => "WorkspaceDelivered@1",
             Self::SurveyRecordedV1 => "SurveyRecorded@1",
             Self::SurveyFailedV1 => "SurveyFailed@1",
             Self::SurveyCollectedV1 => "SurveyCollected@1",
@@ -282,6 +286,7 @@ impl EventType {
             Self::ProjectRegisteredV1 => ("ProjectRegistered", 1),
             Self::WorkspaceRegisteredV1 => ("WorkspaceRegistered", 1),
             Self::WorkspaceRemovedV1 => ("WorkspaceRemoved", 1),
+            Self::WorkspaceDeliveredV1 => ("WorkspaceDelivered", 1),
             Self::SurveyRecordedV1 => ("SurveyRecorded", 1),
             Self::SurveyFailedV1 => ("SurveyFailed", 1),
             Self::SurveyCollectedV1 => ("SurveyCollected", 1),
@@ -379,6 +384,7 @@ impl std::str::FromStr for EventType {
             "ProjectRegistered@1" => Ok(Self::ProjectRegisteredV1),
             "WorkspaceRegistered@1" => Ok(Self::WorkspaceRegisteredV1),
             "WorkspaceRemoved@1" => Ok(Self::WorkspaceRemovedV1),
+            "WorkspaceDelivered@1" => Ok(Self::WorkspaceDeliveredV1),
             "SurveyRecorded@1" => Ok(Self::SurveyRecordedV1),
             "SurveyFailed@1" => Ok(Self::SurveyFailedV1),
             "SurveyCollected@1" => Ok(Self::SurveyCollectedV1),
@@ -945,6 +951,11 @@ pub fn validate_event_payload(
         EventType::WorkspaceRemovedV1 => {
             serde_json::from_value::<crate::WorkspaceRemovedPayloadV1>(payload.clone())
                 .map_err(|error| format!("WorkspaceRemoved@1: {error}"))?
+                .validate()
+        }
+        EventType::WorkspaceDeliveredV1 => {
+            serde_json::from_value::<crate::WorkspaceDeliveredPayloadV1>(payload.clone())
+                .map_err(|error| format!("WorkspaceDelivered@1: {error}"))?
                 .validate()
         }
         EventType::SurveyRecordedV1 => {

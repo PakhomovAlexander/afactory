@@ -388,7 +388,7 @@ repository's `.af/af.toml` cannot change it. See `af help storage`.",
         after_long_help = "Examples:\n  af storage\n  af storage --verbose\n  af storage --json | jq .total_bytes\n  af storage prune\n  af storage prune --apply\n  AF_STORAGE__MAX_BYTES=10GiB af storage prune --apply"
     )]
     Storage {
-        /// Machine-readable af/storage@4
+        /// Machine-readable af/storage@5
         #[arg(long)]
         json: bool,
         /// Also name every path that could not be measured and every Store left alone, and why
@@ -1165,15 +1165,19 @@ Nothing is written without --apply. --apply registers, in table order, every aut
 directory that is not registered yet, through the same locked, atomic publication as `af \
 provider add`, and prints each line it ran; it never logs in, never creates a directory and \
 never touches a directory that is not logged in (it prints that directory's `af provider setup \
-... --login` line). A registry conflict stops it at that row with exit 5; the rows before it \
-stay registered. IDs: the default directory is claude-main or codex-main; a sibling is the kind \
-and its name without the kind prefix (~/.config/claude-work is claude-work, ~/.codex-gridgain is \
-codex-gridgain); the env directory follows the sibling rule when its name is a sibling name, \
-else claude-env or codex-env; --dir follows the sibling rule, and needs one --id per --dir when \
+... --login` line), and never registers a login whose CLI is off PATH, which status and Tasks \
+cannot run (exit 4, with the PATH line). A registry conflict stops it at that row with exit 5; \
+the rows before it stay registered, and the row suggests the retry with a free ID. A registry \
+that cannot be read refuses --apply (exit 1) and makes every row's registration unknown. IDs: \
+the default directory is claude-main or codex-main; a sibling is the kind and its name without \
+the kind prefix (~/.config/claude-work is claude-work, ~/.codex-gridgain is codex-gridgain); \
+the env directory follows the sibling rule when its name is a sibling name, else claude-env or \
+codex-env; --dir follows the sibling rule, and needs one --id per --dir when \
 more than one names the same kind; a taken ID gets -2, -3; *-ambient is never generated.\n\n\
---json prints one af/provider-detect@1 document. Exit codes: 0 the scan completed, 1 \
-unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible (the rows \
-are still printed), 5 a registry conflict stopped --apply.",
+--json prints one af/provider-detect@2 document. Exit codes: 0 the scan completed, 1 \
+unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login \
+was left unregistered because its CLI is off PATH (the rows are still printed), 5 a registry \
+conflict stopped --apply.",
         after_long_help = "Examples:\n  af provider detect\n  af provider detect --apply\n  af provider detect --json\n  af provider detect --dir /secure/claude-team --kind claude --apply\n  af provider detect --all"
     )]
     Detect {
@@ -1192,7 +1196,7 @@ are still printed), 5 a registry conflict stopped --apply.",
         /// Register every authenticated, unregistered directory found
         #[arg(long)]
         apply: bool,
-        /// Emit the versioned `af/provider-detect@1` document instead of the table
+        /// Emit the versioned `af/provider-detect@2` document instead of the table
         #[arg(long)]
         json: bool,
         /// Add the account label each CLI reported (terminal only, never with --json)
@@ -1223,7 +1227,7 @@ unavailable.",
         after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage\n  af provider status --verbose"
     )]
     Status {
-        /// Emit the versioned `af/provider-status@2` document instead of the table
+        /// Emit the versioned `af/provider-status@3` document instead of the table
         #[arg(long)]
         json: bool,
         /// Also probe subscription and quota windows (slower, and may be unavailable)
@@ -3159,7 +3163,7 @@ skips it).",
         /// Run the release check now, before printing, instead of scheduling it when due
         #[arg(long)]
         refresh: bool,
-        /// One JSON document on stdout (af/self-status@1)
+        /// One JSON document on stdout (af/self-status@2)
         #[arg(long)]
         json: bool,
     },

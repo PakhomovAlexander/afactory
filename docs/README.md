@@ -82,6 +82,25 @@ a revision), what each means, and what to do. A test checks that `af` still prin
 | `could not be measured and` | `af storage` met paths it could not measure, such as a half-made Store a test registered. | `af storage --verbose` names each path and why. |
 | `Output port … not found in the result of Task` | `af task output --port` names a port the Task's result does not have; the message lists the ones it has. | Pass one of the ports listed. |
 | `is not a command; the browser is` | `af review tui` is not a command. | Run `af` alone at a terminal to open the browser. |
+| `Spotlight indexes …, which every build and sandbox writes to` | `af doctor` on macOS found Spotlight indexing a root af's builds and sandboxes write to. | Exclude it in Spotlight's Search Privacy, or move it to a directory named `*.noindex` (below). |
+
+### macOS: Spotlight and Gatekeeper
+
+Every gate on macOS builds into af's warm build cache (`[storage] build_cache_root`, by default
+`~/.cache/af/task-build-cache`), its warm Workspaces (`~/.cache/af/workspaces`) and its
+sandboxes (`[storage] sandbox_root`, by default `$TMPDIR`). Spotlight indexes every file written
+there and Gatekeeper scans every new binary, which one machine measured at four to five cores
+(`mds`, `mdworker` and `syspolicyd`) for the length of a gate. `af doctor` warns when Spotlight
+indexes one of these roots. Exclude them once:
+
+- add each root `af doctor` names in System Settings > Spotlight > Search Privacy; or
+- point the roots at directories whose names end in `.noindex`, which Spotlight skips, for
+  example `AF_STORAGE__BUILD_CACHE_ROOT=~/Library/Caches/af-build.noindex` and
+  `AF_STORAGE__SANDBOX_ROOT=~/Library/Caches/af-sandboxes.noindex`, or the same keys under
+  `[storage]` in `~/.config/af/config.toml`;
+- and add your terminal under System Settings > Privacy & Security > Developer Tools
+  (`spctl developer-mode enable-terminal` makes the entry appear), so Gatekeeper does not scan
+  each binary a build writes.
 
 ## Reading and writing ADRs
 

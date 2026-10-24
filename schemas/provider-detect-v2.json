@@ -1,0 +1,878 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:provider-detect:2",
+  "title": "Provider detect@2",
+  "$comment": "The machine-readable result of one `af provider detect` (ADR-0197): the official CLIs found, the unsupported harness CLIs on PATH, every candidate auth directory with what the status probe said about it and the one command af suggests, and, under --apply, what was registered. Deliberately absent, in every state: account email, organization or account identity, credentials, OAuth material and Provider-authored text; versions are af's own reading of a version line, and `notes` are af-authored. Version 2 adds, per candidate, `auth_cause` (why its login is not known: `timeout`, `unstartable`, `incompatible`, `unparsable`, `output_too_large`, `cancelled`, `unchecked` or `other`) and `auth_detail` (af's own words for it, never the CLI's), `registration` (`registered`, `unregistered`, or `unknown` while the registry cannot be read) and `listing_unreadable` (the directory could not be listed, so its markers were checked by name); per applied row `conflict_with`, the registered ID a conflict met; the suggestions `fix_registry`, `fix_path` and `retry_apply`; and the result `skipped_cli_off_path`, for a login whose CLI is off PATH, where `af provider status` and Tasks do not look. An `--apply` refused because the registry cannot be read is exit 1, an af/error@1 document; exit 4 also covers a login left unregistered because its CLI is off PATH. Version 1 is neither printed nor read.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "exit_code",
+    "applied",
+    "binaries",
+    "unsupported",
+    "candidates",
+    "notes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/provider-detect@2"
+    },
+    "exit_code": {
+      "$comment": "0 the scan completed; 4 a found CLI cannot start or does not accept af's invocation, or a logged-in directory was left unregistered because its CLI is off PATH (the rows are still reported); 5 a registry conflict stopped --apply. 1 (an unclassified failure, an --apply refused because the registry cannot be read among them) and 2 are reported as af/error@1 documents, never as this one.",
+      "enum": [
+        0,
+        4,
+        5
+      ]
+    },
+    "applied": {
+      "$comment": "Whether --apply was given; without it nothing was written.",
+      "type": "boolean"
+    },
+    "binaries": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path",
+          "version",
+          "on_path",
+          "compatible"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "$ref": "#/$defs/version"
+          },
+          "on_path": {
+            "type": "boolean"
+          },
+          "compatible": {
+            "$comment": "The capability check's verdict (ADR-0146); null when af gave up waiting on it.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "unsupported": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "path",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "gemini",
+              "cursor-agent",
+              "opencode",
+              "amp",
+              "copilot",
+              "aider",
+              "qwen",
+              "goose"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "$ref": "#/$defs/version"
+          }
+        }
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/candidate"
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "Exit 4 when a found CLI cannot serve af, or a login was left unregistered because its CLI is off PATH; exit 5 and exit 1 outrank it.",
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "binaries": {
+                "contains": {
+                  "properties": {
+                    "compatible": {
+                      "const": false
+                    }
+                  },
+                  "required": [
+                    "compatible"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "binaries"
+            ]
+          },
+          {
+            "properties": {
+              "candidates": {
+                "contains": {
+                  "properties": {
+                    "applied": {
+                      "type": "object",
+                      "properties": {
+                        "result": {
+                          "const": "skipped_cli_off_path"
+                        }
+                      },
+                      "required": [
+                        "result"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "applied"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "candidates"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "exit_code": {
+            "enum": [
+              4,
+              5
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "exit_code": {
+            "enum": [
+              0,
+              5
+            ]
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Exit 5 only under --apply, and only with a row whose publication met a conflict.",
+      "if": {
+        "properties": {
+          "exit_code": {
+            "const": 5
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "applied": {
+            "const": true
+          },
+          "candidates": {
+            "contains": {
+              "properties": {
+                "applied": {
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "const": "registry_conflict"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Without --apply no row says what --apply did.",
+      "if": {
+        "properties": {
+          "applied": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "candidates": {
+            "items": {
+              "properties": {
+                "applied": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "version": {
+      "$comment": "af's reading of a version line: digits and dots, an optional pre-release.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^[0-9]{1,9}(\\.[0-9]{1,9}){1,3}([-+][0-9A-Za-z.-]+)?$"
+        }
+      ]
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "auth_dir",
+        "source",
+        "markers",
+        "safe",
+        "auth",
+        "auth_cause",
+        "auth_detail",
+        "auth_method",
+        "plan",
+        "registration",
+        "registered_as",
+        "listing_unreadable",
+        "suggested",
+        "applied"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "claude",
+            "codex"
+          ]
+        },
+        "auth_dir": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "source": {
+          "$comment": "env: CLAUDE_CONFIG_DIR or CODEX_HOME; default: ~/.claude or ~/.codex; sibling: a literal one-level sibling name; registry: an auth_dir already registered; explicit: --dir.",
+          "enum": [
+            "env",
+            "default",
+            "sibling",
+            "registry",
+            "explicit"
+          ]
+        },
+        "markers": {
+          "$comment": "The login marker names present in the directory, examined by name only.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              ".claude.json",
+              ".credentials.json",
+              "settings.json",
+              "auth.json",
+              "config.toml"
+            ]
+          }
+        },
+        "safe": {
+          "$comment": "Owned by the caller, not group- or world-writable, not a symlink: the rules setup and add apply.",
+          "type": "boolean"
+        },
+        "auth": {
+          "$comment": "The closed vocabulary of af provider status; not_probed for a directory that is absent, unsafe, holds no marker (without --all), or whose CLI was not found or cannot serve af.",
+          "enum": [
+            "authenticated",
+            "not_authenticated",
+            "unknown",
+            "unavailable",
+            "installation_failed",
+            "incompatible",
+            "not_probed"
+          ]
+        },
+        "auth_cause": {
+          "$comment": "Why the login is not known: timeout (the probe outlived detect's 10-second bound), unstartable (the CLI could not be started), incompatible (it does not accept af's invocation), unparsable (its answer is not one af reads), output_too_large, cancelled, unchecked (af could not tell whether the CLI accepts its invocation) or other; null when the probe answered or the directory was not probed.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": [
+                "timeout",
+                "unstartable",
+                "incompatible",
+                "unparsable",
+                "output_too_large",
+                "cancelled",
+                "unchecked",
+                "other"
+              ]
+            }
+          ]
+        },
+        "auth_detail": {
+          "$comment": "af's own words for `auth_cause`, never the CLI's; null when there are none to give.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          ]
+        },
+        "auth_method": {
+          "enum": [
+            "oauth",
+            "api_key",
+            "none",
+            "unknown"
+          ]
+        },
+        "plan": {
+          "$comment": "af's own plan name; the Codex plan is not part of the status probe's answer and stays unknown.",
+          "enum": [
+            "max",
+            "team",
+            "pro",
+            "business",
+            "free",
+            "unknown"
+          ]
+        },
+        "registration": {
+          "$comment": "Whether a registry entry names this directory: unknown while the registry cannot be read (malformed, unreadable, or mid-transaction), never taken for unregistered.",
+          "enum": [
+            "registered",
+            "unregistered",
+            "unknown"
+          ]
+        },
+        "registered_as": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "listing_unreadable": {
+          "$comment": "The directory could not be listed (it grants search but not read), so each login marker was checked by its name instead; it is probed all the same.",
+          "type": "boolean"
+        },
+        "suggested": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "id",
+            "command"
+          ],
+          "properties": {
+            "action": {
+              "$comment": "register: af provider add; login: af provider setup ... --login, run by a human at a private terminal; probe: af provider detect --all; fix_safety: the chmod fix when there is one; fix_cli: the upgrade command; install: the official install command; retry: af provider detect; none. fix_path: the PATH line for a CLI found off PATH, whose login is not registered until it is on PATH, with the ID it would be registered under; fix_registry: af provider status, which names why the registry cannot be read; retry_apply: after a registry conflict, the same --apply for this directory with an ID nothing holds.",
+              "enum": [
+                "register",
+                "login",
+                "probe",
+                "fix_safety",
+                "fix_cli",
+                "fix_path",
+                "fix_registry",
+                "install",
+                "retry",
+                "retry_apply",
+                "none"
+              ]
+            },
+            "id": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "enum": [
+                      "register",
+                      "login",
+                      "retry_apply",
+                      "fix_path"
+                    ]
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "command": {
+                    "type": "string"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "id": {
+                    "type": "null"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "const": "register"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "command": {
+                    "pattern": "^af provider add "
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "const": "login"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "command": {
+                    "pattern": "^af provider setup .* --login$"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "const": "none"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "command": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "const": "af provider status"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "action": {
+                    "const": "retry_apply"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "command": {
+                    "pattern": "^af provider detect --dir .* --id .* --apply$"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "applied": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "result",
+                "conflict_with"
+              ],
+              "properties": {
+                "id": {
+                  "$ref": "#/$defs/id"
+                },
+                "result": {
+                  "enum": [
+                    "registered",
+                    "already_registered",
+                    "registry_conflict",
+                    "skipped_not_authenticated",
+                    "skipped_cli_off_path"
+                  ]
+                },
+                "conflict_with": {
+                  "$comment": "For registry_conflict: the registered ID the publication met (this ID, held by another directory, or the ID this directory is registered under now); null otherwise, or when the registry was full.",
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/id"
+                    }
+                  ]
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "result": {
+                        "not": {
+                          "const": "registry_conflict"
+                        }
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "conflict_with": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "Only an authenticated directory is registered, met a conflict or was left off PATH; a registered one is registered again only when its entry was gone, checked under the registry lock.",
+          "if": {
+            "properties": {
+              "applied": {
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "enum": [
+                      "registered",
+                      "registry_conflict",
+                      "skipped_cli_off_path"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "auth": {
+                "const": "authenticated"
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A conflict suggests the retry that works, or af provider status.",
+          "if": {
+            "properties": {
+              "applied": {
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "const": "registry_conflict"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "suggested": {
+                "properties": {
+                  "action": {
+                    "enum": [
+                      "retry_apply",
+                      "none"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "applied": {
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "const": "skipped_cli_off_path"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "suggested": {
+                "properties": {
+                  "action": {
+                    "const": "fix_path"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "applied": {
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "const": "skipped_not_authenticated"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "auth": {
+                "const": "not_authenticated"
+              }
+            }
+          }
+        },
+        {
+          "$comment": "An authenticated, unregistered directory is offered for registration, unless its CLI is off PATH, whether it is registered is unknown, or a conflict met it.",
+          "if": {
+            "properties": {
+              "auth": {
+                "const": "authenticated"
+              },
+              "registered_as": {
+                "type": "null"
+              },
+              "safe": {
+                "const": true
+              },
+              "applied": {
+                "not": {
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "const": "registry_conflict"
+                    }
+                  },
+                  "required": [
+                    "result"
+                  ]
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "suggested": {
+                "properties": {
+                  "action": {
+                    "enum": [
+                      "register",
+                      "fix_path",
+                      "fix_registry"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "$comment": "An unsafe directory is never probed.",
+          "if": {
+            "properties": {
+              "safe": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "auth": {
+                "const": "not_probed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "auth": {
+                "const": "authenticated"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "auth_method": {
+                "enum": [
+                  "oauth",
+                  "api_key",
+                  "unknown"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "plan": {
+                "const": "unknown"
+              },
+              "auth_method": {
+                "enum": [
+                  "none",
+                  "unknown"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "registration": {
+                "const": "registered"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "registered_as": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "registered_as": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "$comment": "An answered or unprobed login has no cause.",
+          "if": {
+            "properties": {
+              "auth": {
+                "enum": [
+                  "authenticated",
+                  "not_authenticated",
+                  "not_probed"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "auth_cause": {
+                "type": "null"
+              },
+              "auth_detail": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "auth_cause": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

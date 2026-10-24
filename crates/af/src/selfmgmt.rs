@@ -2334,9 +2334,36 @@ fn stalled_check(paths: &Paths, since: u64) -> Option<String> {
         format!(
             "a release check has been running since {}; fix: rm {}",
             iso(since),
-            paths.cache_file.with_extension("lock").display()
+            check_lock_path(paths).display()
         )
     })
+}
+
+/// The check lock's file.
+fn check_lock_path(paths: &Paths) -> PathBuf {
+    paths.cache_file.with_extension("lock")
+}
+
+/// The one command `af self status` names, as its JSON carries it: `rm` of a stalled check's
+/// lock first; else the update to a pre-release newer than both the running af and `latest`,
+/// as the text's `(you run …: af self update --rc)` says; else none.
+fn status_next_action(
+    stalled_lock: Option<&Path>,
+    latest: Option<&str>,
+    prerelease: Option<&str>,
+) -> Option<String> {
+    if let Some(lock) = stalled_lock {
+        return Some(format!(
+            "rm {}",
+            shell_words::quote(&lock.display().to_string())
+        ));
+    }
+    let parse = |version: Option<&str>| version.and_then(|version| Version::parse(version).ok());
+    let running = Version::parse(VERSION).ok()?;
+    let latest = parse(latest);
+    parse(prerelease)
+        .filter(|pre| latest.as_ref().is_none_or(|latest| pre > latest) && *pre > running)
+        .map(|_| "af self update --rc".to_string())
 }
 
 /// The check lock's file, created with its directory when missing.
@@ -2528,8 +2555,8 @@ fn run_check(paths: &Paths, policy: &SelfPolicy, cache: &mut CheckCache) -> Resu
 // ------------------------------------------------------------------------------------------
 // commands
 
-/// `af self status --json`'s shape (`schemas/self-status-v1.json`).
-const STATUS_SCHEMA: &str = "af/self-status@1";
+/// `af self status --json`'s shape (`schemas/self-status-v2.json`).
+const STATUS_SCHEMA: &str = "af/self-status@2";
 
 #[derive(Serialize)]
 struct StatusView {
@@ -2553,8 +2580,13 @@ struct StatusView {
     /// The newest release on the configured channel, and the newest pre-release.
     latest: Option<String>,
     latest_prerelease: Option<String>,
-    /// Since when a release check has held the check lock, when one has for over an hour.
+    /// Since when a release check has held the check lock, when one has for over an hour, and
+    /// that lock's file.
     check_stalled_since: Option<String>,
+    check_lock: Option<PathBuf>,
+    /// The one command the text status names: `rm` of a stalled check's lock, or the update to a
+    /// newer pre-release.
+    next_action: Option<String>,
     policy: PolicyView,
     paths: BTreeMap<&'static str, PathBuf>,
 }
@@ -2621,6 +2653,12 @@ pub(crate) fn status(json: bool, refresh: bool) -> Result<(), String> {
         latest: cache.latest.clone(),
         latest_prerelease: cache.latest_prerelease.clone(),
         check_stalled_since: stalled.map(iso),
+        check_lock: stalled.map(|_| check_lock_path(&paths)),
+        next_action: status_next_action(
+            stalled.map(|_| check_lock_path(&paths)).as_deref(),
+            cache.latest.as_deref(),
+            cache.latest_prerelease.as_deref(),
+        ),
         policy: PolicyView {
             update_check: policy.update_check,
             check_every_secs: policy.check_every.as_secs(),
@@ -2815,31 +2853,42 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
         Some(version) => Version::parse(version.trim_start_matches('v'))
             .map_err(|error| format!("--version {version}: {error}"))?,
         None => {
-            let tags = src.tags(channel == Channel::Rc || (check && !running.pre.is_empty()))?;
-            let latest = newest(&tags, channel)
-                .ok_or_else(|| format!("no release found at {}", src.describe()))?;
-            prerelease = newest(&tags, Channel::Rc).filter(|newest| !newest.pre.is_empty());
+            let asked = channel == Channel::Rc || (check && !running.pre.is_empty());
+            let found = src.tags(asked).and_then(|tags| {
+                let latest = newest(&tags, channel)
+                    .ok_or_else(|| format!("no release found at {}", src.describe()))?;
+                Ok((tags, latest))
+            });
             // Only a release the source actually listed is "latest". An explicit
             // `--version` is a request, not a discovery: recording it here made
             // `af self status` report a version that may not exist. The cache is written under
             // the check lock, taken without waiting: a detached check holding it writes its own.
-            match try_lock_check(&paths) {
-                Ok(Some(_check)) => {
-                    let mut cache = read_cache(&paths);
-                    record_check(&mut cache, &latest);
-                    if channel == Channel::Rc || !running.pre.is_empty() {
-                        cache.latest_prerelease = prerelease.as_ref().map(ToString::to_string);
-                    }
-                    let _ = write_cache(&paths, &cache);
+            // A check that failed is an attempt too: its time and cause go into the cache, as a
+            // detached check records them.
+            let (tags, latest) = match found {
+                Ok(found) => found,
+                Err(error) => {
+                    note_check(&paths, |cache| {
+                        cache.attempted_at_epoch = epoch_now();
+                        cache.last_error = Some(check_error(&error));
+                    });
+                    return Err(error);
                 }
-                _ => {
-                    if let Some(stalled) =
-                        check_held_since(&paths).and_then(|since| stalled_check(&paths, since))
-                    {
-                        eprintln!("af self: {stalled}");
-                    }
+            };
+            prerelease = newest(&tags, Channel::Rc).filter(|newest| !newest.pre.is_empty());
+            note_check(&paths, |cache| {
+                // `latest` is the configured channel's newest, whatever `--rc` asked this once:
+                // a pre-release `--rc` found is the newest pre-release only (finding: an RC
+                // check cached a pre-release as the stable channel's latest).
+                record_check(
+                    cache,
+                    newest(&tags, policy.channel).as_ref(),
+                    policy.channel,
+                );
+                if asked {
+                    cache.latest_prerelease = prerelease.as_ref().map(ToString::to_string);
                 }
-            }
+            });
             latest
         }
     };
@@ -2877,12 +2926,41 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
     Ok(())
 }
 
-/// Note a completed release check in the cache: when it ran and what it found.
-fn record_check(cache: &mut CheckCache, latest: &Version) {
+/// Change the cache under the check lock, taken without waiting: a detached check holding it
+/// writes its own result, and a stalled one is said on stderr. Best effort.
+fn note_check(paths: &Paths, change: impl FnOnce(&mut CheckCache)) {
+    match try_lock_check(paths) {
+        Ok(Some(_check)) => {
+            let mut cache = read_cache(paths);
+            change(&mut cache);
+            let _ = write_cache(paths, &cache);
+        }
+        _ => {
+            if let Some(stalled) =
+                check_held_since(paths).and_then(|since| stalled_check(paths, since))
+            {
+                eprintln!("af self: {stalled}");
+            }
+        }
+    }
+}
+
+/// Note a completed release check in the cache: when it ran, and the newest release it found on
+/// the configured `channel`, which the cache names with it.
+fn record_check(cache: &mut CheckCache, latest: Option<&Version>, channel: Channel) {
     cache.checked_at_epoch = epoch_now();
     cache.attempted_at_epoch = cache.checked_at_epoch;
     cache.last_error = None;
-    cache.latest = Some(latest.to_string());
+    cache.latest = latest.map(ToString::to_string);
+    cache.channel = channel_name(channel).into();
+}
+
+/// A channel as the cache and `af self status` name it.
+const fn channel_name(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Stable => "stable",
+        Channel::Rc => "rc",
+    }
 }
 
 /// A failed install leaves the default untouched; say so, because the progress line that
@@ -3562,6 +3640,11 @@ pub(crate) struct UpdateFacts {
     pub(crate) policy: SelfPolicy,
     /// Why no check runs, when none does.
     pub(crate) off: Option<String>,
+    /// The last attempt, when it failed: its time and its cause, as `af self status` prints them.
+    pub(crate) failed: Option<(String, String)>,
+    /// A check that has held the check lock for over an hour: what `af self status` says of it,
+    /// and the command that clears it.
+    pub(crate) stalled: Option<(String, String)>,
 }
 
 pub(crate) fn update_facts() -> Result<UpdateFacts, String> {
@@ -3579,12 +3662,25 @@ pub(crate) fn update_facts() -> Result<UpdateFacts, String> {
     } else {
         None
     };
+    let failed = cache
+        .last_error
+        .clone()
+        .map(|error| (iso(cache.attempted_at_epoch), error));
+    let lock = check_lock_path(&paths);
+    let stalled = check_held_since(&paths)
+        .and_then(|since| stalled_check(&paths, since))
+        .map(|said| {
+            let fix = format!("rm {}", shell_words::quote(&lock.display().to_string()));
+            (said, fix)
+        });
     Ok(UpdateFacts {
         checked_at_epoch: (cache.checked_at_epoch > 0).then_some(cache.checked_at_epoch),
         now_epoch: epoch_now(),
         latest: cache.latest,
         policy,
         off,
+        failed,
+        stalled,
     })
 }
 
@@ -3836,7 +3932,7 @@ mod tests {
         assert!(check_due(&policy, &cache, 1_250));
     }
 
-    /// `af self status --json` is `af/self-status@1`, its schema's shape.
+    /// `af self status --json` is `af/self-status@2`, its schema's shape.
     #[test]
     fn the_status_document_matches_its_schema() {
         let view = StatusView {
@@ -3875,6 +3971,8 @@ mod tests {
             latest: Some("0.11.0".into()),
             latest_prerelease: Some("0.12.0-rc.5".into()),
             check_stalled_since: Some(iso(1_699_000_000)),
+            check_lock: Some(PathBuf::from("/c/latest.lock")),
+            next_action: Some("rm /c/latest.lock".into()),
             policy: PolicyView {
                 update_check: true,
                 check_every_secs: 86_400,
@@ -3891,7 +3989,7 @@ mod tests {
                 ("cache", PathBuf::from("/c/latest.toml")),
             ]),
         };
-        let schema = include_str!("../../../schemas/self-status-v1.json");
+        let schema = include_str!("../../../schemas/self-status-v2.json");
         valid(schema, &serde_json::to_value(&view).unwrap());
         let bare = StatusView {
             receipt: None,
@@ -3903,6 +4001,8 @@ mod tests {
             latest: None,
             latest_prerelease: None,
             check_stalled_since: None,
+            check_lock: None,
+            next_action: None,
             ..view
         };
         valid(schema, &serde_json::to_value(&bare).unwrap());
@@ -3952,8 +4052,13 @@ mod tests {
     #[test]
     fn record_check_stores_the_discovered_release() {
         let mut cache = CheckCache::default();
-        record_check(&mut cache, &Version::parse("0.9.0-rc.8").unwrap());
+        record_check(
+            &mut cache,
+            Some(&Version::parse("0.9.0-rc.8").unwrap()),
+            Channel::Rc,
+        );
         assert_eq!(cache.latest.as_deref(), Some("0.9.0-rc.8"));
+        assert_eq!(cache.channel, "rc");
         assert!(cache.checked_at_epoch > 0);
     }
 

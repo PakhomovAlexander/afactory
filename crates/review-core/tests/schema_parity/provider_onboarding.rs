@@ -10,10 +10,12 @@ use serde_json::{Value, json};
 
 fn status() -> Value {
     json!({
-        "schema": "af/provider-status@2",
+        "schema": "af/provider-status@3",
         "exit_code": 0,
         "usage_requested": false,
         "registry": {"path": "/home/o/.config/af/providers.toml", "warning": null},
+        "found_unregistered": [],
+        "next_action": null,
         "providers": [{
             "id": "codex-main",
             "kind": "codex",
@@ -48,24 +50,25 @@ fn setup() -> Value {
 
 #[test]
 fn status_states_are_stable_and_independent() {
-    assert_valid("provider-status-v2.json", &status());
+    assert_valid("provider-status-v3.json", &status());
 
     let window = json!({
         "window_minutes": 300,
         "used_percent": 42,
         "resets_at_unix": 1_800_000_000_u64,
+        "reset_reported": true,
     });
     let mut probed = status();
     probed["usage_requested"] = json!(true);
     probed["providers"][0]["usage"] = json!({"state": "available", "windows": [window]});
-    assert_valid("provider-status-v2.json", &probed);
+    assert_valid("provider-status-v3.json", &probed);
 
     // The whole point of the usage axis: a probe that did not answer leaves authentication and
     // usability exactly where they were.
     let mut unavailable = probed.clone();
     unavailable["exit_code"] = json!(7);
     unavailable["providers"][0]["usage"] = json!({"state": "unavailable", "windows": []});
-    assert_valid("provider-status-v2.json", &unavailable);
+    assert_valid("provider-status-v3.json", &unavailable);
     assert_eq!(
         unavailable["providers"][0]["auth"],
         json!("authenticated"),
@@ -75,7 +78,7 @@ fn status_states_are_stable_and_independent() {
     let mut unsupported = probed.clone();
     unsupported["providers"][0]["credential"] = json!("api_key");
     unsupported["providers"][0]["usage"] = json!({"state": "unsupported", "windows": []});
-    assert_valid("provider-status-v2.json", &unsupported);
+    assert_valid("provider-status-v3.json", &unsupported);
 
     let mut ambient = status();
     ambient["providers"][0] = json!({
@@ -88,7 +91,7 @@ fn status_states_are_stable_and_independent() {
         "usability": "unusable",
         "usage": {"state": "not_applicable", "windows": []},
     });
-    assert_valid("provider-status-v2.json", &ambient);
+    assert_valid("provider-status-v3.json", &ambient);
 
     for (path, replacement, why) in [
         ("/exit_code", json!(1), "undocumented status exit code"),
@@ -109,27 +112,32 @@ fn status_states_are_stable_and_independent() {
             json!("af/provider-status@1"),
             "the earlier version fails closed (ADR-0145)",
         ),
+        (
+            "/schema",
+            json!("af/provider-status@2"),
+            "the earlier version fails closed (ADR-0145)",
+        ),
     ] {
         let mut invalid = status();
         *invalid.pointer_mut(path).unwrap() = replacement;
-        assert_invalid("provider-status-v2.json", &invalid, why);
+        assert_invalid("provider-status-v3.json", &invalid, why);
     }
 
     // Exit 7 is a claim about a requested probe, never about a skipped one.
     let mut unrequested = status();
     unrequested["exit_code"] = json!(7);
     assert_invalid(
-        "provider-status-v2.json",
+        "provider-status-v3.json",
         &unrequested,
         "exit 7 without a usage request",
     );
 
     // Windows exist only where a probe answered, so a skipped probe cannot smuggle numbers in.
     let mut smuggled = status();
-    smuggled["providers"][0]["usage"]["windows"] =
-        json!([{"window_minutes": 300, "used_percent": 42, "resets_at_unix": null}]);
+    smuggled["providers"][0]["usage"]["windows"] = json!([{"window_minutes": 300, "used_percent": 42, "resets_at_unix": null,
+            "reset_reported": false}]);
     assert_invalid(
-        "provider-status-v2.json",
+        "provider-status-v3.json",
         &smuggled,
         "windows without an answered probe",
     );
@@ -138,10 +146,55 @@ fn status_states_are_stable_and_independent() {
     let mut demoted = status();
     demoted["providers"][0]["usability"] = json!("unusable");
     assert_invalid(
-        "provider-status-v2.json",
+        "provider-status-v3.json",
         &demoted,
         "authenticated but unusable",
     );
+}
+
+/// Version 3: the directories the table names as found but not registered, with their next
+/// action, and whether a window's reset time was reported at all.
+#[test]
+fn status_names_what_it_found_unregistered_and_unreported_resets() {
+    let mut found = status();
+    found["found_unregistered"] = json!(["/home/o/.config/claude-work", "/home/o/.codex-acme"]);
+    found["next_action"] = json!("af provider detect");
+    assert_valid("provider-status-v3.json", &found);
+    let mut silent = found.clone();
+    silent["next_action"] = json!(null);
+    assert_invalid(
+        "provider-status-v3.json",
+        &silent,
+        "found without a next action",
+    );
+    let mut idle = status();
+    idle["next_action"] = json!("af provider detect");
+    assert_invalid(
+        "provider-status-v3.json",
+        &idle,
+        "a next action with nothing found",
+    );
+
+    let mut unreported = status();
+    unreported["usage_requested"] = json!(true);
+    unreported["providers"][0]["usage"] = json!({"state": "available", "windows": [{
+        "window_minutes": 10080, "used_percent": 88, "resets_at_unix": null,
+        "reset_reported": false,
+    }]});
+    assert_valid("provider-status-v3.json", &unreported);
+    for (resets_at, reported, why) in [
+        (json!(null), true, "a reported reset without its time"),
+        (
+            json!(1_800_000_000_u64),
+            false,
+            "an unreported reset with a time",
+        ),
+    ] {
+        let mut invalid = unreported.clone();
+        invalid["providers"][0]["usage"]["windows"][0]["resets_at_unix"] = resets_at;
+        invalid["providers"][0]["usage"]["windows"][0]["reset_reported"] = json!(reported);
+        assert_invalid("provider-status-v3.json", &invalid, why);
+    }
 }
 
 /// A Provider whose official CLI cannot start is its own documented failure kind: unusable, and
@@ -154,7 +207,7 @@ fn status_reports_a_cli_that_cannot_start_under_exit_4() {
     broken["providers"][0]["credential"] = json!("none");
     broken["providers"][0]["usability"] = json!("unusable");
     broken["providers"][0]["usage"] = json!({"state": "not_applicable", "windows": []});
-    assert_valid("provider-status-v2.json", &broken);
+    assert_valid("provider-status-v3.json", &broken);
 
     let mut with_usage = broken.clone();
     with_usage["usage_requested"] = json!(true);
@@ -165,7 +218,7 @@ fn status_reports_a_cli_that_cannot_start_under_exit_4() {
         .as_array_mut()
         .unwrap()
         .push(healthy);
-    assert_valid("provider-status-v2.json", &with_usage);
+    assert_valid("provider-status-v3.json", &with_usage);
 
     for (path, replacement, why) in [
         (
@@ -186,12 +239,12 @@ fn status_reports_a_cli_that_cannot_start_under_exit_4() {
     ] {
         let mut invalid = broken.clone();
         *invalid.pointer_mut(path).unwrap() = replacement;
-        assert_invalid("provider-status-v2.json", &invalid, why);
+        assert_invalid("provider-status-v3.json", &invalid, why);
     }
     let mut unexplained = status();
     unexplained["exit_code"] = json!(4);
     assert_invalid(
-        "provider-status-v2.json",
+        "provider-status-v3.json",
         &unexplained,
         "exit 4 without a Provider whose CLI cannot start",
     );
@@ -199,7 +252,7 @@ fn status_reports_a_cli_that_cannot_start_under_exit_4() {
     let mut leaked = broken.clone();
     leaked["providers"][0]["cli_error"] = json!("Error: Missing optional dependency");
     assert_invalid(
-        "provider-status-v2.json",
+        "provider-status-v3.json",
         &leaked,
         "Provider-authored CLI error",
     );
@@ -218,7 +271,7 @@ fn status_reports_an_incompatible_cli_under_exit_4() {
     incompatible["providers"][0]["credential"] = json!("none");
     incompatible["providers"][0]["usability"] = json!("unusable");
     incompatible["providers"][0]["usage"] = json!({"state": "not_applicable", "windows": []});
-    assert_valid("provider-status-v2.json", &incompatible);
+    assert_valid("provider-status-v3.json", &incompatible);
 
     for (path, replacement, why) in [
         (
@@ -239,7 +292,7 @@ fn status_reports_an_incompatible_cli_under_exit_4() {
     ] {
         let mut invalid = incompatible.clone();
         *invalid.pointer_mut(path).unwrap() = replacement;
-        assert_invalid("provider-status-v2.json", &invalid, why);
+        assert_invalid("provider-status-v3.json", &invalid, why);
     }
     for (key, value) in [
         ("cli_version", json!("2.1.101 (Claude Code)")),
@@ -248,7 +301,7 @@ fn status_reports_an_incompatible_cli_under_exit_4() {
     ] {
         let mut leaked = incompatible.clone();
         leaked["providers"][0][key] = value;
-        assert_invalid("provider-status-v2.json", &leaked, key);
+        assert_invalid("provider-status-v3.json", &leaked, key);
     }
 }
 
@@ -267,10 +320,10 @@ fn status_never_carries_personal_credential_or_provider_text() {
     ] {
         let mut leaked = status();
         leaked["providers"][0][key] = json!("leaked");
-        assert_invalid("provider-status-v2.json", &leaked, key);
+        assert_invalid("provider-status-v3.json", &leaked, key);
         let mut leaked_root = status();
         leaked_root[key] = json!("leaked");
-        assert_invalid("provider-status-v2.json", &leaked_root, key);
+        assert_invalid("provider-status-v3.json", &leaked_root, key);
     }
     let mut labelled = status();
     labelled["usage_requested"] = json!(true);
@@ -280,11 +333,12 @@ fn status_never_carries_personal_credential_or_provider_text() {
             "window_minutes": 300,
             "used_percent": 42,
             "resets_at_unix": null,
+            "reset_reported": false,
             "name": "Codex weekly (gpt-5-codex)",
         }],
     });
     assert_invalid(
-        "provider-status-v2.json",
+        "provider-status-v3.json",
         &labelled,
         "Provider-authored window label",
     );

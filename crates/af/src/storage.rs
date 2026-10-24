@@ -337,6 +337,39 @@ pub(crate) struct Inventory {
     /// taken over every registration as it is, so such a path (renamed into a dead process's
     /// claim, say) is still reached through its parent; only the plan drops it.
     pub(crate) gone_registrations: Vec<PathBuf>,
+    /// The Tasks every Project Store's delivered Workspaces were made from, read without the
+    /// Store discovery ceilings, and the Project Stores that could not be read for them.
+    pub(crate) delivered: Delivered,
+    /// For each Store this release cannot read, the command that reads it, as its writer's
+    /// release reruns it (`AF_VERSION=… <command>`).
+    pub(crate) reruns: BTreeMap<PathBuf, String>,
+}
+
+/// The finished Tasks a sweep never takes because a registered delivered Workspace was made
+/// from them (finding I9), as every Project Store on this machine records them.
+#[derive(Debug, Default)]
+pub(crate) struct Delivered {
+    pub(crate) tasks: BTreeSet<String>,
+    /// Each Project Store whose delivered Workspaces cannot be read, with why: any Task Store's
+    /// finished Task could be the source of one, so while one is listed no finished Task is
+    /// collected, by the budget or by age.
+    pub(crate) unknown: Vec<(PathBuf, String)>,
+}
+
+impl Delivered {
+    /// Why no finished Task may be collected now, when a Project Store cannot be read.
+    pub(crate) fn blocked(&self) -> Option<String> {
+        let (path, why) = self.unknown.first()?;
+        let more = match self.unknown.len() {
+            1 => String::new(),
+            count => format!(" (and {} more)", count - 1),
+        };
+        Some(format!(
+            "the delivered Workspaces of the Project Store {}{more} cannot be read, so no finished \
+             Task is collected: {why}",
+            path.display()
+        ))
+    }
 }
 
 impl Inventory {
@@ -512,29 +545,41 @@ fn newest_file_write(root: &Path) -> u64 {
     newest
 }
 
-/// The writer leases a Store's Tasks hold now, read-only.
-fn live_writers(state: &Path) -> Vec<(String, u64)> {
-    let (Ok(cas), Ok(store)) = (
-        Cas::open_existing(state.join("cas")),
-        EventStore::open_read_only(state.join("events.sqlite")),
-    ) else {
-        return Vec::new();
+/// The writer leases a Store's Tasks hold now, read-only. A Store with no CAS or no log yet
+/// holds none; one whose Tasks cannot be read is `Err`: its leases are unknown, never none.
+fn live_writers(state: &Path) -> Result<Vec<(String, u64)>, String> {
+    let cas = match Cas::open_existing(state.join("cas")) {
+        Ok(cas) => cas,
+        Err(_) if !state.join("cas").exists() => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
     };
-    store
-        .plan_task_collection(&cas, 0, 0)
+    if !state.join("events.sqlite").exists() {
+        return Ok(Vec::new());
+    }
+    EventStore::open_read_only(state.join("events.sqlite"))
+        .and_then(|store| store.plan_task_collection(&cas, 0, 0))
         .map(|plan| plan.live_writers)
-        .unwrap_or_default()
+        .map_err(|error| error.to_string())
+}
+
+/// Why a campaign whose writer leases are as `writers` says must not be removed now.
+fn writers_in_use(writers: Result<Vec<(String, u64)>, String>) -> Option<String> {
+    match writers {
+        Ok(writers) => writers
+            .first()
+            .map(|(task, _)| format!("Task `{task}` holds a live writer lease")),
+        Err(error) => Some(format!("its leases could not be read: {error}")),
+    }
 }
 
 /// Why a review campaign's Store must not be removed now: a running `af review run` holds it,
-/// or one of its Tasks holds a live writer lease. Used by the sweep and by `af review gc`.
+/// one of its Tasks holds a live writer lease, or its leases cannot be read. Used by the sweep
+/// and by `af review gc`.
 pub(crate) fn campaign_in_use(state: &Path) -> Option<String> {
     if lock_held(&state.join(RUNNING_LOCK)) {
         return Some("a running `af review run` holds it".into());
     }
-    live_writers(state)
-        .first()
-        .map(|(task, _)| format!("Task `{task}` holds a live writer lease"))
+    writers_in_use(live_writers(state))
 }
 
 /// Hold the campaign at `state` exclusively for its removal: the run lock `af review run` takes
@@ -553,8 +598,8 @@ pub(crate) fn hold_campaign_for_removal(
         .map_err(|error| format!("opening {}: {error}", path.display()))?;
     let held = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
         .map_err(|_| "a running `af review run` holds it".to_string())?;
-    if let Some((task, _)) = live_writers(state).first() {
-        return Err(format!("Task `{task}` holds a live writer lease"));
+    if let Some(why) = writers_in_use(live_writers(state)) {
+        return Err(why);
     }
     Ok(held)
 }
@@ -706,6 +751,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
             }
         }
     }
+    inventory.delivered = delivered(roots, &projects);
     // The Surveys of at most so many Project Stores are read, in path order (the Store
     // discovery ceiling); every Project Store is measured all the same.
     let discovery = crate::projects::survey::collect::Discovery::current();
@@ -724,7 +770,9 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
     }
     for path in campaigns.into_iter().filter(|path| has_store(path)) {
         match written_by_another_release(&path, "af review campaigns") {
-            Ok(Some(reason)) => unreadable(&mut inventory, roots, &path, reason),
+            Ok(Some(reason)) => {
+                unreadable(&mut inventory, roots, &path, reason, "af review campaigns")
+            }
             // A Store with a live writer lease is never on the sweep's list: judged here, before
             // the plan, and checked again, in full, before a removal.
             Ok(None) => measure_into(&mut inventory, roots, Kind::Campaign, &path, |path| {
@@ -735,7 +783,10 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
     }
     for path in tasks.into_iter().filter(|path| has_store(path)) {
         match written_by_another_release(&path, &task_list_command(&path)) {
-            Ok(Some(reason)) => unreadable(&mut inventory, roots, &path, reason),
+            Ok(Some(reason)) => {
+                let command = task_list_command(&path);
+                unreadable(&mut inventory, roots, &path, reason, &command);
+            }
             Ok(None) if detail == Detail::Tasks => task_store(&mut inventory, roots, &path),
             Ok(None) => {
                 measure_into(&mut inventory, roots, Kind::TaskStore, &path, |path| {
@@ -772,6 +823,56 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
     telemetry_inventory(roots, &mut inventory);
     abandoned_claims(roots, &registered, &mut inventory);
     inventory
+}
+
+/// The delivered Tasks of every Project Store: the registered ones and every one under the
+/// default Project root, which holds them all whatever the registry says, each log read whole
+/// (no discovery ceiling). A Project Store another release wrote, or one whose log cannot be
+/// read, is unknown, and so is the default root when it cannot be listed.
+fn delivered(roots: &Roots, registered: &BTreeSet<PathBuf>) -> Delivered {
+    let mut found = Delivered::default();
+    let mut stores: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    if let Some(state) = roots.registry.parent() {
+        let root = state.join("project");
+        match std::fs::read_dir(&root) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => {
+                            stores.insert(entry.path());
+                        }
+                        Err(error) => found.unknown.push((
+                            root.clone(),
+                            format!("an entry of the Project root cannot be read: {error}"),
+                        )),
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => found.unknown.push((
+                root.clone(),
+                format!("the Project root cannot be listed: {error}"),
+            )),
+        }
+    }
+    stores.extend(registered.iter().cloned());
+    for path in stores.into_iter().filter(|path| has_store(path)) {
+        // One Store registered and listed under two spellings is read once.
+        if !seen.insert(std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone())) {
+            continue;
+        }
+        let read = match written_by_another_release(&path, "af project show") {
+            Ok(Some(reason)) => Err(reason),
+            Ok(None) => crate::projects::survey::collect::delivered_of(&path),
+            Err(reason) => Err(reason),
+        };
+        match read {
+            Ok(tasks) => found.tasks.extend(tasks),
+            Err(reason) => found.unknown.push((path, reason)),
+        }
+    }
+    found
 }
 
 /// Every directory the storage inventory accounts on its own, for the telemetry overlap rule,
@@ -998,7 +1099,15 @@ fn store_bytes(roots: &Roots, state: &Path) -> std::io::Result<u64> {
     }
 }
 
-fn unreadable(inventory: &mut Inventory, roots: &Roots, path: &Path, reason: String) {
+/// A Store this release cannot read: measured, its refusal kept as `reason`, and `command`, the
+/// command that reads it under the release that wrote it, kept for `af storage --json`.
+fn unreadable(
+    inventory: &mut Inventory,
+    roots: &Roots,
+    path: &Path,
+    reason: String,
+    command: &str,
+) {
     measure_into(inventory, roots, Kind::UnreadableStore, path, |path| {
         (newest_file_write(path), unreadable_in_use(path))
     });
@@ -1006,6 +1115,9 @@ fn unreadable(inventory: &mut Inventory, roots: &Roots, path: &Path, reason: Str
         && entry.kind == Kind::UnreadableStore
     {
         entry.reason = Some(reason);
+        inventory
+            .reruns
+            .insert(path.to_path_buf(), command.to_string());
     }
 }
 
@@ -1107,7 +1219,7 @@ fn project_store(
         .collect();
     match written_by_another_release(path, "af project show") {
         Ok(Some(reason)) => {
-            unreadable(inventory, roots, path, reason);
+            unreadable(inventory, roots, path, reason, "af project show");
             if let Some(entry) = inventory.entries.last_mut()
                 && entry.kind == Kind::UnreadableStore
                 && entry.in_use.is_none()
@@ -1185,8 +1297,9 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
         // (or none, from before markers): a Store this release cannot read, like one whose
         // types it does not know.
         Err(reason) if crate::store_release::foreign(state, &reason).is_some() => {
-            let reason = named_writer(state, reason, &task_list_command(state));
-            unreadable(inventory, roots, state, reason);
+            let command = task_list_command(state);
+            let reason = named_writer(state, reason, &command);
+            unreadable(inventory, roots, state, reason, &command);
             return;
         }
         Err(reason) => {
@@ -1584,18 +1697,20 @@ pub(crate) fn sweep(
         }
     }
     // The Tasks a Project's delivered Workspaces were made from: never taken by a sweep, by the
-    // budget or by age, while the Workspace stays registered (finding I9).
-    let delivered: BTreeSet<String> = stock
-        .projects
-        .iter()
-        .flat_map(|(_, look)| look.delivered.iter().cloned())
-        .collect();
-    let mut picks = if collection {
+    // budget or by age, while the Workspace stays registered (finding I9). When a Project Store
+    // cannot be read for them, no finished Task is taken at all: any could be one.
+    let blocked = stock.delivered.blocked();
+    if let Some(why) = &blocked {
+        report.failures.push(format!(
+            "{why}; fix or remove that Project Store, then run `af storage prune --apply`"
+        ));
+    }
+    let mut picks = if collection && blocked.is_none() {
         task_picks(roots, policy, &stock, now, apply, &mut report)
     } else {
         Vec::new()
     };
-    picks.retain(|pick| !delivered.contains(&pick.task_id));
+    picks.retain(|pick| !stock.delivered.tasks.contains(&pick.task_id));
     let mut entries = stock.entries.clone();
     for entry in &mut entries {
         // The sweep that ends a run never takes the Task the run executed.
@@ -1608,7 +1723,7 @@ pub(crate) fn sweep(
             entry.in_use = Some("the Task this run executed".into());
         }
     }
-    keep_delivered(&mut entries, &delivered);
+    keep_delivered(&mut entries, &stock.delivered.tasks, blocked.as_deref());
     // Every telemetry directory's model: the plan takes each segment it evicts out of a copy, so
     // a preview takes it out of the directory it was taken from only, and the applied sweep out
     // of this one as each eviction runs.
@@ -1665,15 +1780,20 @@ pub(crate) fn sweep(
 }
 
 /// Keep every finished Task a registered delivered Workspace was made from, by its ID: the Task
-/// behind a delivered branch and its pull request is never the budget's (finding I9).
-fn keep_delivered(entries: &mut [Entry], delivered: &BTreeSet<String>) {
+/// behind a delivered branch and its pull request is never the budget's (finding I9). While a
+/// Project Store cannot be read for its delivered Workspaces (`blocked` says which), every
+/// finished Task is kept.
+fn keep_delivered(entries: &mut [Entry], delivered: &BTreeSet<String>, blocked: Option<&str>) {
     for entry in entries {
-        if entry.in_use.is_none()
-            && entry.kind == Kind::Task
-            && let Some(task_id) = entry
-                .task_id
-                .as_deref()
-                .filter(|task_id| delivered.contains(*task_id))
+        if entry.in_use.is_some() || entry.kind != Kind::Task {
+            continue;
+        }
+        if let Some(why) = blocked {
+            entry.in_use = Some(why.to_string());
+        } else if let Some(task_id) = entry
+            .task_id
+            .as_deref()
+            .filter(|task_id| delivered.contains(*task_id))
         {
             entry.in_use = Some(format!(
                 "Task {task_id} is the source of a delivered Workspace"
@@ -3213,6 +3333,15 @@ pub(crate) enum Role {
 }
 
 impl Role {
+    /// Its name in `af/storage@5`.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Role::Sandbox => "sandbox",
+            Role::Cache => "cache",
+            Role::BuildCache => "build_cache",
+        }
+    }
+
     fn fix(self, root: &Path) -> String {
         match self {
             Role::Sandbox => format!(
@@ -3698,14 +3827,23 @@ pub(crate) fn show(json_output: bool, verbose: bool) -> Result<i32, String> {
             if let Some(counted_in) = counted_in {
                 value["counted_in"] = json!(counted_in);
             }
+            if entry.kind == Kind::UnreadableStore {
+                let (writer_release, next_action) = unreadable_fix(&stock, entry);
+                value["writer_release"] = json!(writer_release);
+                value["next_action"] = json!(next_action);
+            }
             entries.push(value);
         }
         let document = json!({
-            "schema": "af/storage@4",
+            "schema": "af/storage@5",
             "max_bytes": policy.max_bytes,
             "total_bytes": total,
             "min_free_bytes": policy.min_free_bytes,
             "free_bytes": free.as_ref().map(|(free, _)| *free),
+            "volumes": volumes
+                .iter()
+                .map(|volume| volume_document(volume, policy.min_free_bytes))
+                .collect::<Vec<_>>(),
             "kinds": kinds,
             "entries": entries,
             "problems": stock.problems,
@@ -3855,6 +3993,47 @@ pub(crate) fn show(json_output: bool, verbose: bool) -> Result<i32, String> {
         }
     }
     Ok(0)
+}
+
+/// One volume the floor measures, as `af/storage@5` carries it: its role, root and volume, its
+/// free bytes, whether it is below `floor`, and what to do when it is or cannot be measured.
+fn volume_document(volume: &Volume, floor: u64) -> serde_json::Value {
+    let below = volume.free.as_ref().ok().map(|free| *free < floor);
+    let act = below != Some(false);
+    json!({
+        "role": volume.role.as_str(),
+        "root": volume.root,
+        "volume": volume.mount.as_ref().map_or(&volume.path, |(mount, _)| mount),
+        "free_bytes": volume.free.as_ref().ok(),
+        "below_floor": below,
+        "error": volume.free.as_ref().err(),
+        "next_action": act.then_some("af storage prune --apply"),
+        "fix": act.then(|| volume.role.fix(&volume.root)),
+    })
+}
+
+/// An unreadable Store's writer release, from its provenance (`None` for a Store from before
+/// markers, or a refusal no marker explains), and the command that reads it: under that release,
+/// or `af storage prune --apply` once an unmarked one is idle.
+fn unreadable_fix(stock: &Inventory, entry: &Entry) -> (Option<String>, Option<String>) {
+    let reason = entry.reason.as_deref().unwrap_or_default();
+    let Some(provenance) = crate::store_release::foreign(&entry.path, reason) else {
+        return (None, None);
+    };
+    match provenance.writer() {
+        Some(release) => {
+            let command = stock
+                .reruns
+                .get(&entry.path)
+                .cloned()
+                .unwrap_or_else(|| task_list_command(&entry.path));
+            (
+                Some(release.to_string()),
+                Some(format!("AF_VERSION={release} {command}")),
+            )
+        }
+        None => (None, Some("af storage prune --apply".to_string())),
+    }
 }
 
 /// How the budget was chosen, as `af storage` says it: `[storage] max_bytes` as set, or

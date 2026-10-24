@@ -154,6 +154,29 @@ impl WorkspaceRegisteredPayloadV1 {
     }
 }
 
+/// Payload of `WorkspaceDelivered@1`: the Task a `delivered` Workspace was made from, as data
+/// apart from its label. Recorded right after the Workspace's `WorkspaceRegistered@1`, since its
+/// label may be a suffixed one when the Task ID was taken; the Storage Budget never collects
+/// that Task while the Workspace stays registered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceDeliveredPayloadV1 {
+    pub workspace_id: String,
+    pub task_id: String,
+}
+
+impl WorkspaceDeliveredPayloadV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        if !is_project_workspace_id(&self.workspace_id) {
+            return Err("WorkspaceDelivered@1 has an invalid Workspace ID".into());
+        }
+        if !crate::task::is_name(&self.task_id) {
+            return Err("WorkspaceDelivered@1 has an invalid Task ID".into());
+        }
+        Ok(())
+    }
+}
+
 /// Payload of `WorkspaceRemoved@1`: the Workspace is no longer registered. Its checkout and its
 /// Store are left where they are.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
