@@ -183,8 +183,10 @@ Task's state and next command, `Task ID: phase/outcome/cause; next: COMMAND`, in
 `--json`.
 
 `af task run ID --detach` runs the same command in the background and returns once that run holds
-the Task and its plan is admitted, printing its pid, its host and its log (`af/task-detached@1`
-under `--json`). The run has no terminal, survives the shell that started it, and writes its
+the Task and its plan is admitted, printing its pid, its host and its log (`af/task-detached@2`
+under `--json`, `admitted: true`). A run that is not admitted within 2 minutes is not claimed to
+run: the command exits 4 with `admitted: false` and `af task status ID` as the next command. The
+run has no terminal, survives the shell that started it, and writes its
 output to `runs/ID-N.log` in the Task Store; every run, in a terminal or not, also records its
 process there as `runs/ID-N.json` before it takes the Task
 ([ADR-0202](adr/0202-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
@@ -196,8 +198,9 @@ af task wait pagination-cli --timeout 3600
 af task cancel pagination-cli
 ```
 
-`af task status ID` prints one line at once: the state, the node whose Attempt runs, the time since
-the Task's clock started, the tokens so far and the run that holds it. `af task wait ID` blocks
+`af task status ID` prints at once the state, the node whose Attempt runs, the time since the
+Task's clock started, the tokens so far and the run that holds the Task's lease, then the next
+command on its own line, broken between its arguments to fit 100 columns. `af task wait ID` blocks
 until the Task settles and exits with its exit code, or with 124 when `--timeout S` passes first;
 both print `af/task-status@1` under `--json`. `af task cancel ID` stops the `af task run` the Task's
 writer lease names: it finds the process by the lease's writer in the run records, refuses one of
@@ -853,8 +856,10 @@ an unknown figure is absent there.
 `gh pr create --body-file` takes unchanged: the repository's `.github/PULL_REQUEST_TEMPLATE.md`
 (or `--template FILE`) with this block between its markers, and the lines added block that the
 checkout's `scripts/pr-lines.py` prints between `<!-- af-pr-lines:v1 -->` and
-`<!-- /af-pr-lines -->` when the checkout has the script. `scripts/check-pr-report.py --body`
-accepts it as it is.
+`<!-- /af-pr-lines -->` when the checkout has the script, counted from `--base REF` (origin/main
+by default). A checkout without the script keeps the template's block as it is; one whose script
+cannot print its block gets no body, and the command exits 1 naming `--base REF`.
+`scripts/check-pr-report.py --body` accepts it as it is.
 
 ## Troubleshooting
 

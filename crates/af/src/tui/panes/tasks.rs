@@ -1211,15 +1211,12 @@ fn explicit_targets(
         }
     }
     found.extend(session.iter().map(|dir| (dir.clone(), Origin::Session)));
-    let same = |a: &Path, b: &Path| {
-        a == b || std::fs::canonicalize(a).ok() == std::fs::canonicalize(b).ok()
-    };
     let mut targets: Vec<Target> = Vec::new();
     for (dir, origin) in found {
         let known = listed
             .iter()
             .chain(targets.iter())
-            .any(|t| same(&t.dir, &dir));
+            .any(|t| same_store(&t.dir, &dir));
         if known {
             continue;
         }
@@ -1232,6 +1229,19 @@ fn explicit_targets(
         });
     }
     (targets, warning)
+}
+
+/// Whether two Store paths name one Store: the same path, or two that both resolve to one
+/// directory. Two paths that cannot be resolved (each missing or unreadable) are two Stores,
+/// each listed with its own refusal.
+fn same_store(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// Every repository's Task state directory under the XDG state root, sorted, with its opaque
@@ -1507,8 +1517,13 @@ impl TasksPane {
                 "af",
             )
             .unwrap_or_default();
-            for line in bounded(&summary, MAIN, "") {
-                rows.push(Row::painted(line, Paint::Muted));
+            for line in summary.lines() {
+                // A line of the summary keeps its indent on each row it wraps to.
+                let text = line.trim_start();
+                let indent = &line[..line.len() - text.len()];
+                for row in bounded(text, MAIN, indent) {
+                    rows.push(Row::painted(row, Paint::Muted));
+                }
             }
             let (stores, they) = if count == 1 {
                 ("Task Store", "It is")

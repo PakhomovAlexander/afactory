@@ -85,8 +85,16 @@ pub(crate) fn explain(state: &Path, error: String) -> String {
     }
 }
 
+/// The widest line [`summary`] writes, so a caller that indents it by two still fits 100
+/// columns.
+const SUMMARY_WIDTH: usize = 96;
+
 /// One row for every Store another release wrote: how many, by which releases, and how to run
 /// them. `command` is the command to rerun under the release, as `AF_VERSION=… {command}`.
+/// Stores of one release are one line with that release's command; Stores of several releases
+/// (an unmarked one counts as its own) are a line each, so no release is recommended for a
+/// Store it did not write. Lines are separated by `\n`; a mixed summary's lines fit in
+/// [`SUMMARY_WIDTH`] columns.
 pub(crate) fn summary<'a>(
     provenances: impl IntoIterator<Item = &'a StoreProvenance>,
     command: &str,
@@ -94,19 +102,10 @@ pub(crate) fn summary<'a>(
     let mut by_release: BTreeMap<String, usize> = BTreeMap::new();
     let mut unmarked = 0usize;
     let mut total = 0usize;
-    let mut newest: Option<String> = None;
     for provenance in provenances {
         total += 1;
         match provenance.writer() {
-            Some(release) => {
-                *by_release.entry(release.to_string()).or_default() += 1;
-                if newest
-                    .as_deref()
-                    .is_none_or(|current| semver_key(release) > semver_key(current))
-                {
-                    newest = Some(release.to_string());
-                }
-            }
+            Some(release) => *by_release.entry(release.to_string()).or_default() += 1,
             None => unmarked += 1,
         }
     }
@@ -115,28 +114,79 @@ pub(crate) fn summary<'a>(
     }
     let mut releases: Vec<(String, usize)> = by_release.into_iter().collect();
     releases.sort_by(|(left, _), (right, _)| semver_key(right).cmp(&semver_key(left)));
-    let mut parts: Vec<String> = releases
-        .iter()
-        .map(|(release, count)| format!("af {release} ({count})"))
-        .collect();
-    if unmarked > 0 {
-        parts.push(format!(
-            "an older af release with no version marker ({unmarked})"
-        ));
-    }
+    let groups = releases.len() + usize::from(unmarked > 0);
     let (noun, them) = if total == 1 {
         ("Store written by another release", "it")
     } else {
         ("Stores written by other releases", "them")
     };
-    let fix = match newest {
-        Some(release) => format!("run {them} with AF_VERSION={release} {command}"),
-        None => format!(
+    let finish = |them: &str| {
+        format!(
             "finish {them} under the release that started {them}, or remove {them} with af \
              storage prune --apply once idle"
-        ),
+        )
     };
-    Some(format!("{total} {noun}: {}; {fix}", parts.join(", ")))
+    if groups == 1 {
+        let (what, fix) = match releases.first() {
+            Some((release, count)) => (
+                format!("af {release} ({count})"),
+                format!("run {them} with AF_VERSION={release} {command}"),
+            ),
+            None => (
+                format!("an older af release with no version marker ({unmarked})"),
+                finish(them),
+            ),
+        };
+        return Some(format!("{total} {noun}: {what}; {fix}"));
+    }
+    let stores = |count: usize| {
+        if count == 1 {
+            "1 Store".to_owned()
+        } else {
+            format!("{count} Stores")
+        }
+    };
+    let mut lines = vec![format!(
+        "{total} {noun}; run each under the release that wrote it:"
+    )];
+    for (release, count) in &releases {
+        lines.extend(wrap(
+            &format!("AF_VERSION={release} {command} ({})", stores(*count)),
+            "  ",
+        ));
+    }
+    if unmarked > 0 {
+        let them = if unmarked == 1 { "it" } else { "them" };
+        lines.extend(wrap(
+            &format!(
+                "{} by an older af release with no version marker: finish {them} under {} own \
+                 release, or remove {them} with af storage prune --apply once idle",
+                stores(unmarked),
+                if unmarked == 1 { "its" } else { "their" }
+            ),
+            "  ",
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+/// `text` in lines of at most [`SUMMARY_WIDTH`] columns, broken between words, the first
+/// indented by `indent` and the rest by two more.
+fn wrap(text: &str, indent: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = indent.to_owned();
+    for word in text.split(' ').filter(|word| !word.is_empty()) {
+        let fresh = line.trim().is_empty();
+        if !fresh && line.chars().count() + 1 + word.chars().count() > SUMMARY_WIDTH {
+            lines.push(std::mem::replace(&mut line, format!("{indent}  ")));
+        }
+        if !line.trim().is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    lines.push(line);
+    lines
 }
 
 /// A release spelling ordered as a version where it parses as one, after every one that does
@@ -174,25 +224,43 @@ mod tests {
     }
 
     #[test]
-    fn many_stores_are_one_row_by_release() {
-        let stores = [
-            StoreProvenance::OtherReleases(vec!["0.9.0-rc.8".into()]),
+    fn stores_of_one_release_are_one_row_and_of_several_a_command_each() {
+        let one = [
             StoreProvenance::OtherReleases(vec!["0.12.0-rc.3".into()]),
             StoreProvenance::OtherReleases(vec!["0.12.0-rc.3".into()]),
         ];
         assert_eq!(
-            summary(&stores, "af task list").unwrap(),
-            "3 Stores written by other releases: af 0.12.0-rc.3 (2), af 0.9.0-rc.8 (1); run \
-             them with AF_VERSION=0.12.0-rc.3 af task list"
+            summary(&one, "af task list").unwrap(),
+            "2 Stores written by other releases: af 0.12.0-rc.3 (2); run them with \
+             AF_VERSION=0.12.0-rc.3 af task list"
         );
-        let one = [StoreProvenance::Unmarked];
+        let unmarked = [StoreProvenance::Unmarked];
         assert_eq!(
-            summary(&one, "af storage").unwrap(),
+            summary(&unmarked, "af storage").unwrap(),
             "1 Store written by another release: an older af release with no version marker \
              (1); finish it under the release that started it, or remove it with af storage \
              prune --apply once idle"
         );
         assert!(summary(&[], "af storage").is_none());
+        // Two releases: one command per release, never the newest one for both.
+        let mixed = [
+            StoreProvenance::OtherReleases(vec!["0.9.0-rc.8".into()]),
+            StoreProvenance::OtherReleases(vec!["0.12.0-rc.3".into()]),
+            StoreProvenance::OtherReleases(vec!["0.12.0-rc.3".into()]),
+            StoreProvenance::Unmarked,
+        ];
+        let text = summary(&mixed, "af task list --state DIR").unwrap();
+        assert_eq!(
+            text,
+            "4 Stores written by other releases; run each under the release that wrote it:\n  \
+             AF_VERSION=0.12.0-rc.3 af task list --state DIR (2 Stores)\n  \
+             AF_VERSION=0.9.0-rc.8 af task list --state DIR (1 Store)\n  \
+             1 Store by an older af release with no version marker: finish it under its own \
+             release, or\n    remove it with af storage prune --apply once idle"
+        );
+        for line in text.lines() {
+            assert!(line.chars().count() <= SUMMARY_WIDTH, "{line}");
+        }
     }
 
     #[test]

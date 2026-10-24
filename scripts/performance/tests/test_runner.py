@@ -15,7 +15,8 @@ import sys
 import time
 from unittest import mock
 
-from perflab import builds, bundle, clicases, compare, contracts, oracle, planning, runner
+from perflab import builds, bundle, clicases, compare, contracts, hostlock, oracle, planning
+from perflab import runner
 from perflab import schedule, supervise
 from perflab import suite as suite_module
 from perflab.values import ContractError, sha256_bytes
@@ -674,8 +675,23 @@ class Shards(ShardHarness):
 
     def test_the_run_command_refuses_an_ambiguous_mode_and_reports_unavailability(self):
         plan, plan_path, build = self.prepare([DISCOVERY], run_id="command")
-        base = [sys.executable, "-I", CLI, "run", "--plan", plan_path, "--build", build,
-                "--shard", "0", "--run-dir", self.path("cmd-run"), "--repo", self.repo.path]
+        # The command line as it runs, but its machine lock in a directory of this test's own:
+        # a performance run elsewhere on the host holds the real one, and this test never meets
+        # it. The seam is the runner's, set by the stand-in that loads the command line.
+        locks = self.path("cli-locks")
+        os.makedirs(locks)
+        private_lock = (
+            "import runpy, sys\n"
+            "sys.path.insert(0, %r)\n"
+            "from perflab import runner\n"
+            "held = runner.machine_lock\n"
+            "runner.machine_lock = lambda directory=None: held(%r)\n"
+            "sys.argv = [%r] + sys.argv[1:]\n"
+            "runpy.run_path(%r, run_name='__main__')\n"
+            % (os.path.dirname(CLI), locks, CLI, CLI))
+        base = [sys.executable, "-I", "-c", private_lock, "run", "--plan", plan_path, "--build",
+                build, "--shard", "0", "--run-dir", self.path("cmd-run"), "--repo",
+                self.repo.path]
         both = subprocess.run(base + ["--trusted-local", "--container"], cwd=ROOT,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(both.returncode, 2)
@@ -683,9 +699,11 @@ class Shards(ShardHarness):
         container = subprocess.run(base + ["--container", "--image", "sha256:" + "1" * 64,
                                            "--scratch-fs", self.path("scratch")], cwd=ROOT,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(container.returncode, 4)
+        self.assertEqual(container.returncode, 4, container.stderr.decode())
         refusal = json.loads(container.stdout)
         self.assertIn(refusal["reason"], ("mode_mismatch", "host_mismatch"))
+        # The lock it took is the private one.
+        self.assertTrue(os.path.exists(os.path.join(locks, hostlock.MACHINE_LOCK_NAME)))
 
 
 class SeedHarness(ShardHarness):

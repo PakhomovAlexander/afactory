@@ -1020,11 +1020,17 @@ pub(super) fn show(options: InspectOptions, checks: bool) -> Result<(), String> 
 
 /// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@2` document, over
 /// the named Tasks of one Store. Read-only; nothing is printed unless every Task is found.
+/// `af task report --pr-body`: the template it fills, and the base its lines added block counts
+/// from.
+pub(super) struct PrBody<'a> {
+    pub(super) template: Option<&'a Path>,
+    pub(super) base: Option<&'a str>,
+}
+
 pub(super) fn report(
     options: InspectOptions,
     task_ids: &[String],
-    pr_body: bool,
-    template: Option<&Path>,
+    pr_body: Option<PrBody<'_>>,
 ) -> Result<(), String> {
     for task_id in task_ids {
         validate_task_id(task_id).map_err(|error| format!("`{task_id}`: {error}"))?;
@@ -1034,16 +1040,23 @@ pub(super) fn report(
     let state = resolve_task_state(&options.state, &repository)?;
     let report = super::task_execution::task_report::read(&state, task_ids)
         .map_err(|error| super::store_release::explain(&state, error))?;
+    for line in super::task_execution::task_report::adr_collisions(&repository, &state, task_ids) {
+        if line.starts_with("warning:") {
+            eprintln!("af task report: {line}");
+        } else {
+            eprintln!("{line}");
+        }
+    }
     if options.json {
         println!(
             "{}",
             serde_json::to_string(&report).map_err(|error| error.to_string())?
         );
-    } else if pr_body {
+    } else if let Some(body) = pr_body {
         let block = super::task_execution::task_report::markdown(&report);
         print!(
             "{}",
-            super::task_execution::pr_body::render(&repository, template, &block)?
+            super::task_execution::pr_body::render(&repository, body.template, body.base, &block)?
         );
     } else {
         print!("{}", super::task_execution::task_report::markdown(&report));

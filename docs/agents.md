@@ -31,8 +31,10 @@ keeps them back.
 
 An agent that must not hold a terminal for the whole run detaches it:
 `af task run TASK_ID --confirm-plan PLAN_ID --detach --json` returns once the run holds the
-Task, with one `af/task-detached@1` document naming its pid, its host and its log, a file under
-the Store's `runs/` directory. The run survives the shell that started it. Then
+Task, with one `af/task-detached@2` document naming its pid, its host and its log, a file under
+the Store's `runs/` directory, and `admitted: true`. A run not admitted within 2 minutes is not
+claimed to run: exit 4, `admitted: false` and `next_action` `af task status TASK_ID`. The run
+survives the shell that started it. Then
 `af task wait TASK_ID --json` blocks until the Task settles and exits with its exit code
 (`--timeout S` gives up with exit 124), and `af task status TASK_ID --json` answers at once;
 both print `af/task-status@1`: the state, the node that runs, the time since the Task's clock
@@ -95,6 +97,7 @@ delivered without being made again. A candidate no Task verified is refused here
 `af task report TASK_ID... --pr-body > body.md` prints the whole pull request description the
 repository's template asks for: the template with the `af task report` block between its
 `<!-- af-task-report:v1 -->` markers, and the lines added block that the checkout's
-`scripts/pr-lines.py` prints, when it has one. `gh pr create --body-file body.md` takes it
-unchanged. `af task report TASK_ID... --json` prints the same figures as one `af/task-report@2`
-document.
+`scripts/pr-lines.py` prints, when it has one, counted from `--base REF` (origin/main by
+default). When the script cannot print its block, nothing is printed and the command exits 1,
+naming `--base REF`. `gh pr create --body-file body.md` takes it unchanged.
+`af task report TASK_ID... --json` prints the same figures as one `af/task-report@2` document.

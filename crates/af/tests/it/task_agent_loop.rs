@@ -861,9 +861,27 @@ fn the_pr_body_is_the_template_with_both_blocks_and_the_checker_accepts_it() {
         repo.join("scripts/pr-lines.py"),
     )
     .unwrap();
-    git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "template and lines script"]);
+    // Without origin/main the script cannot count, and no body is printed: a body without its
+    // lines block is one the pull request check refuses.
+    let refused = af(
+        &repo,
+        &state,
+        &["task", "report", "chain-base", "gc-older", "--pr-body"],
+    );
+    assert_eq!(refused.status.code(), Some(1), "{}", err(&refused));
+    assert!(out(&refused).is_empty(), "{}", out(&refused));
+    let said = err(&refused);
+    assert!(said.contains("--base REF"), "{said}");
+    assert!(
+        said.contains("af task report chain-base gc-older --pr-body"),
+        "the command to run again, with a base: {said}"
+    );
+    for line in said.lines() {
+        assert!(line.chars().count() <= 100, "{line}");
+    }
+    git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
     let body = expect(
         &af(
             &repo,
@@ -886,6 +904,24 @@ fn the_pr_body_is_the_template_with_both_blocks_and_the_checker_accepts_it() {
         "{body}"
     );
     assert!(body.contains("## Checklist"), "{body}");
+    // The base named on the command line is the script's.
+    let based = expect(
+        &af(
+            &repo,
+            &state,
+            &[
+                "task",
+                "report",
+                "chain-base",
+                "gc-older",
+                "--pr-body",
+                "--base",
+                "origin/main",
+            ],
+        ),
+        0,
+    );
+    assert_eq!(based, body);
     let file = root.path().join("body.md");
     std::fs::write(&file, &body).unwrap();
     let check = Command::new("python3")
@@ -962,7 +998,8 @@ impl Drop for Leftovers {
 }
 
 /// Items 4, 5 and 8: a detached run returns at once with its pid and log, outlives the shell
-/// that started it, logs its progress and heartbeat; `status` names it running at its node;
+/// that started it, logs its progress and heartbeat; `status` names it running at its node,
+/// by the run that holds the lease even when a newer run recorded itself;
 /// `wait --timeout` gives up with 124; `cancel` refuses a writer of another host, then stops the
 /// recorded run and its Worker, leaving the Task cancelled by its requester and resumable; a
 /// foreground run resumes it, printing its node lines and its state as stderr's last line; and
@@ -999,11 +1036,13 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         .env("AF_TEST_HEARTBEAT_MS", "300")
         .output()
         .unwrap();
-    let value = document(&detached, 0, Some("task-detached-v1.json"));
+    let value = document(&detached, 0, Some("task-detached-v2.json"));
     assert!(
         started.elapsed() < Duration::from_secs(60),
         "returned at once"
     );
+    assert_eq!(value["admitted"], true, "{value:#}");
+    assert_eq!(value["next_action"], format!("af task wait {task}"));
     let pid = u32::try_from(value["pid"].as_u64().unwrap()).unwrap();
     let mut leftovers = Leftovers(vec![pid]);
     let log = PathBuf::from(value["log"].as_str().unwrap());
@@ -1037,6 +1076,30 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         "{status}"
     );
     assert!(status.contains(&format!("pid {pid} on ")), "{status}");
+    // A newer run whose lease attempt was refused recorded itself too: the status still names
+    // the run that holds the lease.
+    let record_path = state.join(format!("runs/{task}-1.json"));
+    let mut refused: Value =
+        serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
+    refused["run"] = 2.into();
+    refused["pid"] = std::process::id().into();
+    refused["writer"] = "cli-refused".into();
+    refused["detached"] = false.into();
+    refused["log"] = Value::Null;
+    let refused_path = state.join(format!("runs/{task}-2.json"));
+    std::fs::write(&refused_path, serde_json::to_vec(&refused).unwrap()).unwrap();
+    let held = expect(&af(&repo, &state, &["task", "status", task]), 0);
+    assert!(held.contains(&format!("run 1 pid {pid} on ")), "{held}");
+    let held = document(
+        &af(&repo, &state, &["task", "status", task, "--json"]),
+        0,
+        Some("task-status-v1.json"),
+    );
+    assert_eq!(held["run"]["pid"], pid, "{held:#}");
+    std::fs::remove_file(&refused_path).unwrap();
+    for line in status.lines() {
+        assert!(line.chars().count() <= 100, "{line}");
+    }
     document(
         &af(&repo, &state, &["task", "status", task, "--json"]),
         0,
@@ -1064,7 +1127,6 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     }
 
     // A writer the records place on another host is refused with its pid and host.
-    let record_path = state.join(format!("runs/{task}-1.json"));
     let record = std::fs::read_to_string(&record_path).unwrap();
     let mut elsewhere: Value = serde_json::from_str(&record).unwrap();
     elsewhere["host"] = "build-host-elsewhere".into();
@@ -1140,6 +1202,27 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     );
     assert!(stderr.contains("tokens so far)"), "{stderr}");
     assert!(stderr.contains("af task run: check finished ("), "{stderr}");
+    // Every node that ran, the kernel's own included, has one start line before each of its
+    // finished or failed lines.
+    let progress: Vec<&str> = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("af task run: "))
+        .collect();
+    let mut open: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut ended = 0;
+    for line in &progress {
+        let Some((node, rest)) = line.split_once(' ') else {
+            continue;
+        };
+        if rest.starts_with("started (") {
+            assert!(open.insert(node), "{node} started twice:\n{stderr}");
+        } else if rest.starts_with("finished (") || rest.starts_with("failed (") {
+            assert!(open.remove(node), "{node} ended without a start:\n{stderr}");
+            ended += 1;
+        }
+    }
+    assert!(ended >= 3, "{stderr}");
+    assert!(stderr.contains("af task run: check started ("), "{stderr}");
     assert_eq!(
         stderr.lines().last().unwrap(),
         format!(
@@ -1158,4 +1241,48 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         "the resumed run is run 2: {settled:#}"
     );
     leftovers.0.clear();
+}
+
+/// A detached run that is neither holding the Task nor admitted when the window passes is not
+/// claimed to run: `--detach` exits 4 with `admitted: false` and `af task status ID` next, and
+/// the run, held back here as a loaded machine can, still starts and finishes afterwards.
+#[test]
+fn a_detached_run_not_admitted_in_time_is_not_claimed_to_run() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(root.path(), "pagination");
+    let task = task_interrupt::TASK;
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
+        0,
+    );
+    let detached = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "task",
+            "run",
+            task,
+            "--execute",
+            "--detach",
+            "--json",
+            "--state",
+        ])
+        .arg(&state)
+        .env("AF_TEST_DETACH_ADMISSION_MS", "200")
+        .env("AF_TEST_DETACHED_START_DELAY_MS", "3000")
+        .output()
+        .unwrap();
+    let value = document(&detached, 4, Some("task-detached-v2.json"));
+    let pid = u32::try_from(value["pid"].as_u64().unwrap()).unwrap();
+    let _leftovers = Leftovers(vec![pid]);
+    assert_eq!(value["admitted"], false, "{value:#}");
+    assert_eq!(value["next_action"], format!("af task status {task}"));
+    assert_ne!(value["state"]["phase"], "running", "{value:#}");
+    let said = err(&detached);
+    assert!(said.contains(&format!("`af task status {task}`")), "{said}");
+    for line in said.lines() {
+        assert!(line.chars().count() <= 100, "{line}");
+    }
+    // The run goes on: once it starts it takes the Task and finishes it.
+    let waited = af(&repo, &state, &["task", "wait", task, "--timeout", "600"]);
+    assert_eq!(waited.status.code(), Some(0), "{}", err(&waited));
 }

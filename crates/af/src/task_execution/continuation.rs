@@ -10,7 +10,6 @@
 //! Requirements bound.
 
 use super::*;
-use review_core::reviewer_result::{CHANGE_WIDE_SENTINEL, ReviewerStageOutput};
 use review_core::task::findings::*;
 use review_core::task::input_bindings::ReferencedTaskV1;
 use review_core::task::pipeline::ReceiptOutcomeV1;
@@ -67,49 +66,40 @@ fn text(body: &str) -> String {
     body.chars().take(65536).collect()
 }
 
-/// Every report of each selected reviewer result of `round`, in reviewer-name order, under
-/// `NAME-N`.
+/// The round's findings as `af task findings --round N` prints them, one builder for both
+/// (`findings::round_findings`), each under `NAME-N`, its reviewer's slot and its position in
+/// that reviewer's list. A finding names the reviewer result it came from, or the round's
+/// Finding Set when the reviewer has no selected result.
 fn reviewer_findings(
     cas: &Cas,
     round: &review_core::task::review::TaskReviewRoundV1,
 ) -> Result<Vec<TaskReviewFindingV1>, String> {
     let mut findings = Vec::new();
-    for (name, id) in &round.selected_results {
-        let envelope = cas
-            .get_artifact(id)
-            .map_err(|error| format!("the round's {name} result {id} is unreadable: {error}"))?;
-        validate_envelope(&envelope)?;
-        let stage: ReviewerStageOutput =
-            serde_json::from_value(envelope.payload).map_err(|error| {
-                format!("the round's {name} result is not a reviewer result: {error}")
-            })?;
-        for (index, report) in stage.reports.iter().enumerate() {
-            let file = report.file.trim();
-            let title = line(&report.title, 1024);
-            let body = text(&report.body);
+    for reviewer in super::findings::round_findings(cas, round)? {
+        let Some(artifact_id) = reviewer
+            .result_id
+            .clone()
+            .or_else(|| round.finding_set_id.clone())
+        else {
+            continue;
+        };
+        for (index, finding) in reviewer.findings.iter().enumerate() {
+            let title = line(&finding.title, 1024);
             findings.push(TaskReviewFindingV1 {
-                id: format!("{name}-{}", index + 1),
+                id: format!("{}-{}", reviewer.reviewer, index + 1),
                 origin: TaskReviewFindingOriginV1::Reviewer,
-                by: name.clone(),
-                artifact_id: id.clone(),
-                severity: Some(report.severity),
-                file: (!file.is_empty() && file != CHANGE_WIDE_SENTINEL).then(|| line(file, 1024)),
-                line: report.line.and_then(|line| u64::try_from(line).ok()),
+                by: reviewer.reviewer.clone(),
+                artifact_id: artifact_id.clone(),
+                severity: Some(finding.severity),
+                file: finding.file.as_deref().map(|file| line(file, 1024)),
+                line: finding.line.and_then(|line| u64::try_from(line).ok()),
                 title: if title.is_empty() {
                     "(untitled)".into()
                 } else {
                     title
                 },
-                body: if body.trim().is_empty() {
-                    "(no body)".into()
-                } else {
-                    body
-                },
-                fix: report
-                    .fix
-                    .as_deref()
-                    .filter(|fix| !fix.trim().is_empty())
-                    .map(text),
+                body: text(&finding.evidence),
+                fix: finding.fix.as_deref().map(text),
             });
         }
     }

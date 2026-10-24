@@ -1,5 +1,5 @@
 //! The agent loop's documents and records (ADR-0202): `af/task-findings@1`,
-//! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@1`, `af/task-detached@1`,
+//! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@1`, `af/task-detached@2`,
 //! `af/task-cancelled@1`, the `runs/` records `af/task-run-process@1` and
 //! `af/task-cancel-request@1`, and the `af/TaskDeliveryProof@1` a verification Task's delivery
 //! references. A typed value the Rust validator accepts satisfies its schema, both reject the
@@ -335,23 +335,65 @@ fn materialized_diff_and_status_documents_are_closed() {
 #[test]
 fn detached_cancelled_and_the_delivery_proof_are_closed() {
     let running = TaskStateV1::new(TaskStatePhaseV1::Running);
-    let detached = TaskDetachedV1 {
-        schema: TASK_DETACHED_V1.into(),
+    let detached = TaskDetachedV2 {
+        schema: TASK_DETACHED_V2.into(),
         task_id: "pagination-cli".into(),
         run: 2,
         pid: 812,
         host: "builder".into(),
         log: "/state/runs/pagination-cli-2.log".into(),
+        admitted: true,
         state: running,
+        next_action: Some("af task wait pagination-cli".into()),
     };
     both(
-        "task-detached-v1.json",
+        "task-detached-v2.json",
         &detached,
-        TaskDetachedV1::validate,
+        TaskDetachedV2::validate,
         vec![
             (Box::new(|v: &mut Value| v["run"] = json!(0)), "run 0"),
             (Box::new(|v: &mut Value| v["log"] = json!("")), "no log"),
+            (
+                Box::new(|v: &mut Value| v["next_action"] = Value::Null),
+                "an admitted run without the command that waits for it",
+            ),
+            (
+                Box::new(|v: &mut Value| {
+                    v.as_object_mut().unwrap().remove("admitted");
+                }),
+                "a run that does not say whether it was admitted",
+            ),
+            (
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-detached@1")),
+                "the earlier version",
+            ),
         ],
+    );
+    // Still starting when the command gave up waiting: not admitted, and the next command
+    // looks at it rather than claiming it runs.
+    let starting = TaskDetachedV2 {
+        admitted: false,
+        state: TaskStateV1::new(TaskStatePhaseV1::Planned).with_next("af task run pagination-cli"),
+        next_action: Some("af task status pagination-cli".into()),
+        ..detached.clone()
+    };
+    both(
+        "task-detached-v2.json",
+        &starting,
+        TaskDetachedV2::validate,
+        vec![],
+    );
+    let ended = TaskDetachedV2 {
+        admitted: false,
+        state: verified(),
+        next_action: None,
+        ..detached
+    };
+    both(
+        "task-detached-v2.json",
+        &ended,
+        TaskDetachedV2::validate,
+        vec![],
     );
     let cancelled = TaskCancelledV1 {
         schema: TASK_CANCELLED_V1.into(),

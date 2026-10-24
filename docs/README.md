@@ -78,7 +78,7 @@ a revision), what each means, and what to do. A test checks that `af` still prin
 | `--timeout-secs must be positive` | A zero timeout was given; it is refused before any file is read. | Pass a positive number of seconds, or leave the flag out. |
 | `Store … was written by … (this is af …); fix: AF_VERSION=` | A Store was written by another af release, which this one does not replay (ADR-0145). | Run the command under that release with `AF_VERSION=…`, install it with `af self install …`, or move the project pin with `af onboard --refresh-lock --af …`. |
 | `was written by an older af release (no version marker` | A Store from a release before Stores named their writer. | Finish its work under the release that started it, or remove it with `af storage prune --apply` once idle. |
-| `Stores written by other releases` | A listing met several Stores other releases wrote, counted by release in one row. | Run them under the release named, or `af storage --verbose` to see each. |
+| `Stores written by other releases` | A listing met several Stores other releases wrote: one row when one release wrote them all, else one line per release with its own command. | Run each with the `AF_VERSION=…` command of its own release, or `af storage --verbose` to see each. |
 | `could not be measured and` | `af storage` met paths it could not measure, such as a half-made Store a test registered. | `af storage --verbose` names each path and why. |
 | `Output port … not found in the result of Task` | `af task output --port` names a port the Task's result does not have; the message lists the ones it has. | Pass one of the ports listed. |
 | `is not a command; the browser is` | `af review tui` is not a command. | Run `af` alone at a terminal to open the browser. |

@@ -304,9 +304,9 @@ runs it, handing the terminal over as described in §4.
 
 ### 5.6 Campaigns
 
-Mirrors `af review campaigns --json` and `af review report --json`, read by the functions behind
-them (`enumerate_campaigns`, `read_campaign_view`, the report view), silently: a warning the
-CLI prints on stderr would land on the screen. The sources are the default Campaign root, each
+Mirrors `af review campaigns --format json` and `af review report --format json`, read by the
+functions behind them (`enumerate_campaigns`, `read_campaign_view`, the report view), silently:
+a warning the CLI prints on stderr would land on the screen. The sources are the default Campaign root, each
 Store a plain `af review run` keeps under `review/local/`, and every `review` Store and
 `review_root` directory the Store registry records. A Store reached twice is listed once.
 
@@ -324,9 +324,12 @@ Round has no Run Report, else its verdict: `pass` (green), `fail` or `incomplete
 before its first Round. The folder shows each Store's path, then per Campaign its newest Round,
 state and verdict, its spend (the Tasks' cumulative charge and the Rounds' wall-clock, as `af
 review report` counts them) and its Store's last write in UTC, and the reviewer nodes of the newest
-Round as chips of their latest Attempt's outcome (`running`, `selected`, `failed`). While the pane
-shows and any listed Round is open, a thread reads every source again once a second, the Tasks
-pane's cadence.
+Round as chips of their latest Attempt's outcome (`running`, `selected`, `failed`): only that
+Round's Attempts, so a Round that has none yet shows no chips, never the previous Round's, and
+the latest Attempt is the one that started last, not the last one listed. While the pane shows,
+a thread reads every source again: once a second while any listed Round is open, the Tasks
+pane's cadence, and every five seconds otherwise, so a Campaign started meanwhile appears
+without a key.
 
 One Campaign's pane shows STATE, SPEND and STORE, NODES (each reviewer's latest outcome,
 charge and wall), LEDGER (the report's verdict and findings summary, then its findings grouped by
@@ -334,8 +337,9 @@ the reviewer that reported each) and COMMANDS: `review report`, `review ledger -
 show … KEY` and, while a Round is open, `review run … --restart-round`, each with `--campaign
 LABEL` and, unless the default root resolves it by its label, `--state DIR`. Enter on a command
 or a finding puts the line on the `:` line, unsubmitted. `y` copies the label. Stores another
-release wrote are one muted row, as in the Tasks pane; another unreadable Store is an error row and
-a `! … unreadable` bar entry. Nothing is written.
+release wrote are one muted row, as in the Tasks pane, with one command per release that wrote
+them; another unreadable Store, a log that cannot even be looked at included, is an error row
+naming its path and the error, and a `! … unreadable` bar entry. Nothing is written.
 
 `af review campaigns` without `--format json` prints the same Campaigns as a 100-column table:
 `CAMPAIGN  ROUND  STATE  VERDICT  TOKENS  WALL  UPDATED`, a cut cell ending in `~`, then its

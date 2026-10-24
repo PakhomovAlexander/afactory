@@ -18,7 +18,7 @@ pub const TASK_FINDINGS_V1: &str = "af/task-findings@1";
 pub const TASK_MATERIALIZED_V1: &str = "af/task-materialized@1";
 pub const TASK_DIFF_V1: &str = "af/task-diff@1";
 pub const TASK_STATUS_V1: &str = "af/task-status@1";
-pub const TASK_DETACHED_V1: &str = "af/task-detached@1";
+pub const TASK_DETACHED_V2: &str = "af/task-detached@2";
 pub const TASK_CANCELLED_V1: &str = "af/task-cancelled@1";
 pub const TASK_RUN_PROCESS_V1: &str = "af/task-run-process@1";
 pub const TASK_CANCEL_REQUEST_V1: &str = "af/task-cancel-request@1";
@@ -378,8 +378,9 @@ impl TaskCancelRequestV1 {
 
 /// `af task status ID --json`: where a Task is, without waiting. `node` is the node whose
 /// Attempt runs now, `elapsed_ms` the time since the Task's clock started (to now while it
-/// runs, to its last event once it stopped), `run` the newest run process the Store recorded,
-/// `cancel` the request that stopped it.
+/// runs, to its last event once it stopped), `run` the run process whose writer took the Task's
+/// last lease (the newest one recorded when no record names that writer), `cancel` the request
+/// that stopped it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskStatusV1 {
@@ -412,29 +413,43 @@ impl TaskStatusV1 {
     }
 }
 
-/// `af task run ID --detach --json`: the run that went on in the background, and where it logs.
+/// `af task run ID --detach --json`: the run it started in the background, where it logs, and
+/// whether it was admitted. `admitted` is true only once that run holds the Task's lease and its
+/// plan is admitted; a run still starting when the command gave up waiting, or one that ended
+/// before it went to the background, is not. `next_action` is the command to run next: `af task
+/// wait ID` for an admitted run, `af task status ID` for one still starting, and the Task's own
+/// next command, or null, for a run that ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskDetachedV1 {
+pub struct TaskDetachedV2 {
     pub schema: String,
     pub task_id: String,
     pub run: u64,
     pub pid: u32,
     pub host: String,
     pub log: String,
+    pub admitted: bool,
     pub state: TaskStateV1,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub next_action: Option<String>,
 }
 
-impl TaskDetachedV1 {
+impl TaskDetachedV2 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_DETACHED_V1)?;
+        schema_is(&self.schema, TASK_DETACHED_V2)?;
         require(
             is_name(&self.task_id)
                 && self.run >= 1
                 && self.pid > 0
                 && bounded(&self.host)
-                && bounded(&self.log),
-            "A detached run names its Task, run, process, host and log",
+                && bounded(&self.log)
+                && self.next_action.as_deref().is_none_or(bounded),
+            "A detached run names its Task, run, process, host and log, and a next command \
+             when it has one",
+        )?;
+        require(
+            !self.admitted || self.next_action.is_some(),
+            "An admitted detached run names the command that waits for it",
         )?;
         self.state.validate()
     }

@@ -374,7 +374,7 @@ The Task documents, each named by its `schema`:
   af task diff --json                  af/task-diff@1
   af task materialize --json           af/task-materialized@1
   af task status --json, wait --json   af/task-status@1
-  af task run --detach --json          af/task-detached@1
+  af task run --detach --json          af/task-detached@2
   af task cancel --json                af/task-cancelled@1
   af task plan --json, refused         af/task-selection@2; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves

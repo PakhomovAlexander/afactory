@@ -190,6 +190,42 @@ fn a_reviewed_task_continues_from_its_candidate_with_typed_findings() {
     assert_eq!(findings["findings"][0]["id"], "bugs-1");
     assert_eq!(findings["findings"][0]["severity"], "major");
     assert_eq!(findings["findings"][0]["title"], "paginate is undocumented");
+    // One builder makes a round's findings: `af task findings --round 1` and the continued
+    // implementer's findings carry the same set for the same round.
+    let (printed, _) = json(
+        &repo,
+        &state,
+        &["task", "findings", "first", "--round", "1"],
+        0,
+    );
+    let mut shown: Vec<Value> = Vec::new();
+    for reviewer in printed["round"]["reviewers"].as_array().unwrap() {
+        for (index, finding) in reviewer["findings"].as_array().unwrap().iter().enumerate() {
+            shown.push(serde_json::json!({
+                "id": format!("{}-{}", reviewer["reviewer"].as_str().unwrap(), index + 1),
+                "by": reviewer["reviewer"], "severity": finding["severity"],
+                "title": finding["title"], "file": finding["file"], "line": finding["line"],
+                "body": finding["evidence"], "fix": finding["fix"],
+            }));
+        }
+    }
+    let handed: Vec<Value> = findings["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["origin"] == "reviewer")
+        .map(|finding| {
+            serde_json::json!({
+                "id": finding["id"], "by": finding["by"], "severity": finding["severity"],
+                "title": finding["title"], "file": finding.get("file").cloned().unwrap_or(Value::Null),
+                "line": finding.get("line").cloned().unwrap_or(Value::Null),
+                "body": finding["body"],
+                "fix": finding.get("fix").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    assert!(!handed.is_empty());
+    assert_eq!(shown, handed, "{printed:#}\n{findings:#}");
     let requirements = payload(&cas, &revision["inputs"]["requirements"]["artifact_ids"][0]);
     let text = requirements["text"].as_str().unwrap();
     assert!(

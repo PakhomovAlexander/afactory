@@ -409,7 +409,9 @@ impl Browser {
     }
 
     fn exit_code(mut self) -> u32 {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // A load-safe ceiling, as `wait_for`'s: a loaded host can take long to wind the browser
+        // down, and only a browser that never exits fails here.
+        let deadline = Instant::now() + Duration::from_secs(300);
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
                 return status.exit_code();
@@ -567,7 +569,13 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
         assert!(listed, "{}", screen.text());
     }
     assert!(screen.lines()[ROWS - 1].starts_with("NORMAL  hub"));
+    // Quitting is waited for by what the browser writes, the main screen given back, never by
+    // a fixed time.
+    let from = browser.drained();
     browser.keys(b":q\r");
+    browser.wait_written(from, "the main screen given back", |_, written| {
+        String::from_utf8_lossy(written).contains("\x1b[?1049l")
+    });
     assert_eq!(browser.exit_code(), 0);
 }
 
@@ -1608,4 +1616,41 @@ fn the_campaigns_pane_shows_the_campaign_af_review_run_recorded() {
     );
     browser.keys(b"q");
     assert_eq!(browser.exit_code(), 0);
+}
+
+/// Every `af …` command docs/design/tui.md quotes parses: it runs with `--help` appended, so
+/// a flag the CLI does not have is refused as it would be when typed. Quoted status lines (`af
+/// LINE: exit N`), elided commands (`af task … --state DIR`) and the two words the browser
+/// replaced (`af review tui`, `af task tui`, refused as usage errors) are not commands to run.
+#[test]
+fn every_af_command_the_tui_design_quotes_parses() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let page = std::fs::read_to_string(workspace().join("docs/design/tui.md")).unwrap();
+    let mut checked = 0;
+    for span in page.split('`').skip(1).step_by(2) {
+        let words: Vec<&str> = span.split_whitespace().collect();
+        if words.first() != Some(&"af") || words.len() == 1 {
+            continue;
+        }
+        if span.contains(':') || span.contains('…') {
+            continue;
+        }
+        if words[1..] == ["review", "tui"] || words[1..] == ["task", "tui"] {
+            let output = af(&root, &home, &words[1..]);
+            assert_eq!(output.status.code(), Some(2), "`{span}` is no command");
+            continue;
+        }
+        let mut args: Vec<&str> = words[1..].to_vec();
+        args.push("--help");
+        let output = af(&root, &home, &args);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "docs/design/tui.md quotes `{span}`, which af does not parse:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        checked += 1;
+    }
+    assert!(checked >= 10, "only {checked} commands checked");
 }

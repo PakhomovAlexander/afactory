@@ -1995,9 +1995,16 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             task_ids,
             pr_body,
             template,
+            base,
             inspect,
         } => task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
-            .and_then(|options| task::report(options, &task_ids, pr_body, template.as_deref()))
+            .and_then(|options| {
+                let body = pr_body.then_some(task::PrBody {
+                    template: template.as_deref(),
+                    base: base.as_deref(),
+                });
+                task::report(options, &task_ids, body)
+            })
             .map(|()| 0),
     }
 }
@@ -3195,7 +3202,7 @@ fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
             "{}",
             serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
         ),
-        CampaignsFormat::Text => print_campaigns_text(&view, &root),
+        CampaignsFormat::Text => print_campaigns_text(&view, &root, options.state_root.is_some()),
     }
     Ok(())
 }
@@ -3547,13 +3554,13 @@ fn browse_report(state: &Path, label: &str) -> Result<serde_json::Value, String>
     serde_json::to_value(&view).map_err(|error| error.to_string())
 }
 
-fn print_campaigns_text(view: &CampaignListView, root: &Path) {
+fn print_campaigns_text(view: &CampaignListView, root: &Path, custom_root: bool) {
     let local = |unix_ms: u64| {
         let time = human::local_time(unix_ms);
         // The year is left out: the table is 100 columns, and an old Campaign's date says it.
         time.get(5..).unwrap_or(&time).to_owned()
     };
-    print!("{}", campaigns_text(view, root, &local));
+    print!("{}", campaigns_text(view, root, custom_root, &local));
 }
 
 /// The columns of `af review campaigns`, in order, and their widths; 100 columns with the two
@@ -3579,8 +3586,15 @@ fn clip_cell(text: &str, width: usize) -> String {
 
 /// `af review campaigns` as text: a table of one row per Campaign (its label, newest Round,
 /// state, verdict, what its Tasks charged and the wall-clock of its Rounds, and when its Store
-/// was last written), in 100 columns, then the problems. `time` prints a Unix time.
-fn campaigns_text(view: &CampaignListView, root: &Path, time: &dyn Fn(u64) -> String) -> String {
+/// was last written), in 100 columns, then the problems. `time` prints a Unix time. An empty
+/// `custom_root` (`--state-root DIR`) names the command that starts a Campaign there: a plain
+/// `af review run` would keep it under the default root instead.
+fn campaigns_text(
+    view: &CampaignListView,
+    root: &Path,
+    custom_root: bool,
+    time: &dyn Fn(u64) -> String,
+) -> String {
     use std::fmt::Write as _;
     let mut text = String::new();
     if view.campaigns.is_empty() {
@@ -3589,11 +3603,41 @@ fn campaigns_text(view: &CampaignListView, root: &Path, time: &dyn Fn(u64) -> St
         } else {
             "readable "
         };
-        let _ = writeln!(
-            text,
-            "No {readable}Campaigns under {}; af review run --campaign NAME starts one",
-            terminal_text(&root.display().to_string())
-        );
+        let shown = terminal_text(&root.display().to_string());
+        if custom_root {
+            // A Store named by its label directly beneath the root is one this listing reads
+            // (ADR-0035).
+            let head = format!("No {readable}Campaigns under {shown}; start one there with");
+            if head.chars().count() <= 100 {
+                let _ = writeln!(text, "{head}");
+            } else {
+                // The path keeps a line of its own, whole, so it copies as it is.
+                let _ = writeln!(
+                    text,
+                    "No {readable}Campaigns under\n  {shown}\nStart one there with"
+                );
+            }
+            let state = root.join("NAME").display().to_string();
+            let command = shell_words::join([
+                "af",
+                "review",
+                "run",
+                "--campaign",
+                "NAME",
+                "--state",
+                state.as_str(),
+            ]);
+            for line in
+                task_execution::runs::command_lines("  ", &terminal_text(&command), 100, "    ")
+            {
+                let _ = writeln!(text, "{line}");
+            }
+        } else {
+            let _ = writeln!(
+                text,
+                "No {readable}Campaigns under {shown}; af review run --campaign NAME starts one"
+            );
+        }
     } else {
         let row = |cells: [String; 7]| {
             let mut line = String::new();
@@ -3658,7 +3702,9 @@ fn campaigns_text(view: &CampaignListView, root: &Path, time: &dyn Fn(u64) -> St
             .filter_map(|problem| problem.release.as_ref()),
         "af review campaigns",
     ) {
-        let _ = writeln!(text, "  {}", terminal_text(&row));
+        for line in row.lines() {
+            let _ = writeln!(text, "  {}", terminal_text(line));
+        }
     }
     text
 }
@@ -5227,7 +5273,7 @@ mod option_tests {
             problems,
         };
         let utc = |unix_ms: u64| crate::human::utc_time(unix_ms)[5..].to_owned();
-        let text = campaigns_text(&view, &root, &utc);
+        let text = campaigns_text(&view, &root, false, &utc);
         assert_eq!(text, TABLE);
         let table = text
             .lines()
@@ -5251,7 +5297,7 @@ mod option_tests {
             campaigns: Vec::new(),
             problems: Vec::new(),
         };
-        let text = campaigns_text(&empty, &root, &utc);
+        let text = campaigns_text(&empty, &root, false, &utc);
         assert_eq!(
             text,
             format!(
@@ -5259,6 +5305,77 @@ mod option_tests {
                 root.display()
             )
         );
+    }
+
+    /// An empty `--state-root R` names the command that starts a Campaign under R, in 100
+    /// columns; the Store that command names is one the same listing then shows.
+    #[test]
+    fn an_empty_custom_root_names_a_command_that_starts_a_campaign_there() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path())
+            .unwrap()
+            .join("campaigns");
+        std::fs::create_dir_all(&root).unwrap();
+        let empty = CampaignListView {
+            schema: "af/review-campaigns@1",
+            campaigns: Vec::new(),
+            problems: Vec::new(),
+        };
+        let utc = |unix_ms: u64| crate::human::utc_time(unix_ms)[5..].to_owned();
+        let text = campaigns_text(&empty, &root, true, &utc);
+        for line in text.lines() {
+            assert!(line.chars().count() <= 100, "{line}");
+        }
+        let lines: Vec<&str> = text.lines().collect();
+        // The sentence on one line where the root fits, else the root on a line of its own.
+        let head = format!(
+            "No Campaigns under {}; start one there with",
+            root.display()
+        );
+        if head.len() <= 100 {
+            assert_eq!(lines[0], head, "{text}");
+        } else {
+            assert_eq!(lines[1], format!("  {}", root.display()), "{text}");
+        }
+        let at = lines
+            .iter()
+            .position(|line| line.starts_with("  af review run"))
+            .unwrap_or_else(|| panic!("{text}"));
+        let command: String = lines[at..]
+            .iter()
+            .map(|line| line.trim().trim_end_matches('\\').trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let words = shell_words::split(&command).unwrap();
+        assert_eq!(
+            words[..5],
+            ["af", "review", "run", "--campaign", "NAME"],
+            "{text}"
+        );
+        assert_eq!(words[5], "--state", "{text}");
+        assert_eq!(
+            std::path::PathBuf::from(&words[6]),
+            root.join("NAME"),
+            "{text}"
+        );
+        // A root too long for the sentence keeps a line of its own.
+        let long = root.join("x".repeat(80));
+        let text_long = campaigns_text(&empty, &long, true, &utc);
+        assert!(
+            text_long.starts_with(&format!(
+                "No Campaigns under\n  {}\nStart one there with\n",
+                long.display()
+            )),
+            "{text_long}"
+        );
+        // What that command writes, a Campaign `NAME` in `R/NAME`, is what the listing reads.
+        let label = "pr-7";
+        let state = std::path::PathBuf::from(words[6].replace("NAME", label));
+        write_campaign_rounds(&state, label, &[(1, 1)]);
+        let listed = enumerate_campaigns(&root, false).unwrap();
+        assert!(listed.problems.is_empty(), "{:?}", listed.problems.len());
+        assert_eq!(listed.campaigns.len(), 1);
+        assert_eq!(listed.campaigns[0].label, label);
     }
 
     /// A Campaign Store read on its own, whatever its directory is called: the Store of a plain
