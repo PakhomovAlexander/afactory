@@ -181,8 +181,14 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>) {
             .output()
             .unwrap();
         let shown = out(&shown);
+        // Every line fits, except one that holds a single word wider than the terminal (a long
+        // `--state` path cannot be broken): `fit_command` gives such a word a line of its own.
         for line in shown.lines() {
-            assert!(line.chars().count() <= columns, "{line:?}\n{shown}");
+            let unbreakable = !line.trim().trim_end_matches('\\').trim().contains(' ');
+            assert!(
+                line.chars().count() <= columns || unbreakable,
+                "{line:?}\n{shown}"
+            );
         }
         if let (Some(next), false) = (&next, shown.lines().next().unwrap().ends_with("NEXT")) {
             let lines: Vec<&str> = shown.lines().collect();
