@@ -512,7 +512,14 @@ fn first_line(text: &str) -> String {
 }
 
 /// The line and message of `file`'s TOML parse error; `None` when it parses or cannot be read.
+/// Like onboarding's own authority reader, it never follows a symbolic link and never reads a
+/// file larger than `MAX_SCAN_BYTES`: a repository's `.af/` cannot make doctor read, and print a
+/// line of, a file outside it.
 fn toml_problem(file: &Path) -> Option<(usize, String)> {
+    let metadata = std::fs::symlink_metadata(file).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_SCAN_BYTES {
+        return None;
+    }
     let text = std::fs::read_to_string(file).ok()?;
     let error = toml::from_str::<toml::Table>(&text).err()?;
     let start = error.span().map_or(0, |span| span.start.min(text.len()));
@@ -1657,7 +1664,7 @@ fn authority_problem(toplevel: &Path) -> Option<Problem> {
         .chain(listed(af.join("pipelines")))
         .chain(workers)
         .filter(|path| {
-            path.is_file()
+            std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
                 && (path
                     .extension()
                     .is_some_and(|extension| extension == "toml")
@@ -1701,6 +1708,34 @@ fn same_file(found: &Path, link: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A malformed `.af/` file is named, but a symbolic link (here to a malformed file outside
+    /// `.af/`) and a file above the scan bound are never read.
+    #[test]
+    fn the_authority_scan_reads_no_link_and_no_oversized_file() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = root.path().join("outside.toml");
+        std::fs::write(&outside, "secret = [\n").unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join(".af/pipelines/a-link.toml")).unwrap();
+        let big = "# padding\n".repeat(usize::try_from(MAX_SCAN_BYTES).unwrap() / 10 + 1);
+        std::fs::write(repo.join(".af/pipelines/b-big.toml"), big + "broken = [\n").unwrap();
+        assert!(super::toml_problem(&repo.join(".af/pipelines/a-link.toml")).is_none());
+        assert!(super::toml_problem(&repo.join(".af/pipelines/b-big.toml")).is_none());
+        assert!(super::authority_problem(&repo).is_none());
+        std::fs::write(
+            repo.join(".af/pipelines/c-small.toml"),
+            "x = 1\nbroken = [\n",
+        )
+        .unwrap();
+        let problem = super::authority_problem(&repo).expect("the small malformed file is named");
+        assert_eq!(
+            problem.file.as_deref(),
+            Some(repo.join(".af/pipelines/c-small.toml").as_path())
+        );
+        assert_eq!(problem.line, Some(2));
+    }
 
     /// C3 item 29: a root `mdutil -s` reports indexed is named, one named `*.noindex` is never
     /// asked about, and a tool that cannot answer reports nothing.
