@@ -36,7 +36,7 @@ pub(super) enum SelectionAssessment {
 }
 
 /// The document a refused selection prints.
-pub(super) const TASK_SELECTION_V2: &str = "af/task-selection@2";
+pub(super) const TASK_SELECTION_V3: &str = "af/task-selection@3";
 
 /// The clock a selection judges the deadline by: `now`, and the wall the Task has from it. A
 /// plan that has not run judges its whole declared wall, since its clock starts at the first
@@ -145,7 +145,7 @@ pub(super) fn available_tools(
     Ok(())
 }
 
-/// What a refused plan prints: with `--json`, the `af/task-selection@2` document on stdout; in
+/// What a refused plan prints: with `--json`, the `af/task-selection@3` document on stdout; in
 /// either mode, the refusal and its reasons on stderr. With `fit`, an infeasible refusal whose
 /// fit no Pipeline bound blocks is handed back for `af task plan --fit` to plan again.
 pub(super) enum Prepared {
@@ -172,7 +172,15 @@ pub(super) fn prepare(
             decision: SelectionDecision::Infeasible {},
             ..
         } if fit_requested && fit.fixable() && !fit.raised().is_empty() => Ok(Prepared::Refit(fit)),
-        SelectionAssessment::Refused { decision, view, .. } => {
+        SelectionAssessment::Refused {
+            decision, mut view, ..
+        } => {
+            // The refusal as a script reads it: its sentence, the exit code it ends with and
+            // the one command that fixes it, run as printed against the same Store.
+            view["error"] = json!(refusal_sentence(&decision, &view));
+            view["exit_code"] = json!(1);
+            view["next_action"] =
+                json!((decision == SelectionDecision::Infeasible {}).then(|| fit_command(file)));
             if json_output {
                 println!(
                     "{}",
@@ -219,11 +227,7 @@ pub(super) fn refusal_text(
     view: &serde_json::Value,
     file: &Path,
 ) -> Result<String, String> {
-    let mut out = format!(
-        "No Pipeline selected for Task {}: {}\n",
-        preview::text(view["task_id"].as_str().unwrap_or("?")),
-        decision_words(decision)
-    );
+    let mut out = format!("{}\n", refusal_sentence(decision, view));
     for candidate in view["selection"]["candidates"]
         .as_array()
         .into_iter()
@@ -289,12 +293,48 @@ pub(super) fn refusal_text(
     if let Some(next) = view["next_action"].as_str() {
         out.push_str(&format!("next: {next}\n"));
     } else if decision == &(SelectionDecision::Infeasible {}) {
-        out.push_str(&format!(
-            "next: af task plan --file {} --fit\n",
-            shell_words::quote(&file.display().to_string())
-        ));
+        out.push_str(&format!("next: {}\n", fit_command(file)));
     }
     Ok(out)
+}
+
+/// The refusal and each refused candidate's reason, on one line: `No Pipeline selected for Task
+/// ID: unavailable: a Worker or check cannot run here; fixture/implementation: Worker ... is
+/// unavailable`.
+pub(super) fn refusal_summary(decision: &SelectionDecision, view: &serde_json::Value) -> String {
+    let mut summary = refusal_sentence(decision, view);
+    for candidate in view["selection"]["candidates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(pipeline), Some(reason)) = (
+            candidate["pipeline"].as_str(),
+            candidate["state"]["reason"].as_str(),
+        ) {
+            summary.push_str(&format!(
+                "; {}: {}",
+                preview::text(pipeline),
+                preview::text(reason)
+            ));
+        }
+    }
+    summary
+}
+
+/// The refusal in one sentence: `No Pipeline selected for Task ID: infeasible: ...`.
+fn refusal_sentence(decision: &SelectionDecision, view: &serde_json::Value) -> String {
+    format!(
+        "No Pipeline selected for Task {}: {}",
+        preview::text(view["task_id"].as_str().unwrap_or("?")),
+        decision_words(decision)
+    )
+}
+
+/// [`super::plan_again`] with `--fit`: the same capture, planned with the smallest limits that
+/// fit.
+fn fit_command(file: &Path) -> String {
+    format!("{} --fit", super::plan_again(file))
 }
 
 fn decision_words(decision: &SelectionDecision) -> String {
@@ -467,7 +507,7 @@ pub(super) fn assess(
                     .find_map(|c| fits.get(&c.pipeline).map(|fit| (c, fit.clone())))
             })
             .flatten();
-        let mut view = json!({"schema":TASK_SELECTION_V2, "task_id":request.task_id,
+        let mut view = json!({"schema":TASK_SELECTION_V3, "task_id":request.task_id,
             "selection_id": selection_id, "request_revision_id":request_id,
             "attempts":0, "chargeable_tokens":0, "selection":selection});
         if let Some((candidate, fit)) = &fit {

@@ -45,6 +45,12 @@ impl Fixture {
             .unwrap()
     }
 
+    /// `command` as this fixture's commands print it: with the `--state` they were given, so it
+    /// runs as printed against the same Store.
+    fn next(&self, command: &str) -> String {
+        format!("{command} --state {}", self.state.display())
+    }
+
     /// The `--json` document of `af ARGS`, which must succeed.
     fn json(&self, args: &[&str]) -> Value {
         let output = self.af(&[args, &["--json"]].concat());
@@ -134,8 +140,17 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>) {
         .unwrap()
         .clone();
     assert_eq!(entry["state"], state, "list --json and show --json");
+    // The report is pasted into a pull request: its next command names no Store path, so it
+    // is the state's own command, without the `--state` this fixture gives.
+    let mut bare = state.clone();
+    if let Some(next) = state["next_action"].as_str() {
+        bare["next_action"] = next
+            .strip_suffix(&format!(" --state {}", fixture.state.display()))
+            .unwrap_or_else(|| panic!("{next}"))
+            .into();
+    }
     assert_eq!(
-        reported["tasks"][0]["state"], state,
+        reported["tasks"][0]["state"], bare,
         "report --json and show --json"
     );
     let label = [&state["phase"], &state["outcome"], &state["cause"]]
@@ -155,6 +170,38 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>) {
         "{show}"
     );
     let list = out(&fixture.af(&["task", "list"]));
+    // A row names the next command by its verb; at a terminal too narrow for the table the
+    // command moves, whole, to an indented line of its own, and every line fits.
+    for columns in [100, 80] {
+        let shown = crate::common::af()
+            .current_dir(&fixture.repo)
+            .args(["task", "list", "--state"])
+            .arg(&fixture.state)
+            .env("COLUMNS", columns.to_string())
+            .output()
+            .unwrap();
+        let shown = out(&shown);
+        // Every line fits, except one that holds a single word wider than the terminal (a long
+        // `--state` path cannot be broken): `fit_command` gives such a word a line of its own.
+        for line in shown.lines() {
+            let unbreakable = !line.trim().trim_end_matches('\\').trim().contains(' ');
+            assert!(
+                line.chars().count() <= columns || unbreakable,
+                "{line:?}\n{shown}"
+            );
+        }
+        if let (Some(next), false) = (&next, shown.lines().next().unwrap().ends_with("NEXT")) {
+            let lines: Vec<&str> = shown.lines().collect();
+            let at = lines.iter().position(|l| l.starts_with(TASK)).unwrap();
+            let continued = lines[at + 1..]
+                .iter()
+                .take_while(|line| line.starts_with("  "))
+                .map(|line| line.trim().trim_end_matches('\\').trim())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(continued, format!("next: {next}"), "{shown}");
+        }
+    }
     let row = list.lines().find(|l| l.starts_with(TASK)).unwrap();
     let cells: Vec<&str> = row.split_whitespace().collect();
     assert_eq!(cells[1], label, "{list}");
@@ -242,15 +289,17 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             "{}: {printed}",
             case.name
         );
+        // Every next command carries the `--state` the command was given.
+        let expected = fixture.next(case.next);
         assert_eq!(
             *lines.last().unwrap(),
-            format!("next: {}", case.next),
+            format!("next: {expected}"),
             "{}: {printed}",
             case.name
         );
         let (label, next) = agreed_state(&fixture);
         assert_eq!(label, case.label, "{}", case.name);
-        assert_eq!(next.as_deref(), Some(case.next), "{}", case.name);
+        assert_eq!(next.as_deref(), Some(expected.as_str()), "{}", case.name);
         // The same run under --json prints the document on stdout and its last log line on
         // stderr.
         let again = fixture.af(&["task", "run", TASK, "--json"]);
@@ -258,14 +307,14 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
         let document: Value = serde_json::from_slice(&again.stdout).unwrap();
         assert_eq!(
             document["state"]["next_action"].as_str(),
-            Some(case.next),
+            Some(expected.as_str()),
             "{}",
             case.name
         );
         assert!(
             err(&again)
                 .trim_end()
-                .ends_with(&format!("Task {TASK}: {}; next: {}", case.label, case.next)),
+                .ends_with(&format!("Task {TASK}: {}; next: {expected}", case.label)),
             "{}: {}",
             case.name,
             err(&again)
@@ -284,10 +333,10 @@ fn a_planned_and_an_interrupted_task_print_the_same_state_everywhere() {
     assert_eq!(label, "planned");
     assert_eq!(
         next.unwrap(),
-        format!(
+        planned.next(&format!(
             "af task run {TASK} --confirm-plan {}",
             plan["plan_id"].as_str().unwrap()
-        )
+        ))
     );
 
     let interrupted = fixture("pagination");
@@ -303,7 +352,181 @@ fn a_planned_and_an_interrupted_task_print_the_same_state_everywhere() {
     assert!(!stopped.status.success(), "{}", err(&stopped));
     let (label, next) = agreed_state(&interrupted);
     assert_eq!(label, "abandoned/cancelled/host_cancelled");
-    assert_eq!(next.unwrap(), format!("af task run {TASK}"));
+    assert_eq!(
+        next.unwrap(),
+        interrupted.next(&format!("af task run {TASK}"))
+    );
+}
+
+/// The words of the command a printed `next: COMMAND` line names, as a shell splits them.
+fn next_words(line: &str) -> Vec<String> {
+    let command = line
+        .rsplit_once("next: ")
+        .map_or(line, |(_, command)| command);
+    shell_words::split(command).unwrap()
+}
+
+/// `af WORDS`, the words of a printed command after its `af`, from `dir`: the command run
+/// exactly as printed.
+fn run_printed(dir: &std::path::Path, words: &[String]) -> Output {
+    assert_eq!(words.first().map(String::as_str), Some("af"), "{words:?}");
+    crate::common::af()
+        .current_dir(dir)
+        .args(&words[1..])
+        .output()
+        .unwrap()
+}
+
+/// With explicit selectors, given as relative paths from another directory, every next
+/// command af prints — the run's last line on stdout and on stderr, `show`, `list`, `report`
+/// and their `--json`, a refused plan's `--fit` command and the preview's approve command —
+/// carries them as typed, and run verbatim from the same directory it acts on that Store.
+#[test]
+fn printed_next_commands_carry_the_selectors_and_run_as_printed() {
+    let fixture = fixture("pagination");
+    failing_check(&fixture);
+    fixture.task_file("ticket.json", |_| {});
+    let root = &fixture.root;
+    let selected = |args: &[&str]| -> Output {
+        crate::common::af()
+            .current_dir(root)
+            .args(args)
+            .args(["--repo", "repo", "--state", "state"])
+            .output()
+            .unwrap()
+    };
+    let run = selected(&["task", "start", "--file", "ticket.json", "--execute"]);
+    assert_eq!(run.status.code(), Some(5), "{}", err(&run));
+    let next = format!("af task run {TASK} --retry-gate --repo repo --state state");
+    assert_eq!(
+        out(&run).lines().last(),
+        Some(format!("next: {next}").as_str())
+    );
+    assert!(
+        err(&run).trim_end().ends_with(&format!("; next: {next}")),
+        "{}",
+        err(&run)
+    );
+    let shown = selected(&["task", "show", TASK]);
+    assert_eq!(
+        out(&shown).lines().last(),
+        Some(format!("next: {next}").as_str())
+    );
+    for args in [
+        &["task", "show", TASK, "--json"][..],
+        &["task", "explain", TASK, "--json"],
+    ] {
+        let document: Value = serde_json::from_slice(&selected(args).stdout).unwrap();
+        assert_eq!(document["state"]["next_action"], next.as_str(), "{args:?}");
+    }
+    let listed: Value =
+        serde_json::from_slice(&selected(&["task", "list", "--json"]).stdout).unwrap();
+    assert_eq!(listed["tasks"][0]["state"]["next_action"], next.as_str());
+    // A pull request's report names no Store path: its next command is the state's own.
+    let reported: Value =
+        serde_json::from_slice(&selected(&["task", "report", TASK, "--json"]).stdout).unwrap();
+    assert_eq!(
+        reported["tasks"][0]["state"]["next_action"],
+        format!("af task run {TASK} --retry-gate")
+    );
+    // Run as printed, the retry reaches the Task in that Store; without the selectors the same
+    // words would look in this directory's default Store, which holds no such Task.
+    let retried = run_printed(root, &next_words(&next));
+    let said = err(&retried);
+    assert!(!said.contains("not found"), "{said}");
+    assert!(
+        retried.status.code() == Some(5) || said.contains(&format!("Task {TASK} cannot retry")),
+        "{said}"
+    );
+    let bare = next_words(&format!("af task run {TASK} --retry-gate --repo repo"));
+    let lost = run_printed(root, &bare);
+    assert_eq!(lost.status.code(), Some(1));
+    assert!(err(&lost).contains("not found"), "{}", err(&lost));
+
+    // A refused plan's `--fit` command carries the selectors, and plans in the same Store.
+    fixture.task_file("tight.json", |ticket| {
+        ticket["task_id"] = "tight-cli".into();
+        ticket["limits"]["max_attempts"] = 2.into();
+    });
+    let refused = selected(&["task", "plan", "--file", "tight.json", "--json"]);
+    assert_eq!(refused.status.code(), Some(1));
+    let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    let fit = "af task plan --file tight.json --repo repo --state state --fit";
+    assert_eq!(document["next_action"], fit);
+    assert!(
+        err(&refused).trim_end().ends_with(&format!("next: {fit}")),
+        "{}",
+        err(&refused)
+    );
+    let fitted = run_printed(root, &next_words(fit));
+    assert!(fitted.status.success(), "{}", err(&fitted));
+    // The preview's approve command, continued between its arguments, carries them too.
+    let preview = out(&fitted);
+    let approve: String = preview
+        .lines()
+        .skip_while(|line| !line.trim_start().starts_with("af task run tight-cli"))
+        .scan(true, |more, line| {
+            let take = *more;
+            *more = line.ends_with('\\');
+            take.then(|| line.trim_end_matches('\\').trim().to_owned())
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words = next_words(&approve);
+    assert_eq!(
+        words[..5],
+        ["af", "task", "run", "tight-cli", "--confirm-plan"],
+        "{preview}"
+    );
+    assert_eq!(
+        words[6..],
+        ["--repo", "repo", "--state", "state"],
+        "{preview}"
+    );
+    assert!(!preview.contains("Use the same --repo"), "{preview}");
+    let approved = run_printed(root, &words);
+    assert_eq!(approved.status.code(), Some(5), "{}", err(&approved));
+    let ran: Value =
+        serde_json::from_slice(&selected(&["task", "show", "tight-cli", "--json"]).stdout).unwrap();
+    assert_eq!(ran["state"]["phase"], "finished", "{ran}");
+}
+
+/// Under the default Store, chosen by the checkout alone, the commands are printed as the
+/// state chose them: no selector to repeat.
+#[test]
+fn next_commands_under_the_default_store_carry_no_selector() {
+    let fixture = fixture("pagination");
+    let file = fixture.task_file("ticket.json", |_| {});
+    let planned = crate::common::af()
+        .current_dir(&fixture.repo)
+        .args(["task", "plan", "--file", file.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(planned.status.success(), "{}", err(&planned));
+    let document: Value = serde_json::from_slice(&planned.stdout).unwrap();
+    let plan = document["plan_id"].as_str().unwrap();
+    assert_eq!(
+        document["state"]["next_action"],
+        format!("af task run {TASK} --confirm-plan {plan}")
+    );
+    let preview = crate::common::af()
+        .current_dir(&fixture.repo)
+        .args(["task", "explain", TASK])
+        .output()
+        .unwrap();
+    let preview = out(&preview);
+    assert!(
+        preview.contains(&format!(
+            "  af task run {TASK} \\\n    --confirm-plan {plan}\n"
+        )),
+        "{preview}"
+    );
+    assert!(
+        preview.contains(&format!(
+            "Details: af task explain {TASK} --tree (or --json)"
+        )),
+        "{preview}"
+    );
 }
 
 /// Replace every artifact ID with `sha256:<id>` and every measured duration with `<ms>`, so a
@@ -359,20 +582,26 @@ fn a_failed_gate_names_its_failing_tests_in_checks_the_list_and_the_run() {
         .position(|line| line.starts_with("check pagination: failed: "))
         .unwrap();
     let tail = stable(&tail[at..].join("\n"));
+    // The fixture holds no Attempt for a new check, so the next command is the checks view (C1), with
+    // the selectors this Store needs (C2).
+    let show_checks = fixture.next(&format!("af task show {TASK} --checks"));
     assert_eq!(
         tail,
-        "\
+        format!(
+            "\
 check pagination: failed: 2 failing tests
   FAIL alpha::one
   FAIL beta::two
   stderr of check pagination: sha256:<id>
-next: af task show pagination-cli --checks"
+next: {show_checks}"
+        )
     );
     let checks = fixture.af(&["task", "show", TASK, "--checks"]);
     assert!(checks.status.success(), "{}", err(&checks));
     assert_eq!(
         stable(&out(&checks)),
-        "\
+        format!(
+            "\
 Task pagination-cli: finished/gate_failed/check_failed
 receipt sha256:<id> from root.nodes.check: failed
 check pagination: failed (exit 1) in <ms> ms, cold (no warm cache)
@@ -382,8 +611,9 @@ check pagination: failed (exit 1) in <ms> ms, cold (no warm cache)
   stderr sha256:<id>, last 2 lines:
             FAIL [   0.004s] af::it alpha::one
          TIMEOUT [  60.000s] af::it beta::two
-next: af task show pagination-cli --checks
+next: {show_checks}
 "
+        )
     );
     let document = fixture.json(&["task", "show", TASK, "--checks"]);
     schemas::valid(&schemas::validator("task-checks-v2.json"), &document);
@@ -414,9 +644,7 @@ next: af task show pagination-cli --checks
     );
     // A command that exits with the outcome's code while its result goes to stdout says why on
     // stderr too: a non-zero exit never leaves stderr silent.
-    let state_line = format!(
-        "Task {TASK}: finished/gate_failed/check_failed; next: af task show {TASK} --checks"
-    );
+    let state_line = format!("Task {TASK}: finished/gate_failed/check_failed; next: {show_checks}");
     for args in [
         &["task", "explain", TASK][..],
         &["task", "explain", TASK, "--json"],
@@ -456,15 +684,34 @@ fn a_refusal_names_its_reason_on_stderr_in_text_and_json() {
                 refused.status,
                 err(&refused)
             );
+            // The refusal names the file, its field and value, and the command to run once the
+            // file is fixed; never a flag the command was not given.
+            let again = fixture.next(&format!("af task plan --file {zero}"));
             assert!(
-                err(&refused).contains("Task wall_ms and --timeout-secs must be positive"),
+                err(&refused).contains(&format!(
+                    "Task file {zero}: limits.wall_ms=0 must be positive: 0 ms leaves the Task no \
+                     time to run; set limits.wall_ms to the Task's wall-clock budget in \
+                     milliseconds, then run `{again}` again"
+                )),
                 "{args:?}: {:?}\n{}",
                 refused.status,
                 err(&refused)
             );
+            assert!(
+                !err(&refused).contains("--timeout-secs"),
+                "{}",
+                err(&refused)
+            );
             if json {
                 let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
+                schemas::valid(&schemas::validator("error-v1.json"), &document);
                 assert_eq!(document["schema"], "af/error@1", "{args:?}");
+                assert_eq!(document["cause"], "task_file_invalid", "{args:?}");
+                assert_eq!(document["next_action"], again.as_str(), "{args:?}");
+                assert_eq!(
+                    document["details"],
+                    serde_json::json!({"file": zero, "field": "limits.wall_ms", "value": 0})
+                );
             } else {
                 assert!(out(&refused).is_empty(), "{args:?}: {}", out(&refused));
             }
@@ -480,6 +727,19 @@ fn a_refusal_names_its_reason_on_stderr_in_text_and_json() {
         err(&refused).contains("cannot retain verification reserves"),
         "{}",
         err(&refused)
+    );
+    // A zero timeout is said as the flag it is, before any file is read.
+    let flagged = fixture.af(&["task", "start", "--file", zero, "--timeout-secs", "0"]);
+    assert_eq!(flagged.status.code(), Some(2), "{}", err(&flagged));
+    assert!(
+        err(&flagged).contains("--timeout-secs"),
+        "{}",
+        err(&flagged)
+    );
+    assert!(
+        !err(&flagged).contains("limits.wall_ms"),
+        "{}",
+        err(&flagged)
     );
 }
 
@@ -499,6 +759,7 @@ fn show_names_each_failed_node_s_cause_and_first_error_line() {
     ]);
     assert_eq!(run.status.code(), Some(6), "{}", err(&run));
     let shown = out(&fixture.af(&["task", "show", TASK]));
+    let next = format!("next: {}", fixture.next("af task show pagination-cli"));
     let failures: Vec<String> = stable(&shown)
         .lines()
         .skip_while(|line| !line.starts_with("root.nodes."))
@@ -511,7 +772,7 @@ fn show_names_each_failed_node_s_cause_and_first_error_line() {
             "  diagnostic sha256:<id>",
             "root.nodes.evaluate: follows from the failure above: Required branch receipt was not produced: root.nodes.check did not publish one",
             "  diagnostic sha256:<id>",
-            "next: af task show pagination-cli",
+            next.as_str(),
         ],
         "{shown}"
     );
@@ -556,13 +817,27 @@ fn a_refused_plan_names_the_limits_that_fit_and_fit_plans_with_them() {
          reserves per verification slot: [root.nodes.check 1 x 0 tokens; root.nodes.evaluate 1 \
          x 0 tokens]"
     );
+    let fit = fixture.next(&format!("af task plan --file {file}")) + " --fit";
+    assert!(said.contains(&format!("next: {fit}")), "{said}");
+    let refused = fixture.af(&["task", "plan", "--file", file, "--json"]);
+    assert_eq!(refused.status.code(), Some(1));
+    let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    schemas::valid(&schemas::validator("task-selection-v3.json"), &document);
+    // The refusal as a script reads it: its sentence, the exit code and the command that fits.
+    assert_eq!(document["schema"], "af/task-selection@3");
+    assert_eq!(document["exit_code"], 1);
+    assert_eq!(document["next_action"], fit.as_str());
+    assert_eq!(
+        document["error"],
+        format!(
+            "No Pipeline selected for Task {TASK}: infeasible: the Task's limits are too small \
+             for the plan"
+        )
+    );
     assert!(
-        said.contains(&format!("next: af task plan --file {file} --fit")),
+        said.starts_with(document["error"].as_str().unwrap()),
         "{said}"
     );
-    let document = fixture.af(&["task", "plan", "--file", file, "--json"]);
-    let document: Value = serde_json::from_slice(&document.stdout).unwrap();
-    schemas::valid(&schemas::validator("task-selection-v2.json"), &document);
     let diagnostic = &document["planning_diagnostic"];
     let required = &diagnostic["required_limits"];
     assert_eq!(

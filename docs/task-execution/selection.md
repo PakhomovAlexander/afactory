@@ -71,9 +71,11 @@ image tools must be resolved by their actual runtime environment.
 
 `af task plan --file ticket.json --json` shows the selected plan and selection assessment with
 zero Attempts. `af task explain TASK_ID --json` exposes the same recorded assessment. A selection
-refusal exits 1 with `af/task-selection@2` on stdout under `--json`, the persisted selection and
-request artifact IDs, candidate reasons and zero charged Attempts, and prints the refusal on
-stderr in either mode: the decision, each candidate's reason, and for an infeasible plan the
+refusal exits 1 with `af/task-selection@3` on stdout under `--json`, the persisted selection and
+request artifact IDs, candidate reasons and zero charged Attempts, the refusal's sentence as
+`error`, `exit_code` 1 and `next_action` (the `--fit` command for an infeasible plan, carrying
+the capture flags and Store selectors the command was given; null when no command fixes the
+refusal), and prints the refusal on stderr in either mode: the decision, each candidate's reason, and for an infeasible plan the
 smallest limits that fit with the reserve each verification slot protects. Those limits are the
 document's `planning_diagnostic.required_limits` (with `supplied_limits`, `raised`, `reserves`,
 `mandatory` and `unfixable`), computed by the planner from the declared allowances alone, token

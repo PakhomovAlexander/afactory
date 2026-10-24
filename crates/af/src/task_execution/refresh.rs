@@ -173,6 +173,7 @@ pub(crate) fn refresh(
     let lease = store
         .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)
         .map_err(|e| e.to_string())?;
+    let mut refused: Option<Refusal> = None;
     let outcome = {
         let locked = Mutex::new(&mut store);
         review_pipeline::task::lease::with_heartbeat(&locked, &cas, &lease, || {
@@ -265,9 +266,18 @@ pub(crate) fn refresh(
                     revision,
                     revision_id,
                     decision,
+                    view,
                     ..
                 } => {
                     debug_assert_eq!(revision.task_id, id);
+                    // Why the refreshed source has no plan, said once the refresh is recorded.
+                    refused = Some(Refusal {
+                        sentence: selection::refusal_summary(&decision, &view),
+                        decision: serde_json::to_value(&decision)
+                            .ok()
+                            .and_then(|value| value["kind"].as_str().map(str::to_owned))
+                            .unwrap_or_default(),
+                    });
                     let reason = match decision {
                         SelectionDecision::Infeasible {} => TaskWaitingReasonV1::NeedsResources,
                         SelectionDecision::NeedsFacts { .. } => TaskWaitingReasonV1::NeedsInput,
@@ -297,7 +307,52 @@ pub(crate) fn refresh(
         })
     };
     release(&cas, &mut store, &lease, outcome)?;
-    present_noting(&cas, &store, id, inspect.json, true)
+    match refused {
+        Some(refusal) => present_refusal(&cas, &store, id, inspect.json, &refusal),
+        None => present_noting(&cas, &store, id, inspect.json, true),
+    }
+}
+
+/// A refreshed source no Pipeline can run now: the refusal's sentence and its selection
+/// decision's kind.
+struct Refusal {
+    sentence: String,
+    decision: String,
+}
+
+/// The refused refresh, recorded: its reason on stderr, then the Task as `present` shows it and
+/// the state line. Under `--json`, when the Task now waits for a person (exit 4), the one
+/// `af/error@1` document carrying that reason, its decision and the next command stands in for
+/// the inspection.
+fn present_refusal(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    json: bool,
+    refusal: &Refusal,
+) -> Result<i32, String> {
+    let sentence = preview::text(&format!(
+        "the refreshed source of Task {id} cannot be planned now: {}",
+        refusal.sentence
+    ));
+    if json {
+        let Inspection { state, view, .. } = inspection(cas, store, id, true, None)?;
+        let code = exit_code(&state, &view);
+        if code != 0 {
+            use crate::error_document::{Cause, Detail};
+            let mut detail =
+                Detail::new(Cause::RefreshRefused).with("decision", refusal.decision.clone());
+            detail.next_action = view.state.next_action.clone();
+            let document =
+                crate::error_document::document("af task", &sentence, code, Some(&detail));
+            println!("{document}");
+            eprintln!("af task refresh: {sentence}");
+            Presented::new(id, code, &view).note(code);
+            return Ok(code);
+        }
+    }
+    eprintln!("af task refresh: {sentence}");
+    present_noting(cas, store, id, json, true)
 }
 
 #[cfg(test)]

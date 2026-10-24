@@ -309,9 +309,14 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
             .any(|line| line.starts_with("check pagination host: load ") && line.contains(" CPUs")),
         "{shown}"
     );
+    // The next command carries the `--state` the command was given.
+    let retry = format!(
+        "af task run gate-retry --retry-gate --state {}",
+        fixture.state.display()
+    );
     assert_eq!(
         shown.lines().last(),
-        Some("next: af task run gate-retry --retry-gate"),
+        Some(format!("next: {retry}").as_str()),
         "{shown}"
     );
     let before = fixture.show_json("gate-retry");
@@ -320,10 +325,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
         &before,
     );
     assert_eq!(before["result"]["domain_conclusion"], "changes_requested");
-    assert_eq!(
-        before["state"]["next_action"],
-        "af task run gate-retry --retry-gate"
-    );
+    assert_eq!(before["state"]["next_action"], retry.as_str());
     // The JSON carries the facts the text prints under `gate`: the check report, by stage and
     // with its fix, and the host it ran on.
     let [shown_report] = before["gate"]["check_reports"]
@@ -515,7 +517,13 @@ fn a_retried_gate_continues_into_the_review_it_skipped() {
     let (_, shown, _) = fixture.af(&["task", "show", "review-retry"]);
     assert_eq!(
         shown.lines().last(),
-        Some("next: af task run review-retry --retry-gate"),
+        Some(
+            format!(
+                "next: af task run review-retry --retry-gate --state {}",
+                fixture.state.display()
+            )
+            .as_str()
+        ),
         "{shown}"
     );
 

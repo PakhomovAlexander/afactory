@@ -302,8 +302,9 @@ fn an_inspection_carries_the_state_its_failures_and_its_gate() {
     );
 }
 
-/// `af/task-selection@2`: a refused plan's document carries the planner's fit, the Rust
-/// `TaskLimitsFitV1` serialized as the diagnostic's terms, and nothing else.
+/// `af/task-selection@3`: a refused plan's document carries its sentence, its exit code and the
+/// command that fixes it, and the planner's fit, the Rust `TaskLimitsFitV1` serialized as the
+/// diagnostic's terms, and nothing else.
 #[test]
 fn a_refused_selection_names_the_smallest_limits_that_fit() {
     use review_core::task::VerificationReserveV1;
@@ -337,7 +338,7 @@ fn a_refused_selection_names_the_smallest_limits_that_fit() {
     fit.validate().unwrap();
     assert_eq!(fit.raised().len(), 6);
     let document = json!({
-        "schema": "af/task-selection@2",
+        "schema": "af/task-selection@3",
         "task_id": "tight",
         "selection_id": id('1'),
         "request_revision_id": id('2'),
@@ -351,6 +352,9 @@ fn a_refused_selection_names_the_smallest_limits_that_fit() {
                 "state": {"kind": "infeasible", "reason": "Task cannot retain verification reserves"}}],
             "decision": {"kind": "infeasible"}
         },
+        "error": "No Pipeline selected for Task tight: infeasible: the Task's limits are too small for the plan",
+        "exit_code": 1,
+        "next_action": "af task plan --file tight.json --state ../state --fit",
         "planning_diagnostic": {
             "kind": "infeasible",
             "pipeline": "fixture/implementation",
@@ -365,12 +369,24 @@ fn a_refused_selection_names_the_smallest_limits_that_fit() {
             "unfixable": fit.unfixable,
         }
     });
-    assert_valid("task-selection-v2.json", &document);
+    assert_valid("task-selection-v3.json", &document);
     for (pointer, replacement, why) in [
         (
             "/schema",
-            json!("af/task-selection@1"),
+            json!("af/task-selection@2"),
             "the previous version",
+        ),
+        ("/exit_code", json!(0), "a refusal that exits 0"),
+        ("/error", json!(""), "a refusal without its sentence"),
+        (
+            "/next_action",
+            json!(null),
+            "an infeasible plan without the --fit command",
+        ),
+        (
+            "/next_action",
+            json!("af task run tight"),
+            "an infeasible plan that names another command",
         ),
         ("/attempts", json!(1), "a refusal that ran an Attempt"),
         (
@@ -391,8 +407,26 @@ fn a_refused_selection_names_the_smallest_limits_that_fit() {
     ] {
         let mut changed = document.clone();
         *changed.pointer_mut(pointer).unwrap() = replacement;
-        assert_invalid("task-selection-v2.json", &changed, why);
+        assert_invalid("task-selection-v3.json", &changed, why);
     }
+    for field in ["error", "exit_code", "next_action"] {
+        let mut previous = document.clone();
+        previous.as_object_mut().unwrap().remove(field);
+        assert_invalid("task-selection-v3.json", &previous, field);
+    }
+    // A refusal no command fixes names none.
+    let mut unavailable = document.clone();
+    unavailable["selection"]["decision"] = json!({"kind": "unavailable"});
+    unavailable["selection"]["candidates"][0]["state"] = json!({"kind": "unavailable", "reason": "Worker fixture executable python9 is unavailable"});
+    unavailable["error"] = json!(
+        "No Pipeline selected for Task tight: unavailable: a Worker or check cannot run here"
+    );
+    unavailable["next_action"] = json!(null);
+    unavailable
+        .as_object_mut()
+        .unwrap()
+        .remove("planning_diagnostic");
+    assert_valid("task-selection-v3.json", &unavailable);
     let mut shrunk = fit.clone();
     shrunk.required.tokens = 50;
     assert!(
@@ -402,7 +436,7 @@ fn a_refused_selection_names_the_smallest_limits_that_fit() {
     let mut extra = document;
     extra["planning_diagnostic"]["estimate_ms"] = json!(1);
     assert_invalid(
-        "task-selection-v2.json",
+        "task-selection-v3.json",
         &extra,
         "an estimate the planner never makes",
     );

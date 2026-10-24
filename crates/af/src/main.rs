@@ -37,6 +37,7 @@ mod caches;
 mod cli;
 mod config;
 mod doctor;
+mod error_document;
 mod human;
 mod interrupt;
 mod model_check;
@@ -1231,6 +1232,12 @@ fn main() {
         Err(error) => {
             drop(startup);
             perf_trace::finish();
+            // Under --json a usage error is the one `af/error@1` document `af help json`
+            // promises, beside clap's own message on stderr and with its exit code.
+            if let Some(document) = error_document::usage(&argv, &error) {
+                println!("{document}");
+                let _ = std::io::stdout().flush();
+            }
             error.exit()
         }
     };
@@ -1640,13 +1647,10 @@ fn main() {
     let code = match outcome {
         Ok(code) => code,
         Err(error) => {
+            // A classified refusal adds its cause, next command and facts (`af help json`).
+            let detail = error_document::take(&error);
             if argv.iter().skip(1).any(|word| word == "--json") {
-                let document = serde_json::json!({
-                    "schema": "af/error@1",
-                    "command": prefix,
-                    "error": error,
-                    "exit_code": 1,
-                });
+                let document = error_document::document(prefix, &error, 1, detail.as_ref());
                 println!("{document}");
             }
             eprintln!("{prefix}: {}", terminal_lines(&error));
@@ -2323,12 +2327,18 @@ fn print_plan(options: &Options) -> Result<(), String> {
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(repository, git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
-    let (plan, models) = authority::plan(options, &cas, &repo)?;
+    let (mut plan, models) = authority::plan(options, &cas, &repo)?;
+    let empty = plan["subject"]["empty"].as_bool() == Some(true);
+    let unfit = plan["pipeline"]["inputs_fit"].as_bool() == Some(false);
+    let missing = missing_bindings(&plan);
+    let next = plan_next_step(empty, unfit, &missing);
     if options.json {
-        // The document's shape is unchanged; the model lines go to stderr (ADR-0148).
+        // The model lines go to stderr (ADR-0148); the next command the text prints is the
+        // document's `next_action`, null where the text names no command.
         for line in &models {
             eprintln!("{}", terminal_text(line));
         }
+        plan["next_action"] = serde_json::json!(next.command);
         println!(
             "{}",
             serde_json::to_string(&plan).map_err(|error| error.to_string())?
@@ -2337,26 +2347,25 @@ fn print_plan(options: &Options) -> Result<(), String> {
     }
     let selectors = &plan["selectors"];
     let resolved = &plan["resolved"];
-    println!("review plan (token-free; no Campaign state)");
-    println!(
+    plan_line!("review plan (token-free; no Campaign state)");
+    plan_line!(
         "policy   {} => {}",
         terminal_text(selectors["policy_rev"].as_str().unwrap_or("?")),
         terminal_text(resolved["policy_snapshot_id"].as_str().unwrap_or("?"))
     );
     if let Some(base) = selectors["base"].as_str() {
-        println!(
+        plan_line!(
             "base     {} => {}",
             terminal_text(base),
             terminal_text(resolved["base_snapshot_id"].as_str().unwrap_or("?"))
         );
     }
-    println!(
+    plan_line!(
         "candidate {} => {}",
         terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
         terminal_text(resolved["candidate_snapshot_id"].as_str().unwrap_or("?"))
     );
-    let empty = plan["subject"]["empty"].as_bool() == Some(true);
-    println!(
+    plan_line!(
         "subject  {} ({} paths, {} patch{})",
         terminal_text(plan["subject"]["kind"].as_str().unwrap_or("?")),
         plan["subject"]["changed_paths"]
@@ -2371,7 +2380,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
     );
     if empty {
         // What is empty, and the selectors that would fill it.
-        println!(
+        plan_line!(
             "  empty  the diff from base {} to candidate {} changes no file; change files and \
              review them with --uncommitted, or name other revisions with --base REV and \
              --candidate REV",
@@ -2384,10 +2393,10 @@ fn print_plan(options: &Options) -> Result<(), String> {
         .into_iter()
         .flatten()
     {
-        println!("  change  {}", terminal_text(path.as_str().unwrap_or("?")));
+        plan_line!("  change  {}", terminal_text(path.as_str().unwrap_or("?")));
     }
     if let Some(route) = plan["route"].as_object() {
-        println!(
+        plan_line!(
             "route    {} => {}{}{}",
             terminal_text(
                 route
@@ -2416,13 +2425,13 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 .unwrap_or_default()
         );
     }
-    println!("topology");
+    plan_line!("topology");
     for node in plan["pipeline"]["topology"]["nodes"]
         .as_array()
         .into_iter()
         .flatten()
     {
-        println!(
+        plan_line!(
             "  node {} [{}]",
             terminal_text(node["id"].as_str().unwrap_or("?")),
             terminal_text(node["kind"].as_str().unwrap_or("?"))
@@ -2433,7 +2442,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
         .into_iter()
         .flatten()
     {
-        println!(
+        plan_line!(
             "  {}.{} -> {}.{}",
             terminal_text(edge["from"]["node"].as_str().unwrap_or("?")),
             terminal_text(edge["from"]["port"].as_str().unwrap_or("?")),
@@ -2442,7 +2451,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
         );
     }
     for gate in plan["pipeline"]["gates"].as_array().into_iter().flatten() {
-        println!(
+        plan_line!(
             "gate     {} ({})",
             terminal_text(gate["name"].as_str().unwrap_or("?")),
             if gate["required"].as_bool() == Some(true) {
@@ -2453,7 +2462,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
         );
     }
     if let Some(budgets) = plan["pipeline"]["budgets"].as_object() {
-        println!(
+        plan_line!(
             "budgets  {} tokens/Attempt; {} tokens/Round",
             budgets
                 .get("attempt")
@@ -2480,7 +2489,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 )
             })
             .collect::<Vec<_>>();
-        println!(
+        plan_line!(
             "reserve  {}; max simultaneous {}",
             parts.join(" · "),
             plan["pipeline"]["max_simultaneous_reservation"]
@@ -2491,7 +2500,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
             let Some(bytes) = reservation["input_bytes"].as_u64() else {
                 continue;
             };
-            println!(
+            plan_line!(
                 "input    {} {} (about {} tokens){}",
                 terminal_text(reservation["node"].as_str().unwrap_or("?")),
                 human::bytes(bytes),
@@ -2504,53 +2513,46 @@ fn print_plan(options: &Options) -> Result<(), String> {
             );
         }
     }
-    println!(
+    plan_line!(
         "provider admission  {} tokens, {} per capability (new capture; resume retains captured cost)",
         plan["provider_admission"]["tokens"],
         human::duration(plan["provider_admission"]["wall_ms"].as_u64().unwrap_or(0))
     );
     // A missing binding names its fix: a registered Provider of the Worker's kind, or how to
     // register one when this machine has none.
-    let registered = providers::registered()
-        .map(|(ids, _)| ids)
-        .unwrap_or_default();
-    let candidate = |kind: &str| {
-        registered
-            .iter()
-            .find(|(_, registered_kind)| *registered_kind == kind)
-            .map(|(id, _)| id.clone())
-    };
-    let mut missing = Vec::new();
     for provider in plan["providers"].as_array().into_iter().flatten() {
         let node = provider["node"].as_str().unwrap_or("?");
         let kind = provider["runner"].as_str().unwrap_or("?");
         match provider["binding"].as_str() {
-            Some(binding) => println!(
+            Some(binding) => plan_line!(
                 "provider {} -> {}",
                 terminal_text(node),
                 terminal_text(binding)
             ),
             None if provider["required"] == true => {
-                let fix = match candidate(kind) {
+                let fix = match missing
+                    .iter()
+                    .find(|(missing, _)| missing == node)
+                    .and_then(|(_, id)| id.as_deref())
+                {
                     Some(id) => format!("--provider {node}={id}"),
                     None => format!(
-                        "no {kind} Provider is registered: af provider status lists what this \
-                         machine has, af provider setup {kind}-main --kind {kind} --login \
+                        "no {kind} Provider is registered: `af provider status` lists what this \
+                         machine has, and `af provider setup {kind}-main --kind {kind} --login` \
                          registers one"
                     ),
                 };
-                println!(
+                plan_line!(
                     "provider {} -> MISSING; fix: {}",
                     terminal_text(node),
                     terminal_text(&fix)
                 );
-                missing.push((node.to_string(), candidate(kind)));
             }
-            None => println!("provider {} -> MISSING", terminal_text(node)),
+            None => plan_line!("provider {} -> MISSING", terminal_text(node)),
         }
     }
     for line in &models {
-        println!("{}", terminal_text(line));
+        plan_line!("{}", terminal_text(line));
     }
     let bound = plan["providers"]
         .as_array()
@@ -2559,23 +2561,95 @@ fn print_plan(options: &Options) -> Result<(), String> {
         .any(|provider| provider["required"] == true && provider["binding"].is_string());
     if bound {
         // The plan read each bound Provider's catalog, token-free (ADR-0148).
-        println!(
+        plan_line!(
             "effects  no state, Gates, Provider admission, Workers, or token spend; each bound Provider's model catalog was read token-free"
         );
     } else {
-        println!("effects  no state, Gates, Provider calls, Workers, or token spend");
+        plan_line!("effects  no state, Gates, Provider calls, Workers, or token spend");
     }
-    let unfit = plan["pipeline"]["inputs_fit"].as_bool() == Some(false);
-    println!(
-        "next:    {}",
-        terminal_text(&plan_next_step(empty, unfit, &missing))
-    );
+    // What to do, then the one command, whole: continued between its arguments when it is
+    // wider than the terminal, so it still runs as copied.
+    let width = human::width();
+    let command = next.command.as_deref().map(terminal_text);
+    match (next.prose.as_deref().map(terminal_text), command) {
+        (Some(prose), Some(command)) => {
+            println!("{}", human::wrap(&format!("next:    {prose}"), width, 9));
+            println!(
+                "{}",
+                human::fit_command(&format!("         {command}"), width)
+            );
+        }
+        (Some(prose), None) => println!("{}", human::wrap(&format!("next:    {prose}"), width, 9)),
+        (None, Some(command)) => {
+            println!(
+                "{}",
+                human::fit_command(&format!("next:    {command}"), width)
+            );
+        }
+        (None, None) => println!("next:    none"),
+    }
     Ok(())
+}
+
+/// One line of `af review plan`'s text, held to the terminal's width (`af help json` keeps the
+/// document whole): prose wraps at spaces under the column its label's values start at, and a
+/// command between backticks stays on one line.
+macro_rules! plan_line {
+    ($($argument:tt)*) => {
+        println!("{}", wrap_plan_line(&format!($($argument)*)))
+    };
+}
+use plan_line;
+
+/// [`plan_line!`]'s wrapping: continuation lines start where the line's first value does
+/// (`policy   HEAD => sha256:...` continues under `HEAD`), else two columns past its indent.
+fn wrap_plan_line(line: &str) -> String {
+    let width = human::width();
+    let lead = line.len() - line.trim_start().len();
+    let rest = &line[lead..];
+    let column = rest
+        .find("  ")
+        .map(|at| lead + at + (rest[at..].len() - rest[at..].trim_start().len()))
+        .filter(|column| *column <= width / 3)
+        .unwrap_or(lead + 2);
+    human::wrap(line, width, column)
+}
+
+/// The model Workers of `plan` without a Provider binding, each with a registered Provider of
+/// its kind when this machine has one.
+fn missing_bindings(plan: &serde_json::Value) -> Vec<(String, Option<String>)> {
+    let registered = providers::registered()
+        .map(|(ids, _)| ids)
+        .unwrap_or_default();
+    plan["providers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|provider| provider["binding"].is_null() && provider["required"] == true)
+        .map(|provider| {
+            let kind = provider["runner"].as_str().unwrap_or("?");
+            let candidate = registered
+                .iter()
+                .find(|(_, registered_kind)| *registered_kind == kind)
+                .map(|(id, _)| id.clone());
+            (
+                provider["node"].as_str().unwrap_or("?").to_owned(),
+                candidate,
+            )
+        })
+        .collect()
+}
+
+/// What `af review plan` says to do next: what to do, when that is more than one command, and
+/// the one command to run, when there is one. The command is the document's `next_action`.
+struct NextStep {
+    prose: Option<String>,
+    command: Option<String>,
 }
 
 /// What `af review plan` tells a person to do next: the exact `af review run` command when the
 /// plan is what run admits, else the first thing that keeps it from running.
-fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]) -> String {
+fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]) -> NextStep {
     let words: Vec<String> = std::env::args().skip(1).collect();
     let rerun = |subcommand: &str, extra: &[String]| {
         let mut command = vec!["af".to_string()];
@@ -2592,15 +2666,23 @@ fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]
         shell_words::join(command)
     };
     if empty {
-        return format!(
-            "change files first; the diff is empty and af review run refuses it. Then: {}",
-            rerun("plan", &[])
-        );
+        return NextStep {
+            prose: Some(
+                "change files first; the diff is empty and `af review run` refuses it. Then:"
+                    .into(),
+            ),
+            command: Some(rerun("plan", &[])),
+        };
     }
     if unfit {
-        return "narrow the Subject (a smaller --base REV to --candidate REV range) or raise the \
-                Worker's budget.attempt, then plan again"
-            .into();
+        return NextStep {
+            prose: Some(
+                "narrow the Subject (a smaller --base REV to --candidate REV range) or raise the \
+                 Worker's budget.attempt, then plan again"
+                    .into(),
+            ),
+            command: None,
+        };
     }
     if !missing.is_empty() {
         if missing.iter().all(|(_, id)| id.is_some()) {
@@ -2613,13 +2695,24 @@ fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]
                     ]
                 })
                 .collect();
-            return rerun("plan", &flags);
+            return NextStep {
+                prose: None,
+                command: Some(rerun("plan", &flags)),
+            };
         }
-        return "register a Provider for each model Worker (af provider setup ID --kind KIND \
-                --login), then bind each with --provider NODE=ID"
-            .into();
+        return NextStep {
+            prose: Some(
+                "register a Provider for each model Worker (`af provider setup ID --kind KIND \
+                 --login`), then bind each with --provider NODE=ID"
+                    .into(),
+            ),
+            command: None,
+        };
     }
-    rerun("run", &[])
+    NextStep {
+        prose: None,
+        command: Some(rerun("run", &[])),
+    }
 }
 
 /// One progress line of `af review run`: findings, nodes and reasons a reviewer or the

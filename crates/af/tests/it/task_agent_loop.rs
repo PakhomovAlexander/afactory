@@ -369,6 +369,11 @@ evaluator (evaluate_goal): passed
   Verified offset and limit on the sealed source
 next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base --confirm chain-base
 ";
+    // The next command carries the `--state` the command was given.
+    let expected = expected.replace(
+        "--confirm chain-base\n",
+        &format!("--confirm chain-base --state {}\n", state.display()),
+    );
     assert_eq!(ids_elided(&text), expected);
 
     let value = document(
@@ -1088,7 +1093,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     assert_eq!(
         cancelled["state"],
         serde_json::json!({"phase":"abandoned","outcome":"cancelled","cause":"host_cancelled",
-            "next_action":format!("af task run {task}")})
+            "next_action":format!("af task run {task} --state {}", state.display())})
     );
     let gone = Instant::now() + Duration::from_secs(15);
     while alive(pid) || alive(worker[1]) {
@@ -1107,7 +1112,10 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     );
     assert!(shown.contains("cancelled: run 1 by "), "{shown}");
     assert!(
-        shown.ends_with(&format!("next: af task run {task}\n")),
+        shown.ends_with(&format!(
+            "next: af task run {task} --state {}\n",
+            state.display()
+        )),
         "{shown}"
     );
     let again = af(&repo, &state, &["task", "cancel", task]);
@@ -1144,7 +1152,8 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         stderr.lines().last().unwrap(),
         format!(
             "Task {task}: finished/verified; next: af task deliver {task} --branch af/{task} \
-             --worktree ../{task} --confirm {task}"
+             --worktree ../{task} --confirm {task} --state {}",
+            state.display()
         )
     );
     let settled = document(

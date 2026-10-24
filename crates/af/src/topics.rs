@@ -30,12 +30,12 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
     ),
     (
         "task-states",
-        "The one Task state every af task command prints: phase, outcome, cause and next command",
+        "The one Task state af task prints: phase, outcome, cause and next command",
         TASK_STATES,
     ),
     (
         "task-file",
-        "The Task file: its fields, project defaults, context and continuing a reviewed Task",
+        "The Task file: its fields, defaults, context and continuing a reviewed Task",
         TASK_FILE,
     ),
     (
@@ -122,12 +122,15 @@ pub(crate) fn task_state_tables() -> String {
     }
     out.push_str("\nCauses, with the outcome each belongs to\n\n");
     for cause in TaskCauseV1::ALL {
-        out.push_str(&format!(
-            "  {:<24} {:<18} {}\n",
+        // A description wider than the page continues under its own column.
+        let row = format!(
+            "  {:<24} {:<18} {}",
             cause.as_str(),
             cause.outcome().map_or("(retained)", TaskOutcomeV1::as_str),
             cause.description()
-        ));
+        );
+        out.push_str(&crate::human::wrap(&row, 100, 46));
+        out.push('\n');
     }
     out.trim_end().to_owned()
 }
@@ -136,7 +139,7 @@ pub(crate) fn task_state_tables() -> String {
 fn task_exit_codes() -> String {
     use review_core::task::state::TaskOutcomeV1;
     let mut out = String::from(
-        "`af task run`, `af task start --execute`, `af task explain` and `af review run --file` \
+        "`af task run`, `af task start --execute`, `af task explain` and `af review run --file`\n\
          end with their Task's outcome (`af help task-states`):\n\n",
     );
     let mut codes: Vec<(u8, Vec<&str>)> = Vec::new();
@@ -158,15 +161,18 @@ fn task_exit_codes() -> String {
         };
         out.push_str(&format!("  {code:<4} {}{extra}\n", names.join(", ")));
     }
+    // Hard-wrapped: a page is printed as written, and no line is wider than 100 columns.
     out.push_str(
-        "\nWhere such a code's result goes to stdout alone (under --json, `af task explain`, \
-         `af task run` of a Task that already finished), stderr ends with `Task ID: \
-         phase/outcome/cause; next: COMMAND`, so a non-zero exit always says why there.\n\
-         \n`af task wait` ends with the same code once the Task settles (4 for a Task that was \
-         cancelled or waits for a person), and with 124 when its --timeout passes first.\n\
-         \n`af task show`, `af task list`, `af task report`, `af task status` and `af task \
-         findings` exit 0 once they read the Store: the state they print is data, not their \
-         outcome.",
+        "
+Where such a code's result goes to stdout alone (under --json, `af task explain`, `af task run`
+of a Task that already finished), stderr ends with `Task ID: phase/outcome/cause; next: COMMAND`,
+so a non-zero exit always says why there.
+
+`af task wait` ends with the same code once the Task settles (4 for a Task that was cancelled or
+waits for a person), and with 124 when its --timeout passes first.
+
+`af task show`, `af task list`, `af task report`, `af task status` and `af task findings` exit 0
+once they read the Store: the state they print is data, not their outcome.",
     );
     out
 }
@@ -253,8 +259,8 @@ The project file is `.af/af.toml` at the git toplevel. `version`, `[project]` `n
 `min_af`, and `[defaults]` `pipeline` are required: they name the project, the minimum `af`
 release it needs and its default review pipeline. Optional `[[routes]]` pick a pipeline by the
 changed paths, and an optional `[survey]` table bounds what the Surveyor measures into a Survey
-(`af project refresh --help`). Worker packages live under `.af/workers/`, pinned in `.af/af.lock`; pipelines
-name them.
+(`af project refresh --help`). Worker packages live under `.af/workers/`, pinned in
+`.af/af.lock`; pipelines name them.
 
   version = 1
   [project]   name = \"myrepo\"      min_af = \"0.7\"
@@ -298,14 +304,17 @@ Examples:
   AF_SELF__AUTO_UPDATE=never af config show --origin";
 
 // The first line of a table keeps its indent: a `"\` continuation would strip it.
-const ENVIRONMENT: &str = "  AF_<TABLE>__<KEY>       override one configuration value (highest layer), e.g.
+const ENVIRONMENT: &str =
+    "  AF_<TABLE>__<KEY>       override one configuration value (highest layer), e.g.
                           AF_TELEMETRY__LEVEL=content for one run
   AF_VERSION              run this installed version regardless of the project's pin
   AF_SELF_OFFLINE=1       never contact a release source: no pin installs, no update checks
   AF_RELEASE_SOURCE       a local directory of releases (<tag>/<asset>) instead of GitHub
-  AF_RELEASE_KEY          a minisign .pub file to verify SHA256SUMS with, instead of the embedded key
-  AF_PROVIDERS_FILE       absolute path of the provider registry (default: ~/.config/af/providers.toml)
-  AF_CACHE_POLICY_FILE    absolute path of machine-local cache policy (default: ~/.config/af/caches.toml)
+  AF_RELEASE_KEY          a minisign .pub file to verify SHA256SUMS with, not the embedded key
+  AF_PROVIDERS_FILE       absolute path of the provider registry
+                          (default: ~/.config/af/providers.toml)
+  AF_CACHE_POLICY_FILE    absolute path of machine-local cache policy
+                          (default: ~/.config/af/caches.toml)
   AF_DISPATCHED_FROM      set by af when it execs a pinned version; never set it yourself
   AF_TASK_RUN_DETACHED    set by `af task run --detach` on the run it starts; never set it yourself
   XDG_CONFIG_HOME         config          (~/.config)
@@ -350,8 +359,21 @@ Examples:
 const JSON: &str = "\
 stdout is the result, stderr is progress. With --json every reading command prints exactly one
 JSON document on stdout — no banner, no trailing text — so `af … --json | jq` always works.
-Errors under --json are one document on stdout with an `error` field and the same exit code. A
-command that classifies its own outcomes — `af provider status` and `af provider setup` — prints
+Errors under --json are one af/error@1 document on stdout (schemas/error-v1.json) with the same
+exit code: `command`, `error` (the sentence stderr prints) and `exit_code`. A usage error is one
+too, exit 2, with clap's message; `--help` and `--version` are not errors. A refusal af
+classifies adds `cause`, `next_action` (the one af command to run next, with the --repo, --state
+or --workspace the command was given; null when there is none) and `details`, the facts behind
+the cause:
+
+  usage                exit 2; next_action is the command's --help
+  recovery_exhausted   a node used up its recovery allowance: node, count (abandoned
+                       Attempts), writer_lost, host_cancelled, allowance
+  refresh_refused      exit 4: no Pipeline can run the refreshed source; decision
+  task_file_invalid    a Task file field af refuses: file, field, value
+  input_unreadable     a file the command names cannot be read: file, what
+
+A command that classifies its own outcomes — `af provider status` and `af provider setup` — prints
 its own versioned document instead, carrying that exit code and an af-authored `diagnostic`;
 stderr still gets one diagnostic line, so discarding stdout never hides a refusal. The Provider
 documents are af/provider-detect@2 (`af provider detect`), af/provider-status@3,
@@ -376,11 +398,16 @@ The Task documents, each named by its `schema`:
   af task status --json, wait --json   af/task-status@1
   af task run --detach --json          af/task-detached@1
   af task cancel --json                af/task-cancelled@1
-  af task plan --json, refused         af/task-selection@2; an infeasible plan carries
+  af task plan --json, refused         af/task-selection@3, exit 1, with `error`, `exit_code`
+                                       and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-Each carries the Task's `state` (`af help task-states`); a previous version is refused, never
-read.
+af/task-inspection@13, af/task-collected-inspection@2, af/task-checks@2, each
+af/task-list-entry@3, af/task-report@2, af/task-findings@1, af/task-status@1, af/task-detached@1
+and af/task-cancelled@1 carry the Task's `state` (`af help task-states`), its `next_action`
+carrying the selectors the command was given (a report, pasted into a pull request, names no
+Store path); the diff, the materialized candidate and the refused selection describe no Task
+state. A previous version is refused, never read.
 
 Examples:
   af task list --json
@@ -462,9 +489,12 @@ says the same with `\"continue\": {\"task\": \"TASK\", \"round\": 1}`. `af task 
 continued Task's row.
 
 Examples:
-  af task plan --file ticket.json   # needs: a Task file ticket.json; stderr names the defaults
-  af task run fix-2 --from fix-1   # needs: a finished reviewed Task fix-1; plans fix-2 from it
-  af task run fix-2 --from fix-1 --round 1 --goal goal.md --execute   # needs: the same, goal.md";
+  # needs: a Task file ticket.json; stderr names the defaults
+  af task plan --file ticket.json
+  # needs: a finished reviewed Task fix-1; plans fix-2 from it
+  af task run fix-2 --from fix-1
+  # needs: the same, and goal.md
+  af task run fix-2 --from fix-1 --round 1 --goal goal.md --execute";
 
 const PROVIDERS: &str = "\
 A Provider is a login of an official model CLI, `claude` (Claude Code) or `codex` (Codex CLI),
@@ -516,10 +546,13 @@ younger than keep_days or one a delivered Workspace was made from, a Store with 
 lease, or a Project Store another release wrote.
 
 Examples:
-  af storage                  # what af holds, per kind, against the budget and the free-disk floor
-  af storage --verbose        # also every path it could not measure, and every Store left alone
+  # what af holds, per kind, against the budget and the free-disk floor
+  af storage
+  # also every path it could not measure, and every Store left alone
+  af storage --verbose
   af storage prune            # preview the sweep: collection, then the budget
-  af storage prune --apply    # perform it now (it also runs after every task and review run)
+  # perform it now (it also runs after every task and review run)
+  af storage prune --apply
 
 The [storage] table, machine layers only (built-in, system, user, AF_STORAGE__<KEY>); a
 repository's .af/af.toml cannot set it:
@@ -622,9 +655,9 @@ the first af.run until the seal one consumer thread is the segment's only writer
 record is in it within flush_latency_ms; at the command's end it writes the command's end and
 seals the segment within one bound — 2 s beyond its last progress, each content of a released
 harness stream it publishes renewing it — else it is abandoned, publishes nothing, and the
-segment is left for the next reader to recover. A run's executions (one per process that worked on it,
-numbered by the execution markers, TaskExecutionStarted@1 events of the Task's log, the Store
-holds for the leases before it) can
+segment is left for the next reader to recover. A run's executions (one per process that worked
+on it, numbered by the execution markers, TaskExecutionStarted@1 events of the Task's log, the
+Store holds for the leases before it) can
 overlap: active time is their union, execution time their sum, elapsed time first start to last
 end. Its history is
 `prefix:k` or `partial`, never complete, and its open executions are named beside the sealed
@@ -838,9 +871,9 @@ Updates — `[self]` in ~/.config/af/config.toml
   latest pre-release Y (you run R: af self update --rc)`; a release older than the running one
   is never shown as simply `latest`. CI, AF_SELF_OFFLINE, update_check = false and auto_update =
   \"never\" turn the check off; `af self update --check` offline prints `offline: check skipped`
-  and exits 0. Inside a pinned project the af that dispatches schedules it, once. Only an interactive
-  run — stderr a terminal, no --json — prints the cached notice, one line on stderr; under a
-  pin, the af that dispatches prints it. With `always`, the child installs the newer release
+  and exits 0. Inside a pinned project the af that dispatches schedules it, once. Only an
+  interactive run — stderr a terminal, no --json — prints the cached notice, one line on stderr;
+  under a pin, the af that dispatches prints it. With `always`, the child installs the newer release
   and retargets the default, unless `af self update` or `rollback` changed it meanwhile; the
   running process and every pinned project are untouched. Its \"updated the default\" notice is
   shown only while the activation it announces stands: one a later update or rollback made

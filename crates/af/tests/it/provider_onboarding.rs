@@ -213,7 +213,11 @@ fn setup_refuses_json_with_interactive_login() {
     let output = af(root.path(), &bin, &borrowed(&args));
 
     assert_eq!(code(&output), 2, "{}", err(&output));
-    assert!(out(&output).is_empty(), "{}", out(&output));
+    // Under --json the usage error is the one `af/error@1` document, and nothing else.
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| panic!("not one document: {}", out(&output)));
+    assert_eq!(document["schema"], "af/error@1", "{document}");
+    assert_eq!(document["exit_code"], 2, "{document}");
     let stderr = err(&output);
     assert!(stderr.contains("cannot be used with"), "{stderr}");
     assert!(!auth.join("login-log").exists());

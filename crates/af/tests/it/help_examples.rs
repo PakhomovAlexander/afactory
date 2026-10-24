@@ -16,10 +16,12 @@ use std::time::{Duration, Instant};
 /// longer runs as written.
 const WIDTH: usize = 100;
 
-fn af(args: &[&str]) -> Output {
+/// `af ARGS` as a terminal `columns` wide renders it: clap reads `COLUMNS` without a terminal.
+fn af_at(columns: usize, args: &[&str]) -> Output {
     crate::common::af()
         .args(args)
         .env("NO_COLOR", "1")
+        .env("COLUMNS", columns.to_string())
         .output()
         .unwrap()
 }
@@ -50,7 +52,13 @@ fn subcommands(path: &[String]) -> Vec<String> {
 
 /// Every help page: `af <path> --help` for the root and every visible subcommand, then
 /// `af help <topic>` for every topic. Each is named as a reader would type it.
-fn pages() -> Vec<(String, String)> {
+pub(crate) fn pages() -> Vec<(String, String)> {
+    pages_at(WIDTH)
+}
+
+/// [`pages`] as a terminal `columns` wide renders them.
+pub(crate) fn pages_at(columns: usize) -> Vec<(String, String)> {
+    let af = |args: &[&str]| af_at(columns, args);
     let mut pages = Vec::new();
     let mut pending: Vec<Vec<String>> = vec![Vec::new()];
     while let Some(path) = pending.pop() {
@@ -88,6 +96,50 @@ fn pages() -> Vec<(String, String)> {
         pages.push((format!("af help {topic}"), out(&page)));
     }
     pages
+}
+
+/// The lines of every `Examples:` block of `text`.
+fn example_lines(text: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut in_block = false;
+    for line in text.lines() {
+        if line.trim_end() == "Examples:" {
+            in_block = true;
+        } else if in_block && (line.trim().is_empty() || !line.starts_with(' ')) {
+            in_block = false;
+        } else if in_block {
+            lines.push(line.to_owned());
+        }
+    }
+    lines
+}
+
+/// Every example block as a terminal 80 columns wide renders it: each line is a command, the
+/// `\`-continued line of one, or a `#` note, and the block reads exactly as it does 100 columns
+/// wide. clap wraps a line wider than the terminal, and a note's tail it wraps onto a line of
+/// its own would run as a command when copied.
+#[test]
+fn every_example_line_at_80_columns_is_a_command_or_a_note() {
+    let wide: std::collections::BTreeMap<String, String> = pages().into_iter().collect();
+    let mut wrong = Vec::new();
+    for (page, text) in pages_at(80) {
+        let lines = example_lines(&text);
+        let mut continued = false;
+        for line in &lines {
+            let body = line.trim_start();
+            let command = body
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .any(|word| word == "af");
+            if !(continued || command || body.starts_with('#')) {
+                wrong.push(format!("{page}: a wrapped example line: {line:?}"));
+            }
+            continued = body.ends_with('\\');
+        }
+        if wide.get(&page).map(|text| example_lines(text)) != Some(lines) {
+            wrong.push(format!("{page}: its examples wrap at 80 columns"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 /// One example as its page prints it.
@@ -230,9 +282,44 @@ fn onboarded(root: &Path) -> PathBuf {
     repo
 }
 
-/// The PATH examples run with: this binary, then the system's own tools.
+/// The directories whose tools an example may run, each linked into the examples' own bin.
+const SYSTEM_DIRS: [&str; 4] = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+
+/// A Provider CLI, which no example may find: an example that needs one says so.
+fn is_provider_cli(name: &str) -> bool {
+    name.starts_with("claude") || name.starts_with("codex")
+}
+
+/// Link every executable of `sources` into `bin`, the first of a name winning, except a
+/// Provider CLI: the examples' PATH is `bin` alone, so a `codex` or `claude` installed in a
+/// system directory is never one an example runs.
+fn shim_tools(bin: &Path, sources: &[&Path]) {
+    use std::os::unix::fs::PermissionsExt as _;
+    for source in sources {
+        let Ok(entries) = std::fs::read_dir(source) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(text) = name.to_str() else {
+                continue;
+            };
+            let link = bin.join(&name);
+            if is_provider_cli(text) || link.symlink_metadata().is_ok() {
+                continue;
+            }
+            let executable = std::fs::metadata(entry.path())
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0);
+            if executable {
+                std::os::unix::fs::symlink(entry.path(), link).unwrap();
+            }
+        }
+    }
+}
+
+/// The PATH examples run with: their own bin, which holds this binary and the system's tools.
 fn examples_path(bin: &Path) -> String {
-    format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin.display())
+    bin.display().to_string()
 }
 
 fn has_jq(bin: &Path) -> bool {
@@ -253,8 +340,13 @@ fn runnable(text: &str, jq: bool) -> String {
     if jq {
         return text.to_owned();
     }
+    // A filter on a continued line of its own leaves the command's ` \` behind it.
     match text.find("| jq") {
-        Some(at) => text[..at].trim_end().to_owned(),
+        Some(at) => text[..at]
+            .trim_end()
+            .trim_end_matches('\\')
+            .trim_end()
+            .to_owned(),
         None => text.to_owned(),
     }
 }
@@ -362,6 +454,8 @@ fn every_help_example_runs_as_written_in_an_onboarded_repository() {
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::os::unix::fs::symlink(crate::common::af_binary(), bin.join("af")).unwrap();
+    let system: Vec<&Path> = SYSTEM_DIRS.iter().map(Path::new).collect();
+    shim_tools(&bin, &system);
     let jq = has_jq(&bin);
     let mut seen = std::collections::BTreeSet::new();
     let mut ran = 0;
@@ -385,6 +479,60 @@ fn every_help_example_runs_as_written_in_an_onboarded_repository() {
     }
     assert!(ran > 60, "only {ran} examples ran");
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// A Provider CLI in a system directory, here an incompatible `codex` and `claude` that fail
+/// every invocation, is not on the examples' PATH: the tools beside it are, and an example that
+/// looks for a Provider CLI finds the same nothing it finds without them.
+#[test]
+fn a_provider_cli_in_a_system_directory_is_not_on_the_examples_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let system = root.join("usr-local-bin");
+    std::fs::create_dir_all(&system).unwrap();
+    for name in ["codex", "claude"] {
+        crate::common::write(
+            &system.join(name),
+            "#!/bin/sh\necho incompatible >&2\nexit 3\n",
+        );
+        let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+        std::fs::set_permissions(system.join(name), mode).unwrap();
+    }
+    std::os::unix::fs::symlink("/bin/sh", system.join("sh")).unwrap();
+    let detect = |sources: &[&Path]| {
+        let bin = tempfile::tempdir_in(&root).unwrap();
+        std::os::unix::fs::symlink(crate::common::af_binary(), bin.path().join("af")).unwrap();
+        shim_tools(bin.path(), sources);
+        let example = Example {
+            page: "test".into(),
+            text: "command -v codex || command -v claude || af provider detect --json".into(),
+            needs: None,
+            exit: 0,
+        };
+        let repo = tempfile::tempdir_in(&root).unwrap();
+        let (code, output) = run(&example, repo.path(), bin.path(), false);
+        let tools = std::fs::read_dir(bin.path()).unwrap().count();
+        (code, output, tools)
+    };
+    let mut with: Vec<&Path> = vec![&system];
+    with.extend(SYSTEM_DIRS.iter().map(Path::new));
+    let without: Vec<&Path> = SYSTEM_DIRS.iter().map(Path::new).collect();
+    let (code, output, tools) = detect(&with);
+    assert!(tools > 20, "the system's tools are linked: {tools}");
+    assert!(!output.contains("incompatible"), "{output}");
+    assert!(!output.contains("usr-local-bin"), "{output}");
+    let (bare, bare_output, _) = detect(&without);
+    assert_eq!(code, bare, "{output}\n{bare_output}");
+    let binaries = |output: &str| -> serde_json::Value {
+        let stdout = output
+            .strip_prefix("stdout:\n")
+            .and_then(|rest| rest.split("\nstderr:\n").next())
+            .unwrap_or_default();
+        let document: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_default();
+        document["binaries"].clone()
+    };
+    assert_eq!(binaries(&output), serde_json::json!([]), "{output}");
+    assert_eq!(binaries(&output), binaries(&bare_output), "{output}");
 }
 
 #[test]

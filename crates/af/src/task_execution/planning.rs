@@ -135,7 +135,7 @@ pub(super) fn start(
         )
     })();
     release(&cas, &mut store, &lease, outcome)?;
-    let code = present_with_advisory(
+    let presented = present_with_advisory(
         &cas,
         &store,
         &revision.task_id,
@@ -143,8 +143,8 @@ pub(super) fn start(
         true,
         &undeclared,
     )?;
-    state_note(&cas, &store, &revision.task_id, code);
-    Ok(code)
+    presented.note(presented.code);
+    Ok(presented.code)
 }
 
 #[allow(clippy::too_many_arguments)]

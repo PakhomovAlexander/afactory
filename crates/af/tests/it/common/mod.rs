@@ -47,6 +47,10 @@ pub fn af() -> Command {
     command.env(DETECT_SYSTEM_DIRS_SETTING, "");
     command.env(RETRY_BASE_SETTING, TEST_RETRY_BASE_MS);
     command.env("AF_SELF_OFFLINE", "1");
+    // Human text is held to `COLUMNS` without a terminal, as clap holds `--help`: the
+    // developer's own terminal width never changes what a test reads. A test of a width sets
+    // its own.
+    command.env_remove("COLUMNS");
     command
 }
 

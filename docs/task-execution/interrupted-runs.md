@@ -105,6 +105,12 @@ exit code 1:
 af task: cannot continue Task pagination-cli: node root.nodes.implement lost its writer 2 times (recovery allowance 1); fix: start it again with `af task start --file TASK_FILE` (the Task file it was started from), or allow more with `[slots.implementer] recovery_attempts` in its pipeline (af.pipeline/3)
 ```
 
+Under `--json` the same refusal is one `af/error@1` document whose typed fields a script
+branches on (`af help json`): `cause` `recovery_exhausted`, `next_action` the `af task start`
+command, and `details` with the `node`, its abandoned Attempts (`count`, of which `writer_lost`
+and `host_cancelled`) and its `allowance`. Given `--repo`, `--state` or `--workspace`, the fix
+and `next_action` carry them as typed.
+
 ## What `af task show` and `af task list` print
 
 A Task is *abandoned* when it is unfinished, no run holds its lease, and its last run left an

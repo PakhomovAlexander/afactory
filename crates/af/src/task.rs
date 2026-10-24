@@ -1844,18 +1844,26 @@ fn print_task_list(
                 *width = (*width).max(cell.chars().count());
             }
         }
+        // Wider than the terminal, each row's next command moves to an indented line of its
+        // own, whole, and the table keeps the other columns.
+        let terminal = crate::human::width();
+        let narrow = rows.iter().zip(&extras).any(|(row, extra)| {
+            list_row(row, &widths, true).chars().count() + extra.len() > terminal
+        });
+        let mut next_actions = std::iter::once(None).chain(
+            tasks
+                .iter()
+                .map(|task| task["state"]["next_action"].as_str().map(str::to_owned)),
+        );
         for (row, extra) in rows.iter().zip(&extras) {
-            let mut line = String::new();
-            for (index, (cell, width)) in row.iter().zip(widths).enumerate() {
-                if index == 3 {
-                    line.push_str(&format!("{cell:>width$}  "));
-                } else if index == 5 {
-                    line.push_str(cell);
-                } else {
-                    line.push_str(&format!("{cell:<width$}  "));
-                }
+            let next = next_actions.next().flatten();
+            println!("{}{extra}", list_row(row, &widths, !narrow));
+            if let Some(next) = next.filter(|_| narrow) {
+                println!(
+                    "{}",
+                    crate::human::fit_command(&format!("  next: {next}"), terminal)
+                );
             }
-            println!("{}{extra}", line.trim_end());
         }
     }
     if let Some(store) = store {
@@ -1867,6 +1875,25 @@ fn print_task_list(
         );
     }
     Ok(())
+}
+
+/// One row of `af task list`'s table, its columns aligned to `widths` two spaces apart, or in
+/// the narrow layout one space apart and without the `NEXT` column.
+fn list_row(row: &[String; 6], widths: &[usize; 6], wide: bool) -> String {
+    let gap = if wide { "  " } else { " " };
+    let mut line = String::new();
+    for (index, (cell, width)) in row.iter().zip(widths).enumerate() {
+        if index == 3 {
+            line.push_str(&format!("{cell:>width$}{gap}"));
+        } else if index == 5 {
+            if wide {
+                line.push_str(cell);
+            }
+        } else {
+            line.push_str(&format!("{cell:<width$}{gap}"));
+        }
+    }
+    line.trim_end().to_owned()
 }
 
 /// The document `af task list --json` prints.

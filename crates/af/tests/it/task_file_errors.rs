@@ -156,3 +156,61 @@ fn a_zero_duration_flag_is_refused_before_the_task_file_is_read() {
     );
     assert_eq!(output.status.code(), Some(2), "{}", err(&output));
 }
+
+/// A `--goal` file that cannot be opened is refused by its path with the fix, and under
+/// `--json` with the command that plans the continuation once the file is there.
+#[test]
+fn a_missing_goal_file_names_its_path_and_the_fix() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let (repo, state) = crate::task_cli::fixture_named(root, "pagination");
+    let planned = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "plan", "--file", "ticket.json", "--state"])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(planned.status.success(), "{}", err(&planned));
+    let goal = root.join("goal.md");
+    let shown = goal.display().to_string();
+    let args = [
+        "task",
+        "run",
+        "fix-2",
+        "--from",
+        "pagination-cli",
+        "--goal",
+        &shown,
+        "--state",
+        state.to_str().unwrap(),
+    ];
+    let refused = af(&repo, &args);
+    assert_eq!(refused.status.code(), Some(1), "{}", err(&refused));
+    let said = err(&refused);
+    assert!(
+        said.contains(&format!("cannot open goal file {shown}: ")),
+        "{said}"
+    );
+    assert!(
+        said.trim_end().ends_with(
+            "; write the goal there, or pass --goal FILE naming an existing Markdown file"
+        ),
+        "{said}"
+    );
+    let json = af(&repo, &[&args[..], &["--json"]].concat());
+    assert_eq!(json.status.code(), Some(1));
+    let document: Value = serde_json::from_slice(&json.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("error-v1.json"), &document);
+    assert_eq!(document["cause"], "input_unreadable", "{document}");
+    assert_eq!(
+        document["details"],
+        json!({"file": shown, "what": "goal file"})
+    );
+    assert_eq!(
+        document["next_action"],
+        format!(
+            "af task run fix-2 --from pagination-cli --goal {shown} --state {}",
+            state.display()
+        )
+    );
+}

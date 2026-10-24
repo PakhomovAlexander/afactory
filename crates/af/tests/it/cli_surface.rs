@@ -241,7 +241,9 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
         "af/task-list@3",
         "af/task-list-entry@3",
         "af/task-report@2",
-        "af/task-selection@2",
+        "af/task-selection@3",
+        "af/error@1",
+        "recovery_exhausted",
         "planning_diagnostic.required_limits",
     ] {
         assert!(json.contains(needle), "{needle}:\n{json}");
@@ -399,7 +401,7 @@ fn task_run_help_describes_the_resume_of_an_interrupted_run() {
             "without using one of the node's Attempts",
             "unless its slot declares `recovery_attempts`",
             "the first line says `cannot continue Task TASK_ID` with the count and the fix",
-            "af task run TASK_ID # needs: a Task whose run was interrupted (`interrupted by SIGINT`)",
+            "# needs: a Task whose run was interrupted (`interrupted by SIGINT`) af task run TASK_ID",
         ] {
             assert!(flat.contains(needle), "`{needle}` missing:\n{text}");
         }
@@ -1635,4 +1637,91 @@ fn task_run_help_and_the_task_file_topic_describe_continuation() {
     ] {
         assert!(flat.contains(needle), "`{needle}` missing:\n{text}");
     }
+}
+
+/// A usage error under `--json` is the one `af/error@1` document `af help json` promises, with
+/// clap's message and exit 2, beside clap's own lines on stderr; without `--json` stdout stays
+/// empty, and `--help` and `--version` under `--json` are no errors.
+#[test]
+fn usage_errors_under_json_print_one_error_document() {
+    for args in [
+        &[
+            "task",
+            "start",
+            "--file",
+            "ticket.json",
+            "--timeout-secs",
+            "0",
+        ][..],
+        &["provider", "detect", "--kind", "gemini"],
+        &["review", "plan", "--unknown"],
+        &["provider", "doctor", "--unknown"],
+        &["task", "findings", "missing", "--round", "0"],
+        &["task", "wait", "missing", "--timeout", "0"],
+        &["task", "run", "new", "--from", "first", "--round", "17"],
+    ] {
+        let plain = af(args);
+        assert_eq!(plain.status.code(), Some(2), "{args:?}: {}", err(&plain));
+        assert!(out(&plain).is_empty(), "{args:?}: {}", out(&plain));
+        assert!(
+            err(&plain).starts_with("error: "),
+            "{args:?}: {}",
+            err(&plain)
+        );
+        let json = af(&[args, &["--json"]].concat());
+        assert_eq!(json.status.code(), Some(2), "{args:?}: {}", err(&json));
+        let document: serde_json::Value = serde_json::from_slice(&json.stdout)
+            .unwrap_or_else(|_| panic!("{args:?}: not one document: {}", out(&json)));
+        crate::schemas::valid(&crate::schemas::validator("error-v1.json"), &document);
+        assert_eq!(document["schema"], "af/error@1", "{args:?}");
+        assert_eq!(document["exit_code"], 2, "{args:?}");
+        assert_eq!(document["cause"], "usage", "{args:?}");
+        let message = document["error"].as_str().unwrap();
+        let first = err(&json).lines().next().unwrap().to_owned();
+        assert_eq!(
+            Some(message.lines().next().unwrap()),
+            first.strip_prefix("error: "),
+            "{args:?}: clap's message"
+        );
+        let command = document["command"].as_str().unwrap();
+        assert_eq!(command, format!("af {} {}", args[0], args[1]), "{args:?}");
+        assert_eq!(document["next_action"], format!("{command} --help"));
+    }
+    for args in [
+        &["task", "plan", "--help", "--json"][..],
+        &["--version", "--json"],
+    ] {
+        let shown = af(args);
+        assert!(shown.status.success(), "{args:?}: {}", err(&shown));
+        assert!(
+            !out(&shown).contains("af/error@1"),
+            "{args:?}: {}",
+            out(&shown)
+        );
+    }
+}
+
+/// `af task --help` leads a reader to continuing a reviewed Task, and `af task report --help`
+/// counts a lease that recorded a gate retry as active time, as the report does.
+#[test]
+fn task_help_names_continuation_and_report_help_counts_gate_retries() {
+    let task = out(&af(&["task", "--help"]));
+    let run = task
+        .lines()
+        .find(|line| line.trim_start().starts_with("run "))
+        .unwrap_or_else(|| panic!("{task}"));
+    assert!(
+        run.contains("continue a reviewed Task with --from"),
+        "{run}"
+    );
+    assert!(run.chars().count() <= 100, "{run}");
+    let report = out(&af(&["task", "report", "--help"]));
+    let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains(
+            "Active time is the sum of the Task's runs, the writer leases that started an \
+             Attempt or recorded a gate retry (`af task run --retry-gate`)"
+        ),
+        "{report}"
+    );
 }
