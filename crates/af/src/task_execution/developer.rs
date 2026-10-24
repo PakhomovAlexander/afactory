@@ -672,9 +672,9 @@ pub(crate) fn apply(
         {
             0
         } else {
-            presented
+            presented.code
         };
-        state_note(&cas, &store, task_id, code);
+        presented.note(code);
         return Ok(code);
     }
     let value = bytes

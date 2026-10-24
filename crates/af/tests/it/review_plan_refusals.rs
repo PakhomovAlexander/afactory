@@ -34,6 +34,34 @@ fn err(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// The plan's text as one line per statement: a command continued with ` \` between its
+/// arguments joined back, and prose wrapped under its label joined at its spaces.
+fn unwrapped(text: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let continued = lines.last().is_some_and(|last| last.ends_with(" \\"));
+        match lines.last_mut() {
+            Some(last) if continued => {
+                last.truncate(last.len() - 2);
+                last.push(' ');
+                last.push_str(line.trim_start());
+            }
+            Some(last)
+                if line.starts_with("  ")
+                    && !line.trim_start().starts_with("node ")
+                    && !line.trim_start().starts_with("change ")
+                    && !line.trim_start().starts_with("empty ")
+                    && !line.contains(" -> ") =>
+            {
+                last.push(' ');
+                last.push_str(line.trim_start());
+            }
+            _ => lines.push(line.to_owned()),
+        }
+    }
+    lines.join("\n")
+}
+
 fn git(repo: &Path, args: &[&str]) {
     let done = Command::new("git")
         .current_dir(repo)
@@ -199,26 +227,36 @@ fn ready_comes_from_the_registry_and_a_ready_plan_names_the_run_command() {
     let text = plan(&repo, &[], false);
     assert!(text.status.success(), "{}", err(&text));
     assert!(
-        out(&text).contains(
-            "provider architecture -> MISSING; fix: no codex Provider is registered: af provider \
-             status lists what this machine has, af provider setup codex-main --kind codex \
-             --login registers one"
+        unwrapped(&out(&text)).contains(
+            "provider architecture -> MISSING; fix: no codex Provider is registered: `af \
+             provider status` lists what this machine has, and `af provider setup codex-main \
+             --kind codex --login` registers one"
         ),
         "{}",
         out(&text)
     );
+    // No command fixes that alone: the document names none, as the text does.
+    let document: Value = serde_json::from_slice(&plan(&repo, &[], true).stdout).unwrap();
+    assert_eq!(document["next_action"], Value::Null, "{document}");
     // Registered: the fix is the binding, and next is the plan that binds it.
     register(&repo, "codex-main", "codex");
-    let text = out(&plan(&repo, &[], false));
+    let text = unwrapped(&out(&plan(&repo, &[], false)));
     assert!(
         text.contains("provider architecture -> MISSING; fix: --provider architecture=codex-main"),
         "{text}"
     );
+    let next = text.lines().last().unwrap();
     assert!(
-        text.lines().last().unwrap().starts_with(
+        next.starts_with(
             "next:    af review plan --policy-rev HEAD --base HEAD --uncommitted --provider"
         ),
         "{text}"
+    );
+    let document: Value = serde_json::from_slice(&plan(&repo, &[], true).stdout).unwrap();
+    assert_eq!(
+        document["next_action"].as_str(),
+        next.strip_prefix("next:    "),
+        "the document names the command the text prints"
     );
     let bound = [
         "--provider",
@@ -231,11 +269,89 @@ fn ready_comes_from_the_registry_and_a_ready_plan_names_the_run_command() {
     for provider in document["providers"].as_array().unwrap() {
         assert_eq!(provider["ready"], true, "{provider}");
     }
-    let text = out(&plan(&repo, &bound, false));
+    let run = "af review run --policy-rev HEAD --base HEAD --uncommitted --provider \
+               'architecture=codex-main' --provider 'correctness=codex-main'";
+    assert_eq!(document["next_action"], run, "{document}");
+    let text = unwrapped(&out(&plan(&repo, &bound, false)));
     assert_eq!(
         text.lines().last().unwrap(),
-        "next:    af review run --policy-rev HEAD --base HEAD --uncommitted --provider \
-         'architecture=codex-main' --provider 'correctness=codex-main'",
+        format!("next:    {run}"),
+        "{text}"
+    );
+}
+
+/// The first-run plan at a terminal 100 and 80 columns wide: every line fits, prose continues
+/// under its label, and the next command continues between its arguments, so a copied command
+/// still runs whole.
+#[test]
+fn the_first_run_plan_fits_the_terminal_and_keeps_commands_whole() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded(&root.path().canonicalize().unwrap());
+    let bound = [
+        "--provider",
+        "architecture=codex-main",
+        "--provider",
+        "correctness=codex-main",
+    ];
+    register(&repo, "codex-main", "codex");
+    for (extra, columns) in [
+        (&[][..], 100),
+        (&[][..], 80),
+        (&bound[..], 100),
+        (&bound[..], 80),
+    ] {
+        let mut args: Vec<&str> = PLAN[..7].to_vec();
+        args.extend(extra);
+        let shown = crate::common::af()
+            .args(&args)
+            .current_dir(&repo)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("NO_COLOR", "1")
+            .env("COLUMNS", columns.to_string())
+            .output()
+            .unwrap();
+        assert!(shown.status.success(), "{}", err(&shown));
+        let text = out(&shown);
+        for line in text.lines() {
+            assert!(
+                line.chars().count() <= columns,
+                "{columns}: {line:?}\n{text}"
+            );
+        }
+        let next: Vec<&str> = text
+            .lines()
+            .skip_while(|line| !line.starts_with("next:    "))
+            .collect();
+        let command = next.join("\n").replace(" \\\n", " ");
+        let words = shell_words::split(command.trim_start_matches("next:")).unwrap();
+        assert_eq!(
+            words[..3],
+            [
+                "af",
+                "review",
+                if extra.is_empty() { "plan" } else { "run" }
+            ]
+        );
+        assert!(words.contains(&"--provider".to_owned()), "{command}");
+    }
+    // Without a registered Provider the fix names both commands, each on one line.
+    let bare = onboarded(&root.path().canonicalize().unwrap().join("unregistered"));
+    let shown = crate::common::af()
+        .args(&PLAN[..7])
+        .current_dir(&bare)
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("COLUMNS", "80")
+        .env("AF_PROVIDERS_FILE", root.path().join("none.toml"))
+        .output()
+        .unwrap();
+    let text = out(&shown);
+    assert!(
+        text.lines().all(|line| line.chars().count() <= 80),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|line| line.contains("`af provider setup codex-main --kind codex --login`")),
         "{text}"
     );
 }
@@ -296,12 +412,17 @@ fn first_run_refusals_name_the_fix() {
     std::fs::remove_file(repo.join("notes.md")).unwrap();
     let empty = out(&plan(&repo, &[], false));
     assert!(empty.contains("EMPTY — run will refuse"), "{empty}");
+    let collapsed = empty.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        empty.contains(
-            "  empty  the diff from base HEAD to candidate worktree changes no file; change \
-             files and review them with --uncommitted, or name other revisions with --base REV \
-             and --candidate REV"
+        collapsed.contains(
+            "empty the diff from base HEAD to candidate worktree changes no file; change files \
+             and review them with --uncommitted, or name other revisions with --base REV and \
+             --candidate REV"
         ),
+        "{empty}"
+    );
+    assert!(
+        collapsed.contains("next: change files first; the diff is empty"),
         "{empty}"
     );
     assert!(
@@ -309,7 +430,8 @@ fn first_run_refusals_name_the_fix() {
             .lines()
             .last()
             .unwrap()
-            .starts_with("next:    change files first; the diff is empty"),
+            .trim_start()
+            .starts_with("af review plan --policy-rev HEAD --base HEAD --uncommitted"),
         "{empty}"
     );
 }

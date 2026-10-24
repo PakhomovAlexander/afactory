@@ -310,3 +310,73 @@ fn human_text_prints_figures_in_units_and_json_keeps_them_raw() {
     assert_eq!(document["provider_admission"]["wall_ms"], 45000);
     assert!(document["subject"]["patch_bytes"].as_u64().unwrap() > 0);
 }
+
+/// Every help page — `af <path> --help` for every command and `af help <topic>` for every
+/// topic — as a terminal 100 columns wide renders it: no line is wider. clap wraps what it
+/// lays out; a topic's text and an example are held to the width as written.
+#[test]
+fn no_help_line_is_wider_than_100_columns() {
+    let mut wide = Vec::new();
+    let pages = crate::help_examples::pages();
+    assert!(pages.len() > 100, "only {} pages", pages.len());
+    for (page, text) in pages {
+        for line in text.lines() {
+            let width = line.chars().count();
+            if width > 100 {
+                wide.push(format!("{page}: {width} columns: {line}"));
+            }
+        }
+    }
+    assert!(wide.is_empty(), "{}", wide.join("\n"));
+}
+
+/// `af help json` names exactly the Task documents whose schema carries the Task's `state`,
+/// and the documents it lists are the versions `schemas/` publishes.
+#[test]
+fn json_help_names_the_documents_that_carry_a_state() {
+    let help = out(&af(&["help", "json"]));
+    let schemas = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join("schemas");
+    // `af/task-list-entry@3` -> `task-list-entry-v3.json`.
+    let file = |document: &str| {
+        let (kind, version) = document.trim_start_matches("af/").split_once('@').unwrap();
+        schemas.join(format!("{kind}-v{version}.json"))
+    };
+    let documents = |text: &str| -> Vec<String> {
+        text.split(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == ':')
+            .filter(|word| word.starts_with("af/task-") && word.contains('@'))
+            .map(|word| word.trim_end_matches(['.', ')']).to_owned())
+            .collect()
+    };
+    let section = help
+        .split("The Task documents, each named by its `schema`:")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{help}"));
+    let (table, rest) = section.trim_start_matches('\n').split_once("\n\n").unwrap();
+    let listed = documents(table);
+    assert!(listed.len() >= 10, "{listed:?}");
+    let with_state = documents(
+        rest.split_once("carry the Task's `state`")
+            .unwrap_or_else(|| panic!("{rest}"))
+            .0,
+    );
+    for document in &listed {
+        let path = file(document);
+        let schema = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{document}: {}: {error}", path.display()));
+        let has_state = schema.contains("\"state\"");
+        assert_eq!(
+            with_state.contains(document),
+            has_state,
+            "{document}: its schema {} a `state`; the help {} it\n{help}",
+            if has_state { "has" } else { "has no" },
+            if with_state.contains(document) {
+                "names"
+            } else {
+                "omits"
+            }
+        );
+    }
+}

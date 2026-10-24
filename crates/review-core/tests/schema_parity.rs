@@ -30,7 +30,8 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 223] = [
+const SCHEMAS: [&str; 224] = [
+    "error-v1.json",
     "task-findings-v1.json",
     "task-materialized-v1.json",
     "task-diff-v1.json",
@@ -52,7 +53,7 @@ const SCHEMAS: [&str; 223] = [
     "warm-eviction-v1.json",
     "task-gate-retried-v1.json",
     "task-state-v1.json",
-    "task-selection-v2.json",
+    "task-selection-v3.json",
     "pipeline-selection-v1.json",
     "task-collected-inspection-v2.json",
     "task-list-v3.json",
@@ -4749,3 +4750,6 @@ fn a_reply_reask_and_a_draft_validation_are_closed_versioned_shapes() {
 
 #[path = "schema_parity/recovery_allowance.rs"]
 mod recovery_allowance;
+
+#[path = "schema_parity/error_document.rs"]
+mod error_document;

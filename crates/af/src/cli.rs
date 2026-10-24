@@ -87,14 +87,14 @@ Exit codes (`af help exit-codes`):
   af task run: 5 gate failed · 6 provider failed · 7 expired (`af help exit-codes`)
 
 Examples:
-  af onboard                     # preview `.af/` for this repository, token-free
+  # preview `.af/` for this repository, token-free\n  af onboard
   af onboard --apply             # needs: a repository without `.af/`
   af review plan --policy-rev HEAD --base HEAD --uncommitted
   # needs: Providers claude-main and codex-main (af provider setup)
   af review --policy-rev HEAD --base HEAD --uncommitted \\
     --provider correctness=claude-main --provider architecture=codex-main
   af self status                 # what is installed and which pin applies here
-  af doctor                      # what is ready on this machine and in this repository
+  # what is ready on this machine and in this repository\n  af doctor
 
 Review and commit generated `.af/` before selecting it with --policy-rev. These review examples
 use trusted policy at HEAD and compare working-tree changes against HEAD; run refuses an empty diff.
@@ -143,7 +143,7 @@ destination is a safe project-relative path under --repo (default `.`) that must
 an absolute path, a backslash, an empty, `.`, `..` or `.git` segment, or a path through a \
 symlink or a non-directory is refused, and an existing destination is never overwritten. \
 `init --profile` names a starter set, not an installed Task-kind profile.",
-        after_long_help = "Examples:\n  af catalog init --profile software --destination task-demo\n  # needs: a Git catalog checkout at ../team-pipelines\n  af catalog sync --source ../team-pipelines --revision main --manifest catalog.toml \\\n    --destination catalog-copy --json\n  af catalog test --source . --json   # needs: a committed catalog.toml"
+        after_long_help = "Examples:\n  af catalog init --profile software --destination task-demo\n  # needs: a Git catalog checkout at ../team-pipelines\n  af catalog sync --source ../team-pipelines --revision main \\\n    --manifest catalog.toml --destination catalog-copy --json\n  af catalog test --source . --json   # needs: a committed catalog.toml"
     )]
     Catalog {
         #[command(subcommand)]
@@ -163,7 +163,7 @@ lists them.\n\nExamples:\n  af review plan --policy-rev HEAD --base HEAD --uncom
 # needs: Providers claude-main and codex-main (af provider setup)\n  \
 af review --policy-rev HEAD --base HEAD --uncommitted \\\n    \
 --provider correctness=claude-main --provider architecture=codex-main\n  \
-af review ledger --campaign pr-42   # needs: Campaign pr-42 (af review run --campaign pr-42)\n  \
+# needs: Campaign pr-42 (af review run --campaign pr-42)\n  af review ledger --campaign pr-42\n  \
 af review report --campaign pr-42 --format md   # needs: Campaign pr-42",
         override_usage = "af review <COMMAND>\n       af review [--heavy] [RUN OPTIONS]   (shorthand for `af review run`)",
         help_template = REVIEW_HELP_TEMPLATE,
@@ -220,10 +220,10 @@ a pull request, commits, pushes, comments, or overwrites an existing `.af/` dire
 agents and automation close this page.",
         after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; architecture = GPT-6 Sol/high\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6 Sol/high\nWithout --runner, onboarding picks claude or codex when only that Provider kind is registered on this machine (`af provider status`), and mixed otherwise; the `profile` line says which and why.\n\nThe preview's `providers` block names, for every model Worker, a registered Provider of its kind and the --provider binding to pass, or the command that registers one; it reads the registry without starting a Provider CLI unless --probe asks.\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  \
 af onboard\n  \
-af onboard --gate 'check=make check' --apply   # needs: a repository without .af/\n  \
+# needs: a repository without .af/\n  af onboard --gate 'check=make check' --apply\n  \
 af onboard --runner mixed --apply   # needs: a repository without .af/\n  \
 af onboard --refresh-lock\n  \
-af onboard --refresh-lock --af 0.9.0   # needs: release 0.9.0; moves the pin to it\n\n\
+# needs: release 0.9.0; moves the pin to it\n  af onboard --refresh-lock --af 0.9.0\n\n\
 Notes for agents and automation:\n  \
 * `.af/af.lock` records the af release that wrote it and the archive digest of that release for \
 every target. Inside such a project any `af` on PATH runs that release, installing it on demand \
@@ -255,12 +255,12 @@ you name.\n\nAn agent's loop — plan, run or run in the background, read the st
 findings and the diff, run another round, deliver, describe the pull request — is `af help \
 agents`.",
         after_long_help = "Examples:\n  \
-af task plan --file ../ticket.json   # needs: a Task file (af catalog init writes starters)\n  \
-af task run TASK_ID --confirm-plan PLAN_ID   # needs: a planned Task and the plan ID it printed\n  \
+# needs: a Task file (af catalog init writes starters)\n  af task plan --file ../ticket.json\n  \
+# needs: a planned Task and the plan ID it printed\n  af task run TASK_ID --confirm-plan PLAN_ID\n  \
 af task list --json\n  \
 af task show TASK_ID   # needs: a Task\n  \
 # needs: a verified Task\n  \
-af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID"
+af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID \\\n    --confirm TASK_ID"
     )]
     Task {
         #[command(subcommand)]
@@ -311,9 +311,9 @@ af project workspaces --json\n  \
 af project workspace new triage --branch agent/triage\n  \
 af project workspace remove triage --delete-worktree\n  \
 # needs: a worktree of this repository at ../afactory-wt-research, and $W\n  \
-af project workspace add ../afactory-wt-research --label research --state \"$W/state\"\n  \
+af project workspace add ../afactory-wt-research --label research \\\n    --state \"$W/state\"\n  \
 af project workspace remove research   # needs: Workspace research\n  \
-af task plan --workspace research --file ticket.json   # needs: Workspace research, a Task file"
+# needs: Workspace research, a Task file\n  af task plan --workspace research --file ticket.json"
     )]
     Project {
         #[command(subcommand)]
@@ -415,7 +415,7 @@ rebuilds the index; `gc --apply` evicts telemetry under the Storage Budget's rul
 telemetry, contacts a network or reads a Store. Exit codes: 0 success, 1 the telemetry \
 directory cannot be read, the index is in use or a run is unknown, 2 a wrong command line or a \
 refused `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry status\n  af telemetry runs --since 7d\n  af telemetry show RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry turns RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry tools RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry config RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry tail   # needs: a run in progress; it follows until it ends\n  af telemetry ledger RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry context RUN_ID ATTEMPT_ID   # needs: a recorded run and its IDs\n  af telemetry reasoning RUN_ID ATTEMPT_ID   # needs: a recorded run and its IDs\n  af telemetry search 'connection refused'   # needs: [telemetry] level = \"content\"\n  af telemetry gc\n  af telemetry status --json | jq .segments\n  af telemetry reindex   # needs: a telemetry directory (any recorded run)\n  af telemetry status --dir ./copied-telemetry   # needs: that copied directory\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID   # needs: a planned Task"
+        after_long_help = "Examples:\n  af telemetry status\n  af telemetry runs --since 7d\n  af telemetry show RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry turns RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry tools RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry config RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry tail   # needs: a run in progress; it follows until it ends\n  af telemetry ledger RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry context RUN_ID ATTEMPT_ID   # needs: a recorded run and its IDs\n  af telemetry reasoning RUN_ID ATTEMPT_ID   # needs: a recorded run and its IDs\n  # needs: [telemetry] level = \"content\"\n  af telemetry search 'connection refused'\n  af telemetry gc\n  af telemetry status --json | jq .segments\n  af telemetry reindex   # needs: a telemetry directory (any recorded run)\n  af telemetry status --dir ./copied-telemetry   # needs: that copied directory\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID   # needs: a planned Task"
     )]
     Telemetry {
         #[command(subcommand)]
@@ -430,8 +430,8 @@ config keys, and installed versions complete from real state and the script neve
 when the binary updates. `af self setup-shell --write` installs it in the shell's autoload \
 directory.",
         after_long_help = "Examples:\n  \
-af completions fish > ~/.config/fish/completions/af.fish   # needs: that directory\n  \
-af completions zsh > ~/.local/share/zsh/site-functions/_af   # needs: that directory\n  \
+# needs: that directory\n  af completions fish > ~/.config/fish/completions/af.fish\n  \
+# needs: that directory\n  af completions zsh > ~/.local/share/zsh/site-functions/_af\n  \
 source <(af completions bash)"
     )]
     Completions {
@@ -742,7 +742,7 @@ or contacts anything but the bound providers.",
 af review run --policy-rev HEAD --base HEAD --uncommitted \\\n    \
 --provider correctness=claude-main --provider architecture=codex-main\n  \
 # needs: those Providers and a branch main\n  \
-af review run --campaign pr-42 --policy-rev main --base main --candidate HEAD \\\n    \
+af review run --campaign pr-42 --policy-rev main --base main \\\n    --candidate HEAD \\\n    \
 --provider correctness=claude-main --provider architecture=codex-main --json"
     )]
     Run(RunArgs),
@@ -764,8 +764,8 @@ transport, and every artifact the role-scoped manifest names — without a sandb
 or Campaign state. This is how a human audits what a Worker sees.",
         override_usage = "af review render --node <NODE> [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  \
-af review render --node correctness --policy-rev HEAD --base HEAD --uncommitted\n  \
-af review render --node correctness --policy-rev HEAD --base HEAD --uncommitted --json"
+af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --uncommitted\n  \
+af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --uncommitted --json"
     )]
     Render(RunArgs),
     /// List the ledger: findings, dispositions, and open demands
@@ -781,7 +781,7 @@ af review render --node correctness --policy-rev HEAD --base HEAD --uncommitted 
     },
     /// Show one ledger entry by key
     #[command(
-        after_long_help = "Examples:\n  af review show --campaign pr-42 F-01H…   # needs: Campaign pr-42 and its finding F-01H…"
+        after_long_help = "Examples:\n  # needs: Campaign pr-42 and its finding F-01H…\n  af review show --campaign pr-42 F-01H…"
     )]
     Show {
         #[command(flatten)]
@@ -792,7 +792,7 @@ af review render --node correctness --policy-rev HEAD --base HEAD --uncommitted 
     /// Export a verified patch proposal, by id or by the finding it fixes
     #[command(
         group = ArgGroup::new("target").required(true).args(["proposal", "finding"]),
-        after_long_help = "Examples:\n  af review export --campaign pr-42 P-01H…   # needs: Campaign pr-42 and its proposal P-01H…\n  \
+        after_long_help = "Examples:\n  # needs: Campaign pr-42 and its proposal P-01H…\n  af review export --campaign pr-42 P-01H…\n  \
 # needs: Campaign pr-42 and a proposal fixing F-01H…\n  \
 af review export --campaign pr-42 --finding F-01H… --allow-stale"
     )]
@@ -867,10 +867,12 @@ policy-time expiry, and requires --max-severity, --tracking, and --expires-at-po
 Non-fixed resolutions are scoped and challengeable.",
         after_long_help = "Examples:\n  \
 # needs: Campaign pr-42 and its finding F-01H…\n  \
-af review resolve --campaign pr-42 F-01H… rejected --policy main --reason \"not reachable\"\n  \
+af review resolve --campaign pr-42 F-01H… rejected --policy main \\\n    --reason \"not reachable\"\n  \
 # needs: Campaign pr-42 and its finding F-01H…\n  \
-af review resolve --campaign pr-42 F-01H… wontfix-tracked --policy main --reason \"tracked\" \\\n    \
---max-severity major --tracking JIRA-1 --expires-at-policy-time 12"
+af review resolve --campaign pr-42 F-01H… wontfix-tracked --policy main \\\n    --reason \"tracked\" \\\n    \
+--max-severity major --tracking JIRA-1 --expires-at-policy-time 12",
+        // Held to the page's 100 columns, as clap does not wrap a usage line.
+        override_usage = "af review resolve [OPTIONS] --campaign <NAME> --policy <REV> --reason <TEXT>\n       <KEY> <rejected|wontfix-tracked>"
     )]
     Resolve {
         #[command(flatten)]
@@ -906,7 +908,7 @@ af review resolve --campaign pr-42 F-01H… wontfix-tracked --policy main --reas
     /// Attest that a region changed in response to a finding
     #[command(after_long_help = "Examples:\n  \
 # needs: Campaign pr-42 and its finding F-01H…\n  \
-af review attest-change --campaign pr-42 F-01H… --region src/lib.rs:10-20 --reason \"guarded\"")]
+af review attest-change --campaign pr-42 F-01H… --region src/lib.rs:10-20 \\\n    --reason \"guarded\"")]
     AttestChange {
         #[command(flatten)]
         selector: CampaignSelector,
@@ -926,8 +928,9 @@ af review attest-change --campaign pr-42 F-01H… --region src/lib.rs:10-20 --re
         group = ArgGroup::new("outcome").required(true).args(["positive", "negative"]),
         after_long_help = "Examples:\n  \
 # needs: Campaign pr-42, its finding F-01H… and attestation A-01H…\n  \
-af review verify-fix --campaign pr-42 F-01H… A-01H… --policy main --reason \"reproduced clean\" \\\n    \
---positive"
+af review verify-fix --campaign pr-42 F-01H… A-01H… --policy main \\\n    --reason \"reproduced clean\" \\\n    \
+--positive",
+        override_usage = "af review verify-fix [OPTIONS] --campaign <NAME> --policy <REV> --reason <TEXT>\n       <--positive|--negative> <FINDING> <ATTESTATION>"
     )]
     VerifyFix {
         #[command(flatten)]
@@ -956,10 +959,13 @@ af review verify-fix --campaign pr-42 F-01H… A-01H… --policy main --reason \
         evidence: Vec<String>,
     },
     /// Challenge a non-fixed resolution
-    #[command(after_long_help = "Examples:\n  \
+    #[command(
+        after_long_help = "Examples:\n  \
 # needs: Campaign pr-42, a resolved finding F-01H… and evidence E-01H…\n  \
 af review challenge-resolution --campaign pr-42 F-01H… --kind new-evidence \\\n    \
---reason \"repro attached\" --evidence E-01H…")]
+--reason \"repro attached\" --evidence E-01H…",
+        override_usage = "af review challenge-resolution [OPTIONS] --campaign <NAME> --kind <KIND>\n       --reason <TEXT> <FINDING>"
+    )]
     ChallengeResolution {
         #[command(flatten)]
         selector: CampaignSelector,
@@ -982,7 +988,7 @@ af review challenge-resolution --campaign pr-42 F-01H… --kind new-evidence \\\
     },
     /// Group one finding under another
     #[command(
-        after_long_help = "Examples:\n  af review group --campaign pr-42 F-02H… F-01H…   # needs: Campaign pr-42 and both findings"
+        after_long_help = "Examples:\n  # needs: Campaign pr-42 and both findings\n  af review group --campaign pr-42 F-02H… F-01H…"
     )]
     Group {
         #[command(flatten)]
@@ -1022,7 +1028,7 @@ af review challenge-resolution --campaign pr-42 F-01H… --kind new-evidence \\\
 pub(crate) enum PolicyTimeCommand {
     /// Advance the policy clock to a tick
     #[command(
-        after_long_help = "Examples:\n  af review policy-time advance --campaign pr-42 12 --reason \"sprint end\"   # needs: Campaign pr-42"
+        after_long_help = "Examples:\n  # needs: Campaign pr-42\n  af review policy-time advance --campaign pr-42 12 --reason \"sprint end\""
     )]
     Advance {
         #[command(flatten)]
@@ -1056,9 +1062,12 @@ pub(crate) enum EvidenceCommand {
         actor: Option<String>,
     },
     /// Mark a demand satisfied by attached evidence
-    #[command(after_long_help = "Examples:\n  \
+    #[command(
+        after_long_help = "Examples:\n  \
 # needs: Campaign pr-42, its demand D-01H… and evidence E-01H…\n  \
-af review evidence satisfy --campaign pr-42 D-01H… E-01H… --policy main --reason \"bench attached\"")]
+af review evidence satisfy --campaign pr-42 D-01H… E-01H… --policy main \\\n    --reason \"bench attached\"",
+        override_usage = "af review evidence satisfy [OPTIONS] --campaign <NAME> --policy <REV> --reason <TEXT>\n       <DEMAND> <EVIDENCE>"
+    )]
     Satisfy {
         #[command(flatten)]
         selector: CampaignSelector,
@@ -1086,7 +1095,7 @@ pub(crate) enum DemandCommand {
     /// Waive a demand under a policy revision
     #[command(after_long_help = "Examples:\n  \
 # needs: Campaign pr-42 and its demand D-01H…\n  \
-af review demand waive --campaign pr-42 D-01H… --policy main --reason \"out of scope\"")]
+af review demand waive --campaign pr-42 D-01H… --policy main \\\n    --reason \"out of scope\"")]
     Waive {
         #[command(flatten)]
         selector: CampaignSelector,
@@ -1255,9 +1264,9 @@ Spends no model tokens and reads no credential.\n\n\
 Exit codes: 0 every catalog listed, 4 a Provider CLI cannot start or is incompatible, 7 a \
 catalog is unavailable (the static rules are printed and nothing is invented).",
         after_long_help = "Examples:\n  af provider models\n  \
-af provider models claude-work --json   # needs: Provider claude-work (af provider setup)\n  \
-af provider models claude-work --resolve 'Fable 5.1/xhigh'   # needs: Provider claude-work\n  \
-af provider models codex-main --resolve 'GPT-6 Sol/ultra'   # needs: Provider codex-main"
+# needs: Provider claude-work (af provider setup)\n  af provider models claude-work --json\n  \
+# needs: Provider claude-work\n  af provider models claude-work --resolve 'Fable 5.1/xhigh'\n  \
+# needs: Provider codex-main\n  af provider models codex-main --resolve 'GPT-6 Sol/ultra'"
     )]
     Models {
         /// Provider IDs to list (default: every registered Provider)
@@ -1289,9 +1298,9 @@ incompatible, 5 \
 registry conflict, 6 authentication failed. Re-running setup for the same binding is safe.",
         after_long_help = "Examples:\n  \
 af provider setup codex-main --kind codex   # needs: the codex CLI, logged in\n  \
-af provider setup codex-main --kind codex --json   # needs: the codex CLI, logged in\n  \
+# needs: the codex CLI, logged in\n  af provider setup codex-main --kind codex --json\n  \
 # needs: the claude CLI and a private terminal for its login\n  \
-af provider setup claude-work --kind claude --auth-dir /secure/claude-work --login"
+af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n    --login"
     )]
     Setup {
         /// Stable ID used by --provider NODE=ID
@@ -1323,7 +1332,7 @@ authenticated is refused with exit 6 and the `af provider setup ID --kind KIND -
 Exit codes: 0 registered, 4 Provider CLI missing, cannot start or incompatible, 5 registry \
 conflict, 6 not authenticated.",
         after_long_help = "Examples:\n  af provider add codex-main --kind codex   # needs: a codex login in ~/.codex\n  \
-af provider add claude-work --kind claude --auth-dir /secure/claude-work   # needs: that directory\n  \
+# needs: that directory\n  af provider add claude-work --kind claude --auth-dir /secure/claude-work\n  \
 # needs: the directory /secure/ci\n  \
 af provider add claude-ci --kind claude --auth-dir /secure/ci --unverified"
     )]
@@ -1393,6 +1402,9 @@ af provider doctor --campaign pr-42 --provider correctness=claude-main"
 #[derive(Debug, Subcommand)]
 pub(crate) enum ProviderAuthCommand {
     /// Begin or reuse one login; a private host grant is required before the CLI starts
+    #[command(
+        override_usage = "af provider auth begin [OPTIONS] --kind <KIND> --auth-dir <DIR>\n       --host-read-fd <HOST_READ_FD> --host-write-fd <HOST_WRITE_FD> <ID>"
+    )]
     Begin {
         /// Provider ID to log in and register
         id: String,
@@ -1549,7 +1561,7 @@ stderr and exits 1.\n\nNever: compares against or changes a catalog or pin, writ
 Worker, contacts a Provider or installs anything. A project's `af` pin never dispatches it to \
 another release, and no update check follows it.",
         after_long_help = "Examples:\n  \
-af catalog digest .af/task-packages/team/implementer   # needs: that Task package\n  \
+# needs: that Task package\n  af catalog digest .af/task-packages/team/implementer\n  \
 # needs: that Task package\n  \
 pin=$(af catalog digest .af/task-packages/team/implementer) || exit 1"
     )]
@@ -1589,10 +1601,10 @@ pub(crate) enum TaskCommand {
 --execute this is `af task plan` under another name: the same capture, the same preview, nothing \
 dispatched. Inspect the compact ASCII preview, or use `af task explain TASK_ID --tree` for the expanded hierarchy. Run with `--confirm-plan PLAN_ID` after reviewing the captured plan. `--execute` explicitly opts into immediate automation. JSON output also previews by default. Generated plans still require signed developer approval.\n\nExecution never writes to the original repository, commits, pushes, or delivers; see `af task deliver`.",
         after_long_help = "Examples:\n  \
-af task start --file ../ticket.json   # needs: a Task file; the same as af task plan\n  \
+# needs: a Task file; the same as af task plan\n  af task start --file ../ticket.json\n  \
 af task explain TASK_ID --tree   # needs: a Task\n  \
-af task run TASK_ID --confirm-plan sha256:...   # needs: a planned Task and its plan ID\n  \
-af task start --file ../ticket.json --execute --json   # needs: a Task file and its Providers"
+# needs: a planned Task and its plan ID\n  af task run TASK_ID --confirm-plan sha256:...\n  \
+# needs: a Task file and its Providers\n  af task start --file ../ticket.json --execute --json"
     )]
     Start {
         /// Versioned Task JSON/TOML file, processed by the common Task runtime
@@ -1658,7 +1670,7 @@ recorded in its Store with the plan; `af task run TASK_ID --confirm-plan PLAN_ID
 that plan, and `af task explain TASK_ID` shows it again.\n\nNever: calls a model, runs a check, \
 writes to the repository, commits or pushes.",
         after_long_help = "Examples:\n  \
-af task plan --file ../ticket.json   # needs: a Task file (af catalog init writes starters)\n  \
+# needs: a Task file (af catalog init writes starters)\n  af task plan --file ../ticket.json\n  \
 af task plan --file ../ticket.json --uncommitted --json   # needs: a Task file"
     )]
     Plan {
@@ -1728,6 +1740,9 @@ af task plan --file ../ticket.json --uncommitted --json   # needs: a Task file"
         inspect: TaskInspectArgs,
     },
     /// Write exact outer-plan or pending experiment bytes for an external developer signature
+    #[command(
+        override_usage = "af task decision-payload [OPTIONS] --developer <LABEL> --decision <DECISION>\n       --reason <TEXT> --output <ABSENT_FILE> <TASK_ID>"
+    )]
     DecisionPayload {
         /// Task id
         task_id: String,
@@ -1759,7 +1774,7 @@ af task output TASK_ID --port report --format markdown\n  \
 # needs: a finished report Task\n  \
 af task output TASK_ID --port report --format markdown --output report.md\n  \
 # needs: a finished report Task\n  \
-af task output TASK_ID --port report --format canonical-markdown --output report-canonical.md"
+af task output TASK_ID --port report --format canonical-markdown \\\n    --output report-canonical.md"
     )]
     Output {
         /// Task id
@@ -1802,10 +1817,10 @@ af task output TASK_ID --port report --format canonical-markdown --output report
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// Run or resume a captured Task using its exact recorded plan and authority
+    /// Run or resume a Task's recorded plan, or continue a reviewed Task with --from
     #[command(
         long_about = "Run or resume a captured Task using its exact recorded plan and \
-authority.\n\n--confirm-plan names the plan you reviewed (`af task plan`, `start` or `explain` print it); a \
+authority, or with --from TASK continue a finished reviewed Task as a new Task.\n\n--confirm-plan names the plan you reviewed (`af task plan`, `start` or `explain` print it); a \
 plan that changed since refuses. --execute runs the current plan without that confirmation, for \
 automation. Model Workers spend tokens within the plan's budget.\n\nWhile it waits it prints on stderr one line per node that starts or finishes, with \
 the time since the run started and the tokens charged so far, and every 5 minutes a heartbeat \
@@ -1833,13 +1848,13 @@ fix. On macOS the run holds a power assertion (caffeinate), so the machine does 
 idle-sleep.\n\nNever: writes to the original repository, commits, pushes, or delivers; see \
 `af task deliver`.",
         after_long_help = "Examples:\n  \
-af task run TASK_ID --confirm-plan PLAN_ID   # needs: a planned Task and the plan ID it printed\n  \
-af task run TASK_ID --retry-gate   # needs: a Task whose `next:` line names --retry-gate\n  \
-af task run TASK_ID   # needs: a Task whose run was interrupted (`interrupted by SIGINT`)\n  \
+# needs: a planned Task and the plan ID it printed\n  af task run TASK_ID --confirm-plan PLAN_ID\n  \
+# needs: a Task whose `next:` line names --retry-gate\n  af task run TASK_ID --retry-gate\n  \
+# needs: a Task whose run was interrupted (`interrupted by SIGINT`)\n  af task run TASK_ID\n  \
 af task run TASK_ID --execute --detach   # needs: a planned Task\n  \
 af task run TASK_ID --execute --quiet --json   # needs: a planned Task\n  \
 af task run NEW_ID --from TASK_ID   # needs: a finished reviewed Task TASK_ID\n  \
-af task run NEW_ID --from TASK_ID --round 1 --goal goal.md --execute   # needs: the same, goal.md"
+# needs: the same, goal.md\n  af task run NEW_ID --from TASK_ID --round 1 --goal goal.md --execute"
     )]
     Run {
         /// Task id
@@ -2000,7 +2015,7 @@ Snapshot, how many paths it wrote, deleted and changed only in mode, and the nex
 contacts a remote or writes the Store. `af task deliver` keeps its stricter contract: a \
 verified Task, onto a new branch and worktree.",
         after_long_help = "Examples:\n  \
-af task materialize TASK_ID --into ../review-wt   # needs: a verified Task and a worktree\n  \
+# needs: a verified Task and a worktree\n  af task materialize TASK_ID --into ../review-wt\n  \
 # needs: a reviewed Task and a clean worktree at ../review-wt\n  \
 af task materialize TASK_ID --into ../review-wt --allow-unverified --json"
     )]
@@ -2033,7 +2048,7 @@ Never: touches a worktree, writes the Store or contacts a remote.",
         after_long_help = "Examples:\n  \
 af task diff TASK_ID   # needs: a Task with a candidate\n  \
 af task diff TASK_ID --stat   # needs: a Task with a candidate\n  \
-af task diff TASK_ID --json | jq '.files[].path'   # needs: a Task with a candidate"
+# needs: a Task with a candidate\n  af task diff TASK_ID --json | jq '.files[].path'"
     )]
     Diff {
         /// Task id
@@ -2061,7 +2076,7 @@ nothing.",
         after_long_help = "Examples:\n  \
 af task explain TASK_ID   # needs: a planned Task\n  \
 af task explain TASK_ID --tree   # needs: a planned Task\n  \
-af task explain TASK_ID --plan PLAN_ID --json   # needs: a Task and one of its plan IDs"
+# needs: a Task and one of its plan IDs\n  af task explain TASK_ID --plan PLAN_ID --json"
     )]
     Explain {
         /// Task id
@@ -2113,7 +2128,7 @@ candidate no Task verified is never delivered: `af task materialize TASK_ID --in
 checkout, commits on your behalf, pushes, opens a pull request, or contacts a remote.",
         after_long_help = "Examples:\n  \
 # needs: a verified Task\n  \
-af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID \\\n    \
+af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID \\\n    --confirm TASK_ID \\\n    \
 --json"
     )]
     Deliver {
@@ -2147,6 +2162,9 @@ af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --con
         json: bool,
     },
     /// Record whether a later commit exactly adopts a delivered light optimization
+    #[command(
+        override_usage = "af task observe-adoption [OPTIONS] --workload <WORKLOAD> --model <MODEL>\n       --environment <ENVIRONMENT> <TASK_ID>"
+    )]
     ObserveAdoption {
         /// Optimization Task id whose local delivery is being observed
         task_id: String,
@@ -2186,7 +2204,7 @@ spend and times, and then removes every CAS object no remaining Task or Campaign
 A collected Task is listed and shown as `collected`; its outputs cannot be written or delivered. \
 Without --apply nothing is written. --apply is refused while any Task's writer lease is live.",
         after_long_help = "Examples:\n  \
-af task gc --older-than 14 --keep 5   # needs: a Task Store (af task plan creates one)\n  \
+# needs: a Task Store (af task plan creates one)\n  af task gc --older-than 14 --keep 5\n  \
 af task gc --older-than 14 --keep 5 --apply   # needs: a Task Store\n  \
 af task gc --older-than 0 --keep 10 --json   # needs: a Task Store"
     )]
@@ -2236,7 +2254,8 @@ results.\n\nThe default output is one Markdown block, ready to paste into a pull
 description, between these two lines:\n\n  <!-- af-task-report:v1 -->\n  \
 <!-- /af-task-report -->\n\n--json prints one `af/task-report@2` document instead. Tasks \
 appear in the order given, numbered as rounds. Active time is the sum of the Task's runs, the \
-writer leases that started an Attempt, so waiting between runs is not counted; wall time runs \
+writer leases that started an Attempt or recorded a gate retry (`af task run --retry-gate`), so \
+waiting between runs is not counted; wall time runs \
 from its first to its last recorded event. A figure the Store does not record is shown as \
 unknown.\n\n--pr-body prints the whole pull request description instead, which `gh pr create \
 --body-file` takes unchanged: the template (--template, or the checkout's \
@@ -2247,9 +2266,9 @@ headings. scripts/check-pr-report.py accepts it.\n\nNever: dispatches a \
 Worker, contacts a Provider, writes the Store or changes a Task. Providers appear only as kind \
 and model; no Provider label, path, credential, prompt or Worker output is printed.",
         after_long_help = "Examples:\n  af task report pagination-cli   # needs: Task pagination-cli\n  \
-af task report implement-x verify-x --json   # needs: Tasks implement-x and verify-x\n  \
+# needs: Tasks implement-x and verify-x\n  af task report implement-x verify-x --json\n  \
 # needs: Tasks implement-x and verify-x\n  \
-af task report implement-x verify-x --pr-body > body.md && gh pr create --body-file body.md"
+af task report implement-x verify-x --pr-body > body.md && gh pr create \\\n    --body-file body.md"
     )]
     Report {
         /// Task ids, reported in this order
@@ -2328,7 +2347,7 @@ runner's token estimate); or `outcome: none` with its reason (`variant_none`, `n
 nothing and says so on stderr. Reads the Project Store only: registers nothing, records nothing \
 and writes nothing inside the checkout.",
         after_long_help = "Examples:\n  af project brief\n  af project brief --variant orient --json | jq .manifest\n  \
-af project brief --survey sha256:… | wc -c   # needs: the ID of a Survey (af project history)"
+# needs: the ID of a Survey (af project history)\n  af project brief --survey sha256:… | wc -c"
     )]
     Brief {
         /// The variant to render [default: orient]
@@ -2492,7 +2511,7 @@ without moving a byte.\n\nA checkout of another Project is refused, naming both 
 a checkout already registered is refused, naming its label.",
         after_long_help = "Examples:\n  \
 # needs: a worktree of this repository at ../afactory-wt-research, and $W\n  \
-af project workspace add ../afactory-wt-research --label research --state \"$W/state\" \\\n    \
+af project workspace add ../afactory-wt-research --label research \\\n    --state \"$W/state\" \\\n    \
 --bindings \"$W/bindings.toml\" --tasks \"$W/tasks\""
     )]
     Add {
@@ -2522,7 +2541,7 @@ holds a Task that is not collected, the command says so and names `af task gc`. 
 --delete-worktree also removes the checkout, only a linked worktree whose files equal its HEAD \
 commit, compared without running any filter or hook of the repository; the branch stays.",
         after_long_help = "Examples:\n  \
-af project workspace remove research   # needs: Workspace research (af project workspace new)\n  \
+# needs: Workspace research (af project workspace new)\n  af project workspace remove research\n  \
 af project workspace remove spike --delete-worktree   # needs: Workspace spike"
     )]
     Remove {
@@ -2656,7 +2675,7 @@ index is derived state, never evidence.\n\n\
 Never: removes a sealed segment or a blob, reads a Store, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the directory cannot be read or another command holds the index, 2 a \
 refused `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry reindex   # needs: a telemetry directory (any recorded run)\n  af telemetry reindex --json   # needs: a telemetry directory (any recorded run)\n  af telemetry reindex --dir ./copied-telemetry   # needs: that copied directory"
+        after_long_help = "Examples:\n  af telemetry reindex   # needs: a telemetry directory (any recorded run)\n  # needs: a telemetry directory (any recorded run)\n  af telemetry reindex --json\n  af telemetry reindex --dir ./copied-telemetry   # needs: that copied directory"
     )]
     Reindex {
         /// Machine-readable af/telemetry-reindex@1
@@ -2687,7 +2706,7 @@ with no recorded end) beside the sealed ones: `retained executions 1–1, open: 
 Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the telemetry directory cannot be read or its index is of another \
 schema version, 2 a wrong command line or a refused `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry runs\n  af telemetry runs --since 7d --kind task\n  af telemetry runs --json | jq '.runs[] | {run_id, active_us, history}'\n  af telemetry runs --dir ./copied-telemetry --json   # needs: that copied directory"
+        after_long_help = "Examples:\n  af telemetry runs\n  af telemetry runs --since 7d --kind task\n  af telemetry runs --json | jq '.runs[] | {run_id, active_us, history}'\n  # needs: that copied directory\n  af telemetry runs --dir ./copied-telemetry --json"
     )]
     Runs {
         /// Only runs active at or after this long ago (30m, 12h, 14d, 2w)
@@ -2719,7 +2738,7 @@ Never: reads a Store, records telemetry, removes anything, or contacts a network
 Exit codes: 0 success, 1 the telemetry directory cannot be read or the run, Attempt or span is \
 unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
 `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry show RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry show RUN_ID --depth 2   # needs: a recorded run (af telemetry runs)\n  af telemetry show RUN_ID --attempt ATTEMPT_ID   # needs: a recorded run and its IDs\n  af telemetry show RUN_ID --span SPAN_ID --json   # needs: a recorded run and its IDs\n  af telemetry show RUN_ID --store STORE_ID   # needs: a recorded run and its IDs"
+        after_long_help = "Examples:\n  af telemetry show RUN_ID   # needs: a recorded run (af telemetry runs)\n  # needs: a recorded run (af telemetry runs)\n  af telemetry show RUN_ID --depth 2\n  # needs: a recorded run and its IDs\n  af telemetry show RUN_ID --attempt ATTEMPT_ID\n  # needs: a recorded run and its IDs\n  af telemetry show RUN_ID --span SPAN_ID --json\n  # needs: a recorded run and its IDs\n  af telemetry show RUN_ID --store STORE_ID"
     )]
     Show {
         /// The kernel run id
@@ -2763,7 +2782,7 @@ Never: reads a Store, records telemetry, removes anything, or contacts a network
 Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or Attempt is \
 unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
 `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry turns RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry turns RUN_ID --attempt ATTEMPT_ID   # needs: a recorded run and its IDs\n  # needs: a recorded run (af telemetry runs)\n  af telemetry turns RUN_ID --json | jq '.turns[] | {ordinal, duration_us, usage}'"
+        after_long_help = "Examples:\n  af telemetry turns RUN_ID   # needs: a recorded run (af telemetry runs)\n  # needs: a recorded run and its IDs\n  af telemetry turns RUN_ID --attempt ATTEMPT_ID\n  # needs: a recorded run (af telemetry runs)\n  af telemetry turns RUN_ID --json \\\n    | jq '.turns[] | {ordinal, duration_us, usage}'"
     )]
     Turns {
         /// The kernel run id
@@ -2799,7 +2818,7 @@ Never: reads a Store, records telemetry, removes anything, or contacts a network
 Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or Attempt is \
 unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
 `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry tools RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry tools RUN_ID --attempt ATTEMPT_ID   # needs: a recorded run and its IDs\n  # needs: a recorded run (af telemetry runs)\n  af telemetry tools RUN_ID --json | jq '.tools[] | {name, duration_us, output_bytes}'"
+        after_long_help = "Examples:\n  af telemetry tools RUN_ID   # needs: a recorded run (af telemetry runs)\n  # needs: a recorded run and its IDs\n  af telemetry tools RUN_ID --attempt ATTEMPT_ID\n  # needs: a recorded run (af telemetry runs)\n  af telemetry tools RUN_ID --json \\\n    | jq '.tools[] | {name, duration_us, output_bytes}'"
     )]
     Tools {
         /// The kernel run id
@@ -2839,7 +2858,7 @@ Never: reads a Store, records telemetry, removes anything, or contacts a network
 Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or Attempt is \
 unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
 `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry context RUN_ID ATTEMPT_ID   # needs: a recorded run and its IDs\n  af telemetry context RUN_ID ATTEMPT_ID --raw > prompt.json   # needs: a recorded run and its IDs\n  # needs: a recorded run and its IDs\n  af telemetry context RUN_ID ATTEMPT_ID --json | jq '{state, manifest, input: .input.digest}'"
+        after_long_help = "Examples:\n  af telemetry context RUN_ID ATTEMPT_ID   # needs: a recorded run and its IDs\n  # needs: a recorded run and its IDs\n  af telemetry context RUN_ID ATTEMPT_ID --raw > prompt.json\n  # needs: a recorded run and its IDs\n  af telemetry context RUN_ID ATTEMPT_ID --json \\\n    | jq '{state, manifest, input: .input.digest}'"
     )]
     Context {
         /// The kernel run id
@@ -2881,7 +2900,7 @@ Never: reads a Store, records telemetry, removes anything, or contacts a network
 Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or Attempt is \
 unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
 `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry reasoning RUN_ID ATTEMPT_ID   # needs: a recorded run and its IDs\n  # needs: a recorded run and its IDs\n  af telemetry reasoning RUN_ID ATTEMPT_ID --json | jq '.thoughts[] | {ordinal, kind, turn_ordinal}'"
+        after_long_help = "Examples:\n  af telemetry reasoning RUN_ID ATTEMPT_ID   # needs: a recorded run and its IDs\n  # needs: a recorded run and its IDs\n  af telemetry reasoning RUN_ID ATTEMPT_ID --json \\\n    | jq '.thoughts[] | {ordinal, kind, turn_ordinal}'"
     )]
     Reasoning {
         /// The kernel run id
@@ -2917,7 +2936,7 @@ Never: reads a Store, records telemetry, removes anything, or contacts a network
 Exit codes: 0 success, 1 the telemetry directory cannot be read or the run is unknown, 2 a \
 wrong command line, a run two Stores share without `--store`, a refused `[telemetry]` key, or a \
 level below `content` or `content_index = false`.",
-        after_long_help = "Examples:\n  af telemetry search 'connection refused'   # needs: [telemetry] level = \"content\"\n  af telemetry search 'TODO' --since 7d   # needs: [telemetry] level = \"content\"\n  # needs: a recorded run (af telemetry runs)\n  af telemetry search 'flaky' --run RUN_ID --json | jq '.matches[].occurrences[].span_path'"
+        after_long_help = "Examples:\n  # needs: [telemetry] level = \"content\"\n  af telemetry search 'connection refused'\n  af telemetry search 'TODO' --since 7d   # needs: [telemetry] level = \"content\"\n  # needs: a recorded run (af telemetry runs)\n  af telemetry search 'flaky' --run RUN_ID --json \\\n    | jq '.matches[].occurrences[].span_path'"
     )]
     Search {
         /// The text to find, as one phrase
@@ -2964,7 +2983,7 @@ Never: reads a Store, records telemetry, removes anything, or contacts a network
 Exit codes: 0 success, 1 the telemetry directory cannot be read or the run or execution is \
 unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
 `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry config RUN_ID   # needs: a recorded run (af telemetry runs)\n  af telemetry config RUN_ID --execution EXECUTION_ID   # needs: a recorded run and its IDs\n  # needs: a recorded run (af telemetry runs)\n  af telemetry config RUN_ID --json | jq '.rows[] | select(.layer == \"environment\")'"
+        after_long_help = "Examples:\n  af telemetry config RUN_ID   # needs: a recorded run (af telemetry runs)\n  # needs: a recorded run and its IDs\n  af telemetry config RUN_ID --execution EXECUTION_ID\n  # needs: a recorded run (af telemetry runs)\n  af telemetry config RUN_ID --json \\\n    | jq '.rows[] | select(.layer == \"environment\")'"
     )]
     Config {
         /// The kernel run id
@@ -3052,7 +3071,7 @@ run id it lists both and asks for `--store ID`.\n\n\
 Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the telemetry directory cannot be read or the run is unknown, 2 a \
 wrong command line, a run two Stores share without `--store`, or a refused `[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry ledger RUN_ID   # needs: a recorded run (af telemetry runs)\n  # needs: a recorded run (af telemetry runs)\n  af telemetry ledger RUN_ID --json | jq '.findings[] | {key, status}'\n  # needs: a recorded run (af telemetry runs)\n  af telemetry ledger RUN_ID --json | jq .accounting.totals\n  af telemetry ledger RUN_ID --dir ./copied-telemetry   # needs: that copied directory"
+        after_long_help = "Examples:\n  af telemetry ledger RUN_ID   # needs: a recorded run (af telemetry runs)\n  # needs: a recorded run (af telemetry runs)\n  af telemetry ledger RUN_ID --json | jq '.findings[] | {key, status}'\n  # needs: a recorded run (af telemetry runs)\n  af telemetry ledger RUN_ID --json | jq .accounting.totals\n  # needs: that copied directory\n  af telemetry ledger RUN_ID --dir ./copied-telemetry"
     )]
     Ledger {
         /// The kernel run id
@@ -3179,7 +3198,7 @@ token.",
         after_long_help = "Examples:\n  \
 af self update --check   # exits 10 when a newer release exists\n  \
 af self update   # needs: the network and an af installed by af self\n  \
-af self update --version 0.9.0   # needs: the network and an af installed by af self"
+# needs: the network and an af installed by af self\n  af self update --version 0.9.0"
     )]
     Update {
         /// Only report whether a newer release exists (exit 10 when it does)
@@ -3252,10 +3271,10 @@ af self uninstall --purge   # needs: an af installed by af self"
         after_long_help = "Examples:\n  \
 af self optimize --strategy light   # needs: .af/optimization-sources.toml\n  \
 af self optimize --since 30d   # needs: .af/optimization-sources.toml\n  \
-af self optimize --all-history --execute   # needs: that file and a report pipeline\n  \
-af self optimize --experiment --execute   # needs: .af/optimization-policy.json\n  \
+# needs: that file and a report pipeline\n  af self optimize --all-history --execute\n  \
+# needs: .af/optimization-policy.json\n  af self optimize --experiment --execute\n  \
 # needs: the Task ID af self optimize printed\n  \
-af task output TASK_ID --port report --format markdown --output optimization.md"
+af task output TASK_ID --port report --format markdown \\\n    --output optimization.md"
     )]
     Optimize {
         /// Include observations at or after this duration before the captured UTC cutoff

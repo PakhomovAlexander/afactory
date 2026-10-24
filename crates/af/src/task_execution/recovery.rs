@@ -145,9 +145,9 @@ fn slot_of(state: &TaskProjection, node: &str) -> Option<String> {
 fn exhausted_fix(state: &TaskProjection, recovery: &TaskNodeRecovery) -> String {
     let slot = slot_of(state, &recovery.node).unwrap_or_else(|| "<slot>".into());
     format!(
-        "start it again with `af task start --file TASK_FILE` (the Task file it was started \
-         from), or allow more with `[slots.{}] recovery_attempts` in its pipeline \
-         (af.pipeline/3)",
+        "start it again with `{}` (the Task file it was started from), or allow more with \
+         `[slots.{}] recovery_attempts` in its pipeline (af.pipeline/3)",
+        super::with_selectors("af task start --file TASK_FILE"),
         preview::text(&slot)
     )
 }
@@ -200,13 +200,26 @@ pub(super) fn announce(
     after: &TaskProjection,
 ) -> Result<(), String> {
     if let Some(recovery) = exhausted(after).first() {
-        return Err(format!(
-            "cannot continue Task {}: node {} {} (recovery allowance {}); fix: {}",
-            preview::text(id),
-            preview::text(&recovery.node),
-            losses(recovery),
-            recovery.allowance,
-            exhausted_fix(after, recovery)
+        // The sentence a person reads, and under --json the same refusal as typed fields: the
+        // node, how often it was abandoned, its allowance and the command that starts it again.
+        use crate::error_document::{Cause, Detail};
+        let detail = Detail::new(Cause::RecoveryExhausted)
+            .next(super::with_selectors("af task start --file TASK_FILE"))
+            .with("node", recovery.node.clone())
+            .with("count", recovery.abandoned())
+            .with("writer_lost", recovery.writer_lost)
+            .with("host_cancelled", recovery.host_cancelled)
+            .with("allowance", recovery.allowance);
+        return Err(crate::error_document::typed(
+            format!(
+                "cannot continue Task {}: node {} {} (recovery allowance {}); fix: {}",
+                preview::text(id),
+                preview::text(&recovery.node),
+                losses(recovery),
+                recovery.allowance,
+                exhausted_fix(after, recovery)
+            ),
+            detail,
         ));
     }
     let orphaned: BTreeSet<String> = before

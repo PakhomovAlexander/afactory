@@ -162,6 +162,53 @@ fn authored_markup_stays_the_text_it_was() {
     }
 }
 
+/// A line's first word is escaped only where it could open a block: `-foo`, `!wow` and `+1`
+/// are a paragraph's words and stay verbatim, and parse back as that paragraph.
+#[test]
+fn a_line_start_word_that_opens_no_block_stays_verbatim() {
+    for case in [
+        "-foo is a flag",
+        "!wow said the reviewer",
+        "+1 from me",
+        "#hashtag and #42",
+        "=x is assignment",
+        ":fn is a vim command",
+        "?why not",
+        "%done",
+    ] {
+        let markdown = rendered(case);
+        assert_eq!(markdown, case, "{case:?}");
+        assert_eq!(leaves(&markdown, &[]), [p(case)], "{case:?}");
+    }
+    // A word that does open a block where it stands is still escaped as a line's first, and
+    // reads back as that text.
+    for (case, escaped) in [
+        ("- item", "\\- item"),
+        ("+ item", "\\+ item"),
+        ("* item", "\\* item"),
+        ("# heading", "\\# heading"),
+        ("###### six", "\\###### six"),
+        ("> quote", "\\> quote"),
+        ("---", "\\---"),
+        ("===", "\\==="),
+        (":---", "\\:---"),
+        ("1. first", "1\\. first"),
+    ] {
+        let markdown = inline(case, true);
+        assert_eq!(markdown, escaped, "{case:?}");
+        assert_eq!(leaves(&markdown, &[]), [p(case)], "{case:?}");
+    }
+    // Seven `#` open no heading, and a word past the first is never a line's first.
+    assert_eq!(inline("####### seven", true), "####### seven");
+    assert_eq!(inline("- item", false), "- item");
+    // The canonical `af.document/2` bytes keep the rule they were recorded with: a Document is
+    // accepted only when its draft renders to them again.
+    assert_eq!(canonical_inline("-foo", true), "\\-foo");
+    assert_eq!(canonical_inline("!wow", true), "\\!wow");
+    assert_eq!(canonical_inline("(aside)", true), "(aside)");
+    assert_eq!(canonical_heading("# x"), heading("# x"));
+}
+
 #[test]
 fn authored_block_syntax_inside_lists_stays_text() {
     let body = "- first item\n  # heading in an item\n  > quote in an item\n  - nested item\n    \

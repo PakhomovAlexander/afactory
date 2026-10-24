@@ -268,7 +268,8 @@ fn a_killed_run_is_abandoned_then_resumed_with_one_chargeable_and_one_abandoned_
     assert_eq!(shown["state"]["phase"], "abandoned");
     assert_eq!(shown["state"]["outcome"], "cancelled");
     assert_eq!(shown["state"]["cause"], "writer_lost");
-    assert_eq!(shown["state"]["next_action"], format!("af task run {TASK}"));
+    let resume = format!("af task run {TASK} --state {}", f.state.display());
+    assert_eq!(shown["state"]["next_action"], resume.as_str());
     let text = String::from_utf8(af(&f, &["task", "show", TASK]).output().unwrap().stdout).unwrap();
     assert!(
         text.contains(&format!(
@@ -276,19 +277,13 @@ fn a_killed_run_is_abandoned_then_resumed_with_one_chargeable_and_one_abandoned_
         )),
         "{text}"
     );
-    assert!(
-        text.contains(&format!("\nnext: af task run {TASK}\n")),
-        "{text}"
-    );
+    assert!(text.contains(&format!("\nnext: {resume}\n")), "{text}");
     let listed = json(&af(&f, &["task", "list", "--json"]).output().unwrap());
     let entry = &listed["tasks"][0];
     schemas::valid(&schemas::validator("task-list-entry-v3.json"), entry);
     assert_eq!(
         (&entry["state"]["cause"], &entry["state"]["next_action"]),
-        (
-            &Value::from("writer_lost"),
-            &Value::from(format!("af task run {TASK}"))
-        )
+        (&Value::from("writer_lost"), &Value::from(resume.as_str()))
     );
     let listed = String::from_utf8(af(&f, &["task", "list"]).output().unwrap().stdout).unwrap();
     assert!(
@@ -376,7 +371,10 @@ fn a_sigterm_resume_dispatches_the_interrupted_node_again() {
     let shown = json(&af(&f, &["task", "show", TASK, "--json"]).output().unwrap());
     assert_eq!(shown["state"]["phase"], "abandoned", "{shown:#}");
     assert_eq!(shown["state"]["cause"], "host_cancelled", "{shown:#}");
-    assert_eq!(shown["state"]["next_action"], format!("af task run {TASK}"));
+    assert_eq!(
+        shown["state"]["next_action"],
+        format!("af task run {TASK} --state {}", f.state.display())
+    );
 
     std::fs::write(&f.resume, b"").unwrap();
     let resumed = af(&f, &["task", "run", TASK, "--json"]).output().unwrap();
@@ -428,21 +426,43 @@ fn a_node_past_its_recovery_allowance_cannot_continue_and_says_why_on_line_one()
     let refused = af(&f, &["task", "run", TASK]).output().unwrap();
     assert_eq!(refused.status.code(), Some(1));
     let line = first_line(&refused);
+    // The fix carries the Store this command was given, so it runs as printed.
+    let start = format!(
+        "af task start --file TASK_FILE --state {}",
+        f.state.display()
+    );
     assert_eq!(
         line,
         format!(
             "af task: cannot continue Task {TASK}: node {NODE} lost its writer 1 time and was \
-             interrupted 1 time (recovery allowance 1); fix: start it again with `af task start \
-             --file TASK_FILE` (the Task file it was started from), or allow more with \
-             `[slots.implementer] recovery_attempts` in its pipeline (af.pipeline/3)"
+             interrupted 1 time (recovery allowance 1); fix: start it again with `{start}` (the \
+             Task file it was started from), or allow more with `[slots.implementer] \
+             recovery_attempts` in its pipeline (af.pipeline/3)"
         )
+    );
+    // Under --json the same refusal is typed: its cause, node, count, allowance and the command.
+    let typed = af(&f, &["task", "run", TASK, "--json"]).output().unwrap();
+    assert_eq!(typed.status.code(), Some(1));
+    let document: Value = serde_json::from_slice(&typed.stdout).unwrap();
+    schemas::valid(&schemas::validator("error-v1.json"), &document);
+    assert_eq!(document["cause"], "recovery_exhausted", "{document:#}");
+    assert_eq!(document["exit_code"], 1);
+    assert_eq!(document["next_action"], start.as_str());
+    assert_eq!(
+        document["details"],
+        serde_json::json!({"node": NODE, "count": 2, "writer_lost": 1, "host_cancelled": 1,
+            "allowance": 1})
+    );
+    assert!(
+        document["error"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("cannot continue Task {TASK}: node {NODE}")),
+        "{document:#}"
     );
     let shown = json(&af(&f, &["task", "show", TASK, "--json"]).output().unwrap());
     assert_eq!(shown["state"]["cause"], "writer_lost", "{shown:#}");
-    assert_eq!(
-        shown["state"]["next_action"],
-        "af task start --file TASK_FILE"
-    );
+    assert_eq!(shown["state"]["next_action"], start.as_str());
     let task = projection(&f);
     let execution = task.execution.as_ref().unwrap();
     let recovery = execution.node_recovery(NODE).unwrap();

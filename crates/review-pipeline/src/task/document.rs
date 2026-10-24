@@ -168,14 +168,15 @@ pub fn document_signatures(
 
 /// Authored plain text as Markdown that reads back as exactly that text, each line placed where
 /// a block could begin: only a character that is markup where it stands is escaped (`*`, `\\`,
-/// a backtick, `[`, `]`, `<`, `|`, `~`, `$`, `_` outside a word, `&` before an entity, a
-/// block marker at a line's start), and a word a GFM autolink could claim is an inert code
+/// a backtick, `[`, `]`, `<`, `|`, `~`, `$`, `_` outside a word, `&` before an entity, and at a
+/// line's start every ASCII punctuation but `()"',./?;`, the rule these bytes were recorded
+/// with), and a word a GFM autolink could claim is an inert code
 /// span. Ordinary punctuation, paths and non-ASCII text are written as authored
 /// (`af.document/2`). Only this renderer emits Markdown link syntax, from captured source
 /// locations that pass the fixed grammar below. Rendering never fetches a URL.
 fn markdown_text(text: &str) -> String {
     text.split('\n')
-        .map(|line| super::human_document::inline(line, true))
+        .map(|line| super::human_document::canonical_inline(line, true))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -183,13 +184,13 @@ fn markdown_text(text: &str) -> String {
 /// A title or heading's authored text, escaped as [`markdown_text`] and `#` too, so no closing
 /// sequence of the heading is dropped.
 fn markdown_heading(text: &str) -> String {
-    super::human_document::heading(text)
+    super::human_document::canonical_heading(text)
 }
 
 /// Authored text inside a line the renderer began: escaped as [`markdown_text`], but no block
 /// can begin here.
 fn markdown_inline(text: &str) -> String {
-    super::human_document::inline(text, false)
+    super::human_document::canonical_inline(text, false)
 }
 
 pub fn safe_source_location(uri: &str) -> bool {

@@ -236,8 +236,9 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
             .unwrap(),
     ))
     .unwrap();
-    // The state is the one `af task show` prints.
-    assert_eq!(task["state"], shown["state"]);
+    // The state is the one `af task show` prints, its next command without the `--state` the
+    // show was given: a report names no Store path.
+    assert_eq!(task["state"], unselected(&shown["state"], &state));
     assert_eq!(task["attempts"]["total"], shown["attempts"]);
     assert_eq!(task["chargeable_tokens"], shown["chargeable_tokens"]);
     let text = String::from_utf8(
@@ -461,6 +462,20 @@ fn fixture_report(f: &Fixture, json: bool) -> String {
     text
 }
 
+/// `state` as a report states it: the next command a command given `--state STORE` printed,
+/// without that selector.
+fn unselected(state: &Value, store: &std::path::Path) -> Value {
+    let mut state = state.clone();
+    if let Some(next) = state["next_action"].as_str() {
+        let selector = format!(" --state {}", store.display());
+        state["next_action"] = next
+            .strip_suffix(&selector)
+            .unwrap_or_else(|| panic!("{next}"))
+            .into();
+    }
+    state
+}
+
 #[test]
 fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stays_private() {
     let (f, done) = failed_provider_task(|_| None);
@@ -471,7 +486,7 @@ fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stay
     assert_eq!(task["runs"], 1);
     assert_eq!(task["attempts"]["total"], done["attempts"]);
     assert_eq!(task["chargeable_tokens"], done["chargeable_tokens"]);
-    assert_eq!(task["state"], done["state"]);
+    assert_eq!(task["state"], unselected(&done["state"], &f.state));
 
     let cas = Cas::open_existing(f.state.join("cas")).unwrap();
     let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();

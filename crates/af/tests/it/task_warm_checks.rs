@@ -1715,7 +1715,18 @@ fn no_warm_documents() -> Value {
         ],
     );
     assert_eq!(code, 0, "{stderr}");
-    let inspection: Value = serde_json::from_str(shown.trim()).unwrap();
+    let mut inspection: Value = serde_json::from_str(shown.trim()).unwrap();
+    // The next command carries the `--state` the command was given, a path of this run: the
+    // documents compare the command the state chose.
+    let selector = format!(" --state {}", fixture.state.display());
+    let next = inspection["state"]["next_action"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let chosen = next
+        .strip_suffix(&selector)
+        .unwrap_or_else(|| panic!("{next}"));
+    inspection["state"]["next_action"] = chosen.into();
     let (delivery, worktree) = deliver(&fixture, "cold-only");
     let cas = cas(&fixture);
     let document = |id: &Value| cas.get_json(id.as_str().unwrap()).unwrap();

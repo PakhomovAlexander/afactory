@@ -3,10 +3,11 @@
   in text and under `--json` (`state`), with the one command to run next (`next: af task run ID
   --retry-gate`); `af help task-states` and [docs/tasks.md](docs/tasks.md#task-states) list every
   phase, outcome and cause. A failed gate is `gate_failed`, never `changes_requested`, and
-  `af task run` exits 5 for it, 6 for a Provider failure and 7 for an expired deadline
-  (`af help exit-codes`). The documents are new versions: `af/task-inspection@13`,
-  `af/task-list@3` of `af/task-list-entry@3`, `af/task-report@2`,
-  `af/task-collected-inspection@2` and `af/task-selection@2`; the previous ones are refused.
+  `af task run`, `af task start --execute` and `af task explain` exit 5 for it, 6 for a Provider
+  failure and 7 for an expired deadline, while `af task show`, `list`, `report`, `status` and
+  `findings` exit 0 (`af help exit-codes`). The documents are new versions:
+  `af/task-inspection@13`, `af/task-list@3` of `af/task-list-entry@3`, `af/task-report@2`,
+  `af/task-collected-inspection@2` and `af/task-selection@3`; the previous ones are refused.
 - `af task show ID --checks` (`af/task-checks@2` under `--json`) prints the gate's last check
   receipt with each check's failing and flaky tests and the end of its stderr; `af task list
   --json` rows carry `gate`, the run log names the failing tests after a failed gate, and

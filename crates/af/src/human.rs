@@ -1,4 +1,5 @@
-//! Figures as a person reads them: durations and sizes in units, times in the local zone.
+//! Figures as a person reads them: durations and sizes in units, times in the local zone, and
+//! lines held to the terminal's width with commands kept whole.
 //!
 //! Human text uses these; the raw figure (milliseconds, bytes, Unix time) is printed only under
 //! `--json`, where a script reads it.
@@ -23,6 +24,116 @@ pub(crate) fn duration(ms: u64) -> String {
 /// A size in binary units with one decimal: `512 B`, `1.2 GiB`.
 pub(crate) fn bytes(bytes: u64) -> String {
     crate::storage::human_bytes(bytes)
+}
+
+/// The widest line human text on stdout may print: the terminal's width when stdout is one,
+/// else `COLUMNS` as clap reads it for `--help`, else 100; never more than 100, the width help
+/// pages are held to.
+pub(crate) fn width() -> usize {
+    use std::io::IsTerminal;
+    let terminal = std::io::stdout()
+        .is_terminal()
+        .then(|| rustix::termios::tcgetwinsize(std::io::stdout()).ok())
+        .flatten()
+        .map(|size| usize::from(size.ws_col));
+    let columns = || {
+        std::env::var("COLUMNS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+    };
+    match terminal.filter(|&columns| columns > 0).or_else(columns) {
+        Some(columns) if columns >= 40 => columns.min(100),
+        Some(columns) if columns > 0 => 40,
+        _ => 100,
+    }
+}
+
+/// `text` wrapped at spaces to lines of at most `width` columns, every line after the first
+/// indented by `indent` spaces; a line that fits is returned as it is, its spacing kept. A span
+/// between backticks is one word, so a command named in prose is never split across lines; a
+/// word wider than a line keeps a line of its own.
+pub(crate) fn wrap(text: &str, width: usize, indent: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    // Each word with the spaces before it, so the first line keeps its own indent and spacing.
+    let mut segments: Vec<(String, String)> = Vec::new();
+    let mut chars = text.chars().peekable();
+    loop {
+        let mut spaces = String::new();
+        while let Some(c) = chars.next_if_eq(&' ') {
+            spaces.push(c);
+        }
+        let mut word = String::new();
+        let mut quoted = false;
+        while let Some(&c) = chars.peek() {
+            if c == ' ' && !quoted {
+                break;
+            }
+            quoted ^= c == '`';
+            word.push(c);
+            chars.next();
+        }
+        if word.is_empty() {
+            break;
+        }
+        segments.push((spaces, word));
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for (spaces, word) in segments {
+        let wide = line.chars().count() + spaces.chars().count() + word.chars().count() > width;
+        if wide && !line.trim().is_empty() {
+            lines.push(std::mem::take(&mut line));
+            line = format!("{}{word}", " ".repeat(indent));
+        } else {
+            line.push_str(&spaces);
+            line.push_str(&word);
+        }
+    }
+    lines.push(line);
+    lines.join("\n")
+}
+
+/// `line`, a label and an `af` command (`next:    af review run --policy-rev HEAD ...`), kept
+/// within `width` columns: unchanged when it fits, else continued with ` \` between the
+/// command's arguments, each continuation indented four columns past the command's start, so a
+/// copied command runs as printed. A line without an `af` command, or one whose quoting a shell
+/// would not read, is returned unchanged.
+pub(crate) fn fit_command(line: &str, width: usize) -> String {
+    if line.chars().count() <= width {
+        return line.to_owned();
+    }
+    let start = if line.starts_with("af ") {
+        Some(0)
+    } else {
+        line.find(" af ").map(|at| at + 1)
+    };
+    let Some(start) = start else {
+        return line.to_owned();
+    };
+    let Ok(words) = shell_words::split(&line[start..]) else {
+        return line.to_owned();
+    };
+    let indent = " ".repeat(line[..start].chars().count() + 4);
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = line[..start].to_owned();
+    let mut first = true;
+    for word in words {
+        let word = shell_words::quote(&word).into_owned();
+        if !first && current.chars().count() + 1 + word.chars().count() + 2 > width {
+            lines.push(format!("{current} \\"));
+            current = format!("{indent}{word}");
+        } else {
+            if !first {
+                current.push(' ');
+            }
+            current.push_str(&word);
+        }
+        first = false;
+    }
+    lines.push(current);
+    lines.join("\n")
 }
 
 /// The UTC offset in seconds and the zone's abbreviation at `unix_seconds`, from the zone
@@ -175,6 +286,72 @@ mod tests {
         assert_eq!(utc_time(0), "1970-01-01 00:00Z");
         // 2026-10-23 06:12:59 UTC.
         assert_eq!(utc_time(1_792_735_979_000), "2026-10-23 06:12Z");
+    }
+
+    #[test]
+    fn prose_wraps_at_spaces_and_keeps_a_quoted_command_whole() {
+        let text = "provider architecture -> MISSING; fix: no codex Provider is registered: \
+                    `af provider status` lists what this machine has, and `af provider setup \
+                    codex-main --kind codex --login` registers one";
+        for width in [100, 80] {
+            let wrapped = wrap(text, width, 2);
+            assert!(
+                wrapped.lines().all(|line| line.chars().count() <= width),
+                "{wrapped}"
+            );
+            assert!(wrapped.lines().skip(1).all(|line| line.starts_with("  ")));
+            assert!(
+                wrapped.contains("`af provider setup codex-main --kind codex --login`"),
+                "{wrapped}"
+            );
+            assert_eq!(
+                wrapped.split_whitespace().collect::<Vec<_>>().join(" "),
+                text
+            );
+        }
+        assert_eq!(wrap("short", 80, 2), "short");
+        // A line that fits keeps its indent and its aligned columns.
+        assert_eq!(wrap("  change  a  b", 80, 2), "  change  a  b");
+        let long = format!("  empty  {}", "word ".repeat(30));
+        let wrapped = wrap(long.trim_end(), 80, 9);
+        assert!(wrapped.starts_with("  empty  word word"), "{wrapped}");
+        assert!(
+            wrapped
+                .lines()
+                .skip(1)
+                .all(|line| line.starts_with("         word"))
+        );
+    }
+
+    #[test]
+    fn a_long_command_continues_between_its_arguments() {
+        let line = "next:    af review run --policy-rev HEAD --base HEAD --uncommitted \
+                    --provider correctness=claude-main --provider architecture=codex-main";
+        assert_eq!(fit_command(line, 200), line);
+        for width in [100, 80] {
+            let fitted = fit_command(line, width);
+            let lines: Vec<&str> = fitted.lines().collect();
+            assert!(lines.len() > 1, "{fitted}");
+            assert!(
+                lines.iter().all(|row| row.chars().count() <= width),
+                "{fitted}"
+            );
+            assert!(
+                lines[..lines.len() - 1]
+                    .iter()
+                    .all(|row| row.ends_with(" \\"))
+            );
+            assert!(
+                lines[1..]
+                    .iter()
+                    .all(|row| row.starts_with("             "))
+            );
+            // A shell reads the continued command as the one it was.
+            let joined = fitted.replace(" \\\n", " ");
+            let words = shell_words::split(joined.trim_start_matches("next:")).unwrap();
+            assert_eq!(words, shell_words::split(&line[9..]).unwrap());
+        }
+        assert_eq!(fit_command(&"x".repeat(120), 80), "x".repeat(120));
     }
 
     #[test]

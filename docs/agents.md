@@ -17,8 +17,8 @@ default per checkout). `af help task-states` lists every state a Task can be in.
 `af task plan --file TASK_FILE --json` captures the Task file and the checkout and compiles the
 plan without running anything: one `af/task-inspection@13` document whose `plan_id` is the
 plan to confirm and whose `state.next_action` is the command that runs it. A plan that does
-not fit its limits is refused with `af/task-selection@2`; `--fit` plans with the smallest
-limits that fit.
+not fit its limits is refused with `af/task-selection@3`, whose `next_action` is the `--fit`
+command that plans with the smallest limits that fit.
 
 ## 2. Run, or run in the background
 
@@ -46,7 +46,11 @@ Every document above carries `state`: `phase`, `outcome`, `cause` and `next_acti
 command to run next. The exit code says the same to a script: 0 verified, 3 changes requested,
 4 exhausted or cancelled, 5 gate failed, 6 Provider failed, 7 expired (`af help exit-codes`).
 stderr's last line is always `Task TASK_ID: phase/outcome/cause; next: COMMAND`. Branch on
-`state.outcome` and run `state.next_action`; never parse the prose.
+`state.outcome` and run `state.next_action`; never parse the prose. `next_action` carries the
+`--repo`, `--state` or `--workspace` the command was given, so it runs as printed. A refusal
+under `--json` is one `af/error@1` document with the same exit code; one af classifies, such as a
+node past its recovery allowance, also carries `cause`, `next_action` and `details`
+(`af help json`).
 
 ## 4. Read the findings
 

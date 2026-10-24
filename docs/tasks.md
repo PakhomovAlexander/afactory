@@ -269,7 +269,10 @@ candidate ([Retry a failed gate](#retry-a-failed-gate)), whatever its cause, `af
 --checks` after one it cannot, `af task run ID` to resume a cancelled run (`af task start --file
 TASK_FILE` once its interrupted node used up its recovery allowance), `af task plan --file
 TASK_FILE --fit` after a budget or deadline ran out (with a new `task_id` once the Task ran), and
-`af provider status` or `af provider setup ID --login` after a Provider failure. `af task show` prints, per
+`af provider status` or `af provider setup ID --login` after a Provider failure. A command given
+`--repo`, `--state` or `--workspace` prints an `af task` next command with them as typed, so it
+runs as printed against the same Store; under the default Store it carries none. `af task show`
+prints, per
 failed node, its cause, the first line of its error and the artifact IDs of its whole diagnostic
 and stderr; a node that only lacks the receipt of a branch that failed comes after that branch.
 A command that exits with an outcome's code while its result goes to stdout, such as `af task
@@ -802,7 +805,8 @@ the review did not run, and `—` for a Task without a review, followed by `; N 
 failed` when a reviewer's Attempt failed. A round recorded before a `task
 refresh` still counts. A last `Total:` row sums Attempts (with how many failed), tokens and
 active time. **Active time** is the sum of the Task's runs, each from its first event to its
-last: a run is `task start --execute` or one `task run` that started an Attempt, so a Task that
+last: a run is `task start --execute` or one `task run` that started an Attempt or recorded a
+gate retry (`task run --retry-gate`), so a Task that
 waited a day before it was resumed shows that day in its wall time only, and neither a `task
 refresh`, even when it settles an Attempt an interrupted run left pending, nor a resume that only
 publishes an already selected result is a run. **Wall time** runs from the Task's first recorded

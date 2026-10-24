@@ -1138,9 +1138,35 @@ pub(crate) fn plan_tree_preview_at(
     })
 }
 
-fn effective_task_wall_ms(file_wall_ms: u64, timeout_secs: Option<u64>) -> Result<u64, String> {
-    if file_wall_ms == 0 || timeout_secs == Some(0) {
-        return Err("Task wall_ms and --timeout-secs must be positive".into());
+/// The Task's wall: the Task file's `limits.wall_ms`, shortened by `--timeout-secs`. A zero is
+/// refused by the name it was given: the flag, or the field of the Task file `file`, with the
+/// command that plans the file once it is fixed.
+fn effective_task_wall_ms(
+    file: &Path,
+    file_wall_ms: u64,
+    timeout_secs: Option<u64>,
+) -> Result<u64, String> {
+    if timeout_secs == Some(0) {
+        return Err(
+            "--timeout-secs must be positive: 0 seconds leaves the Task no time to run".into(),
+        );
+    }
+    if file_wall_ms == 0 {
+        use crate::error_document::{Cause, Detail};
+        let shown = file.display().to_string();
+        let again = plan_again(file);
+        return Err(crate::error_document::typed(
+            format!(
+                "Task file {shown}: limits.wall_ms=0 must be positive: 0 ms leaves the Task no \
+                 time to run; set limits.wall_ms to the Task's wall-clock budget in \
+                 milliseconds, then run `{again}` again"
+            ),
+            Detail::new(Cause::TaskFileInvalid)
+                .next(again)
+                .with("file", shown)
+                .with("field", "limits.wall_ms")
+                .with("value", 0),
+        ));
     }
     let timeout_ms = timeout_secs
         .map(|seconds| seconds.checked_mul(1000).ok_or("Task timeout overflow"))
@@ -1482,7 +1508,7 @@ fn start_bytes(
     // Reject invalid duration before creating state, capturing authority or occupying an ID.
     // Limits the project's defaults fill in are judged once they are read.
     if let Some(limits) = &file.limits {
-        let wall = effective_task_wall_ms(limits.wall_ms, options.timeout_secs)?;
+        let wall = effective_task_wall_ms(&options.file, limits.wall_ms, options.timeout_secs)?;
         started.checked_add(wall).ok_or("Task deadline overflow")?;
     }
     if file.continue_from.is_some()
@@ -1519,9 +1545,8 @@ fn start_bytes(
                 );
             }
             return match presentation {
-                Presentation::Print => {
-                    present(&cas, &store, &file.task_id, options.json, true).map(Started::Code)
-                }
+                Presentation::Print => present(&cas, &store, &file.task_id, options.json, true)
+                    .map(|presented| Started::Code(presented.code)),
                 Presentation::Silent => Ok(Started::Code(0)),
             };
         }
@@ -1555,7 +1580,7 @@ fn start_bytes(
         authority.2.pipelines(),
     )?;
     let limits = file.limits.as_ref().ok_or("Task file has no limits")?;
-    let wall = effective_task_wall_ms(limits.wall_ms, options.timeout_secs)?;
+    let wall = effective_task_wall_ms(&options.file, limits.wall_ms, options.timeout_secs)?;
     started.checked_add(wall).ok_or("Task deadline overflow")?;
     if presentation == Presentation::Print
         && let Some(line) = defaults::line(&filled)
@@ -1786,7 +1811,7 @@ fn start_captured(
     };
     let input_file = cas.put(&bytes).map_err(|e| e.to_string())?;
     let limits = file.limits.clone().ok_or("Task file has no limits")?;
-    let wall = effective_task_wall_ms(limits.wall_ms, options.timeout_secs)?;
+    let wall = effective_task_wall_ms(&options.file, limits.wall_ms, options.timeout_secs)?;
     // The deadline is taken from as late as the revision allows: its clock starts at the
     // first admission (P5), and the time spent here before the Task is recorded would come out
     // of its wall.
@@ -2416,17 +2441,17 @@ fn start_captured(
         options.plan_only,
         &undeclared,
     );
-    if !options.plan_only {
-        run_log_tail(&cas, &store, &revision.task_id, options.json);
-    } else if let Ok(code) = presented {
-        state_note(&cas, &store, &revision.task_id, code);
+    match &presented {
+        Ok(shown) if !options.plan_only => shown.tail(options.json),
+        Ok(shown) => shown.note(shown.code),
+        Err(_) => {}
     }
     // The request is in the Store, so a copy the repository would carry is redundant. Advice
     // only, and given last: the Task deadline was derived and the plan compiled, recorded and
     // presented before this runs, so a slow `git check-ignore` can neither shorten the Task's
     // remaining wall nor change the exit code or the `--json` document already written.
     task_file_home::warn_if_captured_from_the_repository(&options.file, &options.repo);
-    presented.map(Started::Code)
+    presented.map(|shown| Started::Code(shown.code))
 }
 
 /// Selection for a silent preview: a refused selection is an error to show, not a document to
@@ -2848,6 +2873,44 @@ pub(super) struct ContinueOptions {
     pub execute: bool,
 }
 
+/// A `--goal` file that cannot be read, refused with its fix and, under `--json`, the command
+/// that plans the continuation once the file is there.
+fn unreadable_goal(options: &ContinueOptions, path: &Path, error: String) -> String {
+    use crate::error_document::{Cause, Detail};
+    let fix = if error.starts_with("cannot open") || error.ends_with("must be a regular file") {
+        "; write the goal there, or pass --goal FILE naming an existing Markdown file"
+    } else {
+        ""
+    };
+    let quote = |word: &str| shell_words::quote(word).into_owned();
+    let mut again = format!(
+        "af task run {} --from {}",
+        quote(&options.task_id),
+        quote(&options.from)
+    );
+    if let Some(round) = options.round {
+        again.push_str(&format!(" --round {round}"));
+    }
+    again.push_str(&format!(" --goal {}", quote(&path.display().to_string())));
+    if let Some(bindings) = &options.bindings {
+        again.push_str(&format!(
+            " --bindings {}",
+            quote(&bindings.display().to_string())
+        ));
+    }
+    if options.execute {
+        again.push_str(" --execute");
+    }
+    again.push_str(&store_selectors());
+    crate::error_document::typed(
+        format!("{error}{fix}"),
+        Detail::new(Cause::InputUnreadable)
+            .next(again)
+            .with("file", path.display().to_string())
+            .with("what", "goal file"),
+    )
+}
+
 /// `af task run NEW --from TASK [--round N] [--goal FILE]` (ADR-0203): plan, and with
 /// `--execute` run, a new Task from the finished Task's own captured Task file with a
 /// `continue` table, so its source is the reviewed candidate and its implementer reads the
@@ -2860,7 +2923,8 @@ pub(super) fn run_from(options: ContinueOptions) -> Result<i32, String> {
         .goal
         .as_deref()
         .map(|path| -> Result<String, String> {
-            let bytes = input_file::read(path, 256 * 1024, "goal file")?;
+            let bytes = input_file::read(path, 256 * 1024, "goal file")
+                .map_err(|error| unreadable_goal(&options, path, error))?;
             let text = String::from_utf8(bytes)
                 .map_err(|_| format!("goal file {} is not UTF-8 text", path.display()))?;
             if text.trim().is_empty() {
@@ -2969,17 +3033,16 @@ pub(super) fn run(
     }
     if matches!(projection.phase, TaskPhaseV1::Finished { .. }) && !retry_gate {
         // A finished Task returns its recorded result, and its run log ends as the first did.
-        let code = present(&cas, &store, id, json, false)?;
+        let presented = present(&cas, &store, id, json, false)?;
         if json {
-            run_log_tail(&cas, &store, id, json);
+            presented.tail(json);
         } else {
-            state_note(&cas, &store, id, code);
+            presented.note(presented.code);
         }
-        return Ok(code);
+        return Ok(presented.code);
     }
     if projection.plan_id.is_none() {
-        present(&cas, &store, id, json, true)?;
-        state_note(&cas, &store, id, 4);
+        present(&cas, &store, id, json, true)?.note(4);
         return Ok(4);
     }
     let authority: RunAuthority = serde_json::from_value(
@@ -3139,9 +3202,9 @@ pub(super) fn run(
     // (ADR-0147).
     crate::model_failures::print(&cas, &store, id, started);
     released?;
-    let code = present(&cas, &store, id, json, false)?;
-    run_log_tail(&cas, &store, id, json);
-    Ok(code)
+    let presented = present(&cas, &store, id, json, false)?;
+    presented.tail(json);
+    Ok(presented.code)
 }
 
 /// The run log's last lines on stderr, held until the command's housekeeping has said what it
@@ -3169,21 +3232,46 @@ pub(crate) fn print_last_lines() {
     }
 }
 
-/// The run log's last lines under `--json`, on stderr beside the document on stdout: the failing
-/// tests of a failed gate and the Task's state with the next command, as the text output ends.
-/// Best effort: a Store that cannot be read prints nothing more.
-fn run_log_tail(cas: &Cas, store: &EventStore, id: &str, json: bool) {
-    let Ok(Inspection { view, .. }) = inspection(cas, store, id, false, None) else {
-        return;
-    };
-    // The text on stdout already named the failing tests; the state line ends stderr in both
-    // formats, so a run's log always ends with the state and the next command (ADR-0202).
-    if json {
-        for line in state::failed_gate_tail(id, &view) {
-            defer_last_line(line);
+/// What one presentation of a Task printed: the exit code it ends with, and from the same view
+/// that code was judged by, the run log's last line (the Task's state and the next command)
+/// and a failed gate's failing tests. Nothing is read again after the Task was shown, so a
+/// Task that changed or was collected meanwhile can neither silence nor contradict stderr.
+pub(super) struct Presented {
+    pub(super) code: i32,
+    line: String,
+    gate_tail: Vec<String>,
+}
+
+impl Presented {
+    fn new(id: &str, code: i32, view: &state::TaskView) -> Self {
+        Self {
+            code,
+            line: state_line(id, view),
+            gate_tail: state::failed_gate_tail(id, view),
         }
     }
-    defer_last_line(state_line(id, &view));
+
+    /// A command whose exit status `code` reports a Task that did not verify, or one waiting
+    /// for a person, while its result went to stdout, ends with the run log's last line on
+    /// stderr: a non-zero exit never leaves stderr silent.
+    pub(super) fn note(&self, code: i32) {
+        if code != 0 {
+            defer_last_line(self.line.clone());
+        }
+    }
+
+    /// The run log's last lines: under `--json`, on stderr beside the document on stdout, the
+    /// failing tests of a failed gate (the text on stdout already named them); in both
+    /// formats the state line, so a run's log always ends with the state and the next command
+    /// (ADR-0202).
+    pub(super) fn tail(&self, json: bool) {
+        if json {
+            for line in &self.gate_tail {
+                defer_last_line(line.clone());
+            }
+        }
+        defer_last_line(self.line.clone());
+    }
 }
 
 /// The run log's last line: the Task's state and the next command.
@@ -3195,19 +3283,7 @@ pub(super) fn state_line(id: &str, view: &state::TaskView) -> String {
     )
 }
 
-/// A command whose exit status reports a Task that did not verify, or one waiting for a
-/// person, while its result went to stdout, ends with the run log's last line on stderr: a
-/// non-zero exit never leaves stderr silent. Best effort, as [`run_log_tail`].
-fn state_note(cas: &Cas, store: &EventStore, id: &str, code: i32) {
-    if code == 0 {
-        return;
-    }
-    if let Ok(Inspection { view, .. }) = inspection(cas, store, id, false, None) {
-        defer_last_line(state_line(id, &view));
-    }
-}
-
-/// [`present`], then [`state_note`] for a non-zero exit.
+/// [`present`], then [`Presented::note`] for a non-zero exit.
 fn present_noting(
     cas: &Cas,
     store: &EventStore,
@@ -3215,9 +3291,9 @@ fn present_noting(
     json_output: bool,
     explain: bool,
 ) -> Result<i32, String> {
-    let code = present(cas, store, id, json_output, explain)?;
-    state_note(cas, store, id, code);
-    Ok(code)
+    let presented = present(cas, store, id, json_output, explain)?;
+    presented.note(presented.code);
+    Ok(presented.code)
 }
 
 pub(super) fn explain(
@@ -3243,9 +3319,9 @@ pub(super) fn explain(
     if let Some(plan_id) = plan {
         return inspection::explain_plan(&cas, &store, id, plan_id, json, tree);
     }
-    let code = present_with_format(&cas, &store, id, json, true, tree, None)?;
-    state_note(&cas, &store, id, code);
-    Ok(code)
+    let presented = present_with_format(&cas, &store, id, json, true, tree, None)?;
+    presented.note(presented.code);
+    Ok(presented.code)
 }
 
 pub(super) fn show_if_common(
@@ -3352,7 +3428,7 @@ impl OpenedTask {
             _ => None,
         };
         let cancelled = runs::cancelled_epoch(Some(&self.state), &self.task);
-        let view = state::view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled)?;
+        let view = selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled)?;
         Ok((result, view))
     }
 
@@ -3365,6 +3441,99 @@ impl OpenedTask {
             .ok_or_else(|| task_not_found(&self.state, &self.task.task_id))?;
         Ok(())
     }
+}
+
+/// The leaf subcommand's matches of this process's command line when it works on a Task Store:
+/// an `af task` command, or `af review` with a Task file (`--file`), whose `--state` names a
+/// Task Store too. `None` for every other command, a Campaign review and the browser included.
+fn task_invocation() -> Option<&'static clap::ArgMatches> {
+    static MATCHES: std::sync::OnceLock<Option<clap::ArgMatches>> = std::sync::OnceLock::new();
+    MATCHES
+        .get_or_init(|| {
+            use clap::CommandFactory as _;
+            let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+            let matches = crate::cli::Af::command().try_get_matches_from(argv).ok()?;
+            let (namespace, mut leaf) = matches.subcommand()?;
+            while let Some((_, deeper)) = leaf.subcommand() {
+                leaf = deeper;
+            }
+            let task_file = matches!(leaf.try_get_raw("task_file"), Ok(Some(_)));
+            (namespace == "task" || (namespace == "review" && task_file)).then(|| leaf.clone())
+        })
+        .as_ref()
+}
+
+/// The flags of `ids` this command was given on its command line ([`task_invocation`]), as typed
+/// and shell quoted: ` --repo ../x --state ../state`. A default value is not repeated.
+pub(crate) fn invocation_flags(ids: &[&str]) -> String {
+    let Some(matches) = task_invocation() else {
+        return String::new();
+    };
+    let mut flags = String::new();
+    for id in ids {
+        let flag = id.replace('_', "-");
+        if let Ok(Some(true)) = matches.try_get_one::<bool>(id) {
+            flags.push_str(&format!(" --{flag}"));
+            continue;
+        }
+        let Ok(Some(values)) = matches.try_get_raw(id) else {
+            continue;
+        };
+        if matches.value_source(id) != Some(clap::parser::ValueSource::CommandLine) {
+            continue;
+        }
+        for value in values {
+            flags.push_str(&format!(
+                " --{flag} {}",
+                shell_words::quote(&value.to_string_lossy())
+            ));
+        }
+    }
+    flags
+}
+
+/// `af task plan --file FILE` with the capture flags (`--bindings`, `--source-bindings`,
+/// `--authority`, `--uncommitted`) and the Store selectors this command was given: run as
+/// printed, it plans the same capture in the same Store.
+pub(super) fn plan_again(file: &Path) -> String {
+    format!(
+        "af task plan --file {}{}{}",
+        shell_words::quote(&file.display().to_string()),
+        invocation_flags(&["bindings", "source_bindings", "authority", "uncommitted"]),
+        store_selectors()
+    )
+}
+
+/// The Store selectors this command was given (`--repo`, then `--state` or `--workspace`), as
+/// typed; empty for the default Store.
+pub(crate) fn store_selectors() -> String {
+    invocation_flags(&["repo", "state", "workspace"])
+}
+
+/// `command` as a printed next command: an `af task` command carries the Store selectors this
+/// command was given, so run as printed it acts on the same Store. Every other command, and
+/// every command under the default Store, is unchanged.
+pub(crate) fn with_selectors(command: &str) -> String {
+    if command.starts_with("af task ") {
+        format!("{command}{}", store_selectors())
+    } else {
+        command.to_owned()
+    }
+}
+
+/// [`state::view`], with the next command carrying this command's Store selectors.
+fn selected_view(
+    cas: &Cas,
+    task: &TaskProjection,
+    result: Option<&TaskResultV1>,
+    now: u64,
+    cancelled: Option<u64>,
+) -> Result<state::TaskView, String> {
+    let mut view = state::view(cas, task, result, now, cancelled)?;
+    if let Some(next) = view.state.next_action.as_mut() {
+        *next = with_selectors(next);
+    }
+    Ok(view)
 }
 
 /// The not-found refusal of a Task, in the shape every not-found refusal takes:
@@ -3495,7 +3664,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
         };
         // The same state `af task show` prints, from the same derivation.
         let cancelled = runs::cancelled_epoch(Some(state), &task);
-        let view = state::view(&cas, &task, result.as_ref(), now, cancelled)?;
+        let view = selected_view(&cas, &task, result.as_ref(), now, cancelled)?;
         Ok(json!({"schema":TASK_LIST_ENTRY_V3,"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
             "state":view.state,
             "round":review_round(&task),
@@ -3590,7 +3759,7 @@ fn present(
     id: &str,
     json_output: bool,
     explain: bool,
-) -> Result<i32, String> {
+) -> Result<Presented, String> {
     present_with_format(cas, store, id, json_output, explain, false, None)
 }
 
@@ -3604,7 +3773,7 @@ fn present_with_advisory(
     json: bool,
     explain: bool,
     undeclared: &review_config::layout::PathGroup,
-) -> Result<i32, String> {
+) -> Result<Presented, String> {
     let group = Some(undeclared);
     present_with_format(cas, store, id, json, explain, false, group)
 }
@@ -3730,7 +3899,7 @@ fn present_with_format(
     explain: bool,
     tree: bool,
     undeclared: Option<&review_config::layout::PathGroup>,
-) -> Result<i32, String> {
+) -> Result<Presented, String> {
     let Inspection {
         value,
         state,
@@ -3763,7 +3932,7 @@ fn present_with_format(
             );
         }
     }
-    Ok(exit_code(&state, &view))
+    Ok(Presented::new(id, exit_code(&state, &view), &view))
 }
 
 /// The exit code a presentation of `state` ends with: its outcome's (`af help exit-codes`), 4
@@ -4674,7 +4843,7 @@ fn inspection(
     // One state model for every rendering of this Task: `list`, `show`, `report` and `run`.
     let store_dir = store.database_path();
     let cancelled = runs::cancelled_epoch(store_dir.as_deref().and_then(Path::parent), &state);
-    let view = state::view(cas, &state, result.as_ref(), clock()?, cancelled)?;
+    let view = selected_view(cas, &state, result.as_ref(), clock()?, cancelled)?;
     let mut value = json!({"schema":TASK_INSPECTION_V13,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     // The wall clock starts at the first admission: the wall the Task has, when its clock
@@ -5402,5 +5571,47 @@ mod remote_check_line_tests {
         assert_ne!(first, second);
         let writer = format!("cli-{}-{first:016x}", std::process::id());
         assert!(review_core::task::is_name(&writer), "{writer}");
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+
+    /// The state line a non-zero exit ends stderr with is the state the exit code was judged
+    /// by: the Store is not read again, so a Task collected (here: a Store removed) between
+    /// showing it and noting it neither silences stderr nor changes what it says.
+    #[test]
+    fn the_state_note_comes_from_the_view_that_chose_the_exit_code() {
+        let root = tempfile::tempdir().unwrap();
+        let (_repo, state) = crate::tui::tests::hub_with_tasks(root.path());
+        let id = "pagination-unfinished";
+        let cas = Cas::open_existing(state.join("cas")).unwrap();
+        let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let expected = state_line(id, &inspection(&cas, &store, id, false, None).unwrap().view);
+        let presented = present(&cas, &store, id, true, false).unwrap();
+        assert_ne!(presented.code, 0, "{expected}");
+        drop((cas, store));
+        std::fs::remove_dir_all(&state).unwrap();
+        presented.note(presented.code);
+        let noted: Vec<String> = std::mem::take(
+            &mut *LAST_LINES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+        .into_iter()
+        .filter(|line| line.starts_with(&format!("Task {id}:")))
+        .collect();
+        assert_eq!(noted, [expected.clone()]);
+        assert!(expected.contains("; next: af task "), "{expected}");
+        presented.note(0);
+        assert!(
+            !LAST_LINES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .any(|line| line.starts_with(&format!("Task {id}:"))),
+            "an exit 0 adds no line"
+        );
     }
 }

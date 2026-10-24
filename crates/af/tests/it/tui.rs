@@ -626,7 +626,14 @@ fn the_pipelines_pane_prints_what_task_plan_and_explain_tree_print() {
     ];
     let explained = af(&repo, &home, &args);
     assert!(explained.status.success());
-    let expected = stable_lines(&String::from_utf8(explained.stdout).unwrap());
+    // The CLI's commands carry the `--state` it was given; the browser previews the package in
+    // a Store of its own and names none.
+    let selector = format!(" --state {state}");
+    let expected: Vec<String> = stable_lines(&String::from_utf8(explained.stdout).unwrap())
+        .into_iter()
+        .filter(|line| line.trim() != selector.trim())
+        .map(|line| line.replace(&selector, ""))
+        .collect();
 
     let mut browser = Browser::launch(&repo, &home);
     let listed = |screen: &Screen| shows(screen, "  v pipelines/");
