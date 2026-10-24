@@ -13,6 +13,8 @@ import shutil
 import time
 import zipfile
 from datetime import datetime, timezone
+from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 from perflab import contracts, gitrefs, telemetrycollect, telemetrylab, tomlfile, transport
 from perflab.values import ContractError, sha256_bytes
@@ -57,12 +59,13 @@ class FakeApi(object):
             return self.json({"id": WORKFLOW_ID,
                               "path": ".github/workflows/performance-telemetry.yml"})
         if url.startswith(base + "/actions/workflows/%d/runs?" % WORKFLOW_ID):
-            return self.json({"total_count": len(self.runs), "workflow_runs": self.runs})
+            return self.json(self.page(url, "workflow_runs", sorted(
+                self.runs, key=lambda run: run["id"], reverse=True)))
         for run in self.runs:
             if url.startswith(base + "/actions/runs/%d/artifacts?" % run["id"]):
                 listed = [dict((key, value) for key, value in item.items() if key != "data")
                           for item in self.artifacts.get(run["id"], [])]
-                return self.json({"total_count": len(listed), "artifacts": listed})
+                return self.json(self.page(url, "artifacts", listed))
         for items in self.artifacts.values():
             for item in items:
                 if url == base + "/actions/artifacts/%d/zip" % item["id"]:
@@ -74,6 +77,11 @@ class FakeApi(object):
 
     def json(self, doc):
         return transport.Response(200, {}, json.dumps(doc).encode())
+
+    def page(self, url, key, rows):
+        query = parse_qs(urlsplit(url).query)
+        size, page = int(query["per_page"][0]), int(query["page"][0])
+        return {"total_count": len(rows), key: rows[(page - 1) * size:page * size]}
 
 
 def run_entry(run_id, attempt=1, event="workflow_dispatch", head_sha="2" * 40):
@@ -128,6 +136,247 @@ class Collection(TempDir):
         doc = telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path), time.time,
                                      now).run()
         return doc, fake
+
+    def test_repeated_production_cycles_reach_all_350_missing_runs(self):
+        self.config["runs_max"] = 200
+        runs = [run_entry(ident) for ident in range(1, 351)]
+        selected = []
+        for _ in range(3):
+            doc, fake = self.cycle(runs, {})
+            ids = [item["run_id"] for item in doc["runs"]]
+            selected.append(ids)
+            self.assertEqual(len(ids), 200)
+            self.assertEqual(doc["status"], "failed", "a capped cycle is incomplete")
+            self.assertEqual({item["outcome"] for item in doc["runs"]}, {"no_result"})
+            pages = [int(parse_qs(urlsplit(url).query)["page"][0])
+                     for url, _ in fake.requests if "/runs?" in url]
+            self.assertEqual(pages, [1, 2, 3, 4])
+        self.assertEqual(selected[0], list(range(1, 201)))
+        self.assertEqual(selected[1], list(range(201, 351)) + list(range(1, 51)))
+        self.assertEqual(set().union(*map(set, selected)), set(range(1, 351)))
+
+    def test_rotation_keeps_old_results_retries_and_higher_attempts_eligible(self):
+        self.config["runs_max"] = 137  # Deliberately not a page multiple.
+        runs = [run_entry(ident) for ident in range(1, 351)]
+        data = {ident: zipped(self.result(ident)) for ident in (1, 2, 3, 4, 350)}
+        items = {ident: artifact_entry(ident, ident, "perf-telemetry-%d-1" % ident,
+                                       data[ident]) for ident in data}
+        # An already-kept newest result must not prevent an old artifact's admission.
+        self.cycle([run_entry(350)], {350: [items[350]]})
+        items[3]["expired"] = True
+        items[4]["digest"] = "sha256:" + "0" * 64
+        artifacts = {ident: [items[ident]] for ident in (1, 3, 4, 350)}
+        observed = {}
+        visited = set()
+        for _ in range(3):
+            doc, _ = self.cycle(runs, artifacts)
+            visited.update(item["run_id"] for item in doc["runs"])
+            observed.update((item["run_id"], item["outcome"]) for item in doc["runs"])
+            self.assertLessEqual(len({item["run_id"] for item in doc["runs"]}), 137)
+        self.assertEqual(visited, set(range(1, 351)))
+        self.assertIn(observed[1], ("collected", "already_collected"))
+        self.assertEqual([observed[ident] for ident in (2, 3, 4, 350)],
+                         ["no_result", "expired", "refused", "already_collected"])
+        # Retryable failures now have real verified bundles; the high run gets a rerun.
+        items[3]["expired"] = False
+        items[4]["digest"] = sha256_bytes(data[4])
+        artifacts[2] = [items[2]]
+        runs[-1] = run_entry(350, attempt=2)
+        artifacts[350].append(artifact_entry(351, 350, "perf-telemetry-350-2", zipped(
+            self.result(350, attempt=2))))
+        for _ in range(3):
+            doc, fake = self.cycle(runs, artifacts)
+            self.assertLessEqual(len({item["run_id"] for item in doc["runs"]}), 137)
+            self.assertFalse(any("/artifacts/1/zip" in url for url, _ in fake.requests))
+        history = contracts.read_file(os.path.join(self.config["root"], "history.json"),
+                                      "telemetry-history")
+        self.assertEqual({item["result_id"] for item in history["results"]},
+                         {"tl_1_1", "tl_2_1", "tl_3_1", "tl_4_1", "tl_350_1", "tl_350_2"})
+
+    def test_deadline_preserves_position_and_restart_wraps_after_last_attempt(self):
+        self.config["runs_max"] = 4
+        runs = [run_entry(ident) for ident in range(1, 6)]
+        remaining = transport.Collector.remaining
+
+        def deadline(api, step):
+            if step == "collecting run 3":
+                raise ContractError("synthetic cycle deadline")
+            return remaining(api, step)
+
+        with mock.patch.object(transport.Collector, "remaining", deadline):
+            doc, _ = self.cycle(runs, {})
+        self.assertEqual([item["run_id"] for item in doc["runs"]], [1, 2])
+        self.assertEqual(doc["status"], "failed")
+        self.assertIn("synthetic cycle deadline", doc["detail"])
+        position = os.path.join(self.config["root"], telemetrycollect.POSITION_JSON)
+        self.assertEqual(contracts.read_file(position, "telemetry-collection-position")[
+            "after_run_id"], 2)
+        # Restart is a fresh Cycle/Collector/HistoryRoot, with a leftover killed write.
+        with open(position + ".tmp", "wb") as stream:
+            stream.write(b"interrupted")
+        doc, _ = self.cycle(runs, {})
+        self.assertEqual([item["run_id"] for item in doc["runs"]], [3, 4, 5, 1])
+        self.assertFalse(os.path.exists(position + ".tmp"))
+        # If the old position falls outside lookback, IDs alone still order and wrap.
+        doc, _ = self.cycle([run_entry(8), run_entry(9)], {})
+        self.assertEqual([item["run_id"] for item in doc["runs"]], [8, 9])
+        self.assertEqual(doc["status"], "ok")
+        doc, _ = self.cycle([], {})
+        self.assertEqual(doc["status"], "ok")
+        self.assertEqual(contracts.read_file(position, "telemetry-collection-position")[
+            "after_run_id"], 9)
+
+    def test_interruption_during_a_run_advances_attempt_position_without_losing_retry(self):
+        self.config["runs_max"] = 1
+        runs = [run_entry(ident) for ident in (1, 2)]
+        original = telemetrycollect.artifacts
+
+        def interrupted(api, run_id):
+            raise ContractError("synthetic artifact deadline")
+
+        with mock.patch.object(telemetrycollect, "artifacts", interrupted):
+            doc, _ = self.cycle(runs, {})
+        self.assertEqual([(item["run_id"], item["outcome"]) for item in doc["runs"]],
+                         [(1, "refused")])
+        doc, _ = self.cycle(runs, {})
+        self.assertEqual([item["run_id"] for item in doc["runs"]], [2])
+        with mock.patch.object(telemetrycollect, "artifacts", wraps=original) as listing:
+            doc, _ = self.cycle(runs, {})
+        self.assertEqual([item["run_id"] for item in doc["runs"]], [1])
+        self.assertEqual(listing.call_args.args[1], 1)
+
+    def test_failed_position_replacement_keeps_original_state_and_verified_evidence(self):
+        self.config["runs_max"] = 1
+        self.cycle([run_entry(100)], {})
+        position = os.path.join(self.config["root"], telemetrycollect.POSITION_JSON)
+        before = read(position)
+        data = zipped(self.result(1))
+        artifacts = {1: [artifact_entry(1, 1, "perf-telemetry-1-1", data)]}
+        replace = os.replace
+
+        def interrupted(source, target):
+            if target == position:
+                raise OSError("synthetic position write interruption")
+            return replace(source, target)
+
+        with mock.patch.object(os, "replace", interrupted):
+            doc, _ = self.cycle([run_entry(1), run_entry(100)], artifacts)
+        self.assertEqual(doc["status"], "failed")
+        self.assertIn("synthetic position write interruption", doc["detail"])
+        self.assertEqual(read(position), before)
+        self.assertFalse(os.path.lexists(position + ".tmp"))
+        self.assertEqual(doc["runs"][0]["outcome"], "collected")
+        bundle = os.path.join(self.config["root"], "results", "tl_1_1")
+        original = telemetrylab.read_bundle(bundle)[1]
+        doc, fake = self.cycle([run_entry(1), run_entry(100)], artifacts)
+        self.assertEqual(doc["runs"][0]["outcome"], "already_collected")
+        self.assertFalse(any("/zip" in url for url, _ in fake.requests))
+        self.assertEqual(telemetrylab.read_bundle(bundle)[1], original)
+
+    def test_new_runs_cannot_extend_a_rotation_and_starve_old_missing_runs(self):
+        self.config["runs_max"] = 1
+        runs = [run_entry(1), run_entry(2)]
+        observed = []
+        for arriving in range(3, 8):
+            doc, _ = self.cycle(runs, {})
+            observed.append(doc["runs"][0]["run_id"])
+            runs.append(run_entry(arriving))
+        # A plain cursor would chase 1,2,3,4,5 forever. The first pass ends at 2;
+        # the next is bounded at 4, so both old missing runs get another turn.
+        self.assertEqual(observed, [1, 2, 1, 2, 3])
+        # The fixed upper run disappears before it is attempted: wrap still occurs.
+        runs = [run for run in runs if run["id"] != 4]
+        doc, _ = self.cycle(runs, {})
+        self.assertEqual([item["run_id"] for item in doc["runs"]], [1])
+
+    def test_incomplete_or_changed_listings_never_process_a_prefix_or_move_position(self):
+        self.cycle([run_entry(20)], {})
+        position = os.path.join(self.config["root"], telemetrycollect.POSITION_JSON)
+        before = read(position)
+        page = FakeApi.page
+        cases = (("changed count", 350), ("duplicate", 350), ("short", 350),
+                 ("empty", 350), ("excess", 350), ("negative count", 350),
+                 ("wrong workflow", 350), ("too many pages", 1001))
+        for kind, count in cases:
+            with self.subTest(kind=kind):
+                def malformed(fake, url, key, rows):
+                    doc = page(fake, url, key, rows)
+                    if key != "workflow_runs":
+                        return doc
+                    number = int(parse_qs(urlsplit(url).query)["page"][0])
+                    if kind == "changed count" and number == 2:
+                        doc["total_count"] += 1
+                    elif kind == "duplicate" and number == 2:
+                        doc[key][0] = rows[0]
+                    elif kind == "short" and number == 2:
+                        doc[key].pop()
+                    elif kind == "empty" and number == 2:
+                        doc[key] = []
+                    elif kind == "excess" and number == 2:
+                        doc[key].append(rows[0])
+                    elif kind == "negative count":
+                        doc["total_count"] = -1
+                    elif kind == "wrong workflow" and number == 4:
+                        doc[key][0] = dict(doc[key][0], workflow_id=WORKFLOW_ID + 1)
+                    return doc
+
+                with mock.patch.object(FakeApi, "page", malformed):
+                    doc, fake = self.cycle([run_entry(i) for i in range(1, count + 1)], {})
+                self.assertEqual(doc["status"], "failed", doc)
+                self.assertEqual(doc["runs"], [])
+                self.assertEqual(read(position), before)
+                self.assertNotIn("rest wait", doc["detail"])
+                self.assertFalse(any("/artifacts?" in url for url, _ in fake.requests))
+                self.assertLessEqual(sum("/runs?" in url for url, _ in fake.requests),
+                                     telemetrycollect.PAGES_MAX)
+                if kind == "too many pages":
+                    self.assertIn("narrow the lookback", doc["detail"])
+
+    def test_the_existing_page_bound_is_inclusive_and_processing_stays_capped(self):
+        self.config["runs_max"] = 1
+        doc, fake = self.cycle([run_entry(i) for i in range(1, 1001)], {})
+        self.assertEqual([item["run_id"] for item in doc["runs"]], [1])
+        self.assertEqual(sum("/runs?" in url for url, _ in fake.requests), 10)
+        self.assertEqual(sum("/artifacts?" in url for url, _ in fake.requests), 1)
+
+    def test_position_is_bounded_versioned_bound_to_identity_and_never_follows_links(self):
+        self.cycle([run_entry(1)], {})
+        path = os.path.join(self.config["root"], telemetrycollect.POSITION_JSON)
+        good = read(path)
+        doc = contracts.read_json(good, "telemetry-collection-position")
+        for mutation in ({"schema": "af.perf-telemetry-collection-position/0"},
+                         {"schema": "af.perf-telemetry-collection-position/2"},
+                         {"repository": "another/repo"}, {"workflow_id": WORKFLOW_ID + 1},
+                         {"after_run_id": 0}, {"through_run_id": 0},
+                         {"after_run_id": 2, "through_run_id": 1}, {"extra": "refused"}):
+            with self.subTest(mutation=mutation):
+                with open(path, "wb") as stream:
+                    stream.write(json.dumps(dict(doc, **mutation)).encode())
+                refused, fake = self.cycle([run_entry(2)], {})
+                self.assertEqual(refused["status"], "failed")
+                self.assertEqual(refused["runs"], [])
+                self.assertFalse(any("/runs?" in url for url, _ in fake.requests))
+        with open(path, "wb") as stream:
+            stream.write(b" " * (telemetrycollect.POSITION_BYTES_MAX + 1))
+        refused, _ = self.cycle([run_entry(2)], {})
+        self.assertIn("byte bound", refused["detail"])
+        os.unlink(path)
+        outside = self.path("outside-position")
+        with open(outside, "wb") as stream:
+            stream.write(good)
+        os.symlink(outside, path)
+        refused, _ = self.cycle([run_entry(2)], {})
+        self.assertEqual(refused["status"], "failed")
+        self.assertEqual(refused["runs"], [])
+        self.assertEqual(read(outside), good)
+        os.unlink(path)
+        os.mkfifo(path)
+        refused, _ = self.cycle([run_entry(2)], {})
+        self.assertIn("not a regular file", refused["detail"])
+        # Explicit operator reset (under no running collector) starts oldest first again.
+        os.unlink(path)
+        doc, _ = self.cycle([run_entry(2), run_entry(3)], {})
+        self.assertEqual([item["run_id"] for item in doc["runs"]], [2, 3])
 
     def test_a_result_is_collected_once_verified_under_its_trusted_authority(self):
         data = zipped(self.result(101))

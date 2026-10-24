@@ -4560,6 +4560,7 @@ def validate_telemetry_history(doc, where="history.json"):
 # lane, separate from the archive collector, and what one cycle did.
 TELEMETRY_COLLECTOR_SCHEMA = "af.perf-telemetry-collector/1"
 TELEMETRY_COLLECTION_SCHEMA = "af.perf-telemetry-collection/1"
+TELEMETRY_COLLECTION_POSITION_SCHEMA = "af.perf-telemetry-collection-position/1"
 TELEMETRY_WORKFLOW = "performance-telemetry.yml"
 ABSOLUTE_PATH = Str(pattern=r"^/[^\x00]*$", min_len=2, max_len=4096)
 TELEMETRY_COLLECTOR = Obj(
@@ -4585,6 +4586,19 @@ def validate_telemetry_collector(doc, where="telemetry-collector.toml"):
     require(not (doc["authority_repository"] + "/").startswith(doc["root"] + "/")
             and not (doc["root"] + "/").startswith(doc["authority_repository"] + "/"),
             where + ": the trusted repository lies apart from the durable root")
+    return doc
+
+
+TELEMETRY_COLLECTION_POSITION = Obj(
+    Field("schema", Const(TELEMETRY_COLLECTION_POSITION_SCHEMA)),
+    Field("repository", REPOSITORY), Field("workflow_id", ACTIONS_ID),
+    Field("after_run_id", ACTIONS_ID), Field("through_run_id", ACTIONS_ID))
+
+
+def validate_telemetry_collection_position(doc, where="collection-position.json"):
+    TELEMETRY_COLLECTION_POSITION.validate(doc, where)
+    require(doc["after_run_id"] <= doc["through_run_id"],
+            where + ": the attempted ID is within the rotation's upper ID")
     return doc
 
 
@@ -4875,9 +4889,16 @@ CONTRACTS = {
     "telemetry-collection": (TELEMETRY_COLLECTION_SCHEMA, TELEMETRY_COLLECTION,
                              validate_telemetry_collection,
                              "One telemetry collection cycle (ADR-0200): every completed run "
-                             "it saw, by Actions run and attempt, with its artifact, its "
+                             "it attempted, by Actions run and attempt, with its artifact, its "
                              "SHA-256, the result it kept or why it kept none, what it pruned "
                              "for the root's bounds, and the root's results and bytes."),
+    "telemetry-collection-position": (
+        TELEMETRY_COLLECTION_POSITION_SCHEMA, TELEMETRY_COLLECTION_POSITION,
+        validate_telemetry_collection_position,
+        "A bounded telemetry scheduling position in a locked history root: rotate after "
+        "this attempted run ID up to a fixed upper run ID, wrap at the end, and retry all "
+        "outcomes within lookback without new arrivals extending a rotation. "
+        "Bound to one repository and workflow; never evidence of collection success."),
     "telemetry-history": (TELEMETRY_HISTORY_SCHEMA, TELEMETRY_HISTORY,
                           validate_telemetry_history,
                           "Compatible history of telemetry results (ADR-0199, ADR-0200): the "

@@ -30,14 +30,15 @@ It reuses the archive collector's conventions:
   and its ZIP's members, ratio and decompressed bytes (`transport.read_zip`), the root's bytes,
   results and retention (`telemetrylab.HistoryRoot`), all under the root's one lock, every
   import staged and renamed whole.
-- **Accounting.** `collection.json` (`af.perf-telemetry-collection/1`) records every run the
-  cycle saw with what it kept, why it kept nothing, what it refused and what it pruned; the
-  kept results are the idempotency record, so a failed collection is tried again next cycle
-  while its run is within the lookback, and nothing is collected twice.
+- **Accounting.** `collection.json` (`af.perf-telemetry-collection/1`) records every attempted
+  run with what it kept, why it kept nothing, what it refused and what it pruned. The kept
+  results are the idempotency record. `collection-position.json` rotates attempted runs across
+  cycles, including failures, while they remain within lookback; it never records success.
 """
 import os
 import re
 import shutil
+import stat
 from datetime import datetime, timedelta, timezone
 
 from . import contracts, telemetrylab, tomlfile, transport
@@ -45,6 +46,8 @@ from .values import ContractError, require, sha256_bytes
 
 ARTIFACT = re.compile(r"^perf-telemetry-([1-9][0-9]{0,15})-([1-9][0-9]{0,3})$")
 COLLECTION_JSON = "collection.json"
+POSITION_JSON = "collection-position.json"
+POSITION_BYTES_MAX = 1024
 PAGE_SIZE = 100
 PAGES_MAX = 10
 TRIGGERS = {"pull_request": "pr", "schedule": "nightly", "release": "release",
@@ -71,9 +74,12 @@ def workflow_id(api):
     return ident
 
 
-def completed_runs(api, ident, lookback_days, runs_max, now):
-    """The completed runs of workflow `ident` created within the lookback, oldest first, at most
-    `runs_max`; (runs, whether more were listed than that)."""
+def completed_runs(api, ident, lookback_days, now):
+    """A complete bounded listing, oldest first. Never select from a truncated newest prefix.
+
+    Actions pagination is not a snapshot; changed counts, duplicate IDs and short pages are
+    refused. Even a consistent listing describes only what this cycle observed.
+    """
     since = (now - timedelta(days=lookback_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows, total = [], None
     for page in range(1, PAGES_MAX + 1):
@@ -81,14 +87,19 @@ def completed_runs(api, ident, lookback_days, runs_max, now):
             "/actions/workflows/%d/runs?status=completed&created=%%3E%%3D%s&per_page=%d&page=%d"
             % (ident, since, PAGE_SIZE, page), "the completed telemetry runs")
         require(isinstance(doc, dict) and isinstance(doc.get("workflow_runs"), list)
-                and type(doc.get("total_count")) is int, "the run listing is not one")
+                and type(doc.get("total_count")) is int and doc["total_count"] >= 0,
+                "the run listing is not one")
         require(total is None or total == doc["total_count"],
                 "the run listing changed during pagination; collect again")
         total = doc["total_count"]
+        require(total <= PAGES_MAX * PAGE_SIZE,
+                "the run listing exceeds the %d-run page bound; narrow the lookback "
+                "before collecting again" % (PAGES_MAX * PAGE_SIZE))
+        require(len(doc["workflow_runs"]) == min(PAGE_SIZE, total - len(rows)),
+                "the run listing has a short or excess page; collect again")
         rows.extend(doc["workflow_runs"])
-        if len(rows) >= total or len(rows) >= runs_max:
+        if len(rows) == total:
             break
-        require(doc["workflow_runs"], "the run listing ended before its declared count")
     seen = set()
     for run in rows:
         run_id = run.get("id") if isinstance(run, dict) else None
@@ -104,7 +115,67 @@ def completed_runs(api, ident, lookback_days, runs_max, now):
                 "run %d is not a completed run of this repository's telemetry workflow"
                 % run_id)
     rows.sort(key=lambda run: run["id"])
-    return rows[:runs_max], (total or 0) > runs_max
+    return rows
+
+
+def read_position(kept, repository, ident):
+    """A scheduling hint only, confined to this locked root; never proof of collection."""
+    path = os.path.join(kept.root, POSITION_JSON)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return 0, 0
+    with os.fdopen(fd, "rb") as stream:
+        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode),
+                "the collection position is not a regular file")
+        data = stream.read(POSITION_BYTES_MAX + 1)
+    require(len(data) <= POSITION_BYTES_MAX, "the collection position exceeds its byte bound")
+    doc = contracts.read_json(data, "telemetry-collection-position", path)
+    require(doc["repository"] == repository and doc["workflow_id"] == ident,
+            "the collection position belongs to another repository or workflow; "
+            "stop collection and remove collection-position.json to reset")
+    return doc["after_run_id"], doc["through_run_id"]
+
+
+def write_position(kept, repository, ident, after_run_id, through_run_id):
+    doc = {"schema": contracts.TELEMETRY_COLLECTION_POSITION_SCHEMA,
+           "repository": repository, "workflow_id": ident, "after_run_id": after_run_id,
+           "through_run_id": through_run_id}
+    data = contracts.write_bytes(doc, "telemetry-collection-position")
+    require(len(data) <= POSITION_BYTES_MAX, "the collection position exceeds its byte bound")
+    path = os.path.join(kept.root, POSITION_JSON)
+    temporary = path + ".tmp"
+    # One fixed temporary under the history lock bounds leftovers from a killed writer.
+    if os.path.lexists(temporary):
+        os.unlink(temporary)
+    try:
+        with open(temporary, "xb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        fd = os.open(kept.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+
+
+def scheduled_runs(runs, after, through, runs_max):
+    """Finish a rotation's fixed upper ID before wrapping. New arrivals cannot extend it.
+
+    Return (run, rotation upper ID) pairs, attempting each observed run at most once here.
+    If the old upper ID disappeared, the remaining IDs still finish that rotation.
+    """
+    pending = [run for run in runs if after < run["id"] <= through]
+    selected = [(run, through) for run in pending[:runs_max]]
+    if len(selected) < runs_max and runs:
+        seen = {run["id"] for run, _ in selected}
+        selected.extend((run, runs[-1]["id"]) for run in runs if run["id"] not in seen)
+    return selected[:runs_max]
 
 
 def artifacts(api, run_id):
@@ -156,15 +227,19 @@ class Cycle(object):
             kept.prune()
             try:
                 ident = workflow_id(self.api)
-                runs, more = completed_runs(self.api, ident, config["lookback_days"],
-                                            config["runs_max"], self.now)
+                after, through = read_position(kept, config["repository"], ident)
+                runs = completed_runs(self.api, ident, config["lookback_days"], self.now)
+                # Rotate all observed runs, including missing/refused/kept ones. This is an
+                # attempt position, never a success watermark; every run stays retryable.
+                more = len(runs) > config["runs_max"]
                 if more:
-                    detail = ("more completed runs than the cycle's %d; the oldest were "
-                              "collected and the rest wait for the next cycle"
-                              % config["runs_max"])
-                for run in runs:
+                    detail = ("the listing held %d completed runs; this cycle attempts at "
+                              "most %d from its rotating position; unattempted runs remain "
+                              "pending within lookback" % (len(runs), config["runs_max"]))
+                for run, through in scheduled_runs(runs, after, through, config["runs_max"]):
                     self.api.remaining("collecting run %d" % run["id"])
                     self.collect(kept, run)
+                    write_position(kept, config["repository"], ident, run["id"], through)
             except (ContractError, OSError) as error:
                 detail = ("the cycle ended early: %s" % error)[:4096]
             refused = [{"input": "Actions run %d attempt %d" % (item["run_id"], item["attempt"]),

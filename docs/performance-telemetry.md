@@ -341,10 +341,20 @@ also sets the bounds: lookback, the cycle's time, runs per cycle, artifact bytes
 bytes and results, and retention. A cycle does this:
 
 1. **Lock and prune.** It takes the root's lock and prunes it to its bounds.
-2. **List.** It identifies the workflow by its path and lists its completed runs within the
-   lookback, oldest first, at most `runs_max`; each run must be of that workflow and repository.
-3. **Select.** Of each run, it takes only `perf-telemetry-<run>-<attempt>` artifacts of that
-   run and attempt. Another run's name is refused, and a kept result is never downloaded again.
+2. **List.** It identifies the workflow by its path and lists completed runs within the
+   lookback, within the existing ten pages of 100 runs. Every listed run must be of that
+   workflow and repository. A count over 1,000, a changed count, duplicate ID or short/excess
+   page refuses the listing before processing any run; a truncated newest prefix never
+   becomes a complete listing. Actions pagination is not a snapshot: even a consistent
+   listing describes only the observed runs, and later cycles list again.
+3. **Select.** It orders the complete listing by run ID, starts after the last attempted ID
+   in `collection-position.json` (`af.perf-telemetry-collection-position/1`), finishes that
+   rotation through its stored upper run ID, then wraps to the oldest and fixes the next
+   rotation's upper ID at the largest currently listed. New arrivals cannot extend a rotation
+   and starve older retries. It attempts at most `runs_max` distinct runs. Of each run, it takes only
+   `perf-telemetry-<run>-<attempt>` artifacts of that run and attempt. Another run's name is
+   refused, and a kept result is never downloaded again. Already-kept runs still have their
+   artifact lists checked so a higher attempt can be discovered.
 4. **Download.** It downloads within `artifact_bytes_max`. The bytes must have the SHA-256 the
    API declares, and the ZIP is read with the archive collector's bounds (`transport.read_zip`):
    members, ratio, decompressed bytes, no link, special, encrypted, absolute or traversing
@@ -356,8 +366,36 @@ bytes and results, and retention. A cycle does this:
    (`telemetrylab.materialize_authority`).
 7. **Keep.** It imports the result verified under exactly that authority, then writes
    `history.json`, `history.html` and `collection.json` (`af.perf-telemetry-collection/1`):
-   every run seen, with what was collected, already collected, missing, expired or refused and
-   why, what was pruned, and the root's results and bytes.
+   every run attempted, with what was collected, already collected, missing, expired or refused
+   and why, what was pruned, and the root's results and bytes.
+
+The scheduling position is an attempted-run position, never a success watermark. Missing,
+expired and refused results stay eligible on each rotation while within lookback. Every
+attempted run advances it, even after a refusal, so one failed run cannot block the rest. Under
+the same history lock it is contract-validated, staged, synced and atomically replaced after
+each run. Restart resumes after the last stored position; an interruption before replacement
+can repeat that run, and the retained bundles still prevent duplicate imports. A deadline
+before a run starts leaves the position unchanged. A failed listing leaves it unchanged too.
+The one fixed temporary file is replaced on the next position write; neither file can grow
+beyond 1,024 bytes. No run list, credential or artifact evidence is stored in this position.
+
+A listing larger than `runs_max` reports `failed` with the processing cap and pending work;
+it does not claim that the oldest artifacts were collected. A stable, fully listable set makes
+one rotation in at most `ceil(run_count / runs_max)` cycles if each cycle has time to attempt
+its selected runs. Progress requires successful bounded listing and time to process runs.
+Listing churn, insufficient cycle time, expiry, lookback, storage and retention can prevent
+collection; no cycle promises that all remaining artifacts will eventually be kept. If the
+listing exceeds 1,000, the operator must narrow the lookback to a listable window; runs outside
+that window are not reached by this collector.
+
+An absent position starts oldest first. A malformed, oversized, linked, unsupported-version or
+different-repository/workflow position fails closed before run listing. Stop the collector
+and ensure no history command holds its lock before removing `collection-position.json` (and
+its `.tmp`, if present) to reset scheduling; do not edit its fields or migrate old versions.
+Resetting repeats scheduling from the oldest listed run and leaves retained evidence intact.
+The production-cycle regressions in
+[`test_telemetry_collect.py`](../scripts/performance/tests/test_telemetry_collect.py) cover
+350 newest-first paginated runs, a 137-run cap, retries, verified imports and restart.
 
 A cycle exits 4 when it refused an artifact or ended early. The token is read only by
 `telemetry-collect`, from the configured environment variable, and sent only to the API

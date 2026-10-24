@@ -1888,6 +1888,32 @@
       "valid": true
     },
     {
+      "path": "telemetry-collection-position/invalid-run-id.json",
+      "contract": "telemetry-collection-position",
+      "valid": false,
+      "error": "must be within 1..",
+      "shape": true
+    },
+    {
+      "path": "telemetry-collection-position/invalid-upper-id.json",
+      "contract": "telemetry-collection-position",
+      "valid": false,
+      "error": "within the rotation's upper ID",
+      "shape": false
+    },
+    {
+      "path": "telemetry-collection-position/invalid-version.json",
+      "contract": "telemetry-collection-position",
+      "valid": false,
+      "error": "expected af.perf-telemetry-collection-position/1",
+      "shape": true
+    },
+    {
+      "path": "telemetry-collection-position/valid-position.json",
+      "contract": "telemetry-collection-position",
+      "valid": true
+    },
+    {
       "path": "telemetry-collection/invalid-collected-without-its-result.json",
       "contract": "telemetry-collection",
       "valid": false,
