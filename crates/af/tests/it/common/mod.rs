@@ -105,6 +105,13 @@ pub fn private_home_env() -> Vec<(&'static str, PathBuf)> {
     ]
 }
 
+/// This test process's own `TMPDIR`, for a child a helper spawns after `env_clear()`: without
+/// it the child falls back to the system's temporary directory (`/var/folders/…` on macOS),
+/// which a sandbox whose `TMPDIR` is private forbids. `None` when this process has none.
+pub fn inherited_tmpdir() -> Option<(&'static str, std::ffi::OsString)> {
+    std::env::var_os("TMPDIR").map(|tmpdir| ("TMPDIR", tmpdir))
+}
+
 pub fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();

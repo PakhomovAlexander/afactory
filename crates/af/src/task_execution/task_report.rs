@@ -293,7 +293,7 @@ pub(super) fn recorded_outputs(
 ) -> Result<Vec<String>, String> {
     let mut seen = BTreeSet::new();
     let mut ids = Vec::new();
-    published(cas, store, run_id, |output| {
+    published(cas, store, run_id, |_, output| {
         for id in output
             .outputs
             .values()
@@ -324,7 +324,7 @@ pub(super) fn round_evaluations(
     use review_core::task::verification::TASK_EVALUATION_V1;
     let (mut rounds, mut verdicts) = (BTreeSet::new(), BTreeSet::new());
     let mut followed: Vec<Option<(String, String)>> = Vec::new();
-    published(cas, store, run_id, |output| {
+    published(cas, store, run_id, |_, output| {
         for port in output.outputs.values() {
             if port.artifact_type == TASK_REVIEW_ROUND_V1 {
                 for id in &port.artifact_ids {
@@ -355,13 +355,41 @@ pub(super) fn round_evaluations(
     Ok(followed)
 }
 
-/// Every `af/TaskOutput@1` an execution record of the Task published, handed to `visit` in log
-/// order.
+/// The first `af/TaskOutput@1` an execution record of the Task published, in log order, with an
+/// `af/SourceTree@1` port that holds `snapshot_id`: the record's ID and the port's name, the
+/// durable output a continuation of a round on that Snapshot references (ADR-0206). `None` when
+/// no published output holds it.
+pub(super) fn output_holding(
+    cas: &Cas,
+    store: &EventStore,
+    run_id: &str,
+    snapshot_id: &str,
+) -> Result<Option<(String, String)>, String> {
+    let mut found = None;
+    published(cas, store, run_id, |output_id, output| {
+        if found.is_some() {
+            return Ok(());
+        }
+        found = output
+            .outputs
+            .iter()
+            .find(|(_, port)| {
+                port.artifact_type == SOURCE_TREE_V1
+                    && port.snapshot_id.as_deref() == Some(snapshot_id)
+            })
+            .map(|(name, _)| (output_id.to_owned(), name.clone()));
+        Ok(())
+    })?;
+    Ok(found)
+}
+
+/// Every `af/TaskOutput@1` an execution record of the Task published, handed to `visit` with its
+/// ID in log order.
 fn published(
     cas: &Cas,
     store: &EventStore,
     run_id: &str,
-    mut visit: impl FnMut(&TaskOutputV1) -> Result<(), String>,
+    mut visit: impl FnMut(&str, &TaskOutputV1) -> Result<(), String>,
 ) -> Result<(), String> {
     use review_core::task::event::TaskChangeV1 as Change;
     use review_core::task::execution::TaskExecutionRecordV1 as Record;
@@ -384,7 +412,7 @@ fn published(
             continue;
         };
         let output: TaskOutputV1 = artifact(cas, output_id, TASK_OUTPUT_V1)?;
-        visit(&output)?;
+        visit(output_id, &output)?;
     }
     Ok(())
 }

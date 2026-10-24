@@ -24,3 +24,27 @@
 - `af doctor`'s rows fit 100 columns, or the terminal's width when narrower (at least 60): a long
   detail or path continues on indented lines, broken after a `/` and never cut short, and each
   fix command stays whole on its line or is broken between its arguments.
+- `af task report --pr-body` accepts only a lines added block that `scripts/pr-lines.py`'s own
+  parser reads back: the title, then the table header, its separator and at least one row, each
+  directory once, or `**Lines added: none**` alone. A title without its table is refused with
+  exit 1, naming what follows the title, instead of printing a body `scripts/check-pr-report.py`
+  refuses.
+- A continuation from an earlier review round (`af task run NEW --from TASK --round N`) records
+  the provenance of that round's own candidate: its source origin names the `af/TaskOutput@1`
+  record that published the candidate, not TASK's result when the result holds a later Snapshot.
+  A round whose candidate no recorded output holds is refused with `af/error@1`, and binding a
+  source refuses any reference whose output holds a Snapshot other than the bound one
+  ([ADR-0206](docs/adr/0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md),
+  amended).
+- `af doctor`'s fixes are commands a shell runs as given, and what a command cannot say moves to a
+  new hint: `af doctor --json` prints `af/doctor@2` (`schemas/doctor-v2.json`; version 1 is
+  neither printed nor read), each check with `fix` and `hint`, and the text prints a `hint:` line
+  under the fix. The shell check names the shell `$SHELL` names (`af self setup-shell --shell zsh
+  --write`), or `--shell SHELL` with the choices in its hint; the project check's fix is `af
+  onboard --repo PATH`, its hint says it is a token-free preview; the PATH fix is the `export` or
+  `fish_add_path` line, its hint where it belongs. A problem no single command fixes (no known
+  package manager, Spotlight indexing, an unreadable lock) has a null `fix` and a hint that says
+  what to do ([ADR-0204](docs/adr/0204-make-the-first-run-say-what-to-do-next.md), amended).
+- The pseudo-terminal test helpers pass the test process's `TMPDIR` (and, for `af provider
+  detect`'s, the fixture's home and XDG directories) to the child they start after clearing its
+  environment, so the tests pass in a sandbox whose `TMPDIR` is private.

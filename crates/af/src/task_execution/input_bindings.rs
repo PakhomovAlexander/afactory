@@ -453,14 +453,61 @@ fn admitted_source(cas: &Cas, recorded: &ArtifactInputV1) -> Result<AdmittedSour
     Ok((referenced.clone(), tree.snapshot_id, snapshot, manifest))
 }
 
+/// The Snapshot the output `task` references holds: its `port` of the Task's result
+/// (`af/TaskResult@1`) or, for a continuation of an earlier round, of the `af/TaskOutput@1`
+/// record that published the round's candidate (ADR-0206).
+fn referenced_snapshot(cas: &Cas, task: &ReferencedTaskV1) -> Result<Option<String>, String> {
+    use review_core::task::execution::{TASK_OUTPUT_V1, TaskOutputV1};
+    let found = cas.get_artifact(&task.result_id);
+    let envelope = found.map_err(|e| format!("the referenced Task output is unreadable: {e}"))?;
+    let outputs = match envelope.artifact_type.as_str() {
+        TASK_RESULT_V1 => {
+            let result: TaskResultV1 = artifact(cas, &task.result_id, TASK_RESULT_V1)?;
+            result.outputs
+        }
+        TASK_OUTPUT_V1 => {
+            let output: TaskOutputV1 = artifact(cas, &task.result_id, TASK_OUTPUT_V1)?;
+            output.outputs
+        }
+        other => {
+            return Err(format!(
+                "the referenced Task output is a {}, not a Task result or output",
+                shown(other, NAME_SHOWN)
+            ));
+        }
+    };
+    let port = outputs.get(&task.port).ok_or_else(|| {
+        format!(
+            "the referenced Task output has no port {}",
+            shown(&task.port, NAME_SHOWN)
+        )
+    })?;
+    Ok(port.snapshot_id.clone())
+}
+
 /// A bound `source` is decided by one property of the admitted Snapshot and nothing else: a
 /// root capture is carried verbatim, a derived tree is re-rooted over the identical Manifest.
+/// A referenced Task output must hold the bound Snapshot itself, so the binding never records
+/// one Snapshot's provenance under another.
 pub(super) fn bind_source(
     cas: &Cas,
     recorded: ArtifactInputV1,
     task: Option<&ReferencedTaskV1>,
 ) -> Result<BoundSource, String> {
     let (referenced, snapshot_id, snapshot, manifest) = admitted_source(cas, &recorded)?;
+    if let Some(task) = task {
+        let held = referenced_snapshot(cas, task)?;
+        if held.as_deref() != Some(snapshot_id.as_str()) {
+            return Err(format!(
+                "the referenced output task {}/{} holds Snapshot {}, not the bound Snapshot {}, \
+                 so its provenance would name another tree",
+                shown(&task.task_id, NAME_SHOWN),
+                shown(&task.port, NAME_SHOWN),
+                held.as_deref().unwrap_or("none"),
+                snapshot_id
+            ));
+        }
+    }
     if snapshot.parent_snapshot_id.is_none() {
         // A root capture — including a parentless Snapshot whose origin is already generation
         // two. Nothing is re-rooted twice, and a committed one delivers exactly as a Task

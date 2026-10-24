@@ -421,7 +421,11 @@ A Task that ended `changes_requested` holds a reviewed candidate and the finding
 ([ADR-0206](adr/0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)):
 
 - its source is the candidate TASK's last review round reviewed (`--round N` names another), bound
-  as a Snapshot exactly as an `inputs.source` binding of a derived tree is, not the base;
+  as a Snapshot exactly as an `inputs.source` binding of a derived tree is, not the base; its
+  origin names the output that holds that candidate: TASK's result `snapshot`, or, for an earlier
+  round whose candidate the result does not hold, the `af/TaskOutput@1` record that published it.
+  A round whose candidate no recorded output holds is refused, never recorded under another
+  Snapshot's output;
 - its implementer receives that round's reviewer reports and the evaluator's verdict on that
   round (the one the Task log recorded after it, never another round's on the same Snapshot) as one
   `af/TaskReviewFindings@1` artifact on the Pipeline's optional `findings` input, each finding under the

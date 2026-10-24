@@ -978,6 +978,73 @@ fn the_pr_body_is_the_template_with_both_blocks_and_the_checker_accepts_it() {
         out(&check),
         err(&check)
     );
+
+    // GA second fix item 1: a script that prints the title without its table gets no body, and
+    // the checker refuses the same block in a description.
+    std::fs::remove_file(repo.join("scripts/pr-lines.py")).unwrap();
+    std::fs::write(
+        repo.join("scripts/pr-lines.py"),
+        "print('<!-- af-pr-lines:v1 -->')\nprint('**Lines added: 1**')\n\
+         print('<!-- /af-pr-lines -->')\n",
+    )
+    .unwrap();
+    let titled = af(
+        &repo,
+        &state,
+        &["task", "report", "chain-base", "gc-older", "--pr-body"],
+    );
+    assert_eq!(titled.status.code(), Some(1), "{}", err(&titled));
+    assert!(out(&titled).is_empty(), "{}", out(&titled));
+    let said = err(&titled).replace('\n', " ");
+    assert!(
+        said.contains("its block's title is not followed by the table"),
+        "{said}"
+    );
+    let begin = body.find("<!-- af-pr-lines:v1 -->").unwrap();
+    let end = body.find("<!-- /af-pr-lines -->").unwrap();
+    let title_only = format!(
+        "{}<!-- af-pr-lines:v1 -->\n**Lines added: 1**\n{}",
+        &body[..begin],
+        &body[end..]
+    );
+    std::fs::write(&file, &title_only).unwrap();
+    let checked = checker(&file, &repo, None);
+    assert!(!checked.status.success(), "{}", out(&checked));
+    assert!(
+        err(&checked).contains("the lines added block is not what `scripts/pr-lines.py` prints"),
+        "{}",
+        err(&checked)
+    );
+
+    // A branch that adds no line: the script's `**Lines added: none**` alone, which the checker
+    // accepts as the block of the pull request's commits.
+    std::fs::remove_file(repo.join("scripts/pr-lines.py")).unwrap();
+    std::fs::copy(
+        workspace().join("scripts/pr-lines.py"),
+        repo.join("scripts/pr-lines.py"),
+    )
+    .unwrap();
+    git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    let none = expect(
+        &af(
+            &repo,
+            &state,
+            &["task", "report", "chain-base", "gc-older", "--pr-body"],
+        ),
+        0,
+    );
+    assert!(
+        none.contains("<!-- af-pr-lines:v1 -->\n**Lines added: none**\n<!-- /af-pr-lines -->\n"),
+        "{none}"
+    );
+    std::fs::write(&file, &none).unwrap();
+    let checked = checker(&file, &repo, Some(("origin/main", "HEAD")));
+    assert!(
+        checked.status.success(),
+        "{}\n{}\n{none}",
+        out(&checked),
+        err(&checked)
+    );
     // A template of one's own takes the block where its markers are.
     let template = root.path().join("template.md");
     std::fs::write(
@@ -1011,6 +1078,24 @@ fn the_pr_body_is_the_template_with_both_blocks_and_the_checker_accepts_it() {
         &["task", "report", "chain-base", "--pr-body", "--json"],
     );
     assert_eq!(conflict.status.code(), Some(2));
+}
+
+/// `scripts/check-pr-report.py --body FILE` of this workspace, counting the lines added in
+/// `repo` from `diff` (BASE, HEAD), or checking the block's shape alone without one.
+fn checker(file: &Path, repo: &Path, diff: Option<(&str, &str)>) -> std::process::Output {
+    let mut command = Command::new("python3");
+    command
+        .arg("-I")
+        .arg(workspace().join("scripts/check-pr-report.py"))
+        .arg("--body")
+        .arg(file)
+        .arg("--repo")
+        .arg(repo);
+    match diff {
+        Some((base, head)) => command.arg("--diff").arg(base).arg(head),
+        None => command.arg("--no-diff"),
+    };
+    command.output().unwrap()
 }
 
 fn alive(pid: u32) -> bool {

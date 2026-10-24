@@ -2,7 +2,8 @@
 //!
 //! Each check reads what the command that owns the thing reads (`af self status`, `af provider
 //! status`, `af storage`, `af onboard`) and ends `ok`, `warn` or `fail` with the one command that
-//! fixes it. Nothing here calls a model, logs in, installs or writes a file: the only processes it
+//! fixes it, exactly as a shell runs it, and a hint with whatever else the operator needs to know:
+//! a placeholder's choices, a step to take first. Nothing here calls a model, logs in, installs or writes a file: the only processes it
 //! starts are version checks, the Provider status probe and one anonymous HTTPS request to the
 //! release source while update checks are on (ADR-0204). The charged end-to-end Provider check
 //! stays `af provider doctor`.
@@ -14,7 +15,7 @@ use serde::Serialize;
 use crate::selfmgmt;
 
 /// The `--json` document's kind.
-pub(crate) const SCHEMA: &str = "af/doctor@1";
+pub(crate) const SCHEMA: &str = "af/doctor@2";
 /// The text output's first line.
 pub(crate) const FIRST_LINE: &str =
     "token-free; the charged end-to-end Provider check is af provider doctor";
@@ -41,13 +42,17 @@ impl Status {
     }
 }
 
-/// One check's outcome: what was found, and the one-line fix when it is not `ok`.
+/// One check's outcome: what was found and, when it is not `ok`, the fix: one command a shell
+/// runs as given (commands joined by `&&` when it takes several), never prose. The hint carries
+/// what a command cannot say: a placeholder's choices, a step to take first, what the command
+/// does. A problem no single command fixes has no fix and says what to do in its hint.
 #[derive(Debug, Serialize)]
 pub(crate) struct Check {
     pub(crate) id: &'static str,
     pub(crate) status: Status,
     pub(crate) detail: String,
     pub(crate) fix: Option<String>,
+    pub(crate) hint: Option<String>,
 }
 
 impl Check {
@@ -57,6 +62,7 @@ impl Check {
             status: Status::Ok,
             detail: detail.into(),
             fix: None,
+            hint: None,
         }
     }
 
@@ -66,6 +72,7 @@ impl Check {
             status: Status::Warn,
             detail: detail.into(),
             fix: Some(fix.into()),
+            hint: None,
         }
     }
 
@@ -75,7 +82,25 @@ impl Check {
             status: Status::Fail,
             detail: detail.into(),
             fix: Some(fix.into()),
+            hint: None,
         }
+    }
+
+    /// A problem no single command fixes: no fix, and the hint says what to do.
+    fn advise(status: Status, id: &'static str, detail: impl Into<String>, hint: String) -> Check {
+        Check {
+            id,
+            status,
+            detail: detail.into(),
+            fix: None,
+            hint: Some(hint),
+        }
+    }
+
+    /// The check with `hint` beside its fix.
+    fn hint(mut self, hint: impl Into<String>) -> Check {
+        self.hint = Some(hint.into());
+        self
     }
 }
 
@@ -113,9 +138,11 @@ const MIN_WIDTH: usize = 60;
 const DETAIL_INDENT: usize = 17;
 /// Where a fix starts: past `fix: ` under the detail.
 const FIX_INDENT: usize = 22;
+/// Where a hint starts: past `hint: ` under the detail.
+const HINT_INDENT: usize = 23;
 
-/// The text form within `width` columns: the first line, one row per check, its fix under it,
-/// and a summary. A long detail or fix continues on indented lines; a path too long for a line
+/// The text form within `width` columns: the first line, one row per check, its fix and hint
+/// under it, and a summary. A long detail or fix continues on indented lines; a path too long for a line
 /// is broken after one of its `/`, never cut short; a command stays whole on its line, and one
 /// too long for a line is broken between its arguments, as every other rendering of a command
 /// is ([`crate::human::fit_command`]).
@@ -128,6 +155,11 @@ fn render(checks: &[Check], width: usize) -> String {
         if let Some(fix) = &check.fix {
             let prefix = format!("{:<16} fix: ", "");
             text.push_str(&layout(&prefix, fix, width, FIX_INDENT, true));
+            text.push('\n');
+        }
+        if let Some(hint) = &check.hint {
+            let prefix = format!("{:<16} hint: ", "");
+            text.push_str(&layout(&prefix, hint, width, HINT_INDENT, false));
             text.push('\n');
         }
     }
@@ -145,6 +177,7 @@ fn render(checks: &[Check], width: usize) -> String {
 const COMMANDS: &[&str] = &[
     "af",
     "brew",
+    "curl",
     "sudo",
     "apk",
     "cargo",
@@ -343,11 +376,14 @@ fn checks(repo: &Path) -> Vec<Check> {
     match &toplevel {
         Some(toplevel) => checks.push(project(toplevel, authority.as_ref(), &registry)),
         // Asked about a directory by name: say it is no repository rather than skip it.
-        None if repo != Path::new(".") => checks.push(Check::warn(
-            "project",
-            format!("--repo {} is not inside a git repository", repo.display()),
-            "pass --repo a git checkout, or run af doctor inside one",
-        )),
+        None if repo != Path::new(".") => checks.push(
+            Check::warn(
+                "project",
+                format!("--repo {} is not inside a git repository", repo.display()),
+                "af doctor --repo DIR",
+            )
+            .hint("DIR: a git checkout; or run af doctor inside one"),
+        ),
         None => {}
     }
     checks
@@ -364,8 +400,11 @@ fn binary(installation: &Result<selfmgmt::Installation, String>) -> Check {
             return Check::fail(
                 "binary",
                 format!("af {version}: where af installs cannot be named: {error}"),
-                "set HOME (or XDG_DATA_HOME and XDG_BIN_HOME) to an absolute path",
-            );
+                SET_HOME,
+            )
+            .hint(format!(
+                "{HOME_HINT}, or set XDG_DATA_HOME and XDG_BIN_HOME"
+            ));
         }
     };
     let running = installation.running.as_deref().map_or_else(
@@ -398,14 +437,21 @@ fn binary(installation: &Result<selfmgmt::Installation, String>) -> Check {
                 ),
             )
         }
-        Some(receipt) => Check::warn(
-            "binary",
-            format!(
+        Some(receipt) => {
+            let detail = format!(
                 "af {version} at {running} was verified by {} only, not by the release signature; {default}",
                 receipt.verified_by
-            ),
-            format!("install minisign, then af self remove {version} && af self install {version}"),
-        ),
+            );
+            let reinstall = format!("af self remove {version} && af self install {version}");
+            let why = "reinstalls the release, which minisign then verifies";
+            match install_command("minisign") {
+                Ok(install) => {
+                    Check::warn("binary", detail, format!("{install} && {reinstall}")).hint(why)
+                }
+                Err(advice) => Check::warn("binary", detail, reinstall)
+                    .hint(format!("{advice} first; that {why}")),
+            }
+        }
     }
 }
 
@@ -414,28 +460,36 @@ fn path(installation: &Result<selfmgmt::Installation, String>) -> Check {
         return Check::warn(
             "path",
             "the default link's directory cannot be named",
-            "set HOME (or XDG_BIN_HOME) to an absolute path",
-        );
+            SET_HOME,
+        )
+        .hint(format!("{HOME_HINT}, or set XDG_BIN_HOME"));
     };
     let bin = &installation.bin;
     let Some(dir) = bin.parent() else {
         return Check::warn(
             "path",
             format!("{} has no directory", bin.display()),
-            "set XDG_BIN_HOME to an absolute directory",
-        );
+            "export XDG_BIN_HOME=DIR",
+        )
+        .hint("DIR: the absolute directory af links its default `af` into");
     };
     let path = std::env::var_os("PATH").unwrap_or_default();
     let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    let shell = std::env::var("SHELL").ok();
     if !dirs.iter().any(|entry| same_dir(entry, dir)) {
-        return Check::warn(
+        let (fix, hint) = path_fix(dir, shell.as_deref(), false);
+        let check = Check::warn(
             "path",
             format!(
                 "{} is not on PATH, so `af` there is not found",
                 dir.display()
             ),
-            path_fix(dir, std::env::var("SHELL").ok().as_deref()),
+            fix,
         );
+        return match hint {
+            Some(hint) => check.hint(hint),
+            None => check,
+        };
     }
     let first = dirs
         .iter()
@@ -446,20 +500,28 @@ fn path(installation: &Result<selfmgmt::Installation, String>) -> Check {
             "path",
             format!("`af` on PATH is the default link {}", bin.display()),
         ),
-        Some(found) => Check::warn(
-            "path",
-            format!(
-                "`af` on PATH is {}, not the default link {}",
-                found.display(),
-                bin.display()
-            ),
-            format!(
-                "put {} before {} on PATH, or remove {}",
+        Some(found) => {
+            let (fix, hint) = path_fix(dir, shell.as_deref(), true);
+            let before = format!(
+                "it puts {} before {} on PATH",
                 dir.display(),
-                found.parent().unwrap_or(Path::new("/")).display(),
-                found.display()
-            ),
-        ),
+                found.parent().unwrap_or(Path::new("/")).display()
+            );
+            let hint = match hint {
+                Some(hint) => format!("{before}; {hint}; or remove {}", found.display()),
+                None => format!("{before}; or remove {}", found.display()),
+            };
+            Check::warn(
+                "path",
+                format!(
+                    "`af` on PATH is {}, not the default link {}",
+                    found.display(),
+                    bin.display()
+                ),
+                fix,
+            )
+            .hint(hint)
+        }
         None => Check::warn(
             "path",
             format!("{} is on PATH but holds no af", dir.display()),
@@ -468,21 +530,36 @@ fn path(installation: &Result<selfmgmt::Installation, String>) -> Check {
     }
 }
 
-/// The line that puts `dir` on PATH for the shell `$SHELL` names.
-pub(crate) fn path_fix(dir: &Path, shell: Option<&str>) -> String {
-    let dir = dir.display();
+/// The fix a check that needs HOME gives, and its hint's start.
+const SET_HOME: &str = "export HOME=DIR";
+const HOME_HINT: &str = "DIR: your home directory, as an absolute path";
+
+/// The command that puts `dir` first on PATH for the shell `$SHELL` names (`front`: also when it
+/// is on PATH already, behind another `af`), and where that line belongs for a later shell.
+pub(crate) fn path_fix(dir: &Path, shell: Option<&str>, front: bool) -> (String, Option<String>) {
+    let dir = dir.display().to_string();
     let name = shell
         .and_then(|shell| Path::new(shell).file_name())
         .and_then(|name| name.to_str());
+    let export = format!("export PATH=\"{dir}:$PATH\"");
     match name {
-        Some("fish") => format!("fish_add_path {dir}"),
-        Some("zsh") => {
-            format!("export PATH=\"{dir}:$PATH\"   # in ~/.zshrc, then open a new shell")
-        }
-        Some("bash") => {
-            format!("export PATH=\"{dir}:$PATH\"   # in ~/.bashrc, then open a new shell")
-        }
-        _ => format!("add {dir} to PATH in your shell's startup file"),
+        Some("fish") if front => (
+            format!("fish_add_path --move {}", shell_words::quote(&dir)),
+            None,
+        ),
+        Some("fish") => (format!("fish_add_path {}", shell_words::quote(&dir)), None),
+        Some("zsh") => (
+            export,
+            Some("add that line to ~/.zshrc, then open a new shell".into()),
+        ),
+        Some("bash") => (
+            export,
+            Some("add that line to ~/.bashrc, then open a new shell".into()),
+        ),
+        _ => (
+            export,
+            Some("add that line to your shell's startup file, then open a new shell".into()),
+        ),
     }
 }
 
@@ -500,8 +577,9 @@ fn shell() -> Check {
                 "$SHELL ({}) is not one of bash, zsh, fish, elvish, powershell",
                 name.as_deref().unwrap_or("unset")
             ),
-            "af self setup-shell --shell bash|zsh|fish|elvish|powershell --write",
-        );
+            "af self setup-shell --shell SHELL --write",
+        )
+        .hint("SHELL: the shell you use, one of bash, zsh, fish, elvish, powershell");
     };
     let (completion, man) = match (selfmgmt::completion_target(shell), selfmgmt::man_dir()) {
         (Ok((completion, _)), Ok(man)) => (completion, man),
@@ -512,8 +590,9 @@ fn shell() -> Check {
                     "where {} completions go cannot be named: {error}",
                     shell.name()
                 ),
-                "set HOME to an absolute path",
-            );
+                SET_HOME,
+            )
+            .hint(HOME_HINT);
         }
     };
     let mut missing = Vec::new();
@@ -538,7 +617,11 @@ fn shell() -> Check {
             ),
         )
     } else {
-        Check::warn("shell", missing.join("; "), "af self setup-shell --write")
+        Check::warn(
+            "shell",
+            missing.join("; "),
+            format!("af self setup-shell --shell {} --write", shell.name()),
+        )
     }
 }
 
@@ -549,8 +632,9 @@ fn update() -> Check {
             return Check::warn(
                 "update",
                 format!("the [self] policy cannot be read: {error}"),
-                "af config show --origin names the layer that sets it",
-            );
+                "af config show --origin",
+            )
+            .hint("it names the layer that sets [self]");
         }
     };
     let checked = match facts.checked_at_epoch {
@@ -592,8 +676,9 @@ fn update() -> Check {
         return Check::warn(
             "update",
             format!("last attempt {when} failed: {error}; {checked}; {policy_text}"),
-            "af self status --refresh (runs the release check again now)",
-        );
+            "af self status --refresh",
+        )
+        .hint("it runs the release check again now");
     }
     if let Some(latest) = newer {
         return Check::warn(
@@ -613,15 +698,16 @@ fn update() -> Check {
     }
     match selfmgmt::release_source_reachability(policy) {
         Ok(reach) => Check::ok("update", format!("{checked}; {policy_text}; {reach}")),
-        Err(why) => Check::warn(
-            "update",
-            format!("{checked}; {policy_text}; {why}"),
+        Err(why) => {
+            let detail = format!("{checked}; {policy_text}; {why}");
             if why.contains("gh auth login") {
-                "gh auth login (an account that can read the release repository)"
+                Check::warn("update", detail, "gh auth login")
+                    .hint("with an account that can read the release repository")
             } else {
-                "check the network, then af self update --check"
-            },
-        ),
+                Check::warn("update", detail, "af self update --check")
+                    .hint("check the network first")
+            }
+        }
     }
 }
 
@@ -644,9 +730,60 @@ struct Need {
     why: &'static str,
 }
 
+/// The fixes several problems of one check need: the commands, run in order and joined by `&&`,
+/// each once, and the hints, joined by `; `.
+#[derive(Default)]
+struct Fixes {
+    commands: Vec<String>,
+    hints: Vec<String>,
+}
+
+impl Fixes {
+    fn command(&mut self, command: impl Into<String>) {
+        let command = command.into();
+        if !self.commands.contains(&command) {
+            self.commands.push(command);
+        }
+    }
+
+    fn hint(&mut self, hint: impl Into<String>) {
+        self.hints.push(hint.into());
+    }
+
+    /// The install command for `program`, or its advice as a hint when none is known.
+    fn install(&mut self, program: &str) {
+        match install_command(program) {
+            Ok(command) => self.command(command),
+            Err(advice) => self.hint(advice),
+        }
+    }
+
+    fn check(self, status: Status, id: &'static str, detail: String) -> Check {
+        let hint = (!self.hints.is_empty()).then(|| self.hints.join("; "));
+        match (self.commands.is_empty(), hint) {
+            (false, hint) => Check {
+                id,
+                status,
+                detail,
+                fix: Some(self.commands.join(" && ")),
+                hint,
+            },
+            (true, Some(hint)) => Check::advise(status, id, detail, hint),
+            (true, None) => Check {
+                id,
+                status,
+                detail,
+                fix: None,
+                hint: None,
+            },
+        }
+    }
+}
+
 fn tools(toplevel: Option<&Path>, authority: Option<&crate::onboard::AuthorityFacts>) -> Check {
     let mut found = Vec::new();
-    let mut problems: Vec<(bool, String, String)> = Vec::new();
+    // Each problem: whether it fails the check, what it is, and the program to install.
+    let mut problems: Vec<(bool, String, &'static str)> = Vec::new();
     match git_version() {
         Some((major, minor)) if (major, minor) >= GIT_FLOOR => {
             found.push(format!("git {major}.{minor}"));
@@ -657,9 +794,9 @@ fn tools(toplevel: Option<&Path>, authority: Option<&crate::onboard::AuthorityFa
                 "git {major}.{minor} is older than {}.{}",
                 GIT_FLOOR.0, GIT_FLOOR.1
             ),
-            install_line("git"),
+            "git",
         )),
-        None => problems.push((true, "git is not installed".into(), install_line("git"))),
+        None => problems.push((true, "git is not installed".into(), "git")),
     }
     let mut needs = vec![
         Need {
@@ -691,7 +828,7 @@ fn tools(toplevel: Option<&Path>, authority: Option<&crate::onboard::AuthorityFa
                 problems.push((
                     need.fatal,
                     format!("no container runtime (docker or podman): {}", need.why),
-                    install_line("docker"),
+                    "docker",
                 ));
             }
         } else if on_path(need.program) {
@@ -700,32 +837,27 @@ fn tools(toplevel: Option<&Path>, authority: Option<&crate::onboard::AuthorityFa
             problems.push((
                 need.fatal,
                 format!("{} is not installed: {}", need.program, need.why),
-                install_line(need.program),
+                need.program,
             ));
         }
     }
     if problems.is_empty() {
         return Check::ok("tools", found.join(", "));
     }
-    let fatal = problems.iter().any(|(fatal, _, _)| *fatal);
+    let fatal = problems.iter().any(|(fatal, ..)| *fatal);
     let mut details: Vec<String> = problems
         .iter()
-        .map(|(_, detail, _)| detail.clone())
+        .map(|(_, detail, ..)| detail.clone())
         .collect();
     if !found.is_empty() {
         details.push(format!("found {}", found.join(", ")));
     }
-    let detail = details.join("; ");
-    let fix = problems
-        .iter()
-        .map(|(_, _, fix)| fix.as_str())
-        .collect::<Vec<_>>()
-        .join("; ");
-    if fatal {
-        Check::fail("tools", detail, fix)
-    } else {
-        Check::warn("tools", detail, fix)
+    let mut fixes = Fixes::default();
+    for (_, _, program) in &problems {
+        fixes.install(program);
     }
+    let status = if fatal { Status::Fail } else { Status::Warn };
+    fixes.check(status, "tools", details.join("; "))
 }
 
 /// What the repository's Gate runs, read from its commands and the files they name: make, a C
@@ -813,32 +945,36 @@ fn on_path(program: &str) -> bool {
     crate::providers::resolve_program(program).is_some()
 }
 
-/// The one line that installs `program` with this machine's package manager.
-fn install_line(program: &str) -> String {
+/// The one command that installs `program` with this machine's package manager, or, when no
+/// package manager af knows is on PATH, what to do instead.
+fn install_command(program: &str) -> Result<String, String> {
     let manager = ["brew", "apt-get", "dnf", "pacman", "apk"]
         .into_iter()
         .find(|manager| on_path(manager));
     let package = match (program, manager) {
-        ("cargo-nextest", _) => return "cargo install cargo-nextest --locked".into(),
-        ("cargo", _) => return "install Rust from https://rustup.rs".into(),
-        ("cc", Some("brew")) => return "xcode-select --install".into(),
+        ("cargo-nextest", _) => return Ok("cargo install cargo-nextest --locked".into()),
+        // rustup's own installer, as https://rustup.rs prints it.
+        ("cargo", _) => {
+            return Ok("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh".into());
+        }
+        ("cc", Some("brew")) => return Ok("xcode-select --install".into()),
         ("cc" | "make", Some("apt-get")) => "build-essential",
         ("cc", _) => "gcc",
         ("npx", Some("brew")) => "node",
         ("npx", Some("apt-get" | "dnf")) => "npm",
         ("npx", _) => "nodejs",
         ("python3", Some("brew")) => "python",
-        ("docker", Some("brew")) => return "brew install --cask docker".into(),
+        ("docker", Some("brew")) => return Ok("brew install --cask docker".into()),
         ("docker", _) => "podman",
         (other, _) => other,
     };
     match manager {
-        Some("brew") => format!("brew install {package}"),
-        Some("apt-get") => format!("sudo apt install {package}"),
-        Some("dnf") => format!("sudo dnf install {package}"),
-        Some("pacman") => format!("sudo pacman -S {package}"),
-        Some("apk") => format!("apk add {package}"),
-        _ => format!("install {package} with your package manager"),
+        Some("brew") => Ok(format!("brew install {package}")),
+        Some("apt-get") => Ok(format!("sudo apt install {package}")),
+        Some("dnf") => Ok(format!("sudo dnf install {package}")),
+        Some("pacman") => Ok(format!("sudo pacman -S {package}")),
+        Some("apk") => Ok(format!("apk add {package}")),
+        _ => Err(format!("install {package} with your package manager")),
     }
 }
 
@@ -850,8 +986,9 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
         return Check::fail(
             "providers",
             format!("the Provider registry cannot be read: {warning}"),
-            "af provider status names the problem; fix or move the registry file",
-        );
+            "af provider status",
+        )
+        .hint("it names the problem; fix or move the registry file");
     }
     // The same names-only scan `af provider status` and `af onboard` list (ADR-0200).
     let found: Vec<String> = registry
@@ -877,10 +1014,12 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
         return Check::warn(
             "providers",
             format!("no Provider registered{registry_text}{found_text}"),
-            format!(
-                "af provider detect --apply, or at your terminal: af provider setup {kind}-main --kind {kind} --login"
-            ),
-        );
+            "af provider detect --apply",
+        )
+        .hint(format!(
+            "it registers the logins it finds; or, at your terminal: af provider setup \
+             {kind}-main --kind {kind} --login"
+        ));
     }
     let statuses = crate::providers::probed_statuses();
     let mut good = Vec::new();
@@ -909,15 +1048,14 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
             "providers",
             detail,
             format!(
-                "af provider status shows why; at your terminal: af provider setup {} --kind {} --login",
-                entry.id, entry.kind
+                "af provider setup {} --kind {} --login",
+                shell_words::quote(&entry.id),
+                entry.kind
             ),
-        ),
-        None if !found.is_empty() => Check::warn(
-            "providers",
-            detail,
-            "af provider detect --apply registers what it finds",
-        ),
+        )
+        .hint("at your terminal, where it logs in; af provider status shows why first"),
+        None if !found.is_empty() => Check::warn("providers", detail, "af provider detect --apply")
+            .hint("it registers what it finds"),
         None => Check::ok("providers", detail),
     }
 }
@@ -929,8 +1067,9 @@ fn storage(installation: &Result<selfmgmt::Installation, String>) -> Check {
             return Check::fail(
                 "storage",
                 format!("[storage] cannot be read: {error}"),
-                "af config show --origin names the layer that sets it",
-            );
+                "af config show --origin",
+            )
+            .hint("it names the layer that sets [storage]");
         }
     };
     let total = crate::storage::Roots::current()
@@ -959,15 +1098,11 @@ fn storage(installation: &Result<selfmgmt::Installation, String>) -> Check {
     if let Some((free, path)) = &free
         && *free < policy.min_free_bytes
     {
-        return Check::fail(
-            "storage",
-            detail,
-            format!(
-                "free disk at {} above {}: af storage prune --apply reclaims what af keeps",
-                path.display(),
-                human(policy.min_free_bytes)
-            ),
-        );
+        return Check::fail("storage", detail, "af storage prune --apply").hint(format!(
+            "it reclaims what af keeps; free disk at {} must stay above {}",
+            path.display(),
+            human(policy.min_free_bytes)
+        ));
     }
     if let Ok(total) = total
         && total > policy.max_bytes
@@ -984,11 +1119,8 @@ fn storage(installation: &Result<selfmgmt::Installation, String>) -> Check {
             abandoned.len(),
             first.display()
         ));
-        return Check::warn(
-            "storage",
-            detail,
-            "af self status (any af self command recovers them)",
-        );
+        return Check::warn("storage", detail, "af self status")
+            .hint("any af self command recovers them");
     }
     let roots = crate::storage::Roots::current()
         .map(|roots| vec![roots.warm, roots.workspaces])
@@ -1085,12 +1217,14 @@ fn spotlight_warning(mut detail: String, indexed: &[PathBuf]) -> Check {
         "; Spotlight indexes {}, which every build and sandbox writes to",
         named.join(", ")
     ));
-    Check::warn(
+    Check::advise(
+        Status::Warn,
         "storage",
         detail,
         "add them in System Settings > Spotlight > Search Privacy, or point [storage] \
          build_cache_root and sandbox_root at directories named *.noindex (docs/README.md, \
-         macOS)",
+         macOS)"
+            .into(),
     )
 }
 
@@ -1100,15 +1234,17 @@ fn project(
     registry: &crate::providers::RegistryRead,
 ) -> Check {
     let repo = toplevel.display();
+    let onboard = format!(
+        "af onboard --repo {}",
+        shell_words::quote(&repo.to_string())
+    );
     let Some(authority) = authority else {
         return Check::warn(
             "project",
             format!("{repo} has no .af/ review authority"),
-            format!(
-                "af onboard --repo {} (a token-free preview)",
-                shell_words::quote(&repo.to_string())
-            ),
-        );
+            onboard,
+        )
+        .hint("a token-free preview of the .af/ it would write; nothing is written");
     };
     let authority = match authority {
         Ok(authority) => authority,
@@ -1116,37 +1252,35 @@ fn project(
             return Check::fail(
                 "project",
                 format!("{repo}/.af does not validate: {error}"),
-                "af onboard (it names the file and the fix)",
-            );
+                onboard,
+            )
+            .hint("it names the file and the fix");
         }
     };
     let mut parts = vec![format!("{repo}/.af validates")];
-    let mut warns: Vec<String> = Vec::new();
-    let mut fails: Vec<String> = Vec::new();
+    // A failure's fix comes before a warning's.
+    let (mut fails, mut warns) = (Fixes::default(), Fixes::default());
     match selfmgmt::pin_here(toplevel) {
         Ok(None) => parts.push("the lock pins no af release".into()),
         Ok(Some(pin)) => {
             parts.push(format!("{} pins af {}", pin.lock.display(), pin.version));
             if !pin.bound {
-                warns.push(format!(
-                    "af onboard --refresh-lock --af {} (the lock binds no bytes for this target)",
-                    pin.version
-                ));
+                warns.command(format!("{onboard} --refresh-lock --af {}", pin.version));
+                warns.hint("the lock binds no bytes for this target; --refresh-lock binds them");
             }
             if !pin.installed {
-                warns.push(format!(
-                    "af self install {} (the pinned release is not installed)",
-                    pin.version
-                ));
+                warns.command(format!("af self install {}", pin.version));
+                warns.hint("the pinned release is not installed");
             } else if pin.matches == Some(false) {
-                fails.push(format!(
-                    "af self remove {0} && af self install {0} (the installed bytes are not the ones the lock pins)",
+                fails.command(format!(
+                    "af self remove {0} && af self install {0}",
                     pin.version
                 ));
+                fails.hint("the installed bytes are not the ones the lock pins");
             }
         }
-        Err(why) => fails.push(format!(
-            "fix {} ({why})",
+        Err(why) => fails.hint(format!(
+            "fix {} by hand ({why})",
             toplevel.join(".af/af.lock").display()
         )),
     }
@@ -1159,10 +1293,8 @@ fn project(
         if resolvable {
             parts.push(format!("Gate {name} runs {program}"));
         } else {
-            fails.push(format!(
-                "{} (Gate {name} runs {program}, which is not found)",
-                install_line(program)
-            ));
+            fails.install(program);
+            fails.hint(format!("Gate {name} runs {program}, which is not found"));
         }
     }
     for (node, runner) in &authority.workers {
@@ -1173,21 +1305,26 @@ fn project(
         };
         match registry.ids_of(kind).first() {
             Some(id) => parts.push(format!("{node} can bind {id}")),
-            None => warns.push(format!(
-                "af provider detect --apply, or af provider setup {kind}-main --kind {kind} --login ({node} needs a {kind} Provider)"
-            )),
+            None => {
+                warns.command("af provider detect --apply");
+                warns.hint(format!(
+                    "{node} needs a {kind} Provider; or, at your terminal: af provider setup \
+                     {kind}-main --kind {kind} --login"
+                ));
+            }
         }
     }
     let detail = parts.join("; ");
-    if !fails.is_empty() {
-        let fix = fails
-            .into_iter()
-            .chain(warns)
-            .collect::<Vec<_>>()
-            .join("; ");
-        Check::fail("project", detail, fix)
-    } else if !warns.is_empty() {
-        Check::warn("project", detail, warns.join("; "))
+    let failed = !fails.commands.is_empty() || !fails.hints.is_empty();
+    let warned = !warns.commands.is_empty() || !warns.hints.is_empty();
+    for command in warns.commands {
+        fails.command(command);
+    }
+    fails.hints.extend(warns.hints);
+    if failed {
+        fails.check(Status::Fail, "project", detail)
+    } else if warned {
+        fails.check(Status::Warn, "project", detail)
     } else {
         Check::ok("project", detail)
     }
@@ -1277,7 +1414,9 @@ esac
                 .detail
                 .contains(&format!("Spotlight indexes {}", on.display()))
         );
-        assert!(check.fix.unwrap().contains("Search Privacy"));
+        // No one command excludes them: the check has no fix, and its hint says what to do.
+        assert_eq!(check.fix, None);
+        assert!(check.hint.unwrap().contains("Search Privacy"));
     }
 
     #[test]
@@ -1295,22 +1434,31 @@ esac
         assert!(parse_git_version("git version 2.29.2").unwrap() < GIT_FLOOR);
     }
 
+    /// The fix is the command alone; where the line belongs is the hint (GA second fix item 4).
     #[test]
     fn the_path_fix_is_the_line_for_the_users_shell() {
         let dir = Path::new("/home/o/.local/bin");
         assert_eq!(
-            path_fix(dir, Some("/usr/bin/fish")),
-            "fish_add_path /home/o/.local/bin"
-        );
-        assert!(path_fix(dir, Some("/bin/zsh")).contains("~/.zshrc"));
-        assert!(
-            path_fix(dir, Some("/bin/bash"))
-                .starts_with("export PATH=\"/home/o/.local/bin:$PATH\"")
+            path_fix(dir, Some("/usr/bin/fish"), false),
+            ("fish_add_path /home/o/.local/bin".into(), None)
         );
         assert_eq!(
-            path_fix(dir, None),
-            "add /home/o/.local/bin to PATH in your shell's startup file"
+            path_fix(dir, Some("/usr/bin/fish"), true).0,
+            "fish_add_path --move /home/o/.local/bin"
         );
+        let export = "export PATH=\"/home/o/.local/bin:$PATH\"";
+        for (shell, file) in [
+            (Some("/bin/zsh"), "~/.zshrc"),
+            (Some("/bin/bash"), "~/.bashrc"),
+            (None, "your shell's startup file"),
+        ] {
+            let (fix, hint) = path_fix(dir, shell, false);
+            assert_eq!(fix, export);
+            assert_eq!(
+                hint.unwrap(),
+                format!("add that line to {file}, then open a new shell")
+            );
+        }
     }
 
     #[test]
@@ -1356,34 +1504,46 @@ esac
             Check::warn(
                 "path",
                 format!("{bin} is not on PATH, so `af` there is not found"),
-                format!("add {bin} to PATH in your shell's startup file"),
-            ),
+                format!("export PATH=\"{bin}:$PATH\""),
+            )
+            .hint("add that line to your shell's startup file, then open a new shell"),
             Check::warn(
                 "shell",
                 format!(
                     "no bash completions at {home}/.local/share/bash-completion/completions/af; no man pages in {home}/.local/share/man/man1"
                 ),
-                "af self setup-shell --shell bash|zsh|fish|elvish|powershell --write",
-            ),
+                "af self setup-shell --shell SHELL --write",
+            )
+            .hint("SHELL: the shell you use, one of bash, zsh, fish, elvish, powershell"),
             Check::warn(
                 "providers",
                 "no Provider registered",
-                "af provider detect --apply, or at your terminal: af provider setup claude-main \
-                 --kind claude --login",
+                "af provider detect --apply",
+            )
+            .hint(
+                "it registers the logins it finds; or, at your terminal: af provider setup \
+                 claude-main --kind claude --login",
             ),
             Check::warn(
                 "path",
                 "off PATH",
-                "export PATH=\"$HOME/.local/bin:$PATH\"   # in ~/.zshrc, then open a new shell",
-            ),
+                "export PATH=\"$HOME/.local/bin:$PATH\"",
+            )
+            .hint("add that line to ~/.zshrc, then open a new shell"),
         ];
         let squeeze = |text: &str| text.split_whitespace().collect::<String>();
+        // One shell word too long for any line, printed whole on its own line.
+        let export = format!("fix: export PATH=\"{bin}:$PATH\"");
         for width in [100, 80, 60] {
             let text = render(&checks, width);
-            for line in text.lines() {
+            for line in text.lines().filter(|line| line.trim_start() != export) {
                 assert!(line.chars().count() <= width, "{width}: `{line}`\n{text}");
             }
-            // Nothing is cut short: every detail and fix is there, path characters in order.
+            assert!(
+                text.lines().any(|line| line.trim_start() == export),
+                "{width}\n{text}"
+            );
+            // Nothing is cut short: every detail, fix and hint is there, path characters in order.
             let flat = squeeze(&text.replace(" \\\n", " "));
             for check in &checks {
                 assert!(
@@ -1396,9 +1556,20 @@ esac
                     flat.contains(&squeeze(fix)) || width < 100,
                     "{width}: {fix}\n{text}"
                 );
+                if let Some(hint) = &check.hint {
+                    assert!(flat.contains(&squeeze(hint)), "{width}: {hint}\n{text}");
+                }
             }
             // The af commands are whole on one line, or broken between arguments with ` \`.
-            for command in ["af self install 0.1.0", "af provider detect --apply,"] {
+            for command in [
+                "fix: af self install 0.1.0",
+                "fix: af provider detect --apply",
+                "fix: af self setup-shell --shell SHELL --write",
+            ] {
+                // At 60 columns the last one is broken between its arguments.
+                if DETAIL_INDENT + command.len() > width {
+                    continue;
+                }
                 assert!(
                     text.lines().any(|line| line.contains(command)),
                     "{width}: {command}\n{text}"
@@ -1438,8 +1609,9 @@ esac
         let text = render(&checks, 100);
         assert!(
             text.contains(
-                "fix: af provider detect --apply, or at your terminal:\n                      \
-                 af provider setup claude-main --kind claude --login\n"
+                "fix: af provider detect --apply\n                 hint: it registers the logins \
+                 it finds; or, at your terminal:\n                       af provider setup \
+                 claude-main --kind claude --login\n"
             ),
             "{text}"
         );
@@ -1452,10 +1624,10 @@ esac
         let narrow = render(&checks, 80);
         assert!(
             narrow.contains(
-                "fix: export PATH=\"$HOME/.local/bin:$PATH\"\n                      \
-                 # in ~/.zshrc, then open a new shell\n"
+                "fix: export PATH=\"$HOME/.local/bin:$PATH\"\n                 hint: add that \
+                 line to ~/.zshrc, then open a new shell\n"
             ),
-            "the command whole on its line, its comment after it:\n{narrow}"
+            "the command whole on its line, its hint under it:\n{narrow}"
         );
         // Every line of a comment that must be broken is a comment.
         assert_eq!(
@@ -1468,6 +1640,44 @@ esac
             ),
             "fix: export A=1\n     # in ~/.zshrc, then\n     # open a new shell"
         );
+    }
+
+    /// GA second fix item 4: the `af` fixes of the states an integration fixture cannot reach
+    /// (a pinned release, a receipt verified by digest only, a Provider whose login lapsed, a
+    /// newer release, a full disk) parse with the CLI's own parser, each command of a fix.
+    #[test]
+    fn every_af_fix_parses_with_the_cli() {
+        use clap::Parser as _;
+        let registry = crate::providers::RegistryRead {
+            path: None,
+            registered: Vec::new(),
+            warning: None,
+            unregistered: Vec::new(),
+            candidates: Vec::new(),
+        };
+        let fixes = [
+            providers(&registry).fix.unwrap(),
+            "af self remove 0.1.0 && af self install 0.1.0".into(),
+            "af onboard --repo '/w x' --refresh-lock --af 0.1.0".into(),
+            "af provider setup claude-main --kind claude --login".into(),
+            "af self update".into(),
+            "af self update --check".into(),
+            "af self status --refresh".into(),
+            "af self status".into(),
+            "af storage prune --apply".into(),
+            "af config show --origin".into(),
+            "af provider status".into(),
+            "af self setup-shell --shell powershell --write".into(),
+        ];
+        for fix in fixes {
+            let words = shell_words::split(&fix).unwrap();
+            for command in words.split(|word| word == "&&") {
+                assert_eq!(command[0], "af", "{fix}");
+                if let Err(error) = crate::cli::Af::try_parse_from(command) {
+                    panic!("{fix}: {error}");
+                }
+            }
+        }
     }
 
     #[test]

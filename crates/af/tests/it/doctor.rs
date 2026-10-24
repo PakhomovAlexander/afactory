@@ -1,6 +1,6 @@
 //! `af doctor`: a token-free check of the machine and the repository it runs in (ADR-0204). Each
 //! case runs in a private home that a snapshot proves the command leaves exactly as it found it,
-//! and every `--json` document is checked against `schemas/doctor-v1.json`.
+//! and every `--json` document is checked against `schemas/doctor-v2.json`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -97,8 +97,8 @@ fn err(output: &Output) -> String {
 fn document(output: &Output) -> serde_json::Value {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|error| panic!("{error}: {}\n{}", out(output), err(output)));
-    schemas::valid(&schemas::validator("doctor-v1.json"), &value);
-    assert_eq!(value["schema"], "af/doctor@1");
+    schemas::valid(&schemas::validator("doctor-v2.json"), &value);
+    assert_eq!(value["schema"], "af/doctor@2");
     assert_eq!(value["token_free"], true);
     assert_eq!(
         value["exit_code"].as_i64(),
@@ -190,11 +190,10 @@ fn a_clean_host_only_warns_says_what_to_do_and_writes_nothing() {
     );
     // The default link's directory is not on this PATH.
     assert_eq!(check(&document, "path")["status"], "warn");
-    assert!(
-        check(&document, "shell")["fix"]
-            .as_str()
-            .unwrap()
-            .contains("bash|zsh|fish|elvish|powershell"),
+    // $SHELL is unset: the fix names the SHELL placeholder, the hint its choices.
+    assert_eq!(
+        check(&document, "shell")["fix"],
+        "af self setup-shell --shell SHELL --write",
         "{document}"
     );
     assert!(
@@ -227,7 +226,15 @@ fn a_missing_tool_fails_with_the_install_line_and_exit_1() {
     let detail = tools["detail"].as_str().unwrap();
     assert!(detail.contains("git is not installed"), "{detail}");
     assert!(detail.contains("minisign is not installed"), "{detail}");
-    assert!(tools["fix"].as_str().unwrap().contains("git"), "{document}");
+    // No package manager on this PATH either: no command installs them, the hint says how.
+    assert_eq!(tools["fix"], serde_json::Value::Null, "{document}");
+    assert!(
+        tools["hint"]
+            .as_str()
+            .unwrap()
+            .contains("install git with your package manager"),
+        "{document}"
+    );
 
     let text = machine.doctor(&work, &[], Some(empty.as_os_str()));
     assert_eq!(text.status.code(), Some(1));
@@ -326,10 +333,8 @@ fn the_update_row_warns_of_a_failed_or_stalled_release_check() {
         ),
         "{update}"
     );
-    assert_eq!(
-        update["fix"],
-        "af self status --refresh (runs the release check again now)"
-    );
+    assert_eq!(update["fix"], "af self status --refresh");
+    assert_eq!(update["hint"], "it runs the release check again now");
 
     // A check that has held the lock for two hours: the row says so, and how to clear it.
     let lock = cache.with_extension("lock");
@@ -372,12 +377,14 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
     std::fs::create_dir_all(&home).unwrap();
     let bin = home.join(".local/bin");
     let squeeze = |text: &str| text.split_whitespace().collect::<String>();
+    // The PATH fix is one shell word, printed whole on its own line even where it is wider.
+    let export = format!("export PATH=\"{}:$PATH\"", bin.display());
     for columns in [100, 80] {
         let wide = columns.to_string();
         let output = machine.doctor_at(&home, &work, &[], None, &[("COLUMNS", &wide)]);
         assert_eq!(output.status.code(), Some(0), "{}", err(&output));
         let text = out(&output);
-        for line in text.lines() {
+        for line in text.lines().filter(|line| !line.contains(&export)) {
             assert!(
                 line.chars().count() <= columns,
                 "{columns}: `{line}`\n{text}"
@@ -393,7 +400,7 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
             "{columns}\n{text}"
         );
         assert!(
-            flat.contains(&format!("add{}toPATH", bin.display())),
+            flat.contains(&format!("exportPATH=\"{}:$PATH\"", bin.display())),
             "{columns}\n{text}"
         );
         // The receipt path is printed canonical; its tail below the machine root is the same.
@@ -414,21 +421,18 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
         let setup: Vec<String> = text
             .lines()
             .skip_while(|line| !line.contains("fix: af self setup-shell"))
-            .take_while(|line| !line.starts_with("warn ") && !line.starts_with("ok "))
+            .take_while(|line| {
+                !line.starts_with("warn ")
+                    && !line.starts_with("ok ")
+                    && !line.trim_start().starts_with("hint: ")
+            })
             .flat_map(|line| line.split_whitespace().map(str::to_string))
             .filter(|word| word != "\\" && word != "fix:")
             .map(|word| word.trim_matches('\'').to_string())
             .collect();
         assert_eq!(
             setup,
-            [
-                "af",
-                "self",
-                "setup-shell",
-                "--shell",
-                "bash|zsh|fish|elvish|powershell",
-                "--write"
-            ],
+            ["af", "self", "setup-shell", "--shell", "SHELL", "--write"],
             "{columns}\n{text}"
         );
 
@@ -442,7 +446,6 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
             &[("COLUMNS", &wide), ("SHELL", "/bin/zsh")],
         );
         let text = out(&zsh);
-        let export = format!("export PATH=\"{}:$PATH\"", bin.display());
         assert!(
             text.lines()
                 .any(
@@ -465,8 +468,254 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
             "{columns}\n{text}"
         );
         assert!(
-            text.contains("# in ~/.zshrc, then open a new shell"),
+            squeeze(&text).contains("hint:addthatlineto~/.zshrc,thenopenanewshell"),
             "{columns}\n{text}"
         );
     }
+}
+
+/// The `--json` document of `af doctor` under `envs`, with `$SHELL` set when `shell` names one.
+fn shell_document(machine: &Machine, shell: Option<&str>) -> (serde_json::Value, String) {
+    let work = machine.path("work");
+    let envs: Vec<(&str, &str)> = shell.map(|shell| ("SHELL", shell)).into_iter().collect();
+    let home = machine.path("home");
+    let json = machine.doctor_at(&home, &work, &["--json"], None, &envs);
+    let mut text_envs = envs.clone();
+    text_envs.push(("COLUMNS", "100"));
+    let text = machine.doctor_at(&home, &work, &[], None, &text_envs);
+    (document(&json), out(&text))
+}
+
+/// `af ARGS --help` exits 0: clap accepts every argument of `ARGS` as typed.
+fn parses(args: &[String]) -> Result<(), String> {
+    let output = crate::common::af()
+        .args(args)
+        .arg("--help")
+        .env("AF_SELF_OFFLINE", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!("af {args:?} --help: {}", err(&output)))
+    }
+}
+
+/// GA second fix item 3: the shell row's fix is one command a shell runs. With $SHELL naming a
+/// supported shell it names that shell; without one it names the SHELL placeholder, and the hint
+/// lists the choices, in the JSON document and in the text.
+#[test]
+fn the_shell_fix_is_one_command_for_the_users_shell() {
+    let machine = Machine::new();
+    for (shell, name) in [("/bin/zsh", "zsh"), ("/usr/bin/fish", "fish")] {
+        let (document, text) = shell_document(&machine, Some(shell));
+        let row = check(&document, "shell");
+        assert_eq!(row["status"], "warn", "{document}");
+        let fix = format!("af self setup-shell --shell {name} --write");
+        assert_eq!(row["fix"], fix.as_str(), "{document}");
+        assert_eq!(row["hint"], serde_json::Value::Null, "{document}");
+        assert!(
+            text.lines()
+                .any(|line| line.trim_start() == format!("fix: {fix}")),
+            "{text}"
+        );
+        // The fix parses with the CLI as printed.
+        let words = shell_words::split(row["fix"].as_str().unwrap()).unwrap();
+        assert_eq!(words[0], "af");
+        parses(&words[1..]).unwrap();
+    }
+
+    let (document, text) = shell_document(&machine, None);
+    let row = check(&document, "shell");
+    assert_eq!(row["fix"], "af self setup-shell --shell SHELL --write");
+    let choices = "SHELL: the shell you use, one of bash, zsh, fish, elvish, powershell";
+    assert_eq!(row["hint"], choices, "{document}");
+    assert!(
+        text.contains(&format!(
+            "fix: af self setup-shell --shell SHELL --write\n                 hint: {choices}\n"
+        )),
+        "{text}"
+    );
+    // Each choice the hint lists makes the fix a command the CLI accepts.
+    for choice in ["bash", "zsh", "fish", "elvish", "powershell"] {
+        let words =
+            shell_words::split(&row["fix"].as_str().unwrap().replace("SHELL", choice)).unwrap();
+        parses(&words[1..]).unwrap();
+    }
+}
+
+/// A program on this machine's PATH, as the test process sees it.
+fn on_path(program: &str) -> PathBuf {
+    let path = std::env::var_os("PATH").unwrap();
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| panic!("no {program} on PATH"))
+}
+
+/// Every fix in `document` is a command a shell runs as given: it splits as shell words, each
+/// command of it (between `&&`, `|` or `;`) starts with a program, an `af` command parses with
+/// the CLI once each upper-case placeholder is replaced by a value its hint documents, and a
+/// check without a fix says what to do in its hint.
+fn assert_fixes_are_commands(document: &serde_json::Value) {
+    const PROGRAMS: &[&str] = &[
+        "af",
+        "apk",
+        "brew",
+        "cargo",
+        "curl",
+        "export",
+        "fish_add_path",
+        "gh",
+        "rm",
+        "sh",
+        "sudo",
+        "xcode-select",
+    ];
+    for check in document["checks"].as_array().unwrap() {
+        if check["status"] == "ok" {
+            continue;
+        }
+        let hint = check["hint"].as_str().unwrap_or_default();
+        let Some(fix) = check["fix"].as_str() else {
+            assert!(
+                !hint.is_empty(),
+                "a problem without a fix says what to do: {check}"
+            );
+            continue;
+        };
+        assert!(!fix.contains('#') && !fix.contains('('), "prose in {check}");
+        let words = shell_words::split(fix).unwrap_or_else(|e| panic!("{e}: {check}"));
+        for command in words.split(|word| ["&&", "|", ";"].contains(&word.as_str())) {
+            assert!(
+                PROGRAMS.contains(&command[0].as_str()),
+                "`{}` is no command: {check}",
+                command[0]
+            );
+            if command[0] != "af" {
+                continue;
+            }
+            let args: Vec<String> = command[1..]
+                .iter()
+                .map(|word| {
+                    let placeholder = !word.is_empty()
+                        && word.chars().all(|c| c.is_ascii_uppercase() || c == '_');
+                    if !placeholder {
+                        return word.clone();
+                    }
+                    assert!(
+                        hint.contains(&format!("{word}: ")),
+                        "the placeholder {word} is documented in the hint: {check}"
+                    );
+                    match word.as_str() {
+                        "SHELL" => "zsh".to_owned(),
+                        _ => "/tmp".to_owned(),
+                    }
+                })
+                .collect();
+            parses(&args).unwrap_or_else(|e| panic!("{e}\n{check}"));
+        }
+    }
+}
+
+/// GA second fix item 4: a machine where every check is a problem — no install receipt, the
+/// default link off PATH, no $SHELL, an unreadable config, missing tools, an unreadable Provider
+/// registry and a repository whose `.af/` does not validate — and every fix in `--json` is a
+/// command a shell runs as given, every `af` one parsing with the CLI; the hint carries the rest.
+/// With no package manager on PATH the tools row has no fix, and its hint says what to do.
+#[test]
+fn every_fix_of_a_machine_where_every_check_fails_is_a_command() {
+    let machine = Machine::new();
+    let repo = machine.path("work/repo");
+    std::fs::create_dir_all(repo.join(".af")).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join(".af/af.toml"), "version = [\n").unwrap();
+    let config = machine.path("home/.config/af/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "this is = not [valid\n").unwrap();
+    let registry = machine.path("providers.toml");
+    std::fs::write(&registry, "garbage = [\n").unwrap();
+    // A PATH with git and a package manager, and nothing else af looks for.
+    let bin = machine.path("tools-path");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(on_path("git"), bin.join("git")).unwrap();
+    std::fs::write(bin.join("brew"), "#!/bin/sh\nexit 0\n").unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(bin.join("brew"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let registry_env = registry.to_str().unwrap().to_owned();
+    let envs = [("AF_PROVIDERS_FILE", registry_env.as_str())];
+    let home = machine.path("home");
+    let empty = machine.path("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let before = machine.snapshot();
+
+    let output = machine.doctor_at(&home, &repo, &["--json"], Some(bin.as_os_str()), &envs);
+    assert_eq!(output.status.code(), Some(1), "{}", err(&output));
+    let failing = document(&output);
+    let statuses: Vec<(&str, &str)> = failing["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|check| {
+            (
+                check["id"].as_str().unwrap(),
+                check["status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(statuses.len(), 8, "{failing}");
+    assert!(
+        statuses.iter().all(|(_, status)| *status != "ok"),
+        "every check is a problem: {statuses:?}"
+    );
+    assert_eq!(
+        check(&failing, "tools")["fix"],
+        "brew install curl && brew install minisign && brew install gh",
+        "{failing}"
+    );
+    let project = check(&failing, "project");
+    assert_eq!(project["status"], "fail", "{failing}");
+    assert_eq!(
+        project["fix"],
+        format!(
+            "af onboard --repo {}",
+            shell_words::quote(&canonical(&repo))
+        )
+        .as_str(),
+        "{failing}"
+    );
+    assert_eq!(
+        project["hint"], "it names the file and the fix",
+        "{failing}"
+    );
+    assert_fixes_are_commands(&failing);
+
+    // Without a package manager no command installs a tool: the hint says what to do.
+    let work = machine.path("work");
+    let output = machine.doctor_at(
+        &home,
+        &work,
+        &["--repo", "..", "--json"],
+        Some(empty.as_os_str()),
+        &envs,
+    );
+    let bare = document(&output);
+    let tools = check(&bare, "tools");
+    assert_eq!(tools["fix"], serde_json::Value::Null, "{bare}");
+    assert!(
+        tools["hint"]
+            .as_str()
+            .unwrap()
+            .contains("install git with your package manager"),
+        "{bare}"
+    );
+    assert_eq!(check(&bare, "project")["fix"], "af doctor --repo DIR");
+    assert_fixes_are_commands(&bare);
+    assert_eq!(machine.snapshot(), before);
+}
+
+/// `path` as git names its top level: canonical, without a trailing `/`.
+fn canonical(path: &Path) -> String {
+    std::fs::canonicalize(path).unwrap().display().to_string()
 }

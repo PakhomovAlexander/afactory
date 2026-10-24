@@ -95,6 +95,9 @@ fn environment(home: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
     if let Some(path) = std::env::var_os("PATH") {
         environment.push(("PATH", path));
     }
+    // A child spawned after `env_clear()` keeps this process's TMPDIR, never the system default
+    // a sandbox with a private TMPDIR forbids.
+    environment.extend(crate::common::inherited_tmpdir());
     environment
 }
 
