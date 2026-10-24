@@ -1,7 +1,7 @@
-# ADR-0202: Bind calibration dispatch to the checked main source and separate group arguments
+# ADR-0208: Bind calibration dispatch to the checked main source and separate group arguments
 
-**Status:** proposed (2026-10-24). Renumbered from the unmerged calibration ADR-0197 after
-published main's ADR-0198. Repairs the calibration dispatch and group package of
+**Status:** proposed (2026-10-24). Renumbered from unmerged ADR-0202 after
+published main's ADR-0204. Repairs the calibration dispatch and group package of
 [design §12 and §15](../design/continuous-performance.md), amending ADR-0182's unconditional
 member run naming. ADR-0184's producer equality and ADR-0194's per-case group binding stand.
 No persisted laboratory contract changes.

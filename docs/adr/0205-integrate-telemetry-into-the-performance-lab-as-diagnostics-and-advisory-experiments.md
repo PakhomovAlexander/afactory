@@ -1,14 +1,13 @@
-# ADR-0199: Integrate Telemetry into the performance laboratory as diagnostics and advisory experiments
+# ADR-0205: Integrate Telemetry into the performance laboratory as diagnostics and advisory experiments
 
 **Status:** proposed (2026-10-24); its experiments' execution, verification, upload and
 collection are amended by
-[ADR-0200](0200-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md).
-The original workflow-freeze references below describe the unmerged draft's scope; the
-consolidated integration explicitly includes published main and
-[ADR-0202](0202-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md).
+[ADR-0206](0206-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md).
+The consolidated integration includes published main and
+[ADR-0208](0208-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md).
 The old cohort bytes and pinned collector remain frozen; its changed producer requires a new
-cohort after the integrated repair is committed. Renumbered after published main's ADR-0198.
-
+cohort after the integrated repair is committed. Renumbered from unmerged ADR-0199 after
+published main's ADR-0204; published-main ADR0199–0204 retain their identities.
 
 ## Context
 
@@ -25,8 +24,9 @@ So telemetry covers one CLI case of the suite (`cli_task_run_check`) and no nati
 owner asked for telemetry in diagnostic reruns and reports. They asked for continuous
 measurement of telemetry's overhead, default behaviour, stream handling and read latency across
 pull requests and releases. And they asked for an investigation of the `authority_runtime_new`
-slowdown. All of this has to leave alone the timing verdict, the frozen `performance.yml` and
-the hosted calibration cohort of 23 to 29 October.
+slowdown. The initial draft also froze `performance.yml` for the hosted calibration cohort of
+23 to 29 October. The integrated source preserves that cohort as disabled historical evidence;
+published main and ADR-0208 change the workflow producer. The timing verdict is unchanged.
 
 ## Considered options
 
@@ -86,7 +86,7 @@ the hosted calibration cohort of 23 to 29 October.
    - **Contract and history.** `af.perf-telemetry-result/1` keeps the raw documents and capped
      logs and is verified offline (`telemetry-verify`). `telemetry-history` keeps verified
      bundles in a durable root and groups them only by configuration, authority and host
-     (`af.perf-telemetry-history/1`). `content` is never an experiment. ADR-0200 contains every
+     (`af.perf-telemetry-history/1`). `content` is never an experiment. ADR-0206 contains every
    execution, admits a document only as its planned run and verifies only under the exact
    authority.
 3. **A separate workflow.** `.github/workflows/performance-telemetry.yml` runs the experiments
@@ -95,10 +95,11 @@ the hosted calibration cohort of 23 to 29 October.
      measuring job, by SHA-256.
    - **Containment.** Read-only permissions, no secrets, pinned actions, checkouts without
      credentials; every execution of a candidate runs contained, and only an admitted result is
-     uploaded (ADR-0200).
+     uploaded (ADR-0206).
    - **Status.** Advisory, with the profile's retention.
-   - **Frozen files.** `performance.yml` and the cohort file stay byte-identical, pinned by a
-     test.
+   - **Historical cohort.** The old cohort file stays byte-identical, pinned by a test. The
+     integrated `performance.yml` includes published main and ADR-0208's dispatch-head repair;
+     a new cohort must be declared from the final committed reviewed producer.
 4. **An investigation entry point.** `cli.py probe --trace-output PATH` writes the measured
    request's validated phase trace and prints its phase summary and region breakdown. The
    investigation note records what it measured.
@@ -113,9 +114,9 @@ the hosted calibration cohort of 23 to 29 October.
   reader.
 - **No verdict effect.** Telemetry results never enter a verdict, a calibration or a required
   check. A candidate can falsify at most its own run's advisory document; everything else is
-  contained and verified again under its exact authority (ADR-0200).
+  contained and verified again under its exact authority (ADR-0206).
 - **Collection.** A separate, bounded telemetry collection lane keeps verified results in a
-  durable history (ADR-0200); the archive collector does not fetch these artifacts.
+  durable history (ADR-0206); the archive collector does not fetch these artifacts.
 - **Runtime investigation.** The `authority_runtime_new` investigation found three whole Task
   projections in `TaskRuntime::new`, the first in `begin_task_execution` at 34–46% of the
   region on a loaded host. That share alone does not explain the historical +33–34%; the

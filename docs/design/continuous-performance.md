@@ -962,7 +962,7 @@ allowed groups. Preparation and dose validation select that case/group's own par
 Whole-trial acceptance is unchanged; descriptive group tallies overlap when a trial uses
 multiple groups. Unknown or unprepared hosts still invalidate the whole trial.
 
-Telemetry joins the laboratory beside the verdict, not inside it (ADR-0199). A diagnostic child
+Telemetry joins the laboratory beside the verdict, not inside it (ADR-0205). A diagnostic child
 may record its CLI cases at an explicitly selected telemetry level and read them back through
 the side's own `af telemetry` documents (`af.perf-profiles/5`, `af.perf-report/3`). The bench
 scripts of the telemetry design's §12 run as advisory telemetry experiments on a baseline and a
@@ -973,4 +973,4 @@ discovery, startup and state-read commands record none, so `perf-trace` keeps th
 ([`performance-telemetry.md`](../performance-telemetry.md)). Every execution of an experiment's
 candidate runs in its own container of the pinned sample image, a document is admitted only as
 its planned run with every figure recomputed, and a result is verified, uploaded and collected
-into its own durable history only under exactly its measurement authority (ADR-0200).
+into its own durable history only under exactly its measurement authority (ADR-0206).

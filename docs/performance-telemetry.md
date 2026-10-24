@@ -1,7 +1,7 @@
 # Telemetry in the performance laboratory
 
 The laboratory uses [Telemetry](telemetry.md) in two ways, both apart from the timing verdict
-([ADR-0199](adr/0199-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)):
+([ADR-0205](adr/0205-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)):
 
 - **Diagnostics.** A diagnostic child run of a comparison can also record its CLI cases at an
   explicitly selected telemetry level and read the recording back through the side's own
@@ -11,7 +11,7 @@ The laboratory uses [Telemetry](telemetry.md) in two ways, both apart from the t
   candidate binary with the bench scripts of [design §12](design/telemetry.md), from the trusted
   control's checkout, on pull requests, nightly, on publication and on request. Every execution
   of a candidate is contained, and only verified results reach the durable history
-  ([ADR-0200](adr/0200-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).
+  ([ADR-0206](adr/0206-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).
 
 Neither ever contributes a verdict sample, changes a verdict, or satisfies a required check.
 The old hosted calibration cohort's bytes remain pinned by SHA-256. The consolidated
@@ -20,6 +20,23 @@ that changed producer requires a separate future cohort, declared only from the 
 repair ([the dispatcher runbook](performance-cohort-dispatch.md)). The comparison's CLI Task case
 (`cli_task_run_check`) runs `af` at its default level, `spans`, as users do, so the product's
 default telemetry cost stays inside that case's measured time.
+
+## ADR numbering after source reconciliation
+
+Published-main ADR0199–0204 keep their files, content and references. The five unmerged
+performance decisions follow them as ADR0205–0209. This integration preserves the captured
+`scripts/performance`, workflow, fixtures and generated schema bytes. Literal ADR numbers in
+their comments, help text and schema descriptions retain the draft numbering; interpret those
+performance references using this table, rather than as references to the published-main
+Provider or fixture decisions. Documentation links use the reconciled numbers.
+
+| Captured performance draft number | Reconciled decision |
+| --- | --- |
+| 0199 | [0205: Telemetry diagnostics and advisory experiments](adr/0205-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md) |
+| 0200 | [0206: Containment, verification and collection](adr/0206-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md) |
+| 0201 | [0207: Reference-generation throughput](adr/0207-construct-reference-fixture-bytes-without-per-byte-python-loops.md) |
+| 0202 | [0208: Calibration dispatch and group arguments](adr/0208-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md) |
+| 0203 | [0209: Accounting append and reservation settlement](adr/0209-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md) |
 
 ## Supported matrix
 
@@ -136,7 +153,7 @@ run and the teardown, with 90 seconds kept for the last teardown and the result.
 
 ### Where each execution runs
 
-Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0200): each side's
+Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0206): each side's
 `--version` query, the corpus generator and every script run.
 
 - **`--mode linux_container`** runs each execution in its own container of the pinned sample
@@ -297,7 +314,7 @@ falsify its own run's document, never the other side's, the controller's or anot
 
 `cli.py telemetry-collect --config FILE` is one bounded, idempotent collection cycle of the
 workflow's result artifacts into a durable telemetry history root (`perflab/telemetrycollect.py`,
-ADR-0200). It is a lane of its own. The archive collector (`scripts/performance/collect.py`) behaves as
+ADR-0206). It is a lane of its own. The archive collector (`scripts/performance/collect.py`) behaves as
 before, never reads these artifacts, and stays pinned to the frozen cohort's control (below);
 the only code the lanes share is the bounded ZIP reader, `transport.read_zip`.
 
@@ -345,8 +362,9 @@ this.
 
 `fixtures/performance/cohort-quick-20261023-hosted-v6.json` remains byte-identical and disabled
 as historical evidence (a test pins its SHA-256). The current workflow incorporates the
-published-main and calibration repairs; it is not that old cohort's producer. The deployed archive collector runs from a control
-pinned to the cohort's report and profile generations. This change moves the diagnostic
+published-main and calibration repairs; it is not that old cohort's producer. The retained
+deployment record describes an archive collector pinned to the cohort's report and profile
+generations; consult the operator's dated records for its current deployment. This change moves the diagnostic
 contracts to `af.perf-profiles/5` and `af.perf-report/3`, and ADR-0145 refuses earlier versions
 in current readers. So the cohort's original artifacts are collected and read only by that
 pinned collector, never by a reader of this checkout. The telemetry lane neither replaces nor
@@ -354,9 +372,10 @@ reads it, and the archive's existing reports and evidence are not touched.
 
 ## Not provided
 
-- **No hosted run or deployment yet.** No telemetry experiment has run on a hosted runner, and
-  no collection host runs the lane. The local evidence is functional only, and none of its
-  figures is a product speed claim.
+- **Implementation evidence only.** At the 2026-10-24 implementation checkpoint, no hosted
+  telemetry execution or collection-host deployment was demonstrated. Consult the operator's
+  dated deployment and run records for subsequent operational status. The local evidence is
+  functional only, and none of its figures is a product speed claim.
 - **No product exports.** `af telemetry export`, `bottlenecks` and `critical-path` do not exist
   in this release. The Perfetto file and the phase rows are the laboratory's own derivation
   from `af telemetry show`.

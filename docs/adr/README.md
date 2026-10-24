@@ -368,18 +368,6 @@ future readers need.
   label](0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)
 - [0197 — Validate on one latest stable Python](0197-validate-on-one-latest-stable-python.md)
 - [0198 — Opt this repository into distinct-model Worker independence](0198-opt-this-repository-into-distinct-model-worker-independence.md)
-<<<<<<< HEAD
-- [0199 — Integrate Telemetry into the performance laboratory as diagnostics and advisory
-  experiments](0199-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
-- [0200 — Contain telemetry experiments and collect only results verified under their
-  authority](0200-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)
-- [0201 — Construct reference fixture bytes without per-byte Python
-  loops](0201-construct-reference-fixture-bytes-without-per-byte-python-loops.md)
-- [0202 — Bind calibration dispatch to the checked main source and separate group
-  arguments](0202-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md)
-- [0203 — Reapply an accounting append once after only this writer's heartbeat
-  renewals](0203-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)
-=======
 - [0199 — Disable Providers until a machine-local expiry](0199-disable-providers-until-a-machine-local-expiry.md)
 - [0200 — Preserve the Provider ID domain and clear orphaned
   disables](0200-preserve-provider-id-domain-and-clear-orphaned-disables.md)
@@ -391,4 +379,13 @@ future readers need.
   status](0203-isolate-targeted-starter-repair-and-retain-native-exit-status.md)
 - [0204 — Preserve model authority in repository planning
   fixtures](0204-preserve-model-authority-in-repository-planning-fixtures.md)
->>>>>>> 2c9264e40cb1b573204e85e529ab7eb83fa5007c
+- [0205 — Integrate Telemetry into the performance laboratory as diagnostics and advisory
+  experiments](0205-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
+- [0206 — Contain telemetry experiments and collect only results verified under their
+  authority](0206-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)
+- [0207 — Construct reference fixture bytes without per-byte Python
+  loops](0207-construct-reference-fixture-bytes-without-per-byte-python-loops.md)
+- [0208 — Bind calibration dispatch to the checked main source and separate group
+  arguments](0208-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md)
+- [0209 — Reapply an accounting append once after only this writer's heartbeat
+  renewals](0209-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)

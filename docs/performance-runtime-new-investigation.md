@@ -6,7 +6,7 @@ at both issue #255 package sizes, with a fresh valid lease
 what was observed from what is hypothesized, gives the commands that reproduce every figure,
 and names what was not measured. It claims no speedup: no optimization was made. The decision
 to retain the entry point is
-[ADR-0199](adr/0199-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md).
+[ADR-0205](adr/0205-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md).
 
 ## Observed facts
 
@@ -100,7 +100,7 @@ between the lock releases, replay of the marker) that would show it preserves be
 
 ## Reproduce
 
-The bounded entry point is the trusted local probe with a phase trace (ADR-0199). It writes
+The bounded entry point is the trusted local probe with a phase trace (ADR-0205). It writes
 the measured request's validated trace and prints its phase summary and the region's
 breakdown. It never records a verdict sample.
 

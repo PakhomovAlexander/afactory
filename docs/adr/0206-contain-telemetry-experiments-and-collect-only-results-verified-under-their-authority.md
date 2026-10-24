@@ -1,18 +1,17 @@
-# ADR-0200: Contain telemetry experiments and collect only results verified under their authority
+# ADR-0206: Contain telemetry experiments and collect only results verified under their authority
 
 **Status:** proposed (2026-10-24). Amends
-[ADR-0199](0199-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
+[ADR-0205](0205-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
 for its experiments and their collection.
-The original workflow-freeze references below describe the unmerged draft's scope; the
-consolidated integration explicitly includes published main and
-[ADR-0202](0202-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md).
+The consolidated integration includes published main and
+[ADR-0208](0208-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md).
 The old cohort bytes and pinned collector remain frozen; its changed producer requires a new
-cohort after the integrated repair is committed. Renumbered after published main's ADR-0198.
-
+cohort after the integrated repair is committed. Renumbered from unmerged ADR-0200 after
+published main's ADR-0204.
 
 ## Context
 
-ADR-0199 measured telemetry's own cost by running a pull request's candidate binary directly on
+ADR-0205 measured telemetry's own cost by running a pull request's candidate binary directly on
 the measuring runner. The trusted control's scripts, the result directory and the other side's
 binary sat beside it, and a new Python process supervisor had deadline, pipe and cleanup
 semantics of its own. Review of that draft found these problems:
@@ -98,15 +97,16 @@ a reader of earlier versions.
    - **History root.** The root is locked, staged and bounded by bytes, results and retention.
      A systemd service and timer example lives in `scripts/performance/service/`; nothing is
      installed.
-7. **The archive lane is left as it is.** `collect.py`, `performance.yml` and the cohort file
-   are unchanged, and the archive collector behaves as before: only its bounded ZIP reading is
-   moved into `transport.read_zip` for both lanes. The deployed archive collector stays pinned
-   to the cohort's control, and the two lanes never read each other's artifacts.
+7. **The archive lane remains distinct.** The old cohort file is unchanged, and its archive
+   collector remains pinned to that cohort's control. The current workflow includes published
+   main and ADR-0208's repair and cannot produce evidence for that old authority. In current
+   source, only the archive collector's bounded ZIP reading is shared through
+   `transport.read_zip`; the two lanes never read each other's artifacts.
 
 ## Consequences
 
 - **Contracts.** `af.perf-telemetry-result/1`, `af.perf-telemetry-history/1` and
-  `af.perf-telemetry-lab/1`, new with ADR-0199 and never released, change shape in place: the
+  `af.perf-telemetry-lab/1`, new with ADR-0205 and never released, change shape in place: the
   result's execution, build and corpus facts, the history's bounds, mode and pruning, and the
   registry's containment. `af.perf-telemetry-build/1`, `af.perf-telemetry-collector/1` and
   `af.perf-telemetry-collection/1` are new.
@@ -116,4 +116,6 @@ a reader of earlier versions.
 - **Hosts.** Contained experiments need a Linux host with a cgroup v2 container runtime, the
   pinned image and a disk-bounded scratch filesystem of the profile's work bytes. The release
   profile's 12 GiB may not fit a standard hosted runner, which then refuses before measuring.
-- **Not yet operated.** No hosted run or collection host has executed this yet.
+- **Implementation evidence only.** At this draft's 2026-10-24 implementation checkpoint, no
+  hosted execution or collection-host deployment was demonstrated. Later operational status
+  must come from the operator's dated deployment and run records, not this source document.

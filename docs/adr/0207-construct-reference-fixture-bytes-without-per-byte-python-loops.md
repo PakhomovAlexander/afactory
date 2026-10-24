@@ -1,6 +1,7 @@
-# ADR-0201: Construct reference fixture bytes without per-byte Python loops
+# ADR-0207: Construct reference fixture bytes without per-byte Python loops
 
-**Status:** proposed (2026-10-24); renumbered from unmerged ADR-0198 after published main. Implements package
+**Status:** proposed (2026-10-24); renumbered from unmerged ADR-0201 after published main's
+ADR-0204. Implements package
 `telemetry-performance-verification-throughput` under the
 [continuous performance design](../design/continuous-performance.md), retaining
 [ADR-0163](0163-measure-native-workloads-through-a-public-api-probe-and-independent-golden-oracles.md)'s

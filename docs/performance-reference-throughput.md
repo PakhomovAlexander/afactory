@@ -1,7 +1,7 @@
 # Reference-generation throughput repair
 
 Package: `telemetry-performance-verification-throughput`, 23 October 2026.
-Decision: [ADR-0201](adr/0201-construct-reference-fixture-bytes-without-per-byte-python-loops.md).
+Decision: [ADR-0207](adr/0207-construct-reference-fixture-bytes-without-per-byte-python-loops.md).
 
 ## Scope
 
@@ -60,7 +60,10 @@ baseline  21842d32e4f8639ced07dfae75e381d5ba82c2625063022f0eb61c2223607552
 candidate 57837c8ccb4a3f9239ed33d2861911d281cc005e1d7c673c4ab10dd7bab2cfed
 ```
 
-The frozen workflow and cohort retained these input hashes:
+At the 23 October throughput measurement checkpoint, the workflow and cohort had these input
+hashes. The workflow hash records that historical input: published main and the later
+dispatch-head repair changed the integrated workflow. Only the old cohort hash remains pinned
+in current source; it is disabled historical evidence, not a declaration for the new producer.
 
 ```text
 .github/workflows/performance.yml
