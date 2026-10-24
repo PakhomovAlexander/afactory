@@ -116,6 +116,9 @@ pub(crate) fn verdicts<'b, 'a>(
 ) -> Result<Vec<(&'b Binding<'a>, Verdict)>, String> {
     let mut verdicts = Vec::new();
     for binding in bindings {
+        if let Some(provider) = binding.provider {
+            crate::providers::availability::check_id(provider)?;
+        }
         let kind = binding.kind()?;
         let catalog = binding.provider.and_then(catalog_of);
         let verdict = rules::check(

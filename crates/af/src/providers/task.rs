@@ -189,6 +189,7 @@ impl TaskProviderIdentity {
     /// that updates itself repoints its launcher at a new version file (ADR-0126).
     fn check_current(&self, deadline: Instant, cancelled: &AtomicBool) -> Result<(), Recheck> {
         check_task_probe_control(Some(deadline), cancelled).map_err(|_| Recheck::NotCurrent)?;
+        availability::check(&self.spec).map_err(Recheck::Unavailable)?;
         let current = configured_spec(&self.spec.id).map_err(|_| Recheck::NotCurrent)?;
         if current.kind != self.spec.kind
             || current.auth_dir != self.spec.auth_dir
@@ -236,6 +237,7 @@ impl TaskProviderIdentity {
 
 /// Why the recheck before a private send refused it.
 enum Recheck {
+    Unavailable(String),
     /// The captured Provider identity is no longer current or could not be verified.
     NotCurrent,
     /// The Provider's CLI cannot start, or its app-server no longer answers `initialize`: an
@@ -394,8 +396,9 @@ impl CurrentTaskProviderAdapter {
     /// refusal to report.
     fn current_or_installed(
         &self,
-    ) -> Result<(TaskProviderIdentity, Arc<dyn WorkerModelAdapter>), &'static str> {
+    ) -> Result<(TaskProviderIdentity, Arc<dyn WorkerModelAdapter>), String> {
         let mut current = self.current.lock().expect("Task Provider adapter");
+        availability::check(&current.0.spec)?;
         if !is_executable(&current.0.program) {
             let mut identity = current.0.clone();
             identity.program = (self.resolve)(identity.spec.kind.command()).ok_or(concat!(
@@ -466,13 +469,14 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             // Named apart from an identity change: the Provider's client cannot be run at all.
             let (identity, native) = match self.current_or_installed() {
                 Ok(current) => current,
-                Err(reason) => return refuse(reason),
+                Err(reason) => return refuse(&reason),
             };
             // Raw status/account output and filesystem diagnostics remain local, never Worker
             // evidence. A CLI that cannot start is named as the environment failure it is, so
             // neither retries nor reports blame the model or the login; its diagnostic is never
             // retry feedback.
             match identity.check_current(deadline, cancelled) {
+                Err(Recheck::Unavailable(reason)) => return refuse(&reason),
                 Ok(()) => {}
                 Err(_) if !is_executable(&identity.program) => continue,
                 Err(Recheck::CliCannotServe(refusal)) => {
@@ -483,6 +487,9 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return refused();
             };
+            if let Err(reason) = availability::check(&identity.spec) {
+                return refuse(&reason);
+            }
             match native.invoke_started(
                 cas,
                 workdir,

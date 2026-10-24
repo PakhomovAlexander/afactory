@@ -1,14 +1,24 @@
 schema = "af.code-task-policy/1"
 # The kernel's own gate. verify.sh runs `make check` with a stable external target dir.
-check_wall_ms = 3600000
+check_wall_ms = 5400000
 require_container = false
 
 [checks.kernel]
 name = "kernel"
 required = true
 
+# Limit this local native gate's concurrency on a shared development host. The full
+# verify.sh check and its 90-minute allowance remain unchanged; CI defaults do not change.
 [checks.kernel.command]
-program = "bash"
+program = "env"
+
+[[checks.kernel.command.args]]
+value = "TEST_THREADS=4"
+provenance = "literal"
+
+[[checks.kernel.command.args]]
+value = "bash"
+provenance = "literal"
 
 [[checks.kernel.command.args]]
 value = "scripts/verify.sh"

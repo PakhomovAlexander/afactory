@@ -73,6 +73,8 @@ fn in_terminal(
         command.arg(argument);
     }
     command.env_clear();
+    // Preserve the test runner's writable scratch root in a restricted Task sandbox.
+    command.env("TMPDIR", std::env::temp_dir());
     command.cwd("/");
     for (name, value) in env {
         command.env(name, value);
@@ -117,6 +119,7 @@ fn in_terminal_answering(
         command.arg(argument);
     }
     command.env_clear();
+    command.env("TMPDIR", std::env::temp_dir());
     command.cwd("/");
     for (name, value) in env {
         command.env(name, value);

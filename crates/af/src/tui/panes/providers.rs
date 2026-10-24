@@ -197,7 +197,11 @@ impl ProvidersPane {
                 .filter(|provider| {
                     !matches!(
                         provider.status.as_str(),
-                        "installation failed" | "incompatible" | "not probed" | "unavailable"
+                        "installation failed"
+                            | "incompatible"
+                            | "not probed"
+                            | "unavailable"
+                            | "disabled"
                     )
                 })
                 .map(|provider| provider.id.clone())
@@ -581,6 +585,7 @@ pub(crate) mod tests {
 
     fn inventory(ids: &[&str]) -> ProviderInventory {
         let provider = |id: &&str| ProviderStatus {
+            disabled_until: None,
             id: (*id).to_owned(),
             kind: "codex".to_owned(),
             auth_context: "/auth".to_owned(),

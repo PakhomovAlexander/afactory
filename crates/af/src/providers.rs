@@ -40,6 +40,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 
 pub mod auth_handoff;
+pub mod availability;
 mod compatibility;
 mod installation;
 pub mod models;
@@ -117,6 +118,7 @@ pub struct ProviderStatus {
     pub limits: Vec<ProviderLimit>,
     pub usage: UsageState,
     pub detail: String,
+    pub(crate) disabled_until: Option<availability::Expiry>,
 }
 
 #[derive(Clone)]
@@ -484,7 +486,7 @@ fn status_document(
         .as_ref()
         .map(|path| path.display().to_string());
     serde_json::json!({
-        "schema": "af/provider-status@2",
+        "schema": "af/provider-status@3",
         "exit_code": exit_code,
         "usage_requested": usage == UsageProbe::Probe,
         "registry": {
@@ -520,6 +522,8 @@ fn status_provider(provider: &ProviderStatus) -> serde_json::Value {
         "auth": auth_state_name(&provider.status),
         "credential": credential_name(&provider.kind, &provider.auth_type),
         "usability": usability_name(&provider.status),
+        "disabled_until": provider.disabled_until,
+        "enable_command": provider.disabled_until.map(|_| format!("af provider enable {}", provider.id)),
         "usage": {
             "state": provider.usage.name(),
             "windows": windows,
@@ -534,7 +538,7 @@ fn auth_state_name(status: &str) -> &'static str {
         "unavailable" => "unavailable",
         INSTALLATION_FAILED => "installation_failed",
         INCOMPATIBLE => "incompatible",
-        "not probed" => "not_probed",
+        "not probed" | "disabled" => "not_probed",
         _ => "unknown",
     }
 }
@@ -554,7 +558,9 @@ fn credential_name(kind: &str, auth_type: &str) -> &'static str {
 pub(crate) fn usability_name(status: &str) -> &'static str {
     match status {
         "authenticated" => "usable_or_untested",
-        "not authenticated" | "unavailable" | INSTALLATION_FAILED | INCOMPATIBLE => "unusable",
+        "not authenticated" | "unavailable" | "disabled" | INSTALLATION_FAILED | INCOMPATIBLE => {
+            "unusable"
+        }
         _ => "unknown",
     }
 }
@@ -736,6 +742,7 @@ pub fn setup(
     json: bool,
 ) -> Result<i32, String> {
     validate_explicit_id(id)?;
+    availability::check_id(id)?;
     let kind = ProviderKind::parse(kind)?;
     let path = registry_path()?.ok_or("no provider registry path is available")?;
     let auth_dir = resolve_auth_dir(kind, auth_dir, true)?;
@@ -1733,6 +1740,7 @@ impl From<String> for AuthenticationProbe {
 }
 
 fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe> {
+    availability::check(spec)?;
     if let Some(auth_dir) = spec.auth_dir.as_deref() {
         validate_private_auth_directory(auth_dir)?;
     }
@@ -1793,6 +1801,7 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe
 /// neither reads, parses, stores nor re-emits anything that login prints — the child inherits
 /// these standard streams, which the caller has already proven are an interactive terminal.
 fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
+    availability::check(spec)?;
     let program = resolve_program(spec.kind.command())
         .ok_or_else(|| format!("{} is not on PATH", spec.kind.command()))?;
     let auth_dir = spec
@@ -2203,7 +2212,7 @@ fn registry_lock_controlled(
             lock_path.display()
         )
     })?;
-    if !metadata.is_file() {
+    if !metadata.is_file() || metadata.nlink() != 1 {
         return Err(format!(
             "provider registry lock {} must be a regular file",
             lock_path.display()
@@ -3693,6 +3702,18 @@ fn safe_id(id: &str) -> Result<(), String> {
 }
 
 fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe) -> ProviderStatus {
+    match availability::until(&spec.id) {
+        Ok(Some(expiry)) => {
+            let mut status = unprobed_status(&spec);
+            status.status = "disabled".into();
+            status.disabled_until = Some(expiry);
+            status.detail = expiry.diagnostic(&spec.id);
+            status.usage = UsageState::NotApplicable;
+            return status;
+        }
+        Err(error) => return unavailable_status(&spec, &error),
+        Ok(None) => {}
+    }
     if spec
         .auth_dir
         .as_ref()
@@ -3820,6 +3841,7 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe)
         }
     }
     ProviderStatus {
+        disabled_until: None,
         id: spec.id,
         kind: spec.kind.name().to_string(),
         auth_context: spec
@@ -3840,6 +3862,7 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe)
 /// The placeholder a cancelled refresh leaves behind: never probed, never a claim about auth.
 fn unprobed_status(spec: &ProviderSpec) -> ProviderStatus {
     ProviderStatus {
+        disabled_until: None,
         id: spec.id.clone(),
         kind: spec.kind.name().to_string(),
         auth_context: spec
@@ -3859,6 +3882,7 @@ fn unprobed_status(spec: &ProviderSpec) -> ProviderStatus {
 
 fn unavailable_status(spec: &ProviderSpec, detail: &str) -> ProviderStatus {
     ProviderStatus {
+        disabled_until: None,
         id: spec.id.clone(),
         kind: spec.kind.name().to_string(),
         auth_context: spec
@@ -3882,6 +3906,7 @@ fn installation_failed_status(
     failure: &CliInstallationFailure,
 ) -> ProviderStatus {
     ProviderStatus {
+        disabled_until: None,
         status: INSTALLATION_FAILED.to_string(),
         detail: failure.message(),
         ..unavailable_status(spec, "")
@@ -3905,6 +3930,7 @@ fn incompatible_status(
     incompatibility: &CliIncompatibility,
 ) -> ProviderStatus {
     ProviderStatus {
+        disabled_until: None,
         status: INCOMPATIBLE.to_string(),
         detail: incompatibility.message(),
         ..unavailable_status(spec, "")
@@ -4017,6 +4043,7 @@ fn probe_claude_weekly_limits(
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 
+    availability::check(spec)?;
     let reader_slot = ClaudeReaderSlot::acquire()?;
     // An af-owned working directory, dropped after the child below has exited: the CLI keys its
     // project history by working directory, and this one's history is removed with it.
@@ -4584,6 +4611,7 @@ fn probe_codex_request_observed(
     attempt_deadline: Option<Instant>,
     observed: &mut AppServerProbe,
 ) -> Result<serde_json::Value, String> {
+    availability::check(spec)?;
     check_task_probe_control(attempt_deadline, cancelled)?;
     let method = request
         .map(|request| {
@@ -4961,7 +4989,7 @@ fn normalize_codex_plan(value: &str) -> Option<&'static str> {
     }
 }
 
-fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
+fn registered_spec(provider_id: &str) -> Result<ProviderSpec, String> {
     let (specs, _, warning) = load_specs();
     let spec = specs
         .into_iter()
@@ -4973,6 +5001,12 @@ fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
                 )
             })
         })?;
+    Ok(spec)
+}
+
+fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
+    let spec = registered_spec(provider_id)?;
+    availability::check(&spec)?;
     let auth_dir = spec
         .auth_dir
         .as_deref()
@@ -5099,6 +5133,7 @@ fn run_probe_before(
     cancelled: &AtomicBool,
     attempt_deadline: Option<Instant>,
 ) -> Result<ProbeOutput, String> {
+    availability::check(spec)?;
     check_task_probe_control(attempt_deadline, cancelled)?;
     // Removed, with what a Claude CLI kept for it, once the probe has exited (ADR-0144).
     let directory = ProbeDirectory::new(spec)?;
@@ -7204,6 +7239,7 @@ auth_dir = "{}"
     fn a_logged_out_default_context_is_left_out_once_its_kind_is_registered() {
         fn status(id: &str, kind: &str, ambient: bool, status: &str) -> ProviderStatus {
             ProviderStatus {
+                disabled_until: None,
                 id: id.to_string(),
                 kind: kind.to_string(),
                 auth_context: "-".to_string(),
@@ -7250,6 +7286,7 @@ auth_dir = "{}"
     fn logged_out_rows_point_at_logged_in_siblings_of_the_same_kind() {
         fn row(id: &str, kind: &str, context: &str, status: &str, plan: &str) -> ProviderStatus {
             ProviderStatus {
+                disabled_until: None,
                 id: id.to_string(),
                 kind: kind.to_string(),
                 auth_context: context.to_string(),
