@@ -1,7 +1,7 @@
-# ADR-0200: Isolate targeted starter repair and retain native exit status
+# ADR-0203: Isolate targeted starter repair and retain native exit status
 
 **Status:** proposed (2026-10-23). Extends
-[ADR-0199](0199-wait-for-complete-fixture-evidence-and-diagnose-guarded-failures.md) under
+[ADR-0202](0202-wait-for-complete-fixture-evidence-and-diagnose-guarded-failures.md) under
 [ADR-0124](0124-run-tests-in-parallel-processes-and-link-them-once.md).
 
 ## Context

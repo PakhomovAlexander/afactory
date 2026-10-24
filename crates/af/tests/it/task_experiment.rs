@@ -1226,7 +1226,6 @@ fn kernel_repository(root: &Path) -> PathBuf {
         catalog["packages"]["kernel/implementer"]["digest"]
     );
     std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
-    task_cli::command_fixture_independence(&repo);
     for args in [
         vec!["init", "-q", "-b", "main"],
         vec!["add", "-A"],

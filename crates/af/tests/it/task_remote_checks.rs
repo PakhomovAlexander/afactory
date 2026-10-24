@@ -914,7 +914,6 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
         once,
         "a second install changes nothing"
     );
-    task_cli::command_fixture_independence(&repo);
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "remote twins"]);

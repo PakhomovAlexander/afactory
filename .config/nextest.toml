@@ -57,11 +57,11 @@ path = "junit.xml"
 # - heavy_starter_repair_uses_current_evidence: the same eleven-Attempt shape, with 5 s
 #   Workers and a 15 s heartbeat lease. It passed alone in 30.38 s but took 92.2 s in the
 #   full gate and exhausted resources at repair verification. Hold the suite's threads as
-#   the heavy-review fixtures do; this is suite exclusivity, not machine isolation (ADR-0199).
+#   the heavy-review fixtures do; this is suite exclusivity, not machine isolation (ADR-0202).
 # - targeted_starter_repair_uses_current_evidence: the same 5 s Python Workers and 15 s
 #   heartbeat lease. It passed alone in 19.385 s but took 27.888 s in the full gate and
 #   exhausted resources at repair verification. Preserve those budgets and execute it with
-#   the suite's threads held, alongside heavy starter repair (ADR-0200).
+#   the suite's threads held, alongside heavy starter repair (ADR-0203).
 # - guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness: the
 #   kernel compares the measured command's real elapsed_ms, building included, and requires a
 #   10% improvement of the candidate over a baseline slowed by 1.5 s inside the timed operation;

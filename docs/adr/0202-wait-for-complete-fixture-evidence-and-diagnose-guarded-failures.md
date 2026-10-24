@@ -1,4 +1,4 @@
-# ADR-0199: Wait for complete fixture evidence and diagnose guarded failures
+# ADR-0202: Wait for complete fixture evidence and diagnose guarded failures
 
 **Status:** proposed (2026-10-23). Applies
 [ADR-0124](0124-run-tests-in-parallel-processes-and-link-them-once.md) and

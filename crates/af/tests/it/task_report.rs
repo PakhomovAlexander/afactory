@@ -740,7 +740,6 @@ fn kernel_repository(root: &Path) -> PathBuf {
     );
     std::fs::write(repo.join("README.md"), "# Kernel\n\nA fixture copy.\n").unwrap();
     install_kernel_report(&repo);
-    task_cli::command_fixture_independence(&repo);
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "kernel report"]);
