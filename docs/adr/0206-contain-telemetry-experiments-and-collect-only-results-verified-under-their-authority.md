@@ -61,7 +61,14 @@ a reader of earlier versions.
    - **Teardown.** The PID namespace ends every descendant, and `supervise.remove_container`
      removes the container once.
    - **Trusted local.** `trusted_local` runs on the host for source the operator trusts and
-     says what it cannot confine. A pull request is measured only contained.
+     says what it cannot confine. A pull request is measured only contained. Its leader stays
+     unreaped until all group signals and observations end, reserving the group's identity.
+     Like `review_process::sample`, Linux observes exit with `waitid(WNOWAIT)` and enumerates
+     the group's executing members; macOS uses kqueue `NOTE_EXIT` and its zombie-excluding
+     group signal probe. Only after cleanup is the leader reaped. These OS observations stay
+     in the existing file-backed executor: using the verdict helper would require changing
+     its protected duration/protocol or splitting the experiment. No new native supervisor
+     protocol or change to the verdict sample's 120-second bound is introduced.
 2. **Bounded while written.** Stdout and stderr go to controller-owned capture files the
    execution cannot reach. One loop checks the deadline and, about once a second, everything
    the execution may write against the profile's work bytes, and stops it there. Both binaries,
@@ -69,6 +76,17 @@ a reader of earlier versions.
    - **Problems.** A change is a problem, which stops the run.
    - **Uncertain cleanup.** An unconfirmed removal, a changed scratch filesystem or a group
      still alive stops the run and keeps its work for the operator.
+     On Linux a complete, bounded `/proc` scan must establish that no group member can
+     execute. Terminal states `Z`, `X` and `x` cannot execute or retain open file descriptors;
+     an ancestor subreaper may still retain them. A terminal thread-group leader alone does
+     not establish this for its other threads: the same bounded `/proc/<pid>/stat` read must
+     also report exactly one thread. Any additional thread counts as potentially executing.
+     A missing reserved leader, an enumeration, read, parse, ownership, signal or
+     exit-observation error, or an exceeded scan bound makes
+     cleanup uncertain even if a later observation succeeds. Only entries that vanished
+     during the scan may be absent. Group killing repeats within the unchanged cleanup grace
+     while the leader reserves its identity. A live descendant observed at script exit still
+     fails the execution, even when its cleanup is confirmed; a deadline stays a timeout.
    - **Status.** Neither is ever `complete`.
 3. **Admission recomputes everything from the plan.** A document must name its side's binary
    version and the planned pairs, scale, seed, fixtures, cases and repeats. Read latency must
@@ -119,3 +137,22 @@ a reader of earlier versions.
 - **Implementation evidence only.** At this draft's 2026-10-24 implementation checkpoint, no
   hosted execution or collection-host deployment was demonstrated. Later operational status
   must come from the operator's dated deployment and run records, not this source document.
+
+## Retaining ancestor subreaper regression
+
+The native check driver is a Linux child subreaper (`review-process/reaper.rs`). A telemetry
+script's orphaned descendants can become that driver's children, which it reaps when its check
+ends. The predecessor executor reaped its own leader early, then used `killpg(pgid, 0)` to
+decide whether cleanup ended. That probe reports even a zombie-only group as present on Linux.
+The executor could neither reap the ancestor's children nor make another kill remove a zombie,
+so both a leftover child and a deadline incorrectly ended as uncertain after ten seconds.
+Releasing the leader before the last group signal also lost the group's identity reservation.
+
+An isolated helper subprocess now becomes the subreaper, starts the real executor in a nested
+process, and retains adopted children until that executor returns. Bounded fixture-only
+PID/state/parent/group/session observations reproduce both predecessor failures and show the
+adopted zombie with the helper still alive. The repaired executor confirms no executing group
+member remains while preserving the distinct leftover and deadline failures. A negative fixture
+retains a genuinely live survivor and remains uncertain, including a zombie thread-group leader
+whose worker thread can still execute. None of these implementation checks establishes independent
+acceptance, hosted performance, a valid cohort or deployment.

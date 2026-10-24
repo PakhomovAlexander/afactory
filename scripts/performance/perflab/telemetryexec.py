@@ -1,4 +1,4 @@
-"""Where one telemetry experiment script runs, and what bounds it (ADR-0200).
+"""Where one telemetry experiment script runs, and what bounds it (ADR-0206).
 
 A telemetry experiment script runs one side's AF binary, which may be a pull request's
 candidate: it is untrusted code. Each execution (a `--version` query, the corpus generator, every
@@ -34,11 +34,14 @@ deadline and, about once a second, everything the execution may write (its writa
 both capture files) against the room the caller gives it; either ends the execution. Each file
 it writes is bounded by `RLIMIT_FSIZE`. Nothing here retries.
 """
+import errno
 import os
 import resource
+import select
 import secrets
 import signal
 import subprocess
+import sys
 import time
 
 from . import builds, supervise
@@ -47,6 +50,10 @@ from .values import ContractError, require
 POLL_SECONDS = 0.05
 ROOM_SECONDS = 1.0
 KILL_GRACE_SECONDS = 10
+# Bound a complete Linux process scan, including each status read. An exceeded bound is
+# unknown evidence, never an empty group.
+PROCESS_ENTRIES_MAX = 65536
+PROCESS_STAT_BYTES_MAX = 4096
 # A script's document is at most this; a larger stdout is never parsed as a document.
 DOCUMENT_BYTES_MAX = 16 * 1024 * 1024
 # The retained tail of a script's stderr; the whole of it may hold at most STDERR_FILE_MAX.
@@ -226,28 +233,50 @@ class Executor(object):
             for stream in (stdout, stderr):
                 if stream is not None:
                     stream.close()
-        timed_out, exceeded = False, None
-        watched = execution.writable + [stdout_path, stderr_path]
-        checked = started
-        while True:
-            try:
-                process.wait(timeout=POLL_SECONDS)
-                break
-            except subprocess.TimeoutExpired:
-                pass
-            now = self.clock()
-            if now >= execution.deadline:
-                timed_out = True
-            elif now - checked >= ROOM_SECONDS:
-                checked = now
+        try:
+            timed_out, exceeded = False, None
+            watched = execution.writable + [stdout_path, stderr_path]
+            checked = started
+            while True:
+                remaining = execution.deadline - self.clock()
+                if remaining <= 0:
+                    timed_out = True
+                    self.stop(process, execution)
+                    break
+                try:
+                    process.wait(timeout=min(POLL_SECONDS, remaining))
+                    if self.clock() >= execution.deadline:
+                        timed_out = True
+                        self.stop(process, execution)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                except OSError:
+                    if not isinstance(process, _LocalProcess):
+                        raise
+                    # TrustedLocal keeps the observation error and its ownership status. End
+                    # the owned group, but never turn a failed observation into a clean run.
+                    self.stop(process, execution)
+                    break
+                now = self.clock()
+                if now >= execution.deadline:
+                    timed_out = True
+                elif now - checked >= ROOM_SECONDS:
+                    checked = now
+                    exceeded = self._exceeded(execution, watched, stdout_path, stderr_path)
+                if timed_out or exceeded is not None:
+                    self.stop(process, execution)
+                    break
+            if exceeded is None and not timed_out:
+                # What it wrote in its last second is held to the same room.
                 exceeded = self._exceeded(execution, watched, stdout_path, stderr_path)
-            if timed_out or exceeded is not None:
-                self.stop(process, execution)
-                break
-        if exceeded is None and not timed_out:
-            # What it wrote in its last second is held to the same room.
-            exceeded = self._exceeded(execution, watched, stdout_path, stderr_path)
-        wall_ns = int((self.clock() - started) * 1e9)
+            wall_ns = int((self.clock() - started) * 1e9)
+        except BaseException:
+            # Cancellation or an error in the active room check must still close the owned
+            # execution. The original exception propagates; no document is returned.
+            self.stop(process, execution)
+            self.finish(process, execution, True)
+            raise
         lifecycle, cleanup, detail = self.finish(process, execution, timed_out or exceeded)
         out, out_bytes = _read_capture(stdout_path, True, DOCUMENT_BYTES_MAX)
         err, err_bytes = _read_capture(stderr_path, False, LOG_BYTES_MAX)
@@ -281,55 +310,204 @@ class TrustedLocal(Executor):
         self.python = python
 
     def launch(self, execution, stdout, stderr):
-        return subprocess.Popen(execution.argv, cwd=execution.cwd, env=execution.env,
-                                stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
-                                preexec_fn=_limit_files(execution.file_bytes), close_fds=True)
+        return _LocalProcess(subprocess.Popen(
+            execution.argv, cwd=execution.cwd, env=execution.env, stdin=subprocess.DEVNULL,
+            stdout=stdout, stderr=stderr, preexec_fn=_limit_files(execution.file_bytes),
+            close_fds=True))
+
+    def prepare(self, execution):
+        if sys.platform != "linux" and sys.platform != "darwin":
+            return "trusted local lifecycle observation supports only Linux and macOS"
+        return None
 
     def stop(self, process, execution):
         for sent in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(process.pid, sent)
-            except OSError:
-                pass
+            process.signal_group(sent)
             try:
                 process.wait(timeout=KILL_GRACE_SECONDS)
                 return
             except subprocess.TimeoutExpired:
                 continue
+            except OSError:
+                # No polling reap here: the leader reserves the group through finish.
+                continue
 
     def finish(self, process, execution, stopped):
-        if process.returncode is None:
-            self.stop(process, execution)
         lifecycle = None
-        # A child the script reaped is gone at once; one still in its group after a second is
-        # a process that outlived it.
-        settle = time.monotonic() + 1.0
-        while _group_alive(process.pid) and time.monotonic() < settle:
-            time.sleep(POLL_SECONDS)
-        if _group_alive(process.pid):
-            lifecycle = ("a process it started outlived it in its process group; it was "
-                         "killed, and nothing of the run is admitted")
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except OSError:
-            pass
         until = time.monotonic() + KILL_GRACE_SECONDS
-        while _group_alive(process.pid) and time.monotonic() < until:
-            time.sleep(POLL_SECONDS)
-        if process.returncode is None or _group_alive(process.pid):
-            return lifecycle, "uncertain", ("a process of its group was still alive %d s after "
-                                            "it was killed" % KILL_GRACE_SECONDS)
-        return lifecycle, "confirmed", ("no process of its group remains; a process that left "
-                                        "its session cannot be observed in trusted local mode")
+        notes = []
+        try:
+            if not stopped and _group_alive(process.pid, until):
+                lifecycle = ("a process it started outlived it in its process group; it was "
+                             "killed, and nothing of the run is admitted")
+        except (OSError, ValueError) as error:
+            notes.append(str(error))
+        # As in review_process::sample, keep the leader unreaped while repeatedly killing
+        # and scanning: a child forked during one group signal may need the next signal.
+        gone = False
+        while process.owned:
+            process.signal_group(signal.SIGKILL)
+            try:
+                process.wait(timeout=min(POLL_SECONDS, max(0, until - time.monotonic())))
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+            try:
+                gone = not _group_alive(process.pid, until)
+            except (OSError, ValueError) as error:
+                if not notes:
+                    notes.append(str(error))
+            if gone or time.monotonic() >= until:
+                break
+            time.sleep(min(POLL_SECONDS, max(0, until - time.monotonic())))
+        # This is the only reap. No signal or scan of the group follows it.
+        process.reap()
+        if process.problem:
+            notes.insert(0, process.problem)
+        if not gone:
+            notes.append("a live group member remains or its end could not be established")
+        if process.returncode is None:
+            notes.append("the script's exit could not be reaped")
+        if notes:
+            return lifecycle, "uncertain", "; ".join(notes)[:4096]
+        return lifecycle, "confirmed", (
+            "no executing process of its group remains (zombies cannot execute or hold open "
+            "files); a process that left its session cannot be observed in trusted local mode")
 
 
-def _group_alive(pgid):
+class _LocalProcess(object):
+    """Reserve the leader until cleanup, following review-process's unreaped-exit discipline.
+
+    This file-backed, long-duration executor cannot use the verdict supervisor's 120-second
+    request. Use the same OS observations as its shared leaf: waitid(WNOWAIT) on Linux and
+    kqueue NOTE_EXIT on macOS. Never use Popen.poll/wait while a group may still be signalled.
+    """
+
+    def __init__(self, child):
+        self.child, self.pid = child, child.pid
+        self.owned, self.exited, self.problem = True, False, None
+        self.queue = None
+
+    @property
+    def returncode(self):
+        return self.child.returncode
+
+    def wait(self, timeout):
+        until = time.monotonic() + timeout
+        while not self.exited:
+            try:
+                if sys.platform == "linux":
+                    self.exited = os.waitid(os.P_PID, self.pid,
+                                            os.WEXITED | os.WNOWAIT | os.WNOHANG) is not None
+                else:
+                    if self.queue is None:
+                        self.queue = select.kqueue()
+                    event = select.kevent(self.pid, filter=select.KQ_FILTER_PROC,
+                                         flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                         fflags=select.KQ_NOTE_EXIT)
+                    events = self.queue.control([event], 1, 0)
+                    if events and events[0].flags & select.KQ_EV_ERROR:
+                        raise OSError(events[0].data, "kqueue NOTE_EXIT")
+                    self.exited = bool(events)
+            except OSError as error:
+                if sys.platform == "darwin" and error.errno == errno.ESRCH:
+                    # An attach to our unreaped, already exited child (shared leaf semantics).
+                    self.exited = True
+                else:
+                    self.problem = self.problem or "observing the unreaped script failed: %s" % error
+                    if error.errno == errno.ECHILD:
+                        self.owned = False
+                    raise
+            if self.exited:
+                return
+            if time.monotonic() >= until:
+                raise subprocess.TimeoutExpired(self.child.args, timeout)
+            time.sleep(min(POLL_SECONDS, max(0, until - time.monotonic())))
+
+    def signal_group(self, sent):
+        if not self.owned:
+            return
+        try:
+            os.killpg(self.pid, sent)
+        except OSError as error:
+            if error.errno == errno.ESRCH or (sys.platform == "darwin"
+                                            and error.errno == errno.EPERM):
+                return
+            self.problem = self.problem or "signalling the owned process group failed: %s" % error
+
+    def reap(self):
+        # Nonblocking even when exit observation failed. The group reservation ends here.
+        try:
+            if self.owned:
+                self.child.wait(timeout=0)
+        except (subprocess.TimeoutExpired, OSError) as error:
+            self.problem = self.problem or "reaping the script failed: %s" % error
+        self.owned = False
+        if self.queue is not None:
+            self.queue.close()
+
+
+def _group_alive(pgid, deadline):
+    """Any executing group member, or an error for unknown evidence; leader still reserved.
+
+    Follow review_process::sample's process-group evidence: Linux excludes terminal tasks
+    Z/X/x only after also checking the thread count in that same stat read; macOS excludes
+    zombie-only groups. Linux scans every numeric entry,
+    fails closed on enumeration/read/parse/bound errors and tolerates only vanished entries.
+    """
+    if sys.platform == "linux":
+        live, leader = False, False
+        with os.scandir("/proc") as entries:
+            for count, entry in enumerate(entries):
+                if count >= PROCESS_ENTRIES_MAX or time.monotonic() >= deadline:
+                    raise ValueError("process scan exceeded its entry or time bound")
+                if not entry.name.isascii() or not entry.name.isdecimal():
+                    continue
+                try:
+                    with open(os.path.join("/proc", entry.name, "stat"), "rb") as stream:
+                        raw = stream.read(PROCESS_STAT_BYTES_MAX + 1)
+                except OSError as error:
+                    if error.errno in (errno.ENOENT, errno.ESRCH):
+                        continue
+                    raise
+                try:
+                    prefix, rest = raw.rsplit(b")", 1)
+                    fields = rest.split()
+                    state, parent, group, session = fields[:4]
+                    pid = int(prefix.split(b" ", 1)[0])
+                    parent, group, session = int(parent), int(group), int(session)
+                    # stat field 20 (index 17 after comm) counts the whole thread group.
+                    # A zombie leader can still have executing threads, so its state alone
+                    # cannot establish that the process is terminal. One read binds both.
+                    threads = int(fields[17])
+                    if (len(raw) > PROCESS_STAT_BYTES_MAX or len(fields) < 20
+                            or not raw.endswith(b"\n") or not fields[19].isdigit()
+                            or pid != int(entry.name) or threads < 1
+                            or min(parent, group, session) < 0
+                            or not prefix.startswith(str(pid).encode("ascii") + b" (")
+                            or state not in (b"R", b"S", b"D", b"Z", b"T", b"t", b"X",
+                                             b"x", b"K", b"W", b"P", b"I", b"N")):
+                        raise ValueError()
+                except (ValueError, IndexError):
+                    raise ValueError("unreadable process status for pid %s" % entry.name)
+                if pid == pgid:
+                    if parent != os.getpid() or group != pgid or session != pgid:
+                        raise ValueError("the reserved group leader's ownership changed")
+                    leader = True
+                if group == pgid and (state not in (b"Z", b"X", b"x") or threads > 1):
+                    live = True
+        if time.monotonic() >= deadline:
+            raise ValueError("process scan exceeded its time bound")
+        if not leader:
+            raise ValueError("the reserved group leader is absent from the process scan")
+        return live
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        if sys.platform == "darwin":
+            return False
+        raise
     return True
 
 

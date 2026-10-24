@@ -178,6 +178,17 @@ Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0206)
   process that leaves its session cannot be observed. A process of its group that outlives the
   script fails the execution and is killed.
 
+  The script leader stays unreaped through group cleanup, so its group ID cannot be reused
+  while signals are sent. Linux uses a complete, bounded `/proc` process-state scan: cleanup
+  can be confirmed when only terminal processes remain, including zombies retained by an
+  ancestor subreaper. Zombies cannot execute or retain open file descriptors. A terminal
+  thread-group leader also needs the same bounded status read reporting exactly one thread;
+  another thread may still execute even when that leader is a zombie. A failed or
+  incomplete observation, a missing reserved leader or a live survivor makes cleanup uncertain;
+  a later successful observation does not erase the error. macOS uses kqueue exit observation
+  and its group signal probe, following the shared `review-process` lifecycle semantics; it
+  does not claim Linux process enumeration. Other host platforms are refused before launch.
+
 The perf-supervisor is not PID 1 here. Its request bounds a child at the verdict sample's 120
 seconds, and a bench script runs for minutes. Raising that protected bound would change the
 verdict path, so the container's PID namespace is the boundary that ends every descendant.
@@ -191,8 +202,8 @@ After each execution the controller checks again that both binaries, the measure
 authority, the master corpus and the result directory are as it left them. Anything changed is
 recorded in `execution.problems`, the run fails and nothing more runs. An execution whose
 cleanup was not confirmed (an unconfirmed container removal, a scratch filesystem that is not
-as it was, a process group still alive) stops the run too. Its work directory is kept for the
-operator (`execution.retained`), and the next run refuses to start while it exists. A result
+as it was, an executing group member or unknown process evidence) stops the run too. Its work
+directory is kept for the operator (`execution.retained`), and the next run refuses to start while it exists. A result
 with a problem or an uncertain cleanup is never `complete`, and `telemetry-run` exits 4.
 
 ### What a document must be
