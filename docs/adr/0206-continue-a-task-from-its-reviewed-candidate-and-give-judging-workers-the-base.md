@@ -33,7 +33,11 @@ the standing rules were pasted into every goal.
    candidate — TASK's result and its `snapshot` port when the result holds it, else the
    `af/TaskOutput@1` record that first published it and its port — and binding refuses a
    reference whose output holds another Snapshot, as it refuses a round whose candidate no
-   recorded output holds. The goal is
+   recorded output holds. *Amended by the GA third fix round:* what an output holds is read from
+   its artifact, not its port: the port names exactly one `af/SourceTree@1`, whose payload and
+   subject name the Snapshot the port names, else the reference is refused with `af/error@1` and
+   nothing is recorded, so a port that says A over an artifact that holds B is no one's
+   provenance. The goal is
    TASK's goal unless `--goal` replaces it. Without `--execute` the command plans and the plan
    waits for `--confirm-plan`, as every plan does. `continue` excludes `inputs.source` and
    `inputs.findings`, and `findings` joins the root ports no binding may name.

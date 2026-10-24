@@ -456,7 +456,12 @@ fn admitted_source(cas: &Cas, recorded: &ArtifactInputV1) -> Result<AdmittedSour
 /// The Snapshot the output `task` references holds: its `port` of the Task's result
 /// (`af/TaskResult@1`) or, for a continuation of an earlier round, of the `af/TaskOutput@1`
 /// record that published the round's candidate (ADR-0206).
-fn referenced_snapshot(cas: &Cas, task: &ReferencedTaskV1) -> Result<Option<String>, String> {
+///
+/// The port's metadata is a claim about its artifact, so the claim is checked against the
+/// artifact: the port names exactly one `af/SourceTree@1`, and that envelope's payload and
+/// subject name the Snapshot the port names. A port that says one Snapshot over an artifact
+/// that holds another is refused, never taken as the first one's provenance.
+fn referenced_snapshot(cas: &Cas, task: &ReferencedTaskV1) -> Result<String, String> {
     use review_core::task::execution::{TASK_OUTPUT_V1, TaskOutputV1};
     let found = cas.get_artifact(&task.result_id);
     let envelope = found.map_err(|e| format!("the referenced Task output is unreadable: {e}"))?;
@@ -482,7 +487,45 @@ fn referenced_snapshot(cas: &Cas, task: &ReferencedTaskV1) -> Result<Option<Stri
             shown(&task.port, NAME_SHOWN)
         )
     })?;
-    Ok(port.snapshot_id.clone())
+    let named = format!(
+        "the referenced output task {}/{}",
+        shown(&task.task_id, NAME_SHOWN),
+        shown(&task.port, NAME_SHOWN)
+    );
+    let [artifact_id] = port.artifact_ids.as_slice() else {
+        return Err(format!(
+            "{named} names {} artifacts, not exactly one af/SourceTree@1",
+            port.artifact_ids.len()
+        ));
+    };
+    let held = source_tree_snapshot(cas, artifact_id)
+        .map_err(|error| format!("{named} names artifact {artifact_id}: {error}"))?;
+    if port.snapshot_id.as_deref() != Some(held.as_str()) {
+        return Err(format!(
+            "{named} says Snapshot {} but its artifact {artifact_id} holds Snapshot {held}, \
+             so the recorded output disagrees with itself",
+            port.snapshot_id.as_deref().unwrap_or("none"),
+        ));
+    }
+    Ok(held)
+}
+
+/// The one Snapshot an `af/SourceTree@1` artifact holds: its payload's, which its envelope
+/// subject must name too.
+fn source_tree_snapshot(cas: &Cas, artifact_id: &str) -> Result<String, String> {
+    let found = cas.get_artifact(artifact_id);
+    let envelope = found.map_err(|e| format!("it is unreadable: {e}"))?;
+    validate_envelope(&envelope)?;
+    if envelope.artifact_id != artifact_id || envelope.artifact_type != SOURCE_TREE_V1 {
+        return Err("it is not an exact af/SourceTree@1 artifact".into());
+    }
+    let subject = envelope.subject_snapshot_id.clone();
+    let decoded = serde_json::from_value(envelope.payload);
+    let tree: SourceTree = decoded.map_err(|error| error.to_string())?;
+    if subject.as_deref() != Some(tree.snapshot_id.as_str()) {
+        return Err("its subject and payload name two Snapshots".into());
+    }
+    Ok(tree.snapshot_id)
 }
 
 /// A bound `source` is decided by one property of the admitted Snapshot and nothing else: a
@@ -497,13 +540,13 @@ pub(super) fn bind_source(
     let (referenced, snapshot_id, snapshot, manifest) = admitted_source(cas, &recorded)?;
     if let Some(task) = task {
         let held = referenced_snapshot(cas, task)?;
-        if held.as_deref() != Some(snapshot_id.as_str()) {
+        if held != snapshot_id {
             return Err(format!(
                 "the referenced output task {}/{} holds Snapshot {}, not the bound Snapshot {}, \
                  so its provenance would name another tree",
                 shown(&task.task_id, NAME_SHOWN),
                 shown(&task.port, NAME_SHOWN),
-                held.as_deref().unwrap_or("none"),
+                held,
                 snapshot_id
             ));
         }

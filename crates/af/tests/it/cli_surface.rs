@@ -1785,3 +1785,26 @@ fn task_help_names_continuation_and_report_help_counts_gate_retries() {
         "{report}"
     );
 }
+
+/// GA third fix item 4: `af task report --help` describes the whole lines added block the
+/// validator accepts — the title, the Directory/Added/Share header, its separator and at least
+/// one directory row, or `**Lines added: none**` alone — not only an end marker and a title,
+/// within 100 columns.
+#[test]
+fn task_report_help_describes_the_whole_lines_added_block() {
+    let report = out(&af(&["task", "report", "--help"]));
+    for line in report.lines() {
+        assert!(line.chars().count() <= 100, "`{line}`\n{report}");
+    }
+    let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains(
+            "so does a block scripts/check-pr-report.py would refuse, naming what is missing. A \
+             whole block is the begin marker, then the title `**Lines added: <figure>**`, the \
+             header `| Directory | Added | Share |`, its separator and at least one directory \
+             row, each directory once, or `**Lines added: none**` alone, then the end marker."
+        ),
+        "{report}"
+    );
+    assert!(!flat.contains("title first inside"), "{report}");
+}

@@ -188,6 +188,14 @@ const COMMANDS: &[&str] = &[
     "gh",
 ];
 
+/// How each shell's PATH line ([`path_fix`]) starts.
+const PATH_LINES: &[&str] = &[
+    "export PATH=",
+    "fish_add_path ",
+    "set paths = [",
+    "$env:PATH = ",
+];
+
 /// One piece of a row's text: a word, which may be broken when it is a path too long for any
 /// line, or a command, kept whole.
 enum Unit {
@@ -195,6 +203,8 @@ enum Unit {
     Command(String),
     /// A shell comment to the end of the text: every line of it starts with `#`.
     Comment(Vec<String>),
+    /// A command printed exactly as written, never broken: a PATH line.
+    Line(String),
 }
 
 /// `text` as words and commands. A command starts at one of [`COMMANDS`] — at the start of a
@@ -202,6 +212,11 @@ enum Unit {
 /// to a word ending in `,` or `;` (kept), or before `&&`, `||`, a word opening `(` or a shell
 /// comment. A span between backticks is one word.
 fn units(text: &str, leading: bool) -> Vec<Unit> {
+    // A PATH line quotes a directory that may hold spaces, quotes or backquotes: it is one
+    // command, kept exactly as written.
+    if leading && PATH_LINES.iter().any(|line| text.starts_with(line)) {
+        return vec![Unit::Line(text.to_owned())];
+    }
     let mut words: Vec<String> = Vec::new();
     let mut quoted = false;
     for word in text.split(' ').filter(|word| !word.is_empty()) {
@@ -291,7 +306,10 @@ fn layout(prefix: &str, text: &str, width: usize, indent: usize, leading: bool) 
                 if !fits(&fitted) {
                     let margin = crate::human::fit_command(&format!("  {command}"), width);
                     if fits(&margin) {
-                        lines.push(std::mem::take(&mut line));
+                        // The line it would have started on, unless that holds only its indent.
+                        if !line.trim().is_empty() {
+                            lines.push(std::mem::take(&mut line));
+                        }
                         fitted = margin;
                     }
                 }
@@ -299,6 +317,13 @@ fn layout(prefix: &str, text: &str, width: usize, indent: usize, leading: bool) 
                 line = parts.pop().unwrap_or_default();
                 lines.extend(parts);
                 fresh = false;
+            }
+            Unit::Line(command) => {
+                if !fresh && count(&line) + 1 + count(&command) > width {
+                    lines.push(std::mem::replace(&mut line, pad.clone()));
+                    fresh = true;
+                }
+                add(&mut line, &mut fresh, &command);
             }
             Unit::Comment(words) => {
                 let comment = words.join(" ");
@@ -356,6 +381,11 @@ fn layout(prefix: &str, text: &str, width: usize, indent: usize, leading: bool) 
 fn checks(repo: &Path) -> Vec<Check> {
     let installation = selfmgmt::installation();
     let registry = crate::providers::read_registry_entries();
+    // The machine's own configuration, which `af self` and `af storage` read before anything
+    // else: when it does not load, no fix that runs one of them can clear its check.
+    let machine = crate::config::load_machine_naming()
+        .err()
+        .map(|refusal| Problem::of_refusal(&refusal));
     let toplevel = crate::config::git_toplevel(repo);
     let authority = toplevel
         .as_deref()
@@ -365,13 +395,13 @@ fn checks(repo: &Path) -> Vec<Check> {
         binary(&installation),
         path(&installation),
         shell(),
-        update(),
+        update(machine.as_ref()),
         tools(
             toplevel.as_deref(),
             authority.as_ref().and_then(|a| a.as_ref().ok()),
         ),
         providers(&registry),
-        storage(&installation),
+        storage(&installation, machine.as_ref()),
     ];
     match &toplevel {
         Some(toplevel) => checks.push(project(toplevel, authority.as_ref(), &registry)),
@@ -386,7 +416,179 @@ fn checks(repo: &Path) -> Vec<Check> {
         ),
         None => {}
     }
+    let registry_problem = registry.warning.as_ref().map(|warning| {
+        registry
+            .path
+            .as_deref()
+            .map_or_else(|| Problem::said(warning), |path| Problem::at(path, warning))
+    });
+    let blockers: Vec<(Reads, &Problem)> = [
+        machine
+            .as_ref()
+            .map(|problem| (Reads::MachineConfig, problem)),
+        registry_problem
+            .as_ref()
+            .map(|problem| (Reads::Registry, problem)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    withhold(&mut checks, &blockers);
     checks
+}
+
+// ------------------------------------------------------------------------------------------
+// files a fix reads
+
+/// A file that does not load: where (the file, and the line a TOML parse error names) and what
+/// is wrong with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Problem {
+    file: Option<PathBuf>,
+    line: Option<usize>,
+    message: String,
+}
+
+impl Problem {
+    /// A problem with no file to name.
+    fn said(message: &str) -> Problem {
+        Problem {
+            file: None,
+            line: None,
+            message: first_line(message),
+        }
+    }
+
+    /// `file`'s problem: its TOML parse error, with the line, when it does not parse, else
+    /// `otherwise` (it parses, but is not what its reader expects).
+    fn at(file: &Path, otherwise: &str) -> Problem {
+        match toml_problem(file) {
+            Some((line, message)) => Problem {
+                file: Some(file.to_path_buf()),
+                line: Some(line),
+                message,
+            },
+            None => Problem {
+                file: Some(file.to_path_buf()),
+                line: None,
+                message: first_line(otherwise),
+            },
+        }
+    }
+
+    /// A configuration refusal: the file it names, read again for the line.
+    fn of_refusal(refusal: &crate::config::Refusal) -> Problem {
+        let Some(range) = refusal.path.clone() else {
+            return Problem::said(&refusal.text);
+        };
+        let file = PathBuf::from(&refusal.text[range.clone()]);
+        let after = refusal.text[range.end..].trim_start_matches(':').trim();
+        Problem::at(&file, after)
+    }
+
+    /// Where, as a person looks for it: `FILE line N`, `FILE` or nothing.
+    fn place(&self) -> Option<String> {
+        let file = self.file.as_ref()?.display();
+        Some(match self.line {
+            Some(line) => format!("{file} line {line}"),
+            None => file.to_string(),
+        })
+    }
+
+    /// What to do: correct the file by hand, then run `recheck`.
+    fn hint(&self, recheck: &str) -> String {
+        match self.place() {
+            Some(place) => format!(
+                "correct {place} by hand ({}), then recheck: {recheck}",
+                self.message
+            ),
+            None => format!("{}; correct it, then recheck: {recheck}", self.message),
+        }
+    }
+}
+
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or_default().trim().to_owned()
+}
+
+/// The line and message of `file`'s TOML parse error; `None` when it parses or cannot be read.
+/// Like onboarding's own authority reader, it never follows a symbolic link and never reads a
+/// file larger than `MAX_SCAN_BYTES`: a repository's `.af/` cannot make doctor read, and print a
+/// line of, a file outside it.
+fn toml_problem(file: &Path) -> Option<(usize, String)> {
+    let metadata = std::fs::symlink_metadata(file).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_SCAN_BYTES {
+        return None;
+    }
+    let text = std::fs::read_to_string(file).ok()?;
+    let error = toml::from_str::<toml::Table>(&text).err()?;
+    let start = error.span().map_or(0, |span| span.start.min(text.len()));
+    let line = text.as_bytes()[..start]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1;
+    Some((line, first_line(error.message())))
+}
+
+/// What an `af` command reads before it does anything, of what a check can find unreadable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reads {
+    /// The system and user configuration: `af self` (apart from `setup-shell`), `af storage`,
+    /// `af config`.
+    MachineConfig,
+    /// The Provider registry: `af provider setup`, `add`, `remove`, `detect --apply`.
+    Registry,
+}
+
+fn reads(command: &[String]) -> Vec<Reads> {
+    let words: Vec<&str> = command.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        ["af", "self", "setup-shell", ..] => Vec::new(),
+        ["af", "self" | "storage" | "config", ..] => vec![Reads::MachineConfig],
+        ["af", "provider", "setup" | "add" | "remove", ..] => vec![Reads::Registry],
+        ["af", "provider", "detect", rest @ ..] if rest.contains(&"--apply") => {
+            vec![Reads::Registry]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A fix is offered only when running it can clear its check: one that runs a command a
+/// `blockers` file stops before it starts would fail with that file's error, so it moves to the
+/// hint, after what to correct first.
+fn withhold(checks: &mut [Check], blockers: &[(Reads, &Problem)]) {
+    for check in checks.iter_mut() {
+        let Some(fix) = check.fix.clone() else {
+            continue;
+        };
+        let Ok(words) = shell_words::split(&fix) else {
+            continue;
+        };
+        let stops = words
+            .split(|word| word == "&&")
+            .flat_map(reads)
+            .find_map(|read| {
+                blockers
+                    .iter()
+                    .find(|(blocked, _)| *blocked == read)
+                    .map(|(_, problem)| *problem)
+            });
+        let Some(problem) = stops else {
+            continue;
+        };
+        let first = match problem.place() {
+            Some(place) => format!("first correct {place} by hand ({})", problem.message),
+            None => format!("first correct this: {}", problem.message),
+        };
+        let mut hint = format!("{first}, which stops this fix; then run: {fix}");
+        if let Some(old) = &check.hint {
+            hint.push_str("; ");
+            hint.push_str(old);
+        }
+        check.fix = None;
+        check.hint = Some(hint);
+    }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -478,17 +680,14 @@ fn path(installation: &Result<selfmgmt::Installation, String>) -> Check {
     let shell = std::env::var("SHELL").ok();
     if !dirs.iter().any(|entry| same_dir(entry, dir)) {
         let (fix, hint) = path_fix(dir, shell.as_deref(), false);
-        let check = Check::warn(
-            "path",
-            format!(
-                "{} is not on PATH, so `af` there is not found",
-                dir.display()
-            ),
-            fix,
+        let detail = format!(
+            "{} is not on PATH, so `af` there is not found",
+            dir.display()
         );
-        return match hint {
-            Some(hint) => check.hint(hint),
-            None => check,
+        return Check {
+            fix,
+            hint,
+            ..Check::advise(Status::Warn, "path", detail, String::new())
         };
     }
     let first = dirs
@@ -507,20 +706,24 @@ fn path(installation: &Result<selfmgmt::Installation, String>) -> Check {
                 dir.display(),
                 found.parent().unwrap_or(Path::new("/")).display()
             );
-            let hint = match hint {
-                Some(hint) => format!("{before}; {hint}; or remove {}", found.display()),
-                None => format!("{before}; or remove {}", found.display()),
-            };
-            Check::warn(
-                "path",
-                format!(
-                    "`af` on PATH is {}, not the default link {}",
-                    found.display(),
-                    bin.display()
+            let hint = match (&fix, hint) {
+                (Some(_), Some(hint)) => format!("{before}; {hint}; or remove {}", found.display()),
+                (Some(_), None) => format!("{before}; or remove {}", found.display()),
+                (None, hint) => format!(
+                    "{}; or remove {}",
+                    hint.unwrap_or_default(),
+                    found.display()
                 ),
+            };
+            let detail = format!(
+                "`af` on PATH is {}, not the default link {}",
+                found.display(),
+                bin.display()
+            );
+            Check {
                 fix,
-            )
-            .hint(hint)
+                ..Check::advise(Status::Warn, "path", detail, hint)
+            }
         }
         None => Check::warn(
             "path",
@@ -535,32 +738,98 @@ const SET_HOME: &str = "export HOME=DIR";
 const HOME_HINT: &str = "DIR: your home directory, as an absolute path";
 
 /// The command that puts `dir` first on PATH for the shell `$SHELL` names (`front`: also when it
-/// is on PATH already, behind another `af`), and where that line belongs for a later shell.
-pub(crate) fn path_fix(dir: &Path, shell: Option<&str>, front: bool) -> (String, Option<String>) {
-    let dir = dir.display().to_string();
+/// is on PATH already, behind another `af`), with `dir` quoted the way that shell reads a
+/// literal, so nothing in it is expanded when the line is pasted; and the hint, where the line
+/// belongs for a later shell. A shell af writes no line for, or a directory no PATH line can
+/// hold, has no fix, and the hint names the directory and what to do. `af self setup-shell
+/// --write` is never the fix: it writes completions and man pages and leaves PATH alone.
+pub(crate) fn path_fix(
+    dir: &Path,
+    shell: Option<&str>,
+    front: bool,
+) -> (Option<String>, Option<String>) {
     let name = shell
         .and_then(|shell| Path::new(shell).file_name())
         .and_then(|name| name.to_str());
-    let export = format!("export PATH=\"{dir}:$PATH\"");
-    match name {
-        Some("fish") if front => (
-            format!("fish_add_path --move {}", shell_words::quote(&dir)),
+    let shown = dir.display();
+    let Some(literal) = dir.to_str().filter(|dir| path_literal(dir)) else {
+        return (
             None,
+            Some(format!(
+                "no PATH entry can hold {shown}, which has a `:` or a control character; set \
+                 XDG_BIN_HOME to a directory without one, then run af self install {}",
+                selfmgmt::VERSION
+            )),
+        );
+    };
+    let line = |file: &str| Some(format!("add that line to {file}, then open a new shell"));
+    match (name, name.and_then(selfmgmt::shell_named)) {
+        (_, Some(crate::cli::Shell::Fish)) => {
+            let flag = if front { "--move " } else { "" };
+            (
+                Some(format!("fish_add_path {flag}{}", fish_quote(literal))),
+                None,
+            )
+        }
+        (_, Some(crate::cli::Shell::Zsh)) => (Some(sh_export(literal)), line("~/.zshrc")),
+        (_, Some(crate::cli::Shell::Bash)) => (Some(sh_export(literal)), line("~/.bashrc")),
+        (_, Some(crate::cli::Shell::Elvish)) => (
+            Some(format!("set paths = [{} $@paths]", elvish_quote(literal))),
+            line("~/.config/elvish/rc.elv"),
         ),
-        Some("fish") => (format!("fish_add_path {}", shell_words::quote(&dir)), None),
-        Some("zsh") => (
-            export,
-            Some("add that line to ~/.zshrc, then open a new shell".into()),
+        (_, Some(crate::cli::Shell::Powershell)) => (
+            Some(format!(
+                "$env:PATH = {} + [IO.Path]::PathSeparator + $env:PATH",
+                pwsh_quote(literal)
+            )),
+            line("the file $PROFILE names"),
         ),
-        Some("bash") => (
-            export,
-            Some("add that line to ~/.bashrc, then open a new shell".into()),
-        ),
-        _ => (
-            export,
-            Some("add that line to your shell's startup file, then open a new shell".into()),
+        (Some("sh"), None) => (Some(sh_export(literal)), line("~/.profile")),
+        (other, None) => (
+            None,
+            Some(format!(
+                "put {shown} first on PATH in your shell's startup file, then open a new \
+                 shell; af writes that line for bash, zsh, sh, fish, elvish and pwsh, and \
+                 $SHELL is {}",
+                other.unwrap_or("unset")
+            )),
         ),
     }
+}
+
+/// Whether `dir` can be one PATH entry spelled on one line: no `:`, which separates entries,
+/// and no control character, which a pasted line would not carry.
+fn path_literal(dir: &str) -> bool {
+    !dir.contains(':') && !dir.chars().any(char::is_control)
+}
+
+/// `export PATH='DIR':"$PATH"`, DIR single-quoted, so sh, bash and zsh expand nothing in it.
+fn sh_export(dir: &str) -> String {
+    format!("export PATH='{}':\"$PATH\"", dir.replace('\'', r"'\''"))
+}
+
+/// A fish literal: inside fish's single quotes only `\\` and `\'` are escapes.
+fn fish_quote(dir: &str) -> String {
+    format!("'{}'", dir.replace('\\', r"\\").replace('\'', r"\'"))
+}
+
+/// An elvish literal: inside elvish's single quotes only `''` is special, one `'`.
+fn elvish_quote(dir: &str) -> String {
+    format!("'{}'", dir.replace('\'', "''"))
+}
+
+/// A PowerShell literal: inside single quotes every single quote, the typographic ones
+/// PowerShell also reads as one included, is written twice.
+fn pwsh_quote(dir: &str) -> String {
+    let mut quoted = String::from("'");
+    for c in dir.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    quoted.push('\'');
+    quoted
 }
 
 fn shell() -> Check {
@@ -625,16 +894,16 @@ fn shell() -> Check {
     }
 }
 
-fn update() -> Check {
+fn update(machine: Option<&Problem>) -> Check {
     let facts = match selfmgmt::update_facts() {
         Ok(facts) => facts,
         Err(error) => {
-            return Check::warn(
+            return Check::advise(
+                Status::Warn,
                 "update",
                 format!("the [self] policy cannot be read: {error}"),
-                "af config show --origin",
-            )
-            .hint("it names the layer that sets [self]");
+                unreadable_policy("self", machine),
+            );
         }
     };
     let checked = match facts.checked_at_epoch {
@@ -708,6 +977,19 @@ fn update() -> Check {
                     .hint("check the network first")
             }
         }
+    }
+}
+
+/// What to do when `[table]` does not read. A configuration file that does not load stops
+/// every command that reads it, `af config show` among them, so it is named, with its line, to
+/// correct by hand; a value that loads but is wrong is found by `af config show --origin`.
+fn unreadable_policy(table: &str, machine: Option<&Problem>) -> String {
+    match machine {
+        Some(problem) => problem.hint("af doctor"),
+        None => format!(
+            "af config show --origin names the layer that sets [{table}]; correct it there, \
+             then recheck: af doctor"
+        ),
     }
 }
 
@@ -983,12 +1265,26 @@ fn install_command(program: &str) -> Result<String, String> {
 
 fn providers(registry: &crate::providers::RegistryRead) -> Check {
     if let Some(warning) = &registry.warning {
-        return Check::fail(
+        // Every command that reads the registry stops on it, and `af provider status` only says
+        // it again: no command clears it, so the hint names the file and the line.
+        let problem = registry
+            .path
+            .as_deref()
+            .map_or_else(|| Problem::said(warning), |path| Problem::at(path, warning));
+        let hint = match problem.place() {
+            Some(place) => format!(
+                "correct {place} by hand ({}), or move the file aside to start an empty \
+                 registry, then recheck: af doctor",
+                problem.message
+            ),
+            None => problem.hint("af doctor"),
+        };
+        return Check::advise(
+            Status::Fail,
             "providers",
             format!("the Provider registry cannot be read: {warning}"),
-            "af provider status",
-        )
-        .hint("it names the problem; fix or move the registry file");
+            hint,
+        );
     }
     // The same names-only scan `af provider status` and `af onboard` list (ADR-0200).
     let found: Vec<String> = registry
@@ -1060,16 +1356,19 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
     }
 }
 
-fn storage(installation: &Result<selfmgmt::Installation, String>) -> Check {
+fn storage(
+    installation: &Result<selfmgmt::Installation, String>,
+    machine: Option<&Problem>,
+) -> Check {
     let policy = match crate::storage::policy() {
         Ok(policy) => policy,
         Err(error) => {
-            return Check::fail(
+            return Check::advise(
+                Status::Fail,
                 "storage",
                 format!("[storage] cannot be read: {error}"),
-                "af config show --origin",
-            )
-            .hint("it names the layer that sets [storage]");
+                unreadable_policy("storage", machine),
+            );
         }
     };
     let total = crate::storage::Roots::current()
@@ -1248,13 +1547,25 @@ fn project(
     };
     let authority = match authority {
         Ok(authority) => authority,
+        // `af onboard` checks an existing `.af/` exactly as this check did, so it would stop on
+        // the same error: there is no fix, and the hint names the file and the line.
         Err(error) => {
-            return Check::fail(
+            let recheck = format!("af doctor --repo {}", shell_words::quote(&repo.to_string()));
+            let hint = match authority_problem(toplevel) {
+                Some(problem) => problem.hint(&recheck),
+                None if error.contains("af.lock") || error.contains("--refresh-lock") => format!(
+                    "correct .af/ by hand as the error says, then recheck: {recheck}; a lock \
+                     that no longer matches files you changed on purpose is re-pinned by: \
+                     {onboard} --refresh-lock"
+                ),
+                None => format!("correct .af/ by hand as the error says, then recheck: {recheck}"),
+            };
+            return Check::advise(
+                Status::Fail,
                 "project",
-                format!("{repo}/.af does not validate: {error}"),
-                onboard,
-            )
-            .hint("it names the file and the fix");
+                format!("{repo}/.af does not validate: {}", first_line(error)),
+                hint,
+            );
         }
     };
     let mut parts = vec![format!("{repo}/.af validates")];
@@ -1330,6 +1641,44 @@ fn project(
     }
 }
 
+/// The first `.af/` file `af onboard` reads that is not TOML, in the order it reads them: the
+/// project file, the lock, the pipelines, the Worker packages.
+fn authority_problem(toplevel: &Path) -> Option<Problem> {
+    let af = toplevel.join(".af");
+    let listed = |dir: PathBuf| -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        found.sort();
+        found
+    };
+    let workers = listed(af.join("workers"))
+        .into_iter()
+        .filter(|dir| dir.is_dir())
+        .flat_map(listed);
+    [af.join("af.toml"), af.join("af.lock")]
+        .into_iter()
+        .chain(listed(af.join("pipelines")))
+        .chain(workers)
+        .filter(|path| {
+            std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+                && (path
+                    .extension()
+                    .is_some_and(|extension| extension == "toml")
+                    || path.file_name().is_some_and(|name| name == "af.lock"))
+        })
+        .find_map(|path| {
+            toml_problem(&path).map(|(line, message)| Problem {
+                file: Some(path),
+                line: Some(line),
+                message,
+            })
+        })
+}
+
 // ------------------------------------------------------------------------------------------
 // files
 
@@ -1359,6 +1708,34 @@ fn same_file(found: &Path, link: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A malformed `.af/` file is named, but a symbolic link (here to a malformed file outside
+    /// `.af/`) and a file above the scan bound are never read.
+    #[test]
+    fn the_authority_scan_reads_no_link_and_no_oversized_file() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = root.path().join("outside.toml");
+        std::fs::write(&outside, "secret = [\n").unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join(".af/pipelines/a-link.toml")).unwrap();
+        let big = "# padding\n".repeat(usize::try_from(MAX_SCAN_BYTES).unwrap() / 10 + 1);
+        std::fs::write(repo.join(".af/pipelines/b-big.toml"), big + "broken = [\n").unwrap();
+        assert!(super::toml_problem(&repo.join(".af/pipelines/a-link.toml")).is_none());
+        assert!(super::toml_problem(&repo.join(".af/pipelines/b-big.toml")).is_none());
+        assert!(super::authority_problem(&repo).is_none());
+        std::fs::write(
+            repo.join(".af/pipelines/c-small.toml"),
+            "x = 1\nbroken = [\n",
+        )
+        .unwrap();
+        let problem = super::authority_problem(&repo).expect("the small malformed file is named");
+        assert_eq!(
+            problem.file.as_deref(),
+            Some(repo.join(".af/pipelines/c-small.toml").as_path())
+        );
+        assert_eq!(problem.line, Some(2));
+    }
 
     /// C3 item 29: a root `mdutil -s` reports indexed is named, one named `*.noindex` is never
     /// asked about, and a tool that cannot answer reports nothing.
@@ -1435,30 +1812,174 @@ esac
     }
 
     /// The fix is the command alone; where the line belongs is the hint (GA second fix item 4).
+    /// Each shell gets its own line (GA third fix item 2), and a shell af writes no line for
+    /// gets no fix and a hint that names the directory.
     #[test]
     fn the_path_fix_is_the_line_for_the_users_shell() {
         let dir = Path::new("/home/o/.local/bin");
         assert_eq!(
             path_fix(dir, Some("/usr/bin/fish"), false),
-            ("fish_add_path /home/o/.local/bin".into(), None)
+            (Some("fish_add_path '/home/o/.local/bin'".into()), None)
         );
         assert_eq!(
-            path_fix(dir, Some("/usr/bin/fish"), true).0,
-            "fish_add_path --move /home/o/.local/bin"
+            path_fix(dir, Some("/usr/bin/fish"), true).0.unwrap(),
+            "fish_add_path --move '/home/o/.local/bin'"
         );
-        let export = "export PATH=\"/home/o/.local/bin:$PATH\"";
+        let export = "export PATH='/home/o/.local/bin':\"$PATH\"";
         for (shell, file) in [
-            (Some("/bin/zsh"), "~/.zshrc"),
-            (Some("/bin/bash"), "~/.bashrc"),
-            (None, "your shell's startup file"),
+            ("/bin/zsh", "~/.zshrc"),
+            ("/bin/bash", "~/.bashrc"),
+            ("/bin/sh", "~/.profile"),
         ] {
-            let (fix, hint) = path_fix(dir, shell, false);
-            assert_eq!(fix, export);
+            let (fix, hint) = path_fix(dir, Some(shell), false);
+            assert_eq!(fix.as_deref(), Some(export));
             assert_eq!(
                 hint.unwrap(),
                 format!("add that line to {file}, then open a new shell")
             );
         }
+        let (fix, hint) = path_fix(dir, Some("/usr/local/bin/elvish"), false);
+        assert_eq!(fix.unwrap(), "set paths = ['/home/o/.local/bin' $@paths]");
+        assert!(hint.unwrap().contains("rc.elv"));
+        let (fix, hint) = path_fix(dir, Some("/usr/local/bin/pwsh"), true);
+        assert_eq!(
+            fix.unwrap(),
+            "$env:PATH = '/home/o/.local/bin' + [IO.Path]::PathSeparator + $env:PATH"
+        );
+        assert!(hint.unwrap().contains("$PROFILE"));
+        for shell in [None, Some("/bin/tcsh"), Some("/usr/bin/nu")] {
+            let (fix, hint) = path_fix(dir, shell, false);
+            assert_eq!(fix, None, "{shell:?}");
+            let hint = hint.unwrap();
+            assert!(
+                hint.contains("put /home/o/.local/bin first on PATH"),
+                "{hint}"
+            );
+            let named = shell.map_or("unset", |shell| shell.rsplit('/').next().unwrap());
+            assert!(hint.ends_with(&format!("$SHELL is {named}")), "{hint}");
+        }
+        // No PATH entry holds a `:`, and no pasted line carries a newline.
+        for odd in ["/home/o/a:b/bin", "/home/o/a\nb/bin"] {
+            let (fix, hint) = path_fix(Path::new(odd), Some("/bin/zsh"), false);
+            assert_eq!(fix, None);
+            assert!(hint.unwrap().contains("XDG_BIN_HOME"));
+        }
+    }
+
+    /// Every character a shell might expand, in one directory name.
+    const HOSTILE: &str = "a $TAG \"b' c`id`d$(touch x)e\u{2019}";
+
+    /// A real directory with [`HOSTILE`] in its name, inside a fresh temporary directory that
+    /// also serves as the shell's working directory, so a `$(touch x)` that ran leaves `x`.
+    fn hostile_dir() -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join(HOSTILE).join("bin");
+        std::fs::create_dir_all(&dir).unwrap();
+        (root, dir)
+    }
+
+    /// GA third fix item 2: the sh, bash and zsh line parses in `/bin/sh -n`, and run in sh (and
+    /// in bash and zsh, which are on PATH here or skipped) puts the literal directory first on
+    /// PATH, expanding nothing in it.
+    #[test]
+    fn the_posix_path_line_keeps_a_hostile_directory_literal() {
+        let (root, dir) = hostile_dir();
+        let literal = dir.to_str().unwrap();
+        for shell in ["/bin/sh", "/bin/bash", "/bin/zsh"] {
+            let (fix, _) = path_fix(&dir, Some(shell), false);
+            let fix = fix.unwrap();
+            assert!(fix.starts_with("export PATH='"), "{fix}");
+            let parsed = std::process::Command::new("/bin/sh")
+                .args(["-n", "-c", &fix])
+                .output()
+                .unwrap();
+            assert!(parsed.status.success(), "{fix}: {parsed:?}");
+            for runner in ["sh", "bash", "zsh"] {
+                if which(runner).is_none() {
+                    eprintln!("skipped: {runner} is not on PATH");
+                    continue;
+                }
+                let script = format!("{fix}; printf %s \"$PATH\"");
+                let printed = run_in(&root, runner, &["-c", &script]);
+                let first = printed.split(':').next().unwrap();
+                assert_eq!(first, literal, "{runner}: {fix}");
+                assert_eq!(printed, format!("{literal}:/usr/bin:/bin"), "{runner}");
+            }
+            assert!(!root.path().join("x").exists(), "{fix} ran $(touch x)");
+            // The text form prints the line exactly as the JSON carries it, at any width.
+            for width in [100, 60] {
+                let text = render(&[Check::warn("path", "off PATH", fix.clone())], width);
+                assert!(
+                    text.lines()
+                        .any(|line| line.trim_start() == format!("fix: {fix}")),
+                    "{width}\n{text}"
+                );
+            }
+        }
+    }
+
+    /// GA third fix item 2: the fish, elvish and pwsh lines, run in their own shell when it is on
+    /// PATH, put the literal directory first; each is skipped with a message when it is not.
+    #[test]
+    fn the_fish_elvish_and_pwsh_lines_keep_a_hostile_directory_literal() {
+        let (root, dir) = hostile_dir();
+        let literal = dir.to_str().unwrap();
+        let cases = [
+            ("fish", "printf %s\\n $PATH[1]"),
+            ("elvish", "echo $paths[0]"),
+            ("pwsh", "($env:PATH -split [IO.Path]::PathSeparator)[0]"),
+        ];
+        for (shell, print) in cases {
+            let (fix, _) = path_fix(&dir, Some(&format!("/usr/bin/{shell}")), false);
+            let fix = fix.unwrap();
+            let Some(binary) = which(shell) else {
+                eprintln!("skipped: {shell} is not on PATH, so `{fix}` was not run");
+                continue;
+            };
+            let script = format!("{fix}\n{print}\n");
+            let args: Vec<&str> = match shell {
+                "pwsh" => vec!["-NoProfile", "-NonInteractive", "-Command", &script],
+                // fish copies `fish_user_paths` into PATH from its own share config, so it
+                // starts with config, kept off the user's by the private XDG directories.
+                "fish" => vec!["-c", &script],
+                _ => vec!["-norc", "-c", &script],
+            };
+            let printed = run_in(&root, binary.to_str().unwrap(), &args);
+            assert_eq!(printed.trim_end_matches('\n'), literal, "{shell}: {fix}");
+            assert!(!root.path().join("x").exists(), "{fix} ran $(touch x)");
+        }
+    }
+
+    fn which(program: &str) -> Option<PathBuf> {
+        let path = std::env::var_os("PATH")?;
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(program))
+            .find(|candidate| is_executable(candidate))
+    }
+
+    /// `program args` in `root` with a private HOME and XDG directories (fish saves
+    /// `fish_add_path` in its universal variables there), `TAG` set and PATH `/usr/bin:/bin`;
+    /// its stdout.
+    fn run_in(root: &tempfile::TempDir, program: &str, args: &[&str]) -> String {
+        let home = root.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let program = which(program).unwrap_or_else(|| PathBuf::from(program));
+        let output = std::process::Command::new(program)
+            .args(args)
+            .current_dir(root.path())
+            .env_clear()
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .env("XDG_DATA_HOME", home.join("data"))
+            .env("XDG_CACHE_HOME", home.join("cache"))
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("TMPDIR", root.path())
+            .env("TAG", "EXPANDED")
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
     }
 
     #[test]
@@ -1678,6 +2199,174 @@ esac
                 }
             }
         }
+    }
+
+    /// GA third fix item 3: a file that does not parse is named with the line its TOML error
+    /// names, and one that parses but is not what its reader expects keeps the reader's words.
+    #[test]
+    fn a_problem_names_the_file_and_the_parse_errors_line() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("config.toml");
+        std::fs::write(&file, "[self]\nchannel = \"rc\"\n\nx = [\n").unwrap();
+        let problem = Problem::at(&file, "unused");
+        assert_eq!(problem.line, Some(4), "{problem:?}");
+        assert!(problem.message.contains("unclosed array"), "{problem:?}");
+        assert_eq!(
+            problem.hint("af doctor"),
+            format!(
+                "correct {} line 4 by hand ({}), then recheck: af doctor",
+                file.display(),
+                problem.message
+            )
+        );
+        // A configuration refusal names the file; the line is read from the file itself.
+        let refusal = crate::config::Refusal::naming("", &file, ": unclosed array");
+        assert_eq!(Problem::of_refusal(&refusal), problem);
+        // TOML that parses keeps what its reader said, on one line, and names no line.
+        std::fs::write(&file, "version = 2\n").unwrap();
+        let schema = Problem::at(&file, "expected version 1\n  and more");
+        assert_eq!(schema.line, None);
+        assert_eq!(schema.message, "expected version 1");
+        assert_eq!(
+            schema.place().unwrap(),
+            file.display().to_string(),
+            "{schema:?}"
+        );
+        assert_eq!(
+            Problem::said("HOME is not set").hint("af doctor"),
+            "HOME is not set; correct it, then recheck: af doctor"
+        );
+    }
+
+    /// GA third fix item 3: the `.af/` file a project check names is the first one `af onboard`
+    /// reads that is not TOML: the project file, the lock, a pipeline, a Worker package.
+    #[test]
+    fn the_af_file_that_does_not_parse_is_named_in_onboards_order() {
+        let root = tempfile::tempdir().unwrap();
+        let af = root.path().join(".af");
+        for dir in ["pipelines", "workers/correctness"] {
+            std::fs::create_dir_all(af.join(dir)).unwrap();
+        }
+        let files = [
+            "af.toml",
+            "af.lock",
+            "pipelines/review.toml",
+            "workers/correctness/reviewer.toml",
+        ];
+        for file in files {
+            std::fs::write(af.join(file), "version = 1\n").unwrap();
+        }
+        std::fs::write(af.join("README.md"), "x = [\n").unwrap();
+        assert_eq!(authority_problem(root.path()), None, "only TOML is read");
+        for file in files.iter().rev() {
+            std::fs::write(af.join(file), "version = 1\nx = [\n").unwrap();
+            let problem = authority_problem(root.path()).unwrap();
+            assert_eq!(problem.file.as_deref(), Some(af.join(file).as_path()));
+            assert_eq!(problem.line, Some(2), "{problem:?}");
+        }
+    }
+
+    /// GA third fix item 3: a fix that runs a command an unreadable file stops would fail with
+    /// that file's error, so it is withheld, per check kind: the binary's and the project's
+    /// `af self` commands and the storage and update checks' own commands stop on the machine
+    /// configuration, and the project's `af provider detect --apply` on the Provider registry.
+    /// A command neither file stops keeps its fix.
+    #[test]
+    fn a_fix_that_an_unreadable_file_stops_is_withheld() {
+        let config = Problem {
+            file: Some(PathBuf::from("/h/.config/af/config.toml")),
+            line: Some(2),
+            message: "unclosed array".into(),
+        };
+        let registry = Problem {
+            file: Some(PathBuf::from("/h/.config/af/providers.toml")),
+            line: None,
+            message: "expected version 1".into(),
+        };
+        let fixes = || {
+            vec![
+                Check::warn("binary", "no receipt", "af self install 0.1.0"),
+                Check::warn(
+                    "binary",
+                    "digest only",
+                    "brew install minisign && af self remove 0.1.0 && af self install 0.1.0",
+                )
+                .hint("reinstalls the release"),
+                Check::warn("update", "failed", "af self status --refresh"),
+                Check::warn("update", "newer", "af self update"),
+                Check::warn("storage", "over budget", "af storage prune --apply"),
+                Check::warn("storage", "staging", "af self status"),
+                Check::warn("project", "no Provider", "af provider detect --apply"),
+                Check::warn(
+                    "providers",
+                    "lapsed",
+                    "af provider setup claude-main --kind claude --login",
+                ),
+                Check::warn(
+                    "shell",
+                    "no completions",
+                    "af self setup-shell --shell zsh --write",
+                ),
+                Check::warn(
+                    "project",
+                    "unbound",
+                    "af onboard --repo /r --refresh-lock --af 0.1.0",
+                ),
+                Check::warn("path", "off PATH", "export PATH='/h/.local/bin':\"$PATH\""),
+                Check::warn("tools", "missing", "brew install curl"),
+            ]
+        };
+        let ids = |checks: &[Check]| -> Vec<(&'static str, bool)> {
+            checks
+                .iter()
+                .map(|check| (check.id, check.fix.is_some()))
+                .collect()
+        };
+        let mut checks = fixes();
+        withhold(&mut checks, &[(Reads::MachineConfig, &config)]);
+        assert_eq!(
+            ids(&checks),
+            [
+                ("binary", false),
+                ("binary", false),
+                ("update", false),
+                ("update", false),
+                ("storage", false),
+                ("storage", false),
+                ("project", true),
+                ("providers", true),
+                ("shell", true),
+                ("project", true),
+                ("path", true),
+                ("tools", true),
+            ]
+        );
+        assert_eq!(
+            checks[1].hint.as_deref().unwrap(),
+            "first correct /h/.config/af/config.toml line 2 by hand (unclosed array), which stops \
+             this fix; then run: brew install minisign && af self remove 0.1.0 && af self install \
+             0.1.0; reinstalls the release"
+        );
+        let mut checks = fixes();
+        withhold(&mut checks, &[(Reads::Registry, &registry)]);
+        let withheld: Vec<&str> = checks
+            .iter()
+            .filter(|check| check.fix.is_none())
+            .map(|check| check.id)
+            .collect();
+        assert_eq!(withheld, ["project", "providers"]);
+        assert_eq!(
+            checks[6].hint.as_deref().unwrap(),
+            "first correct /h/.config/af/providers.toml by hand (expected version 1), which stops \
+             this fix; then run: af provider detect --apply"
+        );
+        // Nothing unreadable: every fix stays.
+        let mut checks = fixes();
+        withhold(&mut checks, &[]);
+        assert!(checks.iter().all(|check| check.fix.is_some()));
+        // `af provider detect` without --apply reads no registry it could be stopped by.
+        let scan = ["af", "provider", "detect"].map(String::from);
+        assert!(reads(&scan).is_empty());
     }
 
     #[test]
