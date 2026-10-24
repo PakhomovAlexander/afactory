@@ -86,7 +86,7 @@ pub(super) struct Selected {
     pub(super) source_id: Option<String>,
 }
 
-fn select(opened: &OpenedTask, named: Option<&str>) -> Result<Selected, String> {
+pub(super) fn select(opened: &OpenedTask, named: Option<&str>) -> Result<Selected, String> {
     let id = &opened.task.task_id;
     let (result, view) = opened.view()?;
     let all = recorded(opened, result.as_ref());

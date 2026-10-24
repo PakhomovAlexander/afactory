@@ -18,6 +18,18 @@ fn attempt(node: &str, round: u64, epoch: u64, outcome: &str, tokens: &str) -> V
     })
 }
 
+fn attempt_at(node: &str, id: &str, round: u64, outcome: &str, started: Option<u64>) -> Value {
+    let mut value = attempt(node, round, 1, outcome, "1");
+    value["attempt_id"] = json!(id);
+    match started {
+        Some(at) => value["wall"]["started_unix_ms"] = json!(at),
+        None => {
+            value.as_object_mut().unwrap().remove("wall");
+        }
+    }
+    value
+}
+
 #[test]
 fn the_newest_rounds_reviewers_take_their_latest_attempts_outcome() {
     let accounting = json!([
@@ -27,12 +39,12 @@ fn the_newest_rounds_reviewers_take_their_latest_attempts_outcome() {
             // The Round's second epoch: only its Attempts are the nodes' state.
             attempt("correctness", 1, 2, "failed", "7"),
             attempt("bugs", 1, 2, "selected", "3"),
-            attempt("correctness", 1, 2, "running", "0"),
+            {"category": "business", "review_node": "correctness", "round": 1, "epoch": 2,
+             "outcome": "running", "chargeable_tokens": "0"},
             {"category": "provider", "outcome": "selected", "chargeable_tokens": "99"},
         ]},
     ]);
-    let (round, found) = nodes(&accounting);
-    assert_eq!(round, Some((1, 2)));
+    let found = nodes(&accounting, Some((1, 2)));
     let states: Vec<(&str, &str, u128)> = found
         .iter()
         .map(|node| (node.node.as_str(), node.outcome.as_str(), node.tokens))
@@ -41,7 +53,7 @@ fn the_newest_rounds_reviewers_take_their_latest_attempts_outcome() {
         states,
         [("correctness", "running", 7), ("bugs", "selected", 3)]
     );
-    assert_eq!(found[0].wall_ms, Some(2_000));
+    assert_eq!(found[0].wall_ms, Some(1_000));
     assert_eq!(found[0].tone(), Some(Tone::Active));
     assert_eq!(found[1].tone(), Some(Tone::Ok));
     let failed = NodeState {
@@ -49,8 +61,83 @@ fn the_newest_rounds_reviewers_take_their_latest_attempts_outcome() {
         ..found[1].clone()
     };
     assert_eq!(failed.tone(), Some(Tone::Fail));
-    // No Attempt yet: no Round and no node.
-    assert_eq!(nodes(&json!([])), (None, Vec::new()));
+    // No Round yet: no node.
+    assert_eq!(nodes(&json!([]), Some((1, 1))), Vec::new());
+    assert_eq!(nodes(&accounting, None), Vec::new());
+}
+
+/// Round 1 closed with its reviewers' outcomes; Round 2 started and has no Attempt yet. The
+/// folder shows Round 2 without chips, never Round 1's outcomes.
+#[test]
+fn an_open_round_without_attempts_shows_no_earlier_rounds_chips() {
+    let accounting = json!([
+        {"attempts": [
+            attempt("bugs", 1, 1, "selected", "10"),
+            attempt("correctness", 1, 1, "failed", "5"),
+        ]},
+    ]);
+    assert_eq!(nodes(&accounting, Some((2, 1))), Vec::new());
+    assert_eq!(nodes(&accounting, Some((1, 1))).len(), 2);
+}
+
+/// The accounting lists Attempts by their hash-derived ID, as `af review report` produces
+/// them: here the failed Attempt's ID sorts after its successful retry's. The chip is the
+/// retry's, the Attempt that started last.
+#[test]
+fn a_retry_that_succeeded_is_the_chip_whatever_its_id_sorts_as() {
+    // The producer's order: by Attempt ID.
+    let accounting = json!([
+        {"attempts": [
+            attempt_at("bugs", "sha256:0000", 1, "selected", Some(2_000)),
+            attempt_at("bugs", "sha256:ffff", 1, "failed", Some(1_000)),
+        ]},
+    ]);
+    let found = nodes(&accounting, Some((1, 1)));
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].outcome, "selected");
+    // A retry still running has no wall yet: it is the newest.
+    let running = json!([
+        {"attempts": [
+            attempt_at("bugs", "sha256:0000", 1, "running", None),
+            attempt_at("bugs", "sha256:ffff", 1, "failed", Some(1_000)),
+        ]},
+    ]);
+    assert_eq!(nodes(&running, Some((1, 1)))[0].outcome, "running");
+}
+
+/// Only a missing log means "no Campaign here"; a log that cannot be looked at is a problem
+/// that names the path and the error.
+#[test]
+fn an_unreadable_campaign_store_is_a_problem_not_left_out() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let places = Places {
+        home: None,
+        default_root: None,
+    };
+    let empty = temp.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    assert!(read_dir(&places, &empty).is_none(), "no Store, no Campaign");
+    let locked = temp.path().join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("events.sqlite"), b"").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let read = read_dir(&places, &locked);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Root reads through any mode; there the Store is simply read (and refused as no Store).
+    if nix::unistd::geteuid().is_root() {
+        return;
+    }
+    let Some(Err(problem)) = read else {
+        panic!("an unreadable Store was left out");
+    };
+    assert!(
+        problem.reason.contains("events.sqlite cannot be read")
+            && problem.reason.contains("ermission denied"),
+        "{}",
+        problem.reason
+    );
+    assert_eq!(problem.state, locked);
 }
 
 #[test]

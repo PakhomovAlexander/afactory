@@ -1,6 +1,8 @@
 # ADR-0202: Give the agent loop its verbs, and deliver a verified verification
 
-**Status:** accepted (2026-10-23). Narrows
+**Status:** accepted (2026-10-23); amended 2026-10-24
+([a detached run is admitted or says it is not](#amendment-2026-10-24-a-detached-run-is-admitted-or-says-it-is-not)).
+Narrows
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery accepts only a
 verified Task whose Snapshot descends exactly from its source) by one named exception, and
 extends [ADR-0129](0129-stop-task-workers-when-af-is-interrupted.md) (an
@@ -108,3 +110,21 @@ their shapes. Every other Task's refusal is unchanged, and it now names `af task
   another host, is refused with what af knows, and is stopped where it runs.
 - A progress watcher reads the Store while the run writes it; it re-projects only when the log
   grew, and polls less often when projection is slow.
+
+## Amendment, 2026-10-24: a detached run is admitted or says it is not
+
+`af task run --detach` waited two minutes for its run to take the Task and admit its plan, and
+then returned exit 0 with `af/task-detached@1` although the run had done neither, so a script
+was told the Task ran when it might never start. The document is now `af/task-detached@2`
+(`schemas/task-detached-v2.json`); version 1 fails closed. It adds `admitted`, true only once
+the run holds the Task's lease and its plan is admitted, and `next_action`: `af task wait ID`
+for an admitted run, `af task status ID` for one still starting, and the Task's own next command
+for a run that ended before it went to the background. A run not admitted within the window is
+not claimed to run: the command exits 4 with `admitted: false`. The rest of the decision stands.
+The same close-out keeps its verbs exact: a second `af task cancel` of a run reports the first
+request, which stands, rather than its own; `af task status` names the run whose writer holds the
+lease and puts the next command on its own lines within 100 columns; `af task run` prints a
+`started` line for every node it runs, the kernel's own nodes included, before its `finished` or
+`failed` line; and `--pr-body` exits 1, naming `--base REF`, when the checkout's
+`scripts/pr-lines.py` cannot print its block, instead of printing a body the pull request check
+refuses.

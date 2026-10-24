@@ -7,6 +7,7 @@
 use super::*;
 use review_core::Severity;
 use review_core::finding_set::FindingSetV1;
+use review_core::reviewer_result::{CHANGE_WIDE_SENTINEL, ReviewerStageOutput};
 use review_core::task::agent_loop::*;
 use review_core::task::verification::{TASK_EVALUATION_V1, TaskEvaluationV1};
 
@@ -41,7 +42,7 @@ fn gathered(cas: &Cas, set_id: &str) -> Result<BTreeMap<String, Vec<TaskFindingV
                 status: Some(entry.status),
                 confidence: entry.confidence,
                 title: bounded(&entry.title),
-                file: entry.file.map(|file| bounded(&file)),
+                file: entry.file.as_deref().and_then(place),
                 line: entry.line.filter(|line| *line > 0),
                 evidence: bounded(&entry.body),
                 fix: entry.fix.map(|fix| bounded(&fix)),
@@ -51,37 +52,80 @@ fn gathered(cas: &Cas, set_id: &str) -> Result<BTreeMap<String, Vec<TaskFindingV
 }
 
 /// The reports of one reviewer's recorded result, for a round whose reduce step did not run:
-/// shown as recorded, never as gathered evidence (ADR-0034).
-fn recorded(cas: &Cas, result_id: &str) -> Result<Vec<TaskFindingV1>, String> {
-    let envelope = cas.get_artifact(result_id).map_err(|e| e.to_string())?;
-    let reports = envelope.payload["reports"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let mut findings = Vec::new();
-    for report in reports {
-        let Ok(severity) = serde_json::from_value::<Severity>(report["severity"].clone()) else {
-            continue;
-        };
-        let text = |key: &str| report[key].as_str().map(bounded).filter(|t| !t.is_empty());
-        let (Some(title), Some(evidence)) = (text("title"), text("body")) else {
-            continue;
-        };
-        findings.push(TaskFindingV1 {
+/// shown as recorded, never as gathered evidence (ADR-0034). A report without a title or a body
+/// keeps its place under a placeholder, so its position, the ID a continuation names it by,
+/// never shifts.
+fn recorded(cas: &Cas, name: &str, result_id: &str) -> Result<Vec<TaskFindingV1>, String> {
+    let envelope = cas
+        .get_artifact(result_id)
+        .map_err(|error| format!("the round's {name} result {result_id} is unreadable: {error}"))?;
+    validate_envelope(&envelope)?;
+    let stage: ReviewerStageOutput = serde_json::from_value(envelope.payload)
+        .map_err(|error| format!("the round's {name} result is not a reviewer result: {error}"))?;
+    let text = |value: &str, empty: &str| match bounded(value) {
+        cut if cut.is_empty() => empty.to_owned(),
+        cut => cut,
+    };
+    Ok(stage
+        .reports
+        .into_iter()
+        .map(|report| TaskFindingV1 {
             finding_id: None,
-            severity,
+            severity: report.severity,
             status: None,
-            confidence: report["confidence"]
-                .as_f64()
-                .filter(|c| (0.0..=1.0).contains(c)),
-            title,
-            file: text("file"),
-            line: report["line"].as_i64().filter(|line| *line > 0),
-            evidence,
-            fix: text("fix"),
+            confidence: report.confidence.filter(|c| (0.0..=1.0).contains(c)),
+            title: text(&report.title, "(untitled)"),
+            file: place(&report.file),
+            line: report.line.filter(|line| *line > 0),
+            evidence: text(&report.body, "(no body)"),
+            fix: report
+                .fix
+                .as_deref()
+                .map(bounded)
+                .filter(|fix| !fix.is_empty()),
+        })
+        .collect())
+}
+
+/// A report's file as a finding names it: none for a change-wide report.
+fn place(file: &str) -> Option<String> {
+    let file = file.trim();
+    (!file.is_empty() && file != CHANGE_WIDE_SENTINEL).then(|| bounded(file))
+}
+
+/// The findings of one recorded review round, per reviewer in name order, a reviewer that
+/// reported none or whose result is missing included: a complete round's are the Finding Set
+/// entries that round saw itself, an incomplete round's each reviewer's recorded reports. The
+/// one builder of a round's findings: `af task findings` prints them, and a continued Task is
+/// handed exactly them (ADR-0203).
+pub(super) fn round_findings(
+    cas: &Cas,
+    round: &TaskReviewRoundV1,
+) -> Result<Vec<TaskReviewerFindingsV1>, String> {
+    let gathered = match &round.finding_set_id {
+        Some(set) => Some(gathered(cas, set)?),
+        None => None,
+    };
+    let mut names: BTreeSet<String> = round.selected_results.keys().cloned().collect();
+    names.extend(round.missing_reviewers.iter().cloned());
+    if let Some(gathered) = &gathered {
+        names.extend(gathered.keys().filter(|name| is_name(name)).cloned());
+    }
+    let mut reviewers = Vec::new();
+    for name in names {
+        let result_id = round.selected_results.get(&name).cloned();
+        let findings = match (&gathered, &result_id) {
+            (Some(gathered), _) => gathered.get(&name).cloned().unwrap_or_default(),
+            (None, Some(result)) => recorded(cas, &name, result)?,
+            (None, None) => Vec::new(),
+        };
+        reviewers.push(TaskReviewerFindingsV1 {
+            reviewer: name,
+            result_id,
+            findings,
         });
     }
-    Ok(findings)
+    Ok(reviewers)
 }
 
 /// The evaluator's verdict: the `af/TaskEvaluation@1` the last node in plan order published.
@@ -131,8 +175,10 @@ pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskF
         Some(n) if n > count => {
             return Err(match count {
                 0 => format!(
-                    "Task {id} recorded no review round, so --round {n} names none; it is {}",
-                    view.state.label()
+                    "Task {id} recorded no review round, so --round {n} names none; it is {}; \
+                     next: {}",
+                    view.state.label(),
+                    view.state.next_action.as_deref().unwrap_or("none")
                 ),
                 _ => format!(
                     "Task {id} recorded {count} review round{}, so --round {n} names none of \
@@ -149,36 +195,14 @@ pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskF
         None => None,
         Some(index) => {
             let round = &rounds[usize::try_from(index - 1).map_err(|e| e.to_string())?];
-            let gathered = match &round.finding_set_id {
-                Some(set) => Some(gathered(&opened.cas, set)?),
-                None => None,
-            };
-            let mut reviewers = Vec::new();
+            let reviewers = round_findings(&opened.cas, round)?;
             let mut counts = TaskFindingCountsV1::default();
-            let mut names: BTreeSet<String> = round.selected_results.keys().cloned().collect();
-            names.extend(round.missing_reviewers.iter().cloned());
-            if let Some(gathered) = &gathered {
-                names.extend(gathered.keys().filter(|name| is_name(name)).cloned());
-            }
-            for name in names {
-                let result_id = round.selected_results.get(&name).cloned();
-                let findings = match (&gathered, &result_id) {
-                    (Some(gathered), _) => gathered.get(&name).cloned().unwrap_or_default(),
-                    (None, Some(result)) => recorded(&opened.cas, result)?,
-                    (None, None) => Vec::new(),
-                };
-                for finding in &findings {
-                    match finding.severity {
-                        Severity::Blocker => counts.blocker += 1,
-                        Severity::Major => counts.major += 1,
-                        Severity::Minor => counts.minor += 1,
-                    }
+            for finding in reviewers.iter().flat_map(|reviewer| &reviewer.findings) {
+                match finding.severity {
+                    Severity::Blocker => counts.blocker += 1,
+                    Severity::Major => counts.major += 1,
+                    Severity::Minor => counts.minor += 1,
                 }
-                reviewers.push(TaskReviewerFindingsV1 {
-                    reviewer: name,
-                    result_id,
-                    findings,
-                });
             }
             Some(TaskFindingsRoundV1 {
                 index,

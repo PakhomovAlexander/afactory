@@ -1360,15 +1360,69 @@ fn stores_other_releases_wrote_are_named_by_their_writer_marker() {
     };
     pane.rebuild();
     let rows: Vec<String> = pane.rows.iter().map(Row::text).collect();
-    let joined = rows.join(" ");
+    let joined = rows
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
         joined.contains(
-            "2 Stores written by other releases: af 99.1.0 (1), an older af release with no \
-             version marker (1); run them with AF_VERSION=99.1.0 af"
+            "2 Stores written by other releases; run each under the release that wrote it: \
+             AF_VERSION=99.1.0 af (1 Store) 1 Store by an older af release with no version \
+             marker: finish it under its own release"
         ),
         "{rows:#?}"
     );
     assert!(!joined.contains("TaskTransition@9"), "{rows:#?}");
     let labels: Vec<String> = pane.items().into_iter().map(|item| item.label).collect();
     assert_eq!(labels, ["! 2 old Stores"]);
+}
+
+/// Two registered Task Stores that cannot be resolved (here below a directory this process may
+/// not enter) are two Stores, not one: each is listed, each with its own refusal, and so is the
+/// scope's own Store, absent.
+#[test]
+fn unavailable_registered_stores_are_each_their_own_row() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let repo = crate::tui::tests::hub_repo(&root);
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let locked = root.join("locked");
+    let unavailable = [locked.join("one"), locked.join("two")];
+    for path in &unavailable {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let registry = crate::storage::registry::location(&root.join("state"));
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    let mut text = String::from("version = 2\n");
+    for path in &unavailable {
+        text.push_str(&format!(
+            "\n[[store]]\npath = {:?}\nkind = \"task\"\nfirst_use_unix_ms = 1\nlast_use_unix_ms = 1\n",
+            path.display().to_string()
+        ));
+    }
+    std::fs::write(&registry, text).unwrap();
+    let own = targets(&scope).unwrap();
+    assert_eq!(own.len(), 1);
+    assert!(!own[0].dir.exists(), "the scope's own Store is absent");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (explicit, warning) = explicit_targets(&scope, &[], &own);
+    let mut cache = Cache::default();
+    let refusals: Vec<bool> = explicit
+        .iter()
+        .map(|target| read_target(target, &mut cache).tasks.is_err())
+        .collect();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(warning, None);
+    let dirs: Vec<&PathBuf> = explicit.iter().map(|target| &target.dir).collect();
+    assert_eq!(dirs, [&unavailable[0], &unavailable[1]]);
+    if !nix::unistd::geteuid().is_root() {
+        assert_eq!(refusals, [true, true], "each its own refusal");
+    }
+    // Missing paths are two Stores too, and two spellings of one directory are one.
+    assert!(!same_store(&root.join("gone/one"), &root.join("gone/two")));
+    assert!(!same_store(&root.join("gone/one"), &own[0].dir));
+    assert!(same_store(&root.join("gone/one"), &root.join("gone/one")));
+    assert!(same_store(&locked, &root.join("locked/../locked")));
 }

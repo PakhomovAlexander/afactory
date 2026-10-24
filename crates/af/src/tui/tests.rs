@@ -2196,8 +2196,8 @@ fn the_campaigns_pane_lists_every_campaign_store_and_opens_one() {
     );
     assert_eq!(rows[3], "STORE  ~/elsewhere/audit");
     for row in [
-        "NODES  (af review report)",
-        "  no reviewer Attempt recorded yet",
+        "NODES  round 1 epoch 1  (af review report)",
+        "  waiting: no reviewer Attempt of this Round recorded yet",
         "LEDGER  round 1  (af review ledger)",
         "  verdict not recorded",
         "  0 findings: 0 open, 0 pending, 0 fixed, 0 rejected, 0 wontfix, 0 contested",
@@ -2314,6 +2314,50 @@ fn an_open_round_is_read_again_about_once_a_second_while_the_campaigns_pane_show
     assert_eq!(app.panes.campaigns.reads(), 1);
 }
 
+/// With the pane open and no Round open anywhere, the Stores are still read every five
+/// seconds: a Campaign started meanwhile appears with no key pressed.
+#[test]
+fn a_new_campaign_appears_while_the_pane_idles() {
+    let (_temp, root) = temp_root();
+    let review = state_root(&root).join("af/review");
+    crate::option_tests::write_campaign_opening(
+        &review.join("campaigns").join(crate::campaign_id("quiet")),
+        "quiet",
+    );
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]]]\r");
+    assert!(
+        !main_texts(&app)
+            .iter()
+            .any(|row| row.starts_with("  pr-new ")),
+        "{:#?}",
+        main_texts(&app)
+    );
+    // No Round is open: the pane reads every five seconds, not once a second, and not never.
+    assert_eq!(app.panes.campaigns.cadence(), Some(Duration::from_secs(5)));
+    // A Campaign starts; once the interval passed, the pane reads it in without a key.
+    crate::option_tests::write_campaign_opening(
+        &review.join("campaigns").join(crate::campaign_id("pr-new")),
+        "pr-new",
+    );
+    app.panes.campaigns.due();
+    app.poll();
+    assert_eq!(app.panes.campaigns.reads(), 1, "the idle pane reads again");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !app.panes.campaigns.poll() {
+        assert!(Instant::now() < deadline, "the idle read never finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        main_texts(&app)
+            .iter()
+            .any(|row| row.starts_with("  pr-new ")),
+        "{:#?}",
+        main_texts(&app)
+    );
+}
+
 /// A Campaign Store this release cannot replay: its opening's payload is another release's
 /// shape, and its writer marker names `release`, or none when `None`.
 fn foreign_campaign(dir: &Path, release: Option<&str>, label: &str) {
@@ -2363,10 +2407,16 @@ fn campaign_stores_other_releases_wrote_are_one_row_never_one_error_each() {
     let mut host = Recorder::default();
     press(&mut app, &mut host, b"]]]]]]]]]]\r");
     let rows = main_texts(&app);
-    let summary = "2 Stores written by other releases: af 99.1.0 (1), an older af release with \
-                   no version marker (1); run them with AF_VERSION=99.1.0 af review campaigns";
-    let joined = rows.join(" ");
+    let summary = "2 Stores written by other releases; run each under the release that wrote \
+                   it: AF_VERSION=99.1.0 af review campaigns (1 Store) 1 Store by an older af \
+                   release with no version marker: finish it under its own release";
+    let joined = rows
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(joined.contains(summary), "{rows:#?}");
+    assert!(rows.iter().all(|row| row.len() <= 100), "{rows:#?}");
     assert!(
         !rows.iter().any(|row| row.starts_with("error")),
         "{rows:#?}"

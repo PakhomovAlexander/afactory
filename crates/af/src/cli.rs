@@ -1832,7 +1832,8 @@ the time since the run started and the tokens charged so far, and every 5 minute
 back. stderr's last line is always the Task's state and the next command: `Task ID: \
 phase/outcome/cause; next: COMMAND` (`af help task-states`).\n\n--detach starts the same run \
 in the background and returns once it holds the Task and its plan is admitted, printing its pid \
-and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@1` under --json). \
+and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@2` under --json); a \
+run not admitted within 2 minutes exits 4 with `admitted: false`, and `af task status` is next. \
 The run has no terminal, survives the shell that started it, and is the same process a \
 foreground run is; `af task wait`, `af task status` and `af task cancel` follow it. Every run \
 records its process in the Store, `runs/<TASK_ID>-<N>.json`, before it takes the Task.\n\n\
@@ -1946,13 +1947,14 @@ af task wait TASK_ID --timeout 600 --json   # needs: a running Task"
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// Print one line: a Task's state, current node, elapsed time and tokens so far
+    /// Print a Task's state, current node, elapsed time and tokens so far, and what is next
     #[command(
-        long_about = "Print one line about a Task, now, without waiting: its state \
+        long_about = "Print where a Task is, now, without waiting: its state \
 (phase/outcome/cause, `af help task-states`), the node whose Attempt runs, the time since its \
 clock started, the tokens charged so far, the run that holds it (run number, pid and host) and \
-who cancelled it, then the next command. --json prints one `af/task-status@1` document. Exits \
-0: the state is data.",
+who cancelled it, then the next command on its own line, within 100 columns (the terminal's \
+width when narrower) and broken only between arguments. --json prints one `af/task-status@1` \
+document. Exits 0: the state is data.",
         after_long_help = "Examples:\n  \
 af task status TASK_ID   # needs: a Task\n  \
 af task status TASK_ID --json   # needs: a Task"
@@ -2265,8 +2267,10 @@ unknown.\n\n--pr-body prints the whole pull request description instead, which `
 --body-file` takes unchanged: the template (--template, or the checkout's \
 .github/PULL_REQUEST_TEMPLATE.md) with this block between its markers, and the lines added \
 block, between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->`, that the checkout's \
-scripts/pr-lines.py prints when it has one; without a template, the two blocks under their \
-headings. scripts/check-pr-report.py accepts it.\n\nNever: dispatches a \
+scripts/pr-lines.py prints when it has one (counted from --base REF, origin/main by default); \
+without a template, the two blocks under their headings. scripts/check-pr-report.py accepts it. \
+When the checkout has scripts/pr-lines.py and it cannot print its block, nothing is printed and \
+the command exits 1.\n\nNever: dispatches a \
 Worker, contacts a Provider, writes the Store or changes a Task. Providers appear only as kind \
 and model; no Provider label, path, credential, prompt or Worker output is printed.",
         after_long_help = "Examples:\n  af task report pagination-cli   # needs: Task pagination-cli\n  \
@@ -2285,6 +2289,10 @@ af task report implement-x verify-x --pr-body > body.md && gh pr create \\\n    
         /// The pull request template [default: .github/PULL_REQUEST_TEMPLATE.md of --repo]
         #[arg(long, value_name = "FILE", requires = "pr_body")]
         template: Option<PathBuf>,
+        /// The base the lines added block counts from, passed to scripts/pr-lines.py
+        /// [default: origin/main]
+        #[arg(long, value_name = "REF", requires = "pr_body")]
+        base: Option<String>,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },

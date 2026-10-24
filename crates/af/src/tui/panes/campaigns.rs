@@ -7,8 +7,9 @@
 //! (`stores.toml`) records. The folder lists each Campaign with its newest Round, the state of
 //! that Round's reviewer nodes as chips, its verdict, what it spent and when its Store was last
 //! written; one Campaign's pane shows its Ledger by reviewer and the `af review` commands that
-//! apply to it. Nothing is written. While the pane shows and a Round is open, a thread reads the
-//! Stores again about once a second, the Tasks pane's cadence.
+//! apply to it. Nothing is written. While the pane shows, a thread reads the Stores again: about
+//! once a second while a Round is open, the Tasks pane's cadence, and every five seconds while
+//! none is, so a Campaign started meanwhile appears without a key.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -28,6 +29,8 @@ use crate::tui::tree::Item;
 
 /// How often the pane reads the Stores again while a Round is open.
 const LIVE: Duration = Duration::from_secs(1);
+/// How often it reads them while no Round is open: a new Campaign appears within this.
+const IDLE: Duration = Duration::from_secs(5);
 /// The bar's columns, its separator excluded.
 const BAR_INNER: usize = crate::tui::BAR_WIDTH - 1;
 /// The columns of the main pane beside the bar at 100 columns.
@@ -181,30 +184,35 @@ impl NodeState {
     }
 }
 
-/// The reviewer nodes of the newest Round the Task accounting records, in the order their
-/// first Attempt appears, each with its latest Attempt's outcome, and that Round.
-pub(crate) fn nodes(accounting: &Value) -> (Option<(u64, u64)>, Vec<NodeState>) {
-    let mut attempts = Vec::new();
+/// The reviewer nodes of `round`, the Campaign's newest Round, in the order their first Attempt
+/// started, each with the outcome of its latest Attempt and what all of them spent. Only that
+/// Round's Attempts count: a Round that started and has none yet has no node, never the
+/// previous Round's. The latest Attempt is the one that started last — an Attempt still
+/// running, which has no wall yet, after every one that has — never the last in the
+/// accounting's order, which is by Attempt ID.
+pub(crate) fn nodes(accounting: &Value, round: Option<(u32, u32)>) -> Vec<NodeState> {
+    let Some((round, epoch)) = round else {
+        return Vec::new();
+    };
+    let mut attempts: Vec<(usize, &Value)> = Vec::new();
     for task in array(accounting) {
         for attempt in array(&task["attempts"]) {
-            if attempt["category"] == "business" {
-                attempts.push(attempt);
+            let of_round = attempt["round"].as_u64() == Some(u64::from(round))
+                && attempt["epoch"].as_u64().unwrap_or(1) == u64::from(epoch);
+            if attempt["category"] == "business" && of_round {
+                attempts.push((attempts.len(), attempt));
             }
         }
     }
-    let round_of = |attempt: &Value| {
-        let round = attempt["round"].as_u64()?;
-        Some((round, attempt["epoch"].as_u64().unwrap_or(1)))
+    // When each started: an Attempt without a wall is still running, so it is the newest.
+    let started = |attempt: &Value| {
+        attempt["wall"]["started_unix_ms"]
+            .as_u64()
+            .unwrap_or(u64::MAX)
     };
-    let latest = attempts
-        .iter()
-        .filter_map(|attempt| round_of(attempt))
-        .max();
+    attempts.sort_by_key(|(at, attempt)| (started(attempt), *at));
     let mut nodes: Vec<NodeState> = Vec::new();
-    for attempt in attempts {
-        if round_of(attempt) != latest {
-            continue;
-        }
+    for (_, attempt) in attempts {
         let name = attempt["review_node"]
             .as_str()
             .or_else(|| attempt["node"].as_str())
@@ -232,7 +240,7 @@ pub(crate) fn nodes(accounting: &Value) -> (Option<(u64, u64)>, Vec<NodeState>) 
             }),
         }
     }
-    (latest, nodes)
+    nodes
 }
 
 /// A Campaign Store this release refused to read.
@@ -312,10 +320,18 @@ impl Places {
     }
 }
 
-/// Read one Campaign Store on its own; `None` when the directory holds no Store.
+/// Read one Campaign Store on its own; `None` when the directory holds no Store. A Store whose
+/// log cannot even be looked at (permission denied, an I/O error) is a problem naming its path
+/// and the error, never left out as if it were no Campaign.
 fn read_dir(places: &Places, state: &Path) -> Option<Result<Campaign, Problem>> {
-    if std::fs::symlink_metadata(state.join("events.sqlite")).is_err() {
-        return None;
+    let database = state.join("events.sqlite");
+    match std::fs::symlink_metadata(&database) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            let reason = format!("{} cannot be read: {error}", database.display());
+            return Some(Err(places.problem(state.to_path_buf(), reason)));
+        }
     }
     Some(match crate::read_campaign_dir(state) {
         Ok(view) => Ok(places.campaign(state.to_path_buf(), view)),
@@ -496,9 +512,20 @@ impl CampaignsPane {
         self.rebuild();
     }
 
-    /// Whether a Round is open in a listed Campaign while the pane shows, so it reads again.
-    fn live(&self) -> bool {
-        self.opened && self.campaigns().any(|campaign| campaign.view.round_open)
+    /// How often the pane reads the Stores again while it shows: once a second while a Round is
+    /// open in a listed Campaign, every five seconds otherwise; `None` while it does not show.
+    pub(crate) fn cadence(&self) -> Option<Duration> {
+        if !self.opened {
+            return None;
+        }
+        let open = self.campaigns().any(|campaign| campaign.view.round_open);
+        Some(if open { LIVE } else { IDLE })
+    }
+
+    /// Make the next poll read again, as if its interval had passed.
+    #[cfg(test)]
+    pub(crate) fn due(&mut self) {
+        self.next = Some(Instant::now());
     }
 
     fn rebuild(&mut self) {
@@ -546,8 +573,13 @@ impl CampaignsPane {
                 "af review campaigns",
             )
             .unwrap_or_default();
-            for line in bounded(&summary, MAIN, "") {
-                rows.push(Row::painted(line, Paint::Muted));
+            for line in summary.lines() {
+                // A line of the summary keeps its indent on each row it wraps to.
+                let text = line.trim_start();
+                let indent = &line[..line.len() - text.len()];
+                for row in bounded(text, MAIN, indent) {
+                    rows.push(Row::painted(row, Paint::Muted));
+                }
             }
             rows.push(Row::blank());
         }
@@ -603,7 +635,7 @@ fn campaign_rows(campaign: &Campaign) -> Vec<Row> {
         campaign.spend(),
         campaign.written()
     )));
-    let (_, nodes) = nodes(&campaign.accounting);
+    let nodes = nodes(&campaign.accounting, campaign.view.latest_round);
     if !nodes.is_empty() {
         let mut spans = vec![Span::new("      nodes", Paint::Plain)];
         for node in &nodes {
@@ -672,17 +704,19 @@ fn detail_rows(
         rows.push(Row::plain(format!("{lead}{line}")));
     }
     rows.push(Row::blank());
-    let (round, nodes) = nodes(&campaign.accounting);
-    let heading = match round {
+    let nodes = nodes(&campaign.accounting, campaign.view.latest_round);
+    let heading = match campaign.view.latest_round {
         Some((round, epoch)) => format!("NODES  round {round} epoch {epoch}  (af review report)"),
         None => "NODES  (af review report)".to_owned(),
     };
     rows.push(Row::painted(heading, Paint::Title));
     if nodes.is_empty() {
-        rows.push(Row::painted(
-            "  no reviewer Attempt recorded yet",
-            Paint::Muted,
-        ));
+        let none = if campaign.view.round_open {
+            "  waiting: no reviewer Attempt of this Round recorded yet"
+        } else {
+            "  no reviewer Attempt recorded yet"
+        };
+        rows.push(Row::painted(none, Paint::Muted));
     }
     for node in &nodes {
         let wall = node.wall_ms.map_or(String::new(), crate::human::duration);
@@ -874,7 +908,7 @@ impl Pane for CampaignsPane {
             let report = crate::browse_report(&state, &label);
             self.detail = Some(Detail { state, report });
         }
-        self.next = Some(Instant::now() + LIVE);
+        self.next = self.cadence().map(|cadence| Instant::now() + cadence);
         self.rebuild();
     }
 
@@ -932,14 +966,14 @@ impl Pane for CampaignsPane {
                 }
             };
         }
-        if !self.live() {
+        let Some(cadence) = self.cadence() else {
             return false;
-        }
+        };
         let now = Instant::now();
         if self.next.is_some_and(|next| now < next) {
             return false;
         }
-        self.next = Some(now + LIVE);
+        self.next = Some(now + cadence);
         #[cfg(test)]
         {
             self.reads += 1;

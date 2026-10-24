@@ -2015,3 +2015,77 @@ fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
     );
     assert_block_is_checked(&reversed);
 }
+
+/// Two Tasks planned from one base whose candidates both add `docs/adr/0196-*.md`: the report
+/// over both warns on stderr, naming the number and both Tasks; over one of them, it does not.
+#[test]
+fn a_report_warns_when_two_candidates_take_the_same_adr_number() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    let worker = repo.join(".af/task-packages/fixture/implementer/worker.py");
+    let script = std::fs::read_to_string(&worker).unwrap();
+    let marker = "print(json.dumps(";
+    assert_eq!(script.matches(marker).count(), 1, "{script}");
+    let adr = "import os\nname='second' if 'again' in json.dumps(request) else 'first'\n\
+               os.makedirs('docs/adr', exist_ok=True)\n\
+               open('docs/adr/0196-%s.md' % name,'w').write('# 196\\n')\n";
+    std::fs::write(
+        &worker,
+        script.replacen(marker, &format!("{adr}{marker}"), 1),
+    )
+    .unwrap();
+    let path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
+        let package = repo.join(pin["path"].as_str().unwrap());
+        pin["digest"] =
+            toml::Value::String(review_config::lock::package_digest(name, &package).unwrap());
+    }
+    std::fs::write(&path, toml::to_string(&catalog).unwrap()).unwrap();
+    for args in [&["add", "-A"][..], &["commit", "-qm", "an ADR per Task"]] {
+        let output = Command::new("git")
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=f@example.invalid",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    task_gc::start(&repo, &state, "gc-older.json");
+    task_gc::start(&repo, &state, "gc-newer.json");
+
+    let both = report(&repo, &state, &["gc-older", "gc-newer"], false);
+    stdout(&both);
+    let said = String::from_utf8_lossy(&both.stderr).into_owned();
+    let flat = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains(
+            "af task report: warning: ADR 0196 is added by 2 Tasks: gc-older (docs/adr/0196-"
+        ),
+        "{said}"
+    );
+    assert!(flat.contains(", gc-newer (docs/adr/0196-"), "{said}");
+    for line in said.lines() {
+        assert!(line.chars().count() <= 100, "{line}");
+    }
+    // The same warning under --json, beside the one document on stdout.
+    let json = report(&repo, &state, &["gc-older", "gc-newer"], true);
+    serde_json::from_str::<Value>(&stdout(&json)).unwrap();
+    assert!(String::from_utf8_lossy(&json.stderr).contains("ADR 0196"));
+    // One Task alone takes no number from another.
+    let alone = report(&repo, &state, &["gc-older"], false);
+    stdout(&alone);
+    assert!(
+        !String::from_utf8_lossy(&alone.stderr).contains("ADR"),
+        "{}",
+        String::from_utf8_lossy(&alone.stderr)
+    );
+}

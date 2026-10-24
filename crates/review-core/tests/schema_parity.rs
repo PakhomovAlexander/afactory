@@ -36,7 +36,7 @@ const SCHEMAS: [&str; 225] = [
     "task-materialized-v1.json",
     "task-diff-v1.json",
     "task-status-v1.json",
-    "task-detached-v1.json",
+    "task-detached-v2.json",
     "task-cancelled-v1.json",
     "task-run-process-v1.json",
     "task-cancel-request-v1.json",

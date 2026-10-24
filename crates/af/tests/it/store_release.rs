@@ -137,14 +137,27 @@ fn storage_and_campaigns_list_other_releases_stores_in_one_row() {
     let shown = af(&["storage"]);
     assert!(shown.status.success(), "{}", err(&shown));
     let text = out(&shown);
+    // Two kinds of writer: a command for the release's Stores, and none for the older one.
     assert!(
         text.contains(
-            "3 Stores written by other releases: af 99.1.0 (2), an older af release with no \
-             version marker (1); run them with AF_VERSION=99.1.0 af task list --state DIR; af \
-             storage --verbose names each"
+            "3 Stores written by other releases; run each under the release that wrote it:\n  \
+             AF_VERSION=99.1.0 af task list --state DIR (2 Stores)\n  1 Store by an older af \
+             release with no version marker: finish it under its own release, or\n    remove it \
+             with af storage prune --apply once idle; af storage --verbose names each"
         ),
         "{text}"
     );
+    assert!(
+        !text.contains("run them with AF_VERSION=99.1.0"),
+        "no one release is recommended for every Store: {text}"
+    );
+    let summary = text
+        .lines()
+        .skip_while(|line| !line.starts_with("3 Stores written"))
+        .take(4);
+    for line in summary {
+        assert!(line.chars().count() <= 100, "{line}");
+    }
     let per_store = |text: &str| {
         text.lines()
             .filter(|line| line.starts_with("unreadable Store /"))
@@ -233,4 +246,41 @@ fn storage_and_campaigns_list_other_releases_stores_in_one_row() {
         "{}",
         out(&listed)
     );
+}
+
+/// The releases a Store's writer markers name, oldest first.
+fn markers(dir: &Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(dir.join("events.sqlite")).unwrap();
+    let mut statement = conn
+        .prepare("SELECT af_version FROM store_writers ORDER BY rowid")
+        .unwrap();
+    statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// A Store another release wrote stays named by that release alone: a command of this release
+/// that opens it and is refused leaves no marker of this release behind.
+#[test]
+fn a_refused_store_gets_no_marker_of_this_release() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let newer = root.join("newer");
+    task_store(&newer, Some("99.1.0"));
+    for args in [
+        vec!["task", "refresh", "t-1", "--state", newer.to_str().unwrap()],
+        vec!["task", "list", "--state", newer.to_str().unwrap()],
+        vec!["task", "show", "t-1", "--state", newer.to_str().unwrap()],
+    ] {
+        let refused = af(&args);
+        assert_ne!(
+            refused.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            err(&refused)
+        );
+        assert_eq!(markers(&newer), ["99.1.0"], "{args:?}");
+    }
 }

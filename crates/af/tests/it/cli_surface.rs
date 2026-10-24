@@ -1467,7 +1467,8 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             &[
                 "--detach",
                 "--quiet",
-                "af/task-detached@1",
+                "af/task-detached@2",
+                "not admitted within 2 minutes exits 4",
                 "every 5 minutes a heartbeat",
                 "runs/<TASK_ID>-<N>.log",
                 "stderr's last line is always the Task's state",
@@ -1478,6 +1479,8 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             &[
                 "--pr-body",
                 "--template <FILE>",
+                "--base <REF>",
+                "cannot print its block, nothing is printed and the command exits 1",
                 "<!-- af-pr-lines:v1 -->",
                 "gh pr create --body-file",
                 "scripts/check-pr-report.py accepts it",
@@ -1522,6 +1525,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         (&["task", "diff", "t", "--stat", "--json"][..], 2),
         (&["task", "diff", "t", "--stat", "--name-only"], 2),
         (&["task", "report", "t", "--template", "x.md"], 2),
+        (&["task", "report", "t", "--base", "origin/main"], 2),
         (&["task", "findings", "t", "--round", "0"], 2),
         (&["task", "wait", "t", "--timeout", "0"], 2),
         (&["task", "materialize", "t"], 2),
@@ -1571,7 +1575,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         "af/task-diff@1",
         "af/task-materialized@1",
         "af/task-status@1",
-        "af/task-detached@1",
+        "af/task-detached@2",
         "af/task-cancelled@1",
     ] {
         assert!(json.contains(document), "{document}:\n{json}");

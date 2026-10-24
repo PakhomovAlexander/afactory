@@ -495,13 +495,8 @@ impl EventStore {
                  PRIMARY KEY (run_id, attempt_id)
              );",
         )?;
+        // The table only: this release's marker is written with its first appended event.
         conn.execute_batch(writers::CREATE)?;
-        writers::record(
-            &conn,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX)),
-        );
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -5029,6 +5024,16 @@ fn insert_events(
             });
         }
     }
+    if events.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Every event lands with this release's writer marker, in the same transaction.
+    writers::mark(
+        tx,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX)),
+    )?;
     let mut appended = Vec::with_capacity(events.len());
     for (offset, event) in events.iter().enumerate() {
         let offset = i64::try_from(offset)

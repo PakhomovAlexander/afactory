@@ -19,8 +19,14 @@ use std::time::Duration;
 /// whose log the parent created. Never set it yourself.
 pub(crate) const DETACHED_ENV: &str = "AF_TASK_RUN_DETACHED";
 
-/// How long `af task run --detach` waits for its run to take the Task before it returns anyway.
+/// How long `af task run --detach` waits for its run to take the Task and admit its plan before
+/// it returns without claiming that it runs.
 const DETACH_ADMISSION: Duration = Duration::from_secs(120);
+/// The exit of `af task run --detach` whose run was not admitted within [`DETACH_ADMISSION`]:
+/// incomplete, as `af help exit-codes` names 4.
+const NOT_ADMITTED: i32 = 4;
+/// The widest line `af task status` prints when stdout is no narrower terminal.
+const WIDTH: usize = 100;
 /// How long `af task cancel` waits for the run to stop after its first and its second signal.
 const CANCEL_GRACE: Duration = Duration::from_secs(60);
 const CANCEL_FORCE: Duration = Duration::from_secs(15);
@@ -165,6 +171,26 @@ fn next_run(state: &Path, task_id: &str) -> u64 {
         .map_or(1, |(run, _, _)| run.saturating_add(1))
 }
 
+/// A duration a debug build's fixture sets through `name`, in milliseconds.
+fn test_duration(name: &str) -> Option<Duration> {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+    {
+        return Some(Duration::from_millis(ms));
+    }
+    let _ = name;
+    None
+}
+
+/// The window `af task run --detach` gives its run to be admitted: two minutes, or what a debug
+/// build's fixture sets.
+fn detach_admission() -> Duration {
+    test_duration("AF_TEST_DETACH_ADMISSION_MS").unwrap_or(DETACH_ADMISSION)
+}
+
 /// Record the process of this `af task run` before it takes the lease `writer` names. A
 /// detached run takes the number its parent reserved with the log; any other takes the next.
 pub(crate) fn begin(state: &Path, task_id: &str, writer: &str) -> Result<TaskRunProcessV1, String> {
@@ -186,6 +212,13 @@ pub(crate) fn begin(state: &Path, task_id: &str, writer: &str) -> Result<TaskRun
     record.validate()?;
     for _ in 0..64 {
         if write_new(state, &format!("{task_id}-{}.json", record.run), &record)? {
+            // A debug build's fixture holds a detached run back before it takes the Task, as a
+            // loaded machine can, so its parent's admission window passes first.
+            if let Some(delay) = test_duration("AF_TEST_DETACHED_START_DELAY_MS")
+                && detached.is_some()
+            {
+                std::thread::sleep(delay);
+            }
             return Ok(record);
         }
         if detached.is_some() {
@@ -287,13 +320,86 @@ fn status_document(opened: &OpenedTask, state: TaskStateV1) -> TaskStatusV1 {
             .flatten(),
         elapsed_ms,
         chargeable_tokens: committed_tokens(task).into(),
-        run: records(&opened.state, &task.task_id).pop(),
+        run: lease_run(records(&opened.state, &task.task_id), task.lease_writer()),
         cancel,
     }
 }
 
-/// `Task ID: running, node implement, 3 min, 41.2k tokens; run 2 pid 812 on builder`.
-fn status_line(status: &TaskStatusV1) -> String {
+/// The run a status names: the one whose writer took the Task's last lease, which holds it while
+/// the Task runs, never a newer record whose run was refused the lease; without such a record,
+/// the newest run recorded.
+fn lease_run(mut records: Vec<TaskRunProcessV1>, lease_writer: &str) -> Option<TaskRunProcessV1> {
+    match records
+        .iter()
+        .rposition(|record| !lease_writer.is_empty() && record.writer == lease_writer)
+    {
+        Some(at) => Some(records.swap_remove(at)),
+        None => records.pop(),
+    }
+}
+
+/// The columns a line on stdout may take: the terminal's when stdout is a narrower one, 100
+/// otherwise.
+fn width() -> usize {
+    use std::io::IsTerminal as _;
+    let stdout = std::io::stdout();
+    if !stdout.is_terminal() {
+        return WIDTH;
+    }
+    rustix::termios::tcgetwinsize(&stdout)
+        .ok()
+        .map(|size| usize::from(size.ws_col))
+        .filter(|columns| *columns >= 40)
+        .map_or(WIDTH, |columns| columns.min(WIDTH))
+}
+
+/// `lead` and then `command` in lines of at most `width` columns, broken only between its
+/// arguments, a `--flag` kept with its value: each line but the last ends with ` \\`, so the
+/// lines paste into a shell as the one command, and each continuation is indented by `indent`.
+/// An argument longer than a line keeps its line to itself.
+pub(crate) fn command_lines(lead: &str, command: &str, width: usize, indent: &str) -> Vec<String> {
+    let words: Vec<String> = match shell_words::split(command) {
+        Ok(words) if !words.is_empty() => words
+            .iter()
+            .map(|word| shell_words::quote(word).into_owned())
+            .collect(),
+        _ => command.split_whitespace().map(str::to_owned).collect(),
+    };
+    let mut units: Vec<String> = Vec::new();
+    let mut words = words.into_iter().peekable();
+    while let Some(word) = words.next() {
+        match words.peek() {
+            Some(value) if word.starts_with("--") && !value.starts_with('-') => {
+                let value = words.next().unwrap_or_default();
+                units.push(format!("{word} {value}"));
+            }
+            _ => units.push(word),
+        }
+    }
+    let mut lines = Vec::new();
+    let mut line = lead.to_owned();
+    let mut fresh = lead.trim().is_empty();
+    for unit in units {
+        // Room for ` UNIT` and, should another line follow, ` \\`.
+        if !fresh && line.chars().count() + 1 + unit.chars().count() + 2 > width {
+            line.push_str(" \\");
+            lines.push(std::mem::replace(&mut line, indent.to_owned()));
+            fresh = true;
+        }
+        if !fresh {
+            line.push(' ');
+        }
+        line.push_str(&unit);
+        fresh = false;
+    }
+    lines.push(line);
+    lines
+}
+
+/// `Task ID: running, node implement, 3 min, 41.2k tokens; run 2 pid 812 on builder`, then the
+/// next command on its own indented line or lines: at most `width` columns each, the state
+/// broken only between its parts and the command only between its arguments.
+fn status_lines(status: &TaskStatusV1, width: usize) -> Vec<String> {
     let mut parts = vec![status.state.label()];
     if let Some(node) = &status.node {
         parts.push(format!("node {}", preview::text(node)));
@@ -302,28 +408,44 @@ fn status_line(status: &TaskStatusV1) -> String {
         parts.push(state::duration_words(elapsed));
     }
     parts.push(format!("{} tokens", tokens(status.chargeable_tokens.get())));
-    let mut line = format!("Task {}: {}", status.task_id, parts.join(", "));
+    let mut segments = vec![format!("Task {}: {}", status.task_id, parts.join(", "))];
     if status.state.phase == TaskStatePhaseV1::Running
         && let Some(run) = &status.run
     {
-        line.push_str(&format!(
-            "; run {} pid {} on {}",
+        segments.push(format!(
+            "run {} pid {} on {}",
             run.run,
             run.pid,
             preview::text(&run.host)
         ));
     }
     if let Some(cancel) = &status.cancel {
-        line.push_str(&format!(
-            "; cancelled by {}@{}",
+        segments.push(format!(
+            "cancelled by {}@{}",
             preview::text(&cancel.requester.user),
             preview::text(&cancel.requester.host)
         ));
     }
-    if let Some(next) = &status.state.next_action {
-        line.push_str(&format!("; next: {}", preview::text(next)));
+    let mut lines: Vec<String> = Vec::new();
+    for segment in segments {
+        match lines.last_mut() {
+            Some(line) if line.chars().count() + 2 + segment.chars().count() <= width => {
+                line.push_str("; ");
+                line.push_str(&segment);
+            }
+            Some(_) => lines.push(format!("  {segment}")),
+            None => lines.push(segment),
+        }
     }
-    line
+    if let Some(next) = &status.state.next_action {
+        lines.extend(command_lines(
+            "  next:",
+            &preview::text(next),
+            width,
+            "        ",
+        ));
+    }
+    lines
 }
 
 fn print_status(status: &TaskStatusV1, json: bool) -> Result<(), String> {
@@ -334,12 +456,15 @@ fn print_status(status: &TaskStatusV1, json: bool) -> Result<(), String> {
             serde_json::to_string(status).map_err(|e| e.to_string())?
         );
     } else {
-        println!("{}", status_line(status));
+        for line in status_lines(status, width()) {
+            println!("{line}");
+        }
     }
     Ok(())
 }
 
-/// `af task status ID`: one line, now, without waiting. Exits 0: the state is data.
+/// `af task status ID`: the state now, without waiting, and the next command. Exits 0: the state
+/// is data.
 pub(crate) fn status(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<i32, String> {
     let opened = open_task(id, &inspect.repo, inspect.state.as_deref())?;
     let (_, view) = opened.view()?;
@@ -358,7 +483,7 @@ fn starting_run(state: &Path, task: &TaskProjection) -> Option<TaskRunProcessV1>
     (record.host == this_host()
         && alive(record.pid)
         && now_ms().saturating_sub(record.started_unix_ms)
-            < u64::try_from(DETACH_ADMISSION.as_millis()).unwrap_or(u64::MAX)
+            < u64::try_from(detach_admission().as_millis()).unwrap_or(u64::MAX)
         && record.writer != task.lease_writer())
     .then_some(record)
 }
@@ -421,7 +546,8 @@ pub(crate) fn wait(
 /// `af task run ID … --detach`: start the same command in the background, its stdin empty and
 /// its output in `runs/<task>-<run>.log`, in its own process group and deaf to the terminal's
 /// hangup, so it outlives the shell that started it; return once it holds the Task and its plan
-/// is admitted, with its pid and its log.
+/// is admitted, with its pid and its log. A run that is neither within the admission window is
+/// not claimed to run: the command exits 4 and names `af task status ID`.
 pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<i32, String> {
     let opened = open_task(id, &inspect.repo, inspect.state.as_deref())?;
     let state = opened.state.clone();
@@ -472,7 +598,8 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
     let pid = child.id();
     let mut opened = opened;
     let since = std::time::Instant::now();
-    let admitted = loop {
+    let window = detach_admission();
+    let admission = loop {
         if let Some(status) =
             review_process::reap::try_wait(&mut child).map_err(|e| e.to_string())?
         {
@@ -490,7 +617,7 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
                 ));
             }
             eprintln!("{tail}");
-            break false;
+            break Admission::Ended;
         }
         opened.refresh()?;
         let record = records(&state, id).into_iter().find(|r| r.run == run);
@@ -499,50 +626,80 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
                 && opened.task.lease_until_unix_ms() > now_ms()
         });
         if holds && opened.task.admitted {
-            break true;
+            break Admission::Admitted;
         }
-        if since.elapsed() >= DETACH_ADMISSION {
-            eprintln!(
-                "af task run --detach: the run of Task {id} (pid {pid}) has not taken the Task \
-                 after {}; it goes on in the background: `af task status {id}`",
-                state::duration_words(u64::try_from(DETACH_ADMISSION.as_millis()).unwrap_or(0))
-            );
-            break true;
+        if since.elapsed() >= window {
+            // Still starting, or stuck: it neither took the Task nor admitted its plan, so this
+            // says so and never that the Task runs.
+            break Admission::Starting;
         }
         std::thread::sleep(Duration::from_millis(100));
     };
     let (_, view) = opened.view()?;
-    let document = TaskDetachedV1 {
-        schema: TASK_DETACHED_V1.into(),
+    let next_action = match admission {
+        Admission::Admitted => Some(format!("af task wait {id}")),
+        Admission::Starting => Some(format!("af task status {id}")),
+        Admission::Ended => view.state.next_action.clone(),
+    };
+    let document = TaskDetachedV2 {
+        schema: TASK_DETACHED_V2.into(),
         task_id: id.into(),
         run,
         pid,
         host: this_host(),
         log: log.display().to_string(),
+        admitted: admission == Admission::Admitted,
         state: view.state,
+        next_action,
     };
     document.validate()?;
+    let next = document.next_action.as_deref().unwrap_or("none");
     if inspect.json {
         println!(
             "{}",
             serde_json::to_string(&document).map_err(|e| e.to_string())?
         );
-    } else if admitted {
-        println!(
-            "Task {id} runs in the background: run {run}, pid {pid} on {}\nlog: {}\nnext: af task \
-             wait {id}",
-            preview::text(&document.host),
-            log.display()
-        );
     } else {
-        println!(
-            "Task {id}: {}; its run ended at once, its log is {}\nnext: {}",
-            document.state.label(),
-            log.display(),
-            document.state.next_action.as_deref().unwrap_or("none")
+        let host = preview::text(&document.host);
+        match admission {
+            Admission::Admitted => println!(
+                "Task {id} runs in the background: run {run}, pid {pid} on {host}\nlog: {}\n\
+                 next: {next}",
+                log.display()
+            ),
+            Admission::Starting => println!(
+                "Task {id} is not admitted yet: run {run}, pid {pid} on {host}, has not taken \
+                 the Task\nlog: {}\nnext: {next}",
+                log.display()
+            ),
+            Admission::Ended => println!(
+                "Task {id}: {}; its run ended at once, its log is {}\nnext: {next}",
+                document.state.label(),
+                log.display()
+            ),
+        }
+    }
+    if admission == Admission::Starting {
+        let waited = state::duration_words(u64::try_from(window.as_millis()).unwrap_or(u64::MAX));
+        eprintln!(
+            "af task run --detach: run {run} of Task {id} (pid {pid}) neither took the Task nor\n\
+             admitted its plan within {waited}; it may still start, or it stopped: read its log,\n\
+             or see where it is with `af task status {id}`"
         );
+        return Ok(NOT_ADMITTED);
     }
     Ok(0)
+}
+
+/// What became of the run `af task run --detach` started, when it returned.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    /// It holds the Task's lease and its plan is admitted: it runs in the background.
+    Admitted,
+    /// Neither, within the window: still starting, or stuck before the Task.
+    Starting,
+    /// It ended before it went to the background, exit 0: the Task had nothing left to run.
+    Ended,
 }
 
 // ------------------------------------------------------------------------------------------
@@ -651,18 +808,27 @@ pub(crate) fn cancel(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
         requested_unix_ms: now_ms(),
     };
     request.validate()?;
-    write_new(
-        &opened.state,
-        &format!("{id}-{}.cancel.json", record.run),
-        &request,
-    )?;
-    eprintln!(
-        "af task cancel: stopping run {} of Task {id} (pid {} on {})",
-        record.run,
-        record.pid,
-        preview::text(&record.host)
-    );
-    signal(record.pid)?;
+    let (request, ours) = record_request(&opened.state, request)?;
+    if ours {
+        eprintln!(
+            "af task cancel: stopping run {} of Task {id} (pid {} on {})",
+            record.run,
+            record.pid,
+            preview::text(&record.host)
+        );
+        signal(record.pid)?;
+    } else {
+        // Another `af task cancel` asked first and signalled the run: that request stands, and
+        // this one waits for the same stop rather than signalling again, which would force it.
+        eprintln!(
+            "af task cancel: run {} of Task {id} was already asked to stop by {}@{} at {}; \
+             waiting for it to stop",
+            record.run,
+            preview::text(&request.requester.user),
+            preview::text(&request.requester.host),
+            state::local_time(request.requested_unix_ms)
+        );
+    }
     if !wait_stopped(&mut opened, epoch, CANCEL_GRACE)? {
         // A second signal: the run kills its Worker process groups and exits at once.
         eprintln!(
@@ -705,6 +871,36 @@ pub(crate) fn cancel(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
         );
     }
     Ok(0)
+}
+
+/// Record `request` as the cancel request of its run, unless one is recorded already: then the
+/// recorded one stands, the first asker's, and is returned instead. The second value says
+/// whether `request` is the one recorded.
+fn record_request(
+    state: &Path,
+    request: TaskCancelRequestV1,
+) -> Result<(TaskCancelRequestV1, bool), String> {
+    let name = format!("{}-{}.cancel.json", request.task_id, request.run);
+    if write_new(state, &name, &request)? {
+        return Ok((request, true));
+    }
+    let path = runs_dir(state).join(&name);
+    let recorded = read::<TaskCancelRequestV1>(&path)
+        .filter(|recorded| {
+            recorded.validate().is_ok()
+                && recorded.task_id == request.task_id
+                && recorded.run == request.run
+        })
+        .ok_or_else(|| {
+            format!(
+                "{} holds a cancel request of run {} that this release cannot read; remove it, \
+                 then run `af task cancel {}` again",
+                path.display(),
+                request.run,
+                request.task_id
+            )
+        })?;
+    Ok((recorded, false))
 }
 
 /// The line `af task show` prints for a Task an `af task cancel` stopped: who asked, and when.
@@ -758,12 +954,14 @@ fn heartbeat() -> Duration {
     HEARTBEAT
 }
 
-/// What a progress watcher printed already: the Attempts it saw start and settle, and the nodes
-/// it saw finish.
+/// What a progress watcher printed already: the Attempts it saw start and settle, the nodes it
+/// printed a `started` line for that have not finished or failed since, and the nodes it saw
+/// finish.
 #[derive(Default)]
 struct Seen {
     started: BTreeSet<String>,
     settled: BTreeSet<String>,
+    open: BTreeSet<String>,
     finished: BTreeSet<String>,
 }
 
@@ -775,7 +973,10 @@ impl Seen {
         seen
     }
 
-    /// The lines for what `task` records and this watcher has not printed yet.
+    /// The lines for what `task` records and this watcher has not printed yet: every node that
+    /// runs gets one `started` line before each `finished` or `failed` line of it — a node with
+    /// Attempts when one starts, a node the kernel runs itself (seal, check, reduce, accept)
+    /// when it is invoked, or, seen only once it published, just before its `finished`.
     fn lines(&mut self, task: &TaskProjection, run_started: u64) -> Vec<String> {
         let Some(execution) = &task.execution else {
             return Vec::new();
@@ -791,44 +992,88 @@ impl Seen {
         let mut attempts = execution.attempt_accounting();
         attempts.sort_by_key(|attempt| (attempt.started_unix_ms, attempt.settled_unix_ms));
         for attempt in &attempts {
-            let node = node_name(&attempt.reservation.node);
+            let node = &attempt.reservation.node;
+            let name = node_name(node);
             if attempt.started && self.started.insert(attempt.attempt_id.clone()) {
                 let at = attempt.started_unix_ms.unwrap_or(run_started);
-                events.push((at, format!("{node} started ({})", figure(at))));
+                // A node announced when it was invoked has its start line already.
+                if self.open.insert(node.clone()) {
+                    events.push((at, format!("{name} started ({})", figure(at))));
+                }
             }
             if let Some(at) = attempt.settled_unix_ms
                 && self.settled.insert(attempt.attempt_id.clone())
             {
+                if self.open.insert(node.clone()) {
+                    // Settled before this watcher saw it start.
+                    let begun = attempt.started_unix_ms.unwrap_or(at);
+                    events.push((begun, format!("{name} started ({})", figure(begun))));
+                }
+                self.open.remove(node);
                 let word = match &attempt.result {
                     Some(TaskAttemptResultV1::Succeeded { .. }) => {
-                        self.finished.insert(attempt.reservation.node.clone());
+                        self.finished.insert(node.clone());
                         "finished"
                     }
                     _ => "failed",
                 };
-                events.push((at, format!("{node} {word} ({})", figure(at))));
+                events.push((at, format!("{name} {word} ({})", figure(at))));
             }
         }
-        // A node the kernel runs without an Attempt (seal, reduce, accept) finishes when it
-        // publishes its output.
         let order = &execution.graph.order;
-        let mut published: Vec<&String> = execution.outputs.keys().collect();
-        published.sort_by_key(|node| order.iter().position(|n| n == *node));
-        for node in published {
-            // The root's inputs are the Task's, not a node that ran.
-            let inputs = execution.graph.nodes.get(node).is_some_and(|compiled| {
+        let position = |node: &String| order.iter().position(|n| n == node);
+        // The root's inputs are the Task's, not a node that ran.
+        let root = |node: &String| {
+            execution.graph.nodes.get(node).is_some_and(|compiled| {
                 matches!(
                     compiled.operator,
                     review_graph::task::CompiledOperator::RootInputs
                 )
-            });
-            if !inputs && self.finished.insert(node.clone()) {
+            })
+        };
+        let has_attempts = |node: &String| {
+            attempts
+                .iter()
+                .any(|attempt| &attempt.reservation.node == node)
+        };
+        // A node the kernel runs without an Attempt starts when it is invoked, and finishes
+        // when it publishes its output.
+        let mut invoked: Vec<&String> = execution.invocations.keys().collect();
+        invoked.sort_by_key(|node| position(node));
+        let now = now_ms();
+        for node in invoked {
+            if root(node)
+                || has_attempts(node)
+                || self.finished.contains(node)
+                || execution.outputs.contains_key(node)
+                || !self.open.insert(node.clone())
+            {
+                continue;
+            }
+            events.push((
+                u64::MAX - 1,
+                format!("{} started ({})", node_name(node), figure(now)),
+            ));
+        }
+        let mut published: Vec<&String> = execution.outputs.keys().collect();
+        published.sort_by_key(|node| position(node));
+        for node in published {
+            if root(node) || !self.finished.insert(node.clone()) {
+                continue;
+            }
+            if self.open.insert(node.clone()) {
                 events.push((
                     u64::MAX,
-                    format!("{} finished ({})", node_name(node), figure(now_ms())),
+                    format!("{} started ({})", node_name(node), figure(now)),
                 ));
             }
+            self.open.remove(node);
+            events.push((
+                u64::MAX,
+                format!("{} finished ({})", node_name(node), figure(now)),
+            ));
         }
+        // Stable: a node's start keeps its place before its finish at the same time.
         events.sort_by_key(|(at, _)| *at);
         events
             .into_iter()
@@ -999,6 +1244,159 @@ mod tests {
             records(state, "t-1"),
             vec![other],
             "another Task's records stay"
+        );
+    }
+
+    fn record(run: u64, pid: u32, writer: &str) -> TaskRunProcessV1 {
+        TaskRunProcessV1 {
+            schema: TASK_RUN_PROCESS_V1.into(),
+            task_id: "t".into(),
+            run,
+            pid,
+            host: "builder".into(),
+            writer: writer.into(),
+            started_unix_ms: run,
+            detached: false,
+            log: None,
+        }
+    }
+
+    /// Run 1 holds the lease; run 2 recorded itself and was refused the lease. The status
+    /// names run 1, whose writer the lease names, never the newer record.
+    #[test]
+    fn a_status_names_the_run_that_holds_the_lease() {
+        let records = vec![record(1, 101, "cli-101"), record(2, 202, "cli-202")];
+        assert_eq!(lease_run(records.clone(), "cli-101").unwrap().pid, 101);
+        assert_eq!(lease_run(records.clone(), "cli-202").unwrap().pid, 202);
+        // A lease no record names (a delivery, a run of an earlier release): the newest run.
+        assert_eq!(lease_run(records.clone(), "delivery-7").unwrap().pid, 202);
+        assert_eq!(lease_run(records, "").unwrap().pid, 202);
+        assert_eq!(lease_run(Vec::new(), "cli-101"), None);
+    }
+
+    fn finished(next: &str) -> TaskStatusV1 {
+        TaskStatusV1 {
+            schema: TASK_STATUS_V1.into(),
+            task_id: "implementation-small".into(),
+            state: TaskStateV1::ended(
+                TaskStatePhaseV1::Finished,
+                review_core::task::state::TaskOutcomeV1::Verified,
+                None,
+            )
+            .with_next(next),
+            node: None,
+            elapsed_ms: Some(1_000),
+            chargeable_tokens: 0_u128.into(),
+            run: None,
+            cancel: None,
+        }
+    }
+
+    #[test]
+    fn a_status_puts_the_next_command_on_its_own_lines_within_the_width() {
+        let next = "af task deliver implementation-small --branch af/implementation-small \
+                    --worktree ../implementation-small --confirm implementation-small";
+        let status = finished(next);
+        for width in [100, 80] {
+            let lines = status_lines(&status, width);
+            assert_eq!(
+                lines[0], "Task implementation-small: finished/verified, 1 s, 0 tokens",
+                "{lines:#?}"
+            );
+            assert!(
+                lines[1].starts_with("  next: af task deliver"),
+                "{lines:#?}"
+            );
+            for line in &lines {
+                assert!(line.chars().count() <= width, "{width}: {line}");
+            }
+            // Broken only between arguments, each line but the last continued: the lines are
+            // the one command a shell reads.
+            let joined: Vec<String> = lines[1..]
+                .iter()
+                .map(|line| line.trim().trim_end_matches('\\').trim().to_owned())
+                .collect();
+            assert_eq!(joined.join(" "), format!("next: {next}"));
+            for line in &lines[1..lines.len() - 1] {
+                assert!(line.ends_with(" \\"), "{line}");
+            }
+        }
+        assert_eq!(
+            status_lines(&status, 80),
+            [
+                "Task implementation-small: finished/verified, 1 s, 0 tokens",
+                "  next: af task deliver implementation-small --branch af/implementation-small \\",
+                "        --worktree ../implementation-small --confirm implementation-small",
+            ]
+        );
+        // A short command stays on its one line.
+        assert_eq!(
+            status_lines(&finished("af task show implementation-small"), 100)[1],
+            "  next: af task show implementation-small"
+        );
+    }
+
+    #[test]
+    fn a_command_breaks_between_its_arguments_and_keeps_its_quoting() {
+        let lines = command_lines(
+            "  next:",
+            "af review run --state '/a b/c' --campaign x",
+            30,
+            "    ",
+        );
+        assert_eq!(
+            lines,
+            [
+                "  next: af review run \\",
+                "    --state '/a b/c' \\",
+                "    --campaign x",
+            ]
+        );
+        let long = format!("af task show {}", "x".repeat(60));
+        let lines = command_lines("", &long, 40, "  ");
+        assert_eq!(
+            lines[1],
+            format!("  {}", "x".repeat(60)),
+            "a long word keeps its line"
+        );
+    }
+
+    /// Two cancels of one run: the first request is recorded and stands; the second gets the
+    /// first's requester and time back, never its own.
+    #[test]
+    fn a_second_cancel_returns_the_first_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path();
+        let request = |user: &str, at: u64| TaskCancelRequestV1 {
+            schema: TASK_CANCEL_REQUEST_V1.into(),
+            task_id: "t".into(),
+            run: 1,
+            epoch: 3,
+            writer: "cli-1".into(),
+            pid: 1,
+            host: "builder".into(),
+            requester: TaskCancelRequesterV1 {
+                user: user.into(),
+                host: "builder".into(),
+                pid: 9,
+            },
+            requested_unix_ms: at,
+        };
+        let (first, ours) = record_request(state, request("first", 10)).unwrap();
+        assert!(ours);
+        assert_eq!(first.requester.user, "first");
+        let (second, ours) = record_request(state, request("second", 20)).unwrap();
+        assert!(!ours, "the second request is not recorded");
+        assert_eq!(second, first, "the second cancel reports the first request");
+        assert_eq!(cancel_requests(state, "t"), vec![first]);
+        // A request file this release cannot read is refused with what to do.
+        std::fs::write(runs_dir(state).join("t-2.cancel.json"), b"{}").unwrap();
+        let mut other = request("third", 30);
+        other.run = 2;
+        let error = record_request(state, other).unwrap_err();
+        assert!(
+            error.contains("t-2.cancel.json") && error.contains("af task cancel t"),
+            "{error}"
         );
     }
 
