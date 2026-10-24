@@ -18,6 +18,7 @@ if sys.argv[1:2]==['app-server']:
   request=json.loads(line)
   if request.get('id')==1: print(json.dumps({'id':1,'result':{}}),flush=True)
   if request.get('id')==2:
+   with open(home+'/identity-calls','a') as f: f.write('account\n')
    email=open(home+'/email').read()
    if os.path.isfile(home+'/change-during-identity'):
     with open(home+'/email','w') as f: f.write('private-other@example.test')
@@ -28,6 +29,12 @@ with open(home+'/calls','a') as f: f.write(open(home+'/email').read()+' '+('prob
 assert request==PROBE_INPUT, 'private Reviewer context must not reach this changed account'
 with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write('OK')
 with open(home+'/email','w') as f: f.write('private-other@example.test')
+if os.path.isfile(home+'/disable-after-admission'):
+ import time
+ path=os.path.dirname(home)+'/.config/af/provider-disables-v1.json'
+ with open(path,'w') as f: json.dump({'schema':'af.provider-disables/1','providers':[{'id':'test-codex','expires_at':{'unix_seconds':int(time.time())+172800,'nanoseconds':0}}]},f)
+ os.chmod(path,0o600)
+ with open(home+'/accounts-at-disable','w') as f: f.write(open(home+'/identity-calls').read())
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_tokens':1}}))
 "#))).unwrap();
     (repo, home, state)
@@ -63,6 +70,7 @@ fn invoke(repo: &Path, home: &Path, state: &str, doctor: bool) -> std::process::
         ])
         .current_dir(repo)
         .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("USER", "loop-test")
         .env("AF_PROVIDERS_FILE", home.join(".config/af/providers.toml"))
         .env(
@@ -180,4 +188,62 @@ fn doctor_account_change_before_probe_refuses_known_zero_without_business_or_rep
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!text.contains("private-other@example.test"));
+}
+
+#[test]
+fn review_disable_after_admission_refuses_captured_private_send_before_account_probe() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, home, state) = account_fixture(directory.path(), false);
+    std::fs::write(home.join("codex-auth/disable-after-admission"), b"fixture").unwrap();
+    let output = invoke(&repo, &home, &state, false);
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    contracts::valid("review-outcome-v3.json", &value);
+    assert_eq!(value["task"]["committed_tokens"], "2");
+    assert_eq!(
+        std::fs::read_to_string(home.join("codex-auth/calls")).unwrap(),
+        "fixture@example.test probe\n"
+    );
+    assert_eq!(
+        std::fs::read(home.join("codex-auth/identity-calls")).unwrap(),
+        std::fs::read(home.join("codex-auth/accounts-at-disable")).unwrap(),
+        "disabled Provider was asked about its account"
+    );
+    let id = value["task"]["task_id"].as_str().unwrap();
+    let cas = Cas::open(Path::new(&state).join("cas")).unwrap();
+    let store = EventStore::open_read_only(Path::new(&state).join("events.sqlite")).unwrap();
+    let execution = store
+        .task_projection(&cas, id)
+        .unwrap()
+        .unwrap()
+        .execution
+        .unwrap();
+    let mut refused = 0;
+    for attempt in execution.attempt_accounting() {
+        if let Some(review_core::task::execution::TaskAttemptResultV1::Failed {
+            diagnostic_id,
+            ..
+        }) = &attempt.result
+        {
+            let diagnostic = cas.get_json(diagnostic_id).unwrap().to_string();
+            if diagnostic.contains("disabled until ") && diagnostic.contains("Z (UTC)") {
+                assert!(
+                    diagnostic.contains("af provider enable test-codex"),
+                    "{diagnostic}"
+                );
+                assert_eq!(attempt.charged_tokens, 0);
+                refused += 1;
+            }
+        }
+    }
+    assert!(
+        refused > 0,
+        "no disabled private-send diagnostic was recorded"
+    );
 }

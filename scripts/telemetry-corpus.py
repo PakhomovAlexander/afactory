@@ -27,6 +27,8 @@ them. Prints a Markdown table, or with `--json` the `af/telemetry-read-latency@1
 figure is over its bound, 1 when the corpus cannot be generated or measured.
 """
 import argparse
+from contextlib import contextmanager
+import fcntl
 import gzip
 import hashlib
 import json
@@ -454,6 +456,51 @@ def trailer_size(path):
         return int.from_bytes(file.read(4), 'little')
 
 
+@contextmanager
+def fact_index(corpus):
+    """Query a private database/WAL copy without changing the measured index.
+
+    Native macOS SQLite can refuse mode=ro on a WAL database after af's final connection
+    checkpoints and removes its WAL/SHM (SQLITE_CANTOPEN, ENOENT on the first query).
+    Let SQLite reconstruct sidecars only in private scratch. Copy a retained WAL too:
+    immutable=1 would silently ignore its committed rows. Never copy shared-memory locks.
+    Exclude af connections/replacement while copying, using its existing lifetime lock.
+    """
+    try:
+        with (corpus / 'v1' / 'index.lock').open('rb') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise CorpusError(f'{corpus}: index is in use while reading corpus facts') from error
+            with tempfile.TemporaryDirectory(prefix='af-corpus-facts-') as scratch:
+                snapshot = Path(scratch) / 'index.sqlite'
+                shutil.copyfile(corpus / 'v1' / 'index.sqlite', snapshot)
+                wal = corpus / 'v1' / 'index.sqlite-wal'
+                if wal.exists():
+                    shutil.copyfile(wal, Path(scratch) / wal.name)
+                # The copy is complete and private; the original may be used again.
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                connection = sqlite3.connect(snapshot.as_uri() + '?mode=rw', uri=True)
+                try:
+                    connection.execute('PRAGMA query_only=ON')
+                    yield connection
+                finally:
+                    connection.close()
+    except (sqlite3.Error, OSError) as error:
+        files = []
+        for path in index_files(corpus):
+            try:
+                stat = path.stat()
+                files.append(f'{path.name}: {stat.st_size} bytes, mode {stat.st_mode & 0o777:o}')
+            except OSError as problem:
+                files.append(f'{path.name}: {problem}')
+        code = getattr(error, 'sqlite_errorcode', 'unavailable')
+        name = getattr(error, 'sqlite_errorname', 'unavailable')
+        raise CorpusError(f'{corpus}: reading corpus facts: {error}; '
+                          f'SQLite {sqlite3.sqlite_version}, code={code}, name={name}; '
+                          + '; '.join(files)) from error
+
+
 def corpus_facts(corpus):
     segments = sorted((corpus / 'v1' / 'segments').glob('*.jsonl.gz'))
     blobs = sorted((corpus / 'v1' / 'blobs').glob('*/*.gz'))
@@ -463,8 +510,7 @@ def corpus_facts(corpus):
         header = json.loads(file.readline())
     argv = header.get('argv', [])
     seed = int(argv[argv.index('--seed') + 1]) if '--seed' in argv else None
-    connection = sqlite3.connect(f'file:{corpus / "v1" / "index.sqlite"}?mode=ro', uri=True)
-    try:
+    with fact_index(corpus) as connection:
         def count(query):
             return connection.execute(query).fetchone()[0]
         facts = {
@@ -486,8 +532,6 @@ def corpus_facts(corpus):
         has_fts = count("SELECT count(*) FROM sqlite_master WHERE name = 'content_fts'") > 0
         indexed = (count("SELECT count(*) FROM content_index WHERE state = 'indexed'")
                    if has_fts else 0)
-    finally:
-        connection.close()
     name = ('telemetry-corpus-10k' if facts['runs'] == FULL_RUNS
             else f"telemetry-corpus-{facts['runs']}")
     return {'name': name, 'seed': seed, **facts,

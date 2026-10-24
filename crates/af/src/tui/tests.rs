@@ -178,6 +178,7 @@ fn inventory() -> ProviderInventory {
     let session = limit("5h window", 300, 41);
     let weekly = limit("weekly", 10_080, 68);
     let claude = ProviderStatus {
+        disabled_until: None,
         id: "claude-main".to_owned(),
         kind: "claude".to_owned(),
         auth_context: "CLI default".to_owned(),
@@ -190,6 +191,7 @@ fn inventory() -> ProviderInventory {
         detail: "weekly limit read from the local /usage screen".to_owned(),
     };
     let codex = ProviderStatus {
+        disabled_until: None,
         id: "codex-ambient".to_owned(),
         kind: "codex".to_owned(),
         auth_context: "CLI default".to_owned(),

@@ -11,6 +11,13 @@ walkthroughs; the decisions themselves are
 See [preview and confirmation](task-execution/preview.md) for the compact ASCII view,
 expanded tree, Claude/Codex workflow and the automation boundary.
 
+The trusted `.af/code-policy.toml` sets `check_wall_ms`, the whole check Attempt's wall.
+Without `check_process_wall_ms`, positive values through `5400000` (90 minutes) are admitted.
+With an explicit per-process cap, that cap remains at most `3600000` (60 minutes) and no larger
+than the Attempt wall; the aggregate ceiling remains the larger of `3600000` and the cap times
+the number of named checks. Admission does not raise any configured default or alter check
+commands, assertions, or the Task's own budget.
+
 ## Fixed design decisions
 
 - Task is the durable business abstraction; review is a Task kind. Every Pipeline has public

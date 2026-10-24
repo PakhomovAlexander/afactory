@@ -1,0 +1,12 @@
+{
+  "schema": "af.provider-disables/1",
+  "providers": [
+    {
+      "id": "fixture-provider",
+      "expires_at": {
+        "unix_seconds": 1800000000,
+        "nanoseconds": 123456789
+      }
+    }
+  ]
+}

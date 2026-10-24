@@ -68,6 +68,94 @@ OAuth output to a shared conversation. Authentication completion remains `authen
 schema, and never invoke model verification or resume Tasks. See the host contract for lifecycle,
 expiry, cancellation, supported providers, and the remaining runtime scope of issue #122.
 
+## Temporarily disabling a Provider
+
+```sh
+af provider disable claude-personal --for 2d
+af provider status
+af provider enable claude-personal
+```
+
+Disable requires a registered ID. Enable also accepts an ID still present in disable state after
+registry removal, reclaiming that entry's capacity; an ID in neither place is refused. Neither
+command starts a Provider process or spends tokens.
+`--for` accepts a positive integer followed by `s`, `m`, `h` or `d`, up to `30d`; `2d` is exactly
+48 hours. Repeating disable replaces the deadline. Enable restores a registered Provider's
+availability immediately and is idempotent while the ID remains registered. Clearing an orphan
+leaves its ID unknown, so a second enable is refused. Both commands run in the invoking release
+as machine-local bootstrap operations.
+Execution, status and model discovery keep their existing project pin dispatch: an older pinned
+release does **not** honor suspension. Use a pin containing this feature for the work it controls.
+
+Suspensions live separately from registry v1 in
+`$XDG_CONFIG_HOME/af/provider-disables-v1.json` (default
+`~/.config/af/provider-disables-v1.json`), independent of `AF_PROVIDERS_FILE`. They do not edit the
+registry, auth directories or credentials. The file is private, versioned, bounded to 32 entries
+and 64 KiB, and atomically published under a lock. IDs use the registry's validation without a
+separate length cap. Malformed or unsafe state refuses Provider work. Correct the reported
+path or permissions before retrying; enable deliberately refuses to overwrite malformed state.
+
+Each new lookup compares the current wall clock to the stored absolute Unix timestamp, including
+nanoseconds: the Provider is available at the expiry instant, across restarts and downtime.
+Changing the system clock changes the remaining suspension. No background process is needed.
+Status shows a disabled row, the RFC3339 UTC expiry and `af provider enable ID` without probing
+that Provider, even with `--usage`. JSON is `af/provider-status@3`, with `disabled_until` and `enable_command`
+(non-null only while disabled), `auth = "not_probed"` and `usability = "unusable"`.
+
+Review and model preflights, Task admission and every captured or resumed Task private send
+recheck suspension before account/model probes. A refusal names the expiry and enable command.
+Calls admitted before a concurrent disable may finish; this command does not kill them or revoke
+bytes already sent. The control is per registered ID; another separately registered Provider has
+its own availability. See [ADR-0199](adr/0199-disable-providers-until-a-machine-local-expiry.md).
+
+## Tuning Worker independence
+
+The repository's authorized bootstrap currently uses model diversity with
+`distinct_principals = false` and `distinct_models = true`. This policy has no expiry: it remains
+until an operator changes the trusted catalog. Distinct Worker packages and fresh isolated
+sessions remain required. Local bindings select already-admitted packages and Provider aliases;
+they cannot relax trusted independence policy.
+
+The existing `[independence]` table in the trusted `.af/task-catalog.toml` controls each axis.
+To require different native account principals, set:
+
+```toml
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false
+```
+
+To choose model diversity on one account, use:
+
+```toml
+[independence]
+command_workers_by_package = true
+distinct_principals = false
+distinct_providers = false
+distinct_models = true
+```
+
+`distinct_providers` compares Provider kinds (adapter families, such as `claude` versus `codex`);
+two registered IDs of the same kind do not satisfy it. Different IDs alone do not prove different
+principals. Setting both principal and model booleans to true requires both. Change this trusted
+table through the project's implementation and verification Tasks, review and commit the catalog,
+and bind independent slots to the appropriate registered accounts or exact model packages.
+Inspect the new capture before executing it, for example:
+
+```sh
+af provider status
+af task plan --file ticket.json --bindings local-bindings.toml --json
+af task start --file ticket.json --bindings local-bindings.toml
+```
+
+Inspect the captured hierarchy with `af task explain TASK_ID --tree`, then use the plan ID
+printed by `task start` to execute that exact plan with
+`af task run TASK_ID --confirm-plan PLAN_ID`. Existing Tasks retain captured policy and bindings;
+create a new Task to adopt a changed catalog. Provider enable/expiry restores access only; it
+never changes a captured independence decision. See [local bindings](task-execution/local-bindings.md).
+
 ## Removing a Provider
 
 ```sh
@@ -107,7 +195,7 @@ Enter runs it.
 
 ```sh
 af provider status                 # fast: the registry, the CLI capability check and one authentication check per context
-af provider status --json          # the same, as af/provider-status@2
+af provider status --json          # the same, as af/provider-status@3
 af provider status --usage         # additionally probe subscription and quota windows
 af provider doctor --campaign NAME --provider correctness=codex-main
 ```
@@ -381,7 +469,7 @@ discards stdout still shows the operator what happened.
 | 6 | authentication failed | `setup` |
 | 7 | optional usage unavailable; a model catalog unavailable | `status --usage`; `models` |
 
-The versioned documents are [`provider-status-v2.json`](../schemas/provider-status-v2.json),
+The versioned documents are [`provider-status-v3.json`](../schemas/provider-status-v3.json),
 [`provider-setup-v1.json`](../schemas/provider-setup-v1.json) and
 [`provider-models-v1.json`](../schemas/provider-models-v1.json). They are closed vocabularies; the
 models document carries model IDs, aliases, effort levels and bounded display names only. None

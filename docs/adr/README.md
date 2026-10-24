@@ -368,6 +368,7 @@ future readers need.
   label](0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)
 - [0197 — Validate on one latest stable Python](0197-validate-on-one-latest-stable-python.md)
 - [0198 — Opt this repository into distinct-model Worker independence](0198-opt-this-repository-into-distinct-model-worker-independence.md)
+<<<<<<< HEAD
 - [0199 — Integrate Telemetry into the performance laboratory as diagnostics and advisory
   experiments](0199-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
 - [0200 — Contain telemetry experiments and collect only results verified under their
@@ -378,3 +379,16 @@ future readers need.
   arguments](0202-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md)
 - [0203 — Reapply an accounting append once after only this writer's heartbeat
   renewals](0203-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)
+=======
+- [0199 — Disable Providers until a machine-local expiry](0199-disable-providers-until-a-machine-local-expiry.md)
+- [0200 — Preserve the Provider ID domain and clear orphaned
+  disables](0200-preserve-provider-id-domain-and-clear-orphaned-disables.md)
+- [0201 — Admit explicit ninety-minute checks and isolate Command catalog
+  fixtures](0201-admit-explicit-ninety-minute-checks-and-isolate-command-catalog-fixtures.md)
+- [0202 — Wait for complete fixture evidence and diagnose guarded
+  failures](0202-wait-for-complete-fixture-evidence-and-diagnose-guarded-failures.md)
+- [0203 — Isolate targeted starter repair and retain native exit
+  status](0203-isolate-targeted-starter-repair-and-retain-native-exit-status.md)
+- [0204 — Preserve model authority in repository planning
+  fixtures](0204-preserve-model-authority-in-repository-planning-fixtures.md)
+>>>>>>> 2c9264e40cb1b573204e85e529ab7eb83fa5007c

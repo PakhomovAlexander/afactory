@@ -27,7 +27,7 @@
       }
     },
     "check_wall_ms": {
-      "description": "The whole check Attempt's wall. At most 3600000, or the per-check wall times the number of checks when that is larger.",
+      "description": "The whole check Attempt's wall. Without check_process_wall_ms, at most 5400000 (90 minutes). With an explicit per-process cap, at most max(3600000, check_process_wall_ms times the number of checks); the typed validator checks that cross-field bound.",
       "type": "integer",
       "minimum": 1,
       "maximum": 115200000
@@ -64,6 +64,12 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {"not": {"required": ["check_process_wall_ms"]}},
+      "then": {"properties": {"check_wall_ms": {"maximum": 5400000}}}
+    }
+  ],
   "if": {
     "properties": {
       "require_container": {

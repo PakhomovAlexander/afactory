@@ -757,6 +757,91 @@ fn tree(root: &Path) -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// Fact queries retain committed WAL rows and never create or alter measured source files,
+/// including after the final af connection removes its sidecars.
+#[test]
+fn corpus_fact_reader_preserves_source_and_reads_committed_wal_rows() {
+    let machine = Machine::new();
+    let probe = machine.root.join("work/facts.py");
+    std::fs::write(
+        &probe,
+        r#"import fcntl, importlib.util, pathlib, sqlite3, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('corpus', sys.argv[1])
+corpus = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(corpus)
+root = pathlib.Path(sys.argv[2])
+versioned = root / 'v1'
+versioned.mkdir(parents=True)
+lock_path = versioned / 'index.lock'
+lock_path.touch()
+database = versioned / 'index.sqlite'
+writer = sqlite3.connect(database)
+writer.execute('PRAGMA journal_mode=WAL')
+writer.execute('CREATE TABLE facts (value INTEGER)')
+writer.commit()
+writer.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+writer.execute('INSERT INTO facts VALUES (42)')
+writer.commit()
+assert (versioned / 'index.sqlite-wal').stat().st_size > 0
+def source():
+    return {p.name: p.read_bytes() for p in versioned.iterdir()}
+before = source()
+with corpus.fact_index(root) as reader:
+    assert reader.execute('SELECT value FROM facts').fetchall() == [(42,)]
+    try:
+        reader.execute('INSERT INTO facts VALUES (99)')
+    except sqlite3.OperationalError:
+        pass
+    else:
+        raise AssertionError('fact queries must be read-only')
+assert source() == before, 'reader changed measured database, WAL, SHM or lock'
+writer.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+writer.close()
+for suffix in ('-wal', '-shm'):
+    (versioned / ('index.sqlite' + suffix)).unlink(missing_ok=True)
+# This is the native failing lifecycle: WAL-mode header, no WAL or SHM after af exits.
+before = source()
+with corpus.fact_index(root) as reader:
+    assert reader.execute('SELECT value FROM facts').fetchall() == [(42,)]
+assert source() == before, 'reader recreated sidecars in the measured index'
+with lock_path.open('rb') as lock:
+    fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    try:
+        with corpus.fact_index(root):
+            raise AssertionError('copied an index held by another connection')
+    except corpus.CorpusError as error:
+        assert 'index is in use' in str(error), str(error)
+database.write_bytes(b'not a database')
+before = source()
+try:
+    with corpus.fact_index(root) as reader:
+        reader.execute('SELECT value FROM facts').fetchall()
+except corpus.CorpusError as error:
+    diagnostic = str(error)
+    for text in ('reading corpus facts', 'SQLite ', 'code=', 'name=',
+                 'index.sqlite:', 'index.sqlite-wal:', 'index.sqlite-shm:'):
+        assert text in diagnostic, diagnostic
+else:
+    raise AssertionError('malformed database admitted')
+assert source() == before
+"#,
+    )
+    .unwrap();
+    let corpus = machine.root.join("work/corpus");
+    let output = machine.script(
+        probe.to_str().unwrap(),
+        &[
+            workspace()
+                .join("scripts/telemetry-corpus.py")
+                .to_str()
+                .unwrap(),
+            corpus.to_str().unwrap(),
+        ],
+    );
+    assert!(output.status.success(), "{}", text(&output));
+}
+
 /// Design §12: `telemetry-corpus-10k` is generated deterministically from a seed. Two
 /// generations from one seed are byte-identical at a small scale, however many processes write
 /// them, and another seed differs; the generator writes only into an empty directory outside af's

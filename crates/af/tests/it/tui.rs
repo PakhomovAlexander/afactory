@@ -84,6 +84,8 @@ fn environment(home: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
         ("XDG_STATE_HOME", home.join("state").into_os_string()),
         ("XDG_DATA_HOME", home.join("data").into_os_string()),
         ("XDG_CACHE_HOME", home.join("cache").into_os_string()),
+        // Cleared-environment PTY children still need the runner's writable scratch root.
+        ("TMPDIR", std::env::temp_dir().into_os_string()),
         ("AF_SELF_OFFLINE", "1".into()),
         ("NO_COLOR", "1".into()),
         ("TERM", "xterm-256color".into()),
@@ -491,15 +493,24 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
     let (_temp, root) = temp_root();
     let repo = hub(&root);
     let mut browser = Browser::launch(&repo, &root.join("home"));
-    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
-    let screen = browser.wait_for("project settings", ready);
-    let bar = bar_rows(&screen);
     let folders = [
         "  v providers/",
         "  v workers/",
         "  v pipelines/",
         "  v tasks/",
     ];
+    // PTY reads can end midway through a frame, after SETTINGS but before the statusbar.
+    // Wait for every part asserted below within the same existing wait bound.
+    let ready = |screen: &Screen| {
+        let bar = bar_rows(screen);
+        screen.text().contains("SETTINGS  project: hub")
+            && folders
+                .iter()
+                .all(|folder| bar.iter().any(|row| row.starts_with(folder)))
+            && screen.lines()[ROWS - 1].starts_with("NORMAL  hub")
+    };
+    let screen = browser.wait_for("project settings and statusbar", ready);
+    let bar = bar_rows(&screen);
     for folder in folders {
         // A folder whose pane is still discovering carries a spinner after its name.
         let listed = bar.iter().any(|row| row.starts_with(folder));
