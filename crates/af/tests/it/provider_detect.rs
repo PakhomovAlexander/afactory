@@ -811,8 +811,16 @@ fn in_terminal(machine: &Machine, personal: &Path, args: &[&str]) -> (u32, Strin
     ] {
         command.env(name, value);
     }
+    // Every directory af writes under is the fixture's or this process's own, never a default
+    // the sandbox forbids: its home and XDG directories, and the parent's TMPDIR.
     command.env("XDG_CONFIG_HOME", machine.home.join(".config"));
     command.env("XDG_STATE_HOME", machine.home.join(".local/state"));
+    command.env("XDG_CACHE_HOME", machine.home.join(".cache"));
+    command.env("XDG_DATA_HOME", machine.home.join(".local/share"));
+    command.env("XDG_BIN_HOME", machine.home.join(".local/bin"));
+    if let Some((name, value)) = crate::common::inherited_tmpdir() {
+        command.env(name, value);
+    }
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().unwrap();

@@ -85,11 +85,18 @@ document has a `kind@version` (ADR-0145).
 5. **`af doctor [--json] [--repo DIR]`.** A top-level, token-free check whose text starts with
    `token-free; the charged end-to-end Provider check is af provider doctor`, then one line per
    check — `binary`, `path`, `shell`, `update`, `tools`, `providers`, `storage`, and `project`
-   inside a repository — each `ok`, `warn` or `fail` with a one-line `fix:`. Exit 0 when nothing
-   failed, 1 when a check failed. `--json` prints one `af/doctor@1` document
-   (`schemas/doctor-v1.json`): `checks[] {id, status, detail, fix}`, `fix` null exactly when the
-   check is `ok`. It never calls a model, logs in, installs or writes a file; it is exempt from
-   pin dispatch and schedules no update check. The processes it starts are version checks, the
+   inside a repository — each `ok`, `warn` or `fail` with a one-line `fix:` and a `hint:`. Exit 0 when nothing
+   failed, 1 when a check failed. `--json` prints one `af/doctor@2` document
+   (`schemas/doctor-v2.json`): `checks[] {id, status, detail, fix, hint}`. *Amended by the GA
+   second fix round:* `fix` is only a command a shell runs as given (several joined by `&&`, an
+   upper-case placeholder such as `SHELL` or `DIR` named in the hint), never prose; `hint` says
+   what the command cannot (a placeholder's choices, a step to take first, what it does); both are
+   null when the check is `ok`, and a problem no single command fixes has a null `fix` and a
+   `hint` that says what to do. The shell check's fix names the shell `$SHELL` names (`af self
+   setup-shell --shell zsh --write`), or the `SHELL` placeholder with the choices in its hint.
+   Version 1, whose `fix` mixed commands and prose, is neither printed nor read. It never calls a
+   model, logs in, installs or writes a file; it is exempt from pin dispatch and schedules no
+   update check. The processes it starts are version checks, the
    Provider status probe for registered Providers, and, while update checks are on, one
    anonymous HTTPS request to the release source whose answer it discards. The Gate's tools are
    read from its commands and the Makefile or script they name.
@@ -130,4 +137,5 @@ document has a `kind@version` (ADR-0145).
 - `af doctor`'s tool scan is a reading of the Gate's commands, not an execution: a Gate that
   reaches a tool only through layers of scripts may need a tool the doctor did not name. The
   first failed check names it.
-- `af doctor` adds one schema, `af/doctor@1`; a changed shape is a new version (ADR-0145).
+- `af doctor` adds one schema, `af/doctor@1`, since replaced by `af/doctor@2`; a changed shape is
+  a new version (ADR-0145).

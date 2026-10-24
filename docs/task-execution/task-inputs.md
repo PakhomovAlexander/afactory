@@ -135,7 +135,9 @@ Only an admitted source reaches the branch below, which depends on one property 
   republished as a root `af.task-snapshot/1` with no parent and an `af.task-source-origin/2`
   origin that copies the repository identity forward, states the bound tree's content digest,
   names the referenced Task, result, port and artifact under `bound_from`, and deliberately
-  carries no `source_revision`. A new `af/SourceTree@1` envelope is published for the re-rooted
+  carries no `source_revision`. The named output must hold the bound Snapshot itself, or the
+  binding is refused; a continuation of an earlier review round names the `af/TaskOutput@1`
+  record that published that round's candidate in place of the result (ADR-0203). A new `af/SourceTree@1` envelope is published for the re-rooted
   Snapshot, and the resolved port carries that new artifact ID with the re-rooted Snapshot ID.
 - **Already re-rooted** — a parentless Snapshot with a generation-2 origin, referenced again — is
   carried verbatim; nothing is re-rooted twice, and delivery refuses as for the first re-rooting.

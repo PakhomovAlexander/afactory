@@ -444,7 +444,9 @@ source <(af completions bash)"
         display_order = 6,
         long_about = "Check this machine and repository, token-free: what a first run needs and \
 what is missing, each with the one command that fixes it.\n\n\
-Checks, each `ok`, `warn` or `fail` with a one-line `fix:`:\n\
+Checks, each `ok`, `warn` or `fail`. A problem's `fix:` is the one command that fixes it, as a \
+shell runs it, and its `hint:` says what the command cannot: a placeholder's choices (SHELL, DIR), \
+a step to take first. A problem no one command fixes has only a hint.\n\n\
   binary     the running af, its version, install receipt and how it was verified, the default link\n\
   path       the default link's directory on PATH, and whether `af` on PATH is that link\n\
   shell      completions and man pages for $SHELL\n\
@@ -462,8 +464,8 @@ or path continues on indented lines and is never cut short, and a fix command st
 its line or is broken between its arguments with ` \\`.\n\n\
 It never calls a model, logs in, installs, or writes a file, and it schedules no update check; \
 the charged end-to-end Provider check is `af provider doctor`. Exit codes: 0 nothing failed \
-(warnings allowed), 1 at least one check failed, 2 usage error. --json prints one `af/doctor@1` \
-document.",
+(warnings allowed), 1 at least one check failed, 2 usage error. --json prints one `af/doctor@2` \
+document, each check with its `fix` and `hint`.",
         after_long_help = "Examples:\n  af doctor\n  af doctor --repo ../other-checkout   # needs: a checkout at ../other-checkout\n  af doctor --json | jq '.checks[] | select(.status != \"ok\")'"
     )]
     Doctor(MachineDoctorArgs),
@@ -489,7 +491,7 @@ pub(crate) struct MachineDoctorArgs {
     /// The repository whose `.af/`, pin and Gates to check [default: .]
     #[arg(long, value_name = "DIR", default_value = ".")]
     pub(crate) repo: PathBuf,
-    /// One `af/doctor@1` document on stdout instead of text
+    /// One `af/doctor@2` document on stdout instead of text
     #[arg(long)]
     pub(crate) json: bool,
 }

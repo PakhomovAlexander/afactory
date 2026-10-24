@@ -74,6 +74,11 @@ fn in_terminal(
     }
     command.env_clear();
     command.cwd("/");
+    // The parent's TMPDIR, unless the caller names its own: the system default is forbidden in
+    // a sandbox whose TMPDIR is private.
+    if let Some((name, value)) = crate::common::inherited_tmpdir() {
+        command.env(name, value);
+    }
     for (name, value) in env {
         command.env(name, value);
     }
@@ -118,6 +123,11 @@ fn in_terminal_answering(
     }
     command.env_clear();
     command.cwd("/");
+    // The parent's TMPDIR, unless the caller names its own: the system default is forbidden in
+    // a sandbox whose TMPDIR is private.
+    if let Some((name, value)) = crate::common::inherited_tmpdir() {
+        command.env(name, value);
+    }
     for (name, value) in env {
         command.env(name, value);
     }

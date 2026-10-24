@@ -28,7 +28,12 @@ the standing rules were pasted into every goal.
    TASK's own captured Task file. TASK must be finished in the same Store and must have recorded a
    review round; the round is the last one unless named. The candidate that round reviewed is the
    new Task's `source`, bound as an `inputs.source` binding of a derived tree is: re-rooted over
-   the identical Manifest with an `af.task-source-origin/2` origin that names TASK. The goal is
+   the identical Manifest with an `af.task-source-origin/2` origin that names TASK. *Amended by
+   the GA second fix round:* the origin's `bound_from.task` names the output that holds that
+   candidate — TASK's result and its `snapshot` port when the result holds it, else the
+   `af/TaskOutput@1` record that first published it and its port — and binding refuses a
+   reference whose output holds another Snapshot, as it refuses a round whose candidate no
+   recorded output holds. The goal is
    TASK's goal unless `--goal` replaces it. Without `--execute` the command plans and the plan
    waits for `--confirm-plan`, as every plan does. `continue` excludes `inputs.source` and
    `inputs.findings`, and `findings` joins the root ports no binding may name.

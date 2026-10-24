@@ -689,3 +689,204 @@ fn each_round_carries_its_own_evaluator_verdict() {
         "{findings:#}"
     );
 }
+
+/// The `continue` fixture as a Task of two review rounds on two candidates: round 1 reviews the
+/// implementer's candidate A, without NOTES.md, and requests changes; a second implementer then
+/// adds NOTES.md, and round 2 reviews that candidate B, the Task's result. Round 2 is the last the
+/// catalog allows and the round 1 finding stays open, so the Task ends `changes_requested`.
+fn two_candidates(repo: &Path) {
+    let packages = repo.join(".af/task-packages/fixture");
+    let second = packages.join("second-implementer");
+    std::fs::create_dir_all(second.join("outputs")).unwrap();
+    let first = packages.join("implementer");
+    for entry in std::fs::read_dir(first.join("outputs")).unwrap() {
+        let name = entry.unwrap().file_name();
+        std::fs::copy(
+            first.join("outputs").join(&name),
+            second.join("outputs").join(&name),
+        )
+        .unwrap();
+    }
+    std::fs::copy(
+        first.join("input.schema.json"),
+        second.join("input.schema.json"),
+    )
+    .unwrap();
+    let manifest = std::fs::read_to_string(first.join("worker.toml")).unwrap();
+    std::fs::write(
+        second.join("worker.toml"),
+        manifest.replace("fixture/implementer", "fixture/second-implementer"),
+    )
+    .unwrap();
+    std::fs::write(
+        second.join("worker.py"),
+        "import json,sys\njson.load(sys.stdin)\nopen('NOTES.md','w').write('paginate(items, \
+         offset, limit) returns one page.\\n')\nprint(json.dumps({'schema':'af.worker-reply/1',\
+         'outputs':{'report':[{'summary':'Documented paginate'}]}}))\n",
+    )
+    .unwrap();
+
+    let path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut pin = catalog["packages"]["fixture/implementer"].clone();
+    pin["path"] = ".af/task-packages/fixture/second-implementer".into();
+    catalog["packages"]
+        .as_table_mut()
+        .unwrap()
+        .insert("fixture/second-implementer".into(), pin);
+    catalog["review"]["max_rounds"] = 2.into();
+    std::fs::write(&path, toml::to_string(&catalog).unwrap()).unwrap();
+
+    let path = packages.join("implementation/pipeline.toml");
+    let mut pipeline: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut slot = pipeline["slots"]["implementer"].clone();
+    slot["worker"] = "fixture/second-implementer".into();
+    pipeline["slots"]
+        .as_table_mut()
+        .unwrap()
+        .insert("second".into(), slot);
+    let node = |value: &str| -> toml::Value { toml::from_str(value).unwrap() };
+    let nodes = pipeline["nodes"].as_array_mut().unwrap();
+    let after_review = nodes
+        .iter()
+        .position(|n| n["id"].as_str() == Some("review"))
+        .unwrap()
+        + 1;
+    for (offset, text) in [
+        r#"id = "implement_again"
+operator = { op = "worker", slot = "second" }
+inputs.requirements = { kind = "input", port = "requirements" }
+inputs.source = { kind = "node", node = "seal", port = "snapshot" }"#,
+        r#"id = "seal_again"
+operator = { op = "seal" }
+inputs.candidate = { kind = "node", node = "implement_again", port = "candidate" }"#,
+        r#"id = "review_again"
+operator = { op = "call", pipeline = "fixture/review", bindings = { bugs = "bugs", correctness = "correctness" } }
+inputs.source = { kind = "node", node = "seal_again", port = "snapshot" }
+inputs.base = { kind = "input", port = "source" }
+inputs.history = { kind = "node", node = "review", port = "history" }
+inputs.requirements = { kind = "input", port = "requirements" }"#,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        nodes.insert(after_review + offset, node(text));
+    }
+    // Acceptance, the final checks and the exposed ledger follow the second round, on B.
+    for node in nodes.iter_mut() {
+        let id = node["id"].as_str().unwrap().to_owned();
+        if !["accept", "final_checks"].contains(&id.as_str()) {
+            continue;
+        }
+        for (_, input) in node["inputs"].as_table_mut().unwrap().iter_mut() {
+            match input.get("node").and_then(|n| n.as_str()) {
+                Some("review") => input["node"] = "review_again".into(),
+                Some("seal") => input["node"] = "seal_again".into(),
+                _ => {}
+            }
+        }
+    }
+    pipeline["outputs"]["history"]["node"] = "review_again".into();
+    pipeline["max_parallel"] = 1.into();
+    pipeline["max_attempts"] = 12.into();
+    std::fs::write(&path, toml::to_string(&pipeline).unwrap()).unwrap();
+
+    let mut task: Value =
+        serde_json::from_str(&std::fs::read_to_string(repo.join("first.json")).unwrap()).unwrap();
+    task["task_id"] = "redone".into();
+    task["limits"] = serde_json::json!({
+        "tokens": 1000, "max_attempts": 12, "wall_ms": 120000,
+        "verification": {"tokens": 200, "attempts": 10, "wall_ms": 60000},
+    });
+    std::fs::write(
+        repo.join("redone.json"),
+        serde_json::to_vec_pretty(&task).unwrap(),
+    )
+    .unwrap();
+}
+
+/// The `bound_from` a bound source's re-rooted Snapshot records: the derived Snapshot it was
+/// bound from and the Task output it names.
+fn bound_from(cas: &review_store::Cas, revision: &Value) -> (String, Value) {
+    let snapshot = revision["inputs"]["source"]["snapshot_id"]
+        .as_str()
+        .unwrap();
+    let (snapshot, _) = review_source_git::task::read_snapshot(cas, snapshot).unwrap();
+    let origin = review_source_git::task::read_origin(cas, &snapshot.origin_id).unwrap();
+    let from = origin
+        .bound_from()
+        .expect("a continuation re-roots its source");
+    (
+        from.snapshot_id.clone(),
+        serde_json::to_value(from.task.as_ref().unwrap()).unwrap(),
+    )
+}
+
+/// GA second fix item 2: a continuation from round 1 records the provenance of round 1's own
+/// candidate A, the output that published it, never the final result, which holds B; the last
+/// round's continuation still names the result.
+#[test]
+fn a_continuation_from_an_earlier_round_names_the_output_that_holds_its_candidate() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = fixture_with(root.path(), two_candidates);
+    let start = ["task", "start", "--execute", "--file", "redone.json"];
+    let (redone, err) = json(&repo, &state, &start, 3);
+    assert_eq!(
+        redone["state"]["outcome"], "changes_requested",
+        "{redone}\n{err}"
+    );
+    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let result_id = redone["phase"]["result_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{redone}"));
+    let b = redone["result"]["outputs"]["snapshot"]["snapshot_id"].clone();
+
+    let (one, _) = json(
+        &repo,
+        &state,
+        &["task", "findings", "redone", "--round", "1"],
+        0,
+    );
+    let (two, _) = json(
+        &repo,
+        &state,
+        &["task", "findings", "redone", "--round", "2"],
+        0,
+    );
+    let a = one["round"]["snapshot_id"].clone();
+    assert_ne!(a, b, "round 1's candidate is not the result's: {one}");
+    assert_eq!(two["round"]["snapshot_id"], b, "{two}");
+
+    // Round 1: the reference names the TaskOutput record whose port holds A.
+    let plan = ["task", "run", "next", "--from", "redone", "--round", "1"];
+    let (planned, err) = json(&repo, &state, &plan, 0);
+    assert_eq!(planned["continues"]["round"], 1, "{planned}\n{err}");
+    let revision = payload(&cas, &planned["revision_id"]);
+    let (from, task) = bound_from(&cas, &revision);
+    assert_eq!(Value::from(from), a);
+    assert_eq!(task["task_id"], "redone");
+    assert_ne!(
+        task["result_id"], result_id,
+        "never the result, which holds B"
+    );
+    let output = cas.get_json(task["result_id"].as_str().unwrap()).unwrap();
+    assert_eq!(output["type"], "af/TaskOutput@1", "{output}");
+    let port = &output["payload"]["outputs"][task["port"].as_str().unwrap()];
+    assert_eq!(port["snapshot_id"], a, "{output}");
+    assert_eq!(port["artifact_type"], "af/SourceTree@1");
+    // The new Task reads A's tree: no NOTES.md yet.
+    let source = &revision["inputs"]["source"]["artifact_ids"][0];
+    assert!(file_in(&cas, source, "NOTES.md").is_none());
+
+    // Round 2, the last: the result's own `snapshot` output holds B and is the reference.
+    let plan = ["task", "run", "later", "--from", "redone"];
+    let (planned, _) = json(&repo, &state, &plan, 0);
+    let (from, task) = bound_from(&cas, &payload(&cas, &planned["revision_id"]));
+    assert_eq!(Value::from(from), b);
+    assert_eq!(
+        (task["result_id"].as_str(), task["port"].as_str()),
+        (Some(result_id), Some("snapshot"))
+    );
+}

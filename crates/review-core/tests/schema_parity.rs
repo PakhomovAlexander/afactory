@@ -60,7 +60,7 @@ const SCHEMAS: [&str; 225] = [
     "task-checks-v2.json",
     "provider-detect-v3.json",
     "store-writer-v1.json",
-    "doctor-v1.json",
+    "doctor-v2.json",
     "project-registered-v1.json",
     "project-brief-v1.json",
     "project-survey-pin-v1.json",

@@ -139,6 +139,29 @@ fn evaluator_finding(
     }))
 }
 
+/// The durable output that holds the candidate `round` reviewed, as the record ID and port a
+/// continuation's [`ReferencedTaskV1`] names: the Task's result `snapshot` output when it holds
+/// that Snapshot (the last round's, as a rule), or else the first `af/TaskOutput@1` the Task log
+/// published with a SourceTree port that holds it, the round's own candidate output. `None`
+/// when nothing recorded holds it: a reference to another Snapshot's output is never recorded.
+fn candidate_output(
+    cas: &Cas,
+    store: &EventStore,
+    run_id: &str,
+    result: &TaskResultV1,
+    result_id: &str,
+    round: &TaskReviewRoundV1,
+) -> Result<Option<(String, String)>, String> {
+    let holds = result.outputs.get("snapshot").is_some_and(|port| {
+        port.artifact_type == SOURCE_TREE_V1
+            && port.snapshot_id.as_deref() == Some(round.snapshot_id.as_str())
+    });
+    if holds {
+        return Ok(Some((result_id.to_owned(), "snapshot".into())));
+    }
+    task_report::output_holding(cas, store, run_id, &round.snapshot_id)
+}
+
 fn phase_word(phase: &TaskPhaseV1) -> &'static str {
     match phase {
         TaskPhaseV1::Submitted {} => "submitted",
@@ -216,11 +239,21 @@ pub(super) fn resolve(
         None => recorded.iter().enumerate().next_back().expect("nonempty"),
     };
     let (position, (round_id, round)) = (chosen.0, chosen.1.clone());
+    let (output_id, port) = candidate_output(cas, store, &run_id, &result, result_id, &round)?
+        .ok_or_else(|| {
+            format!(
+                "continue: Task `{shown}` round {} reviewed Snapshot {}, and no output the Task \
+                 recorded holds it, so a continuation could not record where its source came \
+                 from; continue from another round (`af task findings {shown} --round N` shows \
+                 each), or omit --round for the last",
+                round.round, round.snapshot_id
+            )
+        })?;
     let referenced = ReferencedTaskV1 {
         task_id: task.clone(),
         task_revision_id: result.task_revision_id.clone(),
-        result_id: result_id.clone(),
-        port: "snapshot".into(),
+        result_id: output_id,
+        port,
         acceptance: result.acceptance,
         domain_conclusion: result.domain_conclusion.clone(),
     };

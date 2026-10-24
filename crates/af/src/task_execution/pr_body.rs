@@ -106,8 +106,8 @@ enum Incomplete {
 }
 
 /// What `text` lacks of the block `scripts/check-pr-report.py` accepts: exactly one begin
-/// marker, the end marker after it, and the title `**Lines added: <figure>**` first inside;
-/// `None` when it has all three.
+/// marker, the end marker after it, and between them a body `scripts/pr-lines.py`'s own parser
+/// reads back ([`body_problem`]); `None` when it has all of them.
 fn incomplete(text: &str) -> Option<Incomplete> {
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
     let at = |marker: &str| -> Vec<usize> {
@@ -131,33 +131,153 @@ fn incomplete(text: &str) -> Option<Incomplete> {
              after it"
         )));
     };
-    match lines[begin + 1..end].iter().find(|line| !line.is_empty()) {
-        Some(line) if is_title(line) => None,
-        Some(line) => Some(Incomplete::Lacks(format!(
-            "its block's first line is not the title `**Lines added: <figure>**`: `{}`",
-            preview::short(&preview::text(line), 60)
-        ))),
-        None => Some(Incomplete::Lacks(
-            "its block has no title line `**Lines added: <figure>**` between its markers".into(),
-        )),
-    }
+    body_problem(&lines[begin + 1..end]).map(Incomplete::Lacks)
 }
 
-/// `**Lines added: FIGURE**`, FIGURE as `scripts/pr-lines.py` writes it: `none`, `0`, up to
-/// three digits, or up to three digits with an optional decimal and `k` (`18.9k`).
-fn is_title(line: &str) -> bool {
-    let Some(figure) = line
-        .strip_prefix("**Lines added: ")
-        .and_then(|rest| rest.strip_suffix("**"))
-    else {
-        return false;
+/// The table header and its separator row, as `scripts/pr-lines.py` writes them.
+const HEADER: [&str; 3] = ["Directory", "Added", "Share"];
+const SEPARATOR_ROW: &str = "|:--|--:|:--|";
+/// The eighth blocks a share's bar is drawn with.
+const BLOCKS: &str = "▏▎▍▌▋▊▉█";
+
+/// What is wrong with the block's body `lines`, by the rules of `parse` in
+/// `scripts/pr-lines.py`, which `scripts/check-pr-report.py` reads the block with: the title
+/// `**Lines added: <figure>**`, then the table header, its separator and at least one row per
+/// directory, each directory once; or `**Lines added: none**` alone. Blank lines do not count.
+/// `None` when the parser reads it back. A figure or share in non-ASCII digits, which the
+/// script never prints, is refused here even where Python's `\d` would read it.
+fn body_problem(lines: &[&str]) -> Option<String> {
+    let lines: Vec<&str> = lines
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let shown = |line: &str| preview::short(&preview::text(line), 60);
+    let Some(first) = lines.first() else {
+        return Some(
+            "its block has no title line `**Lines added: <figure>**` between its markers".into(),
+        );
     };
+    let Some(total) = title_figure(first) else {
+        return Some(format!(
+            "its block's first line is not the title `**Lines added: <figure>**`: `{}`",
+            shown(first)
+        ));
+    };
+    if total == "none" {
+        return lines.get(1).map(|more| {
+            format!(
+                "its block's `**Lines added: none**` is the whole block, but more follows: `{}`",
+                shown(more)
+            )
+        });
+    }
+    let header = format!("| {} |", HEADER.join(" | "));
+    if lines.len() < 4 {
+        return Some(format!(
+            "its block's title is not followed by the table: the header `{header}`, its \
+             separator `{SEPARATOR_ROW}` and one row per directory"
+        ));
+    }
+    if row_cells(lines[1]).is_none_or(|cells| cells != HEADER) {
+        return Some(format!(
+            "its block's line after the title is not the table header `{header}`: `{}`",
+            shown(lines[1])
+        ));
+    }
+    let separator = |cell: &String| {
+        let inner = cell.strip_prefix(':').unwrap_or(cell);
+        let inner = inner.strip_suffix(':').unwrap_or(inner);
+        !inner.is_empty() && inner.bytes().all(|b| b == b'-')
+    };
+    if !row_cells(lines[2]).is_some_and(|cells| cells.len() == 3 && cells.iter().all(separator)) {
+        return Some(format!(
+            "its block's header is not followed by its separator `{SEPARATOR_ROW}`: `{}`",
+            shown(lines[2])
+        ));
+    }
+    let mut names: Vec<String> = Vec::new();
+    for line in &lines[3..] {
+        let Some([name, figure, share]) =
+            row_cells(line).and_then(|c| <[String; 3]>::try_from(c).ok())
+        else {
+            return Some(format!(
+                "its block has a line that is not a row of three cells `| directory | figure | \
+                 bar share |`: `{}`",
+                shown(line)
+            ));
+        };
+        if name.is_empty() || !is_figure(&figure) || !is_share(&share) {
+            return Some(format!(
+                "its block has a row that is not `| directory | figure | bar share |` (a figure \
+                 as `412`, `1.5k` or `23k`; the share as `40%` or `<1%` after its bar): `{}`",
+                shown(line)
+            ));
+        }
+        if names.contains(&name) {
+            return Some(format!(
+                "its block has two rows for `{}`",
+                preview::short(&preview::text(&name), 60)
+            ));
+        }
+        names.push(name);
+    }
+    None
+}
+
+/// The cells of a table row written with both outer `|`, a `\|` read as a `|`, each trimmed;
+/// `None` for any other line. `row_cells` of `scripts/pr-lines.py`.
+fn row_cells(line: &str) -> Option<Vec<String>> {
+    let text = line.trim();
+    if text.chars().count() < 2
+        || !text.starts_with('|')
+        || !text.ends_with('|')
+        || text.ends_with("\\|")
+    {
+        return None;
+    }
+    let (mut cells, mut cell, mut escaped) = (Vec::new(), String::new(), false);
+    for c in text[1..text.len() - 1].chars() {
+        if escaped {
+            if c != '|' {
+                cell.push('\\');
+            }
+            cell.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '|' {
+            cells.push(cell.trim().to_owned());
+            cell.clear();
+        } else {
+            cell.push(c);
+        }
+    }
+    let mut last = cell.trim().to_owned();
+    if escaped {
+        last.push('\\');
+    }
+    cells.push(last);
+    Some(cells)
+}
+
+/// The figure of `**Lines added: FIGURE**`, as `scripts/pr-lines.py` writes it: `none`, or a
+/// figure [`is_figure`] accepts.
+fn title_figure(line: &str) -> Option<&str> {
+    line.strip_prefix("**Lines added: ")
+        .and_then(|rest| rest.strip_suffix("**"))
+        .filter(|figure| *figure == "none" || is_figure(figure))
+}
+
+/// A count as `scripts/pr-lines.py` writes it: `0`, up to three digits, or up to three digits
+/// with an optional decimal and `k` (`18.9k`).
+fn is_figure(figure: &str) -> bool {
     let digits = |text: &str| {
         (1..=3).contains(&text.len())
             && text.bytes().all(|b| b.is_ascii_digit())
             && !text.starts_with('0')
     };
-    if figure == "none" || figure == "0" || digits(figure) {
+    if figure == "0" || digits(figure) {
         return true;
     }
     let Some(thousands) = figure.strip_suffix('k') else {
@@ -169,6 +289,19 @@ fn is_title(line: &str) -> bool {
         }
         None => digits(thousands),
     }
+}
+
+/// A share as `scripts/pr-lines.py` writes it: a bar of at least one eighth block, one space,
+/// and `<1%` or one to three digits and `%`.
+fn is_share(share: &str) -> bool {
+    let Some((bar, percent)) = share.split_once(' ') else {
+        return false;
+    };
+    let number = percent.strip_suffix('%').unwrap_or("");
+    !bar.is_empty()
+        && bar.chars().all(|c| BLOCKS.contains(c))
+        && (percent == "<1%"
+            || ((1..=3).contains(&number.len()) && number.bytes().all(|b| b.is_ascii_digit())))
 }
 
 /// The refusal of a block the script began and did not finish: what it lacks, and the command
@@ -415,24 +548,179 @@ mod tests {
                 );
             }
         }
-        // The whole block passes: the markers, then the title.
-        std::fs::write(
-            &script,
-            "print('<!-- af-pr-lines:v1 -->')\nprint('**Lines added: 18.9k**')\n\
-             print('<!-- /af-pr-lines -->')\n",
-        )
-        .unwrap();
-        assert!(refused(None).is_ok());
+        // GA second fix item 1: a title alone is not a block the parser reads back; the title
+        // and the table, or `**Lines added: none**` alone, are.
+        for (printed, verdict) in [
+            (
+                "print('<!-- af-pr-lines:v1 -->')\nprint('**Lines added: 1**')\n\
+                 print('<!-- /af-pr-lines -->')\n",
+                Err(
+                    "its block's title is not followed by the table: the header \
+                     `| Directory | Added | Share |`, its separator `|:--|--:|:--|` and one row \
+                     per directory",
+                ),
+            ),
+            (
+                "print('<!-- af-pr-lines:v1 -->')\nprint('**Lines added: 18.9k**')\nprint()\n\
+                 print('| Directory | Added | Share |')\nprint('|:--|--:|:--|')\n\
+                 print('| crates | 18.9k | \u{2588}\u{2588} 100% |')\n\
+                 print('<!-- /af-pr-lines -->')\n",
+                Ok(()),
+            ),
+            (
+                "print('<!-- af-pr-lines:v1 -->')\nprint('**Lines added: none**')\n\
+                 print('<!-- /af-pr-lines -->')\n",
+                Ok(()),
+            ),
+        ] {
+            std::fs::write(&script, printed).unwrap();
+            match (refused(None), verdict) {
+                (Ok(body), Ok(())) => assert!(body.contains("**Lines added: "), "{body}"),
+                (Err(error), Err(lacks)) => {
+                    assert!(flat(&error).contains(lacks), "{printed}: {error}");
+                }
+                (got, want) => panic!("{printed}: {got:?}, expected {want:?}"),
+            }
+        }
     }
 
     #[test]
     fn the_title_figure_is_the_one_pr_lines_writes() {
         for title in ["none", "0", "7", "999", "1k", "18.9k", "999.9k"] {
-            assert!(is_title(&format!("**Lines added: {title}**")), "{title}");
+            let line = format!("**Lines added: {title}**");
+            assert_eq!(title_figure(&line), Some(title), "{title}");
         }
         for title in ["", "07", "1000", "1.2", "18.95k", "0k", "1,2k", "many"] {
-            assert!(!is_title(&format!("**Lines added: {title}**")), "{title}");
+            let line = format!("**Lines added: {title}**");
+            assert_eq!(title_figure(&line), None, "{title}");
         }
-        assert!(!is_title("Lines added: 7"));
+        assert_eq!(title_figure("Lines added: 7"), None);
+    }
+
+    /// The bodies the parity test reads with both parsers: what `scripts/pr-lines.py` prints,
+    /// and every way a body can depart from it.
+    fn bodies() -> Vec<Vec<&'static str>> {
+        let header = "| Directory | Added | Share |";
+        let separator = "|:--|--:|:--|";
+        let row = "| crates | 412 | \u{2588}\u{2588}\u{2588} 80% |";
+        let other = "| docs | 1.5k | \u{258f} <1% |";
+        vec![
+            vec![],
+            vec![""],
+            vec!["**Lines added: none**"],
+            vec!["", "**Lines added: none**", ""],
+            vec!["**Lines added: none**", "| x |"],
+            vec!["**Lines added: 1**"],
+            vec!["**Lines added: 0**"],
+            vec!["**Lines added: 1**", header, separator],
+            vec!["**Lines added: 412**", "", header, separator, row],
+            vec!["**Lines added: 2k**", header, separator, row, other],
+            vec!["**Lines added: 2k**", header, separator, row, row],
+            vec![
+                "**Lines added: 2k**",
+                "| Directory | Added |",
+                separator,
+                row,
+            ],
+            vec![
+                "**Lines added: 2k**",
+                "Directory | Added | Share",
+                separator,
+                row,
+            ],
+            vec!["**Lines added: 2k**", header, "|---|---|", row],
+            vec!["**Lines added: 2k**", header, "|:-:|-:|:--|", row],
+            vec!["**Lines added: 2k**", header, "|:--|--x|:--|", row],
+            vec!["**Lines added: 2k**", header, separator, "| crates | 412 |"],
+            vec![
+                "**Lines added: 2k**",
+                header,
+                separator,
+                "| | 412 | \u{2588} 5% |",
+            ],
+            vec![
+                "**Lines added: 2k**",
+                header,
+                separator,
+                "| a | 0412 | \u{2588} 5% |",
+            ],
+            vec!["**Lines added: 2k**", header, separator, "| a | 41 | 5% |"],
+            vec![
+                "**Lines added: 2k**",
+                header,
+                separator,
+                "| a | 41 | \u{2588}5% |",
+            ],
+            vec![
+                "**Lines added: 2k**",
+                header,
+                separator,
+                "| a | 41 | \u{2588} 1000% |",
+            ],
+            vec![
+                "**Lines added: 2k**",
+                header,
+                separator,
+                "| a | 41 | x 5% |",
+            ],
+            vec![
+                "**Lines added: 2k**",
+                header,
+                separator,
+                "| a\\|b | 41 | \u{2588} 5% |",
+            ],
+            vec![
+                "**Lines added: 2k**",
+                header,
+                separator,
+                "| a | 41 | \u{2588} 5% \\|",
+            ],
+            vec![
+                "**Lines added: 2k**",
+                header,
+                separator,
+                "| a | 23k | \u{2588} 5% |",
+                "x",
+            ],
+            vec!["| crates | 412 |"],
+            vec!["**Lines added: many**"],
+        ]
+    }
+
+    /// GA second fix item 1: af's reading of a block's body agrees with `parse` of
+    /// `scripts/pr-lines.py`, which `scripts/check-pr-report.py` uses, on every body above: the
+    /// test asks the script itself, af never does.
+    #[test]
+    fn the_block_rules_are_the_parsers() {
+        let script = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .join(PR_LINES);
+        let cases = bodies();
+        let program = "import importlib.util, json, sys\n\
+             spec = importlib.util.spec_from_file_location('pr_lines', sys.argv[1])\n\
+             module = importlib.util.module_from_spec(spec)\n\
+             spec.loader.exec_module(module)\n\
+             cases = json.load(sys.stdin)\n\
+             print(json.dumps([module.parse(lines)[0] is not None for lines in cases]))\n";
+        let mut child = std::process::Command::new("python3")
+            .args(["-I", "-c", program])
+            .arg(&script)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = serde_json::to_vec(&cases).unwrap();
+        std::io::Write::write_all(child.stdin.as_mut().unwrap(), &input).unwrap();
+        drop(child.stdin.take());
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let accepted: Vec<bool> = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(accepted.len(), cases.len());
+        assert!(accepted.iter().any(|a| *a) && accepted.iter().any(|a| !*a));
+        for (lines, parsed) in cases.iter().zip(accepted) {
+            let problem = body_problem(lines);
+            assert_eq!(problem.is_none(), parsed, "{lines:?}: {problem:?}");
+        }
     }
 }

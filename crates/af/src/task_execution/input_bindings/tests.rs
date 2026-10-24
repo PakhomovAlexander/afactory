@@ -606,6 +606,104 @@ fn a_root_capture_is_verbatim_and_a_derived_tree_is_re_rooted() {
     assert_eq!(source.port, "snapshot");
 }
 
+/// GA second fix item 2: a bound source records the provenance of its own Snapshot. A reference
+/// to an output that holds another Snapshot (a continuation's final result after a later round
+/// changed the candidate) is refused; the `af/TaskOutput@1` record that published the
+/// Snapshot binds it.
+#[test]
+fn a_referenced_output_must_hold_the_bound_snapshot() {
+    use review_core::task::execution::{TASK_OUTPUT_V1, TaskOutputV1};
+    let mut fixture = fixture();
+    let manifest = fixture.manifest();
+    let committed = fixture.origin(json!({"schema":"af.task-source-origin/1",
+        "repository_id":"example/hub","source_revision":"bba24cb",
+        "content_digest":manifest.content_digest()}));
+    let cas = &fixture.cas;
+    let root = capture_snapshot(cas, &manifest, &committed, None).unwrap();
+    let encoded = serde_json::to_value(&manifest).unwrap();
+    let manifest_id = cas.put_json(&encoded).unwrap();
+    // Candidate A, which round 1 reviewed, and the final result's B over another tree.
+    let a = derive_source_tree(cas, producer(), &manifest_id, &root, Vec::new()).unwrap();
+    let other = Manifest::new(vec![Entry {
+        path: "b.txt".into(),
+        kind: EntryKind::File,
+        content: cas.put(b"other\n").unwrap(),
+        size: 6,
+    }])
+    .unwrap();
+    let other_id = cas
+        .put_json(&serde_json::to_value(&other).unwrap())
+        .unwrap();
+    let b = derive_source_tree(cas, producer(), &other_id, &root, Vec::new()).unwrap();
+    assert_ne!(a.snapshot_id, b.snapshot_id);
+    fixture.finish("twice", ports("snapshot", b.clone()));
+    let TaskPhaseV1::Finished { result_id } = fixture.tasks.0["twice"].clone() else {
+        unreachable!()
+    };
+    let referenced = |result_id: &str, port: &str| ReferencedTaskV1 {
+        task_id: "twice".into(),
+        task_revision_id: digest_of('1'),
+        result_id: result_id.into(),
+        port: port.into(),
+        acceptance: TaskAcceptanceV1::Unsatisfied,
+        domain_conclusion: "changes_requested".into(),
+    };
+
+    // The final result's `snapshot` holds B: naming it for A is refused, both Snapshots named.
+    let wrong = referenced(&result_id, "snapshot");
+    let error = bind_source(&fixture.cas, a.clone(), Some(&wrong)).unwrap_err();
+    let (held, bound) = (
+        b.snapshot_id.clone().unwrap(),
+        a.snapshot_id.clone().unwrap(),
+    );
+    assert!(
+        error.contains(&format!(
+            "task twice/snapshot holds Snapshot {held}, not the bound Snapshot {bound}"
+        )),
+        "{error}"
+    );
+    // The same reference binds B, the Snapshot it holds.
+    let same = bind_source(&fixture.cas, b, Some(&wrong));
+    assert!(same.is_ok(), "{same:?}");
+
+    // The round's candidate output, an `af/TaskOutput@1` whose port holds A, binds A and is the
+    // reference its re-rooted origin records.
+    let output = TaskOutputV1 {
+        invocation_id: digest_of('9'),
+        outputs: ports("snapshot", a.clone()),
+    };
+    let output_id = fixture.put(TASK_OUTPUT_V1, serde_json::to_value(&output).unwrap());
+    let right = referenced(&output_id, "snapshot");
+    let (port, binding, _) = bind_source(&fixture.cas, a.clone(), Some(&right)).unwrap();
+    assert_eq!(binding.task.as_ref(), Some(&right));
+    let rerooted = port.snapshot_id.unwrap();
+    let (snapshot, _) = read_snapshot(&fixture.cas, &rerooted).unwrap();
+    let origin = read_origin(&fixture.cas, &snapshot.origin_id).unwrap();
+    let from = origin.bound_from().unwrap();
+    assert_eq!(from.snapshot_id, bound);
+    assert_eq!(from.task.as_ref().unwrap().result_id, output_id);
+
+    // A port the output does not carry, and an artifact that is no output, are refused.
+    let error =
+        bind_source(&fixture.cas, a.clone(), Some(&referenced(&output_id, "x"))).unwrap_err();
+    assert!(error.contains("has no port x"), "{error}");
+    let error = bind_source(
+        &fixture.cas,
+        a,
+        Some(&referenced(&a_requirement(&fixture), "snapshot")),
+    )
+    .unwrap_err();
+    assert!(error.contains("not a Task result or output"), "{error}");
+}
+
+fn digest_of(byte: char) -> String {
+    format!("sha256:{}", byte.to_string().repeat(64))
+}
+
+fn a_requirement(fixture: &Fixture) -> String {
+    fixture.put("af/Requirements@1", json!({"text": "x"}))
+}
+
 #[test]
 fn a_parentless_generation_two_source_is_carried_verbatim() {
     let fixture = fixture();

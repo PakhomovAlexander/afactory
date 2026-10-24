@@ -18,6 +18,12 @@ pub const TASK_INPUT_BINDINGS_V1: &str = "af/TaskInputBindings@1";
 /// The referenced Task, as it stood when the binding resolved. `acceptance` and
 /// `domain_conclusion` are copied so an operator approving the plan sees them; neither is an
 /// obligation of the referencing Task.
+///
+/// `result_id` and `port` name the output that holds the bound artifact: the Task's
+/// `af/TaskResult@1` and one of its output ports, or, for a continuation from a review round
+/// whose candidate the result does not hold, the `af/TaskOutput@1` record that published that
+/// candidate and its port (ADR-0203). Binding checks that the named output holds the bound
+/// Snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReferencedTaskV1 {

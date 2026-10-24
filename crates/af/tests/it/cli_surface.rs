@@ -1257,6 +1257,17 @@ fn the_surface_documents_verbose_storage_canonical_markdown_and_the_provider_lis
         ),
         "{machine}"
     );
+    // GA second fix item 4: a fix is a command, what it cannot say is its hint.
+    assert!(
+        machine.contains(
+            "--json prints one `af/doctor@2` document, each check with its `fix` and `hint`."
+        ),
+        "{machine}"
+    );
+    assert!(
+        machine.contains("A problem's `fix:` is the one command that fixes it, as a shell runs it"),
+        "{machine}"
+    );
     // The pointer for `af review tui` is no command of the namespace.
     let review = collapsed(&["review", "--help"]);
     assert!(!review.contains(" tui "), "{review}");
