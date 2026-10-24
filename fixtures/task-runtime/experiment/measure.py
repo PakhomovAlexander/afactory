@@ -26,19 +26,22 @@ if mode == 'warm':
     if not os.path.exists(built):
         open(built, 'wb').write(b'x' * 4096)
 if mode == 'cargo':
-    # ADR-0161 through the real measure operator, every repetition and A -> B -> A.
-    # Source mtimes must be newer than every product from the previous key holder.
+    # ADR-0207 through the real measure operator, every repetition and A -> B -> A. Sources
+    # are stamped by content: each source group (a Cargo package directory, or the root) carries
+    # one stamp, none in the future, and a group whose content the key did not build last is
+    # stamped after every product. Only the binary below proves which Snapshot was built.
     target_dir = os.environ['CARGO_TARGET_DIR']
-    stamps = {os.lstat(os.path.join(parent, name)).st_mtime_ns
-              for parent, _, files in os.walk('.') for name in files
-              if stat.S_ISREG(os.lstat(os.path.join(parent, name)).st_mode)}
-    assert len(stamps) == 1, sorted(stamps)
-    stamp = stamps.pop()
-    assert stamp <= time.time_ns(), 'source stamp is in the future'
-    for parent, _, files in os.walk(target_dir):
+    groups = {}
+    for parent, _, files in os.walk('.'):
         for name in files:
-            left = os.lstat(os.path.join(parent, name)).st_mtime_ns
-            assert stamp > left, 'a source is not newer than ' + os.path.join(parent, name)
+            path = os.path.join(parent, name)
+            if not stat.S_ISREG(os.lstat(path).st_mode):
+                continue
+            group = next((g for g in ('app', 'word') if path.startswith('./' + g + '/')), '')
+            groups.setdefault(group, set()).add(os.lstat(path).st_mtime_ns)
+    for group, stamps in groups.items():
+        assert len(stamps) == 1, (group, sorted(stamps))
+        assert stamps.pop() <= time.time_ns(), 'source stamp of %r is in the future' % group
     expected = int(re.search(r'\{\s*(\d+)\s*\}', open('word/src/lib.rs').read()).group(1))
     subprocess.run(['cargo', 'build', '--offline', '--locked', '--quiet'], check=True)
     repeated = subprocess.run(['cargo', 'build', '--offline', '--locked', '--message-format=json'],

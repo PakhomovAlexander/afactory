@@ -224,6 +224,7 @@ fn run_case(case: &str) {
         public_result.covers.insert("reviewed".into());
         let result_type = review_core::contract::REVIEWER_RESULT_V2;
         let signature = OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 {
                 inputs: BTreeMap::from([
                     (
@@ -332,6 +333,7 @@ fn run_case(case: &str) {
                     max_attempts: 1,
                     allow_local_replacement: false,
                     independent_from: BTreeSet::new(),
+                    recovery_attempts: None,
                 },
             );
             let mut reviewer = node(

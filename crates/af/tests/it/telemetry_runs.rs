@@ -611,10 +611,15 @@ fn telemetry_interrupted_before_an_attempt_keeps_its_ordinal() {
     let mut child = machine
         .command(
             &repo,
-            &[(
-                "AF_TEST_TASK_PAUSE_AFTER_RUN_OPENS",
-                pauses.to_str().unwrap(),
-            )],
+            &[
+                (
+                    "AF_TEST_TASK_PAUSE_AFTER_RUN_OPENS",
+                    pauses.to_str().unwrap(),
+                ),
+                // A fifteen-second lease, so the dead writer's lease expires well inside the
+                // Task's one-minute wall; production leases are 60 s (ADR-0209).
+                ("AF_TEST_TASK_LEASE_MS", "15000"),
+            ],
             &[
                 "task",
                 "start",
@@ -664,7 +669,7 @@ fn telemetry_interrupted_before_an_attempt_keeps_its_ordinal() {
     let resumed = loop {
         let resumed = machine.af(
             &repo,
-            &[],
+            &[("AF_TEST_TASK_LEASE_MS", "15000")],
             &[
                 "task",
                 "run",
@@ -1314,7 +1319,7 @@ fn telemetry_dirs_registry_reaches_every_directory() {
     );
     let off = [("AF_TELEMETRY__LEVEL", "off")];
     let shown = json(&machine.af(&repo, &off, &["storage", "--json"]));
-    crate::schemas::valid(&crate::schemas::validator("storage-v4.json"), &shown);
+    crate::schemas::valid(&crate::schemas::validator("storage-v5.json"), &shown);
     let entries = telemetry_entries(&shown);
     for directory in [&a, &b] {
         assert!(
@@ -2106,7 +2111,13 @@ fn telemetry_commands_match_their_goldens() {
     ));
     crate::schemas::valid(&crate::schemas::validator("telemetry-show-v1.json"), &one);
     golden("show-span.json", &normalized(&one, &machine.root, false));
-    let gc = json(&machine.af(at, &[], &["telemetry", "gc", "--json"]));
+    // The free bytes pinned below 100 GiB: `[storage] max_bytes = "auto"` is then 20 GiB on
+    // every host.
+    let gc = json(&machine.af(
+        at,
+        &[("AF_TEST_FREE_BYTES", "53687091200")],
+        &["telemetry", "gc", "--json"],
+    ));
     crate::schemas::valid(&crate::schemas::validator("telemetry-gc-v1.json"), &gc);
     golden("gc.json", &normalized(&gc, &machine.root, true));
 

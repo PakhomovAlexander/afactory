@@ -108,6 +108,9 @@ fn accepted_policies_round_trip_through_the_schema() {
         Some(json!({"build_cache": ["cargo_home"]})),
         Some(json!({"build_cache": ["cargo_target", "cargo_home"]})),
         Some(json!({"build_cache": ["cargo_home", "cargo_target"], "caches": ["cargo"]})),
+        Some(json!({"build_cache": ["cargo_target", "npm_cache"], "clone_when_busy": true})),
+        Some(json!({"build_cache": ["cargo_target"], "build_wall_ms": 3_600_000})),
+        Some(json!({"build_cache": ["npm_cache"], "build_wall_ms": 1, "clone_when_busy": false})),
     ] {
         let value = policy(warm.clone(), false);
         let parsed: CodeTaskPolicy = serde_json::from_value(value.clone()).unwrap();
@@ -152,6 +155,11 @@ fn refused_warm_shapes_are_refused_by_both() {
         json!({"build_cache": ["cargo_target"], "hard_max_bytes": 34_359_738_369_u64}),
         json!({"build_cache": ["cargo_target"], "hard_max_bytes": null}),
         json!({"build_cache": ["cargo_target"], "path": "/tmp/target"}),
+        json!({"build_cache": ["cargo_target"], "build_wall_ms": 0}),
+        json!({"build_cache": ["cargo_target"], "build_wall_ms": 3_600_001}),
+        json!({"build_cache": ["cargo_target"], "build_wall_ms": null}),
+        json!({"build_cache": ["cargo_target"], "clone_when_busy": "yes"}),
+        json!({"build_cache": ["npm_cache", "npm_cache"]}),
     ] {
         let value = policy(Some(warm.clone()), false);
         assert!(!rust_accepts(&value), "Rust accepted {warm}");
@@ -413,4 +421,102 @@ fn remote_tables_round_trip_and_refuse_alike() {
         assert!(!rust_accepts(&value), "Rust accepted {remote}");
         assert!(!schema.is_valid(&value), "the schema accepted {remote}");
     }
+}
+
+fn offline_policy(check: Value, warm: Option<Value>) -> Value {
+    let mut value = policy(warm, false);
+    for (key, field) in check.as_object().unwrap() {
+        value["checks"]["kernel"][key] = field.clone();
+    }
+    value
+}
+
+/// An offline check (ADR-0207) needs the warm `npm_cache`, and only it pins npm packages, each
+/// an exact version and a SHA-256; both sides refuse the same shapes.
+#[test]
+fn offline_checks_and_their_npm_pins_round_trip_and_refuse_alike() {
+    let schema = validator();
+    let sha = "57f59b92ce95a5d0beb9d484bf5ecede02fde29f913ad1a6cc74b15901650037";
+    let npm = Some(json!({"build_cache": ["cargo_target", "npm_cache"]}));
+    for check in [
+        json!({"offline": true}),
+        json!({"offline": true, "npm_packages": [{"spec": "markdownlint-cli2@0.22.1", "sha256": sha}]}),
+        json!({"offline": true, "npm_packages": [{"spec": "@scope/tool@1.0.0-rc.1", "sha256": sha}]}),
+    ] {
+        let value = offline_policy(check.clone(), npm.clone());
+        let parsed: CodeTaskPolicy = serde_json::from_value(value.clone()).unwrap();
+        parsed.validate().unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), value, "{check}");
+        assert!(schema.is_valid(&value), "{check}");
+    }
+    let without = offline_policy(json!({"offline": true}), None);
+    let error = serde_json::from_value::<CodeTaskPolicy>(without)
+        .unwrap()
+        .validate()
+        .unwrap_err();
+    assert!(
+        error.contains("offline = true") && error.contains("npm_cache"),
+        "{error}"
+    );
+    for check in [
+        json!({"npm_packages": [{"spec": "markdownlint-cli2@0.22.1", "sha256": sha}]}),
+        json!({"offline": true, "npm_packages": [{"spec": "markdownlint-cli2", "sha256": sha}]}),
+        json!({"offline": true, "npm_packages": [{"spec": "markdownlint-cli2@^0.22.1", "sha256": sha}]}),
+        json!({"offline": true, "npm_packages": [{"spec": "x@1.0.0-", "sha256": sha}]}),
+        json!({"offline": true, "npm_packages": [{"spec": "-x@1.0.0", "sha256": sha}]}),
+        json!({"offline": true, "npm_packages": [{"spec": "x@1.0.0", "sha256": "ABC"}]}),
+        json!({"offline": true, "npm_packages": [{"spec": "x@1.0.0", "sha256": sha, "url": "u"}]}),
+        json!({"offline": true, "npm_packages": []}),
+    ] {
+        let value = offline_policy(check.clone(), npm.clone());
+        let rust = serde_json::from_value::<CodeTaskPolicy>(value.clone())
+            .is_ok_and(|policy| policy.validate().is_ok());
+        // An empty list is how an absent one is written back, so only the schema refuses it.
+        if check["npm_packages"] != json!([]) {
+            assert!(!rust, "Rust accepted {check}");
+        }
+        assert!(!schema.is_valid(&value), "the schema accepted {check}");
+    }
+}
+
+/// This repository's own `.af/code-policy.toml` loads and validates, and its markdownlint
+/// check runs offline from the warm `npm_cache` with `markdownlint-cli2` pinned by SHA-256
+/// (ADR-0207).
+#[test]
+fn this_repositorys_markdownlint_check_runs_offline_on_a_pinned_package() {
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let text = std::fs::read_to_string(root.join(".af/code-policy.toml")).unwrap();
+    let policy: CodeTaskPolicy = toml::from_str(&text).unwrap();
+    policy.validate().unwrap();
+    let value = serde_json::to_value(&policy).unwrap();
+    let errors: Vec<String> = validator()
+        .iter_errors(&value)
+        .map(|error| format!("{error} at {}", error.instance_path()))
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    let markdownlint = &policy.checks["markdownlint"];
+    assert!(markdownlint.offline);
+    assert_eq!(markdownlint.npm_packages.len(), 1);
+    assert_eq!(
+        markdownlint.npm_packages[0].spec,
+        "markdownlint-cli2@0.22.1"
+    );
+    assert_eq!(
+        markdownlint.npm_packages[0].sha256,
+        "57f59b92ce95a5d0beb9d484bf5ecede02fde29f913ad1a6cc74b15901650037"
+    );
+    let warm = policy.warm.as_ref().unwrap();
+    assert!(
+        warm.build_cache
+            .contains(&review_pipeline::task::warm_check::WarmBuildCacheKind::NpmCache)
+    );
+    assert_eq!(warm.build_wall_ms(), Some(2_400_000));
+    // The build's 40 minutes, then the tests' own 90 (ADR-0201).
+    assert_eq!(policy.check_attempt_wall_ms(), 7_800_000);
+    assert!(
+        !policy.checks["kernel"].offline,
+        "the kernel gate keeps its network"
+    );
 }

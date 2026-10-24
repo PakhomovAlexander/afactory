@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-workspace-delivered:1",
+  "title": "WorkspaceDelivered@1",
+  "description": "The Task a `delivered` Workspace was made from (ADR-0158 clause 7), recorded as data right after its `WorkspaceRegistered@1`, apart from its label, which carries a suffix when the Task ID was already a label. The Storage Budget never collects that Task while the Workspace stays registered (ADR-0144). No host path.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workspace_id",
+    "task_id"
+  ],
+  "properties": {
+    "workspace_id": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/workspace_id"
+    },
+    "task_id": {
+      "description": "The delivered Task's ID: the safe-name rule of Task IDs.",
+      "$ref": "urn:af:schema:project-registered:1#/$defs/label"
+    }
+  }
+}

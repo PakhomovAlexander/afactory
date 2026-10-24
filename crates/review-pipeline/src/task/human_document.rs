@@ -527,7 +527,7 @@ impl HumanDocument {
         let value = result
             .outputs
             .get(port)
-            .ok_or("Task result has no such output port")?;
+            .ok_or_else(|| port_not_found(task_id, port, result))?;
         if value.cardinality != PortCardinality::One || value.artifact_ids.len() != 1 {
             return Err("Output command requires a single artifact port".into());
         }
@@ -763,7 +763,7 @@ impl HumanDocument {
     /// that were actually recorded for it.
     fn about(&self) -> String {
         let canonical = inert_code(&format!(
-            "af task output {} --port {} --format markdown",
+            "af task output {} --port {} --format canonical-markdown",
             self.task_id, self.port
         ));
         let judged = match &self.review {
@@ -1202,21 +1202,55 @@ fn list(lines: &[&str], open: Option<Run>) -> (String, Option<Run>) {
     (out.join("\n"), levels.first().and_then(|level| level.run))
 }
 
-/// Line-start characters that begin no block and need no escape.
-const BLOCK_SAFE: &str = "()\"',./?;";
+/// The not-found refusal of an output port, in the shape every not-found refusal takes: the
+/// port, the Task, and the ports its result does have.
+pub fn port_not_found(task_id: &str, port: &str, result: &TaskResultV1) -> String {
+    let ports: Vec<&str> = result.outputs.keys().map(String::as_str).collect();
+    format!(
+        "Output port {port} not found in the result of Task {task_id}; its ports are {}",
+        if ports.is_empty() {
+            "none".to_string()
+        } else {
+            ports.join(", ")
+        }
+    )
+}
+
+/// How a line's first character is judged. The human presentation escapes it only where it
+/// opens a block; the canonical `af.document/2` rendering keeps the rule its recorded bytes were
+/// written with, every ASCII punctuation but [`CANONICAL_BLOCK_SAFE`], since a Document is
+/// accepted only when its draft renders to exactly those bytes again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LineStart {
+    Human,
+    Canonical,
+}
+
+/// Line-start characters the canonical `af.document/2` rendering leaves unescaped.
+const CANONICAL_BLOCK_SAFE: &str = "()\"',./?;";
 
 /// Authored text as inline Markdown that renders exactly that text. `start` marks text at the
-/// start of a line, where a block could begin.
-fn inline(text: &str, start: bool) -> String {
-    escape(text, start, false)
+/// start of a line, where a block could begin; only what is markup where it stands is escaped.
+pub(crate) fn inline(text: &str, start: bool) -> String {
+    escape(text, start, false, LineStart::Human)
+}
+
+/// [`inline`] as the canonical `af.document/2` rendering writes it.
+pub(crate) fn canonical_inline(text: &str, start: bool) -> String {
+    escape(text, start, false, LineStart::Canonical)
 }
 
 /// A generated heading's authored text; `#` is escaped so no closing sequence is dropped.
-fn heading(text: &str) -> String {
-    escape(text.trim_matches(PAD), false, true)
+pub(crate) fn heading(text: &str) -> String {
+    escape(text.trim_matches(PAD), false, true, LineStart::Human)
 }
 
-fn escape(text: &str, start: bool, heading: bool) -> String {
+/// [`heading`] as the canonical `af.document/2` rendering writes it.
+pub(crate) fn canonical_heading(text: &str) -> String {
+    escape(text.trim_matches(PAD), false, true, LineStart::Canonical)
+}
+
+fn escape(text: &str, start: bool, heading: bool, rule: LineStart) -> String {
     // Leading padding at a line start would move where the block begins. Other whitespace is
     // text, and the first word after it is still escaped as a line's first.
     let text = if start { text.trim_matches(PAD) } else { text };
@@ -1235,7 +1269,7 @@ fn escape(text: &str, start: bool, heading: bool) -> String {
         } else if linkable(run) {
             out.push_str(&inert_code(run));
         } else {
-            escape_word(run, first, heading, &mut out);
+            escape_word(run, first, heading, rule, &mut out);
         }
         first &= space;
     }
@@ -1280,7 +1314,7 @@ fn inert_code(text: &str) -> String {
     out
 }
 
-fn escape_word(word: &str, first: bool, heading: bool, out: &mut String) {
+fn escape_word(word: &str, first: bool, heading: bool, rule: LineStart, out: &mut String) {
     let chars: Vec<char> = word.chars().collect();
     let digits = chars.iter().take_while(|c| c.is_ascii_digit()).count();
     let numbered = first
@@ -1299,12 +1333,32 @@ fn escape_word(word: &str, first: bool, heading: bool, out: &mut String) {
             '&' => entity(&chars[i + 1..]),
             '#' if heading => true,
             '.' | ')' if numbered && i == digits => true,
-            _ => first && i == 0 && c.is_ascii_punctuation() && !BLOCK_SAFE.contains(c),
+            _ if !first || i > 0 => false,
+            _ if rule == LineStart::Canonical => {
+                c.is_ascii_punctuation() && !CANONICAL_BLOCK_SAFE.contains(c)
+            }
+            _ => opens_block(&chars),
         };
         if escaped {
             out.push('\\');
         }
         out.push(c);
+    }
+}
+
+/// Whether a line's first word could open a block where it stands, so its first character is
+/// escaped: a bullet (`-`, `+` or `*` before whitespace or the end), an ATX heading (one to six
+/// `#` before a space or the end), a block quote (`>`), a thematic break, setext underline or
+/// table delimiter row (`-`, `=` and `:` alone). Code fences (`` ` ``, `~`) and HTML (`<`) are
+/// escaped wherever they stand, and a numbered marker at its `.` or `)`. Any other word, such as
+/// `-foo`, `+1` or `!wow`, is a paragraph's text and stays as it is.
+fn opens_block(word: &[char]) -> bool {
+    match word[0] {
+        '-' | '+' | '*' if word.len() == 1 => true,
+        '#' => word.len() <= 6 && word.iter().all(|c| *c == '#'),
+        '>' => true,
+        '-' | '=' | ':' => word.iter().all(|c| matches!(c, '-' | '=' | ':')),
+        _ => false,
     }
 }
 

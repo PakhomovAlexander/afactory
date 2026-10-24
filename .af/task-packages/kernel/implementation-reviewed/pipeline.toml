@@ -1,8 +1,17 @@
 schema = "af.pipeline/1"
 name = "kernel/implementation-reviewed"
-version = "1.2.0"
+version = "1.4.0"
 max_attempts = 16
 max_parallel = 2
+
+[contract.inputs.findings]
+artifact_type = "af/TaskReviewFindings@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.inputs.findings.affinity]
+kind = "unbound"
 
 [contract.inputs.history]
 artifact_type = "af/ReviewHistory@1"
@@ -74,7 +83,8 @@ role = "review"
 input_type = "af/ReviewInput@1"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
-max_attempts = 1
+# A reply that does not parse, or a refused one, gets one more Attempt (issue #283).
+max_attempts = 2
 allow_local_replacement = true
 independent_from = ["implementer"]
 
@@ -84,7 +94,8 @@ role = "review"
 input_type = "af/ReviewInput@1"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
-max_attempts = 1
+# A reply that does not parse, or a refused one, gets one more Attempt (issue #283).
+max_attempts = 2
 allow_local_replacement = true
 independent_from = ["implementer"]
 
@@ -94,7 +105,8 @@ role = "evaluate"
 input_type = "af/EvaluationInput@1"
 output_type = "af/TaskEvaluation@1"
 min_attempts = 1
-max_attempts = 1
+# A reply that does not parse, or a refused one, gets one more Attempt (issue #283).
+max_attempts = 2
 allow_local_replacement = true
 independent_from = ["implementer"]
 
@@ -114,6 +126,10 @@ id = "implement"
 [nodes.operator]
 op = "worker"
 slot = "implementer"
+
+[nodes.inputs.findings]
+kind = "input"
+port = "findings"
 
 [nodes.inputs.requirements]
 kind = "input"

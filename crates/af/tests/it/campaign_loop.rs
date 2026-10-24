@@ -466,16 +466,24 @@ fn campaign_enumeration_reads_label_named_explicit_state_and_round_history() {
         &["campaigns", "--state-root", &root, "--format", "text"],
     );
     assert_eq!(code, 0, "{stdout}\n{stderr}");
-    assert!(stdout.contains("Campaigns: 1"), "{stdout}");
-    assert!(stdout.contains("Problems: 0"), "{stdout}");
+    // One table row per Campaign, in 100 columns: label, Round, state, verdict, spend, update.
+    let lines: Vec<&str> = stdout.lines().collect();
     assert!(
-        stdout.contains("last closed: round 1 epoch 1; fail (not_converged)"),
+        lines[0].starts_with("CAMPAIGN") && lines[0].contains("VERDICT"),
+        "{stdout}"
+    );
+    let row: Vec<&str> = lines[1].split_whitespace().collect();
+    assert_eq!(
+        row[..5],
+        ["loop", "1", "closed", "fail", "(not_converged)"],
         "{stdout}"
     );
     assert!(
-        stdout.contains("run 1: round 1 epoch 1; fail (not_converged)"),
-        "{stdout}"
+        row[5].parse::<u128>().is_ok(),
+        "the Tasks' charge: {stdout}"
     );
+    assert!(lines.iter().all(|line| line.len() <= 100), "{stdout}");
+    assert!(!stdout.contains("Problems:"), "{stdout}");
 
     let output = crate::common::af()
         .args([

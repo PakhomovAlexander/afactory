@@ -403,7 +403,7 @@ mod tests {
         let message = refused.message();
         assert!(message.contains("(version codex-cli 0.1.0)"), "{message}");
         assert!(
-            message.contains("missing: --ephemeral, --skip-git-repo-check, --json, -C/--cd, -s/--sandbox, -o/--output-last-message, --model, -c/--config; `codex exec --help` exited 2: error: unrecognized subcommand 'exec'; fix: upgrade it with `npm install -g @openai/codex@latest`"),
+            message.contains("missing: --ephemeral, --skip-git-repo-check, --json, -C/--cd, -s/--sandbox, -o/--output-last-message, --output-schema, --model, -c/--config; `codex exec --help` exited 2: error: unrecognized subcommand 'exec'; fix: upgrade it with `npm install -g @openai/codex@latest`"),
             "{message}"
         );
     }

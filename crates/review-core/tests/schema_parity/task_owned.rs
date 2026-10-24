@@ -47,8 +47,8 @@ fn experimental_execution_records_round_trip_on_the_one_record_wire() {
 #[test]
 fn owned_inspection_pairs_each_execution_record_with_its_exact_type() {
     let value = json!({
-        "schema":"af/task-inspection@11", "task_id":"review-task", "revision_id":id('1'),
-        "phase":{"kind":"running"}, "plan_id":id('2'), "chargeable_tokens":"7", "attempts":1,
+        "schema":"af/task-inspection@13", "task_id":"review-task", "revision_id":id('1'),
+        "phase":{"kind":"running"}, "state":{"phase":"running","outcome":null,"cause":null,"next_action":null}, "clock":{"wall_ms":60000,"started_unix_ms":1,"deadline_unix_ms":60001}, "plan_id":id('2'), "chargeable_tokens":"7", "attempts":1,
         "history":[], "run_reports":[],
         "execution_records":[
             {"artifact_id":id('3'),"artifact_type":"af/TaskExecutionRecord@5","record":{"kind":"invocation","invocation_id":id('4')}},
@@ -59,7 +59,7 @@ fn owned_inspection_pairs_each_execution_record_with_its_exact_type() {
             "children":[{"node":"root.scatter.slice1","source_item_id":id('8'),"invocation_id":id('9')}]
         }}]
     });
-    assert_valid("task-inspection-v11.json", &value);
+    assert_valid("task-inspection-v13.json", &value);
     for (pointer, bad_value) in [
         (
             "/execution_records/1/artifact_type",
@@ -77,12 +77,12 @@ fn owned_inspection_pairs_each_execution_record_with_its_exact_type() {
     ] {
         let mut bad = value.clone();
         *bad.pointer_mut(pointer).unwrap() = bad_value;
-        assert_invalid("task-inspection-v11.json", &bad, pointer);
+        assert_invalid("task-inspection-v13.json", &bad, pointer);
     }
     let mut bad = value.clone();
     bad["owned_child_sets"][0]["record"]["children"][0]["allowance"] = json!(100);
     assert_invalid(
-        "task-inspection-v11.json",
+        "task-inspection-v13.json",
         &bad,
         "registry data cannot invent authority",
     );

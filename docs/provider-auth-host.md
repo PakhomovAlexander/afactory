@@ -293,9 +293,10 @@ existing Task identity fences.
 
 ## Verified provider surfaces and limitations
 
-- Codex 0.159.2's official `login --device-auth` command is documented for
+- Codex's official `login --device-auth` command (fixtures of 0.159.2 and 0.163.0) is documented for
   [headless personal installations](https://learn.chatgpt.com/docs/auth#login-on-headless-devices).
-  The adapter validates its bounded, version-supported prompt and requires successful native
+  The adapter validates its bounded prompt exactly, apart from the banner's version, which it
+  parses on its own as `MAJOR.MINOR.PATCH[-pre]` (issue #305), and requires successful native
   exit; no app-server auth endpoint or model turn is used. Codex clears old authentication when
   starting device login, so cancellation can leave an existing context signed out. Native Codex
   also owns its normal diagnostic log. The host never reads or forwards that log. This personal

@@ -299,10 +299,7 @@ impl Storage {
 
 /// Uses exactly the lock used by terminal setup, but never queues another login behind it.
 fn try_context_lock(kind: ProviderKind, auth: &Path) -> Result<Option<BoundDirectoryLock>, String> {
-    let directory = bind_directory(auth, "auth directory")?;
-    let name = format!(".af-{}-setup.lock", kind.name());
-    let file = open_lock_at(&directory, std::ffi::OsStr::new(&name))
-        .map_err(|_| "cannot open auth context lock")?;
+    let (file, directory) = open_auth_context_lock(&auth_lock_root()?, kind, auth)?;
     let metadata = file
         .metadata()
         .map_err(|_| "cannot inspect auth context lock")?;
@@ -368,7 +365,12 @@ fn now() -> u64 {
 fn resolve(id: &str, kind: &str, auth: &Path, create: bool) -> Result<ProviderSpec, String> {
     validate_explicit_id(id)?;
     let kind = ProviderKind::parse(kind)?;
-    let auth = resolve_auth_dir(kind, Some(auth), create)?;
+    let missing = if create {
+        MissingAuthDir::Create
+    } else {
+        MissingAuthDir::Inspect
+    };
+    let auth = resolve_auth_dir(kind, Some(auth), missing)?;
     Ok(ProviderSpec {
         id: id.into(),
         kind,

@@ -688,7 +688,7 @@ fn a_bound_brief_carries_the_recorded_one_and_is_receipted_per_task() {
     // A Worker that returns the Brief it was handed as its own output is refused at admission.
     f.refresh();
     let file = f.task_file("forged", "fixture/forged", None);
-    let forged = f.task(&["task", "start", "--execute", "--file", &file], 4);
+    let forged = f.task(&["task", "start", "--execute", "--file", &file], 6);
     assert_eq!(forged["result"]["acceptance"], "inconclusive", "{forged}");
     let refused = &forged["run_reports"][0]["diagnostics"]["root.nodes.implement"]["message"];
     assert!(

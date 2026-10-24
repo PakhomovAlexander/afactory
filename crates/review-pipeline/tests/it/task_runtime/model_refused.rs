@@ -36,6 +36,7 @@ impl WorkerModelAdapter for Model {
         let raw = vec![cas.put(b"native refusal fixture").unwrap()];
         if self.calls.fetch_add(1, Ordering::SeqCst) < self.answered {
             return ModelWorkerReturn {
+                notes: Default::default(),
                 native_failure: None,
                 usage_observation: None,
                 usage: Some(TaskTokenUsageV3::charge_only(7)),
@@ -44,6 +45,7 @@ impl WorkerModelAdapter for Model {
             };
         }
         ModelWorkerReturn {
+            notes: Default::default(),
             native_failure: self.ending,
             usage_observation: None,
             usage: Some(TaskTokenUsageV3::charge_only(13)),
@@ -153,9 +155,11 @@ fn a_refused_admission_starts_no_business_worker() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     let (node, charged, failed) = &rows[0];
     assert!(node.starts_with("root.providers.admit"), "{node}");
-    assert_eq!(*charged, 13);
+    // The refused probe and its alternate wording, sent once in the same Attempt (ADR-0208),
+    // both refused and both charged; no business Worker starts.
+    assert_eq!(*charged, 26);
     assert!(failed);
-    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
 }
 
 /// Any other native failure keeps the ordinary retry policy.

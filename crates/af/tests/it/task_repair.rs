@@ -163,10 +163,12 @@ fn repair_is_rejected(case: &str) {
         &state,
         &["task", "start", "--execute", "--file", "ticket.json"],
     );
-    let expected = if matches!(case, "negative" | "failed_checks") {
-        3
-    } else {
-        4
+    // A negative fix verification asked for changes (3), a failed check is a failed gate (5),
+    // and a fix-verifier reply the kernel refuses is a failed Worker (6).
+    let expected = match case {
+        "negative" => 3,
+        "failed_checks" => 5,
+        _ => 6,
     };
     assert_eq!(code, expected, "{case}: {value:#}");
     assert_ne!(value["result"]["acceptance"], "satisfied", "{case}");
@@ -331,6 +333,10 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     let ticket = repo.join("ticket.json");
     let mut value: Value = serde_json::from_slice(&std::fs::read(&ticket).unwrap()).unwrap();
     value["limits"]["max_attempts"] = 9.into();
+    // The interrupted verifier, not any wall, is the subject (ADR-0114); the Task's deadline
+    // bounds the observation below, so a loaded host gets the whole load-safe wall.
+    task_cli::load_safe_walls(&repo);
+    task_cli::load_safe_limits(&mut value["limits"]);
     std::fs::write(ticket, serde_json::to_vec(&value).unwrap()).unwrap();
     commit_fixture(&repo);
     let (code, plan) = run(&repo, &state, &["task", "plan", "--file", "ticket.json"]);
@@ -446,6 +452,13 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     }
     let (code, result) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
     assert_eq!(code, 0, "{result:#}");
+    // The interrupted verifier's usage is unknown by design (it never reported); any other
+    // unknown usage would be an Attempt lost to the host, a failure of its own.
+    assert_eq!(
+        result["unknown_usage_attempts"].as_u64().unwrap_or(0),
+        1,
+        "only the interrupted verifier's usage is unknown: {result:#}"
+    );
     assert_eq!(
         result["attempts"], 9,
         "The abandoned verifier still consumes its parent and child allowance"

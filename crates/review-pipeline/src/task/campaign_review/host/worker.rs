@@ -253,6 +253,7 @@ impl CampaignReviewTaskHost<'_, '_> {
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         let mut result = TaskWorkOutput {
+            notes: Default::default(),
             usage_observation: None,
             usage: Some(TaskTokenUsageV3::charge_only(0)),
             outputs: Err("Review Worker was not started".into()),
@@ -361,6 +362,8 @@ impl CampaignReviewTaskHost<'_, '_> {
             if !environment.is_empty() {
                 review_sandbox::remove_materialized_caches(&sandbox)?;
             }
+            // A transient ending lets the runtime call again within this Attempt (ADR-0208).
+            result.notes = returned.notes;
             result.usage = returned.usage;
             result.usage_observation = returned.usage_observation;
             result.unknown_usage_cause = returned

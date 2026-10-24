@@ -80,7 +80,11 @@ impl NativeLogin {
             .map_err(|_| Failure::Failed)?;
         let mut command = Command::new(std::env::current_exe().map_err(|_| Failure::Failed)?);
         super::configure_private_login_environment(&mut command, spec, &sanitized_path());
+        // The guard checks the lock it inherits against the one this process holds, below the
+        // same state root; the native login it starts gets no such variable.
+        let state = crate::config::state_home().map_err(|_| Failure::Failed)?;
         command
+            .env("XDG_STATE_HOME", state)
             .args([
                 "provider",
                 "auth",
@@ -286,15 +290,18 @@ impl Drop for NativeLogin {
     }
 }
 
-// Codex 0.159.2 login/src/device_code_auth.rs::device_code_prompt prints this exact
-// stdout frame, including unconditional SGR and the extra newline from println!. Match only
-// those SGR positions: never remove arbitrary terminal controls or search prose for a URL.
+// Codex login/src/device_code_auth.rs::device_code_prompt prints this exact stdout frame,
+// including unconditional SGR and the extra newline from println!; verified on 0.159.2 and
+// 0.163.0. Match only those SGR positions: never remove arbitrary terminal controls or search
+// prose for a URL. The banner's version is the one field that differs between releases, so it
+// is parsed on its own, by a closed grammar, between two exact halves of the framing (#305).
 // cli/src/login.rs::run_login_with_device_code reports completion on stderr and by exit status;
 // stderr stays inside the lifetime guard and yields only closed failure categories. No success
 // prose, app-server notification, or status alone completes login.
 const CODEX_DEVICE_URL: &str = "https://auth.openai.com/codex/device";
+const CODEX_DEVICE_BANNER: &str = "\nWelcome to Codex [v\x1b[90m";
 const CODEX_DEVICE_PREFIX: &str = concat!(
-    "\nWelcome to Codex [v\x1b[90m0.159.2\x1b[0m]\n",
+    "\x1b[0m]\n",
     "\x1b[90mOpenAI's command-line coding agent\x1b[0m\n",
     "\nFollow these steps to sign in with ChatGPT using device code authorization:\n",
     "\n1. Open this link in your browser and sign in to your account\n",
@@ -305,6 +312,29 @@ const CODEX_DEVICE_SUFFIX: &str = concat!(
     "\x1b[0m\n\n\x1b[90mContinue only if you started this login in Codex. ",
     "If a website or another person gave you this code, cancel.\x1b[0m\n\n",
 );
+/// The longest banner version accepted: `MAJOR.MINOR.PATCH` with an optional `-` pre-release.
+const MAX_CODEX_VERSION: usize = 32;
+
+/// Whether `version` is a codex-cli release: three dot-separated numbers of at most six digits,
+/// optionally followed by `-` and a pre-release of lower-case letters, digits and dots.
+fn codex_version(version: &[u8]) -> bool {
+    let (core, pre) = match version.iter().position(|byte| *byte == b'-') {
+        Some(dash) => (&version[..dash], Some(&version[dash + 1..])),
+        None => (version, None),
+    };
+    let numbers: Vec<&[u8]> = core.split(|byte| *byte == b'.').collect();
+    numbers.len() == 3
+        && numbers
+            .iter()
+            .all(|number| (1..=6).contains(&number.len()) && number.iter().all(u8::is_ascii_digit))
+        && pre.is_none_or(|pre| {
+            !pre.is_empty()
+                && pre
+                    .iter()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'.')
+        })
+}
+
 const MAX_DEVICE_CODE: usize = 128;
 
 #[derive(Default)]
@@ -328,19 +358,45 @@ impl Codex {
                 None => Ok(None),
             };
         }
-        let prefix = CODEX_DEVICE_PREFIX.as_bytes();
-        let common = output.len().min(prefix.len());
-        if output[..common] != prefix[..common] {
-            return Err(Failure::Unsupported);
-        }
-        if output.len() < prefix.len() {
-            return if exit.is_some() {
+        let incomplete = |exit: Option<ExitStatus>| {
+            if exit.is_some() {
                 Err(Failure::Failed)
             } else {
                 Ok(None)
-            };
+            }
+        };
+        let banner = CODEX_DEVICE_BANNER.as_bytes();
+        let common = output.len().min(banner.len());
+        if output[..common] != banner[..common] {
+            return Err(Failure::Unsupported);
         }
-        let field = &output[prefix.len()..];
+        if output.len() < banner.len() {
+            return incomplete(exit);
+        }
+        // The version ends at the first byte its grammar never holds; the framing resumes there.
+        let rest = &output[banner.len()..];
+        let version_end = rest.iter().position(|byte| {
+            !(byte.is_ascii_digit() || byte.is_ascii_lowercase() || matches!(byte, b'.' | b'-'))
+        });
+        let Some(version_len) = version_end else {
+            if rest.len() > MAX_CODEX_VERSION {
+                return Err(Failure::Unsupported);
+            }
+            return incomplete(exit);
+        };
+        if version_len > MAX_CODEX_VERSION || !codex_version(&rest[..version_len]) {
+            return Err(Failure::Unsupported);
+        }
+        let rest = &rest[version_len..];
+        let prefix = CODEX_DEVICE_PREFIX.as_bytes();
+        let common = rest.len().min(prefix.len());
+        if rest[..common] != prefix[..common] {
+            return Err(Failure::Unsupported);
+        }
+        if rest.len() < prefix.len() {
+            return incomplete(exit);
+        }
+        let field = &rest[prefix.len()..];
         // Upstream treats user_code as an opaque server-issued String, not a fixed 4-4
         // regex. Support bounded uppercase/digit/hyphen codes conservatively; any other
         // alphabet requires explicit characterization, never guessing or forwarding tokens.
@@ -936,7 +992,6 @@ mod tests {
             DEVICE.replace("\n   \x1b[94m", "\n \x1b[94m"),
             DEVICE.replace("\n   \x1b[94m", "\n  \x1b[94m"),
             DEVICE.replace("\n   \x1b[94m", "\n    \x1b[94m"),
-            DEVICE.replace("0.159.2", "0.159.3"),
             DEVICE.replace("0.159.2", "0.159.2; token=secret"),
             DEVICE.replace("auth.openai.com", "auth.openai.com.evil.invalid"),
             DEVICE.replace("codex/device", "codex/device?token=secret"),
@@ -966,6 +1021,114 @@ mod tests {
                     .consume(&mut output.into_bytes(), None)
                     .is_err()
             );
+        }
+    }
+
+    /// The prompt of another codex-cli release: the 0.159.2 frame with its banner version.
+    /// codex-cli 0.163.0 prints exactly this (issue #305).
+    fn device(version: &str) -> String {
+        DEVICE.replace("0.159.2", version)
+    }
+
+    #[test]
+    fn codex_device_prompts_of_0159_2_and_0163_0_both_reach_the_challenge() {
+        for version in ["0.159.2", "0.163.0", "0.164.0-alpha.3", "1.0.0"] {
+            let prompt = device(version);
+            let mut output = prompt.as_bytes().to_vec();
+            let Some(Event::Challenge(challenge)) =
+                Codex::default().consume(&mut output, None).unwrap()
+            else {
+                panic!("expected a challenge from {version}");
+            };
+            assert_eq!(challenge.url.as_str(), CODEX_DEVICE_URL);
+            assert_eq!(
+                challenge.user_code.as_deref().map(String::as_str),
+                Some("TEST-CODE")
+            );
+            assert!(output.is_empty());
+            // Every byte boundary of the newer frame still waits for the rest.
+            for boundary in 0..prompt.len() {
+                let mut protocol = Codex::default();
+                let mut output = prompt.as_bytes()[..boundary].to_vec();
+                assert!(
+                    matches!(protocol.consume(&mut output, None), Ok(None)),
+                    "{version} at {boundary}"
+                );
+                output.extend_from_slice(&prompt.as_bytes()[boundary..]);
+                assert!(matches!(
+                    protocol.consume(&mut output, None),
+                    Ok(Some(Event::Challenge(_)))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn codex_banner_versions_outside_the_release_grammar_are_refused() {
+        for version in [
+            "",
+            "0.163",
+            "0.163.0.1",
+            "v0.163.0",
+            "0.163.0-",
+            "0.163.0-RC1",
+            "0.163.0-rc_1",
+            "0..0",
+            "1234567.0.0",
+            "0.163.0 ",
+            "0.163.0;token=secret",
+            "0.163.0-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "0.163.0\x1b[0m]\n\nWelcome to Codex [v\x1b[90m0.163.0",
+            "https://auth.openai.com/codex/device",
+            "TEST-CODE",
+        ] {
+            assert!(
+                Codex::default()
+                    .consume(&mut device(version).into_bytes(), None)
+                    .is_err(),
+                "{version:?} was accepted"
+            );
+        }
+        // A version that never ends is refused once it outgrows the grammar, never waited on.
+        let mut output = format!("\nWelcome to Codex [v\x1b[90m{}", "1".repeat(64)).into_bytes();
+        assert!(Codex::default().consume(&mut output, None).is_err());
+    }
+
+    #[test]
+    fn codex_prompts_that_move_the_code_drop_the_url_or_embed_a_second_framing_are_refused() {
+        for version in ["0.159.2", "0.163.0"] {
+            let prompt = device(version);
+            let url_line = "   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n";
+            let code_line = "   \x1b[94mTEST-CODE\x1b[0m\n";
+            let moved = prompt
+                .replace(code_line, "   \x1b[94m\x1b[0m\n")
+                .replace(url_line, &format!("{url_line}{code_line}"));
+            let swapped = prompt
+                .replace(url_line, "@URL@")
+                .replace(code_line, url_line)
+                .replace("@URL@", code_line);
+            for output in [
+                moved,
+                swapped,
+                prompt.replace(url_line, ""),
+                prompt.replace("https://auth.openai.com/codex/device", ""),
+                format!("{prompt}{prompt}"),
+                prompt.replace(
+                    "\n2. Enter",
+                    &format!("{}\n2. Enter", device(version).trim_end()),
+                ),
+                prompt.replace(
+                    "OpenAI's command-line coding agent",
+                    "OpenAI's command-line coding agent\x1b[0m]\nWelcome to Codex [v\x1b[90m0.1.0",
+                ),
+            ] {
+                assert!(
+                    Codex::default()
+                        .consume(&mut output.clone().into_bytes(), None)
+                        .is_err(),
+                    "{version}: {output:?}"
+                );
+            }
         }
     }
 

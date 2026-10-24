@@ -15,6 +15,7 @@ use review_store::{Cas, EventStore};
 use serde_json::{Value, json};
 
 use super::{state_path, store_present};
+use crate::human;
 
 const DAY_MS: u64 = 86_400_000;
 
@@ -29,7 +30,10 @@ pub(crate) fn gc(
 ) -> Result<i32, String> {
     let (_, state) = state_path(repo, state)?;
     if !store_present(&state)? {
-        return Err(format!("Task state {} holds no Store", state.display()));
+        return Err(format!(
+            "{}; nothing to collect",
+            super::store_not_found(&state)
+        ));
     }
     let older_than_ms = older_than_days
         .checked_mul(DAY_MS)
@@ -66,6 +70,10 @@ pub(crate) fn gc(
                 stop_after_tombstones(),
             )
             .map_err(|e| e.to_string())?;
+        // A collected Task's run records and logs go with it (ADR-0211).
+        for task_id in &outcome.tombstoned {
+            super::runs::forget(&state, task_id);
+        }
         (outcome.plan.clone(), Some(outcome))
     } else {
         let store =
@@ -191,13 +199,16 @@ fn disposition(value: &CollectionDisposition, keep: usize, older_than_ms: u64) -
 }
 
 fn text(plan: &CollectionPlan, outcome: Option<&CollectionOutcome>) -> String {
+    // Sizes in units and times in the local zone; `--json` keeps the bytes and Unix times.
     let mut out = format!(
-        "Store: {} objects, {} bytes ({} bytes unreachable)\n",
-        plan.totals.objects, plan.totals.bytes, plan.totals.unreachable_bytes
+        "Store: {} objects, {} ({} unreachable)\n",
+        plan.totals.objects,
+        human::bytes(plan.totals.bytes),
+        human::bytes(plan.totals.unreachable_bytes)
     );
     for task in &plan.tasks {
         let bytes = if task.disposition.collects() {
-            format!("  {} bytes", task.collected_bytes)
+            format!("  {}", human::bytes(task.collected_bytes))
         } else {
             String::new()
         };
@@ -205,26 +216,27 @@ fn text(plan: &CollectionPlan, outcome: Option<&CollectionOutcome>) -> String {
             "{}  {}  last event {}{bytes}\n",
             task.task_id,
             disposition(&task.disposition, plan.keep, plan.older_than_ms),
-            collected_time(task.last_event_unix_ms),
+            human::local_time(task.last_event_unix_ms),
         ));
     }
     for task in &plan.collected {
         out.push_str(&format!(
             "{}  collected {}\n",
             task.collected.task_id,
-            collected_time(task.collected.collected_unix_ms)
+            human::local_time(task.collected.collected_unix_ms)
         ));
     }
     for (task_id, until) in &plan.live_writers {
         out.push_str(&format!(
             "live writer: {task_id} holds its lease until {}; --apply is refused until it ends\n",
-            collected_time(*until)
+            human::local_time(*until)
         ));
     }
     match outcome {
         None => out.push_str(&format!(
-            "Would reclaim {} objects, {} bytes. Nothing was written; run with --apply to collect.\n",
-            plan.reclaimable_objects, plan.reclaimable_bytes
+            "Would reclaim {} objects, {}. Nothing was written; run with --apply to collect.\n",
+            plan.reclaimable_objects,
+            human::bytes(plan.reclaimable_bytes)
         )),
         Some(outcome) => {
             if outcome.tombstoned.is_empty() {
@@ -234,8 +246,9 @@ fn text(plan: &CollectionPlan, outcome: Option<&CollectionOutcome>) -> String {
             }
             if outcome.swept {
                 out.push_str(&format!(
-                    "Removed {} objects, {} bytes.\n",
-                    outcome.removed_objects, outcome.removed_bytes
+                    "Removed {} objects, {}.\n",
+                    outcome.removed_objects,
+                    human::bytes(outcome.removed_bytes)
                 ));
             } else {
                 out.push_str("The sweep did not run; the next `af task gc --apply` finishes it.\n");
@@ -245,19 +258,21 @@ fn text(plan: &CollectionPlan, outcome: Option<&CollectionOutcome>) -> String {
     out
 }
 
-/// The `af/task-list-entry@2` of a collected Task: its retained summary, the result its log
+/// The `af/task-list-entry@3` of a collected Task: its retained summary, the result its log
 /// named, and `collected`; nothing artifact-backed. The unknown-usage count is the tombstone's,
 /// so the collected Task still lists `(+N unknown)` (ADR-0143).
 pub(super) fn list_entry(task: &CollectedTask) -> Value {
     let mut entry = json!({
-        "schema": "af/task-list-entry@2",
+        "schema": super::TASK_LIST_ENTRY_V3,
         "task_id": task.collected.task_id,
         "kind": task.collected.kind,
         "phase": {"kind": "finished", "result_id": task.result_id},
-        "outcome": task.collected.outcome,
+        "state": super::state::collected(&task.collected.outcome),
+        "round": 0,
         "chargeable_tokens": task.collected.chargeable_tokens,
         "derived_snapshot_id": null,
         "delivery": null,
+        "updated_unix_ms": task.collected.collected_unix_ms,
         "collected": task.collected,
     });
     if task.collected.unknown_usage_attempts > 0 {
@@ -266,13 +281,15 @@ pub(super) fn list_entry(task: &CollectedTask) -> Value {
     entry
 }
 
-/// The `af/task-collected-inspection@1` document `af task show --json` prints for a collected
-/// Task in place of the artifact-backed inspection.
+/// The `af/task-collected-inspection@2` document `af task show --json` prints for a collected
+/// Task in place of the artifact-backed inspection: its retained summary and the same state
+/// `af task list` prints for it.
 pub(super) fn inspection(task: &CollectedTask) -> Value {
     json!({
-        "schema": "af/task-collected-inspection@1",
+        "schema": "af/task-collected-inspection@2",
         "task_id": task.collected.task_id,
         "phase": {"kind": "finished", "result_id": task.result_id},
+        "state": super::state::collected(&task.collected.outcome),
         "collected": task.collected,
     })
 }
@@ -288,8 +305,12 @@ pub(super) fn present(task: &CollectedTask, json_output: bool) -> Result<(), Str
     }
     let collected = &task.collected;
     println!(
-        "Task {}: collected {}",
+        "Task {}: {}",
         collected.task_id,
+        super::state::collected(&collected.outcome).label()
+    );
+    println!(
+        "  collected: {}",
         collected_time(collected.collected_unix_ms)
     );
     println!("  kind: {}", collected.kind);
@@ -310,5 +331,6 @@ pub(super) fn present(task: &CollectedTask, json_output: bool) -> Result<(), Str
         collected_time(collected.last_event_unix_ms)
     );
     println!("  bytes collected: {}", collected.collected_bytes);
+    println!("next: none");
     Ok(())
 }

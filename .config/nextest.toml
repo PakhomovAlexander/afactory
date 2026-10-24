@@ -54,6 +54,11 @@ path = "junit.xml"
 #   Store operation held the shared one into the lease's last 4 s, cost the next write its
 #   sequence comparison; both are the kernel's correct answers to a real-time budget the
 #   fixture spent on scheduling. Alone the two pass together in 25 s (ADR-0182).
+# - concurrent_short_commands_complete_within_their_real_time_bounds: the real-time half of
+#   review-process's concurrent pipes test (its pipe-independence half runs in parallel under a
+#   load-safe timeout): twelve threads start /bin/sh together 24 times, and every short command
+#   must answer inside its 100 ms timeout, every command be done within 2 s and the whole run
+#   within 10 s. On the loaded gate a shell that answers took longer than 100 ms to start.
 # - heavy_starter_repair_uses_current_evidence: the same eleven-Attempt shape, with 5 s
 #   Workers and a 15 s heartbeat lease. It passed alone in 30.38 s but took 92.2 s in the
 #   full gate and exhausted resources at repair verification. Hold the suite's threads as
@@ -81,6 +86,7 @@ test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/::heavy_starter_repair_uses_current_evidence$/)
 | test(/::targeted_starter_repair_uses_current_evidence$/)
 | test(/::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness$/)
+| test(/concurrent_short_commands_complete_within_their_real_time_bounds$/)
 '''
 threads-required = "num-test-threads"
 priority = 100

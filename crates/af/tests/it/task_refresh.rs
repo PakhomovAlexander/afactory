@@ -546,3 +546,66 @@ fn explicit_relative_refresh_source_uses_the_callers_directory() {
         issue()
     );
 }
+
+/// A refresh whose new source no Pipeline can run now (here its Workers' `python3` is not on
+/// PATH) is recorded, exits 4 (the Task waits for a person) and says why on stderr: the
+/// refusal's sentence with the candidate's reason, before the state line. Under `--json` the
+/// one `af/error@1` document carries the same sentence, the decision and the next command.
+#[test]
+fn a_refresh_refused_by_an_unavailable_pipeline_says_why() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = setup(root.path(), None, "implementation-small", 3);
+    task(&repo, &state, &["task", "plan", "--file", "ticket.json"], 0);
+    let bin = root.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink("/usr/bin/git", bin.join("git")).unwrap();
+    let refresh = |revision: &str, json: bool| {
+        let mut fresh = issue();
+        fresh["revision"] = json!(revision);
+        fresh["description"] = json!(format!("Requirements of {revision}."));
+        write(&repo.join("issue.json"), &fresh);
+        let mut command = crate::common::af();
+        command
+            .current_dir(&repo)
+            .args(["task", "refresh", "issue-refresh", "--state"])
+            .arg(&state)
+            .env("PATH", &bin);
+        if json {
+            command.arg("--json");
+        }
+        command.output().unwrap()
+    };
+    let why = "the refreshed source of Task issue-refresh cannot be planned now: No Pipeline \
+               selected for Task issue-refresh: unavailable: a Worker or check cannot run here; \
+               builtin/implementation-small: Worker builtin/evaluator executable python3 is \
+               unavailable";
+    let next = format!("af task show issue-refresh --state {}", state.display());
+    let text = refresh("v2", false);
+    let stderr = String::from_utf8_lossy(&text.stderr).into_owned();
+    assert_eq!(text.status.code(), Some(4), "{stderr}");
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert!(
+        lines.contains(&format!("af task refresh: {why}").as_str()),
+        "{stderr}"
+    );
+    assert_eq!(
+        lines.last().copied(),
+        Some(format!("Task issue-refresh: waiting; next: {next}").as_str()),
+        "{stderr}"
+    );
+    let json = refresh("v3", true);
+    assert_eq!(json.status.code(), Some(4));
+    let document: Value = serde_json::from_slice(&json.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("error-v1.json"), &document);
+    assert_eq!(
+        document,
+        json!({"schema": "af/error@1", "command": "af task", "error": why, "exit_code": 4,
+            "cause": "refresh_refused", "next_action": next,
+            "details": {"decision": "unavailable"}})
+    );
+    assert!(
+        String::from_utf8_lossy(&json.stderr).contains(why),
+        "{}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+}

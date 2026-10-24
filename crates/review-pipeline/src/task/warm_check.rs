@@ -21,14 +21,19 @@ use std::time::{Duration, Instant};
 
 use review_check::{CheckDefinition, CheckExecution, CheckRunner};
 use review_config::CacheKindSpec;
+use review_core::task::check_layer::{
+    TaskLayerEvictionV1, TaskLayerEvictorV1, TaskLayerHolderV1, TaskLayerLockV1, TaskLayerPhaseV1,
+    TaskLayerSourcesV1, WARM_HOLDER_V1, WarmEvictionV1, WarmHolderV1,
+};
 use review_core::task::present_option;
 use review_core::task::runtime::{
     TaskCacheBoundV1, TaskCacheObservationV1, TaskRuntimeRustupHomeV1,
 };
 use review_sandbox::{
     CacheError, CacheErrorKind, CacheKind, CacheSource, Ensured, TaskBuildCacheKeyLock,
-    TaskBuildCacheLock, WarmDirectory, default_task_build_cache_root, lock_task_build_cache_key,
-    materialize_cache_into_runtime,
+    TaskBuildCacheLock, WarmDirectory, clone_warm_kind, default_task_build_cache_root,
+    lock_task_build_cache_key_waiting, materialize_cache_into_runtime, read_key_eviction,
+    read_key_holder,
 };
 use review_source_git::Manifest;
 use review_store::Cas;
@@ -64,10 +69,28 @@ pub(crate) enum Excess {
 /// Attempt's deadline ran out before or during preparation.
 pub(crate) const DEADLINE_EXHAUSTED: &str = "deadline_exhausted";
 
+mod sources;
+
+/// The offline check's npm cache rules (ADR-0207), for callers that fill or inspect a cache.
+pub use review_check::NpmPackagePin as NpmPin;
+pub use review_check::offline;
+pub(crate) use sources::{PackageIndex, SourcePlan};
+
+/// The build deadline this repository declares, and the one the documentation recommends
+/// (ADR-0207). A policy that leaves `[warm] build_wall_ms` out keeps one deadline for the
+/// whole check: a default would lengthen every warm check Attempt and refuse Task files whose
+/// verification reserve was sized for `check_wall_ms` alone.
+pub const RECOMMENDED_BUILD_WALL_MS: u64 = 2_400_000;
+/// The longest build phase a policy may declare.
+pub const MAX_BUILD_WALL_MS: u64 = 3_600_000;
+
 const TOOLCHAIN_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
-const LOCK_WAIT: Duration = Duration::from_secs(60);
+/// How often a check waiting for a held layer says so (ADR-0207).
+const WAIT_NOTICE: Duration = Duration::from_secs(60);
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 const MONITOR_POLL: Duration = Duration::from_millis(50);
+/// How often the monitor reads a check's report for the end of its build phase.
+const PHASE_POLL: Duration = Duration::from_secs(1);
 
 /// The closed vocabulary of Warm Check Cache directories. Distinct from a Gate's
 /// `build_caches` (ADR-0108), which clone a Round-scoped capture into a sandbox.
@@ -78,6 +101,9 @@ pub enum WarmBuildCacheKind {
     CargoTarget,
     /// Cargo's registry and git caches, bound as `CARGO_HOME`. It never holds a credential.
     CargoHome,
+    /// npm's content-addressed cache, bound as `npm_config_cache`: what an offline check
+    /// (ADR-0207) installs its pinned packages from without network.
+    NpmCache,
 }
 
 impl WarmBuildCacheKind {
@@ -85,6 +111,7 @@ impl WarmBuildCacheKind {
         match self {
             Self::CargoTarget => "cargo_target",
             Self::CargoHome => "cargo_home",
+            Self::NpmCache => "npm_cache",
         }
     }
 
@@ -93,6 +120,7 @@ impl WarmBuildCacheKind {
         match self {
             Self::CargoTarget => "CARGO_TARGET_DIR",
             Self::CargoHome => "CARGO_HOME",
+            Self::NpmCache => "npm_config_cache",
         }
     }
 
@@ -100,7 +128,7 @@ impl WarmBuildCacheKind {
     /// token from either, and the kernel never lets one persist between checks.
     const fn forbidden(self) -> &'static [&'static str] {
         match self {
-            Self::CargoTarget => &[],
+            Self::CargoTarget | Self::NpmCache => &[],
             Self::CargoHome => &["credentials.toml", "credentials"],
         }
     }
@@ -133,6 +161,23 @@ pub struct CodeWarmPolicy {
         deserialize_with = "present_option"
     )]
     pub hard_max_bytes: Option<u64>,
+    /// When another check holds the layer, build in a private copy of it instead of waiting
+    /// (ADR-0207). Absent or `false`, a check waits for the layer until its deadline.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    pub clone_when_busy: Option<bool>,
+    /// The deadline of a check's build phase, until it reports its `build` step (ADR-0207);
+    /// `check_wall_ms` then governs the tests. Absent, the whole check has `check_wall_ms`, as
+    /// before; see [`RECOMMENDED_BUILD_WALL_MS`].
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    pub build_wall_ms: Option<u64>,
 }
 
 impl CodeWarmPolicy {
@@ -172,7 +217,24 @@ impl CodeWarmPolicy {
                 self.max_bytes()
             ));
         }
+        if self
+            .build_wall_ms
+            .is_some_and(|ms| ms == 0 || ms > MAX_BUILD_WALL_MS)
+        {
+            return Err(format!(
+                "Code policy [warm] build_wall_ms must be between 1 and {MAX_BUILD_WALL_MS}"
+            ));
+        }
         Ok(())
+    }
+
+    /// The build phase's own deadline, when the policy declares one.
+    pub fn build_wall_ms(&self) -> Option<u64> {
+        self.build_wall_ms
+    }
+
+    pub fn clone_when_busy(&self) -> bool {
+        self.clone_when_busy.unwrap_or(false)
     }
 
     pub fn max_bytes(&self) -> u64 {
@@ -207,7 +269,11 @@ pub(crate) type CacheSourceResolver =
 #[derive(Clone)]
 pub(crate) struct WarmCheckHost {
     pub(crate) root: Option<PathBuf>,
-    pub(crate) lock_wait: Duration,
+    /// How long a check waits for a held layer; `None`, the default, waits until the check's
+    /// deadline (ADR-0207).
+    pub(crate) lock_wait: Option<Duration>,
+    /// How often a waiting check says whom it waits for.
+    pub(crate) wait_notice: Duration,
     pub(crate) resolver: Option<Arc<CacheSourceResolver>>,
 }
 
@@ -215,7 +281,12 @@ impl Default for WarmCheckHost {
     fn default() -> Self {
         Self {
             root: None,
-            lock_wait: LOCK_WAIT,
+            lock_wait: None,
+            // A test makes the minute shorter so a wait it provokes says so in seconds.
+            wait_notice: std::env::var("AF_TEST_WARM_WAIT_NOTICE_MS")
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+                .map_or(WAIT_NOTICE, Duration::from_millis),
             resolver: None,
         }
     }
@@ -457,7 +528,7 @@ fn version(
     }
 }
 
-fn key_digest(domain: &str, fields: &[&[u8]]) -> String {
+pub(crate) fn key_digest(domain: &str, fields: &[&[u8]]) -> String {
     let mut bytes = domain.as_bytes().to_vec();
     bytes.push(0);
     for field in fields {
@@ -606,6 +677,110 @@ impl Observation {
     }
 }
 
+/// What a check learned of its layer while it was prepared (ADR-0207), for its
+/// `af/TaskCheckLayer@1` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LayerFacts {
+    /// `<project>/<toolchain>`, once the toolchain resolved.
+    pub(crate) key: Option<String>,
+    pub(crate) lock: TaskLayerLockV1,
+    pub(crate) waited_ms: u64,
+    /// The holder the check met, when it met one that named itself.
+    pub(crate) holder: Option<TaskLayerHolderV1>,
+    /// What the content rule did with the Snapshot's source groups.
+    pub(crate) sources: TaskLayerSourcesV1,
+}
+
+impl LayerFacts {
+    pub(crate) fn unresolved() -> Self {
+        Self {
+            key: None,
+            lock: TaskLayerLockV1::Unresolved,
+            waited_ms: 0,
+            holder: None,
+            sources: TaskLayerSourcesV1 { stale: 0, fresh: 0 },
+        }
+    }
+}
+
+/// The holder record beside a key, when it is one this release reads.
+fn holder_of(root: &Path, project: &str, toolchain: &str) -> Option<WarmHolderV1> {
+    read_key_holder(root, project, toolchain)
+        .and_then(|bytes| serde_json::from_slice::<WarmHolderV1>(&bytes).ok())
+        .filter(|holder| holder.validate().is_ok())
+}
+
+/// This process, as the holder record a waiting check reads.
+fn this_holder() -> Vec<u8> {
+    let holder = WarmHolderV1 {
+        schema: WARM_HOLDER_V1.into(),
+        pid: std::process::id(),
+        host: review_process::host::host_name().unwrap_or_else(|| "unknown host".into()),
+        since_unix_ms: unix_ms(),
+        command: "af task run".into(),
+    };
+    serde_json::to_vec(&holder).unwrap_or_default()
+}
+
+pub(crate) fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+/// The line a check waiting for a held layer prints every minute.
+fn wait_notice(
+    key: &str,
+    holder: Option<&WarmHolderV1>,
+    waited: Duration,
+    left: Duration,
+) -> String {
+    let held_by = match holder {
+        Some(holder) => format!(
+            "{} {} since {} on {}",
+            holder.command,
+            holder.pid,
+            utc_time(holder.since_unix_ms),
+            holder.host
+        ),
+        None => "another check that left no holder record".into(),
+    };
+    format!(
+        "waiting for warm layer {key} held by {held_by}; waited {} s, waiting up to {} s more \
+         (the check deadline)",
+        waited.as_secs(),
+        left.as_secs()
+    )
+}
+
+/// `2026-10-23 12:00:00 UTC`.
+pub(crate) fn utc_time(unix_ms: u64) -> String {
+    let seconds = unix_ms / 1000;
+    let days = (seconds / 86_400) as i64;
+    let of_day = seconds % 86_400;
+    // Howard Hinnant's civil-from-days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted + 2) / 5 + 1;
+    let month = if shifted < 10 {
+        shifted + 3
+    } else {
+        shifted - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
+        of_day / 3_600,
+        of_day / 60 % 60,
+        of_day % 60
+    )
+}
+
 /// What one check receives from its warm layer.
 pub(crate) struct PreparedCheck {
     /// `CARGO_TARGET_DIR` first, then a `cargo_home` directory's `CARGO_HOME`, then any Cache
@@ -616,18 +791,25 @@ pub(crate) struct PreparedCheck {
     pub(crate) key_lock: Option<TaskBuildCacheKeyLock>,
     /// The locked warm directories the check builds into; an absent kind runs cold.
     pub(crate) directories: Vec<(WarmBuildCacheKind, WarmDirectory)>,
+    /// Private copies of a busy layer's directories, below the check's runtime directory, when
+    /// `[warm] clone_when_busy` is on (ADR-0207).
+    pub(crate) clones: Vec<(WarmBuildCacheKind, PathBuf)>,
     /// Exactly one per declared kind, build directories first, in declared order.
     pub(crate) observations: Vec<Observation>,
     /// A declared Cache Snapshot that could not be materialized: the check does not run, exactly
     /// as a Gate does not dispatch its command.
     pub(crate) refusal: Option<String>,
+    pub(crate) layer: LayerFacts,
 }
 
 impl PreparedCheck {
-    /// Order sources against the actual held target, not an assumed monotonic wall clock.
-    /// If the target is future-dated, bind a cold private target for this check. Keep the
-    /// original locks and byte monitoring, and leave Cargo home warm. No cache mutation or
-    /// unbounded removal is needed on this deadline-sensitive path.
+    /// Order sources against the actual held target, not an assumed monotonic wall clock, and
+    /// by content (ADR-0207): under the key's lock, a source group whose digest the key's
+    /// sources record holds gets its recorded stamp back, so Cargo keeps what it built from that
+    /// content; every other group is stamped now, newer than everything in the target, and is
+    /// rebuilt. The record is removed before any file is stamped and written again before the
+    /// check starts. If the target is future-dated, bind a cold private target for this check
+    /// and keep the original locks and byte monitoring; Cargo home stays warm.
     pub(crate) fn refresh_source_mtimes(
         &mut self,
         sandbox: &review_sandbox::Sandbox,
@@ -636,13 +818,25 @@ impl PreparedCheck {
         budget: Duration,
     ) -> std::io::Result<usize> {
         let started = Instant::now();
-        let mut after = self
+        let target = self
             .directories
             .iter()
             .find(|(kind, _)| *kind == WarmBuildCacheKind::CargoTarget)
-            .map(|(_, directory)| directory.latest_mtime(cancellation, budget))
+            .map(|(_, directory)| directory);
+        let mut after = target
+            .map(|directory| directory.latest_mtime(cancellation, budget))
             .transpose()?
             .flatten();
+        let mut keyed = target.is_some();
+        if target.is_none()
+            && let Some((_, clone)) = self
+                .clones
+                .iter()
+                .find(|(kind, _)| *kind == WarmBuildCacheKind::CargoTarget)
+        {
+            // A private copy keeps its artifacts' times: sources are ordered after them too.
+            after = latest_mtime_below(clone, cancellation, budget)?;
+        }
         if after.is_some_and(|latest| latest > std::time::SystemTime::now()) {
             let kind = WarmBuildCacheKind::CargoTarget;
             let target = self
@@ -660,13 +854,91 @@ impl PreparedCheck {
             observation.eligible = false;
             observation.bytes_available = 0;
             after = None;
+            keyed = false;
         }
-        sandbox.refresh_source_mtimes(
+        let manifest = sandbox.baseline();
+        let key = self.key_lock.as_ref().filter(|_| keyed);
+        let plan = match key {
+            Some(key) => {
+                // Gone before any file is stamped: if anything below fails, the key has no
+                // record, and the next check rebuilds every group instead of trusting one.
+                let record = key.read_sources();
+                key.forget_sources().map_err(std::io::Error::other)?;
+                SourcePlan::decide(manifest, record.as_deref(), std::time::SystemTime::now())
+            }
+            None => SourcePlan::all_stale(manifest),
+        };
+        let index = PackageIndex::new(manifest);
+        let refreshed = sandbox.refresh_source_mtimes_keyed(
             after,
+            &|path| plan.kept_time(&index, path),
             cancellation,
             budget.saturating_sub(started.elapsed()),
-        )
+        )?;
+        if let Some(key) = key {
+            match plan.record(refreshed.stamp) {
+                Some(record) => {
+                    if let Err(detail) = serde_json::to_vec(&record)
+                        .map_err(|error| error.to_string())
+                        .and_then(|bytes| key.write_sources(&bytes))
+                    {
+                        eprintln!("warm check cache diagnostic: {detail}");
+                    }
+                }
+                None => eprintln!(
+                    "warm check cache diagnostic: the Snapshot has more source groups than a \
+                     sources record holds; every group is rebuilt next time"
+                ),
+            }
+        }
+        self.layer.sources = plan.counts();
+        Ok(refreshed.stamped + refreshed.kept)
     }
+
+    /// Whether the layer held a build when the check started: a bound or copied directory with
+    /// bytes.
+    pub(crate) fn started_warm(&self) -> bool {
+        self.observations.iter().any(|observation| {
+            observation.discarded.is_none()
+                && observation.bytes_available > 0
+                && (observation.eligible || observation.kind.ends_with(":cloned"))
+        })
+    }
+}
+
+/// The newest modification time below `root`, links not followed; `None` when it is empty.
+fn latest_mtime_below(
+    root: &Path,
+    cancellation: Option<&AtomicBool>,
+    budget: Duration,
+) -> std::io::Result<Option<std::time::SystemTime>> {
+    let started = Instant::now();
+    let mut latest = None;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "source freshness refresh cancelled",
+            ));
+        }
+        if started.elapsed() >= budget {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "source freshness refresh exceeded check deadline",
+            ));
+        }
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let metadata = entry.path().symlink_metadata()?;
+            let modified = metadata.modified()?;
+            latest = Some(latest.map_or(modified, |old: std::time::SystemTime| old.max(modified)));
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    Ok(latest)
 }
 
 /// The warm layer of one check Attempt. The toolchain is resolved once per distinct hashed
@@ -722,8 +994,10 @@ impl<'a> WarmSession<'a> {
             environment: Vec::new(),
             key_lock: None,
             directories: Vec::new(),
+            clones: Vec::new(),
             observations: Vec::new(),
             refusal: None,
+            layer: LayerFacts::unresolved(),
         };
         let mut settled = BTreeMap::new();
         let mut kinds = self.policy.build_cache.clone();
@@ -783,31 +1057,120 @@ impl<'a> WarmSession<'a> {
                     // so two checks declaring different kinds cannot each fill the shared bound,
                     // and a kind another check left over the bound is evicted before this one
                     // binds anything.
-                    let key = self
+                    let toolchain_hex = hex(&toolchain);
+                    let root = self
                         .host
                         .root
                         .clone()
-                        .map_or_else(default_task_build_cache_root, Ok)
-                        .and_then(|root| {
-                            // A key that does not exist yet is new bytes on the machine: the
-                            // Storage Budget evicts what it must before it is made (ADR-0144).
-                            let path = root.join(&self.project).join(hex(&toolchain));
-                            if std::fs::symlink_metadata(&path).is_err() {
-                                crate::storage::before_new_warm_key();
-                            }
-                            lock_task_build_cache_key(
-                                &root,
-                                &self.project,
-                                &hex(&toolchain),
-                                self.host.lock_wait.min(left()),
-                            )
-                        });
+                        .map_or_else(default_task_build_cache_root, Ok);
+                    let layer_key = format!("{}/{toolchain_hex}", self.project);
+                    prepared.layer.key = Some(layer_key.clone());
+                    prepared.layer.lock = TaskLayerLockV1::Unavailable;
+                    // A held layer is waited for until the check's deadline, saying every minute
+                    // whom it waits for; with `clone_when_busy` it is not waited for at all.
+                    let clone = self.policy.clone_when_busy();
+                    let waiting = Instant::now();
+                    let mut met: Option<Option<WarmHolderV1>> = None;
+                    let key = root.clone().and_then(|root| {
+                        // A key that does not exist yet is new bytes on the machine: the
+                        // Storage Budget evicts what it must before it is made (ADR-0144).
+                        let path = root.join(&self.project).join(&toolchain_hex);
+                        if std::fs::symlink_metadata(&path).is_err() {
+                            crate::storage::before_new_warm_key();
+                        }
+                        let wait = if clone {
+                            Duration::ZERO
+                        } else {
+                            self.host.lock_wait.unwrap_or(Duration::MAX).min(left())
+                        };
+                        let mut noticed = Duration::ZERO;
+                        lock_task_build_cache_key_waiting(
+                            &root,
+                            &self.project,
+                            &toolchain_hex,
+                            wait,
+                            &mut |waited| {
+                                if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                                    return false;
+                                }
+                                let holder = met.get_or_insert_with(|| {
+                                    holder_of(&root, &self.project, &toolchain_hex)
+                                });
+                                if waited >= noticed + self.host.wait_notice {
+                                    noticed = waited;
+                                    eprintln!(
+                                        "{}",
+                                        wait_notice(&layer_key, holder.as_ref(), waited, left())
+                                    );
+                                }
+                                true
+                            },
+                        )
+                    });
+                    let waited_ms = waiting.elapsed().as_millis() as u64;
+                    prepared.layer.waited_ms = waited_ms;
                     match key {
                         Ok(None) => {
+                            let holder = met.flatten().or_else(|| {
+                                root.as_ref()
+                                    .ok()
+                                    .and_then(|root| holder_of(root, &self.project, &toolchain_hex))
+                            });
+                            prepared.layer.holder = holder.map(|holder| TaskLayerHolderV1 {
+                                pid: holder.pid,
+                                host: holder.host,
+                                since_unix_ms: holder.since_unix_ms,
+                            });
+                            prepared.layer.lock = TaskLayerLockV1::Busy;
                             for kind in &kinds {
-                                settled.insert(
-                                    *kind,
-                                    self.ineligible(
+                                let cloned = match (&root, clone && !self.policy.supersedes(*kind))
+                                {
+                                    (Ok(root), true) => {
+                                        let destination =
+                                            runtime.join(format!("{}-clone", kind.as_str()));
+                                        let copying = Instant::now();
+                                        match clone_warm_kind(
+                                            root,
+                                            &self.project,
+                                            &toolchain_hex,
+                                            kind.as_str(),
+                                            &destination,
+                                            &|| {
+                                                !left().is_zero()
+                                                    && !cancellation.is_some_and(|flag| {
+                                                        flag.load(Ordering::Acquire)
+                                                    })
+                                            },
+                                        ) {
+                                            Ok(bytes) => Some((destination, bytes, copying)),
+                                            Err(detail) => {
+                                                eprintln!("warm check cache diagnostic: {detail}");
+                                                None
+                                            }
+                                        }
+                                    }
+                                    _ => None,
+                                };
+                                let observation = match cloned {
+                                    Some((destination, bytes, copying)) => {
+                                        // A private copy: warm with what the holder had built,
+                                        // without its sources record, so every source group is
+                                        // stamped now and the copy is never the layer itself.
+                                        prepared.layer.lock = TaskLayerLockV1::Cloned;
+                                        prepared.clones.push((*kind, destination));
+                                        let mut observation = self.ineligible(
+                                            cas,
+                                            kind.as_str(),
+                                            "cloned",
+                                            Some(&toolchain),
+                                            bytes,
+                                            started,
+                                        )?;
+                                        observation.materialization_ms =
+                                            copying.elapsed().as_millis() as u64;
+                                        observation
+                                    }
+                                    None => self.ineligible(
                                         cas,
                                         kind.as_str(),
                                         reason_for(*kind, "busy"),
@@ -815,7 +1178,8 @@ impl<'a> WarmSession<'a> {
                                         0,
                                         started,
                                     )?,
-                                );
+                                };
+                                settled.insert(*kind, observation);
                             }
                         }
                         Err(detail) => {
@@ -835,6 +1199,19 @@ impl<'a> WarmSession<'a> {
                             }
                         }
                         Ok(Some(key)) => {
+                            prepared.layer.lock = if met.is_some() {
+                                TaskLayerLockV1::Waited
+                            } else {
+                                TaskLayerLockV1::Held
+                            };
+                            prepared.layer.holder = met.flatten().map(|holder| TaskLayerHolderV1 {
+                                pid: holder.pid,
+                                host: holder.host,
+                                since_unix_ms: holder.since_unix_ms,
+                            });
+                            if let Err(detail) = key.announce(&this_holder()) {
+                                eprintln!("warm check cache diagnostic: {detail}");
+                            }
                             let over = match key.bytes() {
                                 Ok(bytes) => bytes > self.policy.max_bytes(),
                                 Err(uninspectable) => {
@@ -885,41 +1262,43 @@ impl<'a> WarmSession<'a> {
                                     continue;
                                 }
                                 let started = Instant::now();
-                                let directory =
-                                    match key.lock_kind(label, self.host.lock_wait.min(left())) {
-                                        Ok(TaskBuildCacheLock::Held(directory)) => {
-                                            directory.forbidding(kind.forbidden())
-                                        }
-                                        Ok(TaskBuildCacheLock::Busy) => {
-                                            settled.insert(
-                                                *kind,
-                                                self.ineligible(
-                                                    cas,
-                                                    label,
-                                                    "busy",
-                                                    Some(&toolchain),
-                                                    0,
-                                                    started,
-                                                )?,
-                                            );
-                                            continue;
-                                        }
-                                        Err(detail) => {
-                                            eprintln!("warm check cache diagnostic: {detail}");
-                                            settled.insert(
-                                                *kind,
-                                                self.ineligible(
-                                                    cas,
-                                                    label,
-                                                    "unavailable",
-                                                    Some(&toolchain),
-                                                    0,
-                                                    started,
-                                                )?,
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                let directory = match key.lock_kind(
+                                    label,
+                                    self.host.lock_wait.unwrap_or(Duration::MAX).min(left()),
+                                ) {
+                                    Ok(TaskBuildCacheLock::Held(directory)) => {
+                                        directory.forbidding(kind.forbidden())
+                                    }
+                                    Ok(TaskBuildCacheLock::Busy) => {
+                                        settled.insert(
+                                            *kind,
+                                            self.ineligible(
+                                                cas,
+                                                label,
+                                                "busy",
+                                                Some(&toolchain),
+                                                0,
+                                                started,
+                                            )?,
+                                        );
+                                        continue;
+                                    }
+                                    Err(detail) => {
+                                        eprintln!("warm check cache diagnostic: {detail}");
+                                        settled.insert(
+                                            *kind,
+                                            self.ineligible(
+                                                cas,
+                                                label,
+                                                "unavailable",
+                                                Some(&toolchain),
+                                                0,
+                                                started,
+                                            )?,
+                                        );
+                                        continue;
+                                    }
+                                };
                                 let lookup_ms = started.elapsed().as_millis() as u64;
                                 let materializing = Instant::now();
                                 let discarded = match directory.ensure() {
@@ -1011,6 +1390,13 @@ impl<'a> WarmSession<'a> {
                 .iter()
                 .find(|(held, _)| *held == kind)
                 .map(|(_, directory)| directory.path().display().to_string())
+                .or_else(|| {
+                    prepared
+                        .clones
+                        .iter()
+                        .find(|(cloned, _)| *cloned == kind)
+                        .map(|(_, path)| path.display().to_string())
+                })
         };
         prepared.environment.push((
             WarmBuildCacheKind::CargoTarget.variable().into(),
@@ -1021,6 +1407,19 @@ impl<'a> WarmSession<'a> {
             prepared
                 .environment
                 .push((WarmBuildCacheKind::CargoHome.variable().into(), home));
+        }
+        if self
+            .policy
+            .build_cache
+            .contains(&WarmBuildCacheKind::NpmCache)
+        {
+            // A layer the check does not hold leaves it a private, empty npm cache: an offline
+            // check then fills it once, while the network is still allowed.
+            prepared.environment.push((
+                WarmBuildCacheKind::NpmCache.variable().into(),
+                bound(WarmBuildCacheKind::NpmCache)
+                    .unwrap_or_else(|| runtime.join("npm-cache").display().to_string()),
+            ));
         }
         for kind in &self.policy.caches {
             let kind = cache_kind(*kind);
@@ -1074,6 +1473,7 @@ impl<'a> WarmSession<'a> {
             // The check will not run, so it must not keep another check off a directory, and no
             // kind it prepared may read as used.
             prepared.directories.clear();
+            prepared.clones.clear();
             prepared.key_lock = None;
             prepared.observations =
                 self.not_started(cas, prepared.observations, "cache_refused")?;
@@ -1139,36 +1539,91 @@ impl<'a> WarmSession<'a> {
             .collect()
     }
 
-    /// Run one check while a monitor samples its warm directories. Above `hard_max_bytes` the
-    /// monitor ends the check's process group through the runner's supervised cancellation.
-    /// However fast the check was, the directories are measured again once it has ended and
-    /// before its result is accepted, so a check that wrote past the hard bound between two
-    /// samples is caught too. A directory the count cannot fully inspect is above every bound.
-    /// The byte count that crossed the hard bound is returned as [`Excess::Bound`] so the caller
-    /// fails the check and removes the directories; a key that ended above `max_bytes` only is
-    /// [`Excess::Evict`]: removed before the next check, while this check's result stands.
+    /// Run one check while a monitor watches it (ADR-0131, ADR-0207).
+    ///
+    /// When the check holds its key, the monitor samples the key's bytes: above `hard_max_bytes`
+    /// it ends the check's process group through the runner's supervised cancellation. However
+    /// fast the check was, the directories are measured again once it has ended and before its
+    /// result is accepted, so a check that wrote past the hard bound between two samples is
+    /// caught too. A directory the count cannot fully inspect is above every bound. The byte
+    /// count that crossed the hard bound is returned as [`Excess::Bound`] so the caller fails
+    /// the check and removes the directories; a key that ended above `max_bytes` only is
+    /// [`Excess::Evict`]: removed before the next check, while this check's result stands. A
+    /// key that left its name while the check held it was evicted under it: the monitor names
+    /// the phase, the cause and the time.
+    ///
+    /// Every warm check has two phases: the build, until it reports a `build` step through
+    /// `report` (`$AF_CHECK_REPORT`), bounded by `deadlines.build`; then the tests, bounded by
+    /// `deadlines.tests` from the build's end. A check that has reported steps but no build step
+    /// once its build deadline passed is still building and is ended there; one that reports no
+    /// step at all is bounded only by the runner's timeout, both deadlines together.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_monitored(
         &self,
         runner: CheckRunner<'_>,
         definition: &CheckDefinition,
-        key: &TaskBuildCacheKeyLock,
-        directories: &[(WarmBuildCacheKind, WarmDirectory)],
+        held: Option<(
+            &TaskBuildCacheKeyLock,
+            &[(WarmBuildCacheKind, WarmDirectory)],
+        )>,
+        report: &Path,
+        deadlines: PhaseDeadlines,
         cancellation: Option<&AtomicBool>,
-    ) -> (CheckExecution, Option<Excess>) {
+    ) -> (CheckExecution, Option<Excess>, PhaseRecord) {
         let stop = AtomicBool::new(false);
         let done = AtomicBool::new(false);
         let exceeded: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+        let phases = std::sync::Mutex::new(PhaseRecord::default());
         let max = self.policy.max_bytes();
         let hard = self.policy.hard_max_bytes();
+        let start_unix_ms = unix_ms();
         let execution = std::thread::scope(|scope| {
             scope.spawn(|| {
+                let began = Instant::now();
                 let mut sampled = Instant::now();
+                let mut polled: Option<Instant> = None;
+                let mut reported_any = false;
                 while !done.load(Ordering::Acquire) {
                     if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
                         stop.store(true, Ordering::Release);
                     }
-                    if sampled.elapsed() >= SAMPLE_INTERVAL {
+                    let elapsed = began.elapsed();
+                    let mut record = phases.lock().expect("warm phase monitor");
+                    if record.build_end.is_none()
+                        && polled.is_none_or(|polled| polled.elapsed() >= PHASE_POLL)
+                    {
+                        polled = Some(Instant::now());
+                        let (any, build) = reported_steps(report);
+                        reported_any |= any;
+                        if build {
+                            record.build_end = Some(elapsed);
+                        }
+                    }
+                    let ended = match (record.build_end, deadlines.build) {
+                        (None, Some(build)) if reported_any && elapsed >= build => {
+                            Some(TaskLayerPhaseV1::Build)
+                        }
+                        (Some(end), Some(_)) if elapsed >= end + deadlines.tests => {
+                            Some(TaskLayerPhaseV1::Tests)
+                        }
+                        _ => None,
+                    };
+                    if let Some(phase) = ended {
+                        record.deadline = Some(phase);
+                        stop.store(true, Ordering::Release);
+                        return;
+                    }
+                    drop(record);
+                    if let Some((key, directories)) = held
+                        && sampled.elapsed() >= SAMPLE_INTERVAL
+                    {
                         sampled = Instant::now();
+                        let mut record = phases.lock().expect("warm phase monitor");
+                        if record.evicted.is_none() && !key.at_its_name() {
+                            record.evicted =
+                                Some(self.eviction_cause(key, record.phase(), start_unix_ms));
+                        }
+                        drop(record);
                         if let Some(bytes) = over_bound(key, directories, hard) {
                             *exceeded.lock().expect("warm bound monitor") = Some(bytes);
                             stop.store(true, Ordering::Release);
@@ -1184,6 +1639,27 @@ impl<'a> WarmSession<'a> {
             done.store(true, Ordering::Release);
             execution
         });
+        let mut record = phases.into_inner().expect("warm phase monitor");
+        record.elapsed = Duration::from_millis(execution.elapsed_ms);
+        if record.build_end.is_none() && reported_steps(report).1 {
+            // A build step reported after the last poll still ends the build phase, at the end.
+            record.build_end = Some(record.elapsed);
+        }
+        let Some((key, directories)) = held else {
+            return (execution, None, record);
+        };
+        if record.evicted.is_none() && !key.at_its_name() {
+            record.evicted = Some(self.eviction_cause(key, record.phase(), start_unix_ms));
+        }
+        // An offline check's npm reinstalls its pinned packages from the cache into `_npx`,
+        // with links in it; the kernel removes that install tree before the cache is judged.
+        for (kind, directory) in directories {
+            if *kind == WarmBuildCacheKind::NpmCache
+                && let Err(detail) = directory.remove_child("_npx")
+            {
+                eprintln!("warm check cache diagnostic: {detail}");
+            }
+        }
         let sampled = *exceeded.lock().expect("warm bound monitor");
         // Once the check ended, however fast: the whole key is measured again, and every
         // directory the check used is judged as `ensure` would judge it before the next check
@@ -1214,7 +1690,37 @@ impl<'a> WarmSession<'a> {
                     None
                 }
             });
-        (execution, excess)
+        (execution, excess, record)
+    }
+
+    /// Who evicted a key that left its name while a check held it: the Storage Budget's sweep
+    /// when its eviction record is from after the check started, anything else otherwise.
+    fn eviction_cause(
+        &self,
+        key: &TaskBuildCacheKeyLock,
+        phase: TaskLayerPhaseV1,
+        start_unix_ms: u64,
+    ) -> TaskLayerEvictionV1 {
+        let sweep = key
+            .path()
+            .parent()
+            .and_then(Path::parent)
+            .zip(key.path().file_name().and_then(|name| name.to_str()))
+            .and_then(|(root, toolchain)| read_key_eviction(root, &self.project, toolchain))
+            .and_then(|bytes| serde_json::from_slice::<WarmEvictionV1>(&bytes).ok())
+            .filter(|eviction| eviction.validate().is_ok() && eviction.at_unix_ms >= start_unix_ms);
+        match sweep {
+            Some(eviction) => TaskLayerEvictionV1 {
+                phase,
+                by: TaskLayerEvictorV1::StorageSweep,
+                at_unix_ms: eviction.at_unix_ms,
+            },
+            None => TaskLayerEvictionV1 {
+                phase,
+                by: TaskLayerEvictorV1::AnotherProcess,
+                at_unix_ms: unix_ms(),
+            },
+        }
     }
 
     /// After the check: when [`Self::run_monitored`] found the key above either bound or a
@@ -1293,6 +1799,85 @@ impl<'a> WarmSession<'a> {
             "kind": kind,
         }))
         .map_err(|e| e.to_string())
+    }
+}
+
+/// The deadlines of a warm check's two phases (ADR-0207).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PhaseDeadlines {
+    /// `[warm] build_wall_ms`, from the check's start; absent, no phase has a deadline of its
+    /// own and the runner's timeout, `check_wall_ms`, bounds the whole check.
+    pub(crate) build: Option<Duration>,
+    /// `check_wall_ms` (or the per-check wall), from the build's end.
+    pub(crate) tests: Duration,
+}
+
+/// What the monitor saw of a warm check's phases and its layer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PhaseRecord {
+    /// When the check reported its `build` step, from its start.
+    pub(crate) build_end: Option<Duration>,
+    /// The phase whose deadline ended the check.
+    pub(crate) deadline: Option<TaskLayerPhaseV1>,
+    /// The layer, evicted under the check while it ran.
+    pub(crate) evicted: Option<TaskLayerEvictionV1>,
+    pub(crate) elapsed: Duration,
+}
+
+impl PhaseRecord {
+    fn phase(&self) -> TaskLayerPhaseV1 {
+        if self.build_end.is_some() {
+            TaskLayerPhaseV1::Tests
+        } else {
+            TaskLayerPhaseV1::Build
+        }
+    }
+
+    /// The reason a check whose phase deadline ended it records.
+    pub(crate) fn deadline_reason(&self, deadlines: PhaseDeadlines) -> Option<String> {
+        match self.deadline? {
+            TaskLayerPhaseV1::Build => Some(format!(
+                "the build phase ran past [warm] build_wall_ms ({} ms) before the check \
+                 reported its build step; the check was ended",
+                deadlines.build.unwrap_or_default().as_millis()
+            )),
+            TaskLayerPhaseV1::Tests => Some(format!(
+                "the tests ran past check_wall_ms ({} ms) after the build step ended at {} ms; \
+                 the check was ended",
+                deadlines.tests.as_millis(),
+                self.build_end.unwrap_or_default().as_millis()
+            )),
+            TaskLayerPhaseV1::After => None,
+        }
+    }
+}
+
+/// Whether the check's report names any step yet, and whether one of them is a `build` step.
+/// A report that does not parse yet (a line still being written) names nothing.
+fn reported_steps(report: &Path) -> (bool, bool) {
+    use review_core::task::check_report::{
+        CheckStageV1, MAX_CHECK_REPORT_BYTES, parse_check_report,
+    };
+    let Ok(metadata) = std::fs::symlink_metadata(report) else {
+        return (false, false);
+    };
+    if !metadata.file_type().is_file() || metadata.len() > MAX_CHECK_REPORT_BYTES {
+        return (false, false);
+    }
+    let Ok(bytes) = std::fs::read(report) else {
+        return (false, false);
+    };
+    // Only whole lines: ci-step.py appends one line per step.
+    let whole = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(&bytes[..0], |end| &bytes[..=end]);
+    match parse_check_report(whole) {
+        Ok((steps, _)) => (
+            !steps.is_empty(),
+            steps.iter().any(|step| step.stage == CheckStageV1::Build),
+        ),
+        Err(_) => (false, false),
     }
 }
 
@@ -1595,6 +2180,12 @@ mod tests {
         environment: Vec<(String, String)>,
     }
 
+    /// Deadlines no unit test reaches.
+    const NO_PHASES: PhaseDeadlines = PhaseDeadlines {
+        build: None,
+        tests: Duration::from_secs(3_600),
+    };
+
     fn fixture() -> Fixture {
         let bin = tempfile::tempdir().unwrap();
         let (workdir, environment) = toolchain(bin.path(), "rustc 1.88.0 (stub)");
@@ -1613,7 +2204,8 @@ mod tests {
     fn host(fixture: &Fixture, resolver: Option<Arc<CacheSourceResolver>>) -> WarmCheckHost {
         WarmCheckHost {
             root: Some(fixture.root.path().join("task-build-cache")),
-            lock_wait: Duration::from_millis(200),
+            lock_wait: Some(Duration::from_millis(200)),
+            wait_notice: Duration::from_millis(100),
             resolver,
         }
     }
@@ -1625,6 +2217,8 @@ mod tests {
             max_bytes,
             // One bound for both, as ADR-0131 had it; the split has its own tests.
             hard_max_bytes: max_bytes,
+            clone_when_busy: None,
+            build_wall_ms: None,
         }
     }
 
@@ -1742,14 +2336,18 @@ mod tests {
             ),
         );
         let started = Instant::now();
-        let (execution, exceeded) = session.run_monitored(
+        let (execution, exceeded, _) = session.run_monitored(
             runner,
             &check,
-            prepared
-                .key_lock
-                .as_ref()
-                .expect("a prepared check holds its key"),
-            &prepared.directories,
+            Some((
+                prepared
+                    .key_lock
+                    .as_ref()
+                    .expect("a prepared check holds its key"),
+                &prepared.directories,
+            )),
+            &fixture.runtime.path().join("check-report.jsonl"),
+            NO_PHASES,
             None,
         );
         assert!(started.elapsed() < Duration::from_secs(50), "ended early");
@@ -1805,6 +2403,8 @@ mod tests {
             caches: vec![CacheKindSpec::Cargo],
             max_bytes: None,
             hard_max_bytes: None,
+            clone_when_busy: None,
+            build_wall_ms: None,
         };
         let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
         let prepared = prepare(&fixture, &mut session);
@@ -1898,16 +2498,21 @@ mod tests {
                 ],
             ),
         );
-        session.run_monitored(
+        let (execution, excess, _) = session.run_monitored(
             runner,
             &check,
-            prepared
-                .key_lock
-                .as_ref()
-                .expect("a prepared check holds its key"),
-            &prepared.directories,
+            Some((
+                prepared
+                    .key_lock
+                    .as_ref()
+                    .expect("a prepared check holds its key"),
+                &prepared.directories,
+            )),
+            &fixture.runtime.path().join("check-report.jsonl"),
+            NO_PHASES,
             None,
-        )
+        );
+        (execution, excess)
     }
 
     #[test]
@@ -1916,6 +2521,8 @@ mod tests {
         let host = host(&fixture, None);
         let policy = CodeWarmPolicy {
             hard_max_bytes: Some(65_536),
+            clone_when_busy: None,
+            build_wall_ms: None,
             ..warm(Some(4096))
         };
         let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
@@ -1956,6 +2563,8 @@ mod tests {
         let host = host(&fixture, None);
         let policy = CodeWarmPolicy {
             hard_max_bytes: Some(16_384),
+            clone_when_busy: None,
+            build_wall_ms: None,
             ..warm(Some(4096))
         };
         let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
@@ -2114,6 +2723,8 @@ mod tests {
             max_bytes,
             // One bound for both, as ADR-0131 had it; the split has its own tests.
             hard_max_bytes: max_bytes,
+            clone_when_busy: None,
+            build_wall_ms: None,
         }
     }
 
@@ -2396,6 +3007,8 @@ mod tests {
             max_bytes,
             // One bound for both, as ADR-0131 had it; the split has its own tests.
             hard_max_bytes: max_bytes,
+            clone_when_busy: None,
+            build_wall_ms: None,
         }
     }
 
@@ -2540,6 +3153,8 @@ mod tests {
             caches: vec![CacheKindSpec::Cargo],
             max_bytes: Some(1024),
             hard_max_bytes: Some(1024),
+            clone_when_busy: None,
+            build_wall_ms: None,
         };
         let mut second = WarmSession::new(&with_cache, &superseded, "repo", declaration(b"x"));
         let prepared = prepare(&fixture, &mut second);
@@ -2646,6 +3261,8 @@ mod tests {
             caches: vec![CacheKindSpec::Cargo],
             max_bytes: Some(4096),
             hard_max_bytes: Some(4096),
+            clone_when_busy: None,
+            build_wall_ms: None,
         };
         let mut session = WarmSession::new(&with_cache, &superseded, "repo", declaration(b"x"));
         let prepared = prepare(&fixture, &mut session);
@@ -2666,5 +3283,519 @@ mod tests {
             .finish(prepared.key_lock, prepared.directories, excess)
             .unwrap();
         assert!(!key_path.join("junk").exists(), "emptied under the lock");
+    }
+
+    /// The held check and a waiting one: the waiter holds the layer once the holder released
+    /// it, says it waited, and names the holder its record named (ADR-0207).
+    #[test]
+    fn two_checks_in_one_layer_serialize_and_the_second_names_whom_it_waited_for() {
+        let fixture = fixture();
+        let mut host = host(&fixture, None);
+        host.lock_wait = None;
+        let policy = warm(None);
+        let mut first = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
+        let held = prepare(&fixture, &mut first);
+        assert_eq!(held.layer.lock, TaskLayerLockV1::Held);
+        let key = held.layer.key.clone().unwrap();
+        let (project, toolchain) = key.split_once('/').unwrap();
+        let recorded = holder_of(
+            &fixture.root.path().join("task-build-cache"),
+            project,
+            toolchain,
+        )
+        .unwrap();
+        assert_eq!(recorded.pid, std::process::id());
+        assert_eq!(recorded.command, "af task run");
+        let released = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(600));
+            drop(held);
+            Instant::now()
+        });
+        let mut second = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
+        let waited = prepare(&fixture, &mut second);
+        let acquired = Instant::now();
+        let released = released.join().unwrap();
+        assert!(
+            acquired >= released,
+            "the second check never overlapped the first"
+        );
+        assert_eq!(waited.layer.lock, TaskLayerLockV1::Waited);
+        assert!(waited.layer.waited_ms >= 500, "{}", waited.layer.waited_ms);
+        assert_eq!(waited.layer.key.as_deref(), Some(key.as_str()));
+        assert_eq!(
+            waited.layer.holder.as_ref().map(|holder| holder.pid),
+            Some(std::process::id())
+        );
+        assert_eq!(waited.directories.len(), 1, "it holds the layer itself now");
+        assert!(waited.observations[0].eligible);
+        assert!(
+            wait_notice(
+                &key,
+                Some(&recorded),
+                Duration::from_secs(60),
+                Duration::from_secs(5)
+            )
+            .starts_with(&format!(
+                "waiting for warm layer {key} held by af task run {} since ",
+                std::process::id()
+            ))
+        );
+    }
+
+    /// With `clone_when_busy`, a check that finds the layer held builds in a private copy of
+    /// it, with the holder's bytes and modification times, and never touches the layer.
+    #[test]
+    fn a_busy_layer_is_cloned_into_the_check_runtime_when_clone_when_busy_is_on() {
+        let fixture = fixture();
+        let host = host(&fixture, None);
+        let policy = CodeWarmPolicy {
+            clone_when_busy: Some(true),
+            ..warm(None)
+        };
+        let mut first = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
+        let held = prepare(&fixture, &mut first);
+        let layer = held.directories[0].1.path().to_path_buf();
+        std::fs::create_dir_all(layer.join("debug")).unwrap();
+        std::fs::write(layer.join("debug/libx.rlib"), vec![7_u8; 4096]).unwrap();
+        let old = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(layer.join("debug/libx.rlib"))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        let mut second = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
+        let cloned = prepare(&fixture, &mut second);
+        assert_eq!(cloned.layer.lock, TaskLayerLockV1::Cloned);
+        assert!(cloned.key_lock.is_none() && cloned.directories.is_empty());
+        let copy = fixture.runtime.path().join("cargo_target-clone");
+        assert_eq!(target(&cloned), copy.display().to_string());
+        assert_eq!(cloned.observations[0].kind, "cargo_target:cloned");
+        assert_eq!(cloned.observations[0].bytes_available, 4096);
+        assert!(cloned.started_warm());
+        let copied = copy.join("debug/libx.rlib");
+        assert_eq!(std::fs::read(&copied).unwrap(), vec![7_u8; 4096]);
+        assert_eq!(std::fs::metadata(&copied).unwrap().modified().unwrap(), old);
+        assert!(
+            layer.join("debug/libx.rlib").exists(),
+            "the layer is untouched"
+        );
+        drop(held);
+    }
+
+    fn step_line(label: &str, stage: &str) -> String {
+        format!(
+            "{{\"schema\":\"af.check-report/1\",\"record\":\"step\",\"label\":\"{label}\",\
+             \"stage\":\"{stage}\",\"exit_code\":0,\"command\":[\"true\"]}}"
+        )
+    }
+
+    fn phased(
+        fixture: &Fixture,
+        script: &str,
+        deadlines: PhaseDeadlines,
+    ) -> (CheckExecution, PhaseRecord) {
+        let host = host(fixture, None);
+        let policy = warm(None);
+        let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
+        let prepared = prepare(fixture, &mut session);
+        let report = fixture.runtime.path().join("check-report.jsonl");
+        let _ = std::fs::remove_file(&report);
+        let runner = prepared.environment.iter().fold(
+            CheckRunner::new(&fixture.cas, fixture.workdir.path())
+                .with_timeout(Duration::from_secs(120))
+                .with_env("AF_CHECK_REPORT", report.display().to_string()),
+            |runner, (key, value)| runner.with_env(key.clone(), value.clone()),
+        );
+        let check = CheckDefinition::new(
+            "phased",
+            review_core::Command::new(
+                "/bin/sh",
+                vec![
+                    review_core::Arg::literal("-c"),
+                    review_core::Arg::literal(script),
+                ],
+            ),
+        );
+        let (execution, _, record) = session.run_monitored(
+            runner,
+            &check,
+            Some((prepared.key_lock.as_ref().unwrap(), &prepared.directories)),
+            &report,
+            deadlines,
+            None,
+        );
+        session
+            .finish(prepared.key_lock, prepared.directories, None)
+            .unwrap();
+        (execution, record)
+    }
+
+    /// The build phase ends at the build step; the tests' deadline counts from there, so a
+    /// slow build never starves them, and a build past its own deadline is ended as such.
+    #[test]
+    fn build_and_test_phases_have_their_own_deadlines() {
+        let fixture = fixture();
+        let short = PhaseDeadlines {
+            build: Some(Duration::from_millis(1500)),
+            tests: Duration::from_millis(1500),
+        };
+        let started = Instant::now();
+        let (execution, record) = phased(
+            &fixture,
+            &format!(
+                "echo '{}' >> \"$AF_CHECK_REPORT\"; sleep 60",
+                step_line("lint", "lint")
+            ),
+            short,
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "ended at its build deadline"
+        );
+        assert_eq!(record.deadline, Some(TaskLayerPhaseV1::Build));
+        assert_eq!(record.build_end, None);
+        assert_ne!(execution.result.status, review_check::CheckStatus::Passed);
+        assert!(
+            record
+                .deadline_reason(short)
+                .unwrap()
+                .starts_with("the build phase ran past [warm] build_wall_ms (1500 ms)")
+        );
+
+        // A build that takes longer than the tests' deadline still leaves the tests theirs.
+        let (execution, record) = phased(
+            &fixture,
+            &format!(
+                "sleep 2; echo '{}' >> \"$AF_CHECK_REPORT\"; sleep 1; echo done",
+                step_line("test-build", "build")
+            ),
+            PhaseDeadlines {
+                build: Some(Duration::from_secs(10)),
+                tests: Duration::from_secs(5),
+            },
+        );
+        assert_eq!(execution.result.status, review_check::CheckStatus::Passed);
+        assert_eq!(record.deadline, None);
+        let build = record
+            .build_end
+            .expect("the build step ended the build phase");
+        assert!(build >= Duration::from_secs(2), "{build:?}");
+        assert!(record.elapsed >= build);
+
+        let (_, record) = phased(
+            &fixture,
+            &format!(
+                "echo '{}' >> \"$AF_CHECK_REPORT\"; sleep 60",
+                step_line("test-build", "build")
+            ),
+            short,
+        );
+        assert_eq!(record.deadline, Some(TaskLayerPhaseV1::Tests));
+        assert!(record.build_end.is_some());
+        assert!(
+            record
+                .deadline_reason(short)
+                .unwrap()
+                .starts_with("the tests ran past check_wall_ms (1500 ms) after the build step")
+        );
+
+        // A check that reports no step has no phase deadline: only its own wall bounds it.
+        let (execution, record) = phased(&fixture, "sleep 2; echo done", short);
+        assert_eq!(execution.result.status, review_check::CheckStatus::Passed);
+        assert_eq!(record.deadline, None);
+        assert_eq!(record.build_end, None);
+
+        // Without a declared build_wall_ms the phases are recorded but neither has a deadline.
+        let (execution, record) = phased(
+            &fixture,
+            &format!(
+                "echo '{}' >> \"$AF_CHECK_REPORT\"; sleep 3; echo done",
+                step_line("test-build", "build")
+            ),
+            PhaseDeadlines {
+                build: None,
+                tests: Duration::from_millis(500),
+            },
+        );
+        assert_eq!(execution.result.status, review_check::CheckStatus::Passed);
+        assert_eq!(record.deadline, None);
+        assert!(record.build_end.is_some());
+    }
+
+    /// A layer the Storage Budget evicted under a running check names the sweep and the time;
+    /// one removed without an eviction record names another process.
+    #[test]
+    fn a_layer_evicted_during_the_build_names_its_cause() {
+        let fixture = fixture();
+        let host = host(&fixture, None);
+        let policy = warm(None);
+        for sweep in [true, false] {
+            let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
+            let prepared = prepare(&fixture, &mut session);
+            let key = prepared.key_lock.as_ref().unwrap().path().to_path_buf();
+            let root = fixture.root.path().join("task-build-cache");
+            let project = key
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let toolchain = key.file_name().unwrap().to_str().unwrap().to_string();
+            let evictor = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(500));
+                std::fs::remove_dir_all(&key).unwrap();
+                if sweep {
+                    let record = WarmEvictionV1 {
+                        schema: review_core::task::check_layer::WARM_EVICTION_V1.into(),
+                        by: review_core::task::check_layer::WarmEvictorV1::StorageSweep,
+                        at_unix_ms: unix_ms(),
+                        bytes: 0,
+                    };
+                    review_sandbox::record_key_eviction(
+                        &root,
+                        &project,
+                        &toolchain,
+                        &serde_json::to_vec(&record).unwrap(),
+                    )
+                    .unwrap();
+                }
+            });
+            let runner = prepared.environment.iter().fold(
+                CheckRunner::new(&fixture.cas, fixture.workdir.path())
+                    .with_timeout(Duration::from_secs(120)),
+                |runner, (key, value)| runner.with_env(key.clone(), value.clone()),
+            );
+            let check = CheckDefinition::new(
+                "evicted",
+                review_core::Command::new(
+                    "/bin/sh",
+                    vec![
+                        review_core::Arg::literal("-c"),
+                        review_core::Arg::literal("sleep 6"),
+                    ],
+                ),
+            );
+            let (_, excess, record) = session.run_monitored(
+                runner,
+                &check,
+                Some((prepared.key_lock.as_ref().unwrap(), &prepared.directories)),
+                &fixture.runtime.path().join("none.jsonl"),
+                NO_PHASES,
+                None,
+            );
+            evictor.join().unwrap();
+            let evicted = record
+                .evicted
+                .expect("the monitor saw the key leave its name");
+            assert_eq!(evicted.phase, TaskLayerPhaseV1::Build);
+            assert_eq!(
+                evicted.by,
+                if sweep {
+                    TaskLayerEvictorV1::StorageSweep
+                } else {
+                    TaskLayerEvictorV1::AnotherProcess
+                }
+            );
+            assert!(evicted.sentence("t").starts_with(if sweep {
+                "layer evicted during build by storage sweep at t"
+            } else {
+                "layer evicted during build by another process at t"
+            }));
+            assert!(matches!(excess, Some(Excess::Suspect(_))));
+            let _ = session.finish(prepared.key_lock, prepared.directories, excess);
+        }
+    }
+
+    /// Issue #266: one warm layer builds Snapshot A, where crate `y` calls `x::old`, then
+    /// Snapshot B, where `x` renamed it to `x::new` and `y` calls that, from a materialization
+    /// that left every source with one old modification time. With the content rule, B builds
+    /// and runs B's code, `z`, unchanged, stays fresh, and returning to A runs A's code again.
+    /// Without it (the control) Cargo takes A's `x` as fresh for B.
+    #[test]
+    fn a_warm_layer_builds_snapshot_b_after_a_with_only_the_changed_crates_stale() {
+        use review_sandbox::{Mode, Sandbox};
+        use review_source_git::{Entry, EntryKind, Manifest};
+        let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        // Keep this small Cargo build in the checkout's own target, as every gate does.
+        let target_root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace.join("target"))
+            .join("tmp");
+        std::fs::create_dir_all(&target_root).unwrap();
+        let temp = tempfile::tempdir_in(target_root).unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let rustup = RustupHome::of_kernel();
+        let mut environment = vec![
+            (
+                "PATH".to_string(),
+                std::env::var("PATH").unwrap_or_default(),
+            ),
+            ("LC_ALL".into(), "C".into()),
+            ("TZ".into(), "UTC".into()),
+            ("HOME".into(), home.display().to_string()),
+            ("CARGO_INCREMENTAL".into(), "0".into()),
+        ];
+        environment.extend(rustup.environment());
+        let snapshot = |x: &str, y: &str| {
+            let files = [
+                (
+                    "Cargo.toml",
+                    "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+                     [dependencies]\ny = { path = \"y\" }\nz = { path = \"z\" }\n[workspace]\n",
+                ),
+                (
+                    "Cargo.lock",
+                    "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\n\
+                     dependencies = [\n \"y\",\n \"z\",\n]\n\n[[package]]\nname = \"x\"\n\
+                     version = \"0.1.0\"\n\n[[package]]\nname = \"y\"\nversion = \"0.1.0\"\n\
+                     dependencies = [\n \"x\",\n]\n\n[[package]]\nname = \"z\"\n\
+                     version = \"0.1.0\"\n",
+                ),
+                (
+                    "src/main.rs",
+                    "fn main() { print!(\"{}{}\", y::value(), z::value()); }\n",
+                ),
+                (
+                    "x/Cargo.toml",
+                    "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+                ),
+                ("x/src/lib.rs", x),
+                (
+                    "y/Cargo.toml",
+                    "[package]\nname = \"y\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+                     [dependencies]\nx = { path = \"../x\" }\n",
+                ),
+                ("y/src/lib.rs", y),
+                (
+                    "z/Cargo.toml",
+                    "[package]\nname = \"z\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+                ),
+                ("z/src/lib.rs", "pub fn value() -> &'static str { \"z\" }\n"),
+            ];
+            Manifest::new(
+                files
+                    .into_iter()
+                    .map(|(path, text)| Entry {
+                        path: path.into(),
+                        kind: EntryKind::File,
+                        content: cas.put(text.as_bytes()).unwrap(),
+                        size: text.len() as u64,
+                    })
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let a = snapshot(
+            "pub fn old() -> &'static str { \"A\" }\n",
+            "pub fn value() -> &'static str { x::old() }\n",
+        );
+        let b = snapshot(
+            "pub fn new() -> &'static str { \"B\" }\n",
+            "pub fn value() -> &'static str { x::new() }\n",
+        );
+        let host = WarmCheckHost {
+            root: Some(temp.path().join("task-build-cache")),
+            ..WarmCheckHost::default()
+        };
+        let policy = warm(None);
+        let old = std::time::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+        // Materialize, give every file the same old time a reflinked CAS blob can carry, take
+        // the layer, apply the content rule and build. `content_rule = false` is the control.
+        let build = |manifest: &Manifest, content_rule: bool| {
+            let sandbox = Sandbox::materialize(manifest, &cas, Mode::ReadOnly).unwrap();
+            for entry in &manifest.entries {
+                std::fs::File::open(sandbox.root().join(&entry.path))
+                    .unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(old))
+                    .unwrap();
+            }
+            let runtime = tempfile::tempdir_in(temp.path()).unwrap();
+            let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"none"));
+            let mut prepared = session
+                .prepare(
+                    &cas,
+                    &environment,
+                    sandbox.root(),
+                    runtime.path(),
+                    None,
+                    None,
+                    Duration::from_secs(120),
+                )
+                .unwrap();
+            assert_eq!(
+                prepared.layer.lock,
+                TaskLayerLockV1::Held,
+                "{:?}",
+                prepared.observations
+            );
+            if content_rule {
+                prepared
+                    .refresh_source_mtimes(&sandbox, runtime.path(), None, Duration::from_secs(30))
+                    .unwrap();
+            }
+            let output = std::process::Command::new("cargo")
+                .args(["build", "--offline", "--locked", "--message-format=json"])
+                .current_dir(sandbox.root())
+                .env_clear()
+                .envs(environment.iter().map(|(key, value)| (key, value)))
+                .envs(prepared.environment.iter().map(|(key, value)| (key, value)))
+                .env("CARGO_HOME", temp.path().join("cargo-home"))
+                .output()
+                .unwrap();
+            let messages = String::from_utf8_lossy(&output.stdout).into_owned();
+            let printed = if output.status.success() {
+                let app =
+                    std::process::Command::new(Path::new(target(&prepared)).join("debug/app"))
+                        .output()
+                        .unwrap();
+                String::from_utf8(app.stdout).unwrap()
+            } else {
+                format!("build failed: {}", String::from_utf8_lossy(&output.stderr))
+            };
+            let fresh = |package: &str| {
+                messages.lines().any(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).is_ok_and(|message| {
+                        message["reason"] == "compiler-artifact"
+                            && message["target"]["name"] == package
+                            && message["fresh"] == true
+                    })
+                })
+            };
+            let freshness = (fresh("x"), fresh("y"), fresh("z"));
+            let sources = prepared.layer.sources;
+            session
+                .finish(prepared.key_lock, prepared.directories, None)
+                .unwrap();
+            (printed, freshness, sources)
+        };
+
+        let (printed, _, sources) = build(&a, true);
+        assert_eq!(printed, "Az");
+        assert_eq!(
+            sources,
+            TaskLayerSourcesV1 { stale: 4, fresh: 0 },
+            "no record: all cold"
+        );
+
+        let (printed, (x, y, z), sources) = build(&b, true);
+        assert_eq!(printed, "Bz", "B builds from B's sources");
+        assert_eq!(sources, TaskLayerSourcesV1 { stale: 2, fresh: 2 });
+        assert!(!x && !y, "the changed crates were rebuilt");
+        assert!(z, "the unchanged crate kept its build");
+
+        let (printed, (x, y, z), _) = build(&a, true);
+        assert_eq!(printed, "Az", "A again, from A's sources");
+        assert!(!x && !y && z);
+
+        // The control: without the content rule the same layer links A's `x` into B.
+        let (printed, _, _) = build(&b, false);
+        assert_ne!(printed, "Bz", "the stale link #266 recorded");
     }
 }

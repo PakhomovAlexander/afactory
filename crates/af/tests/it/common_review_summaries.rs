@@ -321,8 +321,13 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
         0,
     );
     let listed = String::from_utf8(listed.stdout).unwrap();
-    assert!(listed.contains(summary), "{listed}");
-    assert!(listed.contains("  wall: "), "{listed}");
+    // One table row: the Task's current cumulative charge, never a sum of report snapshots, and
+    // the Rounds' wall. The Attempt summary is the ledger's and the report's.
+    let row: Vec<&str> = listed.lines().nth(1).unwrap().split_whitespace().collect();
+    assert_eq!(row[..4], ["timing", "2", "closed", "pass"], "{listed}");
+    let charged = report["task_accounting"][0]["chargeable_tokens"].as_str();
+    assert_eq!(Some(row[4]), charged, "{listed}");
+    assert!(!listed.contains(summary), "{listed}");
     let ledger = checked(
         invoke(
             &repo,

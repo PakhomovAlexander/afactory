@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:provider-status:3",
   "title": "Provider status@3",
-  "$comment": "The machine-readable result of `af provider status`: what the machine-local registry declares and what one bounded authentication check per context concluded. Registration, authentication, usability and usage are four independent axes. `usability` is never `usable`: status does not dispatch, so only the charged `af provider doctor` can prove end-to-end usability, and this document may claim at most `usable_or_untested`. Usage is probed only when `--usage` is passed, and an `unavailable` usage probe never changes `auth`. `installation_failed` means the Provider's official CLI cannot start \u2014 it is missing, not executable, or exits non-zero on its own version check \u2014 so nothing about the login could be learned. `incompatible` means the CLI starts but its help page does not declare every option af's invocation passes, so af will not dispatch to it whatever its login is (ADR-0146): authentication success never implies invocation compatibility. The CLI's own error line, detected version, suggested fix and the missing options are reported only on stderr and in the human table. Deliberately absent, in every state: account email, organization or account identity, plan-holder identity, credentials, OAuth URLs or authorization codes, and Provider-authored text of any kind \u2014 quota windows carry only the numbers af derived, never the Provider's own labels, and `registry.warning` is af-authored. Disabled Providers are not probed: disabled_until is an absolute Unix timestamp including nanoseconds, auth is not_probed, usability is unusable and enable_command names the immediate recovery action.",
+  "$comment": "The machine-readable result of `af provider status`: what the machine-local registry declares and what one bounded authentication check per context concluded. Registration, authentication, usability and usage are four independent axes. `usability` is never `usable`: status does not dispatch, so only the charged `af provider doctor` can prove end-to-end usability, and this document may claim at most `usable_or_untested`. Usage is probed only when `--usage` is passed, and an `unavailable` usage probe never changes `auth`. `installation_failed` means the Provider's official CLI cannot start — it is missing, not executable, or exits non-zero on its own version check — so nothing about the login could be learned. `incompatible` means the CLI starts but its help page does not declare every option af's invocation passes, so af will not dispatch to it whatever its login is (ADR-0146): authentication success never implies invocation compatibility. The CLI's own error line, detected version, suggested fix and the missing options are reported only on stderr and in the human table. Deliberately absent, in every state: account email, organization or account identity, plan-holder identity, credentials, OAuth URLs or authorization codes, and Provider-authored text of any kind — quota windows carry only the numbers af derived, never the Provider's own labels, and `registry.warning` is af-authored. Disabled Providers are not probed: disabled_until is an absolute Unix timestamp including nanoseconds, auth is not_probed, usability is unusable and enable_command names the immediate recovery action. Version 3 also adds `found_unregistered`, the auth directories a names-only scan found that no row lists (the line `found but not registered: … → af provider detect` of the table), with `next_action` `af provider detect` whenever it is not empty, and per quota window `reset_reported`, false when the Provider does not report when the window resets (`resets_at_unix` is then null); version 2 is neither printed nor read.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,7 +10,9 @@
     "exit_code",
     "usage_requested",
     "registry",
-    "providers"
+    "providers",
+    "found_unregistered",
+    "next_action"
   ],
   "properties": {
     "schema": {
@@ -145,7 +147,8 @@
                   "required": [
                     "window_minutes",
                     "used_percent",
-                    "resets_at_unix"
+                    "resets_at_unix",
+                    "reset_reported"
                   ],
                   "properties": {
                     "window_minutes": {
@@ -166,8 +169,37 @@
                         "null"
                       ],
                       "minimum": 0
+                    },
+                    "reset_reported": {
+                      "$comment": "Whether the Provider reported when this window resets; false exactly when `resets_at_unix` is null.",
+                      "type": "boolean"
                     }
-                  }
+                  },
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "reset_reported": {
+                            "const": false
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "resets_at_unix": {
+                            "type": "null"
+                          }
+                        }
+                      },
+                      "else": {
+                        "properties": {
+                          "resets_at_unix": {
+                            "type": "integer"
+                          }
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             },
@@ -330,6 +362,26 @@
           }
         ]
       }
+    },
+    "found_unregistered": {
+      "$comment": "Auth directories found by name only (selector variables, the CLIs' defaults, the sibling names) that no row lists; nothing below them was read and none was probed.",
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "next_action": {
+      "$comment": "`af provider detect` whenever `found_unregistered` is not empty, else null.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "const": "af provider detect"
+        }
+      ]
     }
   },
   "allOf": [
@@ -440,6 +492,30 @@
                 "usage"
               ]
             }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "A next action exactly when something was found.",
+      "if": {
+        "properties": {
+          "found_unregistered": {
+            "maxItems": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "next_action": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "next_action": {
+            "const": "af provider detect"
           }
         }
       }

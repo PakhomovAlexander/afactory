@@ -102,7 +102,13 @@ Four layers, strictly one-directional — `canonical` -> `cas` -> `store` -> `le
   authority (never `occurred_at`). It **refuses** an event referencing an artifact the CAS does
   not already hold, which turns a class of crash corruption into an immediate error. SQLite is
   what backs it today, not part of its interface: the interface stays backend-agnostic, and which
-  database backs a later shared, consensus-based coordinator is deliberately undecided.
+  database backs a later shared, consensus-based coordinator is deliberately undecided. Beside
+  the log, outside it, the `store_writers` table names every af release that opened the Store
+  for writing (`af/store-writer@1`, `schemas/store-writer-v1.json`): a release still refuses to
+  replay a Store another one wrote (ADR-0145), and the refusal names that release and the fix,
+  `AF_VERSION=<v> af …`. A Store with history and no marker was written before markers and is
+  named as an older release's; no replay reads the table
+  (`crates/review-store/src/store/writers.rs`, `crates/af/tests/it/store_release.rs`).
 - **`ledger`** — the projection. `rebuild` is its only constructor, so hand-edited state has no
   way in.
 

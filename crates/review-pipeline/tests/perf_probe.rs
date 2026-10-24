@@ -1459,7 +1459,7 @@ fn the_state_persistence_region_starts_with_a_refreshed_production_lease() {
 #[test]
 fn a_production_lease_lapsing_at_the_state_persistence_boundary_fails_without_retry() {
     let (_owner, scratch) = empty_scratch();
-    // Refreshed, then held until the Store itself reports the 15-second lease lapsed.
+    // Refreshed, then held until the Store itself reports the production lease lapsed.
     let lapsed = cases::LeasePolicy {
         renew_before_region: true,
         wait_for_expiry: true,
@@ -1526,10 +1526,10 @@ fn kinds(events: &[review_core::RunEvent]) -> Vec<String> {
 #[test]
 fn each_authority_setup_write_owns_a_whole_lease_and_the_region_captures_outside_every_lease() {
     // Capturing the authority validates the plan, which can take long on a loaded host; on the
-    // gate one admission alone took 14.5 s of a 15-second lease opened before the proposal. So
-    // each setup write holds a production lease of its own: the opening lease covers the
-    // proposal and is released while live, a lease taken at the next epoch covers the
-    // admission and is released, and the region captures its own host and authority while no
+    // gate one admission alone took 14.5 s of the 15-second lease of the time, opened before the
+    // proposal. So each setup write holds a production lease of its own: the opening lease
+    // covers the proposal and is released while live, a lease taken at the next epoch covers
+    // the admission and is released, and the region captures its own host and authority while no
     // lease is held, then takes a whole lease as its last write. Delays where those costs lie
     // never fall inside a lease: each lease opens after the delay before it and was released
     // before the delay after it.
@@ -1818,11 +1818,14 @@ fn the_state_persistence_refresh_is_the_last_setup_step_after_a_delayed_store_re
         refreshed_ms >= finished_ms,
         "the refresh followed the delay"
     );
-    // The unchanged 15000-ms production lease.
-    assert_eq!(fixtures::TASK_LEASE_MS, 15_000);
+    // The unchanged production lease: the probe holds exactly the one the product takes.
+    assert_eq!(
+        fixtures::TASK_LEASE_MS,
+        review_pipeline::task::lease::TASK_LEASE_MS
+    );
     assert_eq!(
         change["lease_until_unix_ms"].as_u64().unwrap() - refreshed_ms,
-        15_000
+        review_pipeline::task::lease::TASK_LEASE_MS
     );
     let (first_renewal_ms, change) = transition(&events[4]);
     assert_eq!(change["kind"], "lease_renewed", "{change}");

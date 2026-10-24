@@ -44,6 +44,7 @@ fn layout() -> Layout {
 fn policy(max_bytes: u64) -> StoragePolicy {
     StoragePolicy {
         max_bytes,
+        max_bytes_source: crate::config::MaxBytesSource::Set,
         min_free_bytes: 0,
         auto_gc: true,
         keep_days: 14,
@@ -52,6 +53,8 @@ fn policy(max_bytes: u64) -> StoragePolicy {
         keep_surveys: 50,
         keep_worker_transcripts: false,
         keep_gate_pull_requests: false,
+        sandbox_root: None,
+        build_cache_root: None,
     }
 }
 
@@ -172,8 +175,10 @@ fn removed_paths(report: &SweepReport) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Caches go before records (finding I9), least recently used first within each, and the
+/// newest warm key of a project checked in the last 7 days stays (finding K18).
 #[test]
-fn the_budget_evicts_the_least_recently_used_first_and_stops_when_af_fits() {
+fn the_budget_evicts_caches_before_records_least_recently_used_first_and_stops_when_af_fits() {
     let layout = layout();
     let locked = warm_key(&layout, 'a', '1', CHUNK, 7 * DAY);
     let default = version(&layout, "0.9.0", 6 * DAY);
@@ -214,16 +219,32 @@ fn the_budget_evicts_the_least_recently_used_first_and_stops_when_af_fits() {
         Some("the default version")
     );
 
-    // A preview names exactly what --apply then removes, oldest first, and removes nothing.
+    // Project a's newest key (old_key, 3 days) and project b's (fresh_key) are kept.
+    for newest in [&old_key, &fresh_key] {
+        assert_eq!(
+            stock
+                .entries
+                .iter()
+                .find(|entry| entry.path == *newest)
+                .and_then(|entry| entry.in_use.clone())
+                .as_deref(),
+            Some(NEWEST_WARM_KEY),
+            "{}",
+            newest.display()
+        );
+    }
+
+    // A preview names exactly what --apply then removes, caches oldest first, then the campaign,
+    // and removes nothing.
     let budget = policy(1024 * 1024);
     let preview = sweep(&layout.roots, &budget, false, false);
     assert_eq!(
         removed_paths(&preview),
         [
             oldest.clone(),
+            old_workspace.clone(),
+            newer_key.clone(),
             old_campaign.clone(),
-            old_key.clone(),
-            old_workspace.clone()
         ]
     );
     assert!(
@@ -249,11 +270,12 @@ fn the_budget_evicts_the_least_recently_used_first_and_stops_when_af_fits() {
             .is_some_and(|total| total <= budget.max_bytes),
         "{applied:?}"
     );
-    for gone in [&oldest, &old_campaign, &old_key, &old_workspace] {
+    for gone in [&oldest, &old_campaign, &newer_key, &old_workspace] {
         assert!(!gone.exists(), "{}", gone.display());
     }
-    // In use, the default version, used within the hour, or not needed to fit: all kept.
-    for kept in [&locked, &default, &newer_key, &fresh_key] {
+    // In use, the default version, a project's newest warm key, or used within the hour: all
+    // kept.
+    for kept in [&locked, &default, &old_key, &fresh_key] {
         assert!(kept.exists(), "{}", kept.display());
     }
     drop(held);
@@ -370,19 +392,82 @@ fn a_registered_store_that_is_gone_is_dropped_and_one_that_is_there_is_visited()
 }
 
 #[test]
-fn the_refusal_names_the_free_bytes_the_floor_af_storage_and_the_knob() {
-    let message = refusal(3 << 30, 10 << 30, Path::new("/var/tmp"));
-    assert!(message.starts_with("insufficient_disk: "), "{message}");
+fn the_refusal_names_the_volume_the_free_bytes_the_floor_af_storage_and_the_knob() {
+    let message = refusal(&volume("/var/tmp", Ok(3 << 30)), 3 << 30, 10 << 30);
+    assert!(
+        message.starts_with("insufficient_disk: /var/tmp (tmpfs): "),
+        "{message}"
+    );
     for needle in [
-        "3.0 GiB (3221225472 bytes)",
-        "10.0 GiB (10737418240 bytes)",
-        "/var/tmp",
+        "3.0 GiB (3221225472 bytes) free",
+        "floor 10.0 GiB (10737418240 bytes)",
+        "the sandbox root is /var/tmp",
+        "set TMPDIR or [storage] sandbox_root to a volume with room",
         "`af storage`",
         "[storage] min_free_bytes",
         "AF_STORAGE__MIN_FREE_BYTES",
     ] {
         assert!(message.contains(needle), "{needle}: {message}");
     }
+    // Each volume says what af keeps there and how to move it; one whose mount is unknown is
+    // named by the path measured.
+    let cache = Volume {
+        role: Role::Cache,
+        root: PathBuf::from("/home/u/.cache"),
+        mount: None,
+        ..volume("/home/u", Ok(1))
+    };
+    let message = refusal(&cache, 1, 10 << 30);
+    assert!(
+        message.starts_with("insufficient_disk: /home/u: 1 B (1 bytes) free")
+            && message.contains("the cache home is /home/u/.cache; set XDG_CACHE_HOME"),
+        "{message}"
+    );
+    let build = Volume {
+        role: Role::BuildCache,
+        root: PathBuf::from("/srv/af-cache"),
+        ..volume("/srv", Ok(1))
+    };
+    assert!(refusal(&build, 1, 10 << 30).contains(
+        "the build cache root is /srv/af-cache; set [storage] build_cache_root to a volume \
+             with room"
+    ));
+}
+
+/// The floor measures the volumes af actually uses: the configured sandbox root, the cache
+/// home and the configured build cache root, each named by its mount point and type when the
+/// host says them (finding I17, T18).
+#[test]
+fn the_floor_measures_the_configured_sandbox_and_build_cache_roots() {
+    let root = tempfile::tempdir().unwrap();
+    let mut configured = policy(1);
+    configured.sandbox_root = Some(root.path().join("sandboxes"));
+    configured.build_cache_root = Some(root.path().join("warm"));
+    let volumes = volumes_of(&configured);
+    let roles: Vec<(Role, PathBuf)> = volumes
+        .iter()
+        .map(|volume| (volume.role, volume.root.clone()))
+        .collect();
+    assert_eq!(roles[0], (Role::Sandbox, root.path().join("sandboxes")));
+    assert_eq!(roles[1].0, Role::Cache);
+    assert_eq!(roles[2], (Role::BuildCache, root.path().join("warm")));
+    for volume in &volumes {
+        assert!(volume.free.is_ok(), "{volume:?}");
+    }
+    // A directory not made yet is measured at its nearest ancestor, and that volume's mount
+    // point holds it.
+    let (mount, kind) = volumes[0].mount.clone().expect("the host names its volume");
+    assert!(
+        root.path().starts_with(&mount)
+            || std::fs::canonicalize(root.path())
+                .unwrap()
+                .starts_with(&mount),
+        "{mount:?}"
+    );
+    assert!(!kind.is_empty());
+    // Unset, the sandbox root is the temporary directory.
+    assert_eq!(volumes_of(&policy(1))[0].root, std::env::temp_dir());
+    assert_eq!(volumes_of(&policy(1)).len(), 2);
 }
 
 /// A registered Store as the registry names it: `kind = "task"` at `path`.
@@ -553,6 +638,9 @@ fn volume(path: &str, free: Result<u64, &str>) -> Volume {
     Volume {
         path: PathBuf::from(path),
         free: free.map_err(str::to_string),
+        role: Role::Sandbox,
+        root: PathBuf::from(path),
+        mount: Some((PathBuf::from(path), "tmpfs".into())),
     }
 }
 
@@ -569,7 +657,9 @@ fn the_free_disk_floor_fails_closed() {
     let below = judge_floor(&[measured(1 << 30), unmeasurable.clone()], floor).unwrap_err();
     assert!(
         below.starts_with(
-            "insufficient_disk: 1.0 GiB (1073741824 bytes) free on the volume of /tmp"
+            "insufficient_disk: /tmp (tmpfs): 1.0 GiB (1073741824 bytes) free, floor 10.0 GiB \
+             (10737418240 bytes); the sandbox root is /tmp; set TMPDIR or [storage] sandbox_root \
+             to a volume with room;"
         ),
         "{below}"
     );
@@ -690,6 +780,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
             changed: Vec::new(),
             problems: Vec::new(),
         },
+        warm_fit: None,
     };
     assert!(
         observation(&report(vec![], vec![], true)).is_none(),
@@ -2040,4 +2131,403 @@ fn a_planned_container_gone_since_the_inventory_is_a_failed_entry() {
     assert!(outcome.starts_with("failed: finishing "), "{outcome}");
     assert!(outcome.contains("gone since the inventory"), "{outcome}");
     assert_eq!(applied.total_after, Some(applied.total_before));
+}
+
+/// A warm key that stands for `bytes` without holding them: its size record, stamped with its
+/// lock's modification time as a check records it, is what inventory counts.
+fn recorded_warm_key(layout: &Layout, project: char, toolchain: char, bytes: u64, old: Duration) {
+    use std::os::unix::fs::MetadataExt;
+    let key = warm_key(layout, project, toolchain, 16, old);
+    let lock = std::fs::metadata(key.join(review_sandbox::KEY_LOCK)).unwrap();
+    std::fs::write(
+        key.with_file_name(format!("{}.size", hex(toolchain))),
+        format!("{bytes} {} {}\n", lock.mtime(), lock.mtime_nsec()),
+    )
+    .unwrap();
+}
+
+/// Finding K18: the newest warm key of a project checked in the last 7 days is kept whatever the
+/// budget; a project idle longer loses its keys like any cache.
+#[test]
+fn the_newest_warm_key_of_a_recent_project_stays_and_an_idle_projects_go() {
+    let layout = layout();
+    let idle_older = warm_key(&layout, 'a', '1', CHUNK, 9 * DAY);
+    let idle_newest = warm_key(&layout, 'a', '2', CHUNK, 8 * DAY);
+    let active_older = warm_key(&layout, 'b', '3', CHUNK, 6 * DAY);
+    let active_newest = warm_key(&layout, 'b', '4', CHUNK, 2 * DAY);
+    let applied = sweep(&layout.roots, &policy(1024), false, true);
+    assert_eq!(
+        removed_paths(&applied),
+        [
+            idle_older.clone(),
+            idle_newest.clone(),
+            active_older.clone()
+        ]
+    );
+    assert_eq!(applied.stop, Stop::NothingEvictable);
+    assert!(active_newest.exists());
+    for gone in [&idle_older, &idle_newest, &active_older] {
+        assert!(!gone.exists(), "{}", gone.display());
+    }
+}
+
+/// Finding K18: a 16 GiB warm key against the 20 GiB budget is kept while its project is
+/// active, never evicted while a check holds it, and the sweep says once that the budget is too
+/// small for it, with the budget that fits.
+#[test]
+fn a_budget_smaller_than_its_warm_key_keeps_the_key_and_says_so() {
+    let layout = layout();
+    recorded_warm_key(&layout, 'a', '1', 16 << 30, 3 * DAY);
+    let key = layout.roots.warm.join(hex('a')).join(hex('1'));
+    let budget = policy(20 << 30);
+    let report = sweep(&layout.roots, &budget, false, true);
+    assert!(report.removals.is_empty(), "{:?}", report.removals);
+    assert!(key.exists());
+    let warning = report.warm_fit.clone().expect("the key does not fit");
+    assert_eq!(
+        warning,
+        "warm key 16.0 GiB does not fit [storage] max_bytes 20.0 GiB: gates run cold whenever \
+         the budget must evict it; fix: raise max_bytes to ≥ 24 GiB or lower [warm] max_bytes"
+    );
+    // Said once by a Task command, beside its one summary line.
+    let mut tally = Tally::default();
+    tally.add(&report);
+    tally.add(&report);
+    assert_eq!(tally.warm_fit.as_deref(), Some(warning.as_str()));
+    assert_eq!(summary_line(&tally), None, "nothing freed, nothing over");
+    // A budget with room for it says nothing.
+    assert_eq!(
+        warm_fit(24 << 30, &inventory(&layout.roots, Detail::Stores).entries),
+        None
+    );
+
+    // Idle for over a week and held by a check: still never evicted while held.
+    let layout = layout_with_idle_held_key();
+    let report = sweep(&layout.0.roots, &policy(1), false, true);
+    assert!(
+        report
+            .removals
+            .iter()
+            .all(|removal| removal.path != layout.1),
+        "{:?}",
+        report.removals
+    );
+    assert!(layout.1.exists());
+    drop(layout.2);
+}
+
+fn layout_with_idle_held_key() -> (Layout, PathBuf, nix::fcntl::Flock<std::fs::File>) {
+    let layout = layout();
+    let key = warm_key(&layout, 'c', '5', CHUNK, 30 * DAY);
+    let held = nix::fcntl::Flock::lock(
+        std::fs::File::open(key.join(review_sandbox::KEY_LOCK)).unwrap(),
+        nix::fcntl::FlockArg::LockExclusive,
+    )
+    .unwrap();
+    (layout, key, held)
+}
+
+/// Finding C14: a Task command's sweeps say one line, naming what class was freed.
+#[test]
+fn the_summary_line_names_what_was_freed_and_what_is_left_to_do() {
+    let removal = |kind: Kind, bytes: u64, outcome: Option<&str>| Removal {
+        kind,
+        path: PathBuf::from("/x"),
+        task_id: None,
+        segment_id: None,
+        directory: None,
+        bytes,
+        rule: Rule::Budget,
+        total_after: Some(0),
+        unreadable: None,
+        outcome: outcome.map(str::to_string),
+        left: Vec::new(),
+    };
+    let mut report = sweep(&layout().roots, &policy(u64::MAX), false, false);
+    report.removals = vec![
+        removal(Kind::WarmKey, 1 << 30, None),
+        removal(Kind::WarmKey, 1 << 29, None),
+        removal(Kind::Task, 1 << 20, None),
+    ];
+    let mut tally = Tally::default();
+    tally.add(&report);
+    assert_eq!(
+        summary_line(&tally).as_deref(),
+        Some("storage: freed 1.5 GiB (2 warm keys, 1 finished Task)")
+    );
+    report.removals = vec![removal(Kind::Campaign, 0, Some("failed: held"))];
+    report.stop = Stop::NothingEvictable;
+    report.total_after = Some(30 << 30);
+    report.max_bytes = 20 << 30;
+    tally.add(&report);
+    assert_eq!(
+        summary_line(&tally).as_deref(),
+        Some(
+            "storage: freed 1.5 GiB (2 warm keys, 1 finished Task); 1 removal failed; af holds \
+             30.0 GiB of a 20.0 GiB budget and nothing more may go now; see `af storage`"
+        )
+    );
+    assert_eq!(summary_line(&Tally::default()), None, "no sweep, no line");
+}
+
+/// Issue #302: a Project Store another release wrote is never collected, with or without
+/// Workspace directories, by the budget or by age.
+#[test]
+fn a_project_store_another_release_wrote_survives_a_sweep_under_pressure() {
+    let layout = layout();
+    let store = project_store(&layout);
+    let connection = rusqlite::Connection::open(store.join("events.sqlite")).unwrap();
+    connection
+        .execute(
+            "INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs, \
+             payload) VALUES ('project', 0, 'e-1', 'ProjectFromTheFuture@9', \
+             '2026-01-01T00:00:00Z', '[]', '{}')",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    std::fs::write(store.join("filler"), vec![6_u8; CHUNK]).unwrap();
+    assert!(!store.join("workspaces").exists());
+    age(&store, 60 * DAY);
+    let stock = inventory(&layout.roots, Detail::Tasks);
+    let entry = stock
+        .entries
+        .iter()
+        .find(|entry| entry.path == store)
+        .expect("measured");
+    assert_eq!(entry.kind, Kind::UnreadableStore);
+    assert_eq!(entry.in_use.as_deref(), Some(OTHER_RELEASE_PROJECT_STORE));
+    let applied = sweep(&layout.roots, &policy(0), true, true);
+    assert!(
+        applied.removals.iter().all(|removal| removal.path != store),
+        "{:?}",
+        applied.removals
+    );
+    assert!(store.join("events.sqlite").is_file());
+}
+
+/// Finding I9: a finished Task a delivered Workspace was made from is never the sweep's.
+#[test]
+fn a_task_behind_a_delivered_workspace_is_kept() {
+    let task = |id: &str| Entry {
+        kind: Kind::Task,
+        path: PathBuf::from("/state/af/task/local/s"),
+        task_id: Some(id.into()),
+        bytes: 10,
+        last_use_unix_ms: 0,
+        in_use: None,
+        reason: None,
+        directory: None,
+        segment_id: None,
+        state: None,
+        identity: None,
+        found: None,
+        too_deep: false,
+        unmeasurable: None,
+    };
+    let mut entries = vec![task("delivered-1"), task("other")];
+    keep_delivered(
+        &mut entries,
+        &BTreeSet::from(["delivered-1".to_string()]),
+        None,
+    );
+    assert_eq!(
+        entries[0].in_use.as_deref(),
+        Some("Task delivered-1 is the source of a delivered Workspace")
+    );
+    assert_eq!(entries[1].in_use, None);
+
+    // A Project Store that cannot be read could hold the delivered Workspace of any of them:
+    // every finished Task is kept, and the reason names that Project Store.
+    let delivered = Delivered {
+        tasks: BTreeSet::new(),
+        unknown: vec![
+            (
+                PathBuf::from("/state/af/project/aa"),
+                "file is not a database".into(),
+            ),
+            (
+                PathBuf::from("/state/af/project/bb"),
+                "unknown event type".into(),
+            ),
+        ],
+    };
+    let why = delivered.blocked().unwrap();
+    assert_eq!(
+        why,
+        "the delivered Workspaces of the Project Store /state/af/project/aa (and 1 more) cannot \
+         be read, so no finished Task is collected: file is not a database"
+    );
+    let mut entries = vec![task("delivered-1"), task("other")];
+    keep_delivered(&mut entries, &BTreeSet::new(), Some(&why));
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.in_use.as_deref() == Some(why.as_str()))
+    );
+    assert_eq!(Delivered::default().blocked(), None);
+}
+
+/// A Project Store beyond the Store discovery ceiling, or one whose log does not replay, still
+/// counts for delivered-Task protection: the inventory reads every one without the ceiling, and
+/// one it cannot read is unknown rather than empty.
+#[test]
+fn every_project_store_counts_for_delivered_protection_whatever_the_discovery_ceiling() {
+    let layout = layout();
+    let state = layout.roots.registry.parent().unwrap().to_path_buf();
+    let readable = state.join("project").join("a".repeat(64));
+    std::fs::create_dir_all(&readable).unwrap();
+    review_store::EventStore::open(readable.join("events.sqlite")).unwrap();
+    let broken = state.join("project").join("b".repeat(64));
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("events.sqlite"), b"not a database").unwrap();
+    let found = delivered(&layout.roots, &BTreeSet::new());
+    assert!(found.tasks.is_empty());
+    assert_eq!(found.unknown.len(), 1, "{:?}", found.unknown);
+    assert_eq!(found.unknown[0].0, broken);
+}
+
+/// A review campaign is judged in use when inventory takes stock of it, before any plan: a run
+/// holding it keeps it off the sweep's list (the same judgement names a live writer lease).
+#[test]
+fn a_campaign_in_use_is_never_on_the_sweeps_list() {
+    let layout = layout();
+    let held = campaign(&layout, 'e', 30 * DAY);
+    let _running = hold_running(&held).unwrap();
+    let stock = inventory(&layout.roots, Detail::Stores);
+    let entry = stock
+        .entries
+        .iter()
+        .find(|entry| entry.path == held)
+        .unwrap();
+    assert_eq!(
+        entry.in_use.as_deref(),
+        Some("a running `af review run` holds it")
+    );
+    let preview = sweep(&layout.roots, &policy(0), true, false);
+    assert!(preview.removals.iter().all(|removal| removal.path != held));
+}
+
+/// C3 item 3: a campaign whose writer leases cannot be read is in use, never unused: a failed
+/// read hides whatever lease a live writer holds. The sweep's judgement and `af review gc`'s
+/// (`campaign_in_use`, `hold_campaign_for_removal`) both keep it, and say why.
+#[test]
+fn a_campaign_whose_leases_cannot_be_read_is_in_use() {
+    let layout = layout();
+    let fine = campaign(&layout, 'a', 30 * DAY);
+    assert_eq!(campaign_in_use(&fine), None);
+    drop(hold_campaign_for_removal(&fine).unwrap());
+
+    // Its CAS cannot be opened: the leases its Tasks hold cannot be told.
+    let broken_cas = campaign(&layout, 'b', 30 * DAY);
+    std::fs::remove_dir_all(broken_cas.join("cas")).unwrap();
+    std::fs::write(broken_cas.join("cas"), b"no CAS").unwrap();
+    // Its log does not open as one.
+    let broken_log = campaign(&layout, 'c', 30 * DAY);
+    std::fs::write(broken_log.join("events.sqlite"), b"not a database").unwrap();
+    for broken in [&broken_cas, &broken_log] {
+        let why = campaign_in_use(broken).unwrap_or_else(|| panic!("{}", broken.display()));
+        assert!(why.starts_with("its leases could not be read: "), "{why}");
+        let refused = hold_campaign_for_removal(broken).unwrap_err();
+        assert!(
+            refused.starts_with("its leases could not be read: "),
+            "{refused}"
+        );
+    }
+    let applied = sweep(&layout.roots, &policy(0), true, true);
+    let removed = removed_paths(&applied);
+    assert!(removed.contains(&fine), "{removed:?}");
+    assert!(
+        !removed.contains(&broken_cas) && !removed.contains(&broken_log),
+        "{removed:?}"
+    );
+    assert!(broken_cas.join("events.sqlite").is_file());
+}
+
+/// The sweep that ends a run warns about what it failed to do, never about a path the inventory
+/// could not measure: that is a note of `af storage --verbose`.
+#[test]
+fn a_path_the_inventory_could_not_measure_is_no_warning_after_a_run() {
+    let report = SweepReport {
+        applied: true,
+        collection: false,
+        max_bytes: 100,
+        total_before: 10,
+        total_after: Some(10),
+        stop: Stop::Fits,
+        removals: Vec::new(),
+        left: Vec::new(),
+        gate_cleanups: Vec::new(),
+        registry_dropped: Vec::new(),
+        failures: vec![
+            format!("{MEASURING}/tmp/.tmpXYZ/state: event store: no such table: events"),
+            "removing /state/x: permission denied".into(),
+        ],
+        warm_fit: None,
+        telemetry: TelemetrySweep {
+            max_bytes: None,
+            total_before: 0,
+            total_after: 0,
+            stop: Stop::Fits,
+            reclaimed: Vec::new(),
+            notes: Vec::new(),
+            registry_dropped: Vec::new(),
+            changed: Vec::new(),
+            problems: Vec::new(),
+        },
+    };
+    let warned: Vec<&String> = run_warnings(&report).collect();
+    assert_eq!(warned, ["removing /state/x: permission denied"]);
+}
+
+/// ADR-0207: a warm key a check holds is never evicted. The sweep reads its lock at inventory
+/// and again at eviction, so a key a check locked after the inventory measured it is refused and
+/// left in place; an idle key the sweep evicts leaves its eviction record, the cause a check that
+/// finds it gone reports.
+#[test]
+fn a_held_warm_key_is_refused_at_eviction_and_an_evicted_one_leaves_its_cause() {
+    let layout = layout();
+    let key = warm_key(&layout, 'a', '1', CHUNK, 30 * DAY);
+    let _newest = warm_key(&layout, 'a', '2', CHUNK, Duration::from_secs(60));
+    let stock = inventory(&layout.roots, Detail::Tasks);
+    let entry = stock
+        .entries
+        .iter()
+        .find(|entry| entry.path == key)
+        .unwrap();
+    assert_eq!(entry.in_use, None, "idle when the inventory measured it");
+    let held = nix::fcntl::Flock::lock(
+        std::fs::File::open(key.join(review_sandbox::KEY_LOCK)).unwrap(),
+        nix::fcntl::FlockArg::LockExclusive,
+    )
+    .unwrap();
+    let refused = evict(&layout.roots, &policy(1024), &stock, entry).unwrap_err();
+    assert!(
+        refused.reason.contains("a check holds it now"),
+        "{}",
+        refused.reason
+    );
+    assert!(
+        key.join("cargo_target/blob").exists(),
+        "a held key keeps every byte"
+    );
+    assert!(review_sandbox::read_key_eviction(&layout.roots.warm, &hex('a'), &hex('1')).is_none());
+    drop(held);
+
+    let (bytes, _, _) = evict(&layout.roots, &policy(1024), &stock, entry).unwrap();
+    assert!(!key.exists());
+    let record: review_core::task::check_layer::WarmEvictionV1 = serde_json::from_slice(
+        &review_sandbox::read_key_eviction(&layout.roots.warm, &hex('a'), &hex('1')).unwrap(),
+    )
+    .unwrap();
+    record.validate().unwrap();
+    assert_eq!(
+        record.by,
+        review_core::task::check_layer::WarmEvictorV1::StorageSweep
+    );
+    assert_eq!(record.bytes, bytes);
+    // The record sits beside the key, never below a key, so the next inventory lists no key
+    // for it.
+    let after = inventory(&layout.roots, Detail::Tasks);
+    assert!(after.entries.iter().all(|entry| entry.path != key));
 }

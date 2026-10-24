@@ -168,6 +168,31 @@ class HostBackstop(TempDir):
         os.chmod(path, 0o755)
         return path, marker
 
+    def latch(self, marker, bounds=None):
+        """A `started` hook for `launch`: it holds the bounded wait back until the stand-in has
+        started (it wrote `marker`), so the bound measures the supervisor, never how long a
+        loaded host takes to start an interpreter, and records each timeout `launch` waits
+        with in `bounds`. Returns the hook and a list that gets the instant the latch opened."""
+        opened = []
+
+        def started(process):
+            deadline = time.monotonic() + 120
+            while not os.path.exists(marker):
+                self.assertIsNone(process.poll(), "the stand-in ended before it started")
+                self.assertLess(time.monotonic(), deadline, "the stand-in never started")
+                time.sleep(0.01)
+            opened.append(time.monotonic())
+            if bounds is not None:
+                communicate = process.communicate
+
+                def bounded(input=None, timeout=None):
+                    bounds.append(timeout)
+                    return communicate(input, timeout=timeout)
+
+                process.communicate = bounded
+
+        return started, opened
+
     def test_the_backstop_covers_the_setup_and_the_child_with_their_cleanup(self):
         request = self.request(setup_ms=110000, child_ms=80000, grace_ms=5000)
         # The predecessor counted only the child: 85 s + margin, before a valid seed could
@@ -178,14 +203,21 @@ class HostBackstop(TempDir):
         self.assertEqual(supervise.backstop_seconds(alone, margin=60), 80 + 5 + 60)
 
     def test_a_setup_and_child_near_their_limits_are_never_cut_off(self):
-        # 3.1 s each of setup and child time with their grace, and a 1 s margin: a supervisor
-        # that replies after 5 s is within 7.2 s and passes; counting the child alone would
-        # have killed it at 4.1 s.
-        supervisor, _ = self.slow(5)
-        supervised = supervise.launch([supervisor], self.request(), margin=1)
+        # 30.1 s each of setup and child time with their grace, and a 1 s margin: the supervisor
+        # is given 61.2 s; counting the child alone would have cut it off at 31.1 s. The bound is
+        # read where `launch` waits with it, after a latch on the stand-in's start, so a loaded
+        # host's interpreter start never eats into it, and the stand-in replies at once, well
+        # inside it.
+        supervisor, marker = self.slow(0)
+        bounds = []
+        started, _ = self.latch(marker, bounds)
+        request = self.request(setup_ms=30000, child_ms=30000)
+        supervised = supervise.launch([supervisor], request, margin=1, started=started)
         self.assertEqual(supervised.result["termination"]["kind"], "exited")
         self.assertIsNotNone(supervised.result["setup"])
-        self.assertGreater(supervised.host_wall_ns, 5e9)
+        self.assertEqual(len(bounds), 1)
+        self.assertAlmostEqual(bounds[0], 30.1 + 30.1 + 1, places=6)
+        self.assertGreater(bounds[0], 30.1 + 1)
 
     def test_a_supervisor_past_the_backstop_is_killed_and_reported(self):
         supervisor, _ = self.slow(30)
@@ -196,15 +228,21 @@ class HostBackstop(TempDir):
     def test_the_run_s_total_deadline_dominates_the_backstop(self):
         # 3 s remain and the cancellation reserve is 0.5 s: the bound is 2.5 s, not 67.2 s. The
         # stand-in dies of the SIGTERM before it took the signal over, so it launched nothing.
+        # The stand-in has started (a latch on its marker) before the bound runs, so it is the
+        # bound that ends it, whatever the host's load.
         supervisor, marker = self.slow(30)
-        started = time.monotonic()
+        bounds = []
+        started, opened = self.latch(marker, bounds)
         with self.assertRaises(supervise.SupervisorFailure) as caught:
             supervise.launch([supervisor], self.request(), deadline=103.0,
-                             clock=lambda: 100.0, margin=60, cancel_margin=0.2)
+                             clock=lambda: 100.0, margin=60, cancel_margin=0.2,
+                             started=started)
         self.assertIn("within 2.500 s, the run's total deadline", str(caught.exception))
         self.assertTrue((caught.exception.launched, caught.exception.deadline))
         self.assertFalse(caught.exception.uncertain)
-        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(bounds[0], 2.5)
+        # Ended by the bound and its signal, not after the 67.2 s backstop: a load-safe margin.
+        self.assertLess(time.monotonic() - opened[0], 30)
         self.assertTrue(os.path.exists(marker))
 
     def test_nothing_launches_without_the_time_a_cancellation_takes(self):
@@ -264,11 +302,15 @@ class HostBackstop(TempDir):
                       str(caught.exception))
         self.assertFalse(caught.exception.launched)
         self.assertFalse(os.path.exists(marker))
-        supervisor, _ = self.slow(30)
+        supervisor, marker = self.slow(30)
+        bounds = []
+        started, _ = self.latch(marker, bounds)
         with self.assertRaises(supervise.SupervisorFailure) as caught:
             supervise.launch([supervisor], self.request(), deadline=163.0,
-                             clock=lambda: 100.0, cancel_margin=0.2, removal_seconds=60)
+                             clock=lambda: 100.0, cancel_margin=0.2, removal_seconds=60,
+                             started=started)
         self.assertIn("within 2.500 s, the run's total deadline", str(caught.exception))
+        self.assertEqual(bounds[0], 2.5)
         # Whether anything may be live is the removal's to say, never assumed here.
         self.assertNotIn("no reply confirms", str(caught.exception))
 

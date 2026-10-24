@@ -3,6 +3,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use review_core::task::diff_subject::{
+    DIFF_SUBJECT_BASE, DIFF_SUBJECT_FILE, DIFF_SUBJECT_SCHEMA, DiffSubjectChangeV1, DiffSubjectV1,
+    MAX_DIFF_PATHS,
+};
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::PortAffinityV1;
 use review_core::task::plan::ExecutionPlanV1;
@@ -66,7 +70,7 @@ impl SnapshotTaskEnvironment {
         {
             return Err("AF-owned preparation requires a non-source-writing Worker".into());
         }
-        self.materialize_mode(cas, invocation, Mode::EphemeralWrite, false)
+        self.materialize_mode(cas, invocation, Mode::EphemeralWrite, false, false)
     }
 
     fn materialize_mode(
@@ -75,19 +79,131 @@ impl SnapshotTaskEnvironment {
         invocation: &TaskInvocationV1,
         mode: Mode,
         captures_candidate: bool,
+        with_base: bool,
     ) -> Result<Sandbox, String> {
-        let (id, _, mut manifest) = source_snapshot(
+        let (id, snapshot, mut manifest) = source_snapshot(
             cas,
             invocation
                 .inputs
                 .get("source")
                 .ok_or("Source Worker has no source port")?,
         )?;
+        let source_manifest = manifest.clone();
         add_review_inputs(cas, invocation, captures_candidate, &id, &mut manifest)?;
         let sandbox = Sandbox::materialize(&manifest, cas, mode).map_err(|e| e.to_string())?;
         review_sandbox::admit(self.policy, &sandbox).map_err(|e| e.to_string())?;
+        let base = if with_base {
+            match declared_base(cas, invocation)? {
+                Some(declared) => Some(declared),
+                None => recorded_base(cas, &snapshot)?,
+            }
+        } else {
+            None
+        };
+        if let Some(base_id) = base {
+            let (_, base) = read_snapshot(cas, &base_id)?;
+            let subject = diff_subject(&base_id, &base, &id, &source_manifest)?;
+            let bytes = serde_json::to_vec_pretty(&subject).map_err(|e| e.to_string())?;
+            sandbox
+                .attach_base(&base, cas, &[(DIFF_SUBJECT_FILE, &bytes)])
+                .map_err(|e| format!("The base tree beside the sandbox: {e}"))?;
+        }
         Ok(sandbox)
     }
+}
+
+/// The base a Task file declared with `"base": {"commit": …}`, read from the `af/TaskBase@1`
+/// record in the revision's provenance (ADR-0212).
+fn declared_base(cas: &Cas, invocation: &TaskInvocationV1) -> Result<Option<String>, String> {
+    use review_core::task::findings::{TASK_BASE_V1, TaskBaseV1};
+    // The plan and revision are the dispatch's own records, read again where the dispatch reads
+    // them; an invocation that names no readable plan declares no base.
+    let Ok(plan) = envelope(cas, &invocation.plan_id) else {
+        return Ok(None);
+    };
+    let Ok(plan) = serde_json::from_value::<ExecutionPlanV1>(plan.payload) else {
+        return Ok(None);
+    };
+    let task: TaskRevisionV1 =
+        serde_json::from_value(envelope(cas, &plan.task_revision_id)?.payload)
+            .map_err(|e| e.to_string())?;
+    for id in &task.provenance.input_artifact_ids {
+        let Some(artifact) = cas.get_optional_artifact(id).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        if artifact.artifact_type != TASK_BASE_V1 {
+            continue;
+        }
+        let base: TaskBaseV1 =
+            serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+        base.validate()?;
+        return Ok(Some(base.snapshot_id));
+    }
+    Ok(None)
+}
+
+/// The tree a Snapshot changed, as the kernel recorded it (ADR-0212): a sealed candidate's
+/// parent, or, for a tree a Task bound and re-rooted, the parent of the tree it was bound from.
+/// `None` for a root capture, which changed nothing the Store knows of.
+pub fn recorded_base(cas: &Cas, snapshot: &TaskSnapshot) -> Result<Option<String>, String> {
+    if let Some(parent) = &snapshot.parent_snapshot_id {
+        return Ok(Some(parent.clone()));
+    }
+    // Only a bound origin names a tree this one came from; any other origin, typed or not,
+    // names none.
+    let Ok(origin) = review_source_git::task::read_origin(cas, &snapshot.origin_id) else {
+        return Ok(None);
+    };
+    let Some(bound) = origin.bound_from() else {
+        return Ok(None);
+    };
+    let (from, _) = read_snapshot(cas, &bound.snapshot_id)?;
+    Ok(from.parent_snapshot_id)
+}
+
+/// `af/diff-subject@1` between two recorded trees: every path whose kind or content differs,
+/// sorted, with the content digest on each side that holds it.
+pub fn diff_subject(
+    base_id: &str,
+    base: &review_source_git::Manifest,
+    snapshot_id: &str,
+    tree: &review_source_git::Manifest,
+) -> Result<DiffSubjectV1, String> {
+    let before: BTreeMap<&str, (&str, review_source_git::EntryKind)> = base
+        .entries
+        .iter()
+        .map(|entry| (entry.path.as_str(), (entry.content.as_str(), entry.kind)))
+        .collect();
+    let after: BTreeMap<&str, (&str, review_source_git::EntryKind)> = tree
+        .entries
+        .iter()
+        .map(|entry| (entry.path.as_str(), (entry.content.as_str(), entry.kind)))
+        .collect();
+    let paths: BTreeSet<&str> = before.keys().chain(after.keys()).copied().collect();
+    let changes = paths
+        .into_iter()
+        .filter(|path| before.get(path) != after.get(path))
+        .map(|path| DiffSubjectChangeV1 {
+            path: path.to_owned(),
+            before: before.get(path).map(|(content, _)| (*content).to_owned()),
+            after: after.get(path).map(|(content, _)| (*content).to_owned()),
+        })
+        .collect::<Vec<_>>();
+    if changes.len() > MAX_DIFF_PATHS {
+        return Err(format!(
+            "The change holds {} paths, more than a diff subject lists",
+            changes.len()
+        ));
+    }
+    let subject = DiffSubjectV1 {
+        schema: DIFF_SUBJECT_SCHEMA.into(),
+        base_snapshot_id: base_id.to_owned(),
+        snapshot_id: snapshot_id.to_owned(),
+        base: DIFF_SUBJECT_BASE.into(),
+        changes,
+    };
+    subject.validate()?;
+    Ok(subject)
 }
 
 /// The top-level names the materialized source holds.
@@ -265,7 +381,11 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
             | WorkerAccess::WriteSource
             | WorkerAccess::WriteSourceWithShell => Mode::EphemeralWrite,
         };
-        self.materialize_mode(cas, invocation, mode, candidate_port(signature))
+        // A Worker that judges the source without writing it gets the tree before the change
+        // beside its own, read-only, with the change's paths (ADR-0212); a writer changes the
+        // source itself and gets none.
+        let judges = !signature.effects.contains("write-source");
+        self.materialize_mode(cas, invocation, mode, candidate_port(signature), judges)
     }
 
     fn finish(
@@ -300,8 +420,18 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
         // part of what the Worker wrote, so it never reaches the candidate.
         let access = worker_access(signature);
         let owned = owned_top_levels(&sealed);
+        // What the project's ignore rules exclude among what the Worker added — generated
+        // files of its own test runs and builds — is left out and listed (ADR-0207).
+        let rules = sealed.ignore_rules().map_err(|e| e.to_string())?;
+        let ignored: BTreeSet<String> = sealed
+            .ignored_by(&rules)
+            .into_iter()
+            .filter(|path| !shell_scratch(access, &owned, path))
+            .collect();
         let manifest = sealed
-            .capture_snapshot_where(cas, |path| !shell_scratch(access, &owned, path))
+            .capture_snapshot_where(cas, |path| {
+                !shell_scratch(access, &owned, path) && !ignored.contains(path)
+            })
             .map_err(|e| e.to_string())?;
         let manifest_id = cas
             .put_json(&serde_json::to_value(&manifest).map_err(|e| e.to_string())?)
@@ -312,7 +442,29 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
             manifest_id: manifest_id.clone(),
         };
         let mut refs = source.artifact_ids.clone();
-        refs.extend([parent_snapshot_id.clone(), manifest_id]);
+        refs.extend([parent_snapshot_id.clone(), manifest_id.clone()]);
+        if !ignored.is_empty() {
+            let record = review_core::task::seal::SealIgnoredV1::new(
+                manifest_id,
+                ignored.iter().cloned().collect(),
+            );
+            record.validate()?;
+            let id = cas
+                .put_json(&serde_json::to_value(&record).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            eprintln!(
+                "seal: left out {} generated path{} the ignore rules exclude ({}{}); listed in {id}",
+                record.ignored_count,
+                if record.ignored_count == 1 { "" } else { "s" },
+                record.ignored[0],
+                if record.ignored_count > 1 {
+                    ", …"
+                } else {
+                    ""
+                }
+            );
+            refs.push(id);
+        }
         let id = cas
             .put_artifact(
                 CANDIDATE_TREE_V1,
@@ -508,8 +660,40 @@ mod tests {
     use review_core::task::pipeline::PipelineContractV1;
     use review_source_git::{Entry, EntryKind, Manifest};
 
+    #[test]
+    fn a_diff_subject_lists_added_changed_removed_and_mode_changed_paths_only() {
+        let entry = |path: &str, bytes: &[u8], kind: EntryKind| Entry {
+            path: path.into(),
+            kind,
+            content: review_source_git::digest_bytes(bytes),
+            size: bytes.len() as u64,
+        };
+        let base = Manifest::new(vec![
+            entry("same.rs", b"same", EntryKind::File),
+            entry("changed.rs", b"before", EntryKind::File),
+            entry("gone.rs", b"gone", EntryKind::File),
+            entry("run.sh", b"run", EntryKind::File),
+        ])
+        .unwrap();
+        let tree = Manifest::new(vec![
+            entry("same.rs", b"same", EntryKind::File),
+            entry("changed.rs", b"after", EntryKind::File),
+            entry("new.rs", b"new", EntryKind::File),
+            entry("run.sh", b"run", EntryKind::Executable),
+        ])
+        .unwrap();
+        let id = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+        let subject = diff_subject(&id('1'), &base, &id('2'), &tree).unwrap();
+        let paths: Vec<&str> = subject.changes.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(paths, ["changed.rs", "gone.rs", "new.rs", "run.sh"]);
+        assert!(subject.changes[1].after.is_none() && subject.changes[2].before.is_none());
+        assert_eq!(subject.changes[3].before, subject.changes[3].after);
+        assert_eq!(subject.base, "../base");
+    }
+
     fn signature(effects: &str, roles: &str) -> OperatorSignature {
         OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 {
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),

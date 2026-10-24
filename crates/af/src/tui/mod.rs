@@ -24,6 +24,7 @@ mod tree;
 
 use keymap::{Action, Key, KeyMap, Prompt, PromptEvent};
 use paint::{Frame, Paint, Span};
+use panes::campaigns::CampaignsPane;
 use panes::pipelines::PipelinesPane;
 use panes::providers::ProvidersPane;
 use panes::settings::SettingsPane;
@@ -40,16 +41,39 @@ const BAR_MIN_WIDTH: usize = 90;
 const MIN_WIDTH: usize = 80;
 const MIN_HEIGHT: usize = 24;
 const BAR_LEGEND: &str = "j/k move  Enter open  zo/zc fold  / search  :cmd  q quit";
+/// What the status line says, in turn with the legend, once no key came for a while.
+const IDLE_HINT: &str = "? help - : run a command - q quit";
+/// How long without a key before the hint first shows, and how long each turn lasts.
+const IDLE: std::time::Duration = std::time::Duration::from_secs(4);
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// Every pane: the root's settings, then the four folders.
-const PANES: [Option<Tab>; 5] = [
+/// Every pane: the root's settings, then the five folders.
+const PANES: [Option<Tab>; 6] = [
     None,
     Some(Tab::Providers),
     Some(Tab::Workers),
     Some(Tab::Pipelines),
     Some(Tab::Tasks),
+    Some(Tab::Campaigns),
 ];
+
+/// What `?` shows first: the panes, and that the `:` line runs any af command.
+const OVERVIEW: &str = "\
+HELP  ? or :help shows this; q or Esc closes it
+
+PANES  select one in the bar (j/k, ]] [[); Enter opens it
+  settings     the root row: af config show --origin
+  providers/   af provider status; d removes a registered Provider
+  workers/     the Worker packages HEAD commits, and their Attempts
+  pipelines/   af task plan and af task explain --tree, token-free
+  tasks/       the Tasks of every Task Store: this scope's, every
+               --state DIR the Store registry records, and :state DIR
+  campaigns/   every review Campaign, as af review campaigns lists it
+
+: <af command>   runs any af command line here (:task list,
+                 :review campaigns, :provider status), with the
+                 terminal handed to it; Enter comes back.
+";
 
 const KEYS: &str = "\
 KEYS  (docs/design/tui.md section 4)
@@ -62,7 +86,8 @@ gg G               first / last row
 <C-f> <C-b>        page down / up; <C-b> on the bar hides it, and shows it
 zo zc za           open / close / toggle the folder under the cursor
 zR zM              open / close every folder
-/ ? n N            search the focused region forward / backward; again
+/ n N              search the focused region; next / previous match
+?                  this help
 Tab <C-w>l <C-w>h  move focus between the bar and the main pane
 ]] [[              next / previous folder
 Enter o            open the selected node in the main pane
@@ -80,11 +105,14 @@ tasks: Enter on a HISTORY row shows its artifact (q or Esc returns),
        r fills the : line with `task run ID --confirm-plan PLAN`,
        D on a verified Task with `task deliver ID ... --confirm `
        (type the Task id to confirm); Enter on the line runs it
+campaigns: Enter on a COMMANDS or finding row fills the : line with
+           that `review ...` command; y copies the Campaign's name
 
 :e user|directory|project|local   af config edit --layer ...
 :help [TOPIC|COMMAND]             af help ...
 :cd DIR                           browse another directory
 :scope user|project               switch the scope
+:state DIR                        list the Task Store DIR this session
 Any other : line is an af command line: it runs as `af ...` in this
 scope's root with the terminal handed to it; Enter comes back.
 Tab completes commands, and a Task ID from the Tasks pane.";
@@ -242,6 +270,9 @@ fn run(
                 count => decoder.feed(&buffer[..count]),
             }
         };
+        if !keys.is_empty() || app.idle_since.is_none() {
+            app.idle_since = Some(std::time::Instant::now());
+        }
         for key in keys {
             if let Some(effect) = app.key(key) {
                 app.apply(effect, session);
@@ -267,6 +298,7 @@ pub(crate) struct Panes {
     pipelines: PipelinesPane,
     workers: WorkersPane,
     tasks: TasksPane,
+    campaigns: CampaignsPane,
 }
 
 impl Panes {
@@ -281,6 +313,7 @@ impl Panes {
             pipelines: PipelinesPane::default(),
             workers: WorkersPane::with_catalogs(catalogs),
             tasks: TasksPane::default(),
+            campaigns: CampaignsPane::default(),
         }
     }
 
@@ -292,6 +325,7 @@ impl Panes {
             Some(Tab::Workers) => &self.workers,
             Some(Tab::Pipelines) => &self.pipelines,
             Some(Tab::Tasks) => &self.tasks,
+            Some(Tab::Campaigns) => &self.campaigns,
         }
     }
 
@@ -302,6 +336,7 @@ impl Panes {
             Some(Tab::Workers) => &mut self.workers,
             Some(Tab::Pipelines) => &mut self.pipelines,
             Some(Tab::Tasks) => &mut self.tasks,
+            Some(Tab::Campaigns) => &mut self.campaigns,
         }
     }
 }
@@ -316,7 +351,7 @@ enum Focus {
 enum Mode {
     Normal,
     Command,
-    Search { forward: bool },
+    Search,
 }
 
 /// Whether the bar shows: by the terminal's width until `<C-b>` decides.
@@ -356,8 +391,8 @@ pub(crate) struct App {
     mode: Mode,
     keymap: KeyMap,
     prompt: Prompt,
-    /// The last search and whether it ran forward.
-    search: Option<(String, bool)>,
+    /// The last search.
+    search: Option<String>,
     /// A status-line message and whether it is an error.
     message: Option<(String, bool)>,
     /// The byte range of the path the message names, which the status line shortens to fit.
@@ -378,6 +413,10 @@ pub(crate) struct App {
     /// The running `af` executable, which a `:` command line runs as. It is resolved once, so
     /// the hand-off runs these very bytes even after `af self` changes the release a link names.
     exe: Result<PathBuf, String>,
+    /// When the event loop last read a key: once none came for [`IDLE`], the status line's
+    /// legend takes turns with [`IDLE_HINT`]. `None` outside the event loop, so a frame a test
+    /// paints never depends on the clock.
+    idle_since: Option<std::time::Instant>,
 }
 
 impl App {
@@ -406,8 +445,16 @@ impl App {
             fatal: None,
             handed: false,
             exe: std::env::current_exe().map_err(|error| format!("the af executable: {error}")),
+            idle_since: None,
         };
         app.load();
+        // A first run: nothing registered yet, so the browser opens where that is fixed.
+        if app.opened == Opened::Root && app.panes.providers.none_registered() {
+            let providers = Tab::Providers;
+            app.tree
+                .select(NodeKind::Folder(providers), providers.name());
+            app.show(Opened::Folder(providers));
+        }
         app
     }
 
@@ -561,6 +608,10 @@ impl App {
                 };
                 format!("{}/{path}", Tab::Tasks.name())
             }
+            NodeKind::Item(Tab::Campaigns) => {
+                let label = self.panes.campaigns.label(&row.id);
+                format!("{}/{}", Tab::Campaigns.name(), label.unwrap_or(row.label))
+            }
             NodeKind::Group(tab) | NodeKind::Item(tab) => {
                 format!("{}/{}", tab.name(), row.label)
             }
@@ -575,8 +626,8 @@ impl App {
         self.settle_focus();
         match self.mode {
             Mode::Command => return self.command_key(key),
-            Mode::Search { forward } => {
-                self.search_key(key, forward);
+            Mode::Search => {
+                self.search_key(key);
                 return None;
             }
             Mode::Normal => {}
@@ -586,7 +637,7 @@ impl App {
         self.message_path = None;
         if self.help.is_some() {
             match action {
-                Action::Quit | Action::Cancel => self.help = None,
+                Action::Quit | Action::Cancel | Action::Help => self.help = None,
                 Action::Pane(_) => {}
                 _ => {
                     self.focus = Focus::Main;
@@ -627,8 +678,11 @@ impl App {
             Action::FoldToggle => self.tree.fold_toggle(),
             Action::FoldOpenAll => self.tree.fold_all(false),
             Action::FoldCloseAll => self.tree.fold_all(true),
-            Action::SearchForward => self.begin(Mode::Search { forward: true }),
-            Action::SearchBackward => self.begin(Mode::Search { forward: false }),
+            Action::SearchForward => self.begin(Mode::Search),
+            Action::Help => {
+                self.help = Some(overlay_rows());
+                self.main = View::default();
+            }
             Action::SearchNext => self.repeat_search(true),
             Action::SearchPrevious => self.repeat_search(false),
             Action::FocusNext => self.focus_next(),
@@ -760,6 +814,7 @@ impl App {
             NodeKind::Folder(_) | NodeKind::Group(_) => None,
             NodeKind::Item(Tab::Tasks) => self.panes.tasks.task_id(&row.id),
             NodeKind::Item(Tab::Workers) => self.panes.workers.entry_name(&row.id),
+            NodeKind::Item(Tab::Campaigns) => self.panes.campaigns.label(&row.id),
             NodeKind::Item(_) => Some(row.label),
         }
     }
@@ -869,12 +924,13 @@ impl App {
         }
     }
 
-    fn search_key(&mut self, key: Key, forward: bool) {
+    /// The `/` line: a search forward; `N` repeats it backward.
+    fn search_key(&mut self, key: Key) {
         match self.prompt.key(key) {
             PromptEvent::Submit(query) => {
                 self.mode = Mode::Normal;
                 if !query.is_empty() {
-                    self.search = Some((query, forward));
+                    self.search = Some(query);
                 }
                 self.repeat_search(true);
             }
@@ -883,13 +939,12 @@ impl App {
         }
     }
 
-    /// `n` (`same`) and `N`: the last search again, in its own direction or against it.
-    fn repeat_search(&mut self, same: bool) {
-        let Some((query, forward)) = self.search.clone() else {
+    /// `n` (`forward`) and `N`: the last search again, forward or backward.
+    fn repeat_search(&mut self, forward: bool) {
+        let Some(query) = self.search.clone() else {
             self.say_error("no previous search");
             return;
         };
-        let forward = forward == same;
         let found = match self.focus {
             Focus::Bar => self.tree.search(&query, forward),
             Focus::Main => self.search_main(&query, forward),
@@ -947,6 +1002,14 @@ impl App {
             }
             ("scope", _) => {
                 self.say_error("usage: :scope user|project");
+                None
+            }
+            ("state", [dir]) => {
+                self.add_state(dir);
+                None
+            }
+            ("state", _) => {
+                self.say_error("usage: :state DIR (a Task Store, listed in tasks/ this session)");
                 None
             }
             ("e" | "edit", _) => Some(Effect::RunCommand(self.edit_words(rest))),
@@ -1012,7 +1075,7 @@ impl App {
         let owned = |choices: &[&str]| choices.iter().map(|choice| (*choice).to_owned()).collect();
         match before {
             [] => {
-                let mut choices: Vec<String> = owned(&["cd", "e", "help", "q", "scope"]);
+                let mut choices: Vec<String> = owned(&["cd", "e", "help", "q", "scope", "state"]);
                 choices.extend(subcommands(&[]).unwrap_or_default());
                 choices
             }
@@ -1027,11 +1090,39 @@ impl App {
         }
     }
 
-    fn cd(&mut self, dir: &str) {
-        let path = match (dir.strip_prefix('~'), &self.scope.home) {
+    /// A directory a `:` line names: `~` is the home directory, and a relative path is from
+    /// the scope's root, where a handed-off command runs.
+    fn typed_dir(&self, dir: &str) -> PathBuf {
+        match (dir.strip_prefix('~'), &self.scope.home) {
             (Some(rest), Some(home)) => home.join(rest.trim_start_matches('/')),
             _ => self.scope.root.join(dir),
-        };
+        }
+    }
+
+    /// `:state DIR`: list the Task Store DIR in tasks/ for the rest of the session, beside the
+    /// scope's own and the registered ones. Nothing is registered or written.
+    fn add_state(&mut self, dir: &str) {
+        let path = self.typed_dir(dir);
+        if !path.is_dir() {
+            self.say_path_error(
+                &path,
+                "not a directory; :state takes a Task Store directory",
+            );
+            return;
+        }
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        let shown = self.scope.abbreviate(&path);
+        let added = self.panes.tasks.add_session_store(path, &self.scope);
+        self.sync();
+        if added {
+            self.say(format!("tasks/ lists {shown} for this session"));
+        } else {
+            self.say(format!("tasks/ already lists {shown}"));
+        }
+    }
+
+    fn cd(&mut self, dir: &str) {
+        let path = self.typed_dir(dir);
         if !path.is_dir() {
             self.say_path_error(&path, "not a directory");
             return;
@@ -1281,13 +1372,13 @@ impl App {
         }
     }
 
-    /// After a handed-off command: the scope and settings, and the Tasks, Workers and
-    /// Providers panes whether opened or not, read again; the opened pane and the pane behind
+    /// After a handed-off command: the scope and settings, and the Tasks, Campaigns, Workers
+    /// and Providers panes whether opened or not, read again; the opened pane and the pane behind
     /// the bar's selection too, as after an editor. What is opened stays opened, and the bar
     /// keeps its selection where it still exists. `Err` names why the settings are stale.
     fn reread(&mut self) -> Result<(), String> {
         let reloaded = self.reload();
-        let mut touched = vec![Tab::Providers, Tab::Workers, Tab::Tasks];
+        let mut touched = vec![Tab::Providers, Tab::Workers, Tab::Tasks, Tab::Campaigns];
         for tab in [self.opened_tab(), self.selected_tab()]
             .into_iter()
             .flatten()
@@ -1396,7 +1487,7 @@ impl App {
         self.paint_main(&mut frame, left, width - left, body);
         let fill = match self.mode {
             Mode::Normal => self.status_paint(),
-            Mode::Command | Mode::Search { .. } => Paint::Plain,
+            Mode::Command | Mode::Search => Paint::Plain,
         };
         let status = self.status_spans(width);
         frame.paint_spans(body, 0, width, &status, fill);
@@ -1477,8 +1568,7 @@ impl App {
     fn status_spans(&self, width: usize) -> Vec<Span> {
         match self.mode {
             Mode::Command => return self.prompt_spans(':'),
-            Mode::Search { forward: true } => return self.prompt_spans('/'),
-            Mode::Search { forward: false } => return self.prompt_spans('?'),
+            Mode::Search => return self.prompt_spans('/'),
             Mode::Normal => {}
         }
         let word = match self.help {
@@ -1536,10 +1626,17 @@ impl App {
         ]
     }
 
-    /// The key legend, or what the pane says about the row under the main cursor.
+    /// The key legend, or what the pane says about the row under the main cursor. Once no key
+    /// came for a while, it takes turns with the hint that `?` helps and `:` runs a command.
     fn legend(&self) -> String {
         if self.help.is_some() {
             return "j/k scroll  q close help".to_owned();
+        }
+        if let Some(since) = self.idle_since {
+            let idle = since.elapsed();
+            if idle >= IDLE && (idle.as_secs() / IDLE.as_secs()) % 2 == 1 {
+                return IDLE_HINT.to_owned();
+            }
         }
         match self.focus {
             Focus::Bar => BAR_LEGEND.to_owned(),
@@ -1672,12 +1769,22 @@ fn first_line(text: &str) -> String {
 /// help as `af help COMMAND...` prints it.
 fn help_rows(words: &[String]) -> Vec<Row> {
     let (mut rows, text) = match words {
-        [] => (banner_rows(), KEYS.to_owned()),
+        [] => (banner_rows(), format!("{OVERVIEW}\n{KEYS}")),
         [word] if crate::topics::find(word).is_some() => (Vec::new(), topic_help(word)),
         path => (Vec::new(), command_help(path)),
     };
     for line in text.lines() {
         rows.push(Row::plain(typographic(line)));
+    }
+    rows
+}
+
+/// `?`: the overview of the panes and the `:` line, then the keys.
+fn overlay_rows() -> Vec<Row> {
+    let text = format!("{OVERVIEW}\n{KEYS}");
+    let mut rows: Vec<Row> = text.lines().map(Row::plain).collect();
+    if let Some(title) = rows.first_mut() {
+        *title = Row::painted(title.text(), Paint::Title);
     }
     rows
 }
@@ -1719,7 +1826,7 @@ fn banner_rows() -> Vec<Row> {
 fn topic_help(word: &str) -> String {
     match crate::topics::find(word) {
         Some((topic, about, text)) => {
-            let body = crate::topics::body(topic, text);
+            let body = crate::topics::page(topic, text);
             format!("af help {topic} -- {about}\n\n{body}")
         }
         None => String::new(),
@@ -1732,7 +1839,12 @@ fn command_help(path: &[String]) -> String {
     for word in path {
         match current.find_subcommand_mut(word) {
             Some(sub) => current = sub,
-            None => return format!("`{}` is neither a topic nor a command", path.join(" ")),
+            None => {
+                return format!(
+                    "Topic or command {} not found in af help; af --help lists the commands",
+                    path.join(" ")
+                );
+            }
         }
     }
     let name = current.get_name().to_owned();

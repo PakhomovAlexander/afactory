@@ -147,7 +147,9 @@ pub(crate) fn supervise_early(argv: &[String]) -> Option<i32> {
         }
         validate_private_auth_directory(auth_dir).map_err(|_| ())?;
         let directory = bind_directory(auth_dir, "auth directory").map_err(|_| ())?;
-        retain_inherited_lock(&inherited, kind, auth_dir)?;
+        // The owner names its state root in `XDG_STATE_HOME`, so this is the lock it holds.
+        let lock = super::super::auth_context_lock_path(kind, auth_dir).map_err(|_| ())?;
+        retain_inherited_lock(&inherited, &lock)?;
         let mut input = duplicate_cloexec(std::io::stdin())?;
         let mut output = duplicate_cloexec(std::io::stdout())?;
         for pipe in [&input, &output] {
@@ -190,10 +192,9 @@ fn duplicate_cloexec(fd: impl std::os::fd::AsFd) -> Result<File, ()> {
         .map_err(|_| ())
 }
 
-fn retain_inherited_lock(inherited: &File, kind: ProviderKind, auth: &Path) -> Result<(), ()> {
+fn retain_inherited_lock(inherited: &File, path: &Path) -> Result<(), ()> {
     use rustix::fs::{Mode, OFlags, open};
-    let path = auth.join(format!(".af-{}-setup.lock", kind.name()));
-    let named = std::fs::symlink_metadata(&path).map_err(|_| ())?;
+    let named = std::fs::symlink_metadata(path).map_err(|_| ())?;
     let held = inherited.metadata().map_err(|_| ())?;
     if !named.is_file()
         || named.file_type().is_symlink()
@@ -207,7 +208,7 @@ fn retain_inherited_lock(inherited: &File, kind: ProviderKind, auth: &Path) -> R
         return Err(());
     }
     let independent: File = open(
-        &path,
+        path,
         OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
@@ -381,7 +382,7 @@ mod tests {
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(root.join(".af-codex-setup.lock"))
+            .open(root.join("codex-context.lock"))
             .unwrap()
     }
 
@@ -577,16 +578,18 @@ mod tests {
     fn guard_requires_an_already_held_exact_open_file_description() {
         let root = tempfile::tempdir().unwrap();
         let owner = lock(root.path());
-        assert!(retain_inherited_lock(&owner, ProviderKind::Codex, root.path()).is_err());
+        assert!(retain_inherited_lock(&owner, &root.path().join("codex-context.lock")).is_err());
         fs2::FileExt::lock_exclusive(&owner).unwrap();
         let inherited = duplicate_cloexec(&owner).unwrap();
-        assert!(retain_inherited_lock(&inherited, ProviderKind::Codex, root.path()).is_ok());
+        assert!(retain_inherited_lock(&inherited, &root.path().join("codex-context.lock")).is_ok());
         let independent = File::options()
             .read(true)
             .write(true)
-            .open(root.path().join(".af-codex-setup.lock"))
+            .open(root.path().join("codex-context.lock"))
             .unwrap();
-        assert!(retain_inherited_lock(&independent, ProviderKind::Codex, root.path()).is_err());
+        assert!(
+            retain_inherited_lock(&independent, &root.path().join("codex-context.lock")).is_err()
+        );
         drop(owner);
         assert_eq!(
             fs2::FileExt::try_lock_exclusive(&independent)
@@ -607,7 +610,7 @@ mod tests {
         let independent = File::options()
             .read(true)
             .write(true)
-            .open(root.path().join(".af-codex-setup.lock"))
+            .open(root.path().join("codex-context.lock"))
             .unwrap();
         let marker = root.path().join("native-pid");
         let (mut guard_input, parent_input) = pipes();

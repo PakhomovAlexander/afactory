@@ -184,7 +184,7 @@ impl TaskProjection {
         let graph: review_graph::task::CompiledTask =
             payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
         if graph.inputs != next.inputs
-            || graph.schema != "af.compiled-task/1"
+            || graph.validate_schema().is_err()
             || graph.scheduler_plan().map_err(conflict)?.order != graph.order
         {
             return Err(conflict("Generated execution graph is not canonical"));

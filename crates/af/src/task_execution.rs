@@ -38,24 +38,35 @@ use review_store::{Cas, EventStore, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 mod bindings;
+pub(super) mod candidate;
 pub(crate) mod catalog;
 pub(crate) mod collection;
+mod context;
+mod continuation;
+pub(crate) mod defaults;
 pub(super) mod developer;
 pub(crate) mod domain;
 pub(super) mod export;
+pub(super) mod findings;
 mod input_bindings;
 mod input_file;
 mod inspection;
 mod issue;
 mod planning;
+pub(super) mod pr_body;
 mod preview;
 mod provider_admission;
+pub(crate) mod recovery;
 pub(super) mod refresh;
+pub(crate) mod runs;
 mod selection;
 pub(crate) mod starter;
+pub(crate) mod state;
 mod task_file_home;
+mod task_file_shape;
 pub(super) mod task_report;
 
+#[derive(Clone)]
 pub(super) struct StartOptions {
     pub file: PathBuf,
     pub bindings: Option<PathBuf>,
@@ -70,11 +81,17 @@ pub(super) struct StartOptions {
     /// Pre-captured by the token-free `self optimize` adapter. Ordinary Task files leave this
     /// absent and may instead name a project-contained deterministic fixture.
     pub optimization_history: Option<review_core::task::optimization::OptimizationHistoryV1>,
+    /// `af task plan --fit`: an infeasible plan is planned again at the smallest limits that fit.
+    pub fit: bool,
+    /// `af task plan --replace`: an unstarted Task of the same ID is re-planned in place.
+    pub replace: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TaskFile {
+    /// Absent, the file is read as `af.task-file/1`, the one version this release reads.
+    #[serde(default = "task_file_schema")]
     schema: String,
     task_id: String,
     kind: String,
@@ -129,7 +146,14 @@ struct TaskFile {
         deserialize_with = "present_option"
     )]
     pipeline: Option<PipelineChoiceV1>,
-    strategy: String,
+    /// Absent, the Task's kind fills it in, with `verification` and `facts.standard` (see
+    /// [`KIND_DEFAULTS`]).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    strategy: Option<String>,
     /// The requested acceptance profile is Task input, captured before selecting a Pipeline.
     #[serde(
         default,
@@ -139,7 +163,39 @@ struct TaskFile {
     verification: Option<FileVerification>,
     #[serde(default)]
     facts: BTreeMap<String, TaskFactV1>,
-    limits: FileLimits,
+    /// Absent, the project's `[task.defaults] limits` of `.af/af.toml` fill it in (ADR-0212).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    limits: Option<FileLimits>,
+    /// Continue a recorded Task from its reviewed candidate: that round's candidate Snapshot is
+    /// the source and its findings the `findings` port (ADR-0212). Absent by default, and absent
+    /// on round-trip, so a Task file without it keeps its exact revision and plan.
+    #[serde(
+        rename = "continue",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    continue_from: Option<continuation::ContinueRefV1>,
+    /// Files the Worker reads first, captured by digest from the tree the Task reads, each a
+    /// repository path with an optional `#section` (ADR-0212).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    context: Vec<String>,
+    /// The tree before the change the Task's judging Workers read at `../base`; absent, the
+    /// source Snapshot's recorded base (ADR-0212).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    base: Option<context::BaseRefV1>,
+}
+
+fn task_file_schema() -> String {
+    "af.task-file/1".into()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -397,6 +453,41 @@ fn producer() -> Producer {
     }
 }
 
+/// A Task file, or the refusal that names the field path and the shape it takes.
+fn parse_task_file(path: &Path, bytes: &[u8]) -> Result<TaskFile, String> {
+    parse(path, bytes).map_err(|parser| task_file_shape::refusal(path, bytes, &parser))
+}
+
+/// The refusal of a Task file whose fields parse but do not name a Task: which field, what it
+/// takes, and what it holds.
+fn task_file_identity(path: &Path, file: &TaskFile) -> Result<(), String> {
+    let named = format!("task file {}", path.display());
+    if file.schema != "af.task-file/1" {
+        return Err(format!(
+            "{named}: schema must be \"af.task-file/1\", got {:?}",
+            file.schema
+        ));
+    }
+    if !is_name(&file.task_id) {
+        return Err(format!(
+            "{named}: task_id {:?} is not a Task ID: 1 to 128 ASCII letters, digits, `-` and \
+             `_`, starting with a letter or digit",
+            file.task_id
+        ));
+    }
+    if !is_package_name(&file.kind) {
+        return Err(format!(
+            "{named}: kind {:?} is not a Task kind: names like `software` or `team/report`, \
+             separated by `/`",
+            file.kind
+        ));
+    }
+    if file.goal.trim().is_empty() {
+        return Err(format!("{named}: goal is empty; say what the Task is for"));
+    }
+    Ok(())
+}
+
 fn parse<T: serde::de::DeserializeOwned>(path: &Path, bytes: &[u8]) -> Result<T, String> {
     if bytes.len() > 16 * 1024 * 1024 {
         return Err("Task configuration exceeds capture bounds".into());
@@ -469,7 +560,12 @@ pub(crate) fn state_path(repo: &Path, state: Option<&Path>) -> Result<(PathBuf, 
         None => default_task_state(&super::xdg_state_root()?, &repo)?,
     };
     if state.starts_with(&repo) {
-        return Err("Task state must be outside the repository".into());
+        return Err(format!(
+            "Task state {} must be outside the repository {}; name a --state directory outside \
+             it, or omit --state for the default under $XDG_STATE_HOME/af",
+            state.display(),
+            repo.display()
+        ));
     }
     // A Store outside the default root is known to the Storage Budget only through the
     // registry (ADR-0144); recording is best effort. An explicit directory becomes af-owned, so
@@ -1008,8 +1104,8 @@ pub(crate) fn plan_tree_preview_at(
     repo: &Path,
     authority: &str,
 ) -> Result<TreePreview, String> {
-    let bytes = input_file::read(file, 16 * 1024 * 1024)?;
-    let task: TaskFile = parse(file, &bytes)?;
+    let bytes = input_file::read(file, 16 * 1024 * 1024, "Task file")?;
+    let task = parse_task_file(file, &bytes)?;
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     let state = scratch.path().join("state");
     let options = StartOptions {
@@ -1024,6 +1120,8 @@ pub(crate) fn plan_tree_preview_at(
         plan_only: true,
         timeout_secs: None,
         optimization_history: None,
+        fit: false,
+        replace: false,
     };
     start_kind(options, None, Presentation::Silent)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
@@ -1040,9 +1138,35 @@ pub(crate) fn plan_tree_preview_at(
     })
 }
 
-fn effective_task_wall_ms(file_wall_ms: u64, timeout_secs: Option<u64>) -> Result<u64, String> {
-    if file_wall_ms == 0 || timeout_secs == Some(0) {
-        return Err("Task wall_ms and --timeout-secs must be positive".into());
+/// The Task's wall: the Task file's `limits.wall_ms`, shortened by `--timeout-secs`. A zero is
+/// refused by the name it was given: the flag, or the field of the Task file `file`, with the
+/// command that plans the file once it is fixed.
+fn effective_task_wall_ms(
+    file: &Path,
+    file_wall_ms: u64,
+    timeout_secs: Option<u64>,
+) -> Result<u64, String> {
+    if timeout_secs == Some(0) {
+        return Err(
+            "--timeout-secs must be positive: 0 seconds leaves the Task no time to run".into(),
+        );
+    }
+    if file_wall_ms == 0 {
+        use crate::error_document::{Cause, Detail};
+        let shown = file.display().to_string();
+        let again = plan_again(file);
+        return Err(crate::error_document::typed(
+            format!(
+                "Task file {shown}: limits.wall_ms=0 must be positive: 0 ms leaves the Task no \
+                 time to run; set limits.wall_ms to the Task's wall-clock budget in \
+                 milliseconds, then run `{again}` again"
+            ),
+            Detail::new(Cause::TaskFileInvalid)
+                .next(again)
+                .with("file", shown)
+                .with("field", "limits.wall_ms")
+                .with("value", 0),
+        ));
     }
     let timeout_ms = timeout_secs
         .map(|seconds| seconds.checked_mul(1000).ok_or("Task timeout overflow"))
@@ -1050,21 +1174,327 @@ fn effective_task_wall_ms(file_wall_ms: u64, timeout_secs: Option<u64>) -> Resul
     Ok(timeout_ms.map_or(file_wall_ms, |limit| limit.min(file_wall_ms)))
 }
 
+/// What a Task file of each kind gets when it omits `strategy`: that strategy, then, unless the
+/// file names them, this `verification` and `facts.standard = true`. A file that names its
+/// strategy keeps the meaning it always had.
+const KIND_DEFAULTS: [(&str, &str, Option<FileVerification>, bool); 3] = [
+    (
+        "implement",
+        "reviewed",
+        Some(FileVerification::Review),
+        true,
+    ),
+    (
+        "verification",
+        "light",
+        Some(FileVerification::Evaluation),
+        true,
+    ),
+    ("report", "report", None, false),
+];
+
+/// The profile table a contradiction names: `implement -> reviewed/review/standard, ...`.
+pub(crate) fn kind_defaults_table() -> String {
+    KIND_DEFAULTS
+        .iter()
+        .map(|(kind, strategy, verification, standard)| {
+            format!(
+                "{kind} -> strategy {strategy}, verification {}, facts {}",
+                verification.map_or("-", FileVerification::as_str),
+                if *standard { "standard = true" } else { "-" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+impl FileVerification {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Evaluation => "evaluation",
+            Self::Review => "review",
+            Self::ReviewOrTargetedFixes => "review_or_targeted_fixes",
+        }
+    }
+}
+
+/// Fill what a Task file without `strategy` leaves to its kind; an unknown kind without a
+/// strategy is refused with the table.
+fn apply_kind_defaults(file: &mut TaskFile) -> Result<(), String> {
+    if file.strategy.is_some() {
+        return Ok(());
+    }
+    let Some((_, strategy, verification, standard)) =
+        KIND_DEFAULTS.iter().find(|(kind, ..)| *kind == file.kind)
+    else {
+        return Err(format!(
+            "Task file `{}` names no `strategy`, and kind `{}` has no default; add `strategy` to \
+             the Task file, or use a kind that has one: {}",
+            file.task_id,
+            file.kind,
+            kind_defaults_table()
+        ));
+    };
+    file.strategy = Some((*strategy).to_owned());
+    if file.verification.is_none() {
+        file.verification = *verification;
+    }
+    if *standard {
+        file.facts
+            .entry("standard".into())
+            .or_insert(TaskFactV1::Boolean(true));
+    }
+    Ok(())
+}
+
+/// What `start_captured` ended with: an exit code, or an infeasible plan `--fit` plans again.
+enum Started {
+    Code(i32),
+    Refit(Box<review_core::task::limits_fit::TaskLimitsFitV1>),
+}
+
 fn start_kind(
     options: StartOptions,
     expected_kind: Option<&str>,
     presentation: Presentation,
 ) -> Result<i32, String> {
-    let started = clock()?;
-    let bytes = input_file::read(&options.file, 16 * 1024 * 1024)?;
-    let file: TaskFile = parse(&options.file, &bytes)?;
-    if file.schema != "af.task-file/1"
-        || !is_name(&file.task_id)
-        || !is_package_name(&file.kind)
-        || file.goal.trim().is_empty()
-    {
-        return Err("Task file requires schema af.task-file/1, a valid ID, supported kind and nonempty goal".into());
+    // A duration flag is judged before any file is read: a wrong command line is said as such,
+    // whatever the file holds.
+    if options.timeout_secs == Some(0) {
+        return Err(
+            "--timeout-secs must be positive: 0 seconds leaves the Task no time to run".into(),
+        );
     }
+    if let Some(seconds) = options.timeout_secs {
+        seconds.checked_mul(1000).ok_or("Task timeout overflow")?;
+    }
+    let bytes = input_file::read(&options.file, 16 * 1024 * 1024, "Task file")?;
+    start_kind_bytes(options, bytes, expected_kind, presentation)
+}
+
+/// `start_kind` over Task file bytes already in hand: a file read from disk, or the file
+/// `af task run NEW --from TASK` derives from the continued Task's captured one.
+fn start_kind_bytes(
+    options: StartOptions,
+    mut bytes: Vec<u8>,
+    expected_kind: Option<&str>,
+    presentation: Presentation,
+) -> Result<i32, String> {
+    let original = parse_task_file(&options.file, &bytes)?;
+    let mut refitted = false;
+    // `--fit` plans again at the limits the planner computed; a second refusal can only raise
+    // them further (Provider admission is counted once the Workers are bound), so this ends.
+    for _ in 0..3 {
+        match start_bytes(options.clone(), bytes.clone(), expected_kind, presentation)? {
+            Started::Code(code) => {
+                if refitted && presentation == Presentation::Print {
+                    let fitted = parse_task_file(&options.file, &bytes)?;
+                    if let (Some(original), Some(fitted)) = (&original.limits, &fitted.limits) {
+                        eprintln!("{}", fit_difference(original, fitted));
+                    }
+                }
+                return Ok(code);
+            }
+            Started::Refit(fit) => {
+                let mut file = parse_task_file(&options.file, &bytes)?;
+                file.limits = Some(FileLimits {
+                    tokens: fit.required.tokens,
+                    max_attempts: fit.required.max_attempts,
+                    wall_ms: fit.required.wall_ms,
+                    verification: fit.required.verification.clone(),
+                });
+                // The request planned is the fitted one; the Store captures exactly it.
+                bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
+                bytes.push(b'\n');
+                refitted = true;
+            }
+        }
+    }
+    Err(format!(
+        "af task plan --fit: {} still does not fit after three plans; read the refusal above",
+        options.file.display()
+    ))
+}
+
+/// The line `af task plan --fit` prints on stderr: every limit it raised, from what the Task
+/// file supplied to what the plan was made with.
+fn fit_difference(supplied: &FileLimits, fitted: &FileLimits) -> String {
+    let pairs = [
+        ("tokens", supplied.tokens, fitted.tokens),
+        (
+            "max_attempts",
+            u64::from(supplied.max_attempts),
+            u64::from(fitted.max_attempts),
+        ),
+        ("wall_ms", supplied.wall_ms, fitted.wall_ms),
+        (
+            "verification.tokens",
+            supplied.verification.tokens,
+            fitted.verification.tokens,
+        ),
+        (
+            "verification.attempts",
+            u64::from(supplied.verification.attempts),
+            u64::from(fitted.verification.attempts),
+        ),
+        (
+            "verification.wall_ms",
+            supplied.verification.wall_ms,
+            fitted.verification.wall_ms,
+        ),
+    ];
+    let raised = pairs
+        .iter()
+        .filter(|(_, from, to)| from != to)
+        .map(|(name, from, to)| format!("{name} {from} -> {to}"))
+        .collect::<Vec<_>>();
+    format!(
+        "af task plan --fit: planned with {}; the Task file on disk is unchanged",
+        raised.join(", ")
+    )
+}
+
+/// The record a Task file's revision names as its adapter: the file it captured.
+pub(crate) const TASK_FILE_ADAPTER_V1: &str = "af.task-file-adapter/1";
+
+/// The Task file adapter record of `revision`, reached through a selection's wrapper; `None`
+/// for a revision no Task file made.
+pub(crate) fn task_file_adapter(
+    cas: &Cas,
+    revision: &TaskRevisionV1,
+) -> Result<Option<serde_json::Value>, String> {
+    let mut id = revision.provenance.adapter_id.clone();
+    // A selection wraps the adapter once; a bounded walk, never a loop.
+    for _ in 0..4 {
+        let bytes = cas.get(&id).map_err(|e| e.to_string())?;
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return Ok(None);
+        };
+        match value["schema"].as_str() {
+            Some(TASK_FILE_ADAPTER_V1) => return Ok(Some(value)),
+            Some("af.selected-task-adapter/1") => {
+                id = value["source_adapter_id"]
+                    .as_str()
+                    .ok_or("Selected Task adapter names no source adapter")?
+                    .to_owned();
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
+/// What `af task plan` does with a Task file whose ID the Store already holds.
+enum Existing {
+    /// Its content and bindings equal the planned Task's: the plan stands.
+    Same,
+    /// `--replace` of an unstarted Task: plan it again as this next revision.
+    Replace(Box<TaskProjection>),
+}
+
+fn existing_task(
+    cas: &Cas,
+    store: &EventStore,
+    options: &StartOptions,
+    bytes: &[u8],
+    task_id: &str,
+) -> Result<Option<Existing>, String> {
+    let Some(current) = store
+        .task_projection(cas, task_id)
+        .map_err(|e| e.to_string())?
+    else {
+        if store
+            .collected_task(task_id)
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            return Err(format!(
+                "Task `{task_id}` was collected from this Store; give the Task file a new \
+                 `task_id` to plan it again"
+            ));
+        }
+        return Ok(None);
+    };
+    let file = options.file.display();
+    let captured = task_file_adapter(cas, &current.revision)?
+        .and_then(|adapter| adapter["source_file_id"].as_str().map(str::to_owned));
+    let same_file = captured.as_deref() == Some(&review_store::canonical::blob_content_id(bytes));
+    let authority: RunAuthority = serde_json::from_value(
+        cas.get_json(&current.revision.authority.policy_id)
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let bindings = options
+        .bindings
+        .as_deref()
+        .map(bindings::read)
+        .transpose()?
+        .map(|local| {
+            serde_json::to_value(&local.definition)
+                .map_err(|e| e.to_string())
+                .and_then(|value| {
+                    review_store::canonical::canonicalize(&value)
+                        .map(|bytes| review_store::canonical::blob_content_id(&bytes))
+                        .map_err(|e| e.to_string())
+                })
+        })
+        .transpose()?;
+    let started = state::started(&current);
+    if same_file && bindings == authority.local_bindings_id {
+        return Ok(Some(Existing::Same));
+    }
+    if !options.replace {
+        let why = if same_file {
+            "with other --bindings"
+        } else {
+            "from a different Task file"
+        };
+        return Err(if started {
+            format!(
+                "Task `{task_id}` already exists in this Store and has run; {file} plans it {why}. \
+                 Give the Task file a new `task_id`, or resume the existing Task with \
+                 `af task run {task_id}`"
+            )
+        } else {
+            format!(
+                "Task `{task_id}` is already planned {why}: {file} differs from the plan it \
+                 recorded. Re-plan it in place with `af task plan --file {} --replace`, or give \
+                 the Task file a new `task_id`",
+                shell_words::quote(&options.file.display().to_string())
+            )
+        });
+    }
+    if same_file {
+        return Err(format!(
+            "Task `{task_id}` is planned from this same Task file with other --bindings; \
+             --replace plans an unstarted Task again from a changed Task file, so give the Task \
+             file a new `task_id` to plan it with these bindings"
+        ));
+    }
+    if started
+        || !matches!(
+            current.phase,
+            TaskPhaseV1::Ready {} | TaskPhaseV1::Submitted {}
+        )
+    {
+        return Err(format!(
+            "Task `{task_id}` has already run, so --replace cannot plan it again; give the Task \
+             file a new `task_id`"
+        ));
+    }
+    Ok(Some(Existing::Replace(Box::new(current))))
+}
+
+fn start_bytes(
+    options: StartOptions,
+    bytes: Vec<u8>,
+    expected_kind: Option<&str>,
+    presentation: Presentation,
+) -> Result<Started, String> {
+    let started = clock()?;
+    let mut file = parse_task_file(&options.file, &bytes)?;
+    task_file_identity(&options.file, &file)?;
+    apply_kind_defaults(&mut file)?;
     if let Some(specification) = &file.requirements {
         if specification.is_empty()
             || serde_json::to_vec(specification)
@@ -1076,22 +1506,52 @@ fn start_kind(
         }
     }
     // Reject invalid duration before creating state, capturing authority or occupying an ID.
-    let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
-    started.checked_add(wall).ok_or("Task deadline overflow")?;
+    // Limits the project's defaults fill in are judged once they are read.
+    if let Some(limits) = &file.limits {
+        let wall = effective_task_wall_ms(&options.file, limits.wall_ms, options.timeout_secs)?;
+        started.checked_add(wall).ok_or("Task deadline overflow")?;
+    }
+    if file.continue_from.is_some()
+        && file
+            .inputs
+            .as_ref()
+            .is_some_and(|inputs| inputs.contains_key("source"))
+    {
+        return Err(format!(
+            "Task file `{}` continues a Task and binds `inputs.source`; a continuation reads the \
+             continued Task's reviewed candidate as its source, so drop `inputs.source`",
+            file.task_id
+        ));
+    }
     let (repo, state) = state_path(&options.repo, options.state.as_deref())?;
     crate::storage::owned::prepare(&state, options.state.is_some())?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
-    if store
-        .task_projection(&cas, &file.task_id)
-        .map_err(|e| e.to_string())?
-        .is_some()
-    {
-        return Err(format!(
-            "Task {} already exists; use af task run {} or a new Task ID",
-            file.task_id, file.task_id
-        ));
-    }
+    let replace = match existing_task(&cas, &store, &options, &bytes, &file.task_id)? {
+        None => None,
+        Some(Existing::Same) if !options.plan_only => {
+            return Err(format!(
+                "Task `{}` already exists in this Store from this Task file; run or resume it \
+                 with `af task run {}`, or give the Task file a new `task_id`",
+                file.task_id, file.task_id
+            ));
+        }
+        Some(Existing::Same) => {
+            // The same request: nothing is captured again and the plan stands.
+            if presentation == Presentation::Print {
+                eprintln!(
+                    "Task {} is already planned from this Task file; showing its plan",
+                    file.task_id
+                );
+            }
+            return match presentation {
+                Presentation::Print => present(&cas, &store, &file.task_id, options.json, true)
+                    .map(|presented| Started::Code(presented.code)),
+                Presentation::Silent => Ok(Started::Code(0)),
+            };
+        }
+        Some(Existing::Replace(current)) => Some(current),
+    };
     let git_home = tempfile::tempdir().map_err(|e| e.to_string())?;
     let source_repo = Repo::open(&repo, git_home.path());
     let policy_source = Capture::new(&source_repo, &cas)
@@ -1111,6 +1571,22 @@ fn start_kind(
     {
         return Err("af review --file requires a Review Task profile".into());
     }
+    // What the Task file leaves to the project's `[task.defaults]` (ADR-0212), filled in from
+    // the Authority Snapshot before anything is recorded, and judged as a stated limit is.
+    let project_defaults = defaults::captured(&cas, &policy_source.manifest)?;
+    let filled = defaults::apply(
+        &mut file,
+        project_defaults.as_ref(),
+        authority.2.pipelines(),
+    )?;
+    let limits = file.limits.as_ref().ok_or("Task file has no limits")?;
+    let wall = effective_task_wall_ms(&options.file, limits.wall_ms, options.timeout_secs)?;
+    started.checked_add(wall).ok_or("Task deadline overflow")?;
+    if presentation == Presentation::Print
+        && let Some(line) = defaults::line(&filled)
+    {
+        eprintln!("{line}");
+    }
     let binds_source = file
         .inputs
         .as_ref()
@@ -1122,6 +1598,28 @@ fn start_kind(
                 .into(),
         );
     }
+    if options.uncommitted && file.continue_from.is_some() {
+        return Err(
+            "--uncommitted captures the invoking checkout, and a continuation reads the \
+             continued Task's reviewed candidate instead; drop --uncommitted"
+                .into(),
+        );
+    }
+    if file.base.is_some() && file.continue_from.is_some() {
+        return Err(format!(
+            "Task file `{}` names a `base` and continues a Task; a continuation's base is the \
+             candidate it continues, so drop `base`",
+            file.task_id
+        ));
+    }
+    // A declared base is a committed tree of this repository, captured now like the source.
+    let declared_base = file
+        .base
+        .as_ref()
+        .map(|base| context::capture_base(&source_repo, &cas, base))
+        .transpose()?;
+    // The standing rules are policy: read from the Authority Snapshot, like the catalog.
+    let rules = context::rules(&policy_source.manifest)?;
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
             .dirty()
@@ -1136,9 +1634,10 @@ fn start_kind(
         started,
         cas,
         store,
-        source,
+        (source, declared_base, rules),
         authority,
         presentation,
+        replace,
     )
 }
 
@@ -1150,10 +1649,15 @@ fn start_captured(
     started: u64,
     cas: Cas,
     mut store: EventStore,
-    source: review_source_git::Snapshot,
+    (source, declared_base, rules): (
+        review_source_git::Snapshot,
+        Option<context::DeclaredBase>,
+        Option<review_core::task::findings::TaskReadFirstEntryV1>,
+    ),
     (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
     presentation: Presentation,
-) -> Result<i32, String> {
+    replace: Option<Box<TaskProjection>>,
+) -> Result<Started, String> {
     let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
     let (_, state) = state_path(&options.repo, options.state.as_deref())?;
     // Resolved once, here, from the `--state` Store alone, before any Worker is dispatched or
@@ -1189,14 +1693,72 @@ fn start_captured(
     {
         return Err("A bound history port and a history file claim one port".into());
     }
+    // A continuation is resolved from this Store too, before anything is recorded: the
+    // reviewed candidate becomes the source and the round's findings the `findings` port, which
+    // the selected Pipeline must take, or the implementer would never read them (ADR-0212).
+    let continued = file
+        .continue_from
+        .as_ref()
+        .map(|reference| continuation::resolve(&cas, &store, reference))
+        .transpose()?;
+    if file.base.is_some()
+        && matches!(
+            profile,
+            TaskKindProfile::Document | TaskKindProfile::OptimizationAnalysis
+        )
+    {
+        return Err(format!(
+            "base: a {} Task reads no source tree, so it has no change to set a base for; drop \
+             `base`",
+            file.kind
+        ));
+    }
+    if let Some(continued) = &continued {
+        if matches!(
+            profile,
+            TaskKindProfile::Document | TaskKindProfile::OptimizationAnalysis
+        ) {
+            return Err(format!(
+                "continue: a {} Task reads no source tree, so it cannot continue Task `{}`",
+                file.kind,
+                preview::text(&continued.findings.continues.task_id)
+            ));
+        }
+        let named = file.pipeline.as_ref().map(|choice| choice.name.as_str());
+        let declared = input_bindings::DeclaredPorts::of(compiler.pipelines(), &file.kind, named);
+        let takes = declared
+            .declares(
+                continuation::FINDINGS_PORT,
+                review_core::task::findings::TASK_REVIEW_FINDINGS_V1,
+            )
+            .map_err(|error| format!("continue: {error}"))?;
+        if !takes {
+            let whose = match named {
+                Some(name) => format!("the Pipeline {}", preview::text(name)),
+                None => format!(
+                    "no captured Pipeline accepting kind {}",
+                    preview::text(&file.kind)
+                ),
+            };
+            return Err(format!(
+                "continue: {whose} declares the optional `findings` input, so its implementer \
+                 could never read the findings; name a Pipeline that does in the Task file's \
+                 `pipeline` (`af task catalog` lists the captured ones)"
+            ));
+        }
+    }
     // What the declared layout says about the Snapshot this Task will read. A pure function of
     // a recorded manifest: no working tree is walked, nothing is removed, and Snapshot identity
     // is whatever the capture already made it. The result is advice here and a receipt field
     // later. A bound `source` reads the bound tree, so that is the tree classified.
-    let read = match bound.as_ref() {
-        Some(bound) => bound.source_manifest.as_ref().unwrap_or(&source.manifest),
-        None => &source.manifest,
+    let read = match (continued.as_ref(), bound.as_ref()) {
+        (Some(continued), _) => &continued.manifest,
+        (None, Some(bound)) => bound.source_manifest.as_ref().unwrap_or(&source.manifest),
+        (None, None) => &source.manifest,
     };
+    // The rules and context the Worker reads first, bound by digest: the rules from the
+    // Authority Snapshot, the context from the tree the Task reads.
+    let read_first = context::capture(&file.context, rules, read)?;
     let undeclared = review_config::layout::classify_manifest(read).undeclared;
     if presentation == Presentation::Print {
         super::af_paths::warn(&undeclared);
@@ -1211,8 +1773,12 @@ fn start_captured(
         if file.document_sources.is_some() {
             return Err("Document source input is only valid for a document Task".into());
         }
-        // A bound `source` captures no Git tree from the invoking checkout.
-        match bound_ports.get("source") {
+        // A bound or continued `source` captures no Git tree from the invoking checkout.
+        match continued
+            .as_ref()
+            .map(|continued| &continued.source)
+            .or(bound_ports.get("source"))
+        {
             Some(port) => Some(port.clone()),
             None => {
                 let snapshot = capture_snapshot(&cas, &source.manifest, &origin, None)?;
@@ -1244,8 +1810,15 @@ fn start_captured(
         None
     };
     let input_file = cas.put(&bytes).map_err(|e| e.to_string())?;
-    let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
-    let deadline = started.checked_add(wall).ok_or("Task deadline overflow")?;
+    let limits = file.limits.clone().ok_or("Task file has no limits")?;
+    let wall = effective_task_wall_ms(&options.file, limits.wall_ms, options.timeout_secs)?;
+    // The deadline is taken from as late as the revision allows: its clock starts at the
+    // first admission (P5), and the time spent here before the Task is recorded would come out
+    // of its wall.
+    let deadline_base = clock()?;
+    let deadline = deadline_base
+        .checked_add(wall)
+        .ok_or("Task deadline overflow")?;
     let issue = file
         .issue
         .as_ref()
@@ -1270,6 +1843,23 @@ fn start_captured(
             serde_json::to_value(&issue.requirements).map_err(|e| e.to_string())?;
         input_refs.push(issue.capture_id.clone());
     }
+    // The Worker's requirements end with what to read first, each file by the digest of the
+    // bytes the Task captured, so a changed file is a changed plan.
+    let base_id = declared_base
+        .as_ref()
+        .map(|base| context::record_base(&cas, base, &source.repository_id))
+        .transpose()?;
+    let read_first_id = match &read_first {
+        Some(record) => {
+            let text = requirements_payload["text"].as_str().unwrap_or_default();
+            requirements_payload["text"] =
+                json!(format!("{text}\n\n{}", record.lines().join("\n")));
+            let id = context::record(&cas, record)?;
+            input_refs.push(id.clone());
+            Some(id)
+        }
+        None => None,
+    };
     let requirements = cas
         .put_artifact(
             "af/Requirements@1",
@@ -1280,7 +1870,7 @@ fn start_captured(
         )
         .map_err(|e| e.to_string())?
         .0;
-    let mut adapter = json!({"schema":"af.task-file-adapter/1","source_file_id":input_file});
+    let mut adapter = json!({"schema":TASK_FILE_ADAPTER_V1,"source_file_id":input_file});
     if let Some(issue) = &issue {
         adapter["source_capture_id"] = json!(issue.capture_id);
     }
@@ -1290,18 +1880,36 @@ fn start_captured(
         None => file.goal.clone(),
     };
     let optimization_finalize = file.facts.get("finalize") == Some(&TaskFactV1::Boolean(true));
+    // `--replace` plans the Task again as its next revision; nothing of it ran.
+    let (revision_number, previous_revision_id) = match &replace {
+        Some(current) => (
+            current
+                .revision
+                .revision
+                .checked_add(1)
+                .ok_or("Task revision overflow")?,
+            Some(current.revision_id.clone()),
+        ),
+        None => (1, None),
+    };
+    let strategy = file.strategy.clone().ok_or("Task file has no strategy")?;
     let mut revision=TaskRevisionV1 {
-        task_id:file.task_id,revision:1,previous_revision_id:None,kind:file.kind,goal,
+        task_id:file.task_id,revision:revision_number,previous_revision_id,kind:file.kind,goal,
         inputs:BTreeMap::from([("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),
         required_outputs:serde_json::from_value(json!({"snapshot":{"artifact_type":SOURCE_TREE_V1,"cardinality":"one"},"verification":{"artifact_type":VERIFICATION_RESULT_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?,
         acceptance:BTreeMap::from([("verified".into(),AcceptanceObligationV1 {evidence_type:VERIFICATION_RESULT_V1.into(),verifier_policy:authority.invocation_policy_id()?.into()})]),
-        provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:std::iter::once(requirements).chain(undeclared_record).collect()},
+        provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:std::iter::once(requirements).chain(undeclared_record).chain(read_first_id).chain(base_id).chain(continued.as_ref().map(|continued|continued.findings_id.clone())).collect()},
         authority:TaskAuthorityV1 {policy_id:authority_id,allowed_effects:BTreeSet::from(["read-source".into(),"write-source".into(),"execute-checks".into()]),data_destinations:BTreeSet::new()},
-        limits:TaskLimitsV1 {tokens:file.limits.tokens,max_attempts:file.limits.max_attempts,deadline_unix_ms:deadline,verification:file.limits.verification},
-        strategy:file.strategy,pipeline:file.pipeline,facts:file.facts,
+        limits:TaskLimitsV1 {tokens:limits.tokens,max_attempts:limits.max_attempts,deadline_unix_ms:deadline,verification:limits.verification},
+        strategy,pipeline:file.pipeline,facts:file.facts,
     };
     if let Some(source_port) = source_port {
         revision.inputs.insert("source".into(), source_port);
+    }
+    if let Some(continued) = &continued {
+        revision
+            .inputs
+            .insert(continuation::FINDINGS_PORT.into(), continued.port());
     }
     if profile == TaskKindProfile::Report {
         use review_core::task::report_task::*;
@@ -1637,14 +2245,32 @@ fn start_captured(
         ids.sort();
         ids.dedup();
     }
+    // The deadline starts when the Task first runs, so planning judges its whole wall.
+    let plan_clock = selection::PlanClock {
+        now: deadline_base,
+        wall_ms: wall,
+    };
     let prepared = match presentation {
-        Presentation::Print => {
-            selection::prepare(&cas, &authority, &compiler, revision, options.json)?
+        Presentation::Print => match selection::prepare(
+            &cas,
+            &authority,
+            &compiler,
+            revision,
+            options.json,
+            plan_clock,
+            options.fit,
+            &options.file,
+        )? {
+            selection::Prepared::Ready(prepared) => Some(prepared),
+            selection::Prepared::Refused => None,
+            selection::Prepared::Refit(fit) => return Ok(Started::Refit(fit)),
+        },
+        Presentation::Silent => {
+            silent_selection(&cas, &authority, &compiler, revision, plan_clock)?
         }
-        Presentation::Silent => silent_selection(&cas, &authority, &compiler, revision)?,
     };
     let Some(selected) = prepared else {
-        return Ok(1);
+        return Ok(Started::Code(1));
     };
     let selected = match selected {
         selection::PreparedSelection::Selected(selected) => selected,
@@ -1657,6 +2283,13 @@ fn start_captured(
             revision,
             revision_id,
         } => {
+            if replace.is_some() {
+                return Err(
+                    "--replace cannot re-plan a Task whose request needs a generated plan; give \
+                     the Task file a new `task_id`"
+                        .into(),
+                );
+            }
             return planning::start(
                 options,
                 cas,
@@ -1666,7 +2299,8 @@ fn start_captured(
                 *revision,
                 revision_id,
                 undeclared,
-            );
+            )
+            .map(Started::Code);
         }
     };
     let selection::SelectedTask {
@@ -1714,6 +2348,7 @@ fn start_captured(
         &plan,
         &compiler,
         &state,
+        &options.repo,
     )?;
     let models = model_bindings(&plan, &graph, &adapters)?;
     let domain = ProviderTaskDomain {
@@ -1734,24 +2369,46 @@ fn start_captured(
     )?;
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
-    let lease = store
-        .open_task(
-            &cas,
-            &revision_id,
-            // The opening writer is what makes one Store's Task distinguishable from another
-            // Store's Task of the same file (ADR-0140 derives the gate owner from this
-            // transition), so it carries 64 bits from the operating system, not the PID alone.
-            &format!("cli-{}-{:016x}", std::process::id(), opening_nonce()),
-            15_000,
-        )
-        .map_err(|e| e.to_string())?;
+    let writer = match &replace {
+        Some(_) => format!("cli-{}", writer_pid()),
+        // The opening writer is what makes one Store's Task distinguishable from another
+        // Store's Task of the same file (ADR-0140 derives the gate owner from this transition),
+        // so it carries 64 bits from the operating system, not the PID alone.
+        None => format!("cli-{}-{:016x}", std::process::id(), opening_nonce()),
+    };
+    // A run records its process before it takes the lease, so `af task cancel` finds it
+    // (ADR-0211); a plan runs nothing to cancel.
+    let _run_record = (!options.plan_only)
+        .then(|| runs::begin(&state, &revision.task_id, &writer))
+        .transpose()?;
+    let lease = match &replace {
+        // The unstarted Task keeps its log: its next revision and plan replace the recorded
+        // ones in one barrier, as a source refresh does.
+        Some(_) => store
+            .take_task_lease(&cas, &revision.task_id, &writer, recovery::lease_ms())
+            .map_err(|e| e.to_string())?,
+        None => store
+            .open_task(&cas, &revision_id, &writer, recovery::lease_ms())
+            .map_err(|e| e.to_string())?,
+    };
     let outcome = (|| {
-        store
-            .propose_task_plan(&cas, &lease, &plan_id, &trusted)
-            .map_err(|e| e.to_string())?;
+        if replace.is_some() {
+            let decisions = developer::DecisionAuthority {
+                compiler: &compiler,
+                developer: developer.as_ref(),
+            };
+            store
+                .refresh_task_source(&cas, &lease, &revision_id, Some(&plan_id), None, &decisions)
+                .map_err(|e| e.to_string())?;
+        } else {
+            store
+                .propose_task_plan(&cas, &lease, &plan_id, &trusted)
+                .map_err(|e| e.to_string())?;
+        }
         if options.plan_only {
             return Ok(());
         }
+        admit_checks(&cas, &authority, &domain, &revision)?;
         store
             .admit_task_plan(&cas, &lease, &trusted)
             .map_err(|e| e.to_string())?;
@@ -1768,7 +2425,13 @@ fn start_captured(
     }
     released?;
     if presentation == Presentation::Silent {
-        return Ok(0);
+        return Ok(Started::Code(0));
+    }
+    if replace.is_some() {
+        eprintln!(
+            "Task {} planned again as revision {revision_number}; confirm its new plan to run it",
+            revision.task_id
+        );
     }
     let presented = present_with_advisory(
         &cas,
@@ -1778,12 +2441,17 @@ fn start_captured(
         options.plan_only,
         &undeclared,
     );
+    match &presented {
+        Ok(shown) if !options.plan_only => shown.tail(options.json),
+        Ok(shown) => shown.note(shown.code),
+        Err(_) => {}
+    }
     // The request is in the Store, so a copy the repository would carry is redundant. Advice
     // only, and given last: the Task deadline was derived and the plan compiled, recorded and
     // presented before this runs, so a slow `git check-ignore` can neither shorten the Task's
     // remaining wall nor change the exit code or the `--json` document already written.
     task_file_home::warn_if_captured_from_the_repository(&options.file, &options.repo);
-    presented
+    presented.map(|shown| Started::Code(shown.code))
 }
 
 /// Selection for a silent preview: a refused selection is an error to show, not a document to
@@ -1793,8 +2461,9 @@ fn silent_selection(
     authority: &RunAuthority,
     compiler: &TaskPlanCompiler,
     revision: TaskRevisionV1,
+    clock: selection::PlanClock,
 ) -> Result<Option<selection::PreparedSelection>, String> {
-    match selection::assess(cas, authority, compiler, revision, None)? {
+    match selection::assess(cas, authority, compiler, revision, None, clock)? {
         selection::SelectionAssessment::Prepared(prepared) => Ok(Some(prepared)),
         selection::SelectionAssessment::Refused { decision, view, .. } => {
             Err(selection::refusal_line(&decision, &view)?)
@@ -1812,7 +2481,9 @@ fn release(
         .release_task_lease(cas, lease)
         .map_err(|e| e.to_string());
     match outcome {
-        Err(error) => Err(error),
+        // A writer that lost its lease cannot release it either: it says so, and how to
+        // continue (ADR-0209).
+        Err(error) => Err(recovery::writer_lost(lease.task_id(), &error).unwrap_or(error)),
         Ok(()) => {
             released?;
             Ok(())
@@ -1865,7 +2536,24 @@ fn selected_profile(
             )
         )
     }) {
-        return Err("Task verification request contradicts its captured kind profile".into());
+        let asked = verification.map_or("-", FileVerification::as_str);
+        let verifies = match profile {
+            TaskKindProfile::Implementation => "evaluation",
+            TaskKindProfile::ReviewedImplementation => "review",
+            TaskKindProfile::RepairAllowedImplementation => "review_or_targeted_fixes",
+            _ => "its own acceptance, with no `verification` field",
+        };
+        let profile_name = serde_json::to_value(profile)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        return Err(format!(
+            "Task verification request contradicts its captured kind profile: the Task file asks \
+             for verification `{asked}`, but kind `{kind}` is the `{profile_name}` profile, which \
+             verifies by {verifies}. Remove `verification` from the Task file to take the \
+             kind's, or set it to the profile's. Kind defaults: {}",
+            kind_defaults_table()
+        ));
     }
     Ok(profile)
 }
@@ -2031,10 +2719,11 @@ fn captured_domain(
     plan: &ExecutionPlanV1,
     compiler: &TaskPlanCompiler,
     state: &Path,
+    repo: &Path,
 ) -> Result<Box<dyn TaskDomain>, String> {
     match profile {
         TaskKindProfile::Implementation if authority.review_policy_id.is_none() => Ok(Box::new(
-            domain::code_domain(cas, authority.code_policy_id()?, graph, state)?
+            domain::code_domain(cas, authority.code_policy_id()?, graph, state, repo)?
                 .with_cache_source_resolver(crate::caches::resolve_kind),
         )),
         TaskKindProfile::Review
@@ -2051,9 +2740,8 @@ fn captured_domain(
                         .ok_or("Review Task lost its captured policy")?,
                     graph,
                 )?
-                .with_rust_toolchain_mapping(
-                    std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from),
-                )
+                .with_rust_toolchain_mapping(domain::rust_toolchain_mapping(repo)?)
+                .with_task_build_cache_root(domain::build_cache_root()?)
                 .with_remote_checks(remote)
                 .with_review_task(profile == TaskKindProfile::Review)
                 .with_cache_source_resolver(crate::caches::resolve_kind),
@@ -2095,12 +2783,21 @@ fn execute(
 ) -> Result<(), String> {
     let cancellation = std::sync::atomic::AtomicBool::new(false);
     let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?
-        .with_cancellation(&cancellation);
+        .with_cancellation(&cancellation)
+        .with_lease_timing(recovery::timing());
     crate::interrupt::note_task(lease.task_id());
     let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
     // Interrupted work is neither assembled nor finished: the lease is released and the Task
-    // stays resumable with `af task run` (ADR-0129).
-    crate::interrupt::check()?;
+    // stays resumable with `af task run` (ADR-0129), unless a node used up its recovery
+    // allowance, whose next command the interrupt then names (ADR-0209).
+    if crate::interrupt::check().is_err() {
+        if let Ok(projection) = runtime.projection()
+            && let Some(next) = recovery::interrupted_next(&projection)
+        {
+            crate::interrupt::note_next(with_selectors(&next));
+        }
+        crate::interrupt::check()?;
+    }
     // So is work the free-disk floor stopped before a Worker started (ADR-0144).
     if let Some(refusal) = runtime.disk_refusal() {
         return Err(refusal);
@@ -2129,6 +2826,30 @@ fn execute(
     Ok(())
 }
 
+/// Refuse, before the plan is admitted and before any Attempt, a Task whose captured checks
+/// cannot run on this machine (ADR-0205): a check whose Rust toolchain does not resolve here.
+/// The message starts with the code policy file the refused field is in.
+fn admit_checks(
+    cas: &Cas,
+    authority: &RunAuthority,
+    domain: &dyn TaskDomain,
+    revision: &review_core::task::TaskRevisionV1,
+) -> Result<(), String> {
+    domain.admit_checks(cas, revision).map_err(|reason| {
+        let path = cas
+            .get(&authority.catalog_id)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+            .and_then(|catalog| catalog.get("code_policy")?.as_str().map(str::to_owned))
+            .unwrap_or_else(|| ".af/code-policy.toml".into());
+        format!(
+            "{}: {reason}; nothing ran and nothing was charged",
+            preview::text(&path)
+        )
+    })
+}
+
 fn confirm_current_plan(
     cas: &Cas,
     store: &EventStore,
@@ -2147,6 +2868,129 @@ fn confirm_current_plan(
     Ok(())
 }
 
+/// `af task run NEW --from TASK`: what the command line names.
+pub(super) struct ContinueOptions {
+    pub task_id: String,
+    pub from: String,
+    pub round: Option<u32>,
+    pub goal: Option<PathBuf>,
+    pub bindings: Option<PathBuf>,
+    pub repo: PathBuf,
+    pub state: Option<PathBuf>,
+    pub json: bool,
+    pub execute: bool,
+}
+
+/// A `--goal` file that cannot be read, refused with its fix and, under `--json`, the command
+/// that plans the continuation once the file is there.
+fn unreadable_goal(options: &ContinueOptions, path: &Path, error: String) -> String {
+    use crate::error_document::{Cause, Detail};
+    let fix = if error.starts_with("cannot open") || error.ends_with("must be a regular file") {
+        "; write the goal there, or pass --goal FILE naming an existing Markdown file"
+    } else {
+        ""
+    };
+    let quote = |word: &str| shell_words::quote(word).into_owned();
+    let mut again = format!(
+        "af task run {} --from {}",
+        quote(&options.task_id),
+        quote(&options.from)
+    );
+    if let Some(round) = options.round {
+        again.push_str(&format!(" --round {round}"));
+    }
+    again.push_str(&format!(" --goal {}", quote(&path.display().to_string())));
+    if let Some(bindings) = &options.bindings {
+        again.push_str(&format!(
+            " --bindings {}",
+            quote(&bindings.display().to_string())
+        ));
+    }
+    if options.execute {
+        again.push_str(" --execute");
+    }
+    again.push_str(&store_selectors());
+    crate::error_document::typed(
+        format!("{error}{fix}"),
+        Detail::new(Cause::InputUnreadable)
+            .next(again)
+            .with("file", path.display().to_string())
+            .with("what", "goal file"),
+    )
+}
+
+/// `af task run NEW --from TASK [--round N] [--goal FILE]` (ADR-0212): plan, and with
+/// `--execute` run, a new Task from the finished Task's own captured Task file with a
+/// `continue` table, so its source is the reviewed candidate and its implementer reads the
+/// round's findings. Without `--execute` it plans, exactly as `af task plan` does, and the plan
+/// waits for `--confirm-plan`.
+pub(super) fn run_from(options: ContinueOptions) -> Result<i32, String> {
+    let (_, state) = state_path(&options.repo, options.state.as_deref())?;
+    require_store(&state)?;
+    let goal = options
+        .goal
+        .as_deref()
+        .map(|path| -> Result<String, String> {
+            let bytes = input_file::read(path, 256 * 1024, "goal file")
+                .map_err(|error| unreadable_goal(&options, path, error))?;
+            let text = String::from_utf8(bytes)
+                .map_err(|_| format!("goal file {} is not UTF-8 text", path.display()))?;
+            if text.trim().is_empty() {
+                return Err(format!(
+                    "goal file {} is empty; say what the new Task is for",
+                    path.display()
+                ));
+            }
+            Ok(text)
+        })
+        .transpose()?;
+    let bytes = {
+        let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+        let store =
+            EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+        if store
+            .task_projection(&cas, &options.from)
+            .map_err(|e| crate::store_release::explain(&state, e.to_string()))?
+            .is_none()
+        {
+            return Err(format!("--from: {}", task_not_found(&state, &options.from)));
+        }
+        continuation::derived_file(
+            &cas,
+            &store,
+            &options.task_id,
+            &options.from,
+            options.round,
+            goal,
+        )?
+    };
+    if !options.execute {
+        crate::model_check::enable_plan_time();
+    }
+    let start = StartOptions {
+        // Named for the messages that quote it; the bytes are the derived file, never read
+        // from this path.
+        file: PathBuf::from(format!(
+            "{} (af task run --from {}).json",
+            options.task_id, options.from
+        )),
+        bindings: options.bindings,
+        source_bindings: None,
+        repo: options.repo,
+        state: options.state,
+        authority: "HEAD".into(),
+        uncommitted: false,
+        json: options.json,
+        plan_only: !options.execute,
+        timeout_secs: None,
+        optimization_history: None,
+        fit: false,
+        replace: false,
+    };
+    start_kind_bytes(start, bytes, None, Presentation::Print)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     id: &str,
     repo: &Path,
@@ -2154,23 +2998,38 @@ pub(super) fn run(
     json: bool,
     confirm_plan: Option<&str>,
     execute_now: bool,
+    retry_gate: bool,
+    quiet: bool,
 ) -> Result<i32, String> {
     let started = clock()?;
     let (_, state) = state_path(repo, state)?;
+    require_store(&state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
-    if !state.join("events.sqlite").is_file() {
-        return Err("No common Task Store exists".into());
-    }
     let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     let projection = store
         .task_projection(&cas, id)
-        .map_err(|e| e.to_string())?
-        .ok_or("Unknown Task")?;
+        .map_err(|e| crate::store_release::explain(&state, e.to_string()))?
+        .ok_or_else(|| task_not_found(&state, id))?;
+    // `--retry-gate` reopens only a finished Task whose last failure was a gate; anything else
+    // is refused before a lease is taken or anything is recorded.
+    if retry_gate
+        && let review_store::store::task::gate_retry::GateRetry::Refused(why) = projection
+            .failed_gates(
+                &cas,
+                review_store::store::task::now().map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?
+    {
+        return Err(format!("Task {id} cannot retry its gate: {why}."));
+    }
     if let Some(expected) = confirm_plan {
         if !review_core::is_digest(expected) || projection.plan_id.as_deref() != Some(expected) {
-            return Err(
-                "Plan confirmation differs from the current captured plan; inspect it again".into(),
-            );
+            return Err(format!(
+                "Plan confirmation differs from the current captured plan; inspect it again: \
+                 Task {id}'s plan is {}; read it with `af task explain {id} --tree` and confirm \
+                 that one",
+                projection.plan_id.as_deref().unwrap_or("not recorded")
+            ));
         }
     }
     if !execute_now
@@ -2184,11 +3043,18 @@ pub(super) fn run(
         }
         return Err("Confirm the captured plan with --confirm-plan PLAN_ID (or explicitly opt into --execute automation)".into());
     }
-    if matches!(projection.phase, TaskPhaseV1::Finished { .. }) {
-        return present(&cas, &store, id, json, false);
+    if matches!(projection.phase, TaskPhaseV1::Finished { .. }) && !retry_gate {
+        // A finished Task returns its recorded result, and its run log ends as the first did.
+        let presented = present(&cas, &store, id, json, false)?;
+        if json {
+            presented.tail(json);
+        } else {
+            presented.note(presented.code);
+        }
+        return Ok(presented.code);
     }
     if projection.plan_id.is_none() {
-        present(&cas, &store, id, json, true)?;
+        present(&cas, &store, id, json, true)?.note(4);
         return Ok(4);
     }
     let authority: RunAuthority = serde_json::from_value(
@@ -2224,6 +3090,9 @@ pub(super) fn run(
             .pipeline,
     )?;
     compiler.validate_plan(&cas, &projection.revision, &plan)?;
+    // The wall clock starts at the first admission (P5): a plan that has not run yet gets its
+    // whole wall from now, and one that ran keeps its deadline.
+    let deadline = projection.deadline_at(clock()?);
     let verification = projection
         .revision
         .acceptance
@@ -2255,6 +3124,7 @@ pub(super) fn run(
         &plan,
         &compiler,
         &state,
+        repo,
     )?;
     let models = model_bindings(&plan, &graph, &adapters)?;
     let domain = ProviderTaskDomain {
@@ -2275,14 +3145,48 @@ pub(super) fn run(
     )?;
     let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
-    let lease = store
-        .take_task_lease(&cas, id, &format!("cli-{}", writer_pid()), 15_000)
-        .map_err(|e| e.to_string())?;
+    // The process that takes the lease, recorded before it does, so `af task cancel` finds it
+    // by the lease's writer and `af task wait` knows a run is on its way (ADR-0211).
+    let writer = format!("cli-{}", writer_pid());
+    let run_record = runs::begin(&state, id, &writer)?;
+    // A run that died holds its lease until it expires: wait it out rather than refuse
+    // (ADR-0209).
+    let lease = recovery::take_lease(&cas, &mut store, id, &writer)?;
     let outcome = (|| {
         confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
+        let before = store
+            .task_projection(&cas, id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Unknown Task")?;
         store
             .recover_task_attempts(&cas, &lease)
             .map_err(|e| e.to_string())?;
+        // The first line says which interrupted node runs again, or why the Task cannot
+        // continue.
+        let after = store
+            .task_projection(&cas, id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Unknown Task")?;
+        recovery::announce(id, &before, &after)?;
+        // After the resume's line: the first line says what the run does with an interrupted
+        // node (ADR-0209).
+        eprintln!(
+            "af task run: Task {id} {}",
+            state::deadline_line(deadline, clock()?)
+        );
+        if retry_gate {
+            let gates = store
+                .retry_task_gate(&cas, &lease, &trusted)
+                .map_err(|e| format!("Task {id} cannot retry its gate: {e}"))?;
+            eprintln!(
+                "retrying gate {} of Task {id} on the same candidate",
+                gates
+                    .iter()
+                    .map(|gate| preview::text(gate))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         if projection
             .waiting_for_domain_publication(&cas)
             .map_err(|e| e.to_string())?
@@ -2292,21 +3196,116 @@ pub(super) fn run(
                 .map_err(|e| e.to_string())?;
         }
         if !projection.admitted {
+            admit_checks(&cas, &authority, &domain, &projection.revision)?;
             store
                 .admit_task_plan(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;
         }
         // The sweep that ends this run records what it removed on this Task (ADR-0144).
         crate::storage::note_task_run(&state, lease.task_id());
+        // One line per node on stderr while the run waits, and a heartbeat (ADR-0211).
+        let _progress = (!quiet).then(|| runs::Progress::start(&state, id, started));
         execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
     })();
+    drop(run_record);
     let released = release(&cas, &mut store, &lease, outcome);
     // Whatever the outcome, a model the bound one did not answer for is named on stderr
     // (ADR-0147).
     crate::model_failures::print(&cas, &store, id, started);
     released?;
-    present(&cas, &store, id, json, false)
+    let presented = present(&cas, &store, id, json, false)?;
+    presented.tail(json);
+    Ok(presented.code)
+}
+
+/// The run log's last lines on stderr, held until the command's housekeeping has said what it
+/// did: `main` prints them ([`print_last_lines`]) after the stale sandbox sweep and the Storage
+/// Budget sweep that end a run, so the Task's state stays the last line however late those
+/// report.
+static LAST_LINES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn defer_last_line(line: String) {
+    LAST_LINES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(line);
+}
+
+/// Print the run log's last lines this command held back, once, on stderr.
+pub(crate) fn print_last_lines() {
+    let lines = std::mem::take(
+        &mut *LAST_LINES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    for line in lines {
+        eprintln!("{line}");
+    }
+}
+
+/// What one presentation of a Task printed: the exit code it ends with, and from the same view
+/// that code was judged by, the run log's last line (the Task's state and the next command)
+/// and a failed gate's failing tests. Nothing is read again after the Task was shown, so a
+/// Task that changed or was collected meanwhile can neither silence nor contradict stderr.
+pub(super) struct Presented {
+    pub(super) code: i32,
+    line: String,
+    gate_tail: Vec<String>,
+}
+
+impl Presented {
+    fn new(id: &str, code: i32, view: &state::TaskView) -> Self {
+        Self {
+            code,
+            line: state_line(id, view),
+            gate_tail: state::failed_gate_tail(id, view),
+        }
+    }
+
+    /// A command whose exit status `code` reports a Task that did not verify, or one waiting
+    /// for a person, while its result went to stdout, ends with the run log's last line on
+    /// stderr: a non-zero exit never leaves stderr silent.
+    pub(super) fn note(&self, code: i32) {
+        if code != 0 {
+            defer_last_line(self.line.clone());
+        }
+    }
+
+    /// The run log's last lines: under `--json`, on stderr beside the document on stdout, the
+    /// failing tests of a failed gate (the text on stdout already named them); in both
+    /// formats the state line, so a run's log always ends with the state and the next command
+    /// (ADR-0211).
+    pub(super) fn tail(&self, json: bool) {
+        if json {
+            for line in &self.gate_tail {
+                defer_last_line(line.clone());
+            }
+        }
+        defer_last_line(self.line.clone());
+    }
+}
+
+/// The run log's last line: the Task's state and the next command.
+pub(super) fn state_line(id: &str, view: &state::TaskView) -> String {
+    format!(
+        "Task {id}: {}; next: {}",
+        view.state.label(),
+        view.state.next_action.as_deref().unwrap_or("none")
+    )
+}
+
+/// [`present`], then [`Presented::note`] for a non-zero exit.
+fn present_noting(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    json_output: bool,
+    explain: bool,
+) -> Result<i32, String> {
+    let presented = present(cas, store, id, json_output, explain)?;
+    presented.note(presented.code);
+    Ok(presented.code)
 }
 
 pub(super) fn explain(
@@ -2318,16 +3317,31 @@ pub(super) fn explain(
     tree: bool,
 ) -> Result<i32, String> {
     let (_, state) = state_path(repo, state)?;
+    require_store(&state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    if store
+        .task_projection(&cas, id)
+        .map_err(|e| crate::store_release::explain(&state, e.to_string()))?
+        .is_none()
+    {
+        return Err(task_not_found(&state, id));
+    }
     if let Some(plan_id) = plan {
         return inspection::explain_plan(&cas, &store, id, plan_id, json, tree);
     }
-    present_with_format(&cas, &store, id, json, true, tree, None)
+    let presented = present_with_format(&cas, &store, id, json, true, tree, None)?;
+    presented.note(presented.code);
+    Ok(presented.code)
 }
 
-pub(super) fn show_if_common(id: &str, state: &Path, json: bool) -> Result<bool, String> {
+pub(super) fn show_if_common(
+    id: &str,
+    state: &Path,
+    json: bool,
+    checks: bool,
+) -> Result<bool, String> {
     if !state.join("events.sqlite").is_file() {
         return Ok(false);
     }
@@ -2336,18 +3350,294 @@ pub(super) fn show_if_common(id: &str, state: &Path, json: bool) -> Result<bool,
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     // A collected Task shows its retained summary; its projection stops at the tombstone.
     if let Some(collected) = store.collected_task(id).map_err(|e| e.to_string())? {
+        if checks {
+            return Err(format!(
+                "Task `{id}` was collected: its check receipts are no longer recorded; \
+                 `af task show {id}` prints its summary"
+            ));
+        }
         collection::present(&collected, json)?;
         return Ok(true);
     }
-    if store
-        .task_projection(&cas, id)
-        .map_err(|e| e.to_string())?
-        .is_none()
-    {
+    let Some(task) = store.task_projection(&cas, id).map_err(|e| e.to_string())? else {
         return Ok(false);
+    };
+    if checks {
+        let Inspection { view, .. } = inspection(&cas, &store, id, false, None)?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string(&state::checks_document(id, &view))
+                    .map_err(|e| e.to_string())?
+            );
+        } else {
+            for line in state::checks_lines(id, &view) {
+                println!("{line}");
+            }
+        }
+        return Ok(true);
+    }
+    // Who cancelled the run that stopped it, above the `next:` line (ADR-0211).
+    if let Some(line) = runs::cancel_line(state, &task) {
+        runs::note_for_show(line);
     }
     present(&cas, &store, id, json, false)?;
     Ok(true)
+}
+
+/// One Task of the Store `--repo` and `--state` name, opened read-only for a command of the
+/// agent loop that reads it (ADR-0211): refused by name when the Store or the Task is not there,
+/// and when the Task was collected, whose records are gone.
+pub(super) struct OpenedTask {
+    pub(super) state: PathBuf,
+    pub(super) cas: Cas,
+    pub(super) store: EventStore,
+    pub(super) task: TaskProjection,
+}
+
+pub(super) fn open_task(id: &str, repo: &Path, state: Option<&Path>) -> Result<OpenedTask, String> {
+    if !is_name(id) {
+        return Err(format!(
+            "`{}`: a Task ID is 1 to 128 ASCII letters, digits, `-` or `_`, starting with a \
+             letter or digit; `af task list` lists the Tasks",
+            preview::text(id)
+        ));
+    }
+    let (_, state) = state_path(repo, state)?;
+    require_store(&state)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    if store
+        .collected_task(id)
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err(format!(
+            "Task `{id}` was collected: its Snapshots and records are no longer kept, only its \
+             summary; `af task show {id}` prints it"
+        ));
+    }
+    let task = store
+        .task_projection(&cas, id)
+        .map_err(|e| crate::store_release::explain(&state, e.to_string()))?
+        .ok_or_else(|| task_not_found(&state, id))?;
+    Ok(OpenedTask {
+        state,
+        cas,
+        store,
+        task,
+    })
+}
+
+impl OpenedTask {
+    /// The Task's recorded result and the state every rendering prints, read again now.
+    pub(super) fn view(&self) -> Result<(Option<TaskResultV1>, state::TaskView), String> {
+        let result: Option<TaskResultV1> = match &self.task.phase {
+            TaskPhaseV1::Finished { result_id } => {
+                Some(artifact(&self.cas, result_id, TASK_RESULT_V1)?)
+            }
+            _ => None,
+        };
+        let cancelled = runs::cancelled_epoch(Some(&self.state), &self.task);
+        let view = selected_view(&self.cas, &self.task, result.as_ref(), clock()?, cancelled)?;
+        Ok((result, view))
+    }
+
+    /// Project the Task again from the Store, for a command that watches it change.
+    pub(super) fn refresh(&mut self) -> Result<(), String> {
+        self.task = self
+            .store
+            .task_projection(&self.cas, &self.task.task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| task_not_found(&self.state, &self.task.task_id))?;
+        Ok(())
+    }
+}
+
+/// The leaf subcommand's matches of this process's command line when it works on a Task Store:
+/// an `af task` command, or `af review` with a Task file (`--file`), whose `--state` names a
+/// Task Store too. `None` for every other command, a Campaign review and the browser included.
+fn task_invocation() -> Option<&'static clap::ArgMatches> {
+    static MATCHES: std::sync::OnceLock<Option<clap::ArgMatches>> = std::sync::OnceLock::new();
+    MATCHES
+        .get_or_init(|| {
+            use clap::CommandFactory as _;
+            let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+            let matches = crate::cli::Af::command().try_get_matches_from(argv).ok()?;
+            let (namespace, mut leaf) = matches.subcommand()?;
+            while let Some((_, deeper)) = leaf.subcommand() {
+                leaf = deeper;
+            }
+            let task_file = matches!(leaf.try_get_raw("task_file"), Ok(Some(_)));
+            (namespace == "task" || (namespace == "review" && task_file)).then(|| leaf.clone())
+        })
+        .as_ref()
+}
+
+/// The flags of `ids` this command was given on its command line ([`task_invocation`]), as typed
+/// and shell quoted: ` --repo ../x --state ../state`. A default value is not repeated.
+pub(crate) fn invocation_flags(ids: &[&str]) -> String {
+    let Some(matches) = task_invocation() else {
+        return String::new();
+    };
+    let mut flags = String::new();
+    for id in ids {
+        let flag = id.replace('_', "-");
+        if let Ok(Some(true)) = matches.try_get_one::<bool>(id) {
+            flags.push_str(&format!(" --{flag}"));
+            continue;
+        }
+        let Ok(Some(values)) = matches.try_get_raw(id) else {
+            continue;
+        };
+        if matches.value_source(id) != Some(clap::parser::ValueSource::CommandLine) {
+            continue;
+        }
+        for value in values {
+            flags.push_str(&format!(
+                " --{flag} {}",
+                shell_words::quote(&value.to_string_lossy())
+            ));
+        }
+    }
+    flags
+}
+
+/// `af task plan --file FILE` with the capture flags (`--bindings`, `--source-bindings`,
+/// `--authority`, `--uncommitted`) and the Store selectors this command was given: run as
+/// printed, it plans the same capture in the same Store.
+pub(super) fn plan_again(file: &Path) -> String {
+    format!(
+        "af task plan --file {}{}{}",
+        shell_words::quote(&file.display().to_string()),
+        invocation_flags(&["bindings", "source_bindings", "authority", "uncommitted"]),
+        store_selectors()
+    )
+}
+
+/// The Store selectors this command was given (`--repo`, then `--state` or `--workspace`), as
+/// typed; empty for the default Store.
+pub(crate) fn store_selectors() -> String {
+    invocation_flags(&["repo", "state", "workspace"])
+}
+
+/// `command` as a printed next command: an `af task` command carries the Store selectors this
+/// command was given, so run as printed it acts on the same Store. Every other command, and
+/// every command under the default Store, is unchanged.
+pub(crate) fn with_selectors(command: &str) -> String {
+    if command.starts_with("af task ") {
+        format!("{command}{}", store_selectors())
+    } else {
+        command.to_owned()
+    }
+}
+
+/// [`state::view`], with the next command carrying this command's Store selectors.
+fn selected_view(
+    cas: &Cas,
+    task: &TaskProjection,
+    result: Option<&TaskResultV1>,
+    now: u64,
+    cancelled: Option<u64>,
+) -> Result<state::TaskView, String> {
+    let mut view = state::view(cas, task, result, now, cancelled)?;
+    if let Some(next) = view.state.next_action.as_mut() {
+        *next = with_selectors(next);
+    }
+    Ok(view)
+}
+
+/// The not-found refusal of a Task, in the shape every not-found refusal takes:
+/// `<Thing> <name> not found in <where>; <what exists or the fix>`. `<where>` is the Store as
+/// the command was told to find it (the path given, the Workspace named, or this checkout's
+/// own) and the Tasks it does hold; the fix lists them, with the selectors this command was
+/// given.
+pub(crate) fn task_not_found(state: &Path, id: &str) -> String {
+    let words: Vec<String> = std::env::args().collect();
+    let given = |flag: &str| {
+        words
+            .iter()
+            .position(|word| word == flag)
+            .and_then(|at| words.get(at + 1).cloned())
+            .or_else(|| {
+                words
+                    .iter()
+                    .find_map(|word| word.strip_prefix(&format!("{flag}=")).map(str::to_owned))
+            })
+    };
+    let (place, selector) = if given("--state").is_some() {
+        (
+            format!("the Task Store {}", state.display()),
+            format!(
+                " --state {}",
+                shell_words::quote(&state.display().to_string())
+            ),
+        )
+    } else if let Some(label) = given("--workspace") {
+        (
+            format!("the Task Store of Workspace {}", preview::text(&label)),
+            format!(" --workspace {}", shell_words::quote(&label)),
+        )
+    } else {
+        ("this checkout's Task Store".into(), String::new())
+    };
+    // What the Store does hold: its Tasks, the collected ones included, up to ten of them;
+    // nothing when there is no Store there.
+    let listed = (|| -> Result<Option<Vec<String>>, String> {
+        if !store_present(state)? {
+            return Ok(None);
+        }
+        let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+        let store =
+            EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+        let mut ids = store.task_ids(&cas).map_err(|e| e.to_string())?;
+        ids.extend(
+            store
+                .collected_tasks()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|task| task.collected.task_id),
+        );
+        ids.sort();
+        ids.dedup();
+        Ok(Some(ids))
+    })();
+    let holds = match listed {
+        Ok(None) => String::new(),
+        Ok(Some(ids)) => {
+            let shown = ids.iter().take(10).cloned().collect::<Vec<_>>().join(", ");
+            let more = if ids.len() > 10 { ", …" } else { "" };
+            match ids.len() {
+                0 => " (no Tasks there)".to_owned(),
+                1 => format!(" (1 Task there: {shown})"),
+                n => format!(" ({n} Tasks there: {shown}{more})"),
+            }
+        }
+        Err(error) => format!(" (its Tasks cannot be listed: {error})"),
+    };
+    format!(
+        "Task {} not found in {place}{holds}; af task list{selector} lists its Tasks",
+        preview::text(id)
+    )
+}
+
+/// The not-found refusal of a Task Store, in the shape every not-found refusal takes.
+pub(crate) fn store_not_found(state: &Path) -> String {
+    format!(
+        "Task Store not found in {}; af task plan --file FILE creates it, and af task list \
+         lists the Tasks of the Store this checkout uses",
+        state.display()
+    )
+}
+
+/// Refuse a command that reads a Task Store before anything opens one that is not there.
+pub(crate) fn require_store(state: &Path) -> Result<(), String> {
+    if store_present(state)? {
+        Ok(())
+    } else {
+        Err(store_not_found(state))
+    }
 }
 
 /// Whether a Task state directory holds a Store. Only a missing `events.sqlite` means none;
@@ -2378,17 +3668,26 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
     // Uncollected Tasks are projected first and the tombstones read after: a Task that
     // `gc --apply` collects between the two is skipped by the projection and listed from its
     // tombstone, so no Task the log retains is ever omitted (ADR-0135).
+    let now = clock()?;
     let mut entries = store.map_tasks(&cas, |task| {
         let result: Option<TaskResultV1> = match &task.phase {
             TaskPhaseV1::Finished { result_id } => Some(artifact(&cas, result_id, TASK_RESULT_V1)?),
             _ => None,
         };
-        Ok(json!({"schema":"af/task-list-entry@2","task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
-            "outcome":result.as_ref().map(|r| &r.domain_conclusion),
+        // The same state `af task show` prints, from the same derivation.
+        let cancelled = runs::cancelled_epoch(Some(state), &task);
+        let view = selected_view(&cas, &task, result.as_ref(), now, cancelled)?;
+        Ok(json!({"schema":TASK_LIST_ENTRY_V3,"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
+            "state":view.state,
+            "round":review_round(&task),
             "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()).to_string(),
             "derived_snapshot_id":result.as_ref().and_then(|r| r.outputs.get("snapshot")).and_then(|o| o.snapshot_id.as_ref()),
-            "delivery":delivery_view(&cas, &task)?}))
+            "delivery":delivery_view(&cas, &task)?,
+            "updated_unix_ms":task.last_event_unix_ms()}))
         .map(|mut entry| {
+            if let Some(gate) = &view.gate {
+                entry["gate"] = json!(gate);
+            }
             let unknown = unknown_usage(&task).values().sum::<u64>();
             if unknown > 0 {
                 entry["unknown_usage_attempts"] = json!(unknown);
@@ -2417,6 +3716,22 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
     entries.extend(collected);
     entries.sort_by(|left, right| left["task_id"].as_str().cmp(&right["task_id"].as_str()));
     Ok(entries)
+}
+
+/// One entry of `af task list --json`.
+pub(crate) const TASK_LIST_ENTRY_V3: &str = "af/task-list-entry@3";
+
+/// The review round a Task is in: the rounds it handed off to a successor plan, plus the one its
+/// current execution recorded; 0 before a review recorded a round.
+fn review_round(task: &TaskProjection) -> u64 {
+    let current = task.execution.as_ref().is_some_and(|execution| {
+        execution
+            .outputs
+            .values()
+            .flat_map(|(_, output)| output.outputs.values())
+            .any(|port| port.artifact_type == TASK_REVIEW_ROUND_V1)
+    });
+    task.review_handoffs.len() as u64 + u64::from(current)
 }
 
 /// `af task list --sizes`: the Store's totals and each uncollected Task's CAS footprint. The
@@ -2456,7 +3771,7 @@ fn present(
     id: &str,
     json_output: bool,
     explain: bool,
-) -> Result<i32, String> {
+) -> Result<Presented, String> {
     present_with_format(cas, store, id, json_output, explain, false, None)
 }
 
@@ -2470,7 +3785,7 @@ fn present_with_advisory(
     json: bool,
     explain: bool,
     undeclared: &review_config::layout::PathGroup,
-) -> Result<i32, String> {
+) -> Result<Presented, String> {
     let group = Some(undeclared);
     present_with_format(cas, store, id, json, explain, false, group)
 }
@@ -2569,6 +3884,8 @@ pub(crate) fn run_silently(file: &Path, repo: &Path, state: &Path) -> Result<i32
         plan_only: false,
         timeout_secs: None,
         optimization_history: None,
+        fit: false,
+        replace: false,
     };
     start_kind(options, None, Presentation::Silent)
 }
@@ -2579,8 +3896,11 @@ struct Inspection {
     state: TaskProjection,
     result: Option<TaskResultV1>,
     bindings: Option<review_core::task::input_bindings::TaskInputBindingsV1>,
-    reports: Vec<serde_json::Value>,
+    view: state::TaskView,
 }
+
+/// The document `af task show --json` and `af task explain --json` print.
+pub(crate) const TASK_INSPECTION_V13: &str = "af/task-inspection@13";
 
 #[allow(clippy::too_many_arguments)]
 fn present_with_format(
@@ -2591,13 +3911,13 @@ fn present_with_format(
     explain: bool,
     tree: bool,
     undeclared: Option<&review_config::layout::PathGroup>,
-) -> Result<i32, String> {
+) -> Result<Presented, String> {
     let Inspection {
         value,
         state,
         result,
         bindings,
-        reports,
+        view,
     } = inspection(cas, store, id, explain, undeclared)?;
     if json_output {
         println!(
@@ -2607,61 +3927,15 @@ fn present_with_format(
     } else if explain && state.plan_id.is_some() {
         print!("{}", preview::current(cas, &state, tree)?);
     } else {
-        println!(
-            "Task {}: {}",
-            state.task_id,
-            outcome_label(&state.phase, result.as_ref())
-        );
-        if let Some(id) = &state.plan_id {
-            println!("Plan {id}");
-        }
-        if let Some(line) = unknown_usage_line(&state) {
+        for line in show_lines(
+            cas,
+            &value,
+            &state,
+            result.as_ref(),
+            bindings.as_ref(),
+            &view,
+        )? {
             println!("{line}");
-        }
-        // One line per bound output, through the same sanitizer the preview uses: a referenced
-        // Task ID is untrusted display data wherever it is printed. A port bound from several
-        // outputs prints one line per output (ADR-0134).
-        let bound = bindings.iter().flat_map(|record| &record.bindings);
-        let bound = bound.flat_map(|(port, binding)| {
-            preview::bound_outputs(binding).map(move |output| (port, output))
-        });
-        for (port, binding) in bound {
-            match &binding.task {
-                Some(task) => println!(
-                    "bound {} <- task {}/{} ({})",
-                    preview::text(port),
-                    preview::text(&task.task_id),
-                    preview::text(&task.port),
-                    preview::acceptance_name(task.acceptance)
-                ),
-                None => println!(
-                    "bound {} <- artifact {}",
-                    preview::text(port),
-                    preview::text(&binding.artifact_id)
-                ),
-            }
-        }
-        for line in check_cache_lines(&value) {
-            println!("{line}");
-        }
-        for line in remote_check_lines(&value) {
-            println!("{line}");
-        }
-        if let Some(line) = storage_sweep_line(&value) {
-            println!("{line}");
-        }
-        for line in measurement_lines(cas, &state)? {
-            println!("{line}");
-        }
-        for line in report_lines(cas, result.as_ref())? {
-            println!("{line}");
-        }
-        if let Some(last) = reports.last().and_then(|r| r["diagnostics"].as_object()) {
-            for (node, diagnostic) in last {
-                if let Some(message) = diagnostic["message"].as_str() {
-                    println!("{node}: {message}");
-                }
-            }
         }
         if explain {
             println!(
@@ -2670,31 +3944,155 @@ fn present_with_format(
             );
         }
     }
-    if result.as_ref().is_some_and(|r| {
-        matches!(
-            r.domain_conclusion.as_str(),
-            "pass" | "changes_requested" | "convergence_exhausted" | "incomplete"
-        )
-    }) {
-        return Ok(result.map_or(0, |r| match r.domain_conclusion.as_str() {
-            "pass" => 0,
-            "changes_requested" | "convergence_exhausted" => 3,
-            _ => 4,
-        }));
+    Ok(Presented::new(id, exit_code(&state, &view), &view))
+}
+
+/// The exit code a presentation of `state` ends with: its outcome's (`af help exit-codes`), 4
+/// for a Task that waits for a person's decision, else 0.
+fn exit_code(state: &TaskProjection, view: &state::TaskView) -> i32 {
+    match view.state.outcome {
+        // Only a finished Task ended with an outcome a command reports; an abandoned one is
+        // resumable, and showing it succeeds.
+        Some(outcome)
+            if view.state.phase == review_core::task::state::TaskStatePhaseV1::Finished =>
+        {
+            i32::from(outcome.exit_code())
+        }
+        _ if state.phase
+            == (TaskPhaseV1::Waiting {
+                reason: TaskWaitingReasonV1::NeedsHuman,
+            }) =>
+        {
+            4
+        }
+        _ => 0,
     }
-    let pending = if state.phase
-        == (TaskPhaseV1::Waiting {
-            reason: TaskWaitingReasonV1::NeedsHuman,
-        }) {
-        4
-    } else {
-        0
-    };
-    Ok(result.map_or(pending, |r| match r.acceptance {
-        TaskAcceptanceV1::Satisfied => 0,
-        TaskAcceptanceV1::Unsatisfied => 3,
-        TaskAcceptanceV1::Inconclusive => 4,
-    }))
+}
+
+/// `af task show ID` as text: the state, then what the Store recorded about it, then each
+/// failed node and the failing tests of a failed gate, and as the last line the next command.
+fn show_lines(
+    cas: &Cas,
+    value: &serde_json::Value,
+    state: &TaskProjection,
+    result: Option<&TaskResultV1>,
+    bindings: Option<&review_core::task::input_bindings::TaskInputBindingsV1>,
+    view: &state::TaskView,
+) -> Result<Vec<String>, String> {
+    let mut lines = vec![format!(
+        "Task {}: {}",
+        preview::text(&state.task_id),
+        view.state.label()
+    )];
+    if let Some(summary) = state::summary(view) {
+        lines.push(format!("why: {}", preview::text(&summary)));
+    } else if view.state.phase == review_core::task::state::TaskStatePhaseV1::Abandoned
+        && let Some(abandoned) = recovery::abandoned(state, clock()?)
+    {
+        // The interrupted node of an abandoned Task, and when it stopped (ADR-0209).
+        lines.push(format!("why: {}", abandoned.why()));
+    }
+    if let Some(id) = &state.plan_id {
+        lines.push(format!("Plan {id}"));
+    }
+    if let Some(line) = unknown_usage_line(state) {
+        lines.push(line);
+    }
+    // One line per bound output, through the same sanitizer the preview uses: a referenced
+    // Task ID is untrusted display data wherever it is printed. A port bound from several
+    // outputs prints one line per output (ADR-0134).
+    let bound = bindings.iter().flat_map(|record| &record.bindings);
+    let bound = bound.flat_map(|(port, binding)| {
+        preview::bound_outputs(binding).map(move |output| (port, output))
+    });
+    for (port, binding) in bound {
+        lines.push(match &binding.task {
+            Some(task) => format!(
+                "bound {} <- task {}/{} ({})",
+                preview::text(port),
+                preview::text(&task.task_id),
+                preview::text(&task.port),
+                preview::acceptance_name(task.acceptance)
+            ),
+            None => format!(
+                "bound {} <- artifact {}",
+                preview::text(port),
+                preview::text(&binding.artifact_id)
+            ),
+        });
+    }
+    lines.extend(continuation::show_line(value));
+    lines.extend(check_cache_lines(value));
+    lines.extend(check_report_lines(cas, state));
+    lines.extend(remote_check_lines(value));
+    lines.extend(storage_sweep_line(value).filter(|_| crate::storage::shows_recorded_sweeps()));
+    lines.extend(measurement_lines(cas, state)?);
+    lines.extend(report_lines(cas, result)?);
+    for retry in &state.gate_retries {
+        lines.push(format!(
+            "gate retried: {} ran again on the same candidate",
+            retry
+                .gates
+                .iter()
+                .map(|gate| preview::text(&gate.node))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    // A running Attempt's Provider wait or re-ask (ADR-0208); a settled one's diagnostic,
+    // printed by the failure lines, carries its retry history.
+    lines.extend(provider_event_lines(state));
+    lines.extend(state::failed_gate_tail(&state.task_id, view));
+    lines.extend(state::failure_lines(view));
+    lines.extend(runs::take_show_notes());
+    lines.push(format!(
+        "next: {}",
+        view.state.next_action.as_deref().unwrap_or("none")
+    ));
+    Ok(lines)
+}
+
+/// One line per running Attempt that recorded a Provider event (ADR-0208), from its latest:
+/// `NODE: waiting 120 s for capacity (retry 2 of 3)` while the wait lasts, then
+/// `NODE: retry 2 of 3 after capacity is running`. A settled Attempt prints none: its
+/// diagnostic carries its retry history.
+fn provider_event_lines(state: &TaskProjection) -> Vec<String> {
+    use review_core::task::provider_event::ProviderEventV1;
+    let running: BTreeSet<String> = state
+        .execution
+        .iter()
+        .flat_map(|execution| execution.attempt_accounting())
+        .filter(|attempt| attempt.started && attempt.settled_unix_ms.is_none() && !attempt.released)
+        .map(|attempt| attempt.attempt_id)
+        .collect();
+    let mut latest = BTreeMap::new();
+    for event in &state.provider_events {
+        if running.contains(&event.attempt_id) {
+            latest.insert(event.attempt_id.clone(), event);
+        }
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64);
+    latest
+        .values()
+        .map(|event| {
+            let line = match &event.event {
+                ProviderEventV1::RetryWait {
+                    class,
+                    retry,
+                    max_retries,
+                    wait_ms,
+                    ..
+                } if event.now_unix_ms.saturating_add(*wait_ms) <= now => format!(
+                    "retry {retry} of {max_retries} after {} is running",
+                    class.label()
+                ),
+                _ => event.describe(),
+            };
+            format!("{}: {line}", event.node)
+        })
+        .collect()
 }
 
 /// The Task's settled Attempts whose usage is unknown, by cause (ADR-0143): no usage was
@@ -2741,23 +4139,6 @@ fn unknown_usage_line(state: &TaskProjection) -> Option<String> {
                 .map_or(0, |e| e.budget.committed_tokens())
         )
     })
-}
-
-/// The outcome `af task show` states on its first line: the result's domain conclusion, or the
-/// phase of a Task without a result. `af task report` states it the same way.
-fn outcome_label<'a>(phase: &TaskPhaseV1, result: Option<&'a TaskResultV1>) -> &'a str {
-    result.map_or(
-        match phase {
-            TaskPhaseV1::Waiting { reason } => match reason {
-                TaskWaitingReasonV1::NeedsPlanReview => "needs-plan-review",
-                TaskWaitingReasonV1::NeedsResources => "needs-resources",
-                TaskWaitingReasonV1::NeedsInput => "needs-input",
-                TaskWaitingReasonV1::NeedsHuman => "needs-human",
-            },
-            _ => "planned",
-        },
-        |r| r.domain_conclusion.as_str(),
-    )
 }
 
 /// One line per recorded Measurement and per recorded comparison (ADR-0132), in node order: a
@@ -3209,9 +4590,15 @@ fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
         };
         let timing = match (span, binding["outcome"].as_str()) {
             (Some(check), Some(outcome)) => {
-                format!("{} in {} ms", preview::text(outcome), check["elapsed_ms"])
+                format!(
+                    "{} in {}",
+                    preview::text(outcome),
+                    crate::human::duration(check["elapsed_ms"].as_u64().unwrap_or(0))
+                )
             }
-            (Some(check), None) => format!("{} ms", check["elapsed_ms"]),
+            (Some(check), None) => {
+                crate::human::duration(check["elapsed_ms"].as_u64().unwrap_or(0))
+            }
             // A remote check ran nothing here: every declared kind was skipped as `remote`
             // (ADR-0140), and its own `remote check` lines say what ran and where.
             (None, outcome)
@@ -3240,6 +4627,153 @@ fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
     lines
 }
 
+/// Each check node's latest `af/TaskCheckReport@1`, with its artifact ID, by node ID: the
+/// report of the node's latest settled Attempt, so a retried gate's report, not the failed one
+/// before it. A report that does not decode or validate is skipped, as it was never admitted.
+fn latest_check_reports(
+    cas: &Cas,
+    state: &TaskProjection,
+) -> BTreeMap<String, (String, review_core::task::check_report::TaskCheckReportV1)> {
+    use review_core::task::check_report::*;
+    let mut latest = BTreeMap::new();
+    for attempt in state
+        .execution
+        .iter()
+        .flat_map(|execution| execution.attempt_accounting())
+    {
+        for id in &attempt.raw_artifact_ids {
+            let Ok(Some(artifact)) = cas.get_optional_artifact(id) else {
+                continue;
+            };
+            if artifact.artifact_type != TASK_CHECK_REPORT_V1 {
+                continue;
+            }
+            let Ok(report) = serde_json::from_value::<TaskCheckReportV1>(artifact.payload) else {
+                continue;
+            };
+            if report.validate().is_err() {
+                continue;
+            }
+            let node = match &artifact.producer {
+                review_core::Producer::Attempt { node_id, .. } => node_id.clone(),
+                _ => continue,
+            };
+            // The node's latest settled Attempt wins: a retried gate's report, not the failed
+            // one before it.
+            let settled = attempt.settled_unix_ms.unwrap_or(0);
+            if latest
+                .get(&node)
+                .is_none_or(|(earlier, _, _): &(u64, String, TaskCheckReportV1)| {
+                    *earlier <= settled
+                })
+            {
+                latest.insert(node, (settled, id.clone(), report));
+            }
+        }
+    }
+    latest
+        .into_iter()
+        .map(|(node, (_, id, report))| (node, (id, report)))
+        .collect()
+}
+
+/// What the latest check report of each check node says (`af/TaskCheckReport@1`): where a
+/// check stopped, by stage, step and the fix its gate names; the tests that failed in its
+/// parallel run but passed alone (`flaky`), each list on its own line so an operator sees what
+/// nearly failed; the tests that failed twice; and, for a check that did not pass or had flaky
+/// tests, the host's load around it. A report the check wrote but af refused says so.
+fn check_report_lines(cas: &Cas, state: &TaskProjection) -> Vec<String> {
+    use review_core::task::check_report::*;
+    let mut lines = Vec::new();
+    for (_, report) in latest_check_reports(cas, state).values() {
+        let statuses = cas
+            .get_artifact(&report.receipt_id)
+            .ok()
+            .and_then(|receipt| receipt.payload["checks"].as_object().cloned())
+            .unwrap_or_default();
+        for (check, run) in &report.checks {
+            let name = preview::text(check);
+            let passed = statuses
+                .get(check)
+                .and_then(|id| id.as_str())
+                .and_then(|id| cas.get_json(id).ok())
+                .is_some_and(|result| result["status"] == "passed");
+            if run.report == CheckReportStateV1::Refused {
+                lines.push(format!(
+                    "check {name}: its report was refused: {}",
+                    preview::text(run.refusal.as_deref().unwrap_or("unreadable"))
+                ));
+            }
+            if let Some(step) = run.stopped_at() {
+                let then = match &step.fix {
+                    Some(fix) => format!("fix: {}", preview::text(fix)),
+                    None => format!("rerun it with: {}", preview::text(&step.command.join(" "))),
+                };
+                lines.push(format!(
+                    "check {name}: stopped at {} step {} (exit {}); {then}",
+                    step.stage.as_str(),
+                    preview::text(&step.label),
+                    step.exit_code
+                ));
+            }
+            let tests = run.tests.as_ref();
+            let flaky = tests.map_or(&[][..], |tests| tests.flaky.as_slice());
+            if !flaky.is_empty() {
+                lines.push(format!(
+                    "check {name} flaky: {} (failed in the parallel run, passed alone)",
+                    flaky
+                        .iter()
+                        .map(|test| preview::text(&test.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if let Some(tests) = tests.filter(|tests| tests.failed_count > 0) {
+                let more = tests.failed_count as usize - tests.failed.len();
+                let verb = match tests.rerun {
+                    CheckRerunV1::Isolated => "failed twice",
+                    _ => "failed",
+                };
+                lines.push(format!(
+                    "check {name} {verb}: {}{}",
+                    tests
+                        .failed
+                        .iter()
+                        .map(|test| preview::text(test))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    if more > 0 {
+                        format!(" and {more} more")
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+            if !passed || !flaky.is_empty() {
+                let load = |load: &Option<String>| load.clone().unwrap_or_else(|| "unknown".into());
+                let cpus = if run.host.cpus_start == run.host.cpus_end {
+                    format!("{} CPUs", run.host.cpus_end)
+                } else {
+                    format!(
+                        "{} CPUs at start, {} at end",
+                        run.host.cpus_start, run.host.cpus_end
+                    )
+                };
+                lines.push(format!(
+                    "check {name} host: load {} at start, {} at end, {cpus}{}",
+                    load(&run.host.load_1m_start),
+                    load(&run.host.load_1m_end),
+                    tests.map_or(String::new(), |tests| format!(
+                        ", {} test threads",
+                        tests.test_threads
+                    ))
+                ));
+            }
+        }
+    }
+    lines
+}
+
 /// Why a warm directory was removed after its check, and which byte bound acted when one did:
 /// `bound_exceeded max_bytes` for an eviction whose check's result stood, `bound_exceeded
 /// hard_max_bytes` for a check the bound ended (ADR-0135).
@@ -3258,28 +4792,42 @@ fn cache_states(caches: &[serde_json::Value]) -> String {
         .map(|cache| {
             let kind = cache["kind"].as_str().unwrap_or_default();
             let (base, reason) = kind.split_once(':').unwrap_or((kind, ""));
-            let bytes = &cache["bytes_available"];
+            let bytes = crate::human::bytes(cache["bytes_available"].as_u64().unwrap_or(0));
+            let available = cache["bytes_available"]
+                .as_u64()
+                .is_some_and(|bytes| bytes > 0);
             let first = seen.insert(base.to_owned());
             let base = preview::text(base);
             let reason = preview::text(reason);
             if cache["eligible"] == true {
-                let state = if bytes.as_u64().is_some_and(|bytes| bytes > 0) {
+                let state = if available {
                     format!("{base} warm {bytes}")
                 } else {
                     format!("{base} cold empty")
                 };
                 match cache["evicted_bytes"].as_u64() {
-                    Some(evicted) => format!("{state}, removed {evicted} ({})", eviction(cache)),
+                    Some(evicted) => format!(
+                        "{state}, removed {} ({}); the next check runs cold",
+                        crate::human::bytes(evicted),
+                        eviction(cache)
+                    ),
                     None => state,
                 }
             } else {
-                let state = if first {
+                let state = if reason == "cloned" {
+                    // A private copy of a busy layer (ADR-0207): warm with the holder's build.
+                    format!("{base} copied {bytes} (layer busy)")
+                } else if first {
                     format!("{base} cold {reason}")
                 } else {
                     format!("{base} removed {bytes} ({reason})")
                 };
                 match cache["evicted_bytes"].as_u64() {
-                    Some(evicted) => format!("{state}, removed {evicted} ({})", eviction(cache)),
+                    Some(evicted) => format!(
+                        "{state}, removed {} ({}); the next check runs cold",
+                        crate::human::bytes(evicted),
+                        eviction(cache)
+                    ),
                     None => state,
                 }
             }
@@ -3304,8 +4852,38 @@ fn inspection(
         TaskPhaseV1::Finished { result_id } => Some(artifact(cas, result_id, TASK_RESULT_V1)?),
         _ => None,
     };
-    let mut value = json!({"schema":"af/task-inspection@11","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
+    // One state model for every rendering of this Task: `list`, `show`, `report` and `run`.
+    let store_dir = store.database_path();
+    let cancelled = runs::cancelled_epoch(store_dir.as_deref().and_then(Path::parent), &state);
+    let view = selected_view(cas, &state, result.as_ref(), clock()?, cancelled)?;
+    let mut value = json!({"schema":TASK_INSPECTION_V13,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
+    // The wall clock starts at the first admission: the wall the Task has, when its clock
+    // started, and the deadline it has since.
+    value["clock"] = json!({
+        "wall_ms": state.wall_ms(),
+        "started_unix_ms": state.clock_started_unix_ms(),
+        "deadline_unix_ms": state.clock_started_unix_ms().map(|_| state.deadline_unix_ms()),
+    });
+    if let Some(gate) = &view.gate {
+        value["gate"] = serde_json::to_value(gate).map_err(|e| e.to_string())?;
+        // The gate's evidence the text prints beside the state (ADR-0205): each check node's
+        // latest check report, and every retry of a failed gate.
+        let reports = latest_check_reports(cas, &state);
+        if !reports.is_empty() {
+            value["gate"]["check_reports"] =
+                json!(reports
+                .iter()
+                .map(|(node, (id, report))| json!({"node":node,"artifact_id":id,"record":report}))
+                .collect::<Vec<_>>());
+        }
+        if !state.gate_retries.is_empty() {
+            value["gate"]["retries"] = json!(state.gate_retries);
+        }
+    }
+    if !view.failures.is_empty() {
+        value["failures"] = state::failures_value(&view);
+    }
     let unknown = unknown_usage(&state).values().sum::<u64>();
     if unknown > 0 {
         value["unknown_usage_attempts"] = json!(unknown);
@@ -3326,10 +4904,18 @@ fn inspection(
     let mut runtime_observations = Vec::new();
     let mut runtime_attempt_ids = BTreeSet::new();
     let mut decisions = Vec::new();
+    let mut provider_events = Vec::new();
     for event in events {
-        // A lease's execution marker is its own event kind, not a `TaskTransition@5`: the
-        // history lists the transitions only.
-        if review_store::store::task::is_execution_started(&event) {
+        // A lease's execution marker, a gate retry and a Provider event are their own event
+        // kinds, not `TaskTransition@5`: the history lists the transitions only; the Provider
+        // events are listed beside it.
+        if review_store::store::task::is_provider_event(&event) {
+            let value = review_store::store::task::read_provider_event(&event)
+                .map_err(|e| e.to_string())?;
+            provider_events.push(json!({"sequence":event.sequence,"record":value}));
+            continue;
+        }
+        if review_store::store::task::is_beside_transitions(&event) {
             continue;
         }
         let transition =
@@ -3436,6 +5022,9 @@ fn inspection(
     }
     value["history"] = json!(history);
     value["execution_records"] = json!(execution);
+    if !provider_events.is_empty() {
+        value["provider_events"] = json!(provider_events);
+    }
     if !runtime_observations.is_empty() {
         let run_id = review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?;
         let walls = store
@@ -3550,6 +5139,10 @@ fn inspection(
     if let Some(record) = &bindings {
         value["input_bindings"] = serde_json::to_value(record).map_err(|e| e.to_string())?;
     }
+    // The lineage of a continued Task (ADR-0212), read from its revision's provenance.
+    if let Some((findings_id, record)) = continuation::recorded(cas, &state.revision)? {
+        value["continues"] = continuation::inspection_value(&findings_id, &record);
+    }
     if let Some(delivery) = delivery_view(cas, &state)? {
         value["delivery"] = delivery;
     }
@@ -3625,7 +5218,7 @@ fn inspection(
         state,
         result,
         bindings,
-        reports,
+        view,
     })
 }
 
@@ -3709,6 +5302,8 @@ mod tree_preview_tests {
             plan_only: true,
             timeout_secs: None,
             optimization_history: None,
+            fit: false,
+            replace: false,
         };
         start(options).unwrap();
         let cas = Cas::open_existing(state.join("cas")).unwrap();
@@ -3753,7 +5348,7 @@ mod check_cache_line_tests {
         }));
         assert_eq!(
             check_cache_lines(&started),
-            ["check kernel: passed in 812 ms, cargo_target warm 4096, cargo_home cold empty"]
+            ["check kernel: passed in 812 ms, cargo_target warm 4.0 KiB, cargo_home cold empty"]
         );
         let skipped = group(serde_json::json!({
             "check": {"name": "markdownlint", "outcome": "not_run", "rustup_home": "kernel_home"},
@@ -3960,6 +5555,8 @@ mod remote_check_line_tests {
                 plan_only: true,
                 timeout_secs: None,
                 optimization_history: None,
+                fit: false,
+                replace: false,
             })
             .unwrap();
             let host = domain::machine_remote_checks(state).unwrap();
@@ -3986,5 +5583,72 @@ mod remote_check_line_tests {
         assert_ne!(first, second);
         let writer = format!("cli-{}-{first:016x}", std::process::id());
         assert!(review_core::task::is_name(&writer), "{writer}");
+    }
+}
+
+#[cfg(test)]
+mod eviction_tests {
+    use super::*;
+
+    /// A warm target of 19 GB evicted after its check under a 16 GiB `max_bytes`: the check's
+    /// line says what was removed, why, and that the next check runs cold.
+    #[test]
+    fn an_evicted_warm_target_says_the_next_check_runs_cold() {
+        let cache = json!({
+            "kind": "cargo_target",
+            "eligible": true,
+            "bytes_available": 19_156_177_306u64,
+            "evicted_bytes": 19_156_177_306u64,
+            "evicted_reason": "bound_exceeded",
+            "bound": "max_bytes",
+        });
+        let line = cache_states(&[cache]);
+        assert!(line.starts_with("cargo_target warm "), "{line}");
+        assert!(
+            line.ends_with("(bound_exceeded max_bytes); the next check runs cold"),
+            "{line}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+
+    /// The state line a non-zero exit ends stderr with is the state the exit code was judged
+    /// by: the Store is not read again, so a Task collected (here: a Store removed) between
+    /// showing it and noting it neither silences stderr nor changes what it says.
+    #[test]
+    fn the_state_note_comes_from_the_view_that_chose_the_exit_code() {
+        let root = tempfile::tempdir().unwrap();
+        let (_repo, state) = crate::tui::tests::hub_with_tasks(root.path());
+        let id = "pagination-unfinished";
+        let cas = Cas::open_existing(state.join("cas")).unwrap();
+        let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let expected = state_line(id, &inspection(&cas, &store, id, false, None).unwrap().view);
+        let presented = present(&cas, &store, id, true, false).unwrap();
+        assert_ne!(presented.code, 0, "{expected}");
+        drop((cas, store));
+        std::fs::remove_dir_all(&state).unwrap();
+        presented.note(presented.code);
+        let noted: Vec<String> = std::mem::take(
+            &mut *LAST_LINES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+        .into_iter()
+        .filter(|line| line.starts_with(&format!("Task {id}:")))
+        .collect();
+        assert_eq!(noted, [expected.clone()]);
+        assert!(expected.contains("; next: af task "), "{expected}");
+        presented.note(0);
+        assert!(
+            !LAST_LINES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .any(|line| line.starts_with(&format!("Task {id}:"))),
+            "an exit 0 adds no line"
+        );
     }
 }

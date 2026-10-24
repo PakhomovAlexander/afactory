@@ -32,7 +32,7 @@ description = "Paired same-host comparisons of the AF product's critical operati
 
 [product_constraints]
 # Recorded so fixtures are generated against them; the laboratory never changes them.
-task_lease_ms = 15000
+task_lease_ms = 60000
 artifact_envelope_cap_bytes = 8388608
 description = "Production Task lease and CAS artifact envelope cap at the design base."
 

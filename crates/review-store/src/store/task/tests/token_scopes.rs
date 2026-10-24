@@ -260,7 +260,7 @@ fn a_recovered_attempt_without_usage_leaves_its_reserve_room_for_the_next_attemp
 }
 
 /// A settlement may not claim unknown usage for an Attempt whose usage was observed, nor charge
-/// an abandoned Attempt below its reservation without the marker.
+/// an abandoned Attempt below its reservation with neither a usage report nor the marker.
 #[test]
 fn unknown_usage_is_refused_once_usage_was_observed() {
     let mut f = Fixture::new(false).with_execution_graph();
@@ -465,9 +465,17 @@ fn recovery_after_a_zero_token_observation_settles_reported_usage() {
     f.store = EventStore::open(&f.path).unwrap();
     let row = accounting(&f, &attempt);
     assert_eq!(row.unknown_usage, None);
+    // Abandoned work is charged what it reported, never its reservation (ADR-0209): the whole
+    // reservation is back in the Task's remaining tokens.
     assert_eq!(
-        row.charged_tokens,
-        u128::from(attempt.reservation().tokens),
-        "reported usage of abandoned work keeps its reservation floor"
+        row.charged_tokens, 0,
+        "reported usage of abandoned work is its charge"
     );
+    assert_eq!(
+        row.abandoned,
+        Some(crate::store::task::execution::TaskAbandonCause::WriterLost)
+    );
+    let budget = f.state().execution.unwrap().budget;
+    assert_eq!(budget.committed_tokens(), 0);
+    assert_eq!(budget.reserved_tokens(), 0);
 }

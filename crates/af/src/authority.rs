@@ -94,9 +94,9 @@ fn capture_candidate(
             .dirty()
             .map_err(|error| format!("capturing revalidated worktree: {error}"))?
     } else {
-        capture
-            .committed(&candidate_selector)
-            .map_err(|error| format!("capturing candidate `{candidate_selector}`: {error}"))?
+        capture.committed(&candidate_selector).map_err(|error| {
+            capture_refusal("candidate revision", &candidate_selector, options, &error)
+        })?
     };
     if candidate.repository_id != policy.repository_id {
         return Err("candidate belongs to a different repository than policy".into());
@@ -183,14 +183,15 @@ pub(super) fn resolve_plan(
             "review plan has no Campaign state; omit --campaign and --restart-round".into(),
         );
     }
-    let policy_ref = options
-        .policy_rev
-        .as_deref()
-        .ok_or("review plan requires `--policy-rev REV`")?;
+    let policy_ref = options.policy_rev.as_deref().ok_or(
+        "af review plan needs --policy-rev REV, the commit whose committed .af/ governs the \
+         review (usually HEAD); try: af review plan --policy-rev HEAD --base HEAD --uncommitted",
+    )?;
     let capture = Capture::new(repo, cas);
     let policy = capture
         .committed(policy_ref)
-        .map_err(|error| format!("capturing policy `{policy_ref}`: {error}"))?;
+        .map_err(|error| capture_refusal("policy revision", policy_ref, options, &error))?;
+    require_authority(&policy.manifest, policy_ref)?;
     let (policy_snapshot_id, _) = publish_snapshot(&policy, cas)?;
     let requested_path = authority_path(&options.repo, &options.pipeline)?;
     require_af_pipeline(&requested_path)?;
@@ -218,7 +219,7 @@ pub(super) fn resolve_plan(
             } else {
                 capture
                     .committed(base_ref)
-                    .map_err(|error| format!("capturing Base `{base_ref}`: {error}"))?
+                    .map_err(|error| capture_refusal("base revision", base_ref, options, &error))?
             };
             if base.repository_id != policy.repository_id {
                 return Err("Campaign Base belongs to a different repository than policy".into());
@@ -346,6 +347,9 @@ pub(super) fn plan(
 ) -> Result<(serde_json::Value, Vec<String>), String> {
     let plan = resolve_plan(options, cas, repo)?;
     let loaded = &plan.loaded;
+    // What `run` would refuse, refused here first: a binding to a node that is no model Worker
+    // of this pipeline, or to a Provider this machine's registry does not hold for that kind.
+    check_provider_bindings(options, loaded, &plan.pipeline_path)?;
     let models = model_lines(options, loaded)?;
     let mut providers = Vec::new();
     for (node, package) in loaded.packages() {
@@ -353,6 +357,7 @@ pub(super) fn plan(
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
+        // Every binding passed the registry above, so a bound model Worker is ready.
         providers.push(serde_json::json!({
             "node": node,
             "runner": runner,
@@ -418,6 +423,81 @@ pub(super) fn plan(
         }),
         models,
     ))
+}
+
+/// The model Workers of a loaded pipeline and the Provider kind each runs, in node order.
+pub(super) fn model_workers(loaded: &review_config::Loaded) -> Vec<(String, String)> {
+    loaded
+        .packages()
+        .iter()
+        .filter_map(|(node, package)| {
+            let runner = Path::new(&package.runner.program)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default();
+            matches!(runner.as_str(), "claude" | "codex").then(|| (node.clone(), runner))
+        })
+        .collect()
+}
+
+/// Refuse every `--provider NODE=ID` that `af review run` would refuse, before anything starts
+/// and in the shape every not-found refusal takes: a NODE that is not a model Worker of the
+/// pipeline, an ID the machine-local registry does not declare, or one of another kind than
+/// the Worker runs. Reads the registry only; no Provider CLI starts.
+pub(super) fn check_provider_bindings(
+    options: &Options,
+    loaded: &review_config::Loaded,
+    pipeline_path: &str,
+) -> Result<(), String> {
+    if options.provider_bindings.is_empty() {
+        return Ok(());
+    }
+    let workers = model_workers(loaded);
+    let names = if workers.is_empty() {
+        "it has none".to_string()
+    } else {
+        format!(
+            "model Workers: {}",
+            workers
+                .iter()
+                .map(|(node, _)| node.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let (registered, registry) = crate::providers::registered()?;
+    let registry = registry.map_or("this machine's Provider registry".to_string(), |path| {
+        format!("this machine's Provider registry ({})", path.display())
+    });
+    for (node, id) in &options.provider_bindings {
+        let Some((_, kind)) = workers.iter().find(|(worker, _)| worker == node) else {
+            let what = if loaded.packages().contains_key(node) {
+                format!(
+                    "Model Worker {node} not found in {pipeline_path}: {node} runs a command, which takes no Provider"
+                )
+            } else {
+                format!("Node {node} not found in {pipeline_path}")
+            };
+            return Err(format!("{what}; {names}"));
+        };
+        match registered.iter().find(|(registered, _)| registered == id) {
+            None => {
+                return Err(format!(
+                    "Provider {id} not found in {registry}; af provider status lists the \
+                     registry, and af provider setup {} --kind {kind} registers it",
+                    shell_words::quote(id)
+                ));
+            }
+            Some((_, other)) if other != kind => {
+                return Err(format!(
+                    "Provider {id} is a {other} Provider, and node {node} runs {kind}; bind a \
+                     {kind} Provider (af provider status lists the registry)"
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
 }
 
 /// The `model` line of every captured Model Worker, in node order: the static rules first, over
@@ -859,7 +939,8 @@ fn open_new(
     )?;
     let snapshot = Capture::new(repo, cas)
         .committed(authority_ref)
-        .map_err(|error| format!("capturing authority `{authority_ref}`: {error}"))?;
+        .map_err(|error| capture_refusal("policy revision", authority_ref, options, &error))?;
+    require_authority(&snapshot.manifest, authority_ref)?;
     let (authority_snapshot_id, authority_manifest_id) = publish_snapshot(&snapshot, cas)?;
 
     require_af_pipeline(pipeline_path)?;
@@ -885,7 +966,7 @@ fn open_new(
         Some(base_ref) => {
             let base = Capture::new(repo, cas)
                 .committed(base_ref)
-                .map_err(|error| format!("capturing Base `{base_ref}`: {error}"))?;
+                .map_err(|error| capture_refusal("base revision", base_ref, options, &error))?;
             if base.repository_id != snapshot.repository_id {
                 return Err("Campaign Base belongs to a different repository than policy".into());
             }
@@ -1730,6 +1811,48 @@ fn publish_snapshot(snapshot: &Snapshot, cas: &Cas) -> Result<(String, String), 
         )
         .map_err(|error| error.to_string())?;
     Ok((snapshot_id, manifest_id))
+}
+
+/// Refuse a policy revision that holds no `.af/` at all, with the fix: onboarding writes it, and
+/// only a commit makes it authority (ADR-0032).
+fn require_authority(manifest: &Manifest, revision: &str) -> Result<(), String> {
+    if manifest
+        .entries
+        .iter()
+        .any(|entry| entry.path.starts_with(".af/"))
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "this repository has no .af/ authority at {revision}; fix: af onboard (preview), then \
+         af onboard --apply, commit, and retry"
+    ))
+}
+
+/// Why `revision`, given as `what`, could not be captured: a name git does not resolve is
+/// said as such, with git's own one line; anything else keeps its own words.
+fn capture_refusal(
+    what: &str,
+    revision: &str,
+    options: &Options,
+    error: &impl std::fmt::Display,
+) -> String {
+    let error = error.to_string();
+    if !error.contains("rev-parse") {
+        return format!("capturing {what} {revision}: {error}");
+    }
+    let line = error
+        .find("fatal: ")
+        .map_or(error.as_str(), |at| &error[at..])
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim();
+    let repository = std::fs::canonicalize(&options.repo).unwrap_or_else(|_| options.repo.clone());
+    format!(
+        "{what} {revision} is not a git revision of {}: {line}",
+        repository.display()
+    )
 }
 
 fn authority_bytes(manifest: &Manifest, cas: &Cas, path: &str) -> Result<Vec<u8>, String> {

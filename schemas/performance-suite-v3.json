@@ -21,7 +21,7 @@
       "additionalProperties": false,
       "properties": {
         "task_lease_ms": {
-          "const": 15000
+          "const": 60000
         },
         "artifact_envelope_cap_bytes": {
           "const": 8388608

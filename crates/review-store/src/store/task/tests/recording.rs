@@ -52,9 +52,11 @@ fn expired_publication_at_report(
 fn past_deadlines<const N: usize>(
     cases: [(Fixture, TaskLease, String); N],
 ) -> [(Fixture, TaskLease, String); N] {
+    // Each Task's clock started at its admission: its deadline is the recorded one moved by the
+    // wait before it.
     let deadline = cases
         .iter()
-        .map(|(f, ..)| f.revision.limits.deadline_unix_ms)
+        .map(|(f, ..)| f.state().deadline_unix_ms())
         .max()
         .unwrap_or_default();
     let delay = deadline.saturating_sub(now().unwrap()) + 5;

@@ -46,6 +46,7 @@ pub fn optimization_signatures(
         (
             "operator/optimization-project".into(),
             OperatorSignature {
+                unbound_allowed: Default::default(),
                 contract: PipelineContractV1 {
                     inputs: BTreeMap::from([("history".into(), port(OPTIMIZATION_HISTORY_V1))]),
                     outputs: BTreeMap::from([
@@ -69,6 +70,7 @@ pub fn optimization_signatures(
         (
             "operator/optimization-profile".into(),
             OperatorSignature {
+                unbound_allowed: Default::default(),
                 contract: PipelineContractV1 {
                     inputs: BTreeMap::from([
                         ("history".into(), port(OPTIMIZATION_HISTORY_V1)),
@@ -105,6 +107,7 @@ pub fn optimization_signatures(
         (
             "operator/optimization-experiment".into(),
             OperatorSignature {
+                unbound_allowed: Default::default(),
                 contract: PipelineContractV1 {
                     inputs: BTreeMap::from([
                         ("history".into(), port(OPTIMIZATION_HISTORY_V1)),
@@ -204,6 +207,7 @@ pub fn optimization_signatures(
         signatures.insert(
             name.into(),
             OperatorSignature {
+                unbound_allowed: Default::default(),
                 contract: PipelineContractV1 { inputs, outputs },
                 effects: BTreeSet::new(),
                 evidence,
@@ -708,6 +712,7 @@ impl TaskOperatorHost for OptimizationTaskDomain {
             return super::control::refused(error);
         }
         let output = TaskWorkOutput {
+            notes: Default::default(),
             usage_observation: None,
             usage: None,
             outputs: self.outputs(cas, input),
@@ -2447,6 +2452,7 @@ impl TaskOperatorHost for OptimizationCandidateTaskDomain {
             return super::control::refused(error);
         }
         let output = TaskWorkOutput {
+            notes: Default::default(),
             outputs: self.pure_outputs(cas, input),
             usage_observation: None,
             usage: None,
