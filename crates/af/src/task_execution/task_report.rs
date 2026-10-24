@@ -291,10 +291,80 @@ pub(super) fn recorded_outputs(
     run_id: &str,
     artifact_type: &str,
 ) -> Result<Vec<String>, String> {
-    use review_core::task::event::TaskChangeV1 as Change;
-    use review_core::task::execution::TaskExecutionRecordV1 as Record;
     let mut seen = BTreeSet::new();
     let mut ids = Vec::new();
+    published(cas, store, run_id, |output| {
+        for id in output
+            .outputs
+            .values()
+            .filter(|port| port.artifact_type == artifact_type)
+            .flat_map(|port| port.artifact_ids.iter())
+        {
+            if seen.insert(id.clone()) {
+                ids.push(id.clone());
+            }
+        }
+        Ok(())
+    })?;
+    Ok(ids)
+}
+
+/// The evaluator's verdict each recorded review round was followed by, by the round's place in
+/// [`recorded_rounds`]: the node and the ID of the last `af/TaskEvaluation@1` an execution
+/// record published after that round and before the next one, `None` for a round no verdict
+/// followed. Read from the Task log in order, as the rounds are, so neither a later round on the
+/// same Snapshot nor the outputs `af task refresh` cleared lends a round another round's verdict:
+/// `af task findings --round N` and a continuation from round N both read it (ADR-0203).
+pub(super) fn round_evaluations(
+    cas: &Cas,
+    store: &EventStore,
+    run_id: &str,
+) -> Result<Vec<Option<(String, String)>>, String> {
+    use review_core::task::execution::{TASK_INVOCATION_V1, TaskInvocationV1};
+    use review_core::task::verification::TASK_EVALUATION_V1;
+    let (mut rounds, mut verdicts) = (BTreeSet::new(), BTreeSet::new());
+    let mut followed: Vec<Option<(String, String)>> = Vec::new();
+    published(cas, store, run_id, |output| {
+        for port in output.outputs.values() {
+            if port.artifact_type == TASK_REVIEW_ROUND_V1 {
+                for id in &port.artifact_ids {
+                    if rounds.insert(id.clone()) {
+                        followed.push(None);
+                    }
+                }
+            }
+        }
+        for port in output.outputs.values() {
+            if port.artifact_type != TASK_EVALUATION_V1 {
+                continue;
+            }
+            for id in &port.artifact_ids {
+                if !verdicts.insert(id.clone()) {
+                    continue;
+                }
+                // A verdict before the first round follows none.
+                if let Some(last) = followed.last_mut() {
+                    let invocation: TaskInvocationV1 =
+                        artifact(cas, &output.invocation_id, TASK_INVOCATION_V1)?;
+                    *last = Some((invocation.node, id.clone()));
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(followed)
+}
+
+/// Every `af/TaskOutput@1` an execution record of the Task published, handed to `visit` in log
+/// order.
+fn published(
+    cas: &Cas,
+    store: &EventStore,
+    run_id: &str,
+    mut visit: impl FnMut(&TaskOutputV1) -> Result<(), String>,
+) -> Result<(), String> {
+    use review_core::task::event::TaskChangeV1 as Change;
+    use review_core::task::execution::TaskExecutionRecordV1 as Record;
     for event in store.replay(run_id).map_err(|e| e.to_string())? {
         if review_store::store::task::is_beside_transitions(&event) {
             continue;
@@ -314,18 +384,9 @@ pub(super) fn recorded_outputs(
             continue;
         };
         let output: TaskOutputV1 = artifact(cas, output_id, TASK_OUTPUT_V1)?;
-        for id in output
-            .outputs
-            .values()
-            .filter(|port| port.artifact_type == artifact_type)
-            .flat_map(|port| port.artifact_ids.iter())
-        {
-            if seen.insert(id.clone()) {
-                ids.push(id.clone());
-            }
-        }
+        visit(&output)?;
     }
-    Ok(ids)
+    Ok(())
 }
 
 /// What the Task's reviewer Attempts and checks say about its review.

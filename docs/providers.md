@@ -64,7 +64,7 @@ command that registers it; `--apply` runs those commands
 ```sh
 af provider detect              # what is here; writes nothing
 af provider detect --apply      # register every logged-in directory not registered yet
-af provider detect --json       # the same scan, as af/provider-detect@2
+af provider detect --json       # the same scan, as af/provider-detect@3
 ```
 
 On a machine whose `CLAUDE_CONFIG_DIR` is `~/.config/claude-personal`, with logins in
@@ -123,7 +123,10 @@ What it looks at:
   with the most specific source: explicit, env, default, sibling, registry. A shell alias or
   function that sets one of the variables is not read: pass `--dir` for such a directory.
 - **Markers, by name only.** A Claude directory holds `.claude.json`, `.credentials.json` or
-  `settings.json`; a Codex directory holds `auth.json` or `config.toml`. af examines those names
+  `settings.json`; the default `~/.claude` may instead have a regular file `~/.claude.json`
+  beside it, where the CLI keeps that context's state, and its row's marker is then
+  `~/.claude.json` (`af provider status` asks the same predicate). A Codex directory holds
+  `auth.json` or `config.toml`. af examines those names
   with `fstatat` below a descriptor opened with `O_NOFOLLOW` and never opens a file under the
   directory. A directory that cannot be listed (one that grants search but not read) has each
   marker checked by its path instead and is probed; its row says `listing unreadable`, never
@@ -171,7 +174,11 @@ with every scan, and `--apply` refuses with exit 1 before it scans. The IDs:
 With nothing found, the output is the install guidance — `npm install -g
 @anthropic-ai/claude-code` or `curl -fsSL https://claude.ai/install.sh | bash`, `npm install -g
 @openai/codex` or `brew install codex`, the directories searched and `then run: af provider
-detect` — under exit 0, with `applied` true in the document when `--apply` was given. `af
+detect` — under exit 0, with `applied` true in the document when `--apply` was given. The
+document carries the same next steps as typed fields: `install`, one `{kind, command, docs}` per
+kind whose CLI was not found (the official install command and documentation page), and
+`next_action`, the scan to run again once one is installed (`af provider detect` with the scan's
+own `--kind`, `--dir`, `--id` and `--all`), null when a CLI was found; `notes` say it to a person. `af
 provider status` prints the same guidance when no CLI is on `PATH` and nothing is registered, and
 it names what a names-only scan found that no row lists: `found but not registered:
 ~/.config/claude-work, ~/.codex-acme (not probed) → af provider detect`, which its document
@@ -557,7 +564,7 @@ discards stdout still shows the operator what happened.
 | 6 | authentication failed; for `add`, a context that is not logged in | `setup`, `add` |
 | 7 | optional usage unavailable; a model catalog unavailable | `status --usage`; `models` |
 
-The versioned documents are [`provider-detect-v2.json`](../schemas/provider-detect-v2.json),
+The versioned documents are [`provider-detect-v3.json`](../schemas/provider-detect-v3.json),
 [`provider-status-v3.json`](../schemas/provider-status-v3.json),
 [`provider-setup-v1.json`](../schemas/provider-setup-v1.json) and
 [`provider-models-v1.json`](../schemas/provider-models-v1.json). They are closed vocabularies; the

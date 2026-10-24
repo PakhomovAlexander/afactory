@@ -369,7 +369,12 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
             }
             None => {
                 let probe = canonical.as_deref().unwrap_or(&named);
-                let claude = markers_in(probe, CLAUDE_MARKERS).unwrap_or_default();
+                let mut claude = markers_in(probe, CLAUDE_MARKERS).unwrap_or_default();
+                if claude.is_empty()
+                    && default_claude_context(ProviderKind::Claude, probe, home.as_deref())
+                {
+                    claude.push(DEFAULT_CLAUDE_MARKER);
+                }
                 let codex = markers_in(probe, CODEX_MARKERS).unwrap_or_default();
                 match (claude.is_empty(), codex.is_empty()) {
                     (false, true) => ProviderKind::Claude,
@@ -450,6 +455,8 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
                 code,
                 applied: options.apply,
                 registry_unknown: registry_unknown.is_some(),
+                missing: kinds.clone(),
+                next_action: Some(rerun_command(&options)),
             };
             println!("{}", document(shape, &binaries, &unsupported, &[], &all));
         } else {
@@ -557,10 +564,17 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
         }
     }
     if options.json {
+        let missing: Vec<ProviderKind> = kinds
+            .iter()
+            .copied()
+            .filter(|kind| !binaries.iter().any(|binary| binary.kind == *kind))
+            .collect();
         let shape = Shape {
             code,
             applied: options.apply,
             registry_unknown: registry_unknown.is_some(),
+            next_action: binaries.is_empty().then(|| rerun_command(&options)),
+            missing,
         };
         println!(
             "{}",
@@ -640,14 +654,8 @@ pub(super) fn unmarked_context(spec: &ProviderSpec) -> Option<String> {
             ));
         }
     };
-    // Without a selector the Claude CLI keeps its state for `~/.claude` in `~/.claude.json`.
-    if markers.is_empty()
-        && spec.kind == ProviderKind::Claude
-        && !spec.explicit_selector
-        && let Some(home) = home_dir()
-        && fs::symlink_metadata(home.join(".claude.json")).is_ok_and(|meta| !meta.is_dir())
-    {
-        markers.push("~/.claude.json");
+    if markers.is_empty() && default_claude_context(spec.kind, auth_dir, home_dir().as_deref()) {
+        markers.push(DEFAULT_CLAUDE_MARKER);
     }
     if markers.is_empty() {
         return Some(format!(
@@ -657,6 +665,27 @@ pub(super) fn unmarked_context(spec: &ProviderSpec) -> Option<String> {
         ));
     }
     None
+}
+
+/// The marker a default Claude context holds beside itself rather than inside: the file the CLI
+/// keeps `~/.claude`'s state in.
+const DEFAULT_CLAUDE_MARKER: &str = "~/.claude.json";
+
+/// Whether `auth_dir` is the Claude CLI's default context — `~/.claude`, by its canonical path —
+/// with a regular file `~/.claude.json` beside it, where the CLI keeps that context's state. Such
+/// a directory needs no marker inside it. The one predicate `af provider status` and `detect`
+/// both ask, so the two agree on what a default context is.
+fn default_claude_context(kind: ProviderKind, auth_dir: &Path, home: Option<&Path>) -> bool {
+    let Some(home) = home else {
+        return false;
+    };
+    if kind != ProviderKind::Claude {
+        return false;
+    }
+    let default = home.join(".claude");
+    let canonical = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    canonical(auth_dir) == canonical(&default)
+        && fs::symlink_metadata(home.join(".claude.json")).is_ok_and(|meta| meta.is_file())
 }
 
 /// `a`, `a or b`, `a, b or c`.
@@ -675,10 +704,16 @@ fn candidate(
     explicit_id: Option<String>,
 ) -> Candidate {
     let canonical = fs::canonicalize(&named).ok();
-    let (markers, listing) = match canonical.as_deref() {
+    let (mut markers, listing) = match canonical.as_deref() {
         Some(path) => markers_found(path, marker_names(kind)),
         None => (Vec::new(), None),
     };
+    if markers.is_empty()
+        && let Some(path) = canonical.as_deref()
+        && default_claude_context(kind, path, home_dir().as_deref())
+    {
+        markers.push(DEFAULT_CLAUDE_MARKER);
+    }
     let safety = match (fs::symlink_metadata(&named), canonical.as_deref()) {
         (Err(error), _) if error.kind() == ErrorKind::NotFound => {
             Err(format!("{} does not exist", named.display()))
@@ -1951,17 +1986,49 @@ fn conflicted(
     eprintln!("af provider detect: {message}");
 }
 
-/// What a whole `af/provider-detect@2` document says beside its rows.
+/// What a whole `af/provider-detect@3` document says beside its rows.
 struct Shape {
     code: i32,
     /// Whether `--apply` was given, whatever it found to do.
     applied: bool,
     /// Whether the registry could not be read, so no row's registration is known.
     registry_unknown: bool,
+    /// The kinds scanned for whose CLI none was found: one `install` entry each.
+    missing: Vec<ProviderKind>,
+    /// The scan to run again once a CLI is installed, when none was found.
+    next_action: Option<String>,
 }
 
-/// One `af/provider-detect@2` document: closed states, af's own labels and paths, never an
-/// email, an organization, a credential or the CLI's words.
+/// `af provider detect` with the scan's own `--kind`, `--dir`, `--id` and `--all`: what to run
+/// again once a CLI is installed, so it looks where this scan looked.
+fn rerun_command(options: &DetectOptions) -> String {
+    let mut line = "af provider detect".to_string();
+    if let Some(kind) = &options.kind {
+        line.push_str(&format!(" --kind {}", shell_words::quote(kind)));
+    }
+    for (index, dir) in options.dirs.iter().enumerate() {
+        line.push_str(&format!(" --dir {}", quoted(dir)));
+        if let Some(id) = options.ids.get(index) {
+            line.push_str(&format!(" --id {}", shell_words::quote(id)));
+        }
+    }
+    if options.all {
+        line.push_str(" --all");
+    }
+    line
+}
+
+/// The official install documentation of a kind, beside its install command.
+fn install_docs(kind: ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::Claude => "https://code.claude.com/docs/en/setup",
+        ProviderKind::Codex => "https://developers.openai.com/codex/cli",
+    }
+}
+
+/// One `af/provider-detect@3` document: closed states, af's own labels and paths, never an
+/// email, an organization, a credential or the CLI's words. Next actions are typed fields
+/// (`install`, `next_action`, each row's `suggested`); `notes` repeat them for a person.
 fn document(
     shape: Shape,
     binaries: &[Binary],
@@ -2026,13 +2093,26 @@ fn document(
             })
         })
         .collect();
+    let install: Vec<_> = shape
+        .missing
+        .iter()
+        .map(|kind| {
+            serde_json::json!({
+                "kind": kind.name(),
+                "command": install_commands(*kind)[0],
+                "docs": install_docs(*kind),
+            })
+        })
+        .collect();
     serde_json::json!({
-        "schema": "af/provider-detect@2",
+        "schema": "af/provider-detect@3",
         "exit_code": shape.code,
         "applied": shape.applied,
         "binaries": binaries,
         "unsupported": unsupported,
         "candidates": candidates,
+        "install": install,
+        "next_action": shape.next_action,
         "notes": notes,
     })
 }
@@ -2758,5 +2838,49 @@ mod tests {
         );
         fs::write(dir.join("config.toml"), "").unwrap();
         assert_eq!(unmarked_context(&spec), None);
+    }
+
+    /// GA final fix item 1: `~/.claude` with no marker inside is the default context when a
+    /// regular `~/.claude.json` sits beside it, for both kinds of probe, and only then.
+    #[test]
+    fn the_default_claude_context_is_one_predicate() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(root.path()).unwrap();
+        let default = home.join(".claude");
+        private(&default);
+        let other = home.join(".claude-work");
+        private(&other);
+        assert!(!default_claude_context(
+            ProviderKind::Claude,
+            &default,
+            Some(&home)
+        ));
+        fs::create_dir(home.join(".claude.json")).unwrap();
+        assert!(
+            !default_claude_context(ProviderKind::Claude, &default, Some(&home)),
+            "a directory named .claude.json is no marker"
+        );
+        fs::remove_dir(home.join(".claude.json")).unwrap();
+        fs::write(home.join(".claude.json"), "{}").unwrap();
+        assert!(default_claude_context(
+            ProviderKind::Claude,
+            &default,
+            Some(&home)
+        ));
+        assert!(!default_claude_context(
+            ProviderKind::Claude,
+            &other,
+            Some(&home)
+        ));
+        assert!(!default_claude_context(
+            ProviderKind::Codex,
+            &default,
+            Some(&home)
+        ));
+        assert!(!default_claude_context(
+            ProviderKind::Claude,
+            &default,
+            None
+        ));
     }
 }

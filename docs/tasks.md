@@ -393,8 +393,9 @@ and when the plan's approval or deadline has passed or the limits leave no room.
 
 `af task findings ID` prints the Task's last review round: per reviewer, each finding with its
 severity, confidence, title, location, the quoted evidence and the proposed fix, grouped by
-severity, then the evaluator's verdict and its reason; `--round N` reads an earlier round, and
-`--json` prints `af/task-findings@1`. `af task diff ID` prints the candidate's change against the
+severity, then the evaluator's verdict on that round (the one the Task log recorded after it)
+and its reason; `--round N` reads an earlier round with its own verdict, and `--json` prints
+`af/task-findings@1`. `af task diff ID` prints the candidate's change against the
 Task's source as the unified diff `git diff` prints for the same trees, without touching any
 worktree; `--stat` and `--name-only` print its summary, `--snapshot` and `--base` pick two
 Snapshots the Task recorded, and `--json` prints `af/task-diff@1`.
@@ -421,7 +422,8 @@ A Task that ended `changes_requested` holds a reviewed candidate and the finding
 
 - its source is the candidate TASK's last review round reviewed (`--round N` names another), bound
   as a Snapshot exactly as an `inputs.source` binding of a derived tree is, not the base;
-- its implementer receives that round's reviewer reports and the evaluator's verdict as one
+- its implementer receives that round's reviewer reports and the evaluator's verdict on that
+  round (the one the Task log recorded after it, never another round's on the same Snapshot) as one
   `af/TaskReviewFindings@1` artifact on the Pipeline's optional `findings` input, each finding under the
   ID its reply answers by (`bugs-1`, `evaluator`), outside the 64 KiB requirements bound;
 - its goal is TASK's goal, unless `--goal FILE` replaces it; nothing is pasted into it.
@@ -868,7 +870,9 @@ an unknown figure is absent there.
 checkout's `scripts/pr-lines.py` prints between `<!-- af-pr-lines:v1 -->` and
 `<!-- /af-pr-lines -->` when the checkout has the script, counted from `--base REF` (origin/main
 by default). A checkout without the script keeps the template's block as it is; one whose script
-cannot print its block gets no body, and the command exits 1 naming `--base REF`.
+cannot print its block gets no body, and the command exits 1 naming `--base REF`; a block it
+prints incomplete (no end marker after the begin marker, or no `**Lines added: …**` title first
+inside) gets no body either, and the exit 1 names what is missing.
 `scripts/check-pr-report.py --body` accepts it as it is.
 
 ## Troubleshooting

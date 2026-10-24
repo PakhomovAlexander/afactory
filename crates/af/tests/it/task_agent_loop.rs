@@ -886,6 +886,35 @@ fn the_pr_body_is_the_template_with_both_blocks_and_the_checker_accepts_it() {
     for line in said.lines() {
         assert!(crate::common::fits_or_unbreakable(line, 100), "{line}");
     }
+    // GA final fix item 3: a script that prints only the begin marker gets no body either; the
+    // refusal names the end marker it lacks.
+    std::fs::write(
+        repo.join("scripts/pr-lines.py"),
+        "print('<!-- af-pr-lines:v1 -->')\n",
+    )
+    .unwrap();
+    let begun = af(
+        &repo,
+        &state,
+        &["task", "report", "chain-base", "gc-older", "--pr-body"],
+    );
+    assert_eq!(begun.status.code(), Some(1), "{}", err(&begun));
+    assert!(out(&begun).is_empty(), "{}", out(&begun));
+    let said = err(&begun).replace('\n', " ");
+    assert!(
+        said.contains("printed an incomplete lines added block")
+            && said.contains("no end marker `<!-- /af-pr-lines -->` after it"),
+        "{said}"
+    );
+    assert!(
+        said.contains("python3 -I scripts/pr-lines.py --repo ."),
+        "{said}"
+    );
+    std::fs::copy(
+        workspace().join("scripts/pr-lines.py"),
+        repo.join("scripts/pr-lines.py"),
+    )
+    .unwrap();
     git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
     let body = expect(
         &af(

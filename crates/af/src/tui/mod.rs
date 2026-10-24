@@ -1826,7 +1826,7 @@ fn banner_rows() -> Vec<Row> {
 fn topic_help(word: &str) -> String {
     match crate::topics::find(word) {
         Some((topic, about, text)) => {
-            let body = crate::topics::body(topic, text);
+            let body = crate::topics::page(topic, text);
             format!("af help {topic} -- {about}\n\n{body}")
         }
         None => String::new(),

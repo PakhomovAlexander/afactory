@@ -2,7 +2,8 @@
 //! per reviewer — each with its severity, confidence, title, location, the quoted evidence and
 //! the proposed fix — then the evaluator's verdict and its reason. Text is grouped by severity;
 //! `--json` prints one `af/task-findings@1` document. Read-only: it reads what `af task report`
-//! reads, the Task's recorded rounds, their Finding Sets and reviewer results, from the Store.
+//! reads, the Task's recorded rounds, their Finding Sets and reviewer results, and the verdict
+//! the Task log recorded after the round, from the Store.
 
 use super::*;
 use review_core::Severity;
@@ -128,7 +129,20 @@ pub(super) fn round_findings(
     Ok(reviewers)
 }
 
-/// The evaluator's verdict: the `af/TaskEvaluation@1` the last node in plan order published.
+/// The verdict as the document carries it: the node that published it, af's bounded reason.
+fn verdict(cas: &Cas, node: &str, id: &str) -> Result<TaskFindingsEvaluationV1, String> {
+    let verdict: TaskEvaluationV1 = artifact(cas, id, TASK_EVALUATION_V1)?;
+    Ok(TaskFindingsEvaluationV1 {
+        node: runs::node_name(node),
+        artifact_id: id.to_owned(),
+        outcome: verdict.outcome,
+        reason: bounded(&verdict.reason),
+    })
+}
+
+/// The evaluator's verdict of a Task that recorded no review round: the `af/TaskEvaluation@1`
+/// the last node in plan order published. A round's own verdict is the one the Task log
+/// recorded after it ([`task_report::round_evaluations`]).
 fn evaluation(
     cas: &Cas,
     task: &TaskProjection,
@@ -155,13 +169,7 @@ fn evaluation(
     let Some((_, node, id)) = found else {
         return Ok(None);
     };
-    let verdict: TaskEvaluationV1 = artifact(cas, &id, TASK_EVALUATION_V1)?;
-    Ok(Some(TaskFindingsEvaluationV1 {
-        node: runs::node_name(&node),
-        artifact_id: id,
-        outcome: verdict.outcome,
-        reason: bounded(&verdict.reason),
-    }))
+    verdict(cas, &node, &id).map(Some)
 }
 
 pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskFindingsV1, String> {
@@ -216,13 +224,28 @@ pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskF
             })
         }
     };
+    // The round's own verdict, selected by its place in the log as the round itself is.
+    let evaluation = match index {
+        None => evaluation(&opened.cas, task)?,
+        Some(index) => {
+            let followed = task_report::round_evaluations(&opened.cas, &opened.store, &run_id)?;
+            match followed
+                .get(usize::try_from(index - 1).map_err(|e| e.to_string())?)
+                .cloned()
+                .flatten()
+            {
+                Some((node, verdict_id)) => Some(verdict(&opened.cas, &node, &verdict_id)?),
+                None => None,
+            }
+        }
+    };
     let document = TaskFindingsV1 {
         schema: TASK_FINDINGS_V1.into(),
         task_id: id.clone(),
         state: view.state,
         rounds: count,
         round,
-        evaluation: evaluation(&opened.cas, task)?,
+        evaluation,
     };
     document.validate()?;
     Ok(document)

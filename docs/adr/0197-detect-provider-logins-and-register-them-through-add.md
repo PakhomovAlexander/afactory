@@ -160,3 +160,23 @@ read), and `af provider status` print `af/provider-status@3`.
 - **One names-only scan** lists the directories found but not registered. `af provider status`
   (text, and `found_unregistered` with `next_action` in its document), `af doctor` and
   `af onboard` all use it.
+
+## Amendment, 2026-10-24: typed next actions, and one default Claude context
+
+The final fix round of the release-polish campaign makes `af provider detect --json` print
+`af/provider-detect@3` (`schemas/provider-detect-v3.json`). It is the one version printed:
+versions 1 and 2 are neither printed nor read, and each has no schema file any more
+([ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)). Where
+this record says `af/provider-detect@1` or `@2` above, the current document is version 3.
+
+- **Next actions are typed fields.** `install` gives, for each Provider kind scanned whose CLI
+  was not found, `{kind, command, docs}`: the official install command and documentation page.
+  `next_action` is the scan to run again once one is installed, `af provider detect` with the
+  scan's own `--kind`, `--dir`, `--id` and `--all`, when no CLI was found, and null otherwise,
+  when each row's `suggested` is the next action. `notes` stay, for a person.
+- **One default Claude context.** `af provider status` and `detect` ask one predicate: the
+  canonical `~/.claude`, with no marker inside it, is a marked context when a regular file
+  `~/.claude.json` sits beside it, where the CLI keeps that context's state, with a selector or
+  without one. Detect lists such a directory with the marker `~/.claude.json`, probes it as it
+  probes every marked directory, and `--apply` registers it as `claude-main`; status then probes
+  the registered Provider instead of calling it `not_probed`.

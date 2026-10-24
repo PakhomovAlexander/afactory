@@ -98,7 +98,7 @@ pub(crate) fn run(repo: &Path, json: bool) -> Result<i32, String> {
         });
         println!("{document}");
     } else {
-        print!("{}", render(&checks));
+        print!("{}", render(&checks, crate::human::width().max(MIN_WIDTH)));
     }
     Ok(code)
 }
@@ -107,18 +107,28 @@ fn exit_code(checks: &[Check]) -> i32 {
     i32::from(checks.iter().any(|check| check.status == Status::Fail))
 }
 
-/// The text form: the first line, one line per check, its fix under it, and a summary.
-fn render(checks: &[Check]) -> String {
-    let mut text = format!("{FIRST_LINE}\n");
+/// The narrowest the text form is laid out for: a narrower terminal gets 60-column lines.
+const MIN_WIDTH: usize = 60;
+/// Where a row's detail starts: past the status and the check's ID.
+const DETAIL_INDENT: usize = 17;
+/// Where a fix starts: past `fix: ` under the detail.
+const FIX_INDENT: usize = 22;
+
+/// The text form within `width` columns: the first line, one row per check, its fix under it,
+/// and a summary. A long detail or fix continues on indented lines; a path too long for a line
+/// is broken after one of its `/`, never cut short; a command stays whole on its line, and one
+/// too long for a line is broken between its arguments, as every other rendering of a command
+/// is ([`crate::human::fit_command`]).
+fn render(checks: &[Check], width: usize) -> String {
+    let mut text = format!("{}\n", layout("", FIRST_LINE, width, 2, false));
     for check in checks {
-        text.push_str(&format!(
-            "{:<5} {:<10} {}\n",
-            check.status.word(),
-            check.id,
-            check.detail
-        ));
+        let prefix = format!("{:<5} {:<10} ", check.status.word(), check.id);
+        text.push_str(&layout(&prefix, &check.detail, width, DETAIL_INDENT, false));
+        text.push('\n');
         if let Some(fix) = &check.fix {
-            text.push_str(&format!("{:<16} fix: {fix}\n", ""));
+            let prefix = format!("{:<16} fix: ", "");
+            text.push_str(&layout(&prefix, fix, width, FIX_INDENT, true));
+            text.push('\n');
         }
     }
     let count = |status| checks.iter().filter(|c| c.status == status).count();
@@ -129,6 +139,185 @@ fn render(checks: &[Check]) -> String {
         format!("{failed} check(s) failed, {warned} warning(s)\n")
     });
     text
+}
+
+/// The programs a command in a detail or a fix starts with.
+const COMMANDS: &[&str] = &[
+    "af",
+    "brew",
+    "sudo",
+    "apk",
+    "cargo",
+    "xcode-select",
+    "export",
+    "fish_add_path",
+    "rm",
+    "gh",
+];
+
+/// One piece of a row's text: a word, which may be broken when it is a path too long for any
+/// line, or a command, kept whole.
+enum Unit {
+    Word(String),
+    Command(String),
+    /// A shell comment to the end of the text: every line of it starts with `#`.
+    Comment(Vec<String>),
+}
+
+/// `text` as words and commands. A command starts at one of [`COMMANDS`] — at the start of a
+/// fix (`leading`), or after a word ending in `:`, `,` or `;`, or `then`, `or`, `&&` — and runs
+/// to a word ending in `,` or `;` (kept), or before `&&`, `||`, a word opening `(` or a shell
+/// comment. A span between backticks is one word.
+fn units(text: &str, leading: bool) -> Vec<Unit> {
+    let mut words: Vec<String> = Vec::new();
+    let mut quoted = false;
+    for word in text.split(' ').filter(|word| !word.is_empty()) {
+        match words.last_mut() {
+            Some(last) if quoted => {
+                last.push(' ');
+                last.push_str(word);
+            }
+            _ => words.push(word.to_string()),
+        }
+        quoted ^= word.matches('`').count() % 2 == 1;
+    }
+    let opens =
+        |word: &str| word.ends_with([':', ',', ';']) || matches!(word, "then" | "or" | "&&" | "||");
+    let mut units = Vec::new();
+    let mut index = 0;
+    while index < words.len() {
+        if words[index].starts_with('#') && matches!(units.last(), Some(Unit::Command(_))) {
+            units.push(Unit::Comment(words[index..].to_vec()));
+            break;
+        }
+        let starts = COMMANDS.contains(&words[index].as_str())
+            && if index == 0 {
+                leading
+            } else {
+                opens(&words[index - 1])
+            };
+        if !starts {
+            units.push(Unit::Word(words[index].clone()));
+            index += 1;
+            continue;
+        }
+        let mut command: Vec<&str> = Vec::new();
+        while let Some(word) = words.get(index) {
+            if !command.is_empty()
+                && (matches!(word.as_str(), "&&" | "||")
+                    || word.starts_with('(')
+                    || word.starts_with('#'))
+            {
+                break;
+            }
+            command.push(word);
+            index += 1;
+            if word.ends_with([',', ';']) {
+                break;
+            }
+        }
+        units.push(Unit::Command(command.join(" ")));
+    }
+    units
+}
+
+/// `prefix` and then `text` within `width` columns, continuation lines indented `indent`. Words
+/// wrap at spaces; a word too long for a line of its own — a path — is broken after one of its
+/// `/` (by characters only when it has none), so nothing is cut short; a command stays whole on
+/// one line, and one too long for a line is broken between its arguments by
+/// [`crate::human::fit_command`]. `leading` says whether `text` may start with a command.
+fn layout(prefix: &str, text: &str, width: usize, indent: usize, leading: bool) -> String {
+    let count = |text: &str| text.chars().count();
+    let pad = " ".repeat(indent);
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = prefix.to_string();
+    // Whether `line` holds nothing yet past its prefix or indent.
+    let mut fresh = true;
+    let add = |line: &mut String, fresh: &mut bool, piece: &str| {
+        if !*fresh {
+            line.push(' ');
+        }
+        line.push_str(piece);
+        *fresh = false;
+    };
+    for unit in units(text, leading) {
+        match unit {
+            Unit::Command(command) => {
+                let space = usize::from(!fresh);
+                if count(&line) + space + count(&command) <= width {
+                    add(&mut line, &mut fresh, &command);
+                    continue;
+                }
+                if !fresh {
+                    lines.push(std::mem::replace(&mut line, pad.clone()));
+                }
+                // Broken between its arguments where it starts; when an argument is still too
+                // long there, on a line of its own nearer the margin.
+                let fits = |fitted: &str| fitted.lines().all(|line| count(line) <= width);
+                let mut fitted = crate::human::fit_command(&format!("{line}{command}"), width);
+                if !fits(&fitted) {
+                    let margin = crate::human::fit_command(&format!("  {command}"), width);
+                    if fits(&margin) {
+                        lines.push(std::mem::take(&mut line));
+                        fitted = margin;
+                    }
+                }
+                let mut parts: Vec<String> = fitted.lines().map(str::to_string).collect();
+                line = parts.pop().unwrap_or_default();
+                lines.extend(parts);
+                fresh = false;
+            }
+            Unit::Comment(words) => {
+                let comment = words.join(" ");
+                if count(&line) + 1 + count(&comment) > width {
+                    lines.push(std::mem::replace(&mut line, pad.clone()));
+                    fresh = true;
+                }
+                for word in words {
+                    if !fresh && count(&line) + 1 + count(&word) > width {
+                        lines.push(std::mem::replace(&mut line, format!("{pad}#")));
+                    }
+                    add(&mut line, &mut fresh, &word);
+                }
+            }
+            Unit::Word(word) => {
+                let mut rest: Vec<char> = word.chars().collect();
+                loop {
+                    let room = width.saturating_sub(count(&line) + usize::from(!fresh));
+                    if rest.len() <= room {
+                        add(&mut line, &mut fresh, &rest.iter().collect::<String>());
+                        break;
+                    }
+                    // A word that does not fit here starts the next line; only one too long
+                    // for any line is broken there.
+                    if !fresh {
+                        lines.push(std::mem::replace(&mut line, pad.clone()));
+                        fresh = true;
+                        continue;
+                    }
+                    let cut = rest[..room.min(rest.len())]
+                        .iter()
+                        .rposition(|c| *c == '/')
+                        .map(|at| at + 1);
+                    let cut = cut.unwrap_or(room.max(1));
+                    add(
+                        &mut line,
+                        &mut fresh,
+                        &rest[..cut].iter().collect::<String>(),
+                    );
+                    lines.push(std::mem::replace(&mut line, pad.clone()));
+                    fresh = true;
+                    rest.drain(..cut);
+                }
+            }
+        }
+    }
+    lines.push(line);
+    lines
+        .iter()
+        .map(|line| line.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn checks(repo: &Path) -> Vec<Check> {
@@ -1131,7 +1320,7 @@ esac
             Check::warn("path", "off PATH", "fish_add_path /x"),
         ];
         assert_eq!(exit_code(&checks), 0);
-        let text = render(&checks);
+        let text = render(&checks, 100);
         assert_eq!(text.lines().next(), Some(FIRST_LINE));
         assert!(text.contains("fix: fish_add_path /x"), "{text}");
         assert!(text.ends_with("nothing failed (1 warning(s))\n"), "{text}");
@@ -1141,7 +1330,144 @@ esac
             "brew install git",
         )];
         assert_eq!(exit_code(&failed), 1);
-        assert!(render(&failed).contains("1 check(s) failed"));
+        assert!(render(&failed, 100).contains("1 check(s) failed"));
+    }
+
+    /// GA final fix item 7: every row of the text form fits the width, at 100, 80 and 60
+    /// columns, with long paths: a path is broken after a `/` and never cut short, and each fix
+    /// command stays whole on its line or is broken between its arguments.
+    #[test]
+    fn rows_fit_the_width_and_keep_paths_and_fix_commands_whole() {
+        let home = format!(
+            "/private/var/folders/f9/{}/T/af-check-12345-AbCdEf/tmp/.tmpAbCdEf/home",
+            "y".repeat(32)
+        );
+        let bin = format!("{home}/.local/bin");
+        let checks = vec![
+            Check::warn(
+                "binary",
+                format!(
+                    "af 0.1.0 at {home}/target/debug/af has no install receipt at \
+                     {home}/.local/share/af/receipt.toml (a source build): it cannot write a \
+                     byte-bound pin or update itself; default {bin}/af (missing)"
+                ),
+                "af self install 0.1.0",
+            ),
+            Check::warn(
+                "path",
+                format!("{bin} is not on PATH, so `af` there is not found"),
+                format!("add {bin} to PATH in your shell's startup file"),
+            ),
+            Check::warn(
+                "shell",
+                format!(
+                    "no bash completions at {home}/.local/share/bash-completion/completions/af; no man pages in {home}/.local/share/man/man1"
+                ),
+                "af self setup-shell --shell bash|zsh|fish|elvish|powershell --write",
+            ),
+            Check::warn(
+                "providers",
+                "no Provider registered",
+                "af provider detect --apply, or at your terminal: af provider setup claude-main \
+                 --kind claude --login",
+            ),
+            Check::warn(
+                "path",
+                "off PATH",
+                "export PATH=\"$HOME/.local/bin:$PATH\"   # in ~/.zshrc, then open a new shell",
+            ),
+        ];
+        let squeeze = |text: &str| text.split_whitespace().collect::<String>();
+        for width in [100, 80, 60] {
+            let text = render(&checks, width);
+            for line in text.lines() {
+                assert!(line.chars().count() <= width, "{width}: `{line}`\n{text}");
+            }
+            // Nothing is cut short: every detail and fix is there, path characters in order.
+            let flat = squeeze(&text.replace(" \\\n", " "));
+            for check in &checks {
+                assert!(
+                    flat.contains(&squeeze(&check.detail)),
+                    "{width}: {}\n{text}",
+                    check.detail
+                );
+                let fix = check.fix.as_deref().unwrap();
+                assert!(
+                    flat.contains(&squeeze(fix)) || width < 100,
+                    "{width}: {fix}\n{text}"
+                );
+            }
+            // The af commands are whole on one line, or broken between arguments with ` \`.
+            for command in ["af self install 0.1.0", "af provider detect --apply,"] {
+                assert!(
+                    text.lines().any(|line| line.contains(command)),
+                    "{width}: {command}\n{text}"
+                );
+            }
+            let setup = text
+                .lines()
+                .skip_while(|line| !line.contains("af provider setup"))
+                .take_while(|line| !line.starts_with("warn "))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let words: Vec<&str> = setup
+                .split_whitespace()
+                .filter(|word| *word != "\\")
+                .skip_while(|word| *word != "af")
+                .collect();
+            assert_eq!(
+                words,
+                [
+                    "af",
+                    "provider",
+                    "setup",
+                    "claude-main",
+                    "--kind",
+                    "claude",
+                    "--login"
+                ],
+                "{width}\n{text}"
+            );
+            assert!(
+                text.contains("export PATH=\"$HOME/.local/bin:$PATH\""),
+                "{width}\n{text}"
+            );
+        }
+        // At 100 columns what fits a line is never broken, and a path too long for one is
+        // broken only after a `/`.
+        let text = render(&checks, 100);
+        assert!(
+            text.contains(
+                "fix: af provider detect --apply, or at your terminal:\n                      \
+                 af provider setup claude-main --kind claude --login\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.lines()
+                .filter(|line| line.contains("/private/var/"))
+                .all(|line| line.ends_with('/') || line.contains(".local/bin")),
+            "{text}"
+        );
+        let narrow = render(&checks, 80);
+        assert!(
+            narrow.contains(
+                "fix: export PATH=\"$HOME/.local/bin:$PATH\"\n                      \
+                 # in ~/.zshrc, then open a new shell\n"
+            ),
+            "the command whole on its line, its comment after it:\n{narrow}"
+        );
+        // Every line of a comment that must be broken is a comment.
+        assert_eq!(
+            layout(
+                "fix: ",
+                "export A=1   # in ~/.zshrc, then open a new shell",
+                24,
+                5,
+                true
+            ),
+            "fix: export A=1\n     # in ~/.zshrc, then\n     # open a new shell"
+        );
     }
 
     #[test]

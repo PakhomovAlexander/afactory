@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:provider-detect:2",
-  "title": "Provider detect@2",
-  "$comment": "The machine-readable result of one `af provider detect` (ADR-0197): the official CLIs found, the unsupported harness CLIs on PATH, every candidate auth directory with what the status probe said about it and the one command af suggests, and, under --apply, what was registered. Deliberately absent, in every state: account email, organization or account identity, credentials, OAuth material and Provider-authored text; versions are af's own reading of a version line, and `notes` are af-authored. Version 2 adds, per candidate, `auth_cause` (why its login is not known: `timeout`, `unstartable`, `incompatible`, `unparsable`, `output_too_large`, `cancelled`, `unchecked` or `other`) and `auth_detail` (af's own words for it, never the CLI's), `registration` (`registered`, `unregistered`, or `unknown` while the registry cannot be read) and `listing_unreadable` (the directory could not be listed, so its markers were checked by name); per applied row `conflict_with`, the registered ID a conflict met; the suggestions `fix_registry`, `fix_path` and `retry_apply`; and the result `skipped_cli_off_path`, for a login whose CLI is off PATH, where `af provider status` and Tasks do not look. An `--apply` refused because the registry cannot be read is exit 1, an af/error@1 document; exit 4 also covers a login left unregistered because its CLI is off PATH. Version 1 is neither printed nor read.",
+  "$id": "urn:af:schema:provider-detect:3",
+  "title": "Provider detect@3",
+  "$comment": "The machine-readable result of one `af provider detect` (ADR-0197): the official CLIs found, the unsupported harness CLIs on PATH, every candidate auth directory with what the status probe said about it and the one command af suggests, and, under --apply, what was registered. Deliberately absent, in every state: account email, organization or account identity, credentials, OAuth material and Provider-authored text; versions are af's own reading of a version line, and `notes` are af-authored. Version 2 adds, per candidate, `auth_cause` (why its login is not known: `timeout`, `unstartable`, `incompatible`, `unparsable`, `output_too_large`, `cancelled`, `unchecked` or `other`) and `auth_detail` (af's own words for it, never the CLI's), `registration` (`registered`, `unregistered`, or `unknown` while the registry cannot be read) and `listing_unreadable` (the directory could not be listed, so its markers were checked by name); per applied row `conflict_with`, the registered ID a conflict met; the suggestions `fix_registry`, `fix_path` and `retry_apply`; and the result `skipped_cli_off_path`, for a login whose CLI is off PATH, where `af provider status` and Tasks do not look. An `--apply` refused because the registry cannot be read is exit 1, an af/error@1 document; exit 4 also covers a login left unregistered because its CLI is off PATH. Version 3 carries next actions as typed fields, not only in the `notes` prose: `install` gives, for each Provider kind scanned whose CLI was not found, its official install `command` and `docs` page, and `next_action` is the scan to run again (`af provider detect` with this scan's own --kind, --dir, --id and --all) when no CLI was found, null otherwise; and a default `~/.claude` that holds no marker counts the regular file `~/.claude.json` beside it as its marker, `~/.claude.json` in `markers`, the predicate `af provider status` applies. Versions 1 and 2 are neither printed nor read.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,11 +12,13 @@
     "binaries",
     "unsupported",
     "candidates",
+    "install",
+    "next_action",
     "notes"
   ],
   "properties": {
     "schema": {
-      "const": "af/provider-detect@2"
+      "const": "af/provider-detect@3"
     },
     "exit_code": {
       "$comment": "0 the scan completed; 4 a found CLI cannot start or does not accept af's invocation, or a logged-in directory was left unregistered because its CLI is off PATH (the rows are still reported); 5 a registry conflict stopped --apply. 1 (an unclassified failure, an --apply refused because the registry cannot be read among them) and 2 are reported as af/error@1 documents, never as this one.",
@@ -109,6 +111,83 @@
       "items": {
         "$ref": "#/$defs/candidate"
       }
+    },
+    "install": {
+      "$comment": "One entry per Provider kind scanned whose CLI was found neither on PATH nor in the usual install directories: the official install command and documentation page. Empty when every kind scanned has a CLI.",
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "command",
+          "docs"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          },
+          "command": {
+            "enum": [
+              "npm install -g @anthropic-ai/claude-code",
+              "npm install -g @openai/codex"
+            ]
+          },
+          "docs": {
+            "enum": [
+              "https://code.claude.com/docs/en/setup",
+              "https://developers.openai.com/codex/cli"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "claude"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "command": {
+                  "const": "npm install -g @anthropic-ai/claude-code"
+                },
+                "docs": {
+                  "const": "https://code.claude.com/docs/en/setup"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "command": {
+                  "const": "npm install -g @openai/codex"
+                },
+                "docs": {
+                  "const": "https://developers.openai.com/codex/cli"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "next_action": {
+      "$comment": "When no supported CLI was found: the scan to run again once one is installed, `af provider detect` with this scan's own --kind, --dir, --id and --all. Null when a CLI was found; each row's `suggested` is then the next action.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^af provider detect( .*)?$"
+        }
+      ]
     },
     "notes": {
       "type": "array",
@@ -245,6 +324,36 @@
           }
         }
       }
+    },
+    {
+      "$comment": "No CLI found: every kind scanned is to be installed and the scan run again. A CLI found: no rerun, the rows' suggestions are the next actions.",
+      "if": {
+        "properties": {
+          "binaries": {
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "binaries"
+        ]
+      },
+      "then": {
+        "properties": {
+          "install": {
+            "minItems": 1
+          },
+          "next_action": {
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "next_action": {
+            "type": "null"
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -309,7 +418,7 @@
           ]
         },
         "markers": {
-          "$comment": "The login marker names present in the directory, examined by name only.",
+          "$comment": "The login marker names present in the directory, examined by name only; `~/.claude.json` for the default `~/.claude` that holds none, when that regular file sits beside it.",
           "type": "array",
           "uniqueItems": true,
           "items": {
@@ -318,7 +427,8 @@
               ".credentials.json",
               "settings.json",
               "auth.json",
-              "config.toml"
+              "config.toml",
+              "~/.claude.json"
             ]
           }
         },

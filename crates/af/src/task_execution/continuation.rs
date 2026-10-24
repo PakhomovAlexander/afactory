@@ -106,27 +106,17 @@ fn reviewer_findings(
     Ok(findings)
 }
 
-/// The evaluator's last verdict on the round's candidate, as a finding when it did not pass.
+/// The evaluator's verdict on the round at `position` in the recorded rounds, as a finding when
+/// it did not pass: the verdict the Task log recorded after that round, as `af task findings
+/// --round N` shows it, never one of another round that reviewed the same Snapshot.
 fn evaluator_finding(
     cas: &Cas,
     store: &EventStore,
     run_id: &str,
-    snapshot_id: &str,
+    position: usize,
 ) -> Result<Option<TaskReviewFindingV1>, String> {
-    let ids = task_report::recorded_outputs(cas, store, run_id, TASK_EVALUATION_V1)?;
-    let mut last = None;
-    for id in ids {
-        let envelope = cas.get_artifact(&id).map_err(|e| e.to_string())?;
-        if envelope
-            .subject_snapshot_id
-            .as_deref()
-            .is_some_and(|subject| subject != snapshot_id)
-        {
-            continue;
-        }
-        last = Some(id);
-    }
-    let Some(id) = last else {
+    let followed = task_report::round_evaluations(cas, store, run_id)?;
+    let Some((_, id)) = followed.get(position).cloned().flatten() else {
         return Ok(None);
     };
     let evaluation: TaskEvaluationV1 = artifact(cas, &id, TASK_EVALUATION_V1)?;
@@ -209,8 +199,9 @@ pub(super) fn resolve(
     let chosen = match reference.round {
         Some(number) => recorded
             .iter()
+            .enumerate()
             .rev()
-            .find(|(_, round)| round.round == number)
+            .find(|(_, (_, round))| round.round == number)
             .ok_or_else(|| {
                 let numbers: BTreeSet<String> = recorded
                     .iter()
@@ -222,9 +213,9 @@ pub(super) fn resolve(
                     numbers.into_iter().collect::<Vec<_>>().join(", ")
                 )
             })?,
-        None => recorded.last().expect("nonempty"),
+        None => recorded.iter().enumerate().next_back().expect("nonempty"),
     };
-    let (round_id, round) = chosen.clone();
+    let (position, (round_id, round)) = (chosen.0, chosen.1.clone());
     let referenced = ReferencedTaskV1 {
         task_id: task.clone(),
         task_revision_id: result.task_revision_id.clone(),
@@ -241,7 +232,7 @@ pub(super) fn resolve(
     let (source, _, manifest) = input_bindings::bind_source(cas, candidate, Some(&referenced))
         .map_err(|error| format!("continue: Task `{shown}`'s candidate: {error}"))?;
     let mut findings = reviewer_findings(cas, &round)?;
-    findings.extend(evaluator_finding(cas, store, &run_id, &round.snapshot_id)?);
+    findings.extend(evaluator_finding(cas, store, &run_id, position)?);
     if findings.len() > MAX_FINDINGS {
         return Err(format!(
             "continue: Task `{shown}` round {} recorded {} findings, more than the {MAX_FINDINGS} \

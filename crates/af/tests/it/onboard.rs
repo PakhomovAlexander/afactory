@@ -681,3 +681,88 @@ fn a_build_without_a_receipt_names_the_receipt_path_and_the_install() {
         "{warning}"
     );
 }
+
+/// `af help start` without a terminal, with the registry at `providers` and no Provider CLI on
+/// PATH.
+fn help_start_with(root: &Path, providers: &Path) -> String {
+    let empty = root.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let output = crate::common::af()
+        .args(["help", "start"])
+        .env("AF_PROVIDERS_FILE", providers)
+        .env("PATH", &empty)
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    for line in text.lines() {
+        assert!(line.chars().count() <= 100, "`{line}`\n{text}");
+    }
+    text
+}
+
+/// GA final fix item 4: `af help start` binds the first review to the Providers `af onboard`'s
+/// preview selects on this machine, and with none registered prints the PROVIDER placeholder
+/// and says why.
+#[test]
+fn help_start_binds_the_review_as_the_preview_does() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+    std::fs::write(repo.join("Makefile"), "check:\n\t@true\n").unwrap();
+    for (name, providers, bound) in [
+        (
+            "codex",
+            &[("codex-main", "codex")][..],
+            "--provider correctness=codex-main --provider architecture=codex-main",
+        ),
+        (
+            "claude",
+            &[("claude-main", "claude")][..],
+            "--provider correctness=claude-main --provider architecture=claude-main",
+        ),
+        (
+            "both",
+            &[("claude-work", "claude"), ("codex-main", "codex")][..],
+            "--provider correctness=claude-work --provider architecture=codex-main",
+        ),
+    ] {
+        let registry = registry(&root.path().join(name), providers);
+        let text = help_start_with(root.path(), &registry);
+        assert!(
+            text.contains(&format!(
+                "     af review --policy-rev HEAD --base HEAD --uncommitted \\\n       {bound}\n"
+            )),
+            "{name}:\n{text}"
+        );
+        assert!(
+            text.contains("These are the Providers registered on this machine that `af onboard`"),
+            "{name}:\n{text}"
+        );
+        assert!(!text.contains("PROVIDER"), "{name}:\n{text}");
+        // The same bindings the preview prints, Worker by Worker.
+        let preview = stdout(&onboard_with(&repo, &registry, &[]));
+        for binding in bound
+            .split(" --provider ")
+            .map(|b| b.trim_start_matches("--provider "))
+        {
+            assert!(
+                preview.contains(&format!("← bind with --provider {binding}")),
+                "{name}: {binding}\n{preview}"
+            );
+        }
+    }
+
+    let none = registry(&root.path().join("none"), &[]);
+    let text = help_start_with(root.path(), &none);
+    assert!(
+        text.contains(
+            "       --provider correctness=PROVIDER --provider architecture=PROVIDER\n   No \
+             Provider is registered on this machine yet, so PROVIDER stands for the ID step 1\n   \
+             registers; `af onboard` prints the exact command once one is.\n"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("claude-main --provider"), "{text}");
+}

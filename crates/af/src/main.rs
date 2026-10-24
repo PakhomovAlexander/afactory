@@ -1143,7 +1143,7 @@ fn help_command(words: &[String]) -> Result<i32, String> {
     if words.len() == 1
         && let Some((topic, about, text)) = topics::find(&words[0])
     {
-        let body = topics::body(topic, text);
+        let body = topics::page(topic, text);
         println!("af help {topic} — {about}\n\n{body}");
         return Ok(0);
     }

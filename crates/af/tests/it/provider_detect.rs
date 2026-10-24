@@ -172,13 +172,13 @@ fn code(output: &Output) -> i32 {
     output.status.code().unwrap()
 }
 
-/// stdout as the one `af/provider-detect@2` document, valid against the published schema.
+/// stdout as the one `af/provider-detect@3` document, valid against the published schema.
 fn detected(output: &Output) -> Value {
     let stdout = out(output);
     let document: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("stdout is not one document: {error}\n{stdout}"));
     crate::schemas::valid(
-        &crate::schemas::validator("provider-detect-v2.json"),
+        &crate::schemas::validator("provider-detect-v3.json"),
         &document,
     );
     assert_eq!(document["exit_code"], code(output), "{document}");
@@ -237,6 +237,24 @@ fn detect_with_nothing_found_prints_the_install_guidance() {
     let document = detected(&json);
     assert_eq!(document["candidates"], serde_json::json!([]));
     assert_eq!(document["binaries"], serde_json::json!([]));
+    // GA final fix item 6: the next actions are typed fields, not only prose.
+    assert_eq!(
+        document["install"],
+        serde_json::json!([
+            {
+                "kind": "claude",
+                "command": "npm install -g @anthropic-ai/claude-code",
+                "docs": "https://code.claude.com/docs/en/setup",
+            },
+            {
+                "kind": "codex",
+                "command": "npm install -g @openai/codex",
+                "docs": "https://developers.openai.com/codex/cli",
+            },
+        ]),
+        "{document}"
+    );
+    assert_eq!(document["next_action"], "af provider detect", "{document}");
     assert!(
         document["notes"][0]
             .as_str()
@@ -1541,5 +1559,147 @@ fn status_doctor_and_onboarding_list_the_same_unregistered_directories() {
     assert!(
         lines.contains(&format!("found but not registered: {shown} (not probed)")),
         "{lines}"
+    );
+}
+
+/// A Claude CLI whose context is `$CLAUDE_CONFIG_DIR`, or `~/.claude` without the variable, as
+/// the official one's is: logged in where that directory holds `logged-in`.
+const DEFAULT_CLAUDE: &str = r#"#!/bin/sh
+if [ "$1" = --version ]; then
+  printf '%s\n' '2.1.299 (Claude Code)'
+  exit 0
+fi
+if [ "$1" = auth ] && [ "$2" = status ] && [ "$3" = --json ]; then
+  if [ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/logged-in" ]; then
+    printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}'
+    exit 0
+  fi
+  printf '%s\n' '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+  exit 1
+fi
+exit 64
+"#;
+
+/// GA final fix item 1: the default Claude context `af provider status` accepts — `~/.claude`
+/// with no marker inside and a regular `~/.claude.json` beside it — is a candidate detect
+/// probes and `--apply` registers, and status agrees about the registered Provider.
+#[test]
+fn detect_recognizes_the_default_claude_context_that_status_accepts() {
+    let machine = Machine::new();
+    machine.install("claude", DEFAULT_CLAUDE);
+    // `logged-in` is the fake's login, not a marker: `~/.claude` holds none.
+    let default = machine.dir(".claude", &["logged-in"]);
+
+    // Without `~/.claude.json` it is an empty directory, left alone by both.
+    let document = detected(&machine.af(&["provider", "detect", "--json"]));
+    let row = candidate(&document, &default);
+    assert_eq!(row["auth"], "not_probed", "{row}");
+    assert_eq!(row["markers"], serde_json::json!([]), "{row}");
+
+    std::fs::write(machine.home.join(".claude.json"), "{}").unwrap();
+    let status = machine.af(&["provider", "status", "--json"]);
+    let status: Value = serde_json::from_str(out(&status).trim()).unwrap();
+    assert_eq!(status["providers"][0]["id"], "claude-ambient", "{status}");
+    assert_eq!(status["providers"][0]["auth"], "authenticated", "{status}");
+
+    let scan = machine.af(&["provider", "detect", "--json"]);
+    assert_eq!(code(&scan), 0, "{}", err(&scan));
+    let document = detected(&scan);
+    let row = candidate(&document, &default);
+    assert_eq!(row["source"], "default", "{row}");
+    assert_eq!(
+        row["markers"],
+        serde_json::json!(["~/.claude.json"]),
+        "{row}"
+    );
+    assert_eq!(row["auth"], "authenticated", "{row}");
+    assert_eq!(row["suggested"]["action"], "register", "{row}");
+    assert_eq!(row["suggested"]["id"], "claude-main", "{row}");
+    let table = out(&machine.af(&["provider", "detect"]));
+    assert!(
+        table.contains("af provider add claude-main --kind claude --auth-dir ~/.claude"),
+        "{table}"
+    );
+    assert!(machine.registered().is_empty());
+
+    let apply = machine.af(&["provider", "detect", "--apply", "--json"]);
+    assert_eq!(code(&apply), 0, "{}", err(&apply));
+    let document = detected(&apply);
+    let row = candidate(&document, &default);
+    assert_eq!(row["applied"]["result"], "registered", "{row}");
+    assert_eq!(machine.registered(), ["claude-main"]);
+
+    // The registered Provider is the same context: status probes it and finds the login.
+    let status = machine.af(&["provider", "status", "--json"]);
+    assert_eq!(code(&status), 0, "{}", err(&status));
+    let status: Value = serde_json::from_str(out(&status).trim()).unwrap();
+    crate::schemas::valid(
+        &crate::schemas::validator("provider-status-v3.json"),
+        &status,
+    );
+    let main = status["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["id"] == "claude-main")
+        .unwrap_or_else(|| panic!("{status}"));
+    assert_eq!(main["auth"], "authenticated", "{status}");
+}
+
+/// GA final fix item 6: with one kind's CLI found and the other's missing, `install` names the
+/// missing one and there is no rerun; with no CLI at all the rerun keeps the scan's `--dir`.
+#[test]
+fn detect_names_the_missing_kind_and_the_rerun_as_typed_fields() {
+    let machine = Machine::new();
+    machine.install("claude", CLAUDE);
+    machine.dir(".config/claude-work", &[".claude.json", "logged-in"]);
+    let output = machine.af(&["provider", "detect", "--json"]);
+    assert_eq!(code(&output), 0, "{}", err(&output));
+    let document = detected(&output);
+    assert_eq!(
+        document["install"],
+        serde_json::json!([{
+            "kind": "codex",
+            "command": "npm install -g @openai/codex",
+            "docs": "https://developers.openai.com/codex/cli",
+        }]),
+        "{document}"
+    );
+    assert_eq!(document["next_action"], Value::Null, "{document}");
+    // The notes keep saying it to a person.
+    assert!(
+        document["notes"].as_array().unwrap().iter().any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("npm install -g @openai/codex")),
+        "{document}"
+    );
+
+    let empty = Machine::new();
+    let team = empty.root.join("secure team");
+    let output = empty.af(&[
+        "provider",
+        "detect",
+        "--kind",
+        "claude",
+        "--dir",
+        team.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(code(&output), 0, "{}", err(&output));
+    let document = detected(&output);
+    assert_eq!(document["install"][0]["kind"], "claude", "{document}");
+    assert_eq!(
+        document["install"].as_array().unwrap().len(),
+        1,
+        "{document}"
+    );
+    assert_eq!(
+        document["next_action"],
+        format!(
+            "af provider detect --kind claude --dir '{}'",
+            team.display()
+        ),
+        "{document}"
     );
 }

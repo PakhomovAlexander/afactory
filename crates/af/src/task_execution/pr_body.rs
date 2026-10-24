@@ -64,10 +64,11 @@ fn lines_block(repo: &Path, base: Option<&str>, rerun: &str) -> Result<Option<St
     let cause = match review_process::run_supervised(&mut command, None, PR_LINES_TIMEOUT) {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).into_owned();
-            if text.lines().any(|line| line.trim() == LINES_BEGIN) {
-                return Ok(Some(text));
+            match incomplete(&text) {
+                None => return Ok(Some(text)),
+                Some(Incomplete::NoBlock) => format!("it printed no `{LINES_BEGIN}` block"),
+                Some(Incomplete::Lacks(lacks)) => return Err(incomplete_refusal(&lacks, base)),
             }
-            format!("it printed no `{LINES_BEGIN}` block")
         }
         Ok(output) => {
             let said = String::from_utf8_lossy(&output.stderr);
@@ -94,6 +95,103 @@ fn lines_block(repo: &Path, base: Option<&str>, rerun: &str) -> Result<Option<St
         "    ",
     ));
     Err(lines.join("\n"))
+}
+
+/// What a lines added block the script printed lacks.
+enum Incomplete {
+    /// No begin marker at all: the script printed no block.
+    NoBlock,
+    /// A block begun and not finished, or not one: what it lacks, in af's words.
+    Lacks(String),
+}
+
+/// What `text` lacks of the block `scripts/check-pr-report.py` accepts: exactly one begin
+/// marker, the end marker after it, and the title `**Lines added: <figure>**` first inside;
+/// `None` when it has all three.
+fn incomplete(text: &str) -> Option<Incomplete> {
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let at = |marker: &str| -> Vec<usize> {
+        (0..lines.len())
+            .filter(|index| lines[*index] == marker)
+            .collect()
+    };
+    let (begins, ends) = (at(LINES_BEGIN), at(LINES_END));
+    let Some(&begin) = begins.first() else {
+        return Some(Incomplete::NoBlock);
+    };
+    if begins.len() > 1 || ends.len() > 1 {
+        return Some(Incomplete::Lacks(format!(
+            "it printed {} lines added blocks, and a pull request carries exactly one",
+            begins.len().max(ends.len())
+        )));
+    }
+    let Some(&end) = ends.first().filter(|end| **end > begin) else {
+        return Some(Incomplete::Lacks(format!(
+            "its block has the begin marker `{LINES_BEGIN}` and no end marker `{LINES_END}` \
+             after it"
+        )));
+    };
+    match lines[begin + 1..end].iter().find(|line| !line.is_empty()) {
+        Some(line) if is_title(line) => None,
+        Some(line) => Some(Incomplete::Lacks(format!(
+            "its block's first line is not the title `**Lines added: <figure>**`: `{}`",
+            preview::short(&preview::text(line), 60)
+        ))),
+        None => Some(Incomplete::Lacks(
+            "its block has no title line `**Lines added: <figure>**` between its markers".into(),
+        )),
+    }
+}
+
+/// `**Lines added: FIGURE**`, FIGURE as `scripts/pr-lines.py` writes it: `none`, `0`, up to
+/// three digits, or up to three digits with an optional decimal and `k` (`18.9k`).
+fn is_title(line: &str) -> bool {
+    let Some(figure) = line
+        .strip_prefix("**Lines added: ")
+        .and_then(|rest| rest.strip_suffix("**"))
+    else {
+        return false;
+    };
+    let digits = |text: &str| {
+        (1..=3).contains(&text.len())
+            && text.bytes().all(|b| b.is_ascii_digit())
+            && !text.starts_with('0')
+    };
+    if figure == "none" || figure == "0" || digits(figure) {
+        return true;
+    }
+    let Some(thousands) = figure.strip_suffix('k') else {
+        return false;
+    };
+    match thousands.split_once('.') {
+        Some((whole, tenth)) => {
+            digits(whole) && tenth.len() == 1 && tenth.bytes().all(|b| b.is_ascii_digit())
+        }
+        None => digits(thousands),
+    }
+}
+
+/// The refusal of a block the script began and did not finish: what it lacks, and the command
+/// that shows what the script prints.
+fn incomplete_refusal(lacks: &str, base: Option<&str>) -> String {
+    let message = format!(
+        "{PR_LINES} printed an incomplete lines added block, so no pull request body was printed: \
+         {lacks}. The pull request check refuses a body without the whole block; see what the \
+         script prints, and fix it:"
+    );
+    let mut script = format!("python3 -I {PR_LINES} --repo .");
+    if let Some(base) = base {
+        script.push_str(&format!(" --base {}", shell_words::quote(base)));
+    }
+    let mut lines =
+        crate::tui::panes::tasks::bounded(&message, WIDTH - "af task report: ".len(), "");
+    lines.extend(super::runs::command_lines(
+        "  ",
+        &script,
+        WIDTH - "af task report: ".len(),
+        "    ",
+    ));
+    lines.join("\n")
 }
 
 /// The command as typed, `af` and its arguments, with `--base REF` in place of any `--base` it
@@ -272,5 +370,69 @@ mod tests {
             flat(&error).contains("printed no `<!-- af-pr-lines:v1 -->` block"),
             "{error}"
         );
+
+        // GA final fix item 3: a block begun and not finished is refused, naming what it lacks.
+        for (printed, lacks) in [
+            (
+                "print('<!-- af-pr-lines:v1 -->')\n",
+                "its block has the begin marker `<!-- af-pr-lines:v1 -->` and no end marker \
+                 `<!-- /af-pr-lines -->` after it",
+            ),
+            (
+                "print('<!-- /af-pr-lines -->')\nprint('<!-- af-pr-lines:v1 -->')\n",
+                "no end marker `<!-- /af-pr-lines -->` after it",
+            ),
+            (
+                "print('<!-- af-pr-lines:v1 -->')\nprint('<!-- /af-pr-lines -->')\n",
+                "its block has no title line `**Lines added: <figure>**` between its markers",
+            ),
+            (
+                "print('<!-- af-pr-lines:v1 -->')\nprint('| dir | 3 |')\n\
+                 print('<!-- /af-pr-lines -->')\n",
+                "its block's first line is not the title `**Lines added: <figure>**`: `| dir | 3 |`",
+            ),
+            (
+                "print('<!-- af-pr-lines:v1 -->')\nprint('**Lines added: 1**')\n\
+                 print('<!-- /af-pr-lines -->')\nprint('<!-- af-pr-lines:v1 -->')\n",
+                "it printed 2 lines added blocks, and a pull request carries exactly one",
+            ),
+        ] {
+            std::fs::write(&script, printed).unwrap();
+            let error = refused(Some("v1")).unwrap_err();
+            assert!(flat(&error).contains(lacks), "{printed}: {error}");
+            assert!(
+                flat(&error).contains("printed an incomplete lines added block"),
+                "{error}"
+            );
+            assert!(
+                error.ends_with("python3 -I scripts/pr-lines.py --repo . --base v1"),
+                "{error}"
+            );
+            for line in error.lines() {
+                assert!(
+                    line.chars().count() + "af task report: ".len() <= WIDTH,
+                    "{line}"
+                );
+            }
+        }
+        // The whole block passes: the markers, then the title.
+        std::fs::write(
+            &script,
+            "print('<!-- af-pr-lines:v1 -->')\nprint('**Lines added: 18.9k**')\n\
+             print('<!-- /af-pr-lines -->')\n",
+        )
+        .unwrap();
+        assert!(refused(None).is_ok());
+    }
+
+    #[test]
+    fn the_title_figure_is_the_one_pr_lines_writes() {
+        for title in ["none", "0", "7", "999", "1k", "18.9k", "999.9k"] {
+            assert!(is_title(&format!("**Lines added: {title}**")), "{title}");
+        }
+        for title in ["", "07", "1000", "1.2", "18.95k", "0k", "1,2k", "many"] {
+            assert!(!is_title(&format!("**Lines added: {title}**")), "{title}");
+        }
+        assert!(!is_title("Lines added: 7"));
     }
 }

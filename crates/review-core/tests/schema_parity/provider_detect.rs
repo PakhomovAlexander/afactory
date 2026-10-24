@@ -1,4 +1,4 @@
-//! The agent-facing `af/provider-detect@2` document (ADR-0197).
+//! The agent-facing `af/provider-detect@3` document (ADR-0197).
 //!
 //! Like the other Provider onboarding documents it carries no Rust type: `af provider detect`
 //! builds it from what the machine's CLIs and directories said. The schema is the contract, and
@@ -9,7 +9,7 @@
 use super::{assert_invalid, assert_valid};
 use serde_json::{Value, json};
 
-const SCHEMA: &str = "provider-detect-v2.json";
+const SCHEMA: &str = "provider-detect-v3.json";
 
 fn row(dir: &str, source: &str, auth: &str) -> Value {
     let authenticated = auth == "authenticated";
@@ -46,7 +46,7 @@ fn row(dir: &str, source: &str, auth: &str) -> Value {
 
 fn scan() -> Value {
     json!({
-        "schema": "af/provider-detect@2",
+        "schema": "af/provider-detect@3",
         "exit_code": 0,
         "applied": false,
         "binaries": [{
@@ -78,8 +78,37 @@ fn scan() -> Value {
                 "applied": null,
             },
         ],
+        "install": [{
+            "kind": "codex",
+            "command": "npm install -g @openai/codex",
+            "docs": "https://developers.openai.com/codex/cli",
+        }],
+        "next_action": null,
         "notes": ["shell aliases or functions that set CLAUDE_CONFIG_DIR/CODEX_HOME are not read; pass --dir for such a directory"],
     })
+}
+
+/// A machine with no supported CLI and no auth directory: both kinds to install, and the scan
+/// to run again afterwards.
+fn nothing() -> Value {
+    let mut nothing = scan();
+    nothing["binaries"] = json!([]);
+    nothing["unsupported"] = json!([]);
+    nothing["candidates"] = json!([]);
+    nothing["install"] = json!([
+        {
+            "kind": "claude",
+            "command": "npm install -g @anthropic-ai/claude-code",
+            "docs": "https://code.claude.com/docs/en/setup",
+        },
+        {
+            "kind": "codex",
+            "command": "npm install -g @openai/codex",
+            "docs": "https://developers.openai.com/codex/cli",
+        },
+    ]);
+    nothing["next_action"] = json!("af provider detect");
+    nothing
 }
 
 fn applied() -> Value {
@@ -97,11 +126,7 @@ fn scans_and_applications_are_valid() {
     assert_valid(SCHEMA, &scan());
     assert_valid(SCHEMA, &applied());
 
-    let mut nothing = scan();
-    nothing["binaries"] = json!([]);
-    nothing["unsupported"] = json!([]);
-    nothing["candidates"] = json!([]);
-    assert_valid(SCHEMA, &nothing);
+    assert_valid(SCHEMA, &nothing());
 
     let mut conflict = applied();
     conflict["exit_code"] = json!(5);
@@ -264,8 +289,40 @@ fn identities_raw_text_and_unearned_outcomes_are_unrepresentable() {
             Box::new(|d| d["candidates"][1]["auth_cause"] = json!("timeout")),
         ),
         (
-            "the superseded version",
+            "the first superseded version",
             Box::new(|d| d["schema"] = json!("af/provider-detect@1")),
+        ),
+        (
+            "the second superseded version",
+            Box::new(|d| d["schema"] = json!("af/provider-detect@2")),
+        ),
+        (
+            "a document without its install list",
+            Box::new(|d| {
+                d.as_object_mut().unwrap().remove("install");
+            }),
+        ),
+        (
+            "a rerun beside a CLI that was found",
+            Box::new(|d| d["next_action"] = json!("af provider detect")),
+        ),
+        (
+            "an install command af does not author",
+            Box::new(|d| d["install"][0]["command"] = json!("curl https://example.test | sh")),
+        ),
+        (
+            "an install entry pairing one kind with another's command",
+            Box::new(|d| d["install"][0]["kind"] = json!("claude")),
+        ),
+        (
+            "an install entry without its docs",
+            Box::new(|d| {
+                d["install"][0].as_object_mut().unwrap().remove("docs");
+            }),
+        ),
+        (
+            "an install entry with a field it does not name",
+            Box::new(|d| d["install"][0]["version"] = json!("0.163.0")),
         ),
         (
             "an authenticated unregistered row not offered",
@@ -379,4 +436,63 @@ fn causes_unknown_registrations_and_off_path_logins_are_stated() {
     let mut listed = scan();
     listed["candidates"][1]["listing_unreadable"] = json!(true);
     assert_valid(SCHEMA, &listed);
+}
+
+/// Version 3: the next actions are typed fields. With no CLI found every kind scanned is to be
+/// installed and the scan run again, with its own `--dir`; with a CLI found there is no rerun.
+/// A default `~/.claude` names the `~/.claude.json` beside it as its marker.
+#[test]
+fn next_actions_are_typed_fields() {
+    let mut scoped = nothing();
+    scoped["candidates"] = json!([{
+        "kind": "claude",
+        "auth_dir": "/secure/claude-team",
+        "source": "explicit",
+        "markers": [],
+        "safe": false,
+        "auth": "not_probed",
+        "auth_cause": null,
+        "auth_detail": null,
+        "auth_method": "unknown",
+        "plan": "unknown",
+        "registration": "unregistered",
+        "registered_as": null,
+        "listing_unreadable": false,
+        "suggested": {"action": "none", "id": null, "command": null},
+        "applied": null,
+    }]);
+    scoped["install"] = json!([nothing()["install"][0].clone()]);
+    scoped["next_action"] = json!("af provider detect --kind claude --dir /secure/claude-team");
+    assert_valid(SCHEMA, &scoped);
+
+    for (why, change) in [
+        (
+            "no rerun when no CLI was found",
+            json!({"next_action": null}),
+        ),
+        (
+            "a rerun that is not detect",
+            json!({"next_action": "af provider status"}),
+        ),
+        (
+            "nothing to install when no CLI was found",
+            json!({"install": []}),
+        ),
+    ] {
+        let mut document = nothing();
+        for (field, value) in change.as_object().unwrap() {
+            document[field] = value.clone();
+        }
+        assert_invalid(SCHEMA, &document, why);
+    }
+
+    let mut default = scan();
+    default["candidates"][0]["markers"] = json!(["~/.claude.json"]);
+    assert_valid(SCHEMA, &default);
+    default["candidates"][0]["markers"] = json!(["~/.codex.json"]);
+    assert_invalid(
+        SCHEMA,
+        &default,
+        "a marker beside a directory other than ~/.claude",
+    );
 }

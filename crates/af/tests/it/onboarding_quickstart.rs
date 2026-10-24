@@ -101,9 +101,16 @@ fn readme_quickstart_reaches_a_plan_with_local_committed_authority() {
         plan,
         "af review plan --policy-rev HEAD --base HEAD --uncommitted"
     );
+    // No machine's Provider IDs: the placeholder, and where the exact command comes from.
+    assert_eq!(
+        run,
+        "af review --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER \
+         --provider architecture=PROVIDER"
+    );
+    let flat = readme().split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        run.starts_with("af review --policy-rev HEAD --base HEAD --uncommitted --provider "),
-        "{run}"
+        flat.contains("PROVIDER is the ID of a Provider step 2 registered, such as `codex-main`: `af onboard` prints the exact command"),
+        "README says where the exact command comes from"
     );
     assert_eq!(doctor.trim(), "af doctor");
     // Updating and removing manage this machine's installation; they are not run here.

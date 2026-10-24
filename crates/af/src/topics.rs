@@ -99,6 +99,55 @@ pub(crate) fn body(topic: &str, text: &str) -> String {
     }
 }
 
+/// The bindings line of the `start` page's review command, and the line under it, as the page
+/// is written: what a man page and a machine without a Provider print.
+const START_BINDINGS: &str =
+    "       --provider correctness=PROVIDER --provider architecture=PROVIDER
+   PROVIDER is the ID of a Provider step 1 registered; `af onboard` prints the exact command.";
+
+/// One topic's page as `af help TOPIC` and the browser print it on this machine: [`body`], with
+/// the `start` page's review command bound to the Providers this machine's registry holds, as
+/// `af onboard` binds them. Man pages print [`body`] alone, which no machine's state shapes.
+pub(crate) fn page(topic: &str, text: &str) -> String {
+    let body = body(topic, text);
+    if topic != "start" {
+        return body;
+    }
+    let registry = crate::providers::read_registry_entries();
+    body.replace(START_BINDINGS, &start_bindings(&registry))
+}
+
+/// The `start` page's bindings line for `registry`: the IDs `af onboard` would bind, or the
+/// placeholder with the reason none can be named.
+fn start_bindings(registry: &crate::providers::RegistryRead) -> String {
+    match crate::onboard::first_review_bindings(registry) {
+        Some(bindings) => {
+            let bound: Vec<String> = bindings
+                .iter()
+                .map(|(node, id)| format!("--provider {node}={id}"))
+                .collect();
+            // Within 100 columns: each binding on a line of its own when both are too long.
+            let mut line = format!("       {}", bound.join(" "));
+            if line.chars().count() > 100 {
+                line = format!("       {}", bound.join(" \\\n       "));
+            }
+            format!(
+                "{line}\n   These are the Providers registered on this machine that `af onboard` \
+                 binds; it\n   prints the same command."
+            )
+        }
+        None if registry.warning.is_some() => "       \
+            --provider correctness=PROVIDER --provider architecture=PROVIDER\n   \
+            The Provider registry cannot be read (`af provider status` names why), so PROVIDER\n   \
+            stands for a Provider's ID; `af onboard` prints the exact command once it can."
+            .to_string(),
+        None => "       --provider correctness=PROVIDER --provider architecture=PROVIDER\n   \
+            No Provider is registered on this machine yet, so PROVIDER stands for the ID step 1\n   \
+            registers; `af onboard` prints the exact command once one is."
+            .to_string(),
+    }
+}
+
 /// The phase, outcome and cause tables of `af help task-states`, from
 /// `review_core::task::state`; `docs/tasks.md` carries the same rows.
 pub(crate) fn task_state_tables() -> String {
@@ -215,7 +264,8 @@ The first run, in four steps. `af doctor` checks where you are at any point, tok
 4. Review a change. Make one, then:
      af review plan --policy-rev HEAD --base HEAD --uncommitted        token-free
      af review --policy-rev HEAD --base HEAD --uncommitted \\
-       --provider correctness=claude-main --provider architecture=codex-main
+       --provider correctness=PROVIDER --provider architecture=PROVIDER
+   PROVIDER is the ID of a Provider step 1 registered; `af onboard` prints the exact command.
    The plan shows the change, the route, the Gate and the bindings the run needs. The run executes
    the Gate and the reviewers, spending tokens within the budgets `.af/` sets, and prints the
    verdict and the Findings; `af review report` shows them again.
@@ -376,7 +426,7 @@ the cause:
 A command that classifies its own outcomes — `af provider status` and `af provider setup` — prints
 its own versioned document instead, carrying that exit code and an af-authored `diagnostic`;
 stderr still gets one diagnostic line, so discarding stdout never hides a refusal. The Provider
-documents are af/provider-detect@2 (`af provider detect`), af/provider-status@3,
+documents are af/provider-detect@3 (`af provider detect`), af/provider-status@3,
 af/provider-setup@1 and af/provider-models@1; none carries an account, a credential or the
 Provider CLI's own words.
 
@@ -526,7 +576,8 @@ variables, ~/.claude and ~/.codex, the sibling names ~/.claude-*, ~/.config/clau
 It reads no shell rc file, so a directory a shell alias selects needs --dir. A directory holding
 none of its CLI's marker files (.claude.json, .credentials.json or settings.json; auth.json or
 config.toml) is listed `empty` and not handed to the CLI, which would create files there;
---all asks anyway. status applies the same rule.
+--all asks anyway. The default ~/.claude counts a ~/.claude.json file beside it as its marker.
+status applies the same rule.
 
 Identity: the table and every document show the plan or method (Claude Max (claude.ai),
 ChatGPT, API key, not logged in), never an email or an organization. `detect --identity` adds

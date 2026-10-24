@@ -72,8 +72,12 @@ are at any point, token-free.
 
    ```sh
    af review plan --policy-rev HEAD --base HEAD --uncommitted
-   af review --policy-rev HEAD --base HEAD --uncommitted --provider correctness=claude-main --provider architecture=codex-main
+   af review --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER --provider architecture=PROVIDER
    ```
+
+   PROVIDER is the ID of a Provider step 2 registered, such as `codex-main`: `af onboard` prints
+   the exact command, each reviewer bound to a Provider of the kind it runs, and
+   `af help start` prints it for the Providers registered on your machine.
 
    The plan shows the Change Set, the route, the Gate and the bindings a run needs, and needs no
    login. The run executes the Gate and the reviewers and spends tokens within the budgets `.af/`

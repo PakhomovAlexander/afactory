@@ -28,7 +28,19 @@ impl Machine {
     }
 
     fn doctor(&self, dir: &Path, args: &[&str], path: Option<&std::ffi::OsStr>) -> Output {
-        let home = self.path("home");
+        self.doctor_at(&self.path("home"), dir, args, path, &[])
+    }
+
+    /// `af doctor` with `home` as its home and `envs` set on top.
+    fn doctor_at(
+        &self,
+        home: &Path,
+        dir: &Path,
+        args: &[&str],
+        path: Option<&std::ffi::OsStr>,
+        envs: &[(&str, &str)],
+    ) -> Output {
+        let home = home.to_path_buf();
         let mut command = crate::common::af();
         command
             .arg("doctor")
@@ -49,6 +61,7 @@ impl Machine {
         if let Some(path) = path {
             command.env("PATH", path);
         }
+        command.envs(envs.iter().copied());
         command.output().unwrap()
     }
 
@@ -344,4 +357,116 @@ fn the_update_row_warns_of_a_failed_or_stalled_release_check() {
         "{update}"
     );
     drop(held);
+}
+
+/// GA final fix item 7: the human rows fit 100 columns, or a narrower `COLUMNS` (80 here), with
+/// a long install path: a detail or path continues on indented lines and is never cut short, and
+/// each fix command stays whole on its line or is broken between its arguments.
+#[test]
+fn rows_fit_100_and_80_columns_with_a_long_install_path() {
+    let machine = Machine::new();
+    let work = machine.path("work");
+    let home = machine.path(
+        "home/a-long-gate-like-directory-name-for-path-length-tests/and-one-more-level-of-it",
+    );
+    std::fs::create_dir_all(&home).unwrap();
+    let bin = home.join(".local/bin");
+    let squeeze = |text: &str| text.split_whitespace().collect::<String>();
+    for columns in [100, 80] {
+        let wide = columns.to_string();
+        let output = machine.doctor_at(&home, &work, &[], None, &[("COLUMNS", &wide)]);
+        assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+        let text = out(&output);
+        for line in text.lines() {
+            assert!(
+                line.chars().count() <= columns,
+                "{columns}: `{line}`\n{text}"
+            );
+        }
+        for row in ["warn  binary", "warn  path", "warn  shell"] {
+            assert!(text.contains(row), "{columns}: {row}\n{text}");
+        }
+        // The paths are all there, character for character, across their continuation lines.
+        let flat = squeeze(&text);
+        assert!(
+            flat.contains(&format!("{}isnotonPATH", bin.display())),
+            "{columns}\n{text}"
+        );
+        assert!(
+            flat.contains(&format!("add{}toPATH", bin.display())),
+            "{columns}\n{text}"
+        );
+        // The receipt path is printed canonical; its tail below the machine root is the same.
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(
+            flat.contains(&format!(
+                "/home/a-long-gate-like-directory-name-for-path-length-tests/\
+                 and-one-more-level-of-it/.local/share/af/versions/{version}/receipt.toml(asource"
+            )),
+            "{columns}\n{text}"
+        );
+        // Each af fix command is whole on its line, or broken between its arguments.
+        assert!(
+            text.lines()
+                .any(|line| line.ends_with(&format!("fix: af self install {version}"))),
+            "{columns}\n{text}"
+        );
+        let setup: Vec<String> = text
+            .lines()
+            .skip_while(|line| !line.contains("fix: af self setup-shell"))
+            .take_while(|line| !line.starts_with("warn ") && !line.starts_with("ok "))
+            .flat_map(|line| line.split_whitespace().map(str::to_string))
+            .filter(|word| word != "\\" && word != "fix:")
+            .map(|word| word.trim_matches('\'').to_string())
+            .collect();
+        assert_eq!(
+            setup,
+            [
+                "af",
+                "self",
+                "setup-shell",
+                "--shell",
+                "bash|zsh|fish|elvish|powershell",
+                "--write"
+            ],
+            "{columns}\n{text}"
+        );
+
+        // With zsh the shell row names the long completion and man page paths, and the PATH fix
+        // is one shell word, printed whole on its own line even where it is wider than one.
+        let zsh = machine.doctor_at(
+            &home,
+            &work,
+            &[],
+            None,
+            &[("COLUMNS", &wide), ("SHELL", "/bin/zsh")],
+        );
+        let text = out(&zsh);
+        let export = format!("export PATH=\"{}:$PATH\"", bin.display());
+        assert!(
+            text.lines()
+                .any(
+                    |line| line.trim_start().strip_prefix("fix: ") == Some(export.as_str())
+                        || line.trim_start() == export
+                ),
+            "{columns}: `{export}` whole\n{text}"
+        );
+        for line in text.lines().filter(|line| !line.contains(&export)) {
+            assert!(
+                line.chars().count() <= columns,
+                "{columns}: `{line}`\n{text}"
+            );
+        }
+        assert!(
+            squeeze(&text).contains(&squeeze(&format!(
+                "no zsh completions at {}",
+                home.join(".local/share/zsh/site-functions").display()
+            ))) || squeeze(&text).contains("nozshcompletionsat"),
+            "{columns}\n{text}"
+        );
+        assert!(
+            text.contains("# in ~/.zshrc, then open a new shell"),
+            "{columns}\n{text}"
+        );
+    }
 }

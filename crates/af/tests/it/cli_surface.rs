@@ -515,7 +515,10 @@ fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
             "A registry conflict stops it at that row with exit 5; the rows before it stay registered",
             "~/.config/claude-work is claude-work, ~/.codex-gridgain is codex-gridgain",
             "*-ambient is never generated",
-            "af/provider-detect@2",
+            "af/provider-detect@3",
+            "its `install` names the install command and documentation of each kind whose CLI was not found",
+            "`next_action` the scan to run again once one is installed",
+            "the default ~/.claude may instead have a ~/.claude.json file beside it",
             "Exit codes: 0 the scan completed, 1 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login was left unregistered because its CLI is off PATH (the rows are still printed), 5 a registry conflict stopped --apply.",
             "never registers a login whose CLI is off PATH",
             "the row suggests the retry with a free ID",
@@ -559,7 +562,7 @@ fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
     ] {
         assert!(text.contains(needle), "`{needle}` missing:\n{text}");
     }
-    assert!(out(&af(&["help", "json"])).contains("af/provider-detect@2"));
+    assert!(out(&af(&["help", "json"])).contains("af/provider-detect@3"));
     assert!(out(&af(&["help"])).contains("providers"));
 
     let add = out(&af(&["provider", "add", "--help"]))
@@ -1247,6 +1250,13 @@ fn the_surface_documents_verbose_storage_canonical_markdown_and_the_provider_lis
     let doctor = collapsed(&["provider", "doctor", "--help"]);
     assert!(doctor.contains("--campaign <NAME>"), "{doctor}");
     assert!(!doctor.contains("--file"), "{doctor}");
+    let machine = collapsed(&["doctor", "--help"]);
+    assert!(
+        machine.contains(
+            "The rows fit 100 columns, or the terminal's width when narrower (at least 60)"
+        ),
+        "{machine}"
+    );
     // The pointer for `af review tui` is no command of the namespace.
     let review = collapsed(&["review", "--help"]);
     assert!(!review.contains(" tui "), "{review}");
@@ -1569,6 +1579,41 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         named += 1;
     }
     assert!(named >= 15, "only {named} commands named");
+    // GA final fix item 5: step 6 teaches the continuation command, which carries the findings
+    // and the verdict, and the hand-made source binding only as the form that does not.
+    let step = page
+        .split("## 6. Run another round")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .unwrap();
+    assert!(
+        step.contains("`af task run NEW_ID --from TASK_ID [--round N] --json`"),
+        "{step}"
+    );
+    assert!(
+        step.contains("findings") && step.contains("evaluator's verdict"),
+        "{step}"
+    );
+    assert!(
+        step.contains("carries no findings and no verdict"),
+        "{step}"
+    );
+    let continuations: Vec<&str> = step
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|span| span.starts_with("af task run "))
+        .collect();
+    assert!(continuations.len() >= 2, "{step}");
+    let store = tempfile::tempdir().unwrap();
+    for span in continuations {
+        // Each parses, its placeholders filled: a Task that does not exist is no usage error.
+        let line = span.replace("[--round N]", "--round 1");
+        let mut args: Vec<&str> = line.split_whitespace().skip(1).collect();
+        args.extend(["--state", store.path().to_str().unwrap()]);
+        let output = af(&args);
+        assert_ne!(output.status.code(), Some(2), "`{span}`: {}", err(&output));
+    }
     let json = out(&af(&["help", "json"]));
     for document in [
         "af/task-findings@1",

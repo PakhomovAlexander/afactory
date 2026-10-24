@@ -457,6 +457,9 @@ Checks, each `ok`, `warn` or `fail` with a one-line `fix:`:\n\
              installs a killed installer abandoned\n\
   project    in a repository: `.af/`, the lock's af pin, each Gate command, and a Provider for\n\
              every model Worker kind\n\n\
+The rows fit 100 columns, or the terminal's width when narrower (at least 60): a long detail \
+or path continues on indented lines and is never cut short, and a fix command stays whole on \
+its line or is broken between its arguments with ` \\`.\n\n\
 It never calls a model, logs in, installs, or writes a file, and it schedules no update check; \
 the charged end-to-end Provider check is `af provider doctor`. Exit codes: 0 nothing failed \
 (warnings allowed), 1 at least one check failed, 2 usage error. --json prints one `af/doctor@1` \
@@ -1162,8 +1165,9 @@ Auth directories, each with its SOURCE: env (CLAUDE_CONFIG_DIR, CODEX_HOME), def
 registered) and explicit (--dir). A directory found twice is listed once. Shell aliases or \
 functions that set CLAUDE_CONFIG_DIR or CODEX_HOME are not read; pass --dir for such a \
 directory.\n\n\
-A Claude directory holds .claude.json, .credentials.json or settings.json; a Codex directory \
-holds auth.json or config.toml. Only those names are examined, never opened. A directory with \
+A Claude directory holds .claude.json, .credentials.json or settings.json (the default \
+~/.claude may instead have a ~/.claude.json file beside it, as `af provider status` accepts); a \
+Codex directory holds auth.json or config.toml. Only those names are examined, never opened. A directory with \
 none is listed `empty` and not probed unless --all, because a CLI asked about it creates files \
 there; one that is a symlink, not owned by you, or writable by others is listed unsafe and not \
 probed. Every other directory gets exactly the token-free login check of `af provider status`. \
@@ -1183,7 +1187,9 @@ the kind prefix (~/.config/claude-work is claude-work, ~/.codex-gridgain is code
 the env directory follows the sibling rule when its name is a sibling name, else claude-env or \
 codex-env; --dir follows the sibling rule, and needs one --id per --dir when \
 more than one names the same kind; a taken ID gets -2, -3; *-ambient is never generated.\n\n\
---json prints one af/provider-detect@2 document. Exit codes: 0 the scan completed, 1 \
+--json prints one af/provider-detect@3 document; its `install` names the install command and \
+documentation of each kind whose CLI was not found, and `next_action` the scan to run again once \
+one is installed (null when a CLI was found). Exit codes: 0 the scan completed, 1 \
 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login \
 was left unregistered because its CLI is off PATH (the rows are still printed), 5 a registry \
 conflict stopped --apply.",
@@ -1205,7 +1211,7 @@ conflict stopped --apply.",
         /// Register every authenticated, unregistered directory found
         #[arg(long)]
         apply: bool,
-        /// Emit the versioned `af/provider-detect@2` document instead of the table
+        /// Emit the versioned `af/provider-detect@3` document instead of the table
         #[arg(long)]
         json: bool,
         /// Add the account label each CLI reported (terminal only, never with --json)
@@ -1991,7 +1997,8 @@ af task cancel TASK_ID --json   # needs: a running Task"
         long_about = "Print the review findings of a Task's last review round, or of the Nth \
 with --round N: per reviewer, each finding with its severity, confidence, title, location, the \
 quoted evidence and the reviewer's proposed fix, grouped by severity; then the evaluator's \
-verdict and its reason, and the next command. A round whose reduce step did not run shows each \
+verdict on that round, the one the Task log recorded after it, with its reason, and the next \
+command. A round whose reduce step did not run shows each \
 reviewer's reports as recorded, not gathered. A Task that recorded no review round says so, \
 with the state it reached.\n\n--json prints one `af/task-findings@1` document. Exits 0 once \
 it read the Store.\n\nNever: dispatches a Worker, contacts a Provider or writes the Store.",
@@ -2270,7 +2277,8 @@ block, between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->`, that the c
 scripts/pr-lines.py prints when it has one (counted from --base REF, origin/main by default); \
 without a template, the two blocks under their headings. scripts/check-pr-report.py accepts it. \
 When the checkout has scripts/pr-lines.py and it cannot print its block, nothing is printed and \
-the command exits 1.\n\nNever: dispatches a \
+the command exits 1; so does a block it printed incomplete (no end marker after the begin \
+marker, or no `**Lines added: …**` title first inside), naming what is missing.\n\nNever: dispatches a \
 Worker, contacts a Provider, writes the Store or changes a Task. Providers appear only as kind \
 and model; no Provider label, path, credential, prompt or Worker output is printed.",
         after_long_help = "Examples:\n  af task report pagination-cli   # needs: Task pagination-cli\n  \

@@ -59,9 +59,9 @@ node past its recovery allowance, also carries `cause`, `next_action` and `detai
 `af task findings TASK_ID --json` prints the last review round as one `af/task-findings@1`
 document: per reviewer, each finding with its severity, confidence, title, file and line, the
 quoted evidence and the proposed fix, the round's counts by severity, and the evaluator's
-verdict with its reason. `--round N` reads an earlier round. A Task that recorded no review
-round has `round: null`, and its `state` says how far it got. After `reviewer_findings` this
-is the command `next_action` names.
+verdict on that round with its reason. `--round N` reads an earlier round, with its own
+verdict. A Task that recorded no review round has `round: null`, and its `state` says how far
+it got. After `reviewer_findings` this is the command `next_action` names.
 
 ## 5. Look at the change
 
@@ -79,12 +79,19 @@ Nothing is committed or staged: `git -C DIR status` shows the change.
 
 ## 6. Run another round
 
-A Task that ended with changes requested is not run again: plan a new Task, with a new
-`task_id`, whose Task file names the goal that is left. To build on the reviewed candidate
-rather than on the commit, bind its source to that candidate,
-`"inputs": {"source": {"task": "TASK_ID", "port": "snapshot"}}`, then plan and run it as in
-steps 1 and 2. To check a candidate without changing it, the new Task is of kind
-`verification` with the same binding: its Pipeline verifies the tree read-only.
+A Task that ended with changes requested is not run again: continue it as a new Task.
+`af task run NEW_ID --from TASK_ID [--round N] --json` plans NEW_ID from TASK_ID's own Task
+file. Its source is the candidate that round reviewed (the last round unless `--round` names
+one), not the commit, and its implementer receives that round's reviewer findings and the
+evaluator's verdict on the Pipeline's `findings` input, so nothing is pasted into the goal;
+`--goal FILE` replaces the goal. It prints the plan for
+`af task run NEW_ID --confirm-plan PLAN_ID --json`, or runs it at once with `--execute`, as in
+step 2.
+
+The low-level form binds the source by hand in a new Task file,
+`"inputs": {"source": {"task": "TASK_ID", "port": "snapshot"}}`: it builds on the candidate but
+carries no findings and no verdict. To check a candidate without changing it, the new Task is of
+kind `verification` with that binding: its Pipeline verifies the tree read-only.
 
 ## 7. Deliver
 
@@ -103,5 +110,7 @@ repository's template asks for: the template with the `af task report` block bet
 `<!-- af-task-report:v1 -->` markers, and the lines added block that the checkout's
 `scripts/pr-lines.py` prints, when it has one, counted from `--base REF` (origin/main by
 default). When the script cannot print its block, nothing is printed and the command exits 1,
-naming `--base REF`. `gh pr create --body-file body.md` takes it unchanged.
-`af task report TASK_ID... --json` prints the same figures as one `af/task-report@2` document.
+naming `--base REF`; a block it prints incomplete, without its end marker or its title, is
+refused the same way, naming what is missing. `gh pr create --body-file body.md` takes it
+unchanged. `af task report TASK_ID... --json` prints the same figures as one
+`af/task-report@2` document.

@@ -93,7 +93,13 @@ fn valid(name: &str, value: &Value) {
 
 /// The fixture with every package digest pinned from the copied tree, committed.
 fn fixture(root: &Path) -> (PathBuf, PathBuf) {
+    fixture_with(root, |_| {})
+}
+
+/// [`fixture`], with `edit` applied to the copied tree before its digests are pinned.
+fn fixture_with(root: &Path, edit: impl FnOnce(&Path)) -> (PathBuf, PathBuf) {
     let (repo, state) = task_cli::fixture_named(root, "continue");
+    edit(&repo);
     let path = repo.join(".af/task-catalog.toml");
     let source = std::fs::read_to_string(&path).unwrap();
     let mut catalog: toml::Value = toml::from_str(&source).unwrap();
@@ -435,4 +441,251 @@ fn a_declared_base_is_the_tree_the_reviewers_read_beside_their_own() {
     let err = String::from_utf8_lossy(&refused.stderr).into_owned();
     assert_eq!(refused.status.code(), Some(1), "{err}");
     assert!(err.contains("base.commit no-such-ref"), "{err}");
+}
+
+/// The `continue` fixture as a Task of two review rounds on one candidate: round 1 asks for
+/// `NOTES.md` in a minor finding and requests changes, since the review needs two clean rounds,
+/// and a strict evaluator, run once that round has ended, fails it; round 2 reviews the same Snapshot, where the reviewer reports
+/// nothing new, so it passes, and the goal's evaluator passes it.
+fn two_rounds(repo: &Path) {
+    let packages = repo.join(".af/task-packages/fixture");
+    let strict = packages.join("strict-evaluator");
+    std::fs::create_dir_all(strict.join("outputs")).unwrap();
+    for file in [
+        "input.schema.json",
+        "outputs/result.schema.json",
+        "worker.toml",
+    ] {
+        std::fs::copy(packages.join("evaluator").join(file), strict.join(file)).unwrap();
+    }
+    let manifest = std::fs::read_to_string(strict.join("worker.toml")).unwrap();
+    std::fs::write(
+        strict.join("worker.toml"),
+        manifest.replace("fixture/evaluator", "fixture/strict-evaluator"),
+    )
+    .unwrap();
+    std::fs::write(
+        strict.join("worker.py"),
+        "import json,sys\njson.load(sys.stdin)\nprint(json.dumps({'schema':'af.worker-reply/1',\
+         'outputs':{'result':[{'outcome':'failed','reason':'Round 1 verdict: NOTES.md is \
+         missing'}]}}))\n",
+    )
+    .unwrap();
+    // The reviewer reports only in the round that has no earlier finding to answer, and below
+    // the gate: two clean rounds are needed, so round 1 requests changes and round 2 passes.
+    let bugs = packages.join("bugs/worker.py");
+    let worker = std::fs::read_to_string(&bugs).unwrap();
+    let first_round = "reports=[] if os.path.exists('NOTES.md') else [{'severity':'major'";
+    assert!(worker.contains(first_round), "{worker}");
+    std::fs::write(
+        &bugs,
+        worker.replace(
+            first_round,
+            "reports=[] if os.path.exists('NOTES.md') or \
+             r['inputs']['assignment'][0]['payload']['findings'] else [{'severity':'minor'",
+        ),
+    )
+    .unwrap();
+
+    let path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut pin = catalog["packages"]["fixture/evaluator"].clone();
+    pin["path"] = ".af/task-packages/fixture/strict-evaluator".into();
+    catalog["packages"]
+        .as_table_mut()
+        .unwrap()
+        .insert("fixture/strict-evaluator".into(), pin);
+    catalog["review"]["max_rounds"] = 2.into();
+    catalog["review"]["clean_rounds"] = 2.into();
+    std::fs::write(&path, toml::to_string(&catalog).unwrap()).unwrap();
+
+    let path = packages.join("implementation/pipeline.toml");
+    let mut pipeline: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut slot = pipeline["slots"]["evaluator"].clone();
+    slot["worker"] = "fixture/strict-evaluator".into();
+    pipeline["slots"]
+        .as_table_mut()
+        .unwrap()
+        .insert("strict".into(), slot);
+    let node = |value: &str| -> toml::Value { toml::from_str(value).unwrap() };
+    let nodes = pipeline["nodes"].as_array_mut().unwrap();
+    let after_review = nodes
+        .iter()
+        .position(|n| n["id"].as_str() == Some("review"))
+        .unwrap()
+        + 1;
+    nodes.insert(
+        after_review,
+        node(
+            r#"id = "accept_round"
+operator = { op = "review_accept" }
+inputs.source = { kind = "node", node = "seal", port = "snapshot" }
+inputs.review = { kind = "node", node = "review", port = "review" }
+inputs.checks = { kind = "node", node = "review", port = "checks" }"#,
+        ),
+    );
+    nodes.insert(
+        after_review + 1,
+        node(
+            r#"id = "evaluate_round"
+operator = { op = "verify", slot = "strict" }
+inputs.source = { kind = "node", node = "seal", port = "snapshot" }
+inputs.requirements = { kind = "input", port = "requirements" }
+inputs.checks = { kind = "node", node = "review", port = "checks" }
+when = { node = "accept_round", outcome = "failed" }"#,
+        ),
+    );
+    nodes.insert(
+        after_review + 2,
+        node(
+            r#"id = "review_again"
+operator = { op = "call", pipeline = "fixture/review", bindings = { bugs = "bugs", correctness = "correctness" } }
+inputs.source = { kind = "node", node = "seal", port = "snapshot" }
+inputs.base = { kind = "input", port = "source" }
+inputs.history = { kind = "node", node = "review", port = "history" }
+inputs.requirements = { kind = "input", port = "requirements" }"#,
+        ),
+    );
+    // Acceptance, the final checks and the exposed ledger follow the second round.
+    for node in nodes.iter_mut() {
+        let id = node["id"].as_str().unwrap().to_owned();
+        if !["accept", "final_checks"].contains(&id.as_str()) {
+            continue;
+        }
+        for (_, input) in node["inputs"].as_table_mut().unwrap().iter_mut() {
+            if input.get("node").and_then(|n| n.as_str()) == Some("review") {
+                input["node"] = "review_again".into();
+            }
+        }
+    }
+    pipeline["outputs"]["history"]["node"] = "review_again".into();
+    // One node at a time, in the order declared: round 1's verdict is recorded before round 2.
+    pipeline["max_parallel"] = 1.into();
+    pipeline["max_attempts"] = 12.into();
+    std::fs::write(&path, toml::to_string(&pipeline).unwrap()).unwrap();
+
+    let mut task: Value =
+        serde_json::from_str(&std::fs::read_to_string(repo.join("first.json")).unwrap()).unwrap();
+    task["task_id"] = "twice".into();
+    task["limits"] = serde_json::json!({
+        "tokens": 1000, "max_attempts": 12, "wall_ms": 120000,
+        "verification": {"tokens": 200, "attempts": 10, "wall_ms": 60000},
+    });
+    std::fs::write(
+        repo.join("twice.json"),
+        serde_json::to_vec_pretty(&task).unwrap(),
+    )
+    .unwrap();
+}
+
+/// GA final fix item 2: `af task findings --round N` pairs round N's findings with round N's
+/// verdict, from the Task log, and a continuation from round N receives that verdict, never the
+/// verdict of a later round that reviewed the same Snapshot.
+#[test]
+fn each_round_carries_its_own_evaluator_verdict() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = fixture_with(root.path(), two_rounds);
+    let start = ["task", "start", "--execute", "--file", "twice.json"];
+    let (twice, err) = json(&repo, &state, &start, 0);
+    assert_eq!(twice["state"]["outcome"], "verified", "{twice}\n{err}");
+
+    let (first, _) = json(
+        &repo,
+        &state,
+        &["task", "findings", "twice", "--round", "1"],
+        0,
+    );
+    valid("task-findings-v1.json", &first);
+    let (second, _) = json(
+        &repo,
+        &state,
+        &["task", "findings", "twice", "--round", "2"],
+        0,
+    );
+    valid("task-findings-v1.json", &second);
+    assert_eq!(first["rounds"], 2, "{first}");
+    // Both rounds reviewed the one candidate.
+    assert_eq!(
+        first["round"]["snapshot_id"], second["round"]["snapshot_id"],
+        "{first}\n{second}"
+    );
+    assert_eq!(first["round"]["conclusion"], "changes_requested", "{first}");
+    assert_eq!(first["round"]["counts"]["minor"], 1, "{first}");
+    assert_eq!(first["evaluation"]["node"], "evaluate_round", "{first}");
+    assert_eq!(first["evaluation"]["outcome"], "failed", "{first}");
+    assert_eq!(
+        first["evaluation"]["reason"], "Round 1 verdict: NOTES.md is missing",
+        "{first}"
+    );
+    assert_eq!(second["round"]["conclusion"], "pass", "{second}");
+    assert_eq!(second["evaluation"]["node"], "evaluate_goal", "{second}");
+    assert_eq!(second["evaluation"]["outcome"], "passed", "{second}");
+    // The last round is the default, with its own verdict.
+    let (last, _) = json(&repo, &state, &["task", "findings", "twice"], 0);
+    assert_eq!(last["evaluation"], second["evaluation"], "{last}");
+
+    let text = run(
+        &repo,
+        &state,
+        &["task", "findings", "twice", "--round", "1"],
+        false,
+    );
+    assert_eq!(text.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&text.stdout).into_owned();
+    assert!(
+        text.contains("review round 1 of 2 (changes_requested)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("evaluator (evaluate_round): failed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  Round 1 verdict: NOTES.md is missing"),
+        "{text}"
+    );
+    assert!(!text.contains("evaluate_goal"), "{text}");
+
+    // A continuation from round 1 receives round 1's verdict as its evaluator finding.
+    let plan = ["task", "run", "next", "--from", "twice", "--round", "1"];
+    let (planned, _) = json(&repo, &state, &plan, 0);
+    assert_eq!(planned["continues"]["round"], 1, "{planned}");
+    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let findings = payload(&cas, &planned["continues"]["findings_id"]);
+    valid("task-review-findings-v1.json", &findings);
+    let evaluator: Vec<&Value> = findings["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["origin"] == "evaluator")
+        .collect();
+    assert_eq!(evaluator.len(), 1, "{findings:#}");
+    assert_eq!(evaluator[0]["title"], "Evaluator verdict: failed");
+    assert_eq!(evaluator[0]["body"], "Round 1 verdict: NOTES.md is missing");
+    assert_eq!(
+        evaluator[0]["artifact_id"], first["evaluation"]["artifact_id"],
+        "{findings:#}"
+    );
+    let reviewers: Vec<&Value> = findings["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["origin"] == "reviewer")
+        .collect();
+    assert_eq!(reviewers.len(), 1, "{findings:#}");
+    assert_eq!(reviewers[0]["title"], "paginate is undocumented");
+    // From round 2 the verdict passed, so no evaluator finding is handed on.
+    let plan = ["task", "run", "later", "--from", "twice", "--round", "2"];
+    let (planned, _) = json(&repo, &state, &plan, 0);
+    let findings = payload(&cas, &planned["continues"]["findings_id"]);
+    assert!(
+        findings["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|finding| finding["origin"] != "evaluator"),
+        "{findings:#}"
+    );
 }

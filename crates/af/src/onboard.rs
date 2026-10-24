@@ -1401,6 +1401,29 @@ fn pick_runner(
     )
 }
 
+/// The `--provider NODE=ID` bindings of a new bundle's first review, as the preview selects them:
+/// the runner profile `pick_runner` chooses without `--runner`, and for each reviewer the first
+/// registered Provider of its kind. `None` when the registry cannot be read or a reviewer's kind
+/// has no Provider registered, so no binding can be named. `af help start` prints these.
+pub(crate) fn first_review_bindings(
+    registry: &crate::providers::RegistryRead,
+) -> Option<Vec<(&'static str, String)>> {
+    if registry.warning.is_some() {
+        return None;
+    }
+    let (profile, _) = pick_runner(None, registry);
+    ["correctness", "architecture"]
+        .into_iter()
+        .map(|node| {
+            let kind = profile.runner(node).program();
+            registry
+                .ids_of(kind)
+                .first()
+                .map(|id| (node, (*id).to_string()))
+        })
+        .collect()
+}
+
 /// The Provider kind a model Worker's runner program needs; `None` for a command Worker.
 fn provider_kind(runner: &str) -> Option<&'static str> {
     match runner {
