@@ -42,7 +42,7 @@ pub fn is_beside_transitions(event: &RunEvent) -> bool {
 pub fn is_transition(event: &RunEvent) -> bool {
     event.event_type == EventType::TaskTransitionV5
 }
-/// Whether `event` of a Task log is what an Attempt did about its Provider (ADR-0199).
+/// Whether `event` of a Task log is what an Attempt did about its Provider (ADR-0202).
 pub fn is_provider_event(event: &RunEvent) -> bool {
     event.event_type == EventType::TaskProviderEventV1
 }

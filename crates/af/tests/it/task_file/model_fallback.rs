@@ -203,7 +203,7 @@ fn a_safety_classifier_fallback_at_admission_is_refused_charged_and_named_on_std
     assert!(!output.status.success(), "{stdout}\n{stderr}");
     // Only the admission probe ran, with the fallback turned off and model substitution kept. A
     // fallback's bill is not the bound model's alone, so the alternate probe is not sent on top
-    // of it (ADR-0199).
+    // of it (ADR-0202).
     assert_eq!(fixture.calls(), "admission 1 unset\n", "{stderr}");
     // One line on the run's own stderr names the node, the Provider, the bound model and effort,
     // both models with their output tokens, the counts, the cause, af's refusal and the next step.
@@ -331,7 +331,7 @@ fn a_safeguards_refusal_beside_stringless_errors_is_named_and_not_retried() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{errors}: {stderr}");
         // One Attempt of four allowed: a refusal is never retried as an Attempt; within it the
-        // alternate probe wording is sent once (ADR-0199).
+        // alternate probe wording is sent once (ADR-0202).
         assert_eq!(
             fixture.calls(),
             "admission 1 unset\nalternate 1 unset\n",

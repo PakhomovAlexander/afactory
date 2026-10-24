@@ -958,7 +958,7 @@ impl ReportTaskDomain {
         }
     }
 
-    /// The author's draft judged for shape before it is sealed (ADR-0199): exactly one draft,
+    /// The author's draft judged for shape before it is sealed (ADR-0202): exactly one draft,
     /// a draft its declared version admits (its citation sets sorted and unique), and every
     /// required section present by its exact heading. The report's size and its citations are
     /// judged by the report check after sealing, as they always were (ADR-0133); the author's
@@ -1211,7 +1211,7 @@ impl TaskOperatorHost for ReportTaskDomain {
     }
 }
 impl TaskDomain for ReportTaskDomain {
-    /// The report policy, verbatim, after the author's package instructions (ADR-0199): what
+    /// The report policy, verbatim, after the author's package instructions (ADR-0202): what
     /// its draft is validated against before it is sealed.
     fn worker_instructions(
         &self,
@@ -1247,7 +1247,7 @@ impl TaskDomain for ReportTaskDomain {
     }
 
     /// An author's draft that fails its shape validation is refused before it is sealed, with
-    /// the validation as the receipt its retry feedback carries (ADR-0199).
+    /// the validation as the receipt its retry feedback carries (ADR-0202).
     fn check_worker_reply(
         &self,
         cas: &Cas,

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-delivery-proof:1",
   "title": "TaskDeliveryProof@1 payload",
-  "$comment": "Why a verification Task's delivery places another Task's candidate (ADR-0202): a verified Task of kind `verification` verified, read-only, the Snapshot it bound from the candidate Task's recorded output, and delivery places that candidate on the candidate Task's committed source. Every TaskDeliveryRecord@1 of such a delivery references this proof, so the record names both Tasks.",
+  "$comment": "Why a verification Task's delivery places another Task's candidate (ADR-0205): a verified Task of kind `verification` verified, read-only, the Snapshot it bound from the candidate Task's recorded output, and delivery places that candidate on the candidate Task's committed source. Every TaskDeliveryRecord@1 of such a delivery references this proof, so the record names both Tasks.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -1,4 +1,4 @@
-//! `af provider detect`, and the `status`, `add` and `setup` fixes that came with it (ADR-0197).
+//! `af provider detect`, and the `status`, `add` and `setup` fixes that came with it (ADR-0200).
 //!
 //! Every machine here is a private home with fake `claude` and `codex` scripts that answer af's
 //! capability check and the status probe the way the official CLIs do, keyed on a `logged-in`

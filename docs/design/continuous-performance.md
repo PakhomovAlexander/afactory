@@ -169,7 +169,7 @@ cannot be silently omitted or downgraded when a run fails.
 Issue #255's reported 11.044 CPU seconds is historical motivation, not a current
 measurement. Its projection, decoding/validation, and serialization spans overlap.
 The laboratory must not add them into a false total. Its Task lease is production's
-60-second lease (15 seconds until ADR-0200 lengthened it), and its 8,388,608-byte CAS
+60-second lease (15 seconds until ADR-0203 lengthened it), and its 8,388,608-byte CAS
 envelope cap is production's too; the laboratory never changes either. Fixture size means
 serialized envelope bytes; generation verifies exact sizes and the cap boundary.
 

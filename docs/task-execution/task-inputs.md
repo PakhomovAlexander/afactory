@@ -53,7 +53,7 @@ A report Task reading an experiment binds all three kinds of port:
 Any root input the selected Pipeline declares is bindable, except `requirements`, `base`,
 `continuation` and `findings`, which are refused by name; a continuation fills `findings` from
 the continued Task's review round (`"continue"` or `af task run NEW --from TASK`,
-[ADR-0203](../adr/0203-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
+[ADR-0206](../adr/0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
 At resolution the selected Pipeline is the one the
 Task file names in `pipeline`; when it names none, every captured Pipeline accepting the Task's
 kind is consulted and must declare the port alike, or the refusal asks for the Pipeline to be

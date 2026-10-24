@@ -2480,7 +2480,7 @@ fn a_path_the_inventory_could_not_measure_is_no_warning_after_a_run() {
     assert_eq!(warned, ["removing /state/x: permission denied"]);
 }
 
-/// ADR-0198: a warm key a check holds is never evicted. The sweep reads its lock at inventory
+/// ADR-0201: a warm key a check holds is never evicted. The sweep reads its lock at inventory
 /// and again at eviction, so a key a check locked after the inventory measured it is refused and
 /// left in place; an idle key the sweep evicts leaves its eviction record, the cause a check that
 /// finds it gone reports.

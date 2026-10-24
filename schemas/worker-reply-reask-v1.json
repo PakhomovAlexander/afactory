@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:worker-reply-reask:1",
   "title": "af/WorkerReplyReask@1 payload",
-  "description": "What the kernel tells a model Worker whose typed reply did not parse when it asks it once more within the same Attempt (ADR-0199): the parse error with its line and column, the offending excerpt, and the CAS digest of the whole reply the Attempt keeps as raw evidence. It travels as one more feedback value of the re-sent request and grants nothing.",
+  "description": "What the kernel tells a model Worker whose typed reply did not parse when it asks it once more within the same Attempt (ADR-0202): the parse error with its line and column, the offending excerpt, and the CAS digest of the whole reply the Attempt keeps as raw evidence. It travels as one more feedback value of the re-sent request and grants nothing.",
   "type": "object",
   "additionalProperties": false,
   "required": [

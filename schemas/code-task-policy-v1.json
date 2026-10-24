@@ -177,7 +177,7 @@
           "$ref": "#/$defs/remote"
         },
         "offline": {
-          "description": "The check runs without network (ADR-0198): npm reads only its cache, the warm layer's `npm_cache`, and every proxy variable names a closed local port. Needs [warm] build_cache to declare npm_cache.",
+          "description": "The check runs without network (ADR-0201): npm reads only its cache, the warm layer's `npm_cache`, and every proxy variable names a closed local port. Needs [warm] build_cache to declare npm_cache.",
           "type": "boolean"
         },
         "npm_packages": {
@@ -223,7 +223,7 @@
       }
     },
     "warm": {
-      "description": "An explicitly unsafe, machine-local layer only a trusted_local check touches: toolchain-keyed, byte-bounded build directories (`cargo_target` bound as CARGO_TARGET_DIR, `cargo_home` bound as CARGO_HOME, `npm_cache` bound as npm_config_cache) and administrator-approved Cache Snapshots. A declared `cargo` Cache Snapshot supersedes a `cargo_home` directory. Refused together with require_container = true. A check waits for a layer another check holds until its deadline, or builds in a private copy with `clone_when_busy`; its build phase has its own deadline, `build_wall_ms` (ADR-0198).",
+      "description": "An explicitly unsafe, machine-local layer only a trusted_local check touches: toolchain-keyed, byte-bounded build directories (`cargo_target` bound as CARGO_TARGET_DIR, `cargo_home` bound as CARGO_HOME, `npm_cache` bound as npm_config_cache) and administrator-approved Cache Snapshots. A declared `cargo` Cache Snapshot supersedes a `cargo_home` directory. Refused together with require_container = true. A check waits for a layer another check holds until its deadline, or builds in a private copy with `clone_when_busy`; its build phase has its own deadline, `build_wall_ms` (ADR-0201).",
       "type": "object",
       "additionalProperties": false,
       "anyOf": [
@@ -274,11 +274,11 @@
           "maximum": 34359738368
         },
         "clone_when_busy": {
-          "description": "When another check holds the layer, build in a private copy of it (clonefile on APFS, a reflink on btrfs and XFS, else a plain copy) instead of waiting for it (ADR-0198). Absent or false, a check waits until its deadline.",
+          "description": "When another check holds the layer, build in a private copy of it (clonefile on APFS, a reflink on btrfs and XFS, else a plain copy) instead of waiting for it (ADR-0201). Absent or false, a check waits until its deadline.",
           "type": "boolean"
         },
         "build_wall_ms": {
-          "description": "The deadline of a check's build phase, from its start until it reports its `build` step through `$AF_CHECK_REPORT`; check_wall_ms then governs its tests. 2400000 when absent. A check Attempt under [warm] has check_wall_ms plus build_wall_ms (ADR-0198).",
+          "description": "The deadline of a check's build phase, from its start until it reports its `build` step through `$AF_CHECK_REPORT`; check_wall_ms then governs its tests. 2400000 when absent. A check Attempt under [warm] has check_wall_ms plus build_wall_ms (ADR-0201).",
           "type": "integer",
           "minimum": 1,
           "maximum": 3600000

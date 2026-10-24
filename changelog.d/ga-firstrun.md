@@ -1,5 +1,5 @@
 - The first run says what to do next
-  ([ADR-0201](docs/adr/0201-make-the-first-run-say-what-to-do-next.md)).
+  ([ADR-0204](docs/adr/0204-make-the-first-run-say-what-to-do-next.md)).
   `install.sh` ends with the next steps and the PATH line for your shell, takes
   `AF_INSTALL_CHANNEL=rc` (or `--rc`) for the newest pre-release, and names the `minisign` install
   line for your package manager. Bare `af` without a terminal prints first-run hints before its

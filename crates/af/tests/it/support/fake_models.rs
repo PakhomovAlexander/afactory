@@ -76,6 +76,9 @@ if sys.argv[1:]==['app-server']:
    answer={'id':message['id'],'result':json.load(open(home+'/codex-model-list.json'))}
   elif method=='account/read':
    answer={'id':message['id'],'result':{'account':{'type':'chatgpt','email':'developer@example.test'}}}
+  elif method in ('thread/start','thread/resume','thread/fork','turn/start'):
+   with open(home+'/turns','a') as f: f.write(line)
+   sys.exit(64)
   else:
    continue
   sys.stdout.write(json.dumps(answer)+'\n')
@@ -110,7 +113,7 @@ pub fn started(auth: &Path) -> String {
     std::fs::read_to_string(auth.join("started")).unwrap_or_default()
 }
 
-/// The non-control messages the fake Claude session received: any is a turn.
+/// Business messages the fake received: Claude non-control messages or Codex thread/turn requests.
 pub fn turns(auth: &Path) -> String {
     std::fs::read_to_string(auth.join("turns")).unwrap_or_default()
 }

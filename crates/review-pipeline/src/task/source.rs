@@ -113,7 +113,7 @@ impl SnapshotTaskEnvironment {
 }
 
 /// The base a Task file declared with `"base": {"commit": …}`, read from the `af/TaskBase@1`
-/// record in the revision's provenance (ADR-0203).
+/// record in the revision's provenance (ADR-0206).
 fn declared_base(cas: &Cas, invocation: &TaskInvocationV1) -> Result<Option<String>, String> {
     use review_core::task::findings::{TASK_BASE_V1, TaskBaseV1};
     // The plan and revision are the dispatch's own records, read again where the dispatch reads
@@ -142,7 +142,7 @@ fn declared_base(cas: &Cas, invocation: &TaskInvocationV1) -> Result<Option<Stri
     Ok(None)
 }
 
-/// The tree a Snapshot changed, as the kernel recorded it (ADR-0203): a sealed candidate's
+/// The tree a Snapshot changed, as the kernel recorded it (ADR-0206): a sealed candidate's
 /// parent, or, for a tree a Task bound and re-rooted, the parent of the tree it was bound from.
 /// `None` for a root capture, which changed nothing the Store knows of.
 pub fn recorded_base(cas: &Cas, snapshot: &TaskSnapshot) -> Result<Option<String>, String> {
@@ -382,7 +382,7 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
             | WorkerAccess::WriteSourceWithShell => Mode::EphemeralWrite,
         };
         // A Worker that judges the source without writing it gets the tree before the change
-        // beside its own, read-only, with the change's paths (ADR-0203); a writer changes the
+        // beside its own, read-only, with the change's paths (ADR-0206); a writer changes the
         // source itself and gets none.
         let judges = !signature.effects.contains("write-source");
         self.materialize_mode(cas, invocation, mode, candidate_port(signature), judges)
@@ -421,7 +421,7 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
         let access = worker_access(signature);
         let owned = owned_top_levels(&sealed);
         // What the project's ignore rules exclude among what the Worker added — generated
-        // files of its own test runs and builds — is left out and listed (ADR-0198).
+        // files of its own test runs and builds — is left out and listed (ADR-0201).
         let rules = sealed.ignore_rules().map_err(|e| e.to_string())?;
         let ignored: BTreeSet<String> = sealed
             .ignored_by(&rules)

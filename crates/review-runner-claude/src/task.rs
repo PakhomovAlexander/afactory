@@ -823,7 +823,7 @@ mod invocation_tests {
 mod refusal_category_tests {
     use super::*;
 
-    /// ADR-0199: under `stream-json` the refusal category lives in the assistant message's
+    /// ADR-0202: under `stream-json` the refusal category lives in the assistant message's
     /// `stop_details`, which the result line leaves out; the adapter reads it from any message,
     /// the last one naming it winning, and a stream that names none has none.
     #[test]

@@ -7,7 +7,7 @@
 //! lock, and the reserve is long enough to wait out a lock a Store operation holds. The
 //! heartbeat runs on its own thread by its own tick, whatever the Worker or the work does; it
 //! renews the 60 s lease once a third of it has passed, and a heartbeat that loses the lease
-//! says so first, so the work records nothing more and a successor settles it (ADR-0200).
+//! says so first, so the work records nothing more and a successor settles it (ADR-0203).
 use review_store::{Cas, EventStore, store::task::TaskLease};
 use std::{
     sync::{
@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-/// The lease a Task writer takes and its heartbeat renews (ADR-0200): 60 s. Renewed once a
+/// The lease a Task writer takes and its heartbeat renews (ADR-0203): 60 s. Renewed once a
 /// third of it has passed, it survives 40 s in which the writer's process gets no CPU at all,
 /// which covers a laptop's wake from a short sleep, App Nap's timer coalescing and a loaded
 /// machine's scheduling delays. A longer lease only delays the takeover after a real crash,
@@ -40,7 +40,7 @@ const BACKOFF: Duration = Duration::from_millis(20);
 const MAX_BACKOFF: Duration = Duration::from_millis(200);
 
 /// The first words of every error a failed heartbeat returns: the writer can no longer hold the
-/// Task's lease, so it records nothing more and its successor settles its work (ADR-0200).
+/// Task's lease, so it records nothing more and its successor settles its work (ADR-0203).
 pub const WRITER_LOST: &str = "Task writer lost its lease (writer_lost)";
 
 /// The heartbeat's cadence for one lease length: renewal once a third of the lease has passed
@@ -206,7 +206,7 @@ pub fn with_heartbeat_controlled<T>(
 }
 
 /// Run `work` under a heartbeat that renews `lease` on its own thread, by its own clock and
-/// cadence, whatever the work does (ADR-0128, ADR-0200). A heartbeat that cannot keep the lease
+/// cadence, whatever the work does (ADR-0128, ADR-0203). A heartbeat that cannot keep the lease
 /// flags `writer_lost`, requests cancellation, and returns an error that starts with
 /// [`WRITER_LOST`] and states what the Store observed: its time and the lease's expiry, or the
 /// writer that holds the lease now.

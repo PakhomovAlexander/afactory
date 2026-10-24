@@ -199,7 +199,7 @@ struct DeliveryAssets {
     derived: SnapshotReceipt,
     derived_manifest: Manifest,
     /// A verification Task's proof of the other Task's candidate it delivers, and its
-    /// artifact ID (ADR-0202).
+    /// artifact ID (ADR-0205).
     proof: Option<(String, review_core::task::delivery::TaskDeliveryProofV1)>,
 }
 

@@ -64,7 +64,7 @@ impl SealedSandbox {
         self.mutations.is_empty()
     }
 
-    /// The ignore rules of the sealed tree (ADR-0198): the kernel defaults, every `.gitignore`
+    /// The ignore rules of the sealed tree (ADR-0201): the kernel defaults, every `.gitignore`
     /// it holds and `.af/seal-ignore`.
     pub fn ignore_rules(&self) -> Result<crate::seal_ignore::IgnoreRules, std::io::Error> {
         crate::seal_ignore::IgnoreRules::of_tree(&self.root, &self.final_manifest)
@@ -199,7 +199,7 @@ pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
     let attached = sandbox.take_attached();
     let (root, baseline, dir) = sandbox.into_parts();
     // The base a judging Worker compared against is outside the tree, so the tree's diff
-    // cannot see a change to it; it is compared with what was attached instead (ADR-0203).
+    // cannot see a change to it; it is compared with what was attached instead (ADR-0206).
     if let Some(attached) = &attached
         && let Err(error) = verify_attached(dir.path(), attached)
     {
@@ -390,7 +390,7 @@ fn classify_directory_entry<'a>(
     let relative_path = path.strip_prefix(root).expect("walked path is under root");
     let relative = encode_path(path_bytes(relative_path));
     // A FIFO, a socket or a device is refused by name, never opened: reading one can block the
-    // seal forever or read a device (ADR-0198, #160).
+    // seal forever or read a device (ADR-0201, #160).
     if let Some(kind) = special_kind(&meta.file_type()) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,

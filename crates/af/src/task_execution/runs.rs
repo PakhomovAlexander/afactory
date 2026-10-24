@@ -1,4 +1,4 @@
-//! The processes that run Tasks (ADR-0202): every `af task run` records itself in its Store's
+//! The processes that run Tasks (ADR-0205): every `af task run` records itself in its Store's
 //! `runs/` directory before it takes the Task's lease, `runs/<task>-<run>.json`, and a detached
 //! run writes its log beside it, `runs/<task>-<run>.log`. From those records `af task run
 //! --detach` hands a run to the background, `af task wait` blocks until the Task settles, `af task

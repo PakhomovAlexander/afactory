@@ -426,7 +426,7 @@ impl Browser {
 }
 
 /// A machine that has registered a Provider, as every case here but the first run expects, so
-/// the browser opens on the settings (ADR-0201). The Provider is a `codex` context whose CLI is a
+/// the browser opens on the settings (ADR-0204). The Provider is a `codex` context whose CLI is a
 /// fake that is not logged in, first on the returned `PATH`, so discovery is quick and the same
 /// on every machine. A test that wrote its own registry keeps it.
 fn registered_machine(home: &Path) -> String {
@@ -580,7 +580,7 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
 }
 
 /// A first run: with no Provider registered the browser opens on the Providers pane, whose
-/// first row says how to register one (ADR-0201).
+/// first row says how to register one (ADR-0204).
 #[test]
 fn bare_af_with_no_provider_registered_opens_on_the_providers_pane() {
     let (_temp, root) = temp_root();

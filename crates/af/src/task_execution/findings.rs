@@ -1,4 +1,4 @@
-//! `af task findings` (ADR-0202): the review findings of a Task's last (or Nth) review round,
+//! `af task findings` (ADR-0205): the review findings of a Task's last (or Nth) review round,
 //! per reviewer — each with its severity, confidence, title, location, the quoted evidence and
 //! the proposed fix — then the evaluator's verdict and its reason. Text is grouped by severity;
 //! `--json` prints one `af/task-findings@1` document. Read-only: it reads what `af task report`
@@ -98,7 +98,7 @@ fn place(file: &str) -> Option<String> {
 /// reported none or whose result is missing included: a complete round's are the Finding Set
 /// entries that round saw itself, an incomplete round's each reviewer's recorded reports. The
 /// one builder of a round's findings: `af task findings` prints them, and a continued Task is
-/// handed exactly them (ADR-0203).
+/// handed exactly them (ADR-0206).
 pub(super) fn round_findings(
     cas: &Cas,
     round: &TaskReviewRoundV1,

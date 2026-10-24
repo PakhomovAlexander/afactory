@@ -1271,7 +1271,7 @@ fn main() {
         std::process::exit(code);
     };
     // Still the only thread: every thread started from here inherits the blocked signals. A run
-    // `af task run --detach` started outlives the terminal that started it (ADR-0202).
+    // `af task run --detach` started outlives the terminal that started it (ADR-0205).
     if std::env::var_os(task_execution::runs::DETACHED_ENV).is_some()
         && matches!(
             &command,
@@ -1294,7 +1294,7 @@ fn main() {
     // sandbox sweep below looks in.
     storage::set_output(runs_task_work(&command), verbose_sweeps(&command));
     // A Mac does not idle-sleep while Task work runs; `af task run --verbose` says so
-    // (ADR-0200). Held until af exits.
+    // (ADR-0203). Held until af exits.
     let _power = runs_task_work(&command)
         .then(|| {
             power::hold(matches!(
@@ -2111,7 +2111,7 @@ fn exit_interrupted(
 ) -> ! {
     let code = interrupt::exit_code(signal);
     // The same next command `af task show --json` names: `af task run ID` only while the
-    // interrupted node has a recovery left (ADR-0200). Either carries the Store selectors this
+    // interrupted node has a recovery left (ADR-0203). Either carries the Store selectors this
     // command was given.
     let resume = match (interrupt::noted_task(), interrupt::noted_next()) {
         (Some(id), Some(next)) => format!(
@@ -4972,7 +4972,7 @@ fn provider_doctor(options: &Options) -> Result<i32, String> {
 /// kernel preserved on purpose. One stderr line reports what was removed; stdout and every
 /// `--json` document are untouched.
 /// The sweep's line, if it removed anything, is printed once the command's own work is done:
-/// the first line of `af task run` is the one that says what the run does (ADR-0200).
+/// the first line of `af task run` is the one that says what the run does (ADR-0203).
 fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<Option<String>>> {
     std::thread::Builder::new()
         .name("af-sandbox-sweep".into())

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-materialized:1",
   "title": "Task materialized af/task-materialized@1",
-  "$comment": "What `af task materialize ID --into DIR --json` prints (ADR-0202): the Snapshot written into the worktree DIR, whether it is the Task's verified result (an unverified one is written only under `--allow-unverified`), and the paths, in the Snapshot's spelling, it wrote (new, or changed in content or kind), deleted, and changed only in their executable bit; then the next commands.",
+  "$comment": "What `af task materialize ID --into DIR --json` prints (ADR-0205): the Snapshot written into the worktree DIR, whether it is the Task's verified result (an unverified one is written only under `--allow-unverified`), and the paths, in the Snapshot's spelling, it wrote (new, or changed in content or kind), deleted, and changed only in their executable bit; then the next commands.",
   "type": "object",
   "additionalProperties": false,
   "required": [

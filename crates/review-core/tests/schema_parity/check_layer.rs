@@ -1,4 +1,4 @@
-//! The warm check layer's records (ADR-0198): `af.warm-sources/1`, `af.warm-holder/1`,
+//! The warm check layer's records (ADR-0201): `af.warm-sources/1`, `af.warm-holder/1`,
 //! `af.warm-eviction/1` and `af/TaskCheckLayer@1`. A fully populated value of each is valid
 //! against its schema and the Rust validator and round-trips; every shape either side refuses
 //! the other refuses too.

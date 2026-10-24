@@ -6,7 +6,7 @@ on 2026-09-28 by [ADR-0135](0135-collect-finished-tasks-behind-a-tombstone-and-a
 (package R5, see [Two bounds](#amendment-two-bounds)); amended on 2026-10-07 by
 [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md): the key no longer depends on a
 check's runtime path, and old keys are evicted by the Storage Budget; amended on 2026-10-23 by
-[ADR-0198](0198-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md):
+[ADR-0201](0201-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md):
 a busy key is waited for until the check's deadline instead of 60 seconds, `npm_cache` is a third
 kind, and each check records its layer.
 Supersedes in part

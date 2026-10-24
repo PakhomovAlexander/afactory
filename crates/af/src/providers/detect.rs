@@ -1,5 +1,5 @@
 //! `af provider detect`: the official CLIs and the auth directories on this machine, what each
-//! directory's CLI says about its login, and the one command that registers it (ADR-0197).
+//! directory's CLI says about its login, and the one command that registers it (ADR-0200).
 //!
 //! The scan reads names and metadata only. Binaries are looked up on the sanitized `PATH`, then
 //! in a fixed list of install directories; no shell, `npm prefix`, `nvm` or rc file is evaluated.

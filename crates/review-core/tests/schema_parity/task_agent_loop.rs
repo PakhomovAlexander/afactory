@@ -1,4 +1,4 @@
-//! The agent loop's documents and records (ADR-0202): `af/task-findings@1`,
+//! The agent loop's documents and records (ADR-0205): `af/task-findings@1`,
 //! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@1`, `af/task-detached@2`,
 //! `af/task-cancelled@1`, the `runs/` records `af/task-run-process@1` and
 //! `af/task-cancel-request@1`, and the `af/TaskDeliveryProof@1` a verification Task's delivery

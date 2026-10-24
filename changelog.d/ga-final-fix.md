@@ -7,7 +7,7 @@
   actions are typed fields: `install`, one `{kind, command, docs}` per kind whose CLI was not
   found, and `next_action`, the scan to run again with its own `--kind`, `--dir`, `--id` and
   `--all` when no CLI was found
-  ([ADR-0197](docs/adr/0197-detect-provider-logins-and-register-them-through-add.md),
+  ([ADR-0200](docs/adr/0200-detect-provider-logins-and-register-them-through-add.md),
   amended).
 - `af task findings ID --round N` shows round N's own evaluator verdict, the one the Task log
   recorded after that round, instead of the last one the current execution holds, and a

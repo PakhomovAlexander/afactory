@@ -127,7 +127,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             }
         };
         // A typed request's reply contract, as the strict schema Codex enforces on the final
-        // message, written beside it in this Attempt's own staging directory (ADR-0199).
+        // message, written beside it in this Attempt's own staging directory (ADR-0202).
         let schema = match review_runner::task::reply_schema::strict(&input) {
             Ok(schema) => schema,
             Err(error) => {
@@ -193,7 +193,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         let mut events = TaskEvents::default();
         let mut failure = None;
         let mut said = WorkerStderr::default();
-        // Read from the complete capture before any filter (ADR-0199): whether stdout held
+        // Read from the complete capture before any filter (ADR-0202): whether stdout held
         // anything, and the native text a `Retry-After` may be named in.
         let mut stdout_blank = false;
         let mut ending_text = String::new();

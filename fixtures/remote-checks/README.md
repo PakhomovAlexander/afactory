@@ -15,6 +15,17 @@ serve them, not recorded here.
   and `crates/af/tests/it/task_remote_checks.rs`. A test substitutes `@STATE@`, `@BARE@` and
   `@TASK@` and writes the result onto its own PATH; it never contacts a network. It closes the
   gate pull request when asked (`PATCH`, as the cleanup of a finished Task does), and refuses to
-  while a `refuse-close` file is in its state directory.
+  while a `refuse-close` file is in its state directory. It keeps the pull request's labels in
+  `labels` and the repository's in `repo-labels`, one name per line, adds and removes one label
+  of the pull request (`POST` and `DELETE` on its issue labels, refused while
+  `refuse-label-add` or `refuse-label-remove` exists), and records in `labels-created` every
+  addition of a label the repository did not have, which af must never make
+  ([ADR-0196](../../docs/adr/0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)).
 - `packages/` stages this repository's remote pipeline twins, their catalog pins and the
   `[checks.kernel.remote]` table for a person to install; its README says how.
+
+`pull-list-fails` refuses the pull-request list with HTTP 502; `labels-malformed` returns a
+label without a name. Both exercise refusal before a stale exemption can reach a new head.
+
+`pull-record-malformed` returns a pull-request list entry without its required fields. It
+must be an unreadable list, never an empty list that permits a head update.

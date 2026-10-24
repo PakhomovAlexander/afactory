@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:warm-sources:1",
   "title": "af.warm-sources/1",
-  "description": "What one toolchain key of the Warm Check Cache last built, kept beside the key as `<project>/<toolchain>.sources` (ADR-0198). Per source group of the Snapshot (a Cargo package directory as a Manifest path, or the empty string for the files no package directory holds): the domain-separated digest of the group's paths, kinds and content IDs, and the modification time the kernel gave the group's files, in nanoseconds since the Unix epoch as a canonical decimal string. A check whose group digest matches gives the group's files that time back, so Cargo keeps what it built from the same content; every other group is stamped now and rebuilt. The kernel writes the record under the key's lock before the check starts, never after.",
+  "description": "What one toolchain key of the Warm Check Cache last built, kept beside the key as `<project>/<toolchain>.sources` (ADR-0201). Per source group of the Snapshot (a Cargo package directory as a Manifest path, or the empty string for the files no package directory holds): the domain-separated digest of the group's paths, kinds and content IDs, and the modification time the kernel gave the group's files, in nanoseconds since the Unix epoch as a canonical decimal string. A check whose group digest matches gives the group's files that time back, so Cargo keeps what it built from the same content; every other group is stamped now and rebuilt. The kernel writes the record under the key's lock before the check starts, never after.",
   "type": "object",
   "additionalProperties": false,
   "required": [

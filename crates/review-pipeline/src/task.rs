@@ -69,7 +69,7 @@ pub struct TaskWorkOutput {
     /// The same input is flagged again, so a failed Attempt with it is not retried (ADR-0147).
     pub refused_input: bool,
     /// Whether the failure was transient, and what the Attempt did about its Provider, for the
-    /// runtime to retry within the Attempt and to record (ADR-0199).
+    /// runtime to retry within the Attempt and to record (ADR-0202).
     pub notes: review_runner::task::CallNotes,
 }
 
@@ -185,7 +185,7 @@ pub struct TaskRuntime<'store, 'host> {
     authority: &'host dyn TaskAuthority,
     host: &'host dyn TaskOperatorHost,
     cancellation: Option<&'host AtomicBool>,
-    /// Set by the heartbeat when this writer lost its lease (ADR-0200): the run records nothing
+    /// Set by the heartbeat when this writer lost its lease (ADR-0203): the run records nothing
     /// more, so the successor settles its work as abandoned by a lost writer.
     writer_lost: AtomicBool,
     lease_timing: lease::LeaseTiming,
@@ -413,7 +413,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     /// The one dispatch entry for every Task node: a cancelled or unresolvable node is
     /// refused before the host runs, charging nothing.
     /// One Attempt's work: the host's call, called again after a transient Provider failure
-    /// within the Attempt's own wall and reservation (ADR-0199). Each wait is recorded as a
+    /// within the Attempt's own wall and reservation (ADR-0202). Each wait is recorded as a
     /// `TaskProviderEvent@1` before it begins, so `af task show` names it while it lasts; it is
     /// cut short by cancellation, and it never extends a deadline or resets the reservation.
     fn execute_attempt(
@@ -1021,7 +1021,7 @@ impl TaskRuntime<'_, '_> {
                 // Reported but incomplete counters keep the reservation floor at settlement; an
                 // observation without any counter is no report (ADR-0143). The floor is not
                 // usage: the wall record and the usage observation below keep what was
-                // observed, so an Attempt abandoned meanwhile is charged only that (ADR-0200).
+                // observed, so an Attempt abandoned meanwhile is charged only that (ADR-0203).
                 if observation
                     .as_ref()
                     .is_some_and(|o| !o.charge_complete && o.reported_usage.is_some())
@@ -1193,7 +1193,7 @@ impl TaskRuntime<'_, '_> {
             if let Some(attempt) = &attempt {
                 // A writer that lost its lease records nothing more: its successor settles this
                 // Attempt as abandoned by a lost writer, from the usage retained above
-                // (ADR-0200).
+                // (ADR-0203).
                 if self.writer_lost() {
                     return Err(format!(
                         "{}: Attempt {} of {} is left for the next writer to settle",
@@ -1208,7 +1208,7 @@ impl TaskRuntime<'_, '_> {
                     },
                     // Its host stopped it (SIGINT or SIGTERM): no answer of the Attempt, so it
                     // is abandoned and counts against the node's recovery allowance, not its
-                    // Attempt limit (ADR-0200).
+                    // Attempt limit (ADR-0203).
                     Err(error) if cancelled => {
                         let diagnostic_id = self.cas.put_json(&serde_json::json!({"schema":"af.task-diagnostic/1", "error":error, "cause":"host_cancelled"})).map_err(|e| e.to_string())?;
                         TaskAttemptResultV1::Abandoned { diagnostic_id }
@@ -1223,7 +1223,7 @@ impl TaskRuntime<'_, '_> {
                 };
                 // An Attempt that answered, or failed on its own, is charged at least the
                 // reservation its incomplete counters keep; an abandoned one only what it was
-                // observed to use, and its reservation returns to the Task (ADR-0200).
+                // observed to use, and its reservation returns to the Task (ADR-0203).
                 let abandoned = matches!(conclusion, TaskAttemptResultV1::Abandoned { .. });
                 if !abandoned
                     && unknown_usage.is_none()

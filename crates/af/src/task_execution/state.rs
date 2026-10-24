@@ -88,7 +88,7 @@ pub(crate) struct CheckView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stderr_id: Option<String>,
     pub(crate) stderr_tail: Vec<String>,
-    /// The check's warm layer, as `af/TaskCheckLayer@1` recorded it (ADR-0198).
+    /// The check's warm layer, as `af/TaskCheckLayer@1` recorded it (ADR-0201).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) layer: Option<review_core::task::check_layer::TaskCheckLayerRunV1>,
 }
@@ -122,7 +122,7 @@ pub(crate) fn view(
         _ if !state.admitted => TaskStatePhaseV1::Planned,
         // A run that ended on a node's own failure without finishing waits for a person (a
         // signed decision, say); one that was interrupted or lost its writer was abandoned, and
-        // so was a node whose Attempt was (ADR-0200).
+        // so was a node whose Attempt was (ADR-0203).
         _ if abandoned_cause(cas, state, cancelled) != TaskCauseV1::HostCancelled
             && failures.iter().any(|f| {
                 f.cause.is_some_and(|cause| {
@@ -155,7 +155,7 @@ pub(crate) fn view(
             TaskStateV1::new(phase).with_next(next)
         }
         // A node that used up its recovery allowance is never dispatched again: `af task run`
-        // refuses, so the next command starts the Task again from its file (ADR-0200).
+        // refuses, so the next command starts the Task again from its file (ADR-0203).
         TaskStatePhaseV1::Abandoned => TaskStateV1::ended(
             phase,
             TaskOutcomeV1::Cancelled,
@@ -213,7 +213,7 @@ pub(crate) fn started(state: &TaskProjection) -> bool {
 
 /// Why a Task that ran stopped before it finished: an `af task cancel` of its last lease, a
 /// started Attempt nobody settled (its writer was lost), the cause its last Attempt was
-/// abandoned with (ADR-0200), an interrupt as its last Attempt's usage or diagnostic records it,
+/// abandoned with (ADR-0203), an interrupt as its last Attempt's usage or diagnostic records it,
 /// or a writer that lost its lease (the default when nothing says more).
 fn abandoned_cause(cas: &Cas, state: &TaskProjection, cancelled: Option<u64>) -> TaskCauseV1 {
     use review_store::store::task::execution::TaskAbandonCause;
@@ -1344,7 +1344,7 @@ mod tests {
         }
     }
 
-    /// `af task show --checks` under a warm layer (ADR-0198): the key, how the check came by
+    /// `af task show --checks` under a warm layer (ADR-0201): the key, how the check came by
     /// it, warm or cold, the source groups, both phases against their deadlines, the deadline
     /// that ended it and an eviction with its cause.
     #[test]

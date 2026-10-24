@@ -25,7 +25,7 @@ pub enum NativeFailureKind {
     ModelRefused,
     /// The machine the Provider runs on failed af, not the model or the login: its CLI cannot
     /// start or serve its protocol, or its identity probe proved nothing within the Attempt's
-    /// wall (ADR-0199).
+    /// wall (ADR-0202).
     Environment,
     Unknown,
 }
@@ -153,7 +153,7 @@ impl NativeFailureKind {
     }
 
     /// The transient class of this failure, when the same input may get past it after a wait
-    /// (ADR-0199): a network failure or a model at capacity. Quota, authentication, a refused
+    /// (ADR-0202): a network failure or a model at capacity. Quota, authentication, a refused
     /// invocation and a classifier refusal recur, and are never retried in the Attempt.
     pub fn transient(self) -> Option<TransientClass> {
         match self {
@@ -184,7 +184,7 @@ impl NativeFailureKind {
     }
 }
 
-/// A Provider failure class the same input may get past after a wait (ADR-0199).
+/// A Provider failure class the same input may get past after a wait (ADR-0202).
 pub use review_core::task::provider_event::TransientClassV1 as TransientClass;
 
 /// A transient failure of one native call, and the wait the Provider asked for, if it named one.
@@ -568,7 +568,7 @@ mod tests {
         }
     }
 
-    /// ADR-0199: a refusal that links the Provider's own documentation is kept as it was; the
+    /// ADR-0202: a refusal that links the Provider's own documentation is kept as it was; the
     /// documentation hosts are never a reason to replace the capture. Their login and key pages
     /// still are, and so is a code in any URL.
     #[test]

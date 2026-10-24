@@ -2,7 +2,7 @@
   `af/task-detached@2` with `admitted` and `next_action`, and a run that neither took the Task
   nor admitted its plan within 2 minutes exits 4 with `admitted: false` and `af task status ID`
   next
-  ([ADR-0202](docs/adr/0202-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
+  ([ADR-0205](docs/adr/0205-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
 - A second `af task cancel` of one run reports the first request, its requester and time, and
   waits for the same stop instead of signalling again. `af task status` names the run that holds
   the Task's lease and prints the next command on its own indented lines, broken between its

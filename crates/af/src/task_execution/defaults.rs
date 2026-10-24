@@ -1,4 +1,4 @@
-//! `[task.defaults]` of `.af/af.toml` (ADR-0203): the `limits`, `pipeline` and `fallback` a
+//! `[task.defaults]` of `.af/af.toml` (ADR-0206): the `limits`, `pipeline` and `fallback` a
 //! Task file inherits when it does not state them.
 //!
 //! The table is read from the Authority Snapshot, as every other piece of Task policy is, never

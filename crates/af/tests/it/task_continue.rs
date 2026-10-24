@@ -1,4 +1,4 @@
-//! ADR-0203 end to end: a reviewed Task continued from its candidate with typed findings, and a
+//! ADR-0206 end to end: a reviewed Task continued from its candidate with typed findings, and a
 //! short Task file that takes the project's `[task.defaults]` and lists its context by digest.
 //!
 //! The fixture is `fixtures/task-runtime/continue`. Its first Task ends `changes_requested` on

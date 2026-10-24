@@ -656,7 +656,7 @@ exit 64
         0o700
     );
     // The auth-context lock lives in af's state, below the home's `.local/state`, never in the
-    // auth directory (ADR-0197).
+    // auth directory (ADR-0200).
     assert!(!auth.join(".af-codex-setup.lock").exists());
     let locks = root.path().join(".local/state/af/locks");
     assert_eq!(

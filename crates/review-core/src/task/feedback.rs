@@ -67,7 +67,7 @@ impl TaskRetryFeedbackV1 {
 pub const WORKER_REPLY_REASK_V1: &str = "af/WorkerReplyReask@1";
 
 /// What the kernel tells a model Worker whose typed reply did not parse when it asks it once more
-/// within the same Attempt (ADR-0199): the parse error with its line and column, the offending
+/// within the same Attempt (ADR-0202): the parse error with its line and column, the offending
 /// excerpt of the reply, and the CAS digest of the whole reply the Attempt keeps. It travels as
 /// one more feedback value of the re-sent request; it is never derived from a transcript, and it
 /// grants nothing.

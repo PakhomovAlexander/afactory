@@ -56,11 +56,11 @@ pub fn af() -> Command {
 
 /// The debug-only setting that replaces the system install directories `af provider detect`
 /// searches (`/opt/homebrew/bin`, `/usr/local/bin`) with a `:`-separated list; a release binary
-/// never reads it (ADR-0197).
+/// never reads it (ADR-0200).
 pub const DETECT_SYSTEM_DIRS_SETTING: &str = "AF_TEST_DETECT_SYSTEM_DIRS";
 
 /// The debug-only setting of the first wait before an Attempt calls its Provider again after a
-/// transient failure (ADR-0199); a release binary always waits its production 60 s.
+/// transient failure (ADR-0202); a release binary always waits its production 60 s.
 pub const RETRY_BASE_SETTING: &str = "AF_TEST_PROVIDER_RETRY_BASE_MS";
 
 /// Ten milliseconds in place of the production minute: a fake Provider's transient failure is

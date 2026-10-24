@@ -62,7 +62,7 @@ pub(crate) fn install() -> Result<(), String> {
 }
 
 /// Keep the terminal's hangup away from this process for the rest of its life: a run `af task
-/// run --detach` started in the background outlives the shell that started it (ADR-0202). Call
+/// run --detach` started in the background outlives the shell that started it (ADR-0205). Call
 /// from the main thread before it starts any other thread. A blocked SIGHUP stays pending and is
 /// never taken; children start with an empty mask, so Workers keep the default.
 pub(crate) fn ignore_hangup() -> Result<(), String> {

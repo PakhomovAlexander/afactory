@@ -1,4 +1,4 @@
-//! `af doctor`: a token-free check of the machine and the repository it runs in (ADR-0201). Each
+//! `af doctor`: a token-free check of the machine and the repository it runs in (ADR-0204). Each
 //! case runs in a private home that a snapshot proves the command leaves exactly as it found it,
 //! and every `--json` document is checked against `schemas/doctor-v1.json`.
 

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:warm-eviction:1",
   "title": "af.warm-eviction/1",
-  "description": "What the Storage Budget leaves beside a Warm Check Cache key it evicted, as `<project>/<toolchain>.evicted` (ADR-0198): who evicted it, when, and the bytes it held. The sweep evicts only a key no check holds; a check that nevertheless finds its key gone reports this record's cause, `layer evicted during build by storage sweep at <time>`, and a key gone without one as removed by another process.",
+  "description": "What the Storage Budget leaves beside a Warm Check Cache key it evicted, as `<project>/<toolchain>.evicted` (ADR-0201): who evicted it, when, and the bytes it held. The sweep evicts only a key no check holds; a check that nevertheless finds its key gone reports this record's cause, `layer evicted during build by storage sweep at <time>`, and a key gone without one as removed by another process.",
   "type": "object",
   "additionalProperties": false,
   "required": [

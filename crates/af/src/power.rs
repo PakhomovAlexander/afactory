@@ -1,4 +1,4 @@
-//! A power assertion while af runs Task work (ADR-0200). On macOS `af task run` and
+//! A power assertion while af runs Task work (ADR-0203). On macOS `af task run` and
 //! `af task start --execute` start `/usr/bin/caffeinate -i -s -w <af's pid>`, so the machine does
 //! not idle-sleep (and, on AC power, does not sleep) while a Worker runs; `caffeinate` ends by
 //! itself when af ends, however af ends. It runs in its own process group, so a Ctrl-C meant for
@@ -48,7 +48,7 @@ impl Drop for Held {
 }
 
 /// What `hold` has to say under `verbose`, until [`say`] prints it: after the run's first line,
-/// which says what the run does with an interrupted node (ADR-0200).
+/// which says what the run does with an interrupted node (ADR-0203).
 static NOTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// The widest line af prints here; a longer one continues on lines indented by two spaces.

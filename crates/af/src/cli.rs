@@ -1844,7 +1844,7 @@ The run has no terminal, survives the shell that started it, and is the same pro
 foreground run is; `af task wait`, `af task status` and `af task cancel` follow it. Every run \
 records its process in the Store, `runs/<TASK_ID>-<N>.json`, before it takes the Task.\n\n\
 --from TASK plans NEW_ID as a new Task that continues the finished Task TASK from its reviewed \
-candidate (ADR-0203): the candidate Snapshot of its last review round (--round N for another) is \
+candidate (ADR-0206): the candidate Snapshot of its last review round (--round N for another) is \
 the new source, that round's reviewer findings and evaluator verdict are the implementer's \
 `findings` input, --goal FILE replaces the goal, and TASK's Task file is the rest. Without \
 --execute it prints the plan for --confirm-plan, as `af task plan` does; --from runs in the \

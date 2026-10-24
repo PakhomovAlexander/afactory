@@ -12,4 +12,4 @@
   `.gitignore` and `.af/seal-ignore`), lists them in `af.seal-ignored/1`, and refuses a FIFO,
   socket or device file by name (#160). `af task show --checks` prints each check's layer, lock,
   source groups and phases; its `--json` document is now `af/task-checks@2`
-  ([ADR-0198](docs/adr/0198-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)).
+  ([ADR-0201](docs/adr/0201-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)).

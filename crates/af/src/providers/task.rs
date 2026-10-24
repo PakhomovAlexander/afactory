@@ -256,7 +256,7 @@ impl TaskProviderIdentity {
     /// The executable is the one this identity names: every invocation runs that absolute path,
     /// so it must still be there. What `PATH` resolves to now is not compared. A native client
     /// that updates itself repoints its launcher at a new version file (ADR-0126): the version it
-    /// reports then is read again, and an update alone is recorded, never refused (ADR-0199).
+    /// reports then is read again, and an update alone is recorded, never refused (ADR-0202).
     /// What the recheck did about the Provider without refusing is returned as Task events, with
     /// the executable and CLI version the capture follows from then on.
     fn check_current(
@@ -288,7 +288,7 @@ impl TaskProviderIdentity {
     ) -> Result<Rechecked, Recheck> {
         let mut rechecked = Rechecked::default();
         // A probe that proves nothing either way is sent again within the Attempt's wall:
-        // silence on a busy host is never an account change (ADR-0199).
+        // silence on a busy host is never an account change (ADR-0202).
         let mut silences = Vec::new();
         loop {
             let probe_deadline = self
@@ -784,7 +784,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
                     let mut returned =
                         refuse(&recheck.diagnostic(identity.spec.kind, identity.probe_wall));
                     // A CLI that cannot serve and a probe that proved nothing are the host's
-                    // failure, never an account change (ADR-0199).
+                    // failure, never an account change (ADR-0202).
                     if matches!(
                         recheck,
                         Recheck::CliCannotServe(_) | Recheck::Unverified { .. }

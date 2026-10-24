@@ -1462,7 +1462,7 @@ fn providers_block(
             "the Provider registry cannot be read: {warning}   ← af provider status"
         ));
     }
-    // The same names-only scan `af provider status` and `af doctor` list (ADR-0197).
+    // The same names-only scan `af provider status` and `af doctor` list (ADR-0200).
     if !registry.unregistered.is_empty() {
         let found: Vec<String> = registry
             .unregistered

@@ -545,7 +545,7 @@ fn native_usage_observation_binds_context_producer_floor_and_preserves_late_char
                     TaskExecutionRecordV1::UsageObserved {
                         attempt_id: attempt.id().into(),
                         // An observation records usage, not a settlement: it may stay below
-                        // the reservation (ADR-0200), never below the counters it reports.
+                        // the reservation (ADR-0203), never below the counters it reports.
                         charged_tokens: if variant == "charge" { 2 } else { charge },
                         usage_id: usage_id.clone(),
                         raw_artifact_ids: raw,

@@ -7,7 +7,7 @@ min_af = "0.2"
 [defaults]
 pipeline = "default"
 
-# What a Task file that states only `task_id`, `kind` and `goal` plans with (ADR-0203).
+# What a Task file that states only `task_id`, `kind` and `goal` plans with (ADR-0206).
 [task.defaults]
 pipeline = "fixture/implementation"
 fallback = "refuse"

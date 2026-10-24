@@ -108,7 +108,8 @@ chooses where it runs, and a project that wants both gates keeps two pipeline va
 **Remote Check mapping**:
 The operator's machine-local file (`$XDG_CONFIG_HOME/af/remote-checks.toml` or
 `AF_TASK_REMOTE_CHECK_POLICY_FILE`) that names, per repository, where this machine may push gate
-branches, and nothing else. Having a target is the authorization to push: a pipeline with remote
+branches and, optionally, the prose-only `no_perf_paths` that earn a Gate pull request the
+`no-perf` label, and nothing else. Having a target is the authorization to push: a pipeline with remote
 checks cannot be planned without one, and the target is read again before the check Attempt
 pushes. It selects no check, and a file that still carries RC1's `checks` key is refused. No
 record ever holds its path or push URL.
@@ -121,7 +122,11 @@ owned by that Task in its Store. Resume and repair rounds attach to it; it is no
 merge. When the Task finishes, af closes it and deletes both branches, each only while it still
 equals the Task's recorded evidence, recording a `gate_cleanup` that never changes the Task's
 result; the Task is not collected before one is done
-([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)).
+([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)). Its one label af changes
+is `no-perf`: set when the whole source-to-candidate change lies in the mapping's
+`no_perf_paths` and the repository already has the label, removed before a head update that
+no longer qualifies
+([ADR-0196](docs/adr/0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)).
 _Avoid_: the delivery pull request — delivery still never pushes or opens one.
 
 **Storage Budget**:
@@ -225,7 +230,7 @@ not create Campaign Resolution authority. Later discovery can reopen a previousl
 A new Task planned from a finished reviewed one (`af task run NEW --from TASK`, or a Task file's
 `continue`): its source is the candidate a review round of TASK reviewed, and its implementer
 receives that round's findings as one typed `af/TaskReviewFindings@1` input. It records the lineage and
-carries no acceptance, verification or budget of the Task it continues (ADR-0203).
+carries no acceptance, verification or budget of the Task it continues (ADR-0206).
 _Avoid_: **Task Review Continuation** — that is repair evidence inside one Review; "follow-up
 Task" with the findings pasted into its goal.
 
@@ -233,7 +238,7 @@ Task" with the findings pasted into its goal.
 The tree before the change, materialized read-only beside a judging Worker's own tree at
 `../base`, with `../diff-subject.json` (`af/diff-subject@1`) listing each changed path and its
 digest on each side. Context for a reviewer, evaluator or verifier, never a port and never sealed
-back (ADR-0203).
+back (ADR-0206).
 
 **Captured Issue Source**:
 An exact read-only observation of ticket fields, with raw source, per-field value and normalized
@@ -648,7 +653,7 @@ revoked epoch is quarantined — recorded, charged, and unable to reach the Find
 is *abandoned* when its Writer was lost or its host cancelled it (SIGINT, SIGTERM): it is charged
 the usage its Provider reported, never its reservation, and counts against its node's Recovery
 Allowance instead of its Attempt limits
-([ADR-0200](docs/adr/0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
+([ADR-0203](docs/adr/0203-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
 _Avoid_: treating a fenced Attempt as a free retry; it spent tokens and the budget knows.
 
 **Writer**:

@@ -34,7 +34,7 @@ pub(super) enum ObservedCharge {
     /// keep the reservation floor.
     Settlement { unknown_usage: bool },
     /// An abandoned Attempt's settlement: charged what was observed, never its reservation
-    /// (ADR-0200).
+    /// (ADR-0203).
     Abandoned,
 }
 
@@ -80,7 +80,7 @@ pub(super) fn validate(
         // An incomplete observation that reported no counter at all is no usage report: such
         // an Attempt settles as unknown usage at zero (ADR-0143). A settlement of one that
         // reported any counter keeps the reservation floor, unless the Attempt was abandoned:
-        // that is charged what was observed (ADR-0200). An observation is no settlement.
+        // that is charged what was observed (ADR-0203). An observation is no settlement.
         let floor = match charge {
             ObservedCharge::Settlement { unknown_usage } => {
                 !(unknown_usage && observation.reported_usage.is_none())

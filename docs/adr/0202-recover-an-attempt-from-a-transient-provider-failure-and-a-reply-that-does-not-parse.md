@@ -1,4 +1,4 @@
-# ADR-0199: Recover an Attempt from a transient Provider failure and a reply that does not parse
+# ADR-0202: Recover an Attempt from a transient Provider failure and a reply that does not parse
 
 **Status:** accepted (2026-10-22).
 

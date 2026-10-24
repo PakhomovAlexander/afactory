@@ -1307,17 +1307,17 @@ fn the_checked_in_fixture_is_what_the_renderer_prints_for_its_document() {
 #[test]
 fn an_adr_file_is_named_by_its_four_digit_number() {
     assert_eq!(
-        adr_number("docs/adr/0196-rerun.md").as_deref(),
-        Some("0196")
+        adr_number("docs/adr/0199-rerun.md").as_deref(),
+        Some("0199")
     );
     for other in [
         "docs/adr/README.md",
         "docs/adr/196-short.md",
-        "docs/adr/0196.md",
-        "docs/adr/0196-x/y.md",
-        "docs/adr/0196-rerun.txt",
-        "docs/design/0196-rerun.md",
-        "crates/docs/adr/0196-rerun.md",
+        "docs/adr/0199.md",
+        "docs/adr/0199-x/y.md",
+        "docs/adr/0199-rerun.txt",
+        "docs/design/0199-rerun.md",
+        "crates/docs/adr/0199-rerun.md",
     ] {
         assert_eq!(adr_number(other), None, "{other}");
     }

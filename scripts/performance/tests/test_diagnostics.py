@@ -1051,12 +1051,9 @@ class Counters(TempDir):
                                                                   codesign=self.path("none"))
         self.assertEqual((available, reason), (False, "samply_flags_missing"))
         self.assertIn("--save-only", detail)
-        # The host's own `ls`, by the real path it resolves to: `/bin/ls` on macOS, `/usr/bin/ls`
-        # with GNU coreutils, the multicall `/usr/lib/cargo/bin/coreutils` with Rust coreutils.
-        ls = os.path.realpath(shutil.which("ls", path="/usr/bin:/bin") or "/bin/ls")
-        self.assertTrue(ls.startswith(counters.PROTECTED_PREFIXES),
-                        "%s is under none of %s" % (ls, counters.PROTECTED_PREFIXES))
-        available, reason, _, _ = counters.samply_capability(boss, full, ls, env, 10,
+        # The host's /bin/ls may resolve outside the protected path.
+        available, reason, _, _ = counters.samply_capability(boss, full,
+                                                             "/System/af-protected-fixture", env, 10,
                                                              codesign=self.path("none"))
         self.assertEqual((available, reason), (False, "protected_executable"))
         resolve = os.path.realpath

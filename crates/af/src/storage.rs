@@ -2232,7 +2232,7 @@ fn collect_tasks(
         let result = match &applied {
             Err(error) => Err(failed(error.clone())),
             Ok(done) if done.tombstoned.contains(&task_id) => {
-                // A collected Task's run records and logs go with it (ADR-0202).
+                // A collected Task's run records and logs go with it (ADR-0205).
                 crate::task_execution::runs::forget(state, &task_id);
                 Ok(done
                     .plan
@@ -2577,7 +2577,7 @@ fn evict(
                     match key.identity() {
                         Ok(locked) if locked == measured => {
                             let bytes = key.remove_key().map_err(failed)?;
-                            // The cause a check that finds this key gone reports (ADR-0198).
+                            // The cause a check that finds this key gone reports (ADR-0201).
                             let record = review_core::task::check_layer::WarmEvictionV1 {
                                 schema: review_core::task::check_layer::WARM_EVICTION_V1.into(),
                                 by: review_core::task::check_layer::WarmEvictorV1::StorageSweep,

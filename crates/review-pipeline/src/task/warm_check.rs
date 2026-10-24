@@ -71,13 +71,13 @@ pub(crate) const DEADLINE_EXHAUSTED: &str = "deadline_exhausted";
 
 mod sources;
 
-/// The offline check's npm cache rules (ADR-0198), for callers that fill or inspect a cache.
+/// The offline check's npm cache rules (ADR-0201), for callers that fill or inspect a cache.
 pub use review_check::NpmPackagePin as NpmPin;
 pub use review_check::offline;
 pub(crate) use sources::{PackageIndex, SourcePlan};
 
 /// The build deadline this repository declares, and the one the documentation recommends
-/// (ADR-0198). A policy that leaves `[warm] build_wall_ms` out keeps one deadline for the
+/// (ADR-0201). A policy that leaves `[warm] build_wall_ms` out keeps one deadline for the
 /// whole check: a default would lengthen every warm check Attempt and refuse Task files whose
 /// verification reserve was sized for `check_wall_ms` alone.
 pub const RECOMMENDED_BUILD_WALL_MS: u64 = 2_400_000;
@@ -85,7 +85,7 @@ pub const RECOMMENDED_BUILD_WALL_MS: u64 = 2_400_000;
 pub const MAX_BUILD_WALL_MS: u64 = 3_600_000;
 
 const TOOLCHAIN_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
-/// How often a check waiting for a held layer says so (ADR-0198).
+/// How often a check waiting for a held layer says so (ADR-0201).
 const WAIT_NOTICE: Duration = Duration::from_secs(60);
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 const MONITOR_POLL: Duration = Duration::from_millis(50);
@@ -102,7 +102,7 @@ pub enum WarmBuildCacheKind {
     /// Cargo's registry and git caches, bound as `CARGO_HOME`. It never holds a credential.
     CargoHome,
     /// npm's content-addressed cache, bound as `npm_config_cache`: what an offline check
-    /// (ADR-0198) installs its pinned packages from without network.
+    /// (ADR-0201) installs its pinned packages from without network.
     NpmCache,
 }
 
@@ -162,14 +162,14 @@ pub struct CodeWarmPolicy {
     )]
     pub hard_max_bytes: Option<u64>,
     /// When another check holds the layer, build in a private copy of it instead of waiting
-    /// (ADR-0198). Absent or `false`, a check waits for the layer until its deadline.
+    /// (ADR-0201). Absent or `false`, a check waits for the layer until its deadline.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present_option"
     )]
     pub clone_when_busy: Option<bool>,
-    /// The deadline of a check's build phase, until it reports its `build` step (ADR-0198);
+    /// The deadline of a check's build phase, until it reports its `build` step (ADR-0201);
     /// `check_wall_ms` then governs the tests. Absent, the whole check has `check_wall_ms`, as
     /// before; see [`RECOMMENDED_BUILD_WALL_MS`].
     #[serde(
@@ -270,7 +270,7 @@ pub(crate) type CacheSourceResolver =
 pub(crate) struct WarmCheckHost {
     pub(crate) root: Option<PathBuf>,
     /// How long a check waits for a held layer; `None`, the default, waits until the check's
-    /// deadline (ADR-0198).
+    /// deadline (ADR-0201).
     pub(crate) lock_wait: Option<Duration>,
     /// How often a waiting check says whom it waits for.
     pub(crate) wait_notice: Duration,
@@ -677,7 +677,7 @@ impl Observation {
     }
 }
 
-/// What a check learned of its layer while it was prepared (ADR-0198), for its
+/// What a check learned of its layer while it was prepared (ADR-0201), for its
 /// `af/TaskCheckLayer@1` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LayerFacts {
@@ -792,7 +792,7 @@ pub(crate) struct PreparedCheck {
     /// The locked warm directories the check builds into; an absent kind runs cold.
     pub(crate) directories: Vec<(WarmBuildCacheKind, WarmDirectory)>,
     /// Private copies of a busy layer's directories, below the check's runtime directory, when
-    /// `[warm] clone_when_busy` is on (ADR-0198).
+    /// `[warm] clone_when_busy` is on (ADR-0201).
     pub(crate) clones: Vec<(WarmBuildCacheKind, PathBuf)>,
     /// Exactly one per declared kind, build directories first, in declared order.
     pub(crate) observations: Vec<Observation>,
@@ -804,7 +804,7 @@ pub(crate) struct PreparedCheck {
 
 impl PreparedCheck {
     /// Order sources against the actual held target, not an assumed monotonic wall clock, and
-    /// by content (ADR-0198): under the key's lock, a source group whose digest the key's
+    /// by content (ADR-0201): under the key's lock, a source group whose digest the key's
     /// sources record holds gets its recorded stamp back, so Cargo keeps what it built from that
     /// content; every other group is stamped now, newer than everything in the target, and is
     /// rebuilt. The record is removed before any file is stamped and written again before the
@@ -1539,7 +1539,7 @@ impl<'a> WarmSession<'a> {
             .collect()
     }
 
-    /// Run one check while a monitor watches it (ADR-0131, ADR-0198).
+    /// Run one check while a monitor watches it (ADR-0131, ADR-0201).
     ///
     /// When the check holds its key, the monitor samples the key's bytes: above `hard_max_bytes`
     /// it ends the check's process group through the runner's supervised cancellation. However
@@ -1802,7 +1802,7 @@ impl<'a> WarmSession<'a> {
     }
 }
 
-/// The deadlines of a warm check's two phases (ADR-0198).
+/// The deadlines of a warm check's two phases (ADR-0201).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PhaseDeadlines {
     /// `[warm] build_wall_ms`, from the check's start; absent, no phase has a deadline of its
@@ -3286,7 +3286,7 @@ mod tests {
     }
 
     /// The held check and a waiting one: the waiter holds the layer once the holder released
-    /// it, says it waited, and names the holder its record named (ADR-0198).
+    /// it, says it waited, and names the holder its record named (ADR-0201).
     #[test]
     fn two_checks_in_one_layer_serialize_and_the_second_names_whom_it_waited_for() {
         let fixture = fixture();

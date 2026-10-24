@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-inspection:13",
   "title": "Task inspection af/task-inspection@13",
-  "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together. Version 12 adds the `state` every rendering prints, the `gate` summary of the last check receipt with its check reports and gate retries, and the `failures` of the last run report (`af help task-states`). Version 13 adds `continues`, the Task and review round a continued Task was planned from (ADR-0203).",
+  "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together. Version 12 adds the `state` every rendering prints, the `gate` summary of the last check receipt with its check reports and gate retries, and the `failures` of the last run report (`af help task-states`). Version 13 adds `continues`, the Task and review round a continued Task was planned from (ADR-0206).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -558,7 +558,7 @@
       }
     },
     "provider_events": {
-      "description": "What started Attempts did about their Provider without failing, in log order (ADR-0199): each `TaskProviderEvent@1` event of the Task's log with its sequence. Absent when there is none.",
+      "description": "What started Attempts did about their Provider without failing, in log order (ADR-0202): each `TaskProviderEvent@1` event of the Task's log with its sequence. Absent when there is none.",
       "type": "array",
       "minItems": 1,
       "items": {
@@ -677,7 +677,7 @@
       }
     },
     "graph": {
-      "$comment": "af.compiled-task/2 is the graph of an af.pipeline/3 pipeline, whose slots declare recovery_attempts (ADR-0200); every other graph is af.compiled-task/1.",
+      "$comment": "af.compiled-task/2 is the graph of an af.pipeline/3 pipeline, whose slots declare recovery_attempts (ADR-0203); every other graph is af.compiled-task/1.",
       "oneOf": [
         {
           "$ref": "urn:af:schema:compiled-task:1"
@@ -1145,7 +1145,7 @@
       "$ref": "urn:af:schema:task-input-bindings:1"
     },
     "continues": {
-      "description": "What a continued Task continues (ADR-0203): the Task and review round it was planned from with `af task run NEW --from TASK` or a Task file's `continue` table, that Task's result, the reviewed candidate Snapshot this Task reads as its source, and the af/TaskReviewFindings@1 artifact its implementer receives with the number of findings it holds. Absent for a Task that continues nothing; provenance, never authority.",
+      "description": "What a continued Task continues (ADR-0206): the Task and review round it was planned from with `af task run NEW --from TASK` or a Task file's `continue` table, that Task's result, the reviewed candidate Snapshot this Task reads as its source, and the af/TaskReviewFindings@1 artifact its implementer receives with the number of findings it holds. Absent for a Task that continues nothing; provenance, never authority.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -1182,7 +1182,7 @@
       }
     },
     "gate": {
-      "description": "The last check receipt the Task recorded, summarized: its status and the failing and flaky tests its runners named, as `af task list --json` carries them; and the gate's evidence `af task show` prints beside it (ADR-0196): each check node's latest `af/TaskCheckReport@1` and every `af task run --retry-gate` that ran a failed gate again on the same candidate. Absent before a check recorded one.",
+      "description": "The last check receipt the Task recorded, summarized: its status and the failing and flaky tests its runners named, as `af task list --json` carries them; and the gate's evidence `af task show` prints beside it (ADR-0199): each check node's latest `af/TaskCheckReport@1` and every `af task run --retry-gate` that ran a failed gate again on the same candidate. Absent before a check recorded one.",
       "$ref": "#/$defs/gate"
     },
     "failures": {

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-review-findings:1",
   "title": "TaskReviewFindings af/TaskReviewFindings@1",
-  "$comment": "The findings a continued Task's implementer receives on its optional `findings` input port (ADR-0203): every report of the continued review round's selected reviewer results and, when it did not pass, the evaluator's verdict, each under the ID the implementer's reply answers by. Typed input data carried as an artifact, outside the 64 KiB Requirements cap; no acceptance, verification or budget crosses the Task boundary through it.",
+  "$comment": "The findings a continued Task's implementer receives on its optional `findings` input port (ADR-0206): every report of the continued review round's selected reviewer results and, when it did not pass, the evaluator's verdict, each under the ID the implementer's reply answers by. Typed input data carried as an artifact, outside the 64 KiB Requirements cap; no acceptance, verification or budget crosses the Task boundary through it.",
   "type": "object",
   "additionalProperties": false,
   "required": [

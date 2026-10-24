@@ -258,7 +258,7 @@ fn install_sh_needs_no_gh_when_curl_reaches_the_release() {
     );
 }
 
-/// The stdout lines of an install, which end it: at most six (ADR-0201).
+/// The stdout lines of an install, which end it: at most six (ADR-0204).
 fn ending(output: &Output) -> Vec<String> {
     let lines: Vec<String> = out(output).lines().map(str::to_owned).collect();
     assert!(lines.len() <= 6, "{lines:#?}");

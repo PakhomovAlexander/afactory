@@ -323,7 +323,7 @@ fn check_native_provider_reuse(provider_only: bool) {
                 }
             );
             // A refused admission is decided before any other node starts, so the Gate never
-            // begins its Attempt for a reviewer that cannot run (ADR-0199).
+            // begins its Attempt for a reviewer that cannot run (ADR-0202).
             assert_eq!(
                 execution.budget.begun_attempts(),
                 if retry {

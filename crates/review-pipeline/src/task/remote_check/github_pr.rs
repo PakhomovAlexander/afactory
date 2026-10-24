@@ -3,7 +3,10 @@
 //! workflow's `pull_request` run for that pull request and head commit.
 //!
 //! The executor never force-pushes, writes no ref outside this Task's two branches, and never
-//! merges, marks ready or comments on anything. For a required job that did not succeed it keeps
+//! merges, marks ready or comments on anything. On its own gate pull request it sets or removes
+//! exactly one label, `no-perf`, and only as the operator's `no_perf_paths` classify the whole
+//! candidate (ADR-0196): a stale label is removed before a head update that no longer qualifies,
+//! and a label the repository does not have is never created. For a required job that did not succeed it keeps
 //! a bounded tail of the job's log, so a remote failure can be debugged where a local one is.
 //! When the Task finishes, and before collection takes it, [`cleanup`] closes the draft gate pull
 //! requests its evidence recorded and deletes exactly its two branches (ADR-0144), each only
@@ -27,6 +30,7 @@ use serde_json::Value;
 use super::gate::{
     GateRepository, GateRole, ToolError, Tools, gate_message, is_ref_component, push_refspec,
 };
+use super::no_perf::{NO_PERF_LABEL, NoPerf};
 use super::{EvidenceBase, GithubPrTarget, Redactor, RemoteCheckOutcome, RemoteCheckRequest};
 
 /// How the executor reaches `git` and `gh` and how it paces its wait. The defaults are the
@@ -78,6 +82,8 @@ it ready, merges or comments on it. af closes it and deletes its two af-gate bra
 Task finishes (ADR-0144).";
 const WAIT_SLICE: Duration = Duration::from_millis(50);
 const MAX_PAGES: u32 = 10;
+/// At most this many label names are read from one pull request.
+const MAX_LABELS: usize = 100;
 /// The bound of the one read-back that follows an interrupted push.
 const PUSH_RECOVERY: Duration = Duration::from_secs(20);
 /// The tail kept of one unsuccessful job's log.
@@ -358,6 +364,9 @@ pub fn run(
             None,
         ));
     }
+    // Decided afresh from the whole source-to-candidate change on every phase, so no earlier
+    // phase's exemption carries over to a repaired or resumed candidate.
+    let no_perf = phase.target.no_perf.classify(phase.source, phase.candidate);
     let mut redactor = Redactor::new(&phase.target.push_url, phase.mapping);
     let directory = tempfile::tempdir()
         .map_err(|error| format!("creating the private gate repository: {}", error.kind()))?;
@@ -524,6 +533,8 @@ pub fn run(
     if !found.contains_key(&base_ref) {
         refspecs.push(push_refspec(&base_commit, &base_ref, phase.task_id)?);
     }
+    // The head this Task's verified chain already holds on the remote, when it holds one.
+    let mut prior_tip: Option<String> = None;
     let head_commit = if found.contains_key(&head_ref) {
         let tip = match repository.fetch(&tools, url, &head_ref) {
             Ok(Some(tip)) => tip,
@@ -620,6 +631,7 @@ pub fn run(
                 None,
             ));
         }
+        prior_tip = Some(tip.clone());
         // Only a tip made for this very candidate is attached to.
         let tip_commit = &chain[0];
         if tip_commit.tree == candidate_tree && tip_commit.snapshot == phase.candidate_id {
@@ -654,6 +666,60 @@ pub fn run(
         head_commit: &head_commit,
         tree: &candidate_tree,
     };
+    let github = phase.target.github.as_str();
+    let api = Api {
+        tools: &tools,
+        github,
+        cwd: repository.root(),
+    };
+    let label = LabelOwner {
+        head_branch: &head_branch,
+        base_branch: &base_branch,
+        base_commit: &base_commit,
+        heads: [prior_tip.as_deref(), Some(head_commit.as_str())],
+        candidate_head: &head_commit,
+    };
+    // Only remove before a push. Adding an exemption for the future candidate here
+    // could exempt the old, non-neutral head if the push failed.
+    if prior_tip.as_ref().is_some_and(|tip| *tip != head_commit) && !no_perf.exempt() {
+        let checked = match api.find_pull(&head_branch, &base_branch) {
+            Ok(FoundPull::Open(open)) => label.reconcile(&api, &open, &no_perf),
+            Ok(FoundPull::Closed(_) | FoundPull::None) => Ok(()),
+            Err(error) => {
+                let reason = match &error {
+                    ToolError::Cancelled => RemoteCheckReasonV1::Cancelled,
+                    ToolError::TimedOut => RemoteCheckReasonV1::DeadlineExpired,
+                    _ => RemoteCheckReasonV1::RemotePushRefused,
+                };
+                let message =
+                    error.describe("reading the gate pull request before its head update");
+                let diagnostic = match error {
+                    ToolError::Failed(diagnostic) => diagnostic,
+                    _ => None,
+                };
+                Err(LabelRefusal {
+                    reason,
+                    message,
+                    diagnostic,
+                })
+            }
+        };
+        if let Err(refusal) = checked {
+            let reason = match refusal.reason {
+                reason
+                @ (RemoteCheckReasonV1::Cancelled | RemoteCheckReasonV1::DeadlineExpired) => reason,
+                _ => RemoteCheckReasonV1::RemotePushRefused,
+            };
+            return Ok(refuse_all(
+                reason,
+                format!(
+                    "the head update was not pushed: {}; resume the Task to try again",
+                    refusal.message
+                ),
+                refusal.diagnostic,
+            ));
+        }
+    }
     let mut pushed_at = Instant::now();
     if !refspecs.is_empty() {
         let pushed = match repository.push(&tools, url, &refspecs) {
@@ -733,12 +799,6 @@ pub fn run(
         pushed_at = Instant::now();
     }
 
-    let github = phase.target.github.as_str();
-    let api = Api {
-        tools: &tools,
-        github,
-        cwd: repository.root(),
-    };
     let pull = match api.find_pull(&head_branch, &base_branch) {
         Ok(FoundPull::Open(pull)) => pull,
         // A gate pull request someone closed is never replaced by a second one.
@@ -788,6 +848,28 @@ pub fn run(
         number: pull.number,
         url: pull.url.clone(),
     };
+    // A stale exemption that cannot be removed fails every check: no workflow of this gate may
+    // skip its measurement for a candidate that does not qualify. A label that cannot be added
+    // only leaves the pull request measured as usual.
+    if let Err(refusal) = label.reconcile(&api, &pull, &no_perf) {
+        return Ok(phase
+            .checks
+            .iter()
+            .map(|check| {
+                published.outcome(
+                    check,
+                    refusal.reason,
+                    format!(
+                        "{}; remove the `{NO_PERF_LABEL}` label from pull request #{} by hand, \
+                         or resume the Task to try again",
+                        refusal.message, pull.number
+                    ),
+                    refusal.diagnostic.clone(),
+                    Some(&pull_request),
+                )
+            })
+            .collect());
+    }
 
     // Wait: observe immediately, then every poll interval, until every check is decided.
     let mut decided: BTreeMap<String, RemoteCheckOutcome> = BTreeMap::new();
@@ -1333,6 +1415,8 @@ struct Pull {
     base_ref: String,
     base_sha: String,
     base_repo: String,
+    /// Its label names, `None` when the document carried no readable list.
+    labels: Option<BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1456,6 +1540,123 @@ fn prove(
     Ok(Proof::Proven(merge))
 }
 
+/// Why the gate pull request's `no-perf` label could not be brought in line: a `no-perf`
+/// label may still be on a pull request whose candidate does not qualify.
+struct LabelRefusal {
+    reason: RemoteCheckReasonV1,
+    message: String,
+    diagnostic: Option<String>,
+}
+
+/// What proves a pull request is this Task's own gate pull request, the only one whose label
+/// the executor changes: open, exactly this Task's two branches in the target repository, the
+/// gate base commit, and a head that is the remote's verified tip or the pushed head commit.
+struct LabelOwner<'a> {
+    head_branch: &'a str,
+    base_branch: &'a str,
+    base_commit: &'a str,
+    heads: [Option<&'a str>; 2],
+    candidate_head: &'a str,
+}
+
+impl LabelOwner<'_> {
+    fn owns(&self, pull: &Pull, github: &str) -> bool {
+        pull.open
+            && pull.head_ref == self.head_branch
+            && pull.base_ref == self.base_branch
+            && pull.head_repo.eq_ignore_ascii_case(github)
+            && pull.base_repo.eq_ignore_ascii_case(github)
+            && pull.base_sha == self.base_commit
+            && self.heads.contains(&Some(pull.head_sha.as_str()))
+    }
+
+    /// Bring the exact `no-perf` label of `pull` in line with `no_perf`, touching no other
+    /// label. A removal is read back; an addition is best effort, since an unlabeled pull
+    /// request is only measured as usual.
+    fn reconcile(&self, api: &Api<'_>, pull: &Pull, no_perf: &NoPerf) -> Result<(), LabelRefusal> {
+        let refusal = |reason, message: String, diagnostic| LabelRefusal {
+            reason,
+            message,
+            diagnostic,
+        };
+        let Some(labels) = &pull.labels else {
+            return if no_perf.exempt() {
+                Ok(())
+            } else {
+                Err(refusal(
+                    RemoteCheckReasonV1::RemotePrRefused,
+                    format!(
+                        "the labels of gate pull request #{} could not be read, so a stale \
+                         `{NO_PERF_LABEL}` label cannot be ruled out",
+                        pull.number
+                    ),
+                    None,
+                ))
+            };
+        };
+        let present = labels.contains(NO_PERF_LABEL);
+        let owned = self.owns(pull, api.github);
+        match (no_perf, present) {
+            (NoPerf::Exempt { .. }, true) | (NoPerf::NotExempt(_), false) => Ok(()),
+            (NoPerf::Exempt { .. }, false) => {
+                // GitHub can still report the old PR head after a successful push. Its
+                // ownership permits removal, but only the candidate head may be exempted.
+                if owned
+                    && pull.head_sha == self.candidate_head
+                    && let Ok(true) = api.has_label(NO_PERF_LABEL)
+                {
+                    // A failed addition claims nothing: the pull request stays measured.
+                    let _ = api.add_label(pull.number, NO_PERF_LABEL);
+                }
+                Ok(())
+            }
+            (NoPerf::NotExempt(why), true) => {
+                if !owned {
+                    return Err(refusal(
+                        RemoteCheckReasonV1::RemotePrRefused,
+                        format!(
+                            "gate pull request #{} carries `{NO_PERF_LABEL}` although the \
+                             candidate does not qualify ({why}), and it is not provably this \
+                             Task's to change",
+                            pull.number
+                        ),
+                        None,
+                    ));
+                }
+                let removed = api.remove_label(pull.number, NO_PERF_LABEL);
+                let reason = match &removed {
+                    Err(ToolError::TimedOut) => RemoteCheckReasonV1::DeadlineExpired,
+                    Err(ToolError::Cancelled) => RemoteCheckReasonV1::Cancelled,
+                    _ => RemoteCheckReasonV1::RemotePrRefused,
+                };
+                let diagnostic = match removed {
+                    Err(ToolError::Failed(diagnostic)) => diagnostic,
+                    _ => None,
+                };
+                match api.pull(pull.number) {
+                    Ok(now)
+                        if now
+                            .labels
+                            .as_ref()
+                            .is_some_and(|l| !l.contains(NO_PERF_LABEL)) =>
+                    {
+                        Ok(())
+                    }
+                    _ => Err(refusal(
+                        reason,
+                        format!(
+                            "the stale `{NO_PERF_LABEL}` label of gate pull request #{} could not \
+                             be removed, and the candidate does not qualify ({why})",
+                            pull.number
+                        ),
+                        diagnostic,
+                    )),
+                }
+            }
+        }
+    }
+}
+
 /// Every REST call names its host: the one `gh auth status --hostname github.com` checked,
 /// whatever the operator's `gh` configuration would otherwise pick (L3).
 const GH_API: [&str; 3] = ["api", "--hostname", "github.com"];
@@ -1491,9 +1692,17 @@ impl Api<'_> {
         let pulls = value.as_array().ok_or_else(|| {
             ToolError::Failed(Some("the pull request list is not an array".into()))
         })?;
-        let mut found: Vec<Pull> = pulls
+        let parsed = pulls
             .iter()
-            .filter_map(|pull| parse_pull(pull, self.github))
+            .map(|pull| parse_pull(pull, self.github))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                ToolError::Failed(Some(
+                    "the pull request list contains a malformed record".into(),
+                ))
+            })?;
+        let mut found: Vec<Pull> = parsed
+            .into_iter()
             .filter(|pull| pull.head_ref == head && pull.base_ref == base)
             .collect();
         found.sort_by_key(|pull| pull.number);
@@ -1542,6 +1751,38 @@ impl Api<'_> {
         let value = self.call(&["--method", "PATCH", &path, "-f", "state=closed"])?;
         parse_pull(&value, self.github)
             .ok_or_else(|| ToolError::Failed(Some("the closed pull request is malformed".into())))
+    }
+
+    /// Whether the repository already has a label named exactly `name` (GitHub finds a label
+    /// whatever its case; another spelling is not this one). A missing label is never
+    /// created: adding one to a pull request would create it in the repository, and that is
+    /// the repository owner's decision (ADR-0196).
+    fn has_label(&self, name: &str) -> Result<bool, ToolError> {
+        match self.call(&[&format!("repos/{}/labels/{}", self.github, encode(name))]) {
+            Ok(value) => Ok(value["name"].as_str() == Some(name)),
+            Err(ToolError::Failed(Some(diagnostic))) if diagnostic.contains("(HTTP 404)") => {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Add one label to one pull request; its other labels stay.
+    fn add_label(&self, number: u64, name: &str) -> Result<(), ToolError> {
+        let path = format!("repos/{}/issues/{number}/labels", self.github);
+        let field = format!("labels[]={name}");
+        self.call(&["--method", "POST", &path, "-f", &field])
+            .map(|_| ())
+    }
+
+    /// Remove one label from one pull request; its other labels stay.
+    fn remove_label(&self, number: u64, name: &str) -> Result<(), ToolError> {
+        let path = format!(
+            "repos/{}/issues/{number}/labels/{}",
+            self.github,
+            encode(name)
+        );
+        self.call(&["--method", "DELETE", &path]).map(|_| ())
     }
 
     fn pull(&self, number: u64) -> Result<Pull, ToolError> {
@@ -1623,19 +1864,41 @@ fn text(value: &Value) -> String {
 
 fn parse_pull(value: &Value, github: &str) -> Option<Pull> {
     let number = value["number"].as_u64().filter(|n| *n > 0)?;
+    let open = match value["state"].as_str()? {
+        "open" => true,
+        "closed" => false,
+        _ => return None,
+    };
+    // Missing identity fields must not turn an unreadable PR into an absent one
+    // when find_pull filters by branch names before an unsafe head update.
+    let required_text = |field: &Value| {
+        field
+            .as_str()
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
     let url = Some(text(&value["html_url"]))
         .filter(|url| url.starts_with("https://") && url.len() <= 512 && !url.contains(' '))
         .unwrap_or_else(|| format!("https://github.com/{github}/pull/{number}"));
     Some(Pull {
         number,
         url,
-        open: value["state"] == "open",
-        head_ref: text(&value["head"]["ref"]),
-        head_sha: text(&value["head"]["sha"]),
-        head_repo: text(&value["head"]["repo"]["full_name"]),
-        base_ref: text(&value["base"]["ref"]),
-        base_sha: text(&value["base"]["sha"]),
-        base_repo: text(&value["base"]["repo"]["full_name"]),
+        open,
+        head_ref: required_text(&value["head"]["ref"])?,
+        head_sha: required_text(&value["head"]["sha"])?,
+        head_repo: required_text(&value["head"]["repo"]["full_name"])?,
+        base_ref: required_text(&value["base"]["ref"])?,
+        base_sha: required_text(&value["base"]["sha"])?,
+        base_repo: required_text(&value["base"]["repo"]["full_name"])?,
+        labels: value["labels"].as_array().and_then(|labels| {
+            if labels.len() > MAX_LABELS {
+                return None;
+            }
+            labels
+                .iter()
+                .map(|label| label["name"].as_str().map(str::to_owned))
+                .collect::<Option<BTreeSet<_>>>()
+        }),
     })
 }
 
@@ -1722,6 +1985,40 @@ fn parse_job(value: &Value) -> Option<Job> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn pull_identity_must_be_readable_before_branch_filtering() {
+        let valid = json!({
+            "number": 12, "state": "open", "labels": [],
+            "head": {"ref": "af-gate/task/head", "sha": "a".repeat(40),
+                     "repo": {"full_name": "octo/gate"}},
+            "base": {"ref": "af-gate/task/base", "sha": "b".repeat(40),
+                     "repo": {"full_name": "octo/gate"}}
+        });
+        assert!(parse_pull(&valid, "octo/gate").unwrap().open);
+        let mut closed = valid.clone();
+        closed["state"] = json!("closed");
+        assert!(!parse_pull(&closed, "octo/gate").unwrap().open);
+        assert!(parse_pull(&json!({"number": 12}), "octo/gate").is_none());
+        for pointer in [
+            "/state",
+            "/head/ref",
+            "/head/sha",
+            "/head/repo/full_name",
+            "/base/ref",
+            "/base/sha",
+            "/base/repo/full_name",
+        ] {
+            for invalid in [Value::Null, json!(12), json!("")] {
+                let mut malformed = valid.clone();
+                *malformed.pointer_mut(pointer).unwrap() = invalid;
+                assert!(parse_pull(&malformed, "octo/gate").is_none(), "{pointer}");
+            }
+        }
+        let mut malformed = valid;
+        malformed["state"] = json!("unknown");
+        assert!(parse_pull(&malformed, "octo/gate").is_none());
+    }
 
     fn run(completed: bool) -> Run {
         Run {

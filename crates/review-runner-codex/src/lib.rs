@@ -9,7 +9,7 @@
 //! The invocation shape: `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s
 //! <mode> -o <staging>/last-message [--output-schema <staging>/reply-schema.json] <flags> -`, with
 //! the prompt streamed on stdin; the schema file is the typed reply's strict projection, written
-//! only for a typed request whose contract has one (ADR-0199). Events arrive
+//! only for a typed request whose contract has one (ADR-0202). Events arrive
 //! as JSONL on stdout; the `-o` file holds the final answer; `turn.completed` events carry token
 //! usage. `--ephemeral` keeps session files off the host, `-C` roots the model in the kernel's
 //! sandbox, and `-s` is `workspace-write` when the Worker may write its own copy — and nothing
@@ -178,7 +178,7 @@ pub const CODEX_INVOCATION: CliInvocation = CliInvocation {
 /// The `codex exec` command of one Attempt. `schema` is the file holding the typed reply's
 /// strict output schema ([`review_runner::task::reply_schema::strict`]), when the Worker declares
 /// a typed reply with a strict projection: Codex then refuses a structurally wrong final message
-/// itself, before it is charged as a typed-reply failure (ADR-0199).
+/// itself, before it is charged as a typed-reply failure (ADR-0202).
 fn codex_command(
     program: &str,
     model_flags: &[String],

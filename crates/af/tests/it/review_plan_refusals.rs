@@ -108,7 +108,7 @@ fn onboarded(root: &Path) -> PathBuf {
 
 /// Register `id` of `kind` with an auth directory of its own in the private home. The directory
 /// holds no login and no Provider CLI is installed here, so it is registered `--unverified`
-/// (ADR-0197); a token-free plan reads only the registry.
+/// (ADR-0200); a token-free plan reads only the registry.
 fn register(repo: &Path, id: &str, kind: &str) {
     let home = crate::common::private_home_env()
         .into_iter()

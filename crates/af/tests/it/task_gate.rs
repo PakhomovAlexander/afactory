@@ -1,4 +1,4 @@
-//! A Task's gate (ADR-0196): the check report af records beside the receipt, the host's load and
+//! A Task's gate (ADR-0199): the check report af records beside the receipt, the host's load and
 //! CPUs, the steps by stage, the flaky tests a gate reran alone, and `af task run ID
 //! --retry-gate`, which runs a failed gate again on the same sealed candidate.
 

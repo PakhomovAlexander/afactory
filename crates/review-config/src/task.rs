@@ -115,7 +115,7 @@ mod tests {
         );
     }
 
-    /// A slot's `recovery_attempts` loads only under `af.pipeline/3` (ADR-0200); the same file
+    /// A slot's `recovery_attempts` loads only under `af.pipeline/3` (ADR-0203); the same file
     /// labelled `af.pipeline/1` is refused when it loads, naming the version it needs.
     #[test]
     fn a_slot_recovery_allowance_loads_only_under_af_pipeline_3() {

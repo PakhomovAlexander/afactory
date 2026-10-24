@@ -1,5 +1,5 @@
 //! A writer lost inside an Attempt is resumable and not charged its reservation, and a SIGTERM
-//! resume dispatches the interrupted node again (ADR-0200). The implementer slot keeps
+//! resume dispatches the interrupted node again (ADR-0203). The implementer slot keeps
 //! `max_attempts = 1`, as every `implementation-reviewed` slot does, so each resume here would
 //! have been refused with `exhausted its Attempt limit` before. Command Workers only.
 use crate::{schemas, task_cli, task_interrupt};
@@ -30,7 +30,7 @@ struct Fixture {
 /// The pagination fixture with an implementer that starts a long-running child and waits on it
 /// until `resume` exists, and keeps its slot's single Attempt. A command Worker reserves no
 /// model tokens, so what an abandoned Attempt is charged against a nonzero reservation is
-/// proven by the Store's own tests (ADR-0200); here every reservation must still come back.
+/// proven by the Store's own tests (ADR-0203); here every reservation must still come back.
 /// `recovery` declares the slot's `recovery_attempts`, which makes the pipeline `af.pipeline/3`.
 fn fixture(recovery: Option<u32>) -> Fixture {
     let directory = tempfile::tempdir().unwrap();

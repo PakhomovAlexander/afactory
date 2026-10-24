@@ -1996,7 +1996,7 @@ fn bare_help_opens_with_the_worker_and_the_tagline() {
 
 /// A first run: a registry that names no Provider opens the browser on the Providers pane, whose
 /// first row says how to register one; one registered Provider keeps the settings first
-/// (ADR-0201).
+/// (ADR-0204).
 #[test]
 fn an_empty_registry_opens_on_the_providers_pane_with_the_first_run_row() {
     let (_temp, root) = temp_root();

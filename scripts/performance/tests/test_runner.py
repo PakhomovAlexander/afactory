@@ -675,23 +675,16 @@ class Shards(ShardHarness):
 
     def test_the_run_command_refuses_an_ambiguous_mode_and_reports_unavailability(self):
         plan, plan_path, build = self.prepare([DISCOVERY], run_id="command")
-        # The command line as it runs, but its machine lock in a directory of this test's own:
-        # a performance run elsewhere on the host holds the real one, and this test never meets
-        # it. The seam is the runner's, set by the stand-in that loads the command line.
-        locks = self.path("cli-locks")
-        os.makedirs(locks)
-        private_lock = (
-            "import runpy, sys\n"
-            "sys.path.insert(0, %r)\n"
-            "from perflab import runner\n"
-            "held = runner.machine_lock\n"
-            "runner.machine_lock = lambda directory=None: held(%r)\n"
-            "sys.argv = [%r] + sys.argv[1:]\n"
-            "runpy.run_path(%r, run_name='__main__')\n"
-            % (os.path.dirname(CLI), locks, CLI, CLI))
-        base = [sys.executable, "-I", "-c", private_lock, "run", "--plan", plan_path, "--build",
-                build, "--shard", "0", "--run-dir", self.path("cmd-run"), "--repo",
-                self.repo.path]
+        locks = self.path("command-locks")
+        os.mkdir(locks, 0o755)
+        bootstrap = ("import runpy,sys; sys.path.insert(0,%r); "
+                     "from perflab import runner; original=runner.machine_lock; "
+                     "runner.machine_lock=lambda directory=None: original(%r); "
+                     "sys.argv=[%r]+sys.argv[1:]; runpy.run_path(%r,run_name='__main__')"
+                     % (os.path.join(ROOT, "scripts", "performance"), locks, CLI, CLI))
+        base = [sys.executable, "-I", "-B", "-c", bootstrap, "run", "--plan", plan_path,
+                "--build", build, "--shard", "0", "--run-dir", self.path("cmd-run"),
+                "--repo", self.repo.path]
         both = subprocess.run(base + ["--trusted-local", "--container"], cwd=ROOT,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(both.returncode, 2)

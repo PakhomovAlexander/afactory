@@ -1,4 +1,4 @@
-//! Abandoned Attempts (ADR-0200): a lost writer's Attempt and a host-cancelled one leave the
+//! Abandoned Attempts (ADR-0203): a lost writer's Attempt and a host-cancelled one leave the
 //! Attempt limits, are charged only what they were observed to use, and are bounded by the
 //! node's recovery allowance.
 use super::*;
@@ -269,7 +269,7 @@ fn observe_incomplete(f: &mut Fixture, lease: &TaskLease, attempt: &PreparedTask
     .unwrap()
 }
 
-/// ADR-0200 item 4 with a native observation: an Attempt whose Provider reported 3 tokens
+/// ADR-0203 item 4 with a native observation: an Attempt whose Provider reported 3 tokens
 /// without completing its counters is charged exactly 3 when its host cancels it and when its
 /// writer is lost, and the rest of its reservation returns to the Task; settled by its own
 /// failure instead, the same counters still keep the reservation floor.

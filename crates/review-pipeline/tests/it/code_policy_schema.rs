@@ -374,7 +374,7 @@ fn offline_policy(check: Value, warm: Option<Value>) -> Value {
     value
 }
 
-/// An offline check (ADR-0198) needs the warm `npm_cache`, and only it pins npm packages, each
+/// An offline check (ADR-0201) needs the warm `npm_cache`, and only it pins npm packages, each
 /// an exact version and a SHA-256; both sides refuse the same shapes.
 #[test]
 fn offline_checks_and_their_npm_pins_round_trip_and_refuse_alike() {
@@ -424,7 +424,7 @@ fn offline_checks_and_their_npm_pins_round_trip_and_refuse_alike() {
 
 /// This repository's own `.af/code-policy.toml` loads and validates, and its markdownlint
 /// check runs offline from the warm `npm_cache` with `markdownlint-cli2` pinned by SHA-256
-/// (ADR-0198).
+/// (ADR-0201).
 #[test]
 fn this_repositorys_markdownlint_check_runs_offline_on_a_pinned_package() {
     let root = std::env::var_os("AF_WORKSPACE_ROOT")

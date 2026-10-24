@@ -776,7 +776,7 @@ fn infeasible_verifier_reserve_explains_each_resource_and_protected_node() {
     }
 }
 
-/// A gate retry (ADR-0196) gives its check node one Attempt more than its compiled allowance;
+/// A gate retry (ADR-0199) gives its check node one Attempt more than its compiled allowance;
 /// the Task's own Attempt and token limits still bound it, and an unknown node is refused.
 #[test]
 fn a_retried_gate_gets_one_more_attempt_and_the_task_limits_still_bind_it() {

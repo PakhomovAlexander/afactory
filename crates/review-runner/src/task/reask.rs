@@ -1,4 +1,4 @@
-//! One model call with its typed reply admitted tolerantly and, once, re-asked (ADR-0199).
+//! One model call with its typed reply admitted tolerantly and, once, re-asked (ADR-0202).
 //!
 //! A reply that does not parse is first read for the first balanced JSON object it carries
 //! between prose; a reply with none, or whose object is not a valid reply either, is kept whole in

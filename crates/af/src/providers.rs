@@ -100,7 +100,7 @@ const INSTALLATION_FAILED: &str = "installation failed";
 /// `incompatible` in JSON (ADR-0146).
 const INCOMPATIBLE: &str = "incompatible";
 /// The status a context gets when it is absent or holds no login marker, so af did not ask its CLI
-/// about it: that CLI would create files there (ADR-0197). `not_probed` in JSON.
+/// about it: that CLI would create files there (ADR-0200). `not_probed` in JSON.
 const UNMARKED: &str = "not probed";
 
 static CLAUDE_USAGE_CACHE: OnceLock<Mutex<BTreeMap<ClaudeUsageCacheKey, CachedClaudeUsage>>> =
@@ -286,7 +286,7 @@ pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> Provid
 /// the operator has set up the logins they use, and the default directory is one they do not.
 /// Before one is registered, the row and its `setup … --login` fix are how a new machine starts,
 /// and a default context with a login stays, since it is a login the operator may register
-/// (ADR-0141). A default context left unprobed because it holds no login marker (ADR-0197) is one
+/// (ADR-0141). A default context left unprobed because it holds no login marker (ADR-0200) is one
 /// with no login too.
 fn drop_unused_ambient_contexts(providers: &mut Vec<ProviderStatus>) {
     let registered: BTreeSet<String> = providers
@@ -528,7 +528,7 @@ pub(crate) struct RegistryRead {
 }
 
 /// The auth directories a names-only scan finds (the selector variables', the CLIs' defaults and
-/// the sibling names, ADR-0197) that none of `named` is: the one scan `af provider status`,
+/// the sibling names, ADR-0200) that none of `named` is: the one scan `af provider status`,
 /// `af doctor` and `af onboard` list as found but not registered. No marker is read and nothing
 /// is probed.
 pub(crate) fn unregistered_dirs<'a>(named: impl IntoIterator<Item = &'a Path>) -> Vec<PathBuf> {
@@ -594,7 +594,7 @@ const NEXT_AFTER_REGISTERING: &str =
     "next: af onboard (in a repository) · af provider status lists every Provider";
 
 /// The auth directories the status table names as found but not registered: those the shared
-/// names-only scan finds that no row lists, registered or ambient (ADR-0197).
+/// names-only scan finds that no row lists, registered or ambient (ADR-0200).
 fn found_unregistered(inventory: &ProviderInventory) -> Vec<PathBuf> {
     unregistered_dirs(
         inventory
@@ -606,7 +606,7 @@ fn found_unregistered(inventory: &ProviderInventory) -> Vec<PathBuf> {
 
 fn print_status_table(inventory: &ProviderInventory, usage: UsageProbe, verbose: bool) {
     // What else is on this machine comes from a names-only scan: no marker is read and nothing
-    // is probed (ADR-0197).
+    // is probed (ADR-0200).
     let found = found_unregistered(inventory);
     if inventory.providers.is_empty() {
         for line in detect::install_guidance() {
@@ -794,7 +794,7 @@ pub(crate) fn available_provider_id(kind: &str, ids: &BTreeSet<String>) -> Strin
 ///
 /// The context is probed first, exactly as `af provider setup` probes it, and a context the
 /// Provider CLI does not report authenticated is refused: a registry entry nobody can use only
-/// moves the failure to the first Task. `unverified` skips that probe and says so (ADR-0197).
+/// moves the failure to the first Task. `unverified` skips that probe and says so (ADR-0200).
 pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>, unverified: bool) -> Result<i32, String> {
     validate_explicit_id(id)?;
     let kind = ProviderKind::parse(kind)?;
@@ -1025,7 +1025,7 @@ pub fn setup(
     let kind = ProviderKind::parse(kind)?;
     let path = registry_path()?.ok_or("no provider registry path is available")?;
     // A login needs a home, so only `--login` creates a missing directory; without it a typo
-    // would leave an empty directory behind (ADR-0197).
+    // would leave an empty directory behind (ADR-0200).
     let missing = if login {
         MissingAuthDir::Create
     } else {
@@ -1898,7 +1898,7 @@ fn open_lock_at(
 ///
 /// It lives in af's own state, `$XDG_STATE_HOME/af/locks/<kind>-<sha256 of the canonical auth
 /// directory>`, never in the auth directory: that directory belongs to the Provider CLI, and a
-/// setup that found nothing to do must leave it as it was (ADR-0197).
+/// setup that found nothing to do must leave it as it was (ADR-0200).
 fn auth_context_lock(kind: ProviderKind, auth_dir: &Path) -> Result<BoundDirectoryLock, String> {
     auth_context_lock_in(&auth_lock_root()?, kind, auth_dir, || {})
 }
@@ -5482,7 +5482,7 @@ fn canonical_setup_command(spec: &ProviderSpec, setup_id: &str) -> String {
     command
 }
 
-/// A context af did not probe because it is absent or holds no login marker (ADR-0197): never
+/// A context af did not probe because it is absent or holds no login marker (ADR-0200): never
 /// a claim about a login, and the setup line that would give it one.
 fn unmarked_status(spec: &ProviderSpec, setup_id: &str, reason: &str) -> ProviderStatus {
     ProviderStatus {

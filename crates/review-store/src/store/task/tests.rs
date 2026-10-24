@@ -1265,7 +1265,7 @@ fn writer_recovery_settles_unreported_started_work_as_unknown_and_releases_unsta
         assert_eq!(execution.budget.reserved_tokens(), 0);
         assert_eq!(execution.budget.committed_tokens(), 0);
         // The Attempt still counts as begun, but abandoned it counts against no Attempt limit
-        // (ADR-0200).
+        // (ADR-0203).
         assert_eq!(execution.budget.begun_attempts(), u64::from(started));
         assert_eq!(execution.budget.chargeable_attempts(), 0);
         assert!(!execution.outputs.contains_key("root.nodes.write"));

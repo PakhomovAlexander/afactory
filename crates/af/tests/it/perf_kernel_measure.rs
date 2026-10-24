@@ -989,7 +989,7 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
             "crates/lockfile is a symbolic link",
         ),
         (
-            // Sealing leaves bytecode out of a candidate unless the tree stages it (ADR-0198);
+            // Sealing leaves bytecode out of a candidate unless the tree stages it (ADR-0201);
             // this candidate stages it, so the guard is what refuses it.
             "bytecode",
             json!({

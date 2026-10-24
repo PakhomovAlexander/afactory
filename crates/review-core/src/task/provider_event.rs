@@ -1,4 +1,4 @@
-//! `af/TaskProviderEvent@1` (ADR-0199): what one started Attempt did about its Provider without
+//! `af/TaskProviderEvent@1` (ADR-0202): what one started Attempt did about its Provider without
 //! failing — a wait before it calls again after a transient failure, a re-ask of a typed reply
 //! that did not parse, an identity recheck that probed again or found only a CLI update, an
 //! admission probe sent again in its alternate wording. It is its own event kind of the Task's
@@ -16,7 +16,7 @@ pub const TASK_PROVIDER_EVENT_V1: &str = "af/TaskProviderEvent@1";
 /// The most retries one Attempt makes after transient Provider failures.
 pub const MAX_PROVIDER_RETRIES: u32 = 3;
 
-/// A Provider failure the same input may get past after a wait (ADR-0199).
+/// A Provider failure the same input may get past after a wait (ADR-0202).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransientClassV1 {

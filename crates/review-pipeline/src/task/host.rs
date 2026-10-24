@@ -157,7 +157,7 @@ impl TaskEnvironment for EmptyTaskEnvironment {
 /// Attempt, execute a child graph, authorize a plan, or change the parent's allowance.
 pub trait TaskDomain: TaskOperatorHost {
     /// Refuse, before any Attempt, a captured check this machine cannot run: one whose Rust
-    /// toolchain does not resolve here (ADR-0196). `af` asks once, before it admits the plan,
+    /// toolchain does not resolve here (ADR-0199). `af` asks once, before it admits the plan,
     /// so a Task whose gate could only run cold, or not at all, stops before its implementer
     /// spends anything. The message names the policy field that did not resolve; the default
     /// admits every check.
@@ -253,7 +253,7 @@ pub trait TaskDomain: TaskOperatorHost {
         Err("This Task domain has no installed final-result assembler".into())
     }
     /// What the domain adds to a Worker's captured package instructions for this invocation:
-    /// the policy the Worker's reply is judged against, verbatim (ADR-0199). It is part of the
+    /// the policy the Worker's reply is judged against, verbatim (ADR-0202). It is part of the
     /// rendered context, so the context check renders it the same way.
     fn worker_instructions(
         &self,
@@ -264,7 +264,7 @@ pub trait TaskDomain: TaskOperatorHost {
     }
 
     /// The domain's shape check of a Worker's admitted reply, before its outputs are recorded
-    /// (ADR-0199). A refusal fails the Attempt with typed retry feedback that carries the
+    /// (ADR-0202). A refusal fails the Attempt with typed retry feedback that carries the
     /// refusal's receipt, so a retried Attempt reads exactly what to change.
     fn check_worker_reply(
         &self,
@@ -1029,7 +1029,7 @@ impl<'a> CapturedTaskHost<'a> {
             notes = result.notes;
             let reply = result.reply?;
             // The domain's shape check before anything is recorded: a refusal is retry feedback
-            // with its receipt, never only a diagnostic (ADR-0199).
+            // with its receipt, never only a diagnostic (ADR-0202).
             if let Err(refusal) = self.domain.check_worker_reply(cas, input, &reply) {
                 feedback_code = Some(TaskFeedbackCodeV1::OutputAdmissionRejected);
                 rejection_receipt = refusal.receipt_id;

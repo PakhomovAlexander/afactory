@@ -1,4 +1,4 @@
-//! ADR-0199 through the common runtime: what one Attempt does about its Provider without failing.
+//! ADR-0202 through the common runtime: what one Attempt does about its Provider without failing.
 //! A transient failure is called again inside the same Attempt, each wait recorded as a
 //! `TaskProviderEvent@1` before it begins; a typed reply that does not parse is re-asked once; a
 //! refused admission probe is sent once more in its alternate wording. Every call's usage adds to
@@ -374,7 +374,7 @@ fn a_reply_that_does_not_parse_twice_fails_the_attempt_and_names_both_kept_repli
     }
 }
 
-/// ADR-0199: a safety-classifier refusal of the admission probe itself is answered once with the
+/// ADR-0202: a safety-classifier refusal of the admission probe itself is answered once with the
 /// alternate probe in the same Attempt; its `OK` admits the Provider, the business Worker runs,
 /// and the refusal's category is the recorded event's.
 #[test]

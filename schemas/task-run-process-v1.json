@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-run-process:1",
   "title": "Task run process af/task-run-process@1",
-  "$comment": "One process that runs a Task: `runs/<task>-<run>.json` in its Store, written by `af task run` (and `af task start --execute`) before it takes the Task's lease (ADR-0202). `writer` is the lease's writer, by which `af task cancel` finds the process; `pid` and `host` say which process to stop, and where. A detached run (`af task run --detach`) names its log, `runs/<task>-<run>.log`; any other has none. A record of another version is not read.",
+  "$comment": "One process that runs a Task: `runs/<task>-<run>.json` in its Store, written by `af task run` (and `af task start --execute`) before it takes the Task's lease (ADR-0205). `writer` is the lease's writer, by which `af task cancel` finds the process; `pid` and `host` say which process to stop, and where. A detached run (`af task run --detach`) names its log, `runs/<task>-<run>.log`; any other has none. A record of another version is not read.",
   "type": "object",
   "additionalProperties": false,
   "required": [

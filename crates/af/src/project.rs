@@ -35,7 +35,7 @@ pub struct ProjectFile {
     #[serde(default)]
     #[allow(dead_code)]
     brief: Option<std::collections::BTreeMap<String, crate::project_brief::BriefTable>>,
-    /// The `[task.defaults]` a Task file inherits (ADR-0203). Admitted and checked here so the
+    /// The `[task.defaults]` a Task file inherits (ADR-0206). Admitted and checked here so the
     /// full-file parse refuses an unknown key; Task capture reads it from the Authority
     /// Snapshot.
     #[serde(default)]

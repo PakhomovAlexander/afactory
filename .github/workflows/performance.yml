@@ -6,7 +6,9 @@
 # edits a ruleset or branch protection. Remote Check gate branches (af-gate/**) are never
 # measured. Read-only permissions, no secrets, every action pinned to a commit. A published
 # release is measured through performance-release.yml (ADR-0180), whose read-only handoff
-# claims it first and then calls this workflow with only the claim's artifact name.
+# claims it first and then calls this workflow with only the claim's artifact name. A pull
+# request labeled exactly `no-perf` is not measured at all; its stable check reports that
+# exemption, and every other trigger ignores the label (ADR-0196).
 name: Performance
 # A calibration member's run is named for its cohort's digest and its member before any job
 # starts, so the complete run history binds each member's original dispatch however its
@@ -16,6 +18,9 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'calib
 on:
   pull_request:
     branches: [main]
+    # A label change starts a new run that replaces the running one: adding `no-perf` cancels
+    # the measurement and removing it measures again (ADR-0196).
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
   schedule:
@@ -102,8 +107,40 @@ env:
   PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
+  # The pull request's own opt-out, decided before any plan, build or matrix exists. Only an
+  # exact `no-perf` label on the event's pull request, on its first run attempt, exempts it: a
+  # rerun reads the event as it was, so it measures. No checkout, no candidate code.
+  scope:
+    name: scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      exempt: ${{ steps.label.outputs.exempt }}
+    steps:
+      - name: Read the no-perf label of the pull request
+        id: label
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_CLAIM: ${{ inputs.release_claim }}
+        run: |
+          set -eu
+          exempt=false
+          if [ "$EVENT_NAME" = pull_request ] && [ -z "${RELEASE_CLAIM:-}" ] && [ "$GITHUB_RUN_ATTEMPT" = 1 ]; then
+            exempt="$(python3 -I -c 'import json, sys
+          labels = json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["labels"]
+          print("true" if any(label["name"] == "no-perf" for label in labels) else "false")' "$GITHUB_EVENT_PATH")"
+          fi
+          case "$exempt" in
+            true) echo "Performance: pull request labeled no-perf; nothing is measured." >> "$GITHUB_STEP_SUMMARY" ;;
+            false) ;;
+            *) echo "unreadable pull request labels: $exempt" >&2; exit 1 ;;
+          esac
+          echo "exempt=$exempt" >> "$GITHUB_OUTPUT"
+
   plan:
     name: plan
+    needs: scope
+    if: needs.scope.outputs.exempt == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -182,7 +219,7 @@ jobs:
         run: echo "sha=$(git -C "$RUNNER_TEMP/control" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Fetch the confirmed release claim
         if: ${{ inputs.release_claim }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.release_claim }}
           path: ${{ runner.temp }}/release-claim
@@ -220,7 +257,7 @@ jobs:
             --github-output "$GITHUB_OUTPUT" --job-summary "$GITHUB_STEP_SUMMARY"
       - name: Retain the schedule and frozen plans
         if: ${{ steps.schedule.outputs.installed == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/schedule/
@@ -246,7 +283,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Fetch the frozen plans
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/schedule
@@ -273,7 +310,7 @@ jobs:
             --build "target/performance/$RUN_ID/build" --output "$RUNNER_TEMP/pack"
           python3 "$cli" ci-credentials --scan "$RUNNER_TEMP/pack"
       - name: Publish the hashed build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-build-${{ matrix.run_id }}
           path: ${{ runner.temp }}/pack/
@@ -281,7 +318,7 @@ jobs:
           if-no-files-found: error
       - name: Retain a failed build's bounded evidence
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-build-failure-${{ matrix.run_id }}
           path: |
@@ -292,29 +329,59 @@ jobs:
 
   status:
     name: Performance check
-    needs: [plan, build, shard, aggregate]
+    needs: [scope, plan, build, shard, aggregate]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Require a completed scope decision
+        if: ${{ always() }}
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          EXEMPT: ${{ needs.scope.outputs.exempt }}
+        run: |
+          set -eu
+          test "$SCOPE_RESULT" = success
+          case "$EXEMPT" in
+            true|false) ;;
+            *) echo "Performance scope did not produce a valid decision" >&2; exit 1 ;;
+          esac
+      # An exemption is reported as one, never as a measured or qualified result (ADR-0196).
+      - name: Report the no-perf exemption
+        if: ${{ needs.scope.result == 'success' && needs.scope.outputs.exempt == 'true' }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -eu
+          test "$EVENT_NAME" = pull_request
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          {
+            echo "### Performance check: exempt (label no-perf), not measured"
+            echo
+            echo "This pull request carries the exact label no-perf: no comparison was planned, built or measured, and no performance claim is made. Remove the label to measure it."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ needs.scope.outputs.exempt != 'true' }}
         with:
           ref: ${{ needs.plan.outputs.control }}
           persist-credentials: false
       - name: Fetch the schedule
+        if: ${{ needs.scope.outputs.exempt != 'true' }}
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/schedule
       - name: Fetch the trusted aggregators' reports
+        if: ${{ needs.scope.outputs.exempt != 'true' }}
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: perf-report-gh${{ github.run_id }}_a${{ github.run_attempt }}_*
           path: ${{ runner.temp }}/reports
           merge-multiple: false
       - name: Finish the stable performance check
+        if: ${{ needs.scope.outputs.exempt != 'true' }}
         env:
           CONTROL_SHA: ${{ needs.plan.outputs.control }}
           PERF_JOB_RESULTS: ${{ toJSON(needs) }}
@@ -358,12 +425,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Fetch the frozen plans
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/schedule
       - name: Fetch the hashed build
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-build-${{ matrix.run_id }}
           path: ${{ runner.temp }}/pack
@@ -403,7 +470,7 @@ jobs:
           fi
       - name: Upload the shard bundle
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: af-perf-${{ matrix.run_id }}-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/transport/
@@ -431,19 +498,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Fetch the frozen plans
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/schedule
       - name: Fetch the hashed build
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: perf-build-${{ matrix.run_id }}
           path: ${{ runner.temp }}/pack
       - name: Fetch every shard bundle, one directory each
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: af-perf-${{ matrix.run_id }}-shard-*
           path: ${{ runner.temp }}/shards
@@ -470,7 +537,7 @@ jobs:
             --enforcement advisory
       - name: Upload the run bundle
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: af-perf-${{ matrix.run_id }}-run
           path: ${{ runner.temp }}/transport/
@@ -478,7 +545,7 @@ jobs:
           if-no-files-found: ignore
       - name: Upload the report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: perf-report-${{ matrix.run_id }}
           path: ${{ runner.temp }}/report/

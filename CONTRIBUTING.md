@@ -65,7 +65,7 @@ fail loudly there, never skip.
 ## Flaky tests and the isolation rerun
 
 A gate run reruns the tests that failed in its parallel run before it fails
-([ADR-0196](docs/adr/0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
+([ADR-0199](docs/adr/0199-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
 each failed test runs again on its own, one at a time, with no other test alive. A test that
 passes alone does not fail the step; one that fails both times does, with nextest's exit status.
 More than 25 failed tests are not rerun, and reruns stop after 15 minutes; either way the step

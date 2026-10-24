@@ -1,4 +1,4 @@
-# ADR-0196: Rerun a failed test alone, report the gate, and retry a failed gate on the same candidate
+# ADR-0199: Rerun a failed test alone, report the gate, and retry a failed gate on the same candidate
 
 **Status:** accepted (2026-10-23). Supersedes in part
 [ADR-0124](0124-run-tests-in-parallel-processes-and-link-them-once.md): the consequence of its

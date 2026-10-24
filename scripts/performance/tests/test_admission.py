@@ -63,10 +63,10 @@ class Seeds(TempDir):
                           os.path.join(root, "probe-work", "nested")):
             os.chmod(directory, 0o755)
         for index in range(files):
-            entry = os.path.join(root, "probe-work", "nested", "f%d" % index)
-            with open(entry, "wb") as out:
+            file = os.path.join(root, "probe-work", "nested", "f%d" % index)
+            with open(file, "wb") as out:
                 out.write(b"entry %d\n" % index)
-            os.chmod(entry, 0o644)
+            os.chmod(file, 0o644)
         tool = os.path.join(root, "probe-work", "tool")
         with open(tool, "wb") as out:
             out.write(b"#!/bin/sh\n")

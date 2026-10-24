@@ -1,4 +1,4 @@
-//! ADR-0199, issue #295, end to end: a fake `claude` whose business call fails with a model at
+//! ADR-0202, issue #295, end to end: a fake `claude` whose business call fails with a model at
 //! capacity. `af review run` waits inside the Attempt and calls again; the wait is a recorded
 //! `TaskProviderEvent@1`, so `af task show` names it while it lasts and `af task show --json`
 //! lists it; a failure that outlasts three retries fails the node with its class, and `af task

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-findings:1",
   "title": "Task findings af/task-findings@1",
-  "$comment": "What `af task findings ID --json` prints (ADR-0202): the Task's state, how many review rounds it recorded, the last (or `--round N`) round with every reviewer's findings — severity, confidence, title, location, quoted evidence and proposed fix — and its counts by severity, and the evaluator's verdict. `round` is null when the Task recorded no round, `evaluation` when no evaluator recorded a verdict. Read-only.",
+  "$comment": "What `af task findings ID --json` prints (ADR-0205): the Task's state, how many review rounds it recorded, the last (or `--round N`) round with every reviewer's findings — severity, confidence, title, location, quoted evidence and proposed fix — and its counts by severity, and the evaluator's verdict. `round` is null when the Task recorded no round, `evaluation` when no evaluator recorded a verdict. Read-only.",
   "type": "object",
   "additionalProperties": false,
   "required": [

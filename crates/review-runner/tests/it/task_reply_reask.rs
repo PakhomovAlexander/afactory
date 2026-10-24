@@ -1,4 +1,4 @@
-//! ADR-0199, issue #283: a typed reply that does not parse is read tolerantly, then re-asked once
+//! ADR-0202, issue #283: a typed reply that does not parse is read tolerantly, then re-asked once
 //! from the same Worker within the same Attempt, with the parse error, its line and column and
 //! the offending excerpt as one more feedback value; both raw replies are kept as CAS blobs and
 //! named in the diagnostic. The adapter is in-process and scripted; no Provider runs.

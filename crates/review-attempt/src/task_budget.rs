@@ -29,7 +29,7 @@ pub struct NodeAllowance {
 }
 
 /// One writer loss or host interruption per node is dispatched again unless its slot declares
-/// otherwise (ADR-0200).
+/// otherwise (ADR-0203).
 pub use review_core::task::pipeline::{DEFAULT_RECOVERY_ATTEMPTS, MAX_RECOVERY_ATTEMPTS};
 
 #[derive(Debug, Clone)]

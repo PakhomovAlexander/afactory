@@ -246,7 +246,7 @@ pub fn classify_without_result(
 }
 
 /// The transient class of a native call that ended without a reply, when the same input may get
-/// past it after a wait (ADR-0199): a network or capacity failure, with the wait `text` names if
+/// past it after a wait (ADR-0202): a network or capacity failure, with the wait `text` names if
 /// it names one; a process that ran out of its time; or an exit 1 that wrote nothing on stdout
 /// and nothing af recognizes anywhere. Every other ending recurs, and is not retried.
 pub fn transient_ending(

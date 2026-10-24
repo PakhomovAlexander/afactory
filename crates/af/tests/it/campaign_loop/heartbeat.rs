@@ -84,7 +84,7 @@ fn heartbeat_failure_cancels_native_group_and_new_writer_recovers_exact_usage_wi
             .current_dir(&repo)
             .env("HOME", &home)
             // A fifteen-second lease, so the outage below stops the writer inside the 10 s
-            // window; production leases are 60 s (ADR-0200).
+            // window; production leases are 60 s (ADR-0203).
             .env("AF_TEST_TASK_LEASE_MS", "15000")
             .env("USER", "loop-test")
             .env("PATH", std::env::join_paths(paths).unwrap())

@@ -1,4 +1,4 @@
-# ADR-0200: Recover a lost or interrupted Attempt without charging its reservation
+# ADR-0203: Recover a lost or interrupted Attempt without charging its reservation
 
 **Status:** accepted (2026-10-23). Supersedes in part
 [ADR-0143](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md): the

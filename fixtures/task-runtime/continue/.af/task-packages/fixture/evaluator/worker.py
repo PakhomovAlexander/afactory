@@ -1,6 +1,6 @@
 import json,os,sys,runpy
 request=json.load(sys.stdin)
-# The tree before the change is beside this one, read-only, with the change's paths (ADR-0203).
+# The tree before the change is beside this one, read-only, with the change's paths (ADR-0206).
 subject=json.load(open('../diff-subject.json'))
 assert subject['schema']=='af/diff-subject@1' and subject['base']=='../base', subject
 assert subject['changes'], subject

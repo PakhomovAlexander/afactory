@@ -465,7 +465,7 @@ fn recovery_after_a_zero_token_observation_settles_reported_usage() {
     f.store = EventStore::open(&f.path).unwrap();
     let row = accounting(&f, &attempt);
     assert_eq!(row.unknown_usage, None);
-    // Abandoned work is charged what it reported, never its reservation (ADR-0200): the whole
+    // Abandoned work is charged what it reported, never its reservation (ADR-0203): the whole
     // reservation is back in the Task's remaining tokens.
     assert_eq!(
         row.charged_tokens, 0,

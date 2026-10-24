@@ -115,7 +115,7 @@ fn fixture(root: &Path, passing_gate: bool) -> (PathBuf, PathBuf, PathBuf) {
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(repo.join(".gitignore"), "*.generated\n").unwrap();
-    // The repository stages its generated files for sealing (ADR-0198), so they reach the
+    // The repository stages its generated files for sealing (ADR-0201), so they reach the
     // candidate and the delivery, which lists them as ignored paths.
     std::fs::write(repo.join(".af/seal-ignore"), "!*.generated\n").unwrap();
     let pagination = if passing_gate {
@@ -829,7 +829,7 @@ fn failed_local_creation_rolls_back_only_its_owned_refs() {
     assert_eq!(terminal, "TaskDeliveryFailed@1");
 }
 
-/// ADR-0198: without the staging rule, the generated files the Worker's run left — which the
+/// ADR-0201: without the staging rule, the generated files the Worker's run left — which the
 /// repository's `.gitignore` excludes — are left out of the sealed candidate and listed in the
 /// `af.seal-ignored/1` record its envelope references; what the Worker meant to write stays.
 #[test]

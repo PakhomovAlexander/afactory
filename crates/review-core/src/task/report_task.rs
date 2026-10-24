@@ -286,7 +286,7 @@ mod tests {
 pub const REPORT_DRAFT_VALIDATION_V1: &str = "af/ReportDraftValidation@1";
 
 /// The report policy a report author writes against, verbatim, as its context and its draft
-/// validation state it (ADR-0199).
+/// validation state it (ADR-0202).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReportDraftPolicyV1 {
@@ -297,7 +297,7 @@ pub struct ReportDraftPolicyV1 {
 }
 
 /// What the kernel found when it validated a report author's draft for shape before sealing it
-/// (ADR-0199): one result per check — `one_draft`, `sets`, `required_sections` — the policy it
+/// (ADR-0202): one result per check — `one_draft`, `sets`, `required_sections` — the policy it
 /// judged against, and one line per failure
 /// in the author's own terms. A failed validation refuses the reply and travels with the retry
 /// feedback, so the author's next Attempt reads exactly what to change.

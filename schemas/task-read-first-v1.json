@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-read-first:1",
   "title": "TaskReadFirst af/TaskReadFirst@1",
-  "$comment": "What a Task's Worker is told to read before its goal (ADR-0203): the project's standing rules, `.af/rules.md` of the Authority Snapshot, and the files the Task file's `context` names, each bound by the digest of the bytes the Task captured. Referenced from TaskRevisionV1.provenance.input_artifact_ids, written only when there is something to read, and listed at the end of the Task's requirements text, so a changed file is a changed plan.",
+  "$comment": "What a Task's Worker is told to read before its goal (ADR-0206): the project's standing rules, `.af/rules.md` of the Authority Snapshot, and the files the Task file's `context` names, each bound by the digest of the bytes the Task captured. Referenced from TaskRevisionV1.provenance.input_artifact_ids, written only when there is something to read, and listed at the end of the Task's requirements text, so a changed file is a changed plan.",
   "type": "object",
   "additionalProperties": false,
   "required": [

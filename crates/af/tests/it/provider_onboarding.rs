@@ -346,7 +346,7 @@ exit 64
     assert_eq!(code(&success), 0, "{}", err(&success));
     let stdout = out(&success);
     assert!(stdout.contains("authenticated and registered"), "{stdout}");
-    // The next step of a first run follows a registration (ADR-0201).
+    // The next step of a first run follows a registration (ADR-0204).
     assert!(
         stdout
             .lines()

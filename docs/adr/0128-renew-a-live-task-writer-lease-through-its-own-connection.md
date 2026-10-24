@@ -3,7 +3,7 @@
 **Status:** accepted (2026-09-29), revised (2026-09-30) for the SQLite write lock, and
 (2026-10-08) to apply the writer's own clock to every place that compares it with the last
 recorded time. Amended by
-[ADR-0200](0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md): the
+[ADR-0203](0203-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md): the
 lease is 60 s, renewed once a third of it has passed, on the same connection rules. Amends
 [ADR-0089](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md): the heartbeat no
 longer observes and renews only through the connection its work holds.

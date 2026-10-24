@@ -171,7 +171,7 @@ impl DeclaredPorts {
 
     /// Whether the selected Pipeline takes `port` as `artifact_type` one: `false` when no
     /// consulted Pipeline declares it, and a refusal when only some do or one declares it
-    /// another way, so a continuation's findings never decide the Pipeline (ADR-0203).
+    /// another way, so a continuation's findings never decide the Pipeline (ADR-0206).
     pub(super) fn declares(&self, port: &str, artifact_type: &str) -> Result<bool, String> {
         if !self.ports.contains_key(port) {
             return Ok(false);

@@ -4,7 +4,7 @@
 //! status`, `af storage`, `af onboard`) and ends `ok`, `warn` or `fail` with the one command that
 //! fixes it. Nothing here calls a model, logs in, installs or writes a file: the only processes it
 //! starts are version checks, the Provider status probe and one anonymous HTTPS request to the
-//! release source while update checks are on (ADR-0201). The charged end-to-end Provider check
+//! release source while update checks are on (ADR-0204). The charged end-to-end Provider check
 //! stays `af provider doctor`.
 
 use std::path::{Path, PathBuf};
@@ -853,7 +853,7 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
             "af provider status names the problem; fix or move the registry file",
         );
     }
-    // The same names-only scan `af provider status` and `af onboard` list (ADR-0197).
+    // The same names-only scan `af provider status` and `af onboard` list (ADR-0200).
     let found: Vec<String> = registry
         .unregistered
         .iter()

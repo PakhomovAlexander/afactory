@@ -458,7 +458,7 @@ fn a_codex_attempt_home_is_private_and_not_the_candidate_tree() {
     assert!(stderr.contains("codex_home=[redacted]\n"), "{stderr}");
 }
 
-/// ADR-0199, issue #33: a typed request's reply contract reaches Codex as `--output-schema`: a
+/// ADR-0202, issue #33: a typed request's reply contract reaches Codex as `--output-schema`: a
 /// file in the Attempt's staging directory whose bytes are exactly the strict schema
 /// `reply_schema::strict` derives from the request's own output schemas, so Codex itself refuses
 /// a structurally wrong final message. What the strict schema made the model write beyond the
@@ -552,7 +552,7 @@ fn a_typed_request_passes_its_reply_contract_as_the_output_schema_file() {
     assert!(!copy.exists());
 }
 
-/// ADR-0199, issue #295: an exit 1 that wrote nothing is a transient ending, and so is an
+/// ADR-0202, issue #295: an exit 1 that wrote nothing is a transient ending, and so is an
 /// overloaded model; an authentication failure is not.
 #[test]
 fn a_silent_exit_and_an_overloaded_model_are_transient_and_an_auth_failure_is_not() {

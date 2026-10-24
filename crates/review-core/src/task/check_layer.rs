@@ -1,4 +1,4 @@
-//! The warm check layer's own records (ADR-0198): what a toolchain key of the Warm Check Cache
+//! The warm check layer's own records (ADR-0201): what a toolchain key of the Warm Check Cache
 //! (ADR-0131) remembers about the sources it built, who holds it, why it was evicted, and what
 //! each warm check found in it.
 //!
@@ -312,7 +312,7 @@ pub struct TaskLayerHolderV1 {
     pub since_unix_ms: u64,
 }
 
-/// What the content rule did with the Snapshot's source groups (ADR-0198): `stale` groups were
+/// What the content rule did with the Snapshot's source groups (ADR-0201): `stale` groups were
 /// stamped now and rebuilt, `fresh` ones got back the stamp of the build that holds their
 /// content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

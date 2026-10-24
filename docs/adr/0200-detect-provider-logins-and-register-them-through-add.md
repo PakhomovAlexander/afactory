@@ -1,4 +1,4 @@
-# ADR-0197: Detect Provider logins, and register them through `add`
+# ADR-0200: Detect Provider logins, and register them through `add`
 
 **Status:** accepted (2026-10-22). Extends
 [ADR-0141](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md): the

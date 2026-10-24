@@ -1,4 +1,4 @@
-//! Offline checks (ADR-0198): a check declared `offline = true` runs with no network. npm reads
+//! Offline checks (ADR-0201): a check declared `offline = true` runs with no network. npm reads
 //! only its cache, every proxy variable names a closed local port, and Cargo stays offline. The
 //! npm packages it runs are pinned by the SHA-256 of their registry tarballs; before each run
 //! the kernel finds each tarball in npm's content-addressed cache (`_cacache`) and verifies it.

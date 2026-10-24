@@ -364,19 +364,23 @@ future readers need.
   group](0194-bind-calibration-to-each-cases-observed-shard-cpu-group.md)
 - [0195 — State the lines a pull request adds per directory, and check
   them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)
-- [0196 — Rerun a failed test alone, report the gate, and retry a failed gate on the same
-  candidate](0196-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
-- [0197 — Detect Provider logins, and register them through
-  `add`](0197-detect-provider-logins-and-register-them-through-add.md)
-- [0198 — Key warm check layers by content, lock them, split the build deadline, and seal without
-  generated files](0198-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)
-- [0199 — Recover an Attempt from a transient Provider failure and a reply that does not
-  parse](0199-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)
-- [0200 — Recover a lost or interrupted Attempt without charging its
-  reservation](0200-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)
-- [0201 — Make the first run say what to do
-  next](0201-make-the-first-run-say-what-to-do-next.md)
-- [0202 — Give the agent loop its verbs, and deliver a verified
-  verification](0202-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)
-- [0203 — Continue a Task from its reviewed candidate, and give judging Workers the
-  base](0203-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)
+- [0196 — Skip pull request measurements only for an explicit `no-perf`
+  label](0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)
+- [0197 — Validate on one latest stable Python](0197-validate-on-one-latest-stable-python.md)
+- [0198 — Opt this repository into distinct-model Worker independence](0198-opt-this-repository-into-distinct-model-worker-independence.md)
+- [0199 — Rerun a failed test alone, report the gate, and retry a failed gate on the same
+  candidate](0199-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
+- [0200 — Detect Provider logins, and register them through
+  `add`](0200-detect-provider-logins-and-register-them-through-add.md)
+- [0201 — Key warm check layers by content, lock them, split the build deadline, and seal without
+  generated files](0201-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)
+- [0202 — Recover an Attempt from a transient Provider failure and a reply that does not
+  parse](0202-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)
+- [0203 — Recover a lost or interrupted Attempt without charging its
+  reservation](0203-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)
+- [0204 — Make the first run say what to do
+  next](0204-make-the-first-run-say-what-to-do-next.md)
+- [0205 — Give the agent loop its verbs, and deliver a verified
+  verification](0205-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)
+- [0206 — Continue a Task from its reviewed candidate, and give judging Workers the
+  base](0206-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)
