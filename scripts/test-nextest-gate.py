@@ -32,7 +32,8 @@ def main():
         (repo / 'src').mkdir(parents=True)
         (repo / 'scripts').mkdir()
         (repo / '.config').mkdir()
-        for name in ['verify.sh', 'nextest-gate.py', 'ci-step.py', 'test-time-report.py']:
+        for name in ['verify.sh', 'verify-body.sh', 'gate-owner.py', 'nextest-gate.py',
+                     'ci-step.py', 'test-time-report.py']:
             shutil.copyfile(ROOT / 'scripts' / name, repo / 'scripts' / name)
         shutil.copyfile(ROOT / '.config/nextest.toml', repo / '.config/nextest.toml')
         shutil.copyfile(ROOT / 'rust-toolchain.toml', repo / 'rust-toolchain.toml')

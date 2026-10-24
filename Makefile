@@ -78,6 +78,7 @@ release-check:
 # the staged policy and any installed guarded measure (ADR-0185); they never run a benchmark.
 preflight-check:
 	$(CI_STEP) task-preflight python3 scripts/test-task-preflight.py
+	$(CI_STEP) gate-owner python3 scripts/test-gate-owner.py
 	$(CI_STEP) nextest-gate python3 scripts/test-nextest-gate.py
 	$(CI_STEP) test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) provider-auth-host python3 scripts/test-provider-auth-host.py
