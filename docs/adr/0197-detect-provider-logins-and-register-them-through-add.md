@@ -126,3 +126,37 @@ reads it, as ADR-0114's probe-timeout setting.
   move.
 - A status context without a marker reports `not_probed` where it used to report the CLI's
   answer; logging in there, or `af provider detect --all`, brings the answer back.
+
+## Amendment, 2026-10-24: what detect says when it cannot know
+
+Close-out C3 of the release-polish campaign makes `af provider detect` print
+`af/provider-detect@2` (`schemas/provider-detect-v2.json`; version 1 is neither printed nor
+read), and `af provider status` print `af/provider-status@3`.
+
+- **The auth probe waits 10 seconds at most**, whatever the kind. Claude's structural timeout
+  is 30 s and Codex's 15 s; a scan of every login on a machine does not wait either. A row whose
+  login is not known carries `auth_cause` (`timeout`, `unstartable`, `incompatible`,
+  `unparsable`, `output_too_large`, `cancelled`, `unchecked`, `other`) and `auth_detail`, af's
+  own words for the cause, never the CLI's.
+- **A directory that cannot be listed** (it grants search but not read) has its markers checked
+  by name, one path each, and is probed. Its row says `listing unreadable`, so it is never
+  reported as an empty directory. `af provider status` applies the same rule.
+- **An unreadable registry is unknown, never empty.** A registry that is malformed, cannot be
+  read or is mid-transaction gives every row `registration: unknown` and the suggestion
+  `fix_registry`. Its note is in every output, the empty scan's included, and `--apply` refuses
+  with exit 1 (`af/error@1` under `--json`) before it scans.
+- **`--apply` checks a registered row again under the registry lock.** If the entry was removed
+  after the scan, a logged-in row is registered again and a logged-out one is reported gone. It
+  is never called `already_registered`.
+- **A login whose CLI is off `PATH` is not registered**, because `af provider status` and Task
+  admission look on `PATH` only. Its suggestion is `fix_path`, the PATH line. `--apply` leaves
+  it `skipped_cli_off_path` and exits 4, the code of a CLI af cannot use.
+- **A registry conflict suggests the retry that works.** The applied row names `conflict_with`.
+  Its suggestion becomes `retry_apply`, `af provider detect --dir D --id OTHER --apply` with the
+  first ID nothing holds, or `af provider status` when the directory is registered under
+  another ID now. The closing `next:` line follows the outcome: that retry after exit 5, the
+  CLI's upgrade or PATH line after exit 4, and `af provider status` only after an apply that
+  succeeded.
+- **One names-only scan** lists the directories found but not registered. `af provider status`
+  (text, and `found_unregistered` with `next_action` in its document), `af doctor` and
+  `af onboard` all use it.

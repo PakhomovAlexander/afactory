@@ -3,8 +3,10 @@
 //! Project Store (ADR-0158), so the Storage Budget's sweep reaches Stores nothing else knows.
 //!
 //! Recording is best effort and never fails a command: a registry that cannot be read or
-//! written is reported once on stderr and left as it is. The sweep visits every registered
-//! Store and drops the entries whose path no longer holds one.
+//! written is reported on stderr and left as it is. A version-1 registry an earlier release
+//! wrote is the exception: nothing is lost by dropping it, so the first write that meets it
+//! replaces it with an empty current one and says so once (ADR-0158 clause 8). The sweep visits
+//! every registered Store and drops the entries whose path no longer holds one.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -47,10 +49,17 @@ struct RegistryFile {
 /// Version 2 added the kind `project` (ADR-0158); version 1 is refused (ADR-0145).
 const VERSION: u32 = 2;
 
-/// Why a version-1 registry is refused, and the way out: nothing is lost by deleting it.
+/// Why a version-1 registry is refused by a reader, and the way out: nothing is lost by
+/// deleting it, which the next write does.
 const VERSION_1: &str = "version 1 is the Store registry of an earlier release, which this \
      release does not read; delete $XDG_STATE_HOME/af/stores.toml: Stores register again as \
      commands use them, and the Stores under af's default roots were never in it";
+
+/// What the write that replaces a version-1 registry says, once.
+const REPLACED_VERSION_1: &str = "was the Store registry of an earlier release (version 1), \
+     which this release does not read, so it was replaced by an empty one; nothing is lost: \
+     Stores register again as commands use them, and the Stores under af's default roots were \
+     never in it";
 
 /// The registry's location below a state home.
 pub(crate) fn location(state_home: &Path) -> PathBuf {
@@ -154,7 +163,12 @@ fn update(location: &Path, change: impl FnOnce(&mut Vec<Registered>)) -> Result<
         .map_err(|error| error.to_string())?;
     let _held = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive)
         .map_err(|(_, errno)| format!("locking the Store registry: {errno}"))?;
-    let mut stores = read(location)?;
+    // A version-1 registry holds nothing this release needs: it is replaced, and said once.
+    let (mut stores, replaced) = match read(location) {
+        Ok(stores) => (stores, false),
+        Err(_) if is_version_1(location) => (Vec::new(), true),
+        Err(error) => return Err(error),
+    };
     change(&mut stores);
     stores.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
     let text = toml::to_string(&RegistryFile {
@@ -174,7 +188,22 @@ fn update(location: &Path, change: impl FnOnce(&mut Vec<Registered>)) -> Result<
     staged
         .persist(location)
         .map_err(|error| error.error.to_string())?;
+    if replaced {
+        eprintln!("af: {} {REPLACED_VERSION_1}", location.display());
+    }
     Ok(())
+}
+
+/// Whether the registry at `location` is the version-1 file of an earlier release.
+fn is_version_1(location: &Path) -> bool {
+    #[derive(Deserialize)]
+    struct Versioned {
+        version: u32,
+    }
+    std::fs::read_to_string(location)
+        .ok()
+        .and_then(|text| toml::from_str::<Versioned>(&text).ok())
+        .is_some_and(|versioned| versioned.version == 1)
 }
 
 #[cfg(test)]
@@ -224,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn a_version_1_registry_is_refused_with_the_way_out() {
+    fn a_version_1_registry_is_refused_by_a_reader_and_replaced_by_the_next_write() {
         let directory = tempfile::tempdir().unwrap();
         let location = location(directory.path());
         std::fs::create_dir_all(location.parent().unwrap()).unwrap();
@@ -239,9 +268,25 @@ mod tests {
         );
         assert!(error.contains("register again"), "{error}");
         assert!(error.contains("default roots were never in it"), "{error}");
-        // An update refuses it too and leaves the file as it was.
+        // The next write replaces it with a current registry that holds only its own change.
+        let store = PathBuf::from("/elsewhere/other");
+        update(&location, |stores| {
+            stores.push(Registered {
+                path: store.clone(),
+                kind: StoreKind::Task,
+                first_use_unix_ms: 2,
+                last_use_unix_ms: 2,
+            })
+        })
+        .unwrap();
+        let stores = read(&location).unwrap();
+        assert_eq!(stores.len(), 1);
+        assert_eq!(stores[0].path, store);
+        assert!(!is_version_1(&location));
+        // A registry of another version is still refused, and left as it was.
+        std::fs::write(&location, "version = 7\n").unwrap();
         assert!(update(&location, |_| {}).is_err());
-        assert_eq!(std::fs::read_to_string(&location).unwrap(), written);
+        assert_eq!(std::fs::read_to_string(&location).unwrap(), "version = 7\n");
     }
 
     #[test]

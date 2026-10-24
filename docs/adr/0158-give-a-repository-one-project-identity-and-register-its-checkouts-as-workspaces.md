@@ -489,3 +489,23 @@ directories.
   unsupervised process start under `crates/af/src/projects`.
   `crates/review-core/tests/schema_parity/project.rs` pins the three events and two documents,
   and `crates/af/tests/it/cli_surface.rs` the help surface.
+
+## Amendment, 2026-10-24: a delivered Workspace's source Task, and the version-1 registry
+
+Close-out C3 of the release-polish campaign changes two clauses.
+
+- **Clause 7, delivery.** A delivered worktree is still labelled by its Task ID, but that label
+  is suffixed when the Task ID is already a label (clause 4), and the Storage Budget read labels
+  as Task IDs, so a collision left the source Task unprotected. The registration now appends a
+  fourth event, `WorkspaceDelivered@1` (`workspace_id`, `task_id`;
+  `schemas/project-workspace-delivered-v1.json`, and in `run-event-v1.json`), right after the
+  Workspace's `WorkspaceRegistered@1`. It records the Task ID as data apart from the label, and
+  no host path. The log's fold sets the Workspace's source Task from it, and a sweep keeps that
+  Task while the Workspace stays registered. A delivered Workspace whose second event never
+  landed (a crash between the two appends) is read by its label, as before. A release before
+  this one cannot read a Project Store that holds the event, which ADR-0145 accepts.
+- **Clause 8, the version-1 `stores.toml`.** It is still refused by every reader. The first
+  write that meets it, which is the next recorded Store, now replaces it with an empty
+  version-2 registry and says so once on stderr, the recovery the refusal named. Nothing is
+  lost: Stores register again as commands use them, and the Stores under the default roots were
+  never in it. Before, it warned on every run until the operator deleted it.

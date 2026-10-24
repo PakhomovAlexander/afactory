@@ -9,7 +9,7 @@ v hub  (project)            |
       fixture/implementation|note   run `codex login` in this context
   v tasks/                  |ambient (CODEX_HOME): found through CODEX_HOME, not in the registry
   v campaigns/              |  register it: af provider add codex-main --kind codex
-                            |  or stop listing it: unset CODEX_HOME
+                            |  unsetting CODEX_HOME lists ~/.codex instead
                             |set up codex: af provider setup codex-main --kind codex --login
                             |
                             |

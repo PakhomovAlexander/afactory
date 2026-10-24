@@ -183,12 +183,15 @@ README walks through the rest; [docs/tasks.md](docs/tasks.md) is the guide.
 - Whatever the repository's Gate runs. A Gate runs on this machine, so its tools must be installed
   before a review starts, or the first paid run fails at the Gate. This repository's own
   `make check` needs:
-  - Rust at or above 1.88 (`rust-toolchain.toml` pins it), from https://rustup.rs:
+  - Rust at or above 1.88 with `clippy` and `rustfmt` (`rust-toolchain.toml` pins all three;
+    `make prereqs` checks them), from https://rustup.rs:
     `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
   - a C compiler and `make`: `xcode-select --install` on macOS, `sudo apt install build-essential`
   - `cargo-nextest`: `cargo install cargo-nextest --locked`
   - `python3` and `npx`: `brew install python node`, `sudo apt install python3 npm`
   - `minisign`, as above
+- On macOS, exclude af's build and sandbox roots from Spotlight, which `af doctor` checks:
+  [docs/README.md](docs/README.md#macos-spotlight-and-gatekeeper) says how.
 - Optional: an OCI container runtime (Docker or compatible) for `provider = "container"` Gates.
   Detection runs the runtime's own `info`; an unusable runtime is refused, never silently downgraded.
 

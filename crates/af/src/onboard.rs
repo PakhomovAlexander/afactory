@@ -1439,6 +1439,18 @@ fn providers_block(
             "the Provider registry cannot be read: {warning}   ← af provider status"
         ));
     }
+    // The same names-only scan `af provider status` and `af doctor` list (ADR-0197).
+    if !registry.unregistered.is_empty() {
+        let found: Vec<String> = registry
+            .unregistered
+            .iter()
+            .map(|dir| crate::providers::detect::display_path(dir))
+            .collect();
+        lines.push(format!(
+            "found but not registered: {} (not probed)   ← af provider detect",
+            found.join(", ")
+        ));
+    }
     let taken: BTreeSet<String> = registry
         .registered
         .iter()

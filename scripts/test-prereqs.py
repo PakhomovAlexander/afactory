@@ -28,7 +28,12 @@ prereqs = load()
 
 FAKES = {
     "git": "echo 'git version 2.39.5'",
-    "rustup": "echo '1.88.0-aarch64-apple-darwin (default)'; echo 'stable-aarch64-apple-darwin'",
+    "rustup": "case \"$1\" in\n"
+              "  toolchain) echo '1.88.0-aarch64-apple-darwin (default)';"
+              " echo 'stable-aarch64-apple-darwin' ;;\n"
+              "  component) echo 'cargo-aarch64-apple-darwin'; echo 'clippy-aarch64-apple-darwin';"
+              " echo 'rustfmt-aarch64-apple-darwin' ;;\n"
+              "esac",
     "cargo-nextest": "echo 'cargo-nextest 0.9.132'",
     "cc": "echo 'cc (fixture) 13.2.0'",
     "npx": "echo '10.8.2'",
@@ -128,9 +133,49 @@ class Prereqs(unittest.TestCase):
                               text=True, timeout=120, stdin=subprocess.DEVNULL)
         said = done.stdout + done.stderr
         lines = done.stdout.splitlines()
-        self.assertEqual(len(lines), 9, said)
-        passed = all(line.startswith("ok ") for line in lines[:-1])
+        # One line per check, a wrapped one continued on indented lines, and a last line.
+        entries = [line for line in lines if not line.startswith(" ")]
+        self.assertEqual(len(entries), 9, said)
+        passed = all(line.startswith("ok ") for line in entries[:-1])
         self.assertEqual(done.returncode == 0, passed, said)
+        self.assertTrue(all(len(line) <= prereqs.WIDTH for line in lines), said)
+
+    def test_a_toolchain_without_a_pinned_component_is_missing_with_the_command(self):
+        for name, body in FAKES.items():
+            self.fake(name, body)
+        self.fake("rustup", "case \"$1\" in\n"
+                            "  toolchain) echo '1.88.0-aarch64-apple-darwin (default)' ;;\n"
+                            "  component) echo 'cargo-aarch64-apple-darwin';"
+                            " echo 'rustfmt-aarch64-apple-darwin' ;;\n"
+                            "esac")
+        passed, found, fix = self.run_checks()["rust"]
+        self.assertFalse(passed)
+        self.assertEqual(found, "rustup holds 1.88.0 without clippy")
+        self.assertEqual(fix, "rustup component add --toolchain 1.88.0 clippy")
+        code, out = self.main("--min-free-gib", "0")
+        self.assertEqual(code, 1, out)
+        self.assertIn("missing  rust", out)
+        self.assertTrue(out.splitlines()[-1].startswith("1 of 8 prerequisites missing: rust"),
+                        out)
+
+    def test_long_lines_wrap_at_100_columns_and_home_is_abbreviated(self):
+        for name, body in FAKES.items():
+            self.fake(name, body)
+        deep = self.root / ("a-rather-long-directory-name/" * 6) / "target"
+        deep.parent.mkdir(parents=True)
+        out = io.StringIO()
+        env = dict(os.environ, PATH=str(self.bin), HOME=str(self.root))
+        with contextlib.redirect_stdout(out), \
+                unittest.mock.patch.dict(os.environ, env, clear=True):
+            code = prereqs.main(["--toolchain-file", str(self.toolchain), "--target", str(deep),
+                                 "--min-free-gib", str(1 << 40)])
+        said = out.getvalue()
+        self.assertEqual(code, 1, said)
+        lines = said.splitlines()
+        self.assertTrue(all(len(line) <= 100 for line in lines), said)
+        self.assertIn("GiB free on the volume of\n" + " " * 24 + "~/a-rather-long", said)
+        disk = next(index for index, line in enumerate(lines) if line.startswith("missing  disk"))
+        self.assertTrue(lines[disk + 1].startswith(" " * 24), said)
 
 
 if __name__ == "__main__":

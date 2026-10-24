@@ -2531,7 +2531,7 @@ fn an_ambient_provider_row_says_how_it_got_there_and_how_to_make_it_go() {
     let lines = [
         "ambient (CODEX_HOME): found through CODEX_HOME, not in the registry",
         "  register it: af provider add codex-main --kind codex",
-        "  or stop listing it: unset CODEX_HOME",
+        "  unsetting CODEX_HOME lists ~/.codex instead",
     ];
     let at = rows.iter().position(|row| row == lines[0]).unwrap();
     assert_eq!(rows[at..at + 3], lines);

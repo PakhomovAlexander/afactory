@@ -113,7 +113,7 @@ fn document(output: &Output) -> Value {
     let document: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("stdout is not one document: {error}\n{stdout}"));
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v2.json"),
+        &crate::schemas::validator("provider-status-v3.json"),
         &document,
     );
     document

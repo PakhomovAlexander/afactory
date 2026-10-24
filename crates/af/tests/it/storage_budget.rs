@@ -138,7 +138,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
     // 50 GiB free: `max_bytes = "auto"` is 20 GiB on every host.
     let modest = [("AF_TEST_FREE_BYTES", "53687091200")];
     let shown = json(&machine.af(&machine.root, &modest, &["storage", "--json"]));
-    schemas::valid(&schemas::validator("storage-v4.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v5.json"), &shown);
     assert_eq!(shown["max_bytes"], 20_u64 << 30);
     assert_eq!(shown["min_free_bytes"], 10_u64 << 30);
     let warm = shown["kinds"]
@@ -1354,4 +1354,211 @@ fn the_floor_names_the_configured_sandbox_root() {
         assert!(stderr.contains(needle), "{needle}: {stderr}");
     }
     assert!(sandboxes.is_dir(), "the configured root is made");
+}
+
+/// Findings I9 and C3 items 1-2: a delivered Workspace protects its source Task by the Task ID
+/// its `WorkspaceDelivered@1` records, even when the Task ID was taken as a label (`gc-older`,
+/// so the Workspace is `gc-older-<hex>`); and while a Project Store cannot be read, no finished
+/// Task is collected at all, and the sweep names that Project Store.
+#[test]
+fn a_delivered_task_is_kept_whatever_its_label_and_an_unreadable_project_store_keeps_all() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    for file in ["gc-older.json", "gc-newer.json"] {
+        let output = start(&machine, &repo, &state, file, &[]);
+        assert!(output.status.success(), "{:?}", text(&output));
+    }
+    // `gc-older` is taken as a label before the delivery registers its worktree.
+    let taken = machine.af(&repo, &[], &["project", "workspace", "new", "gc-older"]);
+    assert!(taken.status.success(), "{:?}", text(&taken));
+    let worktree = machine.root.join("delivered");
+    let delivered = machine.af(
+        &repo,
+        &[],
+        &[
+            "task",
+            "deliver",
+            "gc-older",
+            "--state",
+            state.to_str().unwrap(),
+            "--confirm",
+            "gc-older",
+            "--branch",
+            "delivered/gc-older",
+            "--worktree",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    assert!(delivered.status.success(), "{:?}", text(&delivered));
+    let workspaces = json(&machine.af(&repo, &[], &["project", "workspaces", "--json"]));
+    let label = workspaces["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|workspace| workspace["origin"] == "delivered")
+        .map(|workspace| workspace["label"].as_str().unwrap().to_string())
+        .unwrap_or_else(|| panic!("a delivered Workspace in {workspaces}"));
+    assert!(
+        label.starts_with("gc-older-"),
+        "the label collided: {label}"
+    );
+
+    // Collection by age with nothing kept, and a budget nothing fits.
+    let eager = [
+        ("AF_STORAGE__KEEP_DAYS", "0"),
+        ("AF_STORAGE__KEEP_TASKS", "0"),
+        ("AF_STORAGE__MAX_BYTES", "1KiB"),
+    ];
+    let removed = |pruned: &Value| -> Vec<String> {
+        pruned["removals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|removal| removal["task_id"].as_str().map(str::to_string))
+            .collect()
+    };
+
+    // An unreadable Project Store: nothing finished is collected, and the sweep says why.
+    let projects = machine.state_home().join("af/project");
+    let store = std::fs::read_dir(&projects)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.join("events.sqlite").is_file())
+        .expect("a Project Store");
+    let log = store.join("events.sqlite");
+    let kept = std::fs::read(&log).unwrap();
+    std::fs::write(&log, b"not a database, so not a log this release reads").unwrap();
+    let pruned = json(&machine.af(&repo, &eager, &["storage", "prune", "--apply", "--json"]));
+    assert_eq!(removed(&pruned), Vec::<String>::new(), "{pruned}");
+    let failures = pruned["failures"].to_string();
+    assert!(
+        failures.contains(&format!(
+            "the delivered Workspaces of the Project Store {} cannot be read, so no finished \
+             Task is collected",
+            store.display()
+        )),
+        "{failures}"
+    );
+    let list = listed(&machine, &repo, &state);
+    assert!(!collected(&list, "gc-older") && !collected(&list, "gc-newer"));
+
+    // Readable again: the delivered Task stays under its suffixed Workspace, the other goes.
+    std::fs::write(&log, kept).unwrap();
+    let pruned = json(&machine.af(&repo, &eager, &["storage", "prune", "--apply", "--json"]));
+    assert_eq!(removed(&pruned), ["gc-newer"], "{pruned}");
+    let list = listed(&machine, &repo, &state);
+    assert!(!collected(&list, "gc-older"), "{list}");
+    assert!(collected(&list, "gc-newer"), "{list}");
+}
+
+/// C3 item 6: below the floor, `af storage --json` names each volume the floor measures, its
+/// role, its free bytes, that it is below the floor and the next command, as the text does.
+#[test]
+fn storage_json_names_each_volume_below_the_floor() {
+    let machine = Machine::new();
+    let sandboxes = machine.root.join("sandboxes");
+    let env = [
+        ("AF_TEST_FREE_BYTES", "1024"),
+        ("AF_STORAGE__SANDBOX_ROOT", sandboxes.to_str().unwrap()),
+    ];
+    let shown = json(&machine.af(&machine.root, &env, &["storage", "--json"]));
+    schemas::valid(&schemas::validator("storage-v5.json"), &shown);
+    assert_eq!(shown["schema"], "af/storage@5");
+    let volumes = shown["volumes"].as_array().unwrap();
+    let roles: Vec<&str> = volumes
+        .iter()
+        .map(|volume| volume["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, ["sandbox", "cache"], "{shown}");
+    for volume in volumes {
+        assert_eq!(volume["free_bytes"], 1024, "{volume}");
+        assert_eq!(volume["below_floor"], true, "{volume}");
+        assert_eq!(
+            volume["next_action"], "af storage prune --apply",
+            "{volume}"
+        );
+        assert!(
+            volume["volume"]
+                .as_str()
+                .is_some_and(|path| !path.is_empty())
+        );
+    }
+    assert_eq!(volumes[0]["root"], sandboxes.to_str().unwrap());
+    assert!(
+        volumes[0]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("set TMPDIR or [storage] sandbox_root to a volume with room"),
+        "{shown}"
+    );
+    let (text, _) = text(&machine.af(&machine.root, &env, &["storage"]));
+    assert!(text.contains("below the floor"), "{text}");
+
+    // Above the floor nothing is to be done.
+    let roomy = json(&machine.af(
+        &machine.root,
+        &[("AF_TEST_FREE_BYTES", "53687091200")],
+        &["storage", "--json"],
+    ));
+    for volume in roomy["volumes"].as_array().unwrap() {
+        assert_eq!(volume["below_floor"], false, "{volume}");
+        assert!(volume["next_action"].is_null() && volume["fix"].is_null());
+    }
+}
+
+/// C3 item 24: a version-1 Store registry an earlier release wrote is replaced by the first
+/// write that meets it and said once; the next run prints nothing about it.
+#[test]
+fn a_version_1_store_registry_is_replaced_once_and_said_once() {
+    let machine = Machine::new();
+    let repo = machine.root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [
+        ["init", "-q", "-b", "main"].as_slice(),
+        ["commit", "-q", "--allow-empty", "-m", "first"].as_slice(),
+    ] {
+        let output = Command::new("git")
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    let registry = machine.state_home().join("af/stores.toml");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &registry,
+        "version = 1\n\n[[store]]\npath = \"/elsewhere/state\"\nkind = \"task\"\n\
+         first_use_unix_ms = 1\nlast_use_unix_ms = 1\n",
+    )
+    .unwrap();
+    let mut said = Vec::new();
+    for _ in 0..2 {
+        let output = machine.af(&repo, &[], &["project", "show"]);
+        let (stdout, stderr) = text(&output);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        said.extend(
+            stderr
+                .lines()
+                .filter(|line| line.contains("stores.toml"))
+                .map(str::to_string),
+        );
+    }
+    assert_eq!(
+        said,
+        [format!(
+            "af: {} was the Store registry of an earlier release (version 1), which this \
+             release does not read, so it was replaced by an empty one; nothing is lost: Stores \
+             register again as commands use them, and the Stores under af's default roots were \
+             never in it",
+            registry.display()
+        )],
+    );
+    let text = std::fs::read_to_string(&registry).unwrap();
+    assert!(text.contains("\nversion = 2\n"), "{text}");
+    assert!(!text.contains("/elsewhere/state"), "{text}");
+    assert!(text.contains("kind = \"project\""), "{text}");
 }

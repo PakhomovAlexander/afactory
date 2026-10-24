@@ -1319,7 +1319,7 @@ fn telemetry_dirs_registry_reaches_every_directory() {
     );
     let off = [("AF_TELEMETRY__LEVEL", "off")];
     let shown = json(&machine.af(&repo, &off, &["storage", "--json"]));
-    crate::schemas::valid(&crate::schemas::validator("storage-v4.json"), &shown);
+    crate::schemas::valid(&crate::schemas::validator("storage-v5.json"), &shown);
     let entries = telemetry_entries(&shown);
     for directory in [&a, &b] {
         assert!(

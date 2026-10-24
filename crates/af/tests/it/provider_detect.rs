@@ -172,13 +172,13 @@ fn code(output: &Output) -> i32 {
     output.status.code().unwrap()
 }
 
-/// stdout as the one `af/provider-detect@1` document, valid against the published schema.
+/// stdout as the one `af/provider-detect@2` document, valid against the published schema.
 fn detected(output: &Output) -> Value {
     let stdout = out(output);
     let document: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("stdout is not one document: {error}\n{stdout}"));
     crate::schemas::valid(
-        &crate::schemas::validator("provider-detect-v1.json"),
+        &crate::schemas::validator("provider-detect-v2.json"),
         &document,
     );
     assert_eq!(document["exit_code"], code(output), "{document}");
@@ -548,6 +548,16 @@ fn detect_reports_the_status_probe_vocabulary_and_a_cli_that_cannot_serve_af() {
     let human = machine.af(&["provider", "detect"]);
     assert_eq!(code(&human), 4);
     assert!(out(&human).contains("CLI incompatible"), "{}", out(&human));
+    // The rows carry the cause, and an --apply that exits 4 ends with the upgrade, not status.
+    assert_eq!(candidate(&document, &work)["auth_cause"], "incompatible");
+    let applied = machine.af(&["provider", "detect", "--apply"]);
+    assert_eq!(code(&applied), 4, "{}", err(&applied));
+    assert!(
+        out(&applied).contains("\nnext: npm install -g @anthropic-ai/claude-code@latest\n"),
+        "{}",
+        out(&applied)
+    );
+    assert!(!out(&applied).contains("next: af provider status"));
 
     // A Claude CLI that cannot start at all.
     machine.install_in(
@@ -605,8 +615,9 @@ exit 0
     assert_eq!(entries(&gemini), ["settings.json"]);
 }
 
-/// Item 5: a CLI that hangs on its status probe is cut at the production timeout, and the row
-/// says `unavailable` with the cause.
+/// Item 5, C3 items 12-13: a CLI that hangs on its status probe is cut at detect's 10-second
+/// bound whatever its kind (Claude's structural timeout is 30 s, Codex's 15 s), and the row says
+/// `unavailable` with the cause, in the table and as `auth_cause` in the document.
 #[test]
 fn a_hanging_cli_is_cut_at_the_probe_timeout() {
     let machine = Machine::new();
@@ -615,7 +626,12 @@ fn a_hanging_cli_is_cut_at_the_probe_timeout() {
         "codex",
         "#!/bin/sh\nif [ \"$1\" = --version ]; then\n  printf '%s\\n' 'codex-cli 0.163.0'\n  exit 0\nfi\nif [ \"$1\" = login ]; then\n  exec sleep 600\nfi\nexit 64\n",
     );
+    machine.install(
+        "claude",
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then\n  printf '%s\\n' '2.1.299 (Claude Code)'\n  exit 0\nfi\nif [ \"$1\" = auth ]; then\n  exec sleep 600\nfi\nexit 64\n",
+    );
     let acme = machine.dir(".codex-acme", &["auth.json"]);
+    let work = machine.dir(".config/claude-work", &[".claude.json"]);
     let started = std::time::Instant::now();
     let output = machine
         .command(&["provider", "detect"])
@@ -623,24 +639,46 @@ fn a_hanging_cli_is_cut_at_the_probe_timeout() {
         .output()
         .unwrap();
     assert_eq!(code(&output), 0, "{}", err(&output));
-    assert!(started.elapsed() < std::time::Duration::from_secs(60));
+    // Both probes run at once and each ends at 10 s; the margin is for a loaded machine's
+    // process start-up (ADR-0114), well below Claude's 30 s.
+    let elapsed = started.elapsed();
+    assert!(elapsed < std::time::Duration::from_secs(25), "{elapsed:?}");
     let stdout = out(&output);
-    let row = stdout
-        .lines()
-        .find(|line| line.starts_with("codex  ~/.codex-acme "))
-        .unwrap_or_else(|| panic!("no codex-acme row:\n{stdout}"));
-    assert!(row.contains("unavailable"), "{stdout}");
-    assert!(
-        stdout.contains(
-            "~/.codex-acme: unavailable: provider status probe timed out after 15 seconds"
-        ),
-        "{stdout}"
-    );
+    for (prefix, dir) in [
+        ("codex  ~/.codex-acme ", "~/.codex-acme"),
+        ("claude ~/.config/claude-work", "~/.config/claude-work"),
+    ] {
+        let row = stdout
+            .lines()
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {dir} row:\n{stdout}"));
+        assert!(row.contains("unavailable"), "{stdout}");
+        assert!(
+            stdout.contains(&format!(
+                "{dir}: unavailable: provider status probe timed out after 10 seconds"
+            )),
+            "{stdout}"
+        );
+    }
     assert!(acme.exists());
+
+    let json = machine
+        .command(&["provider", "detect", "--json"])
+        .env_remove(crate::common::PROBE_TIMEOUT_SETTING)
+        .output()
+        .unwrap();
+    let document = detected(&json);
+    for dir in [&acme, &work] {
+        let row = candidate(&document, dir);
+        assert_eq!(row["auth"], "unavailable", "{row}");
+        assert_eq!(row["auth_cause"], "timeout", "{row}");
+        assert_eq!(
+            row["auth_detail"],
+            "provider status probe timed out after 10 seconds"
+        );
+    }
 }
 
-/// Item 6: the table for the item-3 machine, as a snapshot: grouped by kind, every line under
-/// 100 columns, the binaries line, the copyable lines and the two closing lines.
 #[test]
 fn the_table_for_logins_in_three_directories() {
     let machine = Machine::new();
@@ -831,11 +869,19 @@ fn apply_registers_what_is_logged_in_and_a_second_apply_changes_nothing() {
     assert_eq!(document["applied"], true);
     assert_eq!(
         candidate(&document, &personal)["applied"],
-        serde_json::json!({"id": "claude-personal", "result": "already_registered"})
+        serde_json::json!({
+            "id": "claude-personal",
+            "result": "already_registered",
+            "conflict_with": null,
+        })
     );
     assert_eq!(
         candidate(&document, &default)["applied"],
-        serde_json::json!({"id": "claude-main", "result": "skipped_not_authenticated"})
+        serde_json::json!({
+            "id": "claude-main",
+            "result": "skipped_not_authenticated",
+            "conflict_with": null,
+        })
     );
     assert_eq!(machine.registry(), registry);
 }
@@ -874,9 +920,23 @@ fn a_registry_conflict_stops_apply_with_the_rows_before_it_published() {
     ]);
     assert_eq!(code(&output), 5, "{}", err(&output));
     let document = detected(&output);
+    let row = candidate(&document, &other);
     assert_eq!(
-        candidate(&document, &other)["applied"],
-        serde_json::json!({"id": "claude-taken", "result": "registry_conflict"})
+        row["applied"],
+        serde_json::json!({
+            "id": "claude-taken",
+            "result": "registry_conflict",
+            "conflict_with": "claude-taken",
+        })
+    );
+    // The row suggests the retry that works, never the add that just failed.
+    let retry = format!(
+        "af provider detect --dir {} --id claude-taken-2 --apply",
+        other.display()
+    );
+    assert_eq!(
+        row["suggested"],
+        serde_json::json!({"action": "retry_apply", "id": "claude-taken-2", "command": retry})
     );
     assert_eq!(candidate(&document, &acme)["applied"], Value::Null);
     assert_eq!(machine.registered(), ["claude-taken", "claude-work"]);
@@ -909,7 +969,33 @@ fn a_registry_conflict_stops_apply_with_the_rows_before_it_published() {
         stdout.contains("1 later login was not registered"),
         "{stdout}"
     );
+    // Text and JSON agree: the message and the closing line name the same retry.
+    let retry = "af provider detect --dir ~/teams/claude-b --id claude-taken-2 --apply";
+    assert!(
+        stdout.contains(&format!("choose another ID: {retry}")),
+        "{stdout}"
+    );
+    assert!(
+        out(&human).contains(&format!("\nnext: {retry}\n")),
+        "{}",
+        out(&human)
+    );
+    assert!(!out(&human).contains("next: af provider status"));
     assert_eq!(machine.registered(), ["claude-taken", "claude-work"]);
+
+    // The retry runs as printed.
+    let retried = machine.af(&[
+        "provider",
+        "detect",
+        "--dir",
+        other.to_str().unwrap(),
+        "--id",
+        "claude-taken-2",
+        "--apply",
+    ]);
+    assert_eq!(code(&retried), 0, "{}", err(&retried));
+    assert!(out(&retried).contains("\nnext: af provider status\n"));
+    assert!(machine.registered().contains(&"claude-taken-2".to_string()));
 }
 
 /// Item 9: exit codes 0, 2, 4 and 5 only, the usage errors under `--json` as one error document.
@@ -1181,7 +1267,7 @@ fn status_and_detect_leave_a_fresh_home_without_a_codex_directory() {
     assert_eq!(code(&json), 0, "{}", err(&json));
     let document: Value = serde_json::from_str(out(&json).trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v2.json"),
+        &crate::schemas::validator("provider-status-v3.json"),
         &document,
     );
     assert_eq!(document["providers"][0]["auth"], "not_probed");
@@ -1224,4 +1310,236 @@ fn setup_keeps_its_lock_in_the_state_directory() {
     assert!(metadata.is_file());
     assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
     assert_eq!(machine.registered(), ["codex-main"]);
+}
+
+/// C3 item 8: a directory that grants search but not read (mode 0100) cannot be listed, yet its
+/// markers are checked by name, it is probed, and the row says its listing was unreadable; it is
+/// never reported as an empty, unprobed directory.
+#[test]
+fn an_unlistable_directory_is_probed_by_its_marker_names() {
+    let machine = Machine::new();
+    machine.install("claude", CLAUDE);
+    let work = machine.dir(".config/claude-work", &[".claude.json", "logged-in"]);
+    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o100)).unwrap();
+    let output = machine.af(&["provider", "detect", "--json"]);
+    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let document = detected(&output);
+    let row = candidate(&document, &work);
+    assert_eq!(row["listing_unreadable"], true, "{row}");
+    assert_eq!(row["markers"], serde_json::json!([".claude.json"]), "{row}");
+    assert_ne!(row["auth"], "not_probed", "{row}");
+    assert_eq!(row["auth"], "authenticated", "{row}");
+
+    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o100)).unwrap();
+    let text = machine.af(&["provider", "detect"]);
+    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let stdout = out(&text);
+    assert!(!stdout.contains("empty (not probed)"), "{stdout}");
+    assert!(
+        stdout.contains("~/.config/claude-work: listing unreadable"),
+        "{stdout}"
+    );
+}
+
+/// C3 item 10: a login whose CLI is only off `PATH` is not registered by `--apply`, since
+/// neither status nor a Task could run it: exit 4, the PATH fix as the row's suggestion and the
+/// closing line, and nothing in the registry.
+#[test]
+fn apply_leaves_a_login_whose_cli_is_off_path_unregistered_with_the_path_fix() {
+    let machine = Machine::new();
+    let local = machine.home.join(".local/bin");
+    machine.install_in(&local, "claude", &with_help("claude", CLAUDE));
+    let work = machine.dir(".config/claude-work", &[".claude.json", "logged-in"]);
+    let fix = "export PATH=\"$HOME/.local/bin:$PATH\"";
+
+    let output = machine.af(&["provider", "detect", "--apply", "--json"]);
+    assert_eq!(code(&output), 4, "{}", err(&output));
+    let document = detected(&output);
+    let row = candidate(&document, &work);
+    assert_eq!(row["suggested"]["action"], "fix_path", "{row}");
+    assert_eq!(row["suggested"]["command"], fix, "{row}");
+    assert_eq!(row["applied"]["result"], "skipped_cli_off_path", "{row}");
+    assert!(machine.registered().is_empty());
+
+    let text = machine.af(&["provider", "detect", "--apply"]);
+    assert_eq!(code(&text), 4, "{}", err(&text));
+    let stdout = out(&text);
+    assert!(stdout.contains("its claude CLI is off PATH"), "{stdout}");
+    assert!(stdout.contains(&format!("\nnext: {fix}\n")), "{stdout}");
+    assert!(!stdout.contains("next: af provider status"), "{stdout}");
+    assert!(machine.registered().is_empty());
+}
+
+/// C3 item 11: a registry that cannot be read is unknown, never empty: every row's registration
+/// says so, the note is in every output (the empty scan's included), and `--apply` refuses with
+/// exit 1 and one `af/error@1` document.
+#[test]
+fn an_unreadable_registry_is_unknown_and_refuses_apply() {
+    let machine = Machine::new();
+    let registry = machine.home.join(".config/af/providers.toml");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(&registry, "version = 1\n[[providers]\n").unwrap();
+
+    // Nothing installed, nothing found: the note is still there.
+    let empty = machine.af(&["provider", "detect", "--json"]);
+    let document = detected(&empty);
+    assert!(
+        document["notes"]
+            .to_string()
+            .contains("the provider registry could not be read"),
+        "{document}"
+    );
+    let text = out(&machine.af(&["provider", "detect"]));
+    assert!(
+        text.contains("note: the provider registry could not be read"),
+        "{text}"
+    );
+
+    machine.install("claude", CLAUDE);
+    let work = machine.dir(".config/claude-work", &[".claude.json", "logged-in"]);
+    let scanned = machine.af(&["provider", "detect", "--json"]);
+    assert_eq!(code(&scanned), 0, "{}", err(&scanned));
+    let document = detected(&scanned);
+    let row = candidate(&document, &work);
+    assert_eq!(row["registration"], "unknown", "{row}");
+    assert_eq!(row["registered_as"], Value::Null, "{row}");
+    assert_eq!(row["suggested"]["action"], "fix_registry", "{row}");
+    let table = out(&machine.af(&["provider", "detect"]));
+    let line = table
+        .lines()
+        .find(|line| line.contains("~/.config/claude-work"))
+        .unwrap();
+    assert!(line.contains(" unknown "), "{table}");
+
+    let refused = machine.af(&["provider", "detect", "--apply", "--json"]);
+    assert_eq!(code(&refused), 1, "{}", err(&refused));
+    let error: Value = serde_json::from_str(out(&refused).trim()).unwrap();
+    assert_eq!(error["schema"], "af/error@1");
+    assert_eq!(error["exit_code"], 1);
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("--apply registered nothing"),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&registry).unwrap(),
+        "version = 1\n[[providers]\n"
+    );
+}
+
+/// C3 items 17-19: an empty scan says whether `--apply` was given; a Claude-only scan gives no
+/// Codex advice; and with no private scratch directory a Claude CLI is checked with Claude's
+/// capabilities, never labelled incompatible.
+#[test]
+fn small_scan_reports_say_what_was_asked() {
+    let machine = Machine::new();
+    for (args, applied) in [
+        (vec!["provider", "detect", "--json"], false),
+        (vec!["provider", "detect", "--apply", "--json"], true),
+    ] {
+        let output = machine.af(&args);
+        assert_eq!(code(&output), 0, "{}", err(&output));
+        assert_eq!(detected(&output)["applied"], applied, "{args:?}");
+    }
+
+    machine.install("claude", CLAUDE);
+    let claude_only = machine.af(&["provider", "detect", "--kind", "claude"]);
+    assert_eq!(code(&claude_only), 0, "{}", err(&claude_only));
+    let stdout = out(&claude_only);
+    assert!(!stdout.contains("codex"), "{stdout}");
+
+    let unwritable = machine.root.join("no-such-tmp");
+    let output = machine
+        .command(&["provider", "detect", "--json"])
+        .env("TMPDIR", &unwritable)
+        .output()
+        .unwrap();
+    assert_ne!(code(&output), 4, "{}\n{}", out(&output), err(&output));
+    let document = detected(&output);
+    assert_ne!(document["binaries"][0]["compatible"], false, "{document}");
+}
+
+/// C3 items 16 and 28: one names-only scan lists the directories found but not registered, and
+/// `af provider status` (text and `--json`), `af doctor` and `af onboard` list the same ones.
+#[test]
+fn status_doctor_and_onboarding_list_the_same_unregistered_directories() {
+    let machine = Machine::new();
+    let work = machine.dir(".config/claude-work", &[".claude.json"]);
+    let acme = machine.dir(".codex-acme", &["auth.json"]);
+    let shown = "~/.config/claude-work, ~/.codex-acme";
+
+    let text = out(&machine.af(&["provider", "status"]));
+    assert!(
+        text.contains(&format!("found but not registered: {shown} (not probed)")),
+        "{text}"
+    );
+    let status = machine.af(&["provider", "status", "--json"]);
+    assert_eq!(code(&status), 0, "{}", err(&status));
+    let document: Value = serde_json::from_str(out(&status).trim()).unwrap();
+    crate::schemas::valid(
+        &crate::schemas::validator("provider-status-v3.json"),
+        &document,
+    );
+    assert_eq!(
+        document["found_unregistered"],
+        serde_json::json!([work.to_str().unwrap(), acme.to_str().unwrap()])
+    );
+    assert_eq!(document["next_action"], "af provider detect");
+
+    let doctor = machine.af(&["doctor", "--json"]);
+    let document: Value = serde_json::from_str(out(&doctor).trim()).unwrap();
+    let providers = document["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["id"] == "providers")
+        .unwrap();
+    assert!(
+        providers["detail"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("; found but not registered: {shown}")),
+        "{providers}"
+    );
+
+    let repo = machine.root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [
+        ["init", "-q", "-b", "main"].as_slice(),
+        [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ]
+        .as_slice(),
+    ] {
+        let status = Command::new("git")
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    // The providers block is text only: the onboarding document keeps its shape.
+    let onboard = machine
+        .command(&["onboard", "--gate", "check=true"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(code(&onboard), 0, "{}", err(&onboard));
+    let lines = out(&onboard);
+    assert!(
+        lines.contains(&format!("found but not registered: {shown} (not probed)")),
+        "{lines}"
+    );
 }

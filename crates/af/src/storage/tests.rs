@@ -2326,12 +2326,65 @@ fn a_task_behind_a_delivered_workspace_is_kept() {
         unmeasurable: None,
     };
     let mut entries = vec![task("delivered-1"), task("other")];
-    keep_delivered(&mut entries, &BTreeSet::from(["delivered-1".to_string()]));
+    keep_delivered(
+        &mut entries,
+        &BTreeSet::from(["delivered-1".to_string()]),
+        None,
+    );
     assert_eq!(
         entries[0].in_use.as_deref(),
         Some("Task delivered-1 is the source of a delivered Workspace")
     );
     assert_eq!(entries[1].in_use, None);
+
+    // A Project Store that cannot be read could hold the delivered Workspace of any of them:
+    // every finished Task is kept, and the reason names that Project Store.
+    let delivered = Delivered {
+        tasks: BTreeSet::new(),
+        unknown: vec![
+            (
+                PathBuf::from("/state/af/project/aa"),
+                "file is not a database".into(),
+            ),
+            (
+                PathBuf::from("/state/af/project/bb"),
+                "unknown event type".into(),
+            ),
+        ],
+    };
+    let why = delivered.blocked().unwrap();
+    assert_eq!(
+        why,
+        "the delivered Workspaces of the Project Store /state/af/project/aa (and 1 more) cannot \
+         be read, so no finished Task is collected: file is not a database"
+    );
+    let mut entries = vec![task("delivered-1"), task("other")];
+    keep_delivered(&mut entries, &BTreeSet::new(), Some(&why));
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.in_use.as_deref() == Some(why.as_str()))
+    );
+    assert_eq!(Delivered::default().blocked(), None);
+}
+
+/// A Project Store beyond the Store discovery ceiling, or one whose log does not replay, still
+/// counts for delivered-Task protection: the inventory reads every one without the ceiling, and
+/// one it cannot read is unknown rather than empty.
+#[test]
+fn every_project_store_counts_for_delivered_protection_whatever_the_discovery_ceiling() {
+    let layout = layout();
+    let state = layout.roots.registry.parent().unwrap().to_path_buf();
+    let readable = state.join("project").join("a".repeat(64));
+    std::fs::create_dir_all(&readable).unwrap();
+    review_store::EventStore::open(readable.join("events.sqlite")).unwrap();
+    let broken = state.join("project").join("b".repeat(64));
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("events.sqlite"), b"not a database").unwrap();
+    let found = delivered(&layout.roots, &BTreeSet::new());
+    assert!(found.tasks.is_empty());
+    assert_eq!(found.unknown.len(), 1, "{:?}", found.unknown);
+    assert_eq!(found.unknown[0].0, broken);
 }
 
 /// A review campaign is judged in use when inventory takes stock of it, before any plan: a run
@@ -2353,6 +2406,42 @@ fn a_campaign_in_use_is_never_on_the_sweeps_list() {
     );
     let preview = sweep(&layout.roots, &policy(0), true, false);
     assert!(preview.removals.iter().all(|removal| removal.path != held));
+}
+
+/// C3 item 3: a campaign whose writer leases cannot be read is in use, never unused: a failed
+/// read hides whatever lease a live writer holds. The sweep's judgement and `af review gc`'s
+/// (`campaign_in_use`, `hold_campaign_for_removal`) both keep it, and say why.
+#[test]
+fn a_campaign_whose_leases_cannot_be_read_is_in_use() {
+    let layout = layout();
+    let fine = campaign(&layout, 'a', 30 * DAY);
+    assert_eq!(campaign_in_use(&fine), None);
+    drop(hold_campaign_for_removal(&fine).unwrap());
+
+    // Its CAS cannot be opened: the leases its Tasks hold cannot be told.
+    let broken_cas = campaign(&layout, 'b', 30 * DAY);
+    std::fs::remove_dir_all(broken_cas.join("cas")).unwrap();
+    std::fs::write(broken_cas.join("cas"), b"no CAS").unwrap();
+    // Its log does not open as one.
+    let broken_log = campaign(&layout, 'c', 30 * DAY);
+    std::fs::write(broken_log.join("events.sqlite"), b"not a database").unwrap();
+    for broken in [&broken_cas, &broken_log] {
+        let why = campaign_in_use(broken).unwrap_or_else(|| panic!("{}", broken.display()));
+        assert!(why.starts_with("its leases could not be read: "), "{why}");
+        let refused = hold_campaign_for_removal(broken).unwrap_err();
+        assert!(
+            refused.starts_with("its leases could not be read: "),
+            "{refused}"
+        );
+    }
+    let applied = sweep(&layout.roots, &policy(0), true, true);
+    let removed = removed_paths(&applied);
+    assert!(removed.contains(&fine), "{removed:?}");
+    assert!(
+        !removed.contains(&broken_cas) && !removed.contains(&broken_log),
+        "{removed:?}"
+    );
+    assert!(broken_cas.join("events.sqlite").is_file());
 }
 
 /// The sweep that ends a run warns about what it failed to do, never about a path the inventory

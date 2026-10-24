@@ -183,8 +183,9 @@ The main pane shows the same columns as the CLI table for the selected provider,
 make it go: `ambient (CODEX_HOME): found through CODEX_HOME, not in the registry` when the
 browser's environment sets the variable, else `ambient (~/.codex): the codex CLI's default
 directory, not in the registry`; then `register it: af provider add codex-main --kind codex`
-with the first free id, `or stop listing it: unset CODEX_HOME` when the variable is set, and the
-`af provider setup` hint the CLI prints (ADR-0141).
+with the first free id, `unsetting CODEX_HOME lists ~/.codex instead` when the variable is set
+(the row is listed while the CLI is on `PATH` and its directory is not registered, so registering
+it is what makes it go), and the `af provider setup` hint the CLI prints (ADR-0141).
 
 `d` on a registered Provider, on the bar or in its opened pane, fills the `:` line with
 `provider remove ID` and does not submit it; Enter runs it, handing the terminal over as
