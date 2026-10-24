@@ -1,0 +1,393 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-telemetry-history:1",
+  "title": "af.perf-telemetry-history/1",
+  "description": "Compatible history of telemetry results (ADR-0199, ADR-0200): the durable root's bounds and use, every result verified under its exact measurement authority once, groups of one configuration under one authority, execution mode and image on one host, each group's series by experiment, subject, level, metric and shape, what was pruned and every refused input with its reason.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-telemetry-history/1"
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bytes_max": {
+          "type": "integer",
+          "minimum": 1048576,
+          "maximum": 1099511627776
+        },
+        "results_max": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "retention_days": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3650
+            }
+          ]
+        }
+      },
+      "required": [
+        "bytes_max",
+        "results_max",
+        "retention_days"
+      ]
+    },
+    "used_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "result_id": {
+            "$ref": "#/$defs/id"
+          },
+          "bundle_sha256": {
+            "$ref": "#/$defs/digest"
+          },
+          "page": {
+            "$ref": "#/$defs/relative_path"
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "pr",
+              "main_push",
+              "nightly",
+              "release",
+              "manual"
+            ]
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "pr",
+              "nightly",
+              "release",
+              "manual"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "trusted_local",
+              "linux_container"
+            ]
+          },
+          "started_unix_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740992
+          },
+          "baseline_sha": {
+            "$ref": "#/$defs/git_sha"
+          },
+          "candidate_sha": {
+            "$ref": "#/$defs/git_sha"
+          },
+          "authority_sha": {
+            "$ref": "#/$defs/git_sha"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial",
+              "failed"
+            ]
+          },
+          "group_id": {
+            "$ref": "#/$defs/digest"
+          }
+        },
+        "required": [
+          "result_id",
+          "bundle_sha256",
+          "page",
+          "trigger",
+          "profile",
+          "mode",
+          "started_unix_ms",
+          "baseline_sha",
+          "candidate_sha",
+          "authority_sha",
+          "status",
+          "group_id"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "$ref": "#/$defs/digest"
+          },
+          "configuration_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "authority_digest": {
+            "$ref": "#/$defs/digest"
+          },
+          "host_id": {
+            "$ref": "#/$defs/digest"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "trusted_local",
+              "linux_container"
+            ]
+          },
+          "image_id": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            ]
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/id"
+            },
+            "minItems": 1,
+            "maxItems": 4096,
+            "uniqueItems": true
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "experiment": {
+                  "type": "string",
+                  "enum": [
+                    "overhead",
+                    "invocation_cost",
+                    "read_latency"
+                  ]
+                },
+                "subject": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "level": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "spans",
+                    "content"
+                  ]
+                },
+                "metric": {
+                  "type": "string",
+                  "enum": [
+                    "wall_ms",
+                    "peak_rss_bytes",
+                    "drain_ms",
+                    "latency_ms"
+                  ]
+                },
+                "shape": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string",
+                      "enum": [
+                        "json",
+                        "stream-json"
+                      ]
+                    }
+                  ]
+                },
+                "points": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "result_id": {
+                        "$ref": "#/$defs/id"
+                      },
+                      "candidate_sha": {
+                        "$ref": "#/$defs/git_sha"
+                      },
+                      "baseline_sha": {
+                        "$ref": "#/$defs/git_sha"
+                      },
+                      "started_unix_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740992
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "compared",
+                          "incompatible",
+                          "missing"
+                        ]
+                      },
+                      "median_change": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/$defs/rational"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "result_id",
+                      "candidate_sha",
+                      "baseline_sha",
+                      "started_unix_ms",
+                      "state",
+                      "median_change"
+                    ]
+                  },
+                  "minItems": 1,
+                  "maxItems": 4096
+                }
+              },
+              "required": [
+                "experiment",
+                "subject",
+                "level",
+                "metric",
+                "shape",
+                "points"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 1024
+          }
+        },
+        "required": [
+          "group_id",
+          "configuration_digest",
+          "authority_digest",
+          "host_id",
+          "mode",
+          "image_id",
+          "results",
+          "series"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    },
+    "pruned": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "result_id": {
+            "$ref": "#/$defs/id"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "result_id",
+          "reason"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    },
+    "refused": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "input": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "input",
+          "reason"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "schema",
+    "limits",
+    "used_bytes",
+    "results",
+    "groups",
+    "pruned",
+    "refused"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "rational": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?$",
+      "description": "Exact signed rational in lowest terms, such as -3/4 or 2."
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

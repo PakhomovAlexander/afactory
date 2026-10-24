@@ -3,13 +3,15 @@
 - `af.perf-diagnostics/1`: the reviewed diagnostic registry `fixtures/performance/diagnostics.toml`
   (selection and capture defaults, diagnostic recipes derived from verdict recipes, the pinned
   tools and their provisioning instructions, the trace overhead target and resource caps).
-- `af.perf-profiles/4`: one child run's evidence, `profiles.json`: its identity and link to the
+- `af.perf-profiles/5`: one child run's evidence, `profiles.json`: its identity and link to the
   parent comparison, what it selected and why, its budgets and the actual usage of them (never
   clamped), its explicit execution mode, containment and supervisor (with the container, image,
   CPUs and verified scratch bound of a contained run), every tool identity or why it is
   unavailable, every capture of a probe region or a CLI process with its decoded loss records,
   rendered graph, trace with the coverage of its region, and counter with its artifacts, and
-  every omission with its reason and reproduction. Versions 1 to 3 are refused (ADR-0176).
+  every omission with its reason and reproduction. Version 5 adds the explicitly selected
+  telemetry level and each telemetry capture of a CLI case, derived from the side's own
+  `af telemetry` documents (ADR-0199). Versions 1 to 4 are refused.
 - `af.perf-trace/1`: the metadata-only phase spans a `perf-trace` build exports
   (`review_core::perf_trace`).
 
@@ -219,9 +221,9 @@ def validate_trace(doc, where="trace.json"):
     return doc
 
 
-# af.perf-profiles/4 ------------------------------------------------------------------------
+# af.perf-profiles/5 ------------------------------------------------------------------------
 
-PROFILES_SCHEMA = "af.perf-profiles/4"
+PROFILES_SCHEMA = "af.perf-profiles/5"
 # What a capture or trace observes: the native probe's acknowledged region, or a whole AF CLI
 # process judged by its command's oracle (ADR-0176).
 SUBJECTS = ("probe_region", "cli_process")
@@ -235,7 +237,7 @@ CAPTURE_TOOLS = ("perf", "samply")
 COUNTER_TOOLS = ("callgrind", "dhat")
 SELECTION_REASONS = ("regressed", "inconclusive", "explicit")
 OMISSION_KINDS = ("cpu_profile", "flamegraph", "trace", "trace_overhead", "counter", "samply",
-                  "build", "symbols")
+                  "build", "symbols", "telemetry")
 RENDER_KINDS = ("baseline", "candidate", "difference_forward", "difference_reverse")
 TOOL_STATES = ("available", "unavailable")
 VERSION_PROVENANCE = ("tool_reported", "declared_pin_only", "unknown")
@@ -352,6 +354,79 @@ COUNTER = Obj(
     Field("omission", Nullable(OMISSION)),
 )
 
+# A telemetry capture (ADR-0199): the run the side's telemetry-recorded execution of a CLI case
+# recorded, read back through that binary's own `af telemetry` documents, bound to the case,
+# side, source and binary; its phases, a bounded timeline and an evidence state that is
+# complete only with nothing open, unsealed, dropped, recovered, unreadable or incomplete.
+TELEMETRY_LEVELS = ("spans", "content")
+TELEMETRY_PARTIAL_REASONS = ("config_incomplete", "corrupt_segment",
+                             "dropped_or_recovered_capture", "history_partial", "index_absent",
+                             "live_segment", "open_execution", "open_spans",
+                             "problems_recorded", "unreadable_files", "unsealed_execution",
+                             "unsealed_segment")
+TELEMETRY_LABEL = Str(min_len=1, max_len=128)
+SPAN_ID = Str(pattern=r"^[0-9a-f]{16}$", max_len=16)
+TELEMETRY_COUNTS = Obj(Field("live", COUNT), Field("unsealed", COUNT), Field("sealed", COUNT),
+                       Field("corrupt", COUNT))
+TELEMETRY_CAPTURE = Obj(
+    Field("instance_id", ID), Field("side", Str(enum=SIDES)),
+    Field("subject", Const("cli_process")), Field("level", Str(enum=TELEMETRY_LEVELS)),
+    Field("source_sha", GIT_SHA), Field("binary_sha256", DIGEST),
+    # The supervisor's wall time of the recorded execution: a diagnostic execution at this
+    # level, never a verdict sample; null when it never ran.
+    Field("command_wall_ms", Nullable(DECIMAL)),
+    Field("run", Nullable(Obj(Field("store_id", Str(pattern=r"^[0-9a-f]{64}$", max_len=64)),
+                              Field("run_id", TELEMETRY_LABEL),
+                              Field("trace_id", Str(pattern=r"^[0-9a-f]{32}$", max_len=32)),
+                              Field("kind", Const("task")),
+                              Field("task_id", Nullable(TELEMETRY_LABEL))))),
+    Field("af", Nullable(Obj(Field("version", Nullable(TELEMETRY_LABEL)),
+                             Field("commit", Nullable(TELEMETRY_LABEL)),
+                             Field("target", Nullable(TELEMETRY_LABEL))))),
+    Field("executions", Arr(Obj(Field("execution_id", TELEMETRY_LABEL),
+                                Field("ordinal", Nullable(Int(1, 2 ** 53))),
+                                Field("segment", Str(enum=("live", "unsealed", "sealed"))),
+                                Field("open", Bool()), Field("wall_us", COUNT),
+                                Field("outcome", Nullable(TELEMETRY_LABEL))), 0, 16)),
+    Field("evidence", Nullable(Obj(
+        Field("state", Str(enum=("complete", "partial"))),
+        Field("reasons", Arr(Str(enum=TELEMETRY_PARTIAL_REASONS), 0, 16, unique=True)),
+        Field("index", Str(enum=("fresh", "direct", "absent"))),
+        Field("history", Str(pattern=r"^(?:prefix:(?:0|[1-9][0-9]{0,18})|partial)$",
+                             max_len=64)),
+        Field("segments", TELEMETRY_COUNTS),
+        Field("segment_captures", Arr(Obj(
+            Field("execution_id", TELEMETRY_LABEL),
+            Field("state", Nullable(Str(enum=("live", "unsealed", "sealed", "corrupt")))),
+            Field("exit", Nullable(Str(enum=("ok", "error", "signal", "recovered")))),
+            Field("capture", Nullable(TELEMETRY_LABEL))), 0, 16)),
+        Field("problems", COUNT), Field("unreadable", COUNT), Field("open_spans", COUNT),
+        Field("config", Str(enum=("complete", "incomplete", "unknown")))))),
+    Field("spans", COUNT),
+    Field("phases", Arr(Obj(Field("name", TELEMETRY_LABEL), Field("spans", COUNT),
+                            Field("open", COUNT), Field("covered_us", COUNT),
+                            Field("self_us", COUNT), Field("longest_us", COUNT)), 0, 128)),
+    Field("timeline", Obj(
+        Field("spans", Arr(Obj(Field("span_id", SPAN_ID), Field("parent", Nullable(SPAN_ID)),
+                               Field("name", TELEMETRY_LABEL), Field("depth", Int(0, 64)),
+                               Field("start_us", COUNT), Field("total_us", Nullable(COUNT)),
+                               Field("self_us", Nullable(COUNT)),
+                               Field("status", Str(enum=("ok", "error", "unset", "open"))),
+                               Field("lane", Str(enum=("nested", "async", "instant"))),
+                               Field("level", Int(0, 64))), 0, 512)),
+        Field("omitted", COUNT))),
+    Field("artifacts", Arr(ARTIFACT, 0, 8)),
+    Field("omission", Nullable(OMISSION)),
+)
+TELEMETRY = Obj(
+    # Selected explicitly (`profile --telemetry`), never implied by a recipe; null when none.
+    Field("level", Nullable(Str(enum=TELEMETRY_LEVELS))),
+    Field("perturbing", Bool()),
+    Field("verdict_effect", Const("none")),
+    Field("captures", Arr(TELEMETRY_CAPTURE, 0, 16)),
+)
+TELEMETRY_DOCUMENTS = ("runs.json", "show.json", "status.json", "config.json", "perfetto.json")
+
 PROFILES = Obj(
     Field("schema", Const(PROFILES_SCHEMA)), Field("run_id", ID),
     Field("parent_run_id", ID), Field("parent_plan_digest", DIGEST),
@@ -414,6 +489,7 @@ PROFILES = Obj(
     Field("renders", Arr(RENDER, 0, 64)),
     Field("traces", Arr(TRACE_ENTRY, 0, 32)),
     Field("counters", Arr(COUNTER, 0, 64)),
+    Field("telemetry", TELEMETRY),
     Field("omissions", Arr(Obj(Field("kind", Str(enum=OMISSION_KINDS)),
                                Field("instance_id", Nullable(ID)),
                                Field("side", Nullable(Str(enum=SIDES))),
@@ -603,8 +679,85 @@ def validate_profiles(doc, where="profiles.json"):
         require((counter["tool"] == "callgrind") == (counter["metric"] == "instructions"),
                 at + ": callgrind counts instructions, dhat allocations")
         paths.extend(item["path"] for item in counter["artifacts"])
+    paths.extend(_validate_telemetry(doc, selected, where))
     require(len(paths) == len(set(paths)), where + ": every artifact path once")
     return doc
+
+
+def _validate_telemetry(doc, selected, where):
+    """The telemetry rules of a child run (ADR-0199); the artifact paths its captures name."""
+    telemetry = doc["telemetry"]
+    level = telemetry["level"]
+    at = where + ".telemetry"
+    require(telemetry["perturbing"] == (level == "content"),
+            at + ".perturbing: exactly the content level is labelled perturbing")
+    require(level is not None or (not telemetry["captures"] and all(
+        item["kind"] != "telemetry" for item in doc["omissions"])),
+            at + ": no telemetry capture or omission without an explicitly selected level")
+    require(level is None or doc["recipe"]["kind"] in ("cpu_profile", "trace"),
+            at + ": telemetry is captured beside CPU profiles or phase traces, never counters")
+    paths = []
+    keys = set()
+    for index, item in enumerate(telemetry["captures"]):
+        here = "%s.captures[%d]" % (at, index)
+        require(item["instance_id"] in selected, here + ": a capture of a selected case")
+        require(item["level"] == level, here + ".level: the child run's selected level")
+        key = (item["instance_id"], item["side"])
+        require(key not in keys, here + ": one capture per case and side")
+        keys.add(key)
+        names = sorted(artifact["path"].rsplit("/", 1)[-1] for artifact in item["artifacts"])
+        if item["omission"] is None:
+            require(item["run"] is not None and item["af"] is not None
+                    and item["evidence"] is not None and item["executions"]
+                    and item["command_wall_ms"] is not None,
+                    here + ": a capture without omission names its run, executions, evidence "
+                    "and its execution's wall time")
+            require(names == sorted(TELEMETRY_DOCUMENTS),
+                    here + ".artifacts: exactly the four documents it was read from and its "
+                    "Perfetto export")
+            evidence = item["evidence"]
+            require(evidence["reasons"] == sorted(evidence["reasons"]),
+                    here + ".evidence.reasons: sorted")
+            require((evidence["state"] == "complete") == (not evidence["reasons"]),
+                    here + ".evidence: complete exactly when no reason makes it partial")
+            facts = (("open_spans", evidence["open_spans"] > 0),
+                     ("unsealed_segment", evidence["segments"]["unsealed"] > 0),
+                     ("live_segment", evidence["segments"]["live"] > 0),
+                     ("corrupt_segment", evidence["segments"]["corrupt"] > 0),
+                     ("problems_recorded", evidence["problems"] > 0),
+                     ("unreadable_files", evidence["unreadable"] > 0),
+                     ("config_incomplete", evidence["config"] != "complete"),
+                     ("index_absent", evidence["index"] == "absent"),
+                     ("history_partial", evidence["history"] == "partial"),
+                     ("open_execution", any(execution["open"]
+                                            for execution in item["executions"])),
+                     ("unsealed_execution", any(execution["segment"] != "sealed"
+                                                for execution in item["executions"])))
+            for reason, holds in facts:
+                require(not holds or reason in evidence["reasons"],
+                        here + ".evidence: %s is a reason it is partial" % reason)
+            timeline = item["timeline"]
+            require(len(timeline["spans"]) + timeline["omitted"] == item["spans"],
+                    here + ".timeline: draws its spans and counts every other one")
+            open_spans = sum(1 for span in timeline["spans"] if span["status"] == "open")
+            require(open_spans <= evidence["open_spans"],
+                    here + ".timeline: no more open spans than the evidence counts")
+            for span in timeline["spans"]:
+                require((span["status"] == "open") == (span["total_us"] is None)
+                        == (span["self_us"] is None) == (span["lane"] == "instant"),
+                        here + ".timeline: an open span has no total and is an instant")
+            phases = [row["name"] for row in item["phases"]]
+            require(phases == sorted(set(phases)), here + ".phases: each name once, sorted")
+            require(sum(row["spans"] for row in item["phases"]) == item["spans"],
+                    here + ".phases: every span under its name")
+        else:
+            require(item["run"] is None and item["evidence"] is None and not item["executions"]
+                    and not item["phases"] and item["spans"] == 0
+                    and not item["timeline"]["spans"] and item["timeline"]["omitted"] == 0,
+                    here + ": an omitted capture claims no run, phase or timeline; what it wrote "
+                    "stays counted in its artifacts")
+        paths.extend(artifact["path"] for artifact in item["artifacts"])
+    return paths
 
 
 def median(values):

@@ -556,42 +556,59 @@ mod tests {
     }
 
     /// An app-server error line that looks like credential material is withheld whole, with the
-    /// exit kept; an ordinary clap error line passes through.
+    /// exit kept; an ordinary clap error line and the trusted executable path pass through.
     #[test]
     fn an_app_server_error_line_carrying_credential_material_is_withheld() {
         use review_runner::cli::WITHHELD_LINE;
-        let directory = tempfile::tempdir().unwrap();
-        for line in [
-            "error: unknown option '--safe-mode'; API_KEY=sk-secret",
-            "Authorization: Bearer abcFIXTUREdefFIXTUREghi",
-            "error: 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b",
-            "error: OPENAI_API_KEY=\"sk-proj-FIXTURE\"",
-            "error: unexpected argument '--stdio' found",
+        let root = tempfile::tempdir().unwrap();
+        // The trusted path may contain the credential prefix (as in task-sk-parent). It is
+        // not leaked stderr: check complete synthetic secrets, independently of that path.
+        for directory in [
+            root.path().to_path_buf(),
+            root.path().join("task-sk-parent"),
         ] {
-            std::fs::write(directory.path().join("said"), format!("{line}\n")).unwrap();
-            let body = codex_with_app_server(&format!(
-                "cat '{}' >&2\nexit 2",
-                directory.path().join("said").display()
-            ));
-            let Err(CliRefusal::Incompatible(refused)) =
-                check(directory.path(), ProviderKind::Codex, &body)
-            else {
-                panic!("{line}: an app-server that exits before initialize was accepted");
-            };
-            let message = refused.message();
-            let quoted = if line.contains("--stdio") {
-                line
-            } else {
-                WITHHELD_LINE
-            };
-            assert!(
-                message.contains(&format!(
-                    "codex app-server exited 2 before answering initialize: {quoted}; fix:"
-                )),
-                "{message}"
-            );
-            for secret in ["sk-", "FIXTURE", "3f9a1c0b"] {
-                assert!(!message.contains(secret), "{message}");
+            std::fs::create_dir_all(&directory).unwrap();
+            for line in [
+                "error: unknown option '--safe-mode'; API_KEY=sk-secret",
+                "Authorization: Bearer abcFIXTUREdefFIXTUREghi",
+                "error: 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b",
+                "error: OPENAI_API_KEY=\"sk-proj-FIXTURE\"",
+                "error: unexpected argument '--stdio' found",
+            ] {
+                std::fs::write(directory.join("said"), format!("{line}\n")).unwrap();
+                let body = codex_with_app_server(&format!(
+                    "cat '{}' >&2\nexit 2",
+                    directory.join("said").display()
+                ));
+                let Err(CliRefusal::Incompatible(refused)) =
+                    check(&directory, ProviderKind::Codex, &body)
+                else {
+                    panic!("{line}: an app-server that exits before initialize was accepted");
+                };
+                let message = refused.message();
+                let quoted = if line.contains("--stdio") {
+                    line
+                } else {
+                    WITHHELD_LINE
+                };
+                assert!(
+                    message.contains(&format!(
+                        "codex app-server exited 2 before answering initialize: {quoted}; fix:"
+                    )),
+                    "{message}"
+                );
+                assert!(
+                    message.contains(directory.join("codex").to_str().unwrap()),
+                    "{message}"
+                );
+                for secret in [
+                    "sk-secret",
+                    "abcFIXTUREdefFIXTUREghi",
+                    "3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b",
+                    "sk-proj-FIXTURE",
+                ] {
+                    assert!(!message.contains(secret), "{message}");
+                }
             }
         }
     }

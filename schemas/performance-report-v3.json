@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-report:2",
-  "title": "af.perf-report/2",
-  "description": "One run's offline report (ADR-0172): its recomputed verdict, whether and why not it satisfies the required check, exact identity and provenance, every planned slot as a raw point, shard health and seeds, verified evidence downloads, the validated diagnostic child runs linked to it with each case's profile and trace items or omissions (ADR-0177), and reproduction commands that keep the frozen configuration and state their limitations.",
+  "$id": "urn:af:schema:performance-report:3",
+  "title": "af.perf-report/3",
+  "description": "One run's offline report (ADR-0172): its recomputed verdict, whether and why not it satisfies the required check, exact identity and provenance, every planned slot as a raw point, shard health and seeds, verified evidence downloads, the validated diagnostic child runs linked to it with each case's profile, trace and telemetry items or omissions (ADR-0177, ADR-0199), and reproduction commands that keep the frozen configuration and state their limitations.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-report/2"
+      "const": "af.perf-report/3"
     },
     "run_id": {
       "$ref": "#/$defs/id"
@@ -499,7 +499,9 @@
                         "difference_reverse",
                         "trace",
                         "perfetto",
-                        "timeline"
+                        "timeline",
+                        "telemetry",
+                        "telemetry_perfetto"
                       ]
                     },
                     "path": {
@@ -630,7 +632,142 @@
                         "difference_reverse",
                         "trace",
                         "perfetto",
-                        "timeline"
+                        "timeline",
+                        "telemetry",
+                        "telemetry_perfetto"
+                      ]
+                    },
+                    "path": {
+                      "$ref": "#/$defs/relative_path"
+                    },
+                    "sha256": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "note": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "string",
+                          "maxLength": 4096
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "child_run_id",
+                    "side",
+                    "kind",
+                    "path",
+                    "sha256",
+                    "note"
+                  ]
+                },
+                "minItems": 0,
+                "maxItems": 64
+              },
+              "omissions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "child_run_id": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "side": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "baseline",
+                            "candidate"
+                          ]
+                        }
+                      ]
+                    },
+                    "reason": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 4096
+                    }
+                  },
+                  "required": [
+                    "child_run_id",
+                    "side",
+                    "reason",
+                    "detail"
+                  ]
+                },
+                "minItems": 0,
+                "maxItems": 64
+              }
+            },
+            "required": [
+              "state",
+              "reason",
+              "items",
+              "omissions"
+            ]
+          },
+          "telemetry": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unavailable",
+                  "available",
+                  "partial",
+                  "omitted"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "child_run_id": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "side": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "baseline",
+                            "candidate"
+                          ]
+                        }
+                      ]
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "baseline",
+                        "candidate",
+                        "difference_forward",
+                        "difference_reverse",
+                        "trace",
+                        "perfetto",
+                        "timeline",
+                        "telemetry",
+                        "telemetry_perfetto"
                       ]
                     },
                     "path": {
@@ -719,7 +856,8 @@
           "failures",
           "denominator",
           "profile",
-          "trace"
+          "trace",
+          "telemetry"
         ]
       },
       "minItems": 1,
@@ -775,6 +913,20 @@
             "minimum": 0,
             "maximum": 9223372036854775807
           },
+          "telemetry_level": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "spans",
+                  "content"
+                ]
+              }
+            ]
+          },
           "page": {
             "$ref": "#/$defs/relative_path"
           },
@@ -792,6 +944,7 @@
           "profiles_sha256",
           "cases",
           "retained_scratch",
+          "telemetry_level",
           "page",
           "directory"
         ]

@@ -1051,11 +1051,24 @@ class Counters(TempDir):
                                                                   codesign=self.path("none"))
         self.assertEqual((available, reason), (False, "samply_flags_missing"))
         self.assertIn("--save-only", detail)
-        # The host's /bin/ls may resolve outside the protected path.
-        available, reason, _, _ = counters.samply_capability(boss, full,
-                                                             "/System/af-protected-fixture", env, 10,
-                                                             codesign=self.path("none"))
-        self.assertEqual((available, reason), (False, "protected_executable"))
+        # Model macOS canonical paths, independent of the verifier's system symlinks
+        # (on Linux /bin/ls can resolve outside every macOS protected prefix).
+        protected_paths = ("/System/Library/af-fixture", "/usr/bin/af-fixture",
+                           "/usr/sbin/af-fixture", "/usr/libexec/af-fixture",
+                           "/bin/af-fixture", "/sbin/af-fixture")
+        link = self.path("protected-link")
+        os.symlink(protected_paths[0], link)
+        for requested, resolved in ([(path, path) for path in protected_paths]
+                                    + [(link, protected_paths[0])]):
+            with self.subTest(requested=requested, resolved=resolved):
+                with mock.patch.object(counters.os.path, "realpath",
+                                       return_value=resolved) as realpath:
+                    available, reason, detail, version = counters.samply_capability(
+                        boss, full, requested, env, 10, codesign=self.path("none"))
+                realpath.assert_called_once_with(requested)
+                self.assertEqual((available, reason), (False, "protected_executable"))
+                self.assertIn(resolved, detail)
+                self.assertEqual(version, "samply 0.0.fake")
         hardened = self.path("codesign")
         with open(hardened, "w") as stream:
             stream.write("#!/bin/sh\necho 'CodeDirectory v=20500 size=1 flags=0x10000(runtime) "
@@ -1096,7 +1109,7 @@ class ChildRunBase(TempDir):
 
     def profile(self, recipe, cases, tools, probe_config, parent_probes=None, duration_ms=300,
                 registry=None, af_config=None, parent_af_config=None, contained=None,
-                prior_bytes=0, work_removed=True, run_id="child_run"):
+                prior_bytes=0, work_removed=True, run_id="child_run", telemetry=None):
         plan = self.child(recipe, cases, duration_ms, run_id)
         output = self.path("child")
         os.makedirs(output)
@@ -1163,7 +1176,7 @@ class ChildRunBase(TempDir):
             budget, lambda instance: ["python3", "scripts/performance/cli.py", "profile",
                                       "--case", instance or "-"], "sha256:" + "d" * 64, "linux",
             supervisor=boss, execution=execution, cli=cli, afs=afs, parent_afs=parent_afs,
-            work=work)
+            work=work, telemetry=telemetry)
         doc = profile.run()
         diagnostics.finish(output, doc, profile.trace_docs, budget)
         reread = contracts.read_file(os.path.join(output, diagnostics.PROFILES_FILE), "profiles")

@@ -107,8 +107,8 @@ concurrency group per pull request, so every label change replaces the running r
    attempt 1 whose pull request carries a label named exactly `no-perf`; every other trigger, a
    release claim and every rerun measure. Unreadable labels fail it. An exempt run plans, builds
    and samples nothing.
-2. **plan.** Runs only when `scope` succeeded and is not exempt. Checks out the event with
-   `persist-credentials: false`, resolves the trusted control revision (the PR's base SHA, the pushed commit's first parent, the scheduled tip, or the
+2. **plan.** Runs only when `scope` succeeded and is not exempt. Checks out the event with `persist-credentials: false`, resolves the trusted control
+   revision (the PR's base SHA, the pushed commit's first parent, the scheduled tip, or the
    dispatch's control or base), and runs `ci-schedule` from that control's worktree. A
    dispatch's `refs/heads/NAME` is read as the checkout fetched it, `refs/remotes/origin/NAME`,
    and refused as ambiguous when a local branch of that name names another commit; a full SHA
@@ -132,7 +132,8 @@ concurrency group per pull request, so every label change replaces the running r
    with the report and summary as views, and the report directory as `perf-report-<run>`.
 6. **Performance check** (always). For an exempt run it only reports `exempt (label no-perf),
    not measured` and succeeds; that is no measurement and no qualification. Otherwise it reads
-   the trusted control's enforcement policy and checks the exact scheduled primary's report and all upstream job results. A missing build or report,
+   the trusted control's enforcement policy and checks the
+   exact scheduled primary's report and all upstream job results. A missing build or report,
    failed or cancelled job, partial scope, synthetic result or inconclusive verdict does not
    qualify. Advisory mode shows that outcome without blocking. Required mode fails it on PRs
    and main pushes; dispatches, calibration, nightly and post-publication release runs remain
@@ -247,7 +248,8 @@ Every step below is a reviewed change or a dispatch, and every failure stays in 
    ```sh
    python3 scripts/performance/cli.py cohort-declare --repo . --authority SHA \
      --cohort-id quick_2026_11 --tier quick --environment linux_x86_64_gnu_hosted \
-     --recipe linux_gnu_native_release --group 'hosted_x86=CPU MODEL@IMAGE@sha256:...' \
+     --recipe linux_gnu_native_release \
+     --group hosted_x86 'CPU MODEL' 'ghcr.io/owner/image@sha256:DIGEST' \
      --start-date 2026-11-02 --days 5 --repository OWNER/NAME --branch main \
      --after-run-number N --output fixtures/performance/cohort-quick-2026-11.json
    ```
@@ -259,7 +261,9 @@ Every step below is a reviewed change or a dispatch, and every failure stays in 
    Readiness refuses a history with a missing number, because the missing run may be a
    member's original (ADR-0183). The environment must be a GitHub-hosted one.
 
-   `--group` names each allowed CPU model and the registry-pinned sample image a hosted runner
+   `--group` takes three separate arguments: ID, exact CPU model and complete registry-pinned
+   sample image. Quote CPU and image separately; `@` inside a CPU model or image is preserved.
+   The former combined `ID=CPU@IMAGE` syntax is refused. Repeat the option for each group a runner
    may report. Each case uses the group observed by its paired shard; different shards may
    have different allowed CPU models. Readiness records that binding per case.
    `--repository` and `--branch` name the only producer of member runs: a
@@ -270,13 +274,21 @@ Every step below is a reviewed change or a dispatch, and every failure stays in 
    `performance.yml` with `scope: calibration`, `base`, `head` and `authority` all set to the
    cohort's SHA, `control` set to a trusted revision holding the cohort file, `cohort` set to its
    path, `cohort_digest` set to the digest `cohort-declare` printed and `member` set to the
-   member ID. The run is named `af-perf calibration DIGEST MEMBER` as it is created, before any
+   member ID. Also supply `dispatch_head`, the full main SHA whose workflow bytes were checked
+   against the cohort authority. Dispatch to `ref: main`; the run must resolve to that SHA.
+   Only then is it named `af-perf calibration DIGEST MEMBER` as it is created, before any
    job runs, so the first such run is that member's one original whatever becomes of it. Do
    not rerun one: a rerun or a second dispatch of the same member is refused as evidence, and
    the member keeps its original outcome, failed or missing. A dispatch whose digest is not the
    control's cohort, or that requests the dedicated executor, is refused by its plan job and
    stays that member's failed original. Only an original whose attempt 1 concluded `success`
    can count; any other conclusion leaves the member failed.
+   An absent, malformed or stale `dispatch_head` instead names a non-member
+   `af-perf source-mismatch` and refuses before checkout, planning, building or measuring.
+   This guard binds the source; it does not make dispatch atomic. Future incompatible workflow
+   edits still fail producer verification. For the disabled operator preflight, deployment and
+   the required new cohort after this repair, see
+   [the cohort dispatcher runbook](performance-cohort-dispatch.md).
 3. **Seal the parameters.** Assemble one evidence directory, every file unedited:
    - `runs.json`: the workflow's runs of every event, newest first,
      `GET /repos/OWNER/NAME/actions/workflows/performance.yml/runs?per_page=100&page=P`,

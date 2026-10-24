@@ -1204,3 +1204,88 @@ fn a_task_hosted_worker_retains_its_build_cache_clone_with_its_own_attempt() {
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].node_id.as_deref(), Some("reviewer"));
 }
+
+/// Cancellation after the scheduler bound a context but before its worker thread starts used
+/// to strand that admitted reservation and make Review conclusion refuse outstanding Attempts.
+#[test]
+fn cancellation_between_context_and_dispatch_releases_the_attempt_before_review_conclusion() {
+    use review_core::task::execution::TaskExecutionRecordV1;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct CancelAfterContext(Arc<AtomicBool>);
+    impl review_store::store::observer::CommitObserver for CancelAfterContext {
+        fn committed(&self, commit: &review_store::store::observer::Commit<'_>) {
+            for event in commit.events {
+                let Ok(transition) = review_store::store::task::read_task_transition(event) else {
+                    continue;
+                };
+                if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
+                    transition.change
+                    && let Ok(record) = review_store::store::task::execution::read_execution_record(
+                        commit.cas, &record_id,
+                    )
+                    && matches!(record.record, TaskExecutionRecordV1::ContextBound { .. })
+                {
+                    self.0.store(true, Ordering::Release);
+                }
+            }
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let (compiler, lease) = admit(&cas, &mut store, &command_pipeline());
+    let cancelled = Arc::new(AtomicBool::new(false));
+    store.observe_commits(Arc::new(CancelAfterContext(cancelled.clone())));
+    let shared = SharedEventStore::new(&mut store);
+    let host = CampaignReviewTaskHost::new(
+        &cas,
+        shared.clone(),
+        &compiler,
+        lease.clone(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
+    let runtime = TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
+        .unwrap()
+        .with_cancellation(&cancelled);
+    let report = runtime.execute().unwrap();
+    assert!(cancelled.load(Ordering::Acquire));
+    assert!(!report.complete());
+    let state = runtime.projection().unwrap();
+    let execution = state.execution.as_ref().unwrap();
+    assert!(
+        execution.pending_attempts().is_empty(),
+        "{:?}",
+        execution.attempt_accounting()
+    );
+    let attempts = execution.attempt_accounting();
+    assert_eq!(attempts.len(), 1);
+    assert!(attempts[0].released && !attempts[0].started);
+    assert_eq!(execution.budget.begun_attempts(), 0);
+    assert_eq!(execution.budget.committed_tokens(), 0);
+    assert_eq!(execution.budget.reserved_tokens(), 0);
+    assert_eq!(
+        state.run_reports.len(),
+        1,
+        "the original scheduler diagnostic stays public"
+    );
+    let result = host.assemble_recorded_result(&cas).unwrap();
+    assert_eq!(
+        result.execution,
+        review_core::task::TaskExecutionV1::Incomplete
+    );
+    assert_eq!(
+        result.acceptance,
+        review_core::task::TaskAcceptanceV1::Inconclusive
+    );
+    let cold = EventStore::open_read_only(directory.path().join("events.sqlite")).unwrap();
+    let replayed = cold
+        .task_projection(&cas, lease.task_id())
+        .unwrap()
+        .unwrap();
+    assert!(replayed.execution.unwrap().pending_attempts().is_empty());
+}

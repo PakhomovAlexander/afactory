@@ -72,6 +72,10 @@ SCRATCH_ROOT_ENTRIES = ("lost+found", SAMPLE_DIRECTORY, SEED_DIRECTORY)
 # private state of each execution and the outputs staged before they are admitted (ADR-0176).
 # Only a diagnostic run creates it, and only its contained requests accept it.
 DIAGNOSTIC_DIRECTORY = "diagnostic"
+# A contained telemetry experiment's own directory on the verified scratch filesystem: its
+# corpus and the private state of each execution (ADR-0200). Only a telemetry experiment
+# creates it, and only its containers bind anything below it writable.
+TELEMETRY_DIRECTORY = "telemetry"
 SUPERVISOR_PATH = "/perf/bin/perf-supervisor"
 BINARIES = "/perf/bin"
 FIXTURES = "/perf/fixtures"

@@ -39,6 +39,13 @@ work and its admission. Reviewers may share a model when independence is require
 source-writing Worker. Isolated fake Providers answer planning probes without dispatching Workers;
 same-model and command-only negative cases must still fail under distinct-model policy.
 
+Repository planning fixtures retain committed model Worker contracts and the copied independence
+policy. Their verification reserves include each protected Worker's Attempt cost, required checks
+and the captured Provider admission costs; total limits also cover mandatory author or implementer
+work and its admission. Reviewers may share a model when independence is required only from the
+source-writing Worker. Isolated fake Providers answer planning probes without dispatching Workers;
+same-model and command-only negative cases must still fail under distinct-model policy.
+
 The plan includes the effective package and every default package whose contract constrained
 its replacement. Resume recompiles those captured bytes and settings; it does not read the
 local file again. The integration fixture runs Alice and Bob against the same Pipeline,

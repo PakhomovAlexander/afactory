@@ -1,0 +1,370 @@
+# Telemetry in the performance laboratory
+
+The laboratory uses [Telemetry](telemetry.md) in two ways, both apart from the timing verdict
+([ADR-0199](adr/0199-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)):
+
+- **Diagnostics.** A diagnostic child run of a comparison can also record its CLI cases at an
+  explicitly selected telemetry level and read the recording back through the side's own
+  `af telemetry` documents. The child shows phase timings, a timeline and a Perfetto file beside
+  its CPU profiles or phase traces.
+- **Experiments.** Telemetry's own cost and read latency are measured on a baseline and a
+  candidate binary with the bench scripts of [design §12](design/telemetry.md), from the trusted
+  control's checkout, on pull requests, nightly, on publication and on request. Every execution
+  of a candidate is contained, and only verified results reach the durable history
+  ([ADR-0200](adr/0200-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).
+
+Neither ever contributes a verdict sample, changes a verdict, or satisfies a required check.
+The old hosted calibration cohort's bytes remain pinned by SHA-256. The consolidated
+integration also incorporates published main's workflow and the calibration dispatch repair;
+that changed producer requires a separate future cohort, declared only from the committed
+repair ([the dispatcher runbook](performance-cohort-dispatch.md)). The comparison's CLI Task case
+(`cli_task_run_check`) runs `af` at its default level, `spans`, as users do, so the product's
+default telemetry cost stays inside that case's measured time.
+
+## Supported matrix
+
+| Case | Telemetry capture | Phase spans | CPU profile |
+| --- | --- | --- | --- |
+| Native library cases (`canonical_*`, `cas_*`, `source_capture`, `state_projection`, `authority_*`, `persistence_fs`) | none: the probe installs no telemetry subscriber (`no_telemetry_subscriber`) | `perf-trace` recipe, probe region | perf (Linux) or samply (macOS), probe region |
+| `cli_discovery` (`--version`, `--help`) | none: discovery records no telemetry by design (`records_no_telemetry`) | `perf-trace`, startup region | whole process |
+| `cli_task_start` (start without execution) | none (`records_no_telemetry`) | `perf-trace`, command region | whole process |
+| `cli_state_read` (`task show`, `review ledger`, `review report`) | none (`records_no_telemetry`) | `perf-trace`, command region | whole process |
+| `cli_task_run_check` (`task run --execute`) | yes: one recorded execution per side | `perf-trace`, command region | whole process |
+
+The cases that record no telemetry keep their `perf-trace` coverage. Telemetry does not replace
+the trace recipe, and a selected case outside the matrix is an omission with its reason, never
+a silent gap. `cli_task_run_check` spawns processes, so like every such case it is diagnosed
+only in its contained Linux environment (`--mode linux_container`); on a trusted local host it
+is an omission naming that capability.
+
+## Telemetry in a diagnostic child run
+
+```sh
+python3 scripts/performance/cli.py profile --plan run.json --case cli_task_run_check__task_cli_task_roots \
+  --recipe linux_gnu_trace --mode linux_container --image IMAGE@sha256:... --scratch-fs /perf/scratch \
+  --telemetry spans --output child/
+```
+
+`--telemetry spans` or `--telemetry content` is accepted with a CPU-profile or trace recipe,
+never with counters. For each eligible selected case and each side, the side's diagnostic AF
+binary runs the case's command once more with `AF_TELEMETRY__LEVEL` set. It runs in the case's
+private HOME, XDG directories, TMPDIR and Store, after its declared setup, and its oracle
+judges the output. Then, in the same private namespace and before it is removed, the same binary
+runs `af telemetry runs --json`, `show RUN --store ID --json`, `status --json` and
+`config RUN --store ID --json`. Each document is a new evidence file, bounded to 4 MiB while it
+is written and admitted as a confined regular file. It is read only through the product's
+committed schema (`schemas/telemetry-*.json`); the laboratory opens no segment, blob or index.
+The child keeps, under `telemetry/<instance>/<side>/`:
+
+| File | What it is |
+| --- | --- |
+| `runs.json`, `show.json`, `status.json`, `config.json` | the side's own documents, byte for byte |
+| `perfetto.json` | Chrome trace-event JSON of `show.json` for Perfetto or `chrome://tracing`: a process per execution, nested tracks, async tracks for what does not nest, instants for open spans; identities, names, statuses and times only, no attribute |
+
+`profiles.json` (`af.perf-profiles/5`) records the selected level, whether it is perturbing
+(`content` is), and each capture. A capture names its case, side, source SHA and binary SHA-256,
+the run, trace and Store ids, every execution with its segment state and outcome, and the AF
+version and target from the configuration record. It holds the phase rows: per span name, its
+spans and open spans, the covered time (the union of its spans' intervals, never a sum across
+overlapping spans), the self time the product computed summed over the name, and the longest
+span. It holds a timeline of at most 512 spans and an evidence state. The state is `complete`
+only when every execution was sealed by its writer with nothing dropped, nothing is open or
+unreadable, no problem was recorded, the history is a prefix and the configuration record is
+complete. Otherwise it is `partial` with every reason:
+
+`config_incomplete`, `corrupt_segment`, `dropped_or_recovered_capture`, `history_partial`,
+`index_absent`, `live_segment`, `open_execution`, `open_spans`, `problems_recorded`,
+`unreadable_files`, `unsealed_execution`, `unsealed_segment`.
+
+A reader that fails, a document over its bound, of another version or refused by its schema, or
+one that names another run, Task or execution is an omission (`telemetry_read_failed`,
+`telemetry_unreadable`, ...). What it had written stays counted in the evidence and is never
+shown. The child's `diagnostic.html` gains a Telemetry section: the captures, each execution,
+the phase table and an SVG timeline, every name escaped. `report --diagnostic child/` derives
+every capture again from the archived documents, refusing a child whose figures, state or
+Perfetto file differ. It adds a Telemetry column per case (`af.perf-report/3`), and copies the
+child below the report's `diagnostics/`, where the durable archive keeps it with the report's
+views.
+
+## Telemetry experiments
+
+`fixtures/performance/telemetry.toml` (`af.perf-telemetry-lab/1`) declares the experiments and
+one bounded profile per trigger:
+
+| Experiment | Script | Levels | Each side judged by |
+| --- | --- | --- | --- |
+| `overhead` | `scripts/telemetry-overhead.py` | `off` and `spans`, finalization inside every wall time | its own 2%/3% gate over all three fixtures at full scale with 20 pairs, else `not_judged` |
+| `invocation_cost` | `scripts/telemetry-invocation-cost.py` | `json` against `stream-json` at `off` and at `spans` | its own `off` gate over every case at full scale with 20 pairs, else `not_judged` |
+| `read_latency` | `scripts/telemetry-corpus.py` | the reader at `content` with the content index | the warm bounds, on `telemetry-corpus-10k` only, else `not_judged` |
+
+| Profile | Rounds | Overhead | Invocation cost | Corpus | Timeout | Work bytes | Retention |
+| --- | ---: | --- | --- | ---: | ---: | ---: | ---: |
+| `pr` | 2 | 3 pairs, full | 2 pairs, smoke | 200 runs | 120 min | 4 GiB | 14 days |
+| `nightly` | 2 | 20 pairs, full | 5 pairs, full | 1,000 runs | 340 min | 8 GiB | 30 days |
+| `release` | 2 | 20 pairs, full | 20 pairs, full | 10,000 runs | 355 min | 12 GiB | 90 days |
+| `manual` | 2 | 3 pairs, full | 2 pairs, smoke | 200 runs | 240 min | 8 GiB | 30 days |
+
+`content` is never measured as an experiment: it is diagnostic only and perturbing.
+
+```sh
+# On a Linux host: contained, the only mode for source the operator does not trust.
+python3 scripts/performance/cli.py ci-scratch --image /srv/scratch.img --mount /srv/scratch-fs \
+  --bytes 8589934592
+python3 scripts/performance/cli.py telemetry-run --profile manual --trigger manual \
+  --mode linux_container --image REGISTRY/IMAGE@sha256:... --scratch-fs /srv/scratch-fs \
+  --baseline-af base/af --candidate-af head/af \
+  [--baseline-build base/af.build.json --candidate-build head/af.build.json] \
+  --baseline-sha BASE_SHA --candidate-sha HEAD_SHA --authority-sha "$(git rev-parse HEAD)" \
+  [--experiment overhead]... [--rounds N] [--pairs N] [--scale full|smoke] [--corpus-runs N] \
+  --output result/
+# On a trusted host, for source the operator trusts (never a pull request):
+python3 scripts/performance/cli.py telemetry-run --mode trusted_local ... --output result/
+python3 scripts/performance/cli.py telemetry-verify --result result/ [--summary] \
+  [--authority-root CHECKOUT_OF_THE_AUTHORITY]
+python3 scripts/performance/cli.py telemetry-history --root /srv/af-perf/telemetry \
+  --import result/ [--authority-root CHECKOUT] [--bytes-max N] [--results-max N] \
+  [--retention-days N]
+```
+
+Both binaries run on this host with this checkout's registry, scripts, fixtures, schemas and
+laboratory code. That is one measurement authority, identified by the SHA-256 of every file it
+reads (`authority_digest`, including `telemetrylab.py`, `telemetryexec.py` and
+`jsonsubset.py`). Rounds alternate which side runs first, and both sides of a round use the
+same seed. The machine's performance lock is held for the whole run, and one deadline, the
+profile's timeout, bounds everything: the host checks, both version queries, the corpus, every
+run and the teardown, with 90 seconds kept for the last teardown and the result.
+
+### Where each execution runs
+
+Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0200): each side's
+`--version` query, the corpus generator and every script run.
+
+- **`--mode linux_container`** runs each execution in its own container of the pinned sample
+  image: network none, read-only root, every capability dropped, no new privileges,
+  `docker-init` as PID 1, the registry's PIDs (`[containment] pid_limit`), memory with swap
+  disabled and CPU set, a file size limit, as this user.
+  - **Binds.** Read-only, at their own paths: only that experiment's declared inputs and that
+    side's binary. Writable: only the execution's own new directory under the verified
+    disk-bounded scratch filesystem's `telemetry/` entry.
+  - **Never bound.** The controller's checkout, the result directory, the capture files, the
+    other side's binary and the master corpus.
+  - **Teardown.** Every process of the execution lives in the container's PID namespace and
+    ends with it. The container is removed once however the execution ended, and the scratch
+    filesystem is checked against its inventory.
+
+  A pull request's candidate is measured only this way: `telemetry-run --trigger pr` refuses
+  any other mode, and the result contract refuses a pull request's result recorded otherwise.
+  The host is checked like a shard's (`runner.contained_host`: cgroup v2 container runtime,
+  the image present and pinned, the scratch bound verified by an enforcement fill, the CPUs).
+- **`--mode trusted_local`** runs each execution on this host in its own session, for source
+  the operator trusts. The result says so. Nothing confines what it writes or reaches, and a
+  process that leaves its session cannot be observed. A process of its group that outlives the
+  script fails the execution and is killed.
+
+The perf-supervisor is not PID 1 here. Its request bounds a child at the verdict sample's 120
+seconds, and a bench script runs for minutes. Raising that protected bound would change the
+verdict path, so the container's PID namespace is the boundary that ends every descendant.
+
+What an execution writes, its corpus copy and its stdout and stderr included, is measured while
+it writes. Past the profile's `work_bytes` it is stopped. Each file is bounded by
+`RLIMIT_FSIZE`, the stdout document by 16 MiB, and the stderr by 16 MiB of which the last
+256 KiB is kept.
+
+After each execution the controller checks again that both binaries, the measurement
+authority, the master corpus and the result directory are as it left them. Anything changed is
+recorded in `execution.problems`, the run fails and nothing more runs. An execution whose
+cleanup was not confirmed (an unconfirmed container removal, a scratch filesystem that is not
+as it was, a process group still alive) stops the run too. Its work directory is kept for the
+operator (`execution.retained`), and the next run refuses to start while it exists. A result
+with a problem or an uncertain cleanup is never `complete`, and `telemetry-run` exits 4.
+
+### What a document must be
+
+The corpus is generated once, by the authority's own generator under the same executor. The
+controller then reads its files' facts (segments, their uncompressed and stored bytes, blob files
+and their stored bytes) and requires one segment per planned execution. Each read gets its own
+copy of the corpus, counted in its room. An index one side builds is never another read's, and
+the master corpus is never bound.
+
+A script's stdout is admitted only as the run it was planned as (`telemetrylab.admit`):
+
+- **Every document.** It names exactly this side's binary version, from the same contained
+  `--version` query.
+- **`overhead`.** The planned pairs, scale and seed; exactly the script's three fixtures,
+  each with the planned number of pairs; and the dense fixture's drain latency.
+- **`invocation_cost`.** The planned pairs, scale and seed; exactly the cases of that scale,
+  each level with the planned pairs.
+- **`read_latency`.** The generated corpus: its runs, seed, the name those runs are given and
+  every file fact. Exactly `fresh_status`, `unchanged_status` and `show`, each with the
+  script's own bound, one fresh sample and `repeat` unchanged and show samples, each latency
+  the median of its samples, `within_bound` and `passed` what the latencies and bounds give,
+  and no cold figure where none was measured.
+
+The script's own rule then judges it, recomputed from its raw pairs or samples. For the paired
+scripts, the script's own `summarize` must give back the whole document: every difference,
+median, interval, verdict and reason. Read latency is judged only on the full 10,000-run
+corpus, else `not_judged`. Two documents that agree with each other but not with their plan are
+both refused.
+
+Every planned run is recorded once: `ok`, `failed`, `timeout`, `refused_document` or `not_run`
+(the deadline, the work budget, an earlier problem or a failed version query came first). The
+result is `complete` only when every run succeeded on a host observed the same at both ends,
+every cleanup was confirmed and nothing protected changed.
+
+`result/` holds `result.json` (`af.perf-telemetry-result/1`), every script's document under
+`raw/<experiment>/round-<n>-<side>.json`, capped stderr under `logs/`, the offline
+`report.html`, the job summary `summary.md` and `manifest.json`. The result records:
+
+- the sources, both binaries' SHA-256, versions and build records (`af.perf-telemetry-build/1`:
+  the pinned image, `rustc -V`, `cargo -V` and the command), and the authority digest;
+- the execution: its mode and containment, the container's image identity, runtime, CPUs and
+  limits, the work and file bounds, the cleanup state, any kept work and any protected state
+  that changed, and the mode's limitations in words;
+- the effective configuration and its digest, the corpus and its facts, and the host identity;
+- every run with its argv, its placeholders kept;
+- each side's own figures by level (`within`): the overhead of `spans` over `off`, the drain
+  latency, `json` against `stream-json` at each level, and the read figures;
+- the cross-revision comparisons by experiment, subject, level, metric and shape. Per round,
+  each side's median and the candidate's relative change, and the median change over rounds.
+  A round's figures are set side by side only when both documents' protocol (pairs, scale,
+  seed, bounds), corpus and machine agree, on one host; anything else is `incompatible` or
+  `missing` with its reason.
+
+### Verification and history
+
+`telemetry-verify` reads a bundle back only under exactly the measurement authority it names.
+The checkout at `--authority-root` (default: this one) must have the same authority digest,
+file count and registry hash, or the result is refused; a result of another authority is never
+kept "as recorded". It then rehashes the bundle and admits every raw document again as its
+planned run. It judges every document again with that authority's own scripts, never with
+anything of the result. And it recomputes the figures, the comparisons, the page and the
+summary, refusing anything that differs.
+
+`telemetry-history` holds its root under one lock (`ROOT/lock`) for every import, prune and
+write. It keeps each bundle verified so, whole, under `ROOT/results/<result id>/`, staged and
+renamed. Importing the same bundle again changes nothing, and another bundle under a kept ID is
+refused. It is bounded:
+
+- an import that would take the root past `--bytes-max` (32 GiB by default) or
+  `--results-max` (2,048) is refused before anything is written;
+- `--retention-days` prunes whole results older than that, oldest first, then any results
+  beyond the result bound.
+
+It then writes `ROOT/history.json` (`af.perf-telemetry-history/1`: the bounds, the bytes used,
+every result, the groups, what this write pruned and every refused input) and
+`ROOT/history.html`. A series holds only results of one configuration under one measurement
+authority, in one execution mode and image, on one host. A different group is never a trend.
+
+## CI: the Performance telemetry workflow
+
+[`.github/workflows/performance-telemetry.yml`](../.github/workflows/performance-telemetry.yml)
+resolves each event once with `cli.py telemetry-schedule`, from the trusted control's own
+checkout:
+
+| Event | Profile | Control and baseline | Candidate |
+| --- | --- | --- | --- |
+| pull request to main | `pr` | the base | the merge commit |
+| nightly (04:41 UTC) | `nightly` | the tip; baseline the highest stable release reachable from it | the tip |
+| release published | `release` | the tag; baseline the highest smaller stable release | the tag |
+| dispatch | its `profile` input | `control` input, else `base` | `head` |
+
+A dispatch names full SHAs or fully qualified refs and may narrow `experiments`, `rounds` and
+`pairs` within the caps. A Remote Check gate branch is never measured. Nothing is planned
+without the repository variable `AF_PERF_GNU_BUILD_IMAGE`, the sample image pinned by digest
+that `performance.yml` already uses: no experiment ever runs uncontained in CI.
+
+- **Build.** Each side is built in its own job, in that image, credential-free with its pinned
+  toolchain. Only its binary and its build record reach the measuring job, by SHA-256. No
+  candidate build script runs where the control measures.
+- **Measure.** The measuring job refuses any credential in its checkout or environment. It
+  prepares a verified disk-bounded scratch filesystem of the profile's work bytes
+  (`ci-scratch --bytes`), pulls the image and runs `telemetry-run --mode linux_container` from
+  the control's checkout.
+- **Admit.** `telemetry-admit` writes `admitted=true` only for a result that verifies under the
+  control's authority and holds no credential-shaped value. A missing result, a result that
+  does not verify, or one with a credential writes `admitted=false` with its `outcome` and
+  fails the job.
+- **Upload.** `perf-telemetry-RUN_ID-ATTEMPT` is uploaded with the profile's retention only
+  when `steps.admit.outputs.admitted == 'true'`. A valid `partial` or `failed` result is
+  uploaded and says what it is. When the measuring step itself failed, the job still fails.
+
+Permissions are read-only, there are no secrets, every action is pinned, and pull requests
+cancel superseded runs. The workflow is advisory and is not a required check. Within one
+execution the script and the binary it measures share one user. A candidate can therefore still
+falsify its own run's document, never the other side's, the controller's or another run's.
+
+## Collection: the telemetry history lane
+
+`cli.py telemetry-collect --config FILE` is one bounded, idempotent collection cycle of the
+workflow's result artifacts into a durable telemetry history root (`perflab/telemetrycollect.py`,
+ADR-0200). It is a lane of its own. The archive collector (`scripts/performance/collect.py`) behaves as
+before, never reads these artifacts, and stays pinned to the frozen cohort's control (below);
+the only code the lanes share is the bounded ZIP reader, `transport.read_zip`.
+
+```sh
+python3 -I -B scripts/performance/cli.py telemetry-collect --config /etc/af-perf-telemetry/collector.toml
+```
+
+The configuration (`af.perf-telemetry-collector/1`) is the operator's; an example is
+[`scripts/performance/service/telemetry-collector.example.toml`](../scripts/performance/service/telemetry-collector.example.toml).
+It names the repository, the credential's environment variable, the durable root, a trusted
+mirror of the repository and the refs whose history holds trusted measurement authorities. It
+also sets the bounds: lookback, the cycle's time, runs per cycle, artifact bytes, the root's
+bytes and results, and retention. A cycle does this:
+
+1. **Lock and prune.** It takes the root's lock and prunes it to its bounds.
+2. **List.** It identifies the workflow by its path and lists its completed runs within the
+   lookback, oldest first, at most `runs_max`; each run must be of that workflow and repository.
+3. **Select.** Of each run, it takes only `perf-telemetry-<run>-<attempt>` artifacts of that
+   run and attempt. Another run's name is refused, and a kept result is never downloaded again.
+4. **Download.** It downloads within `artifact_bytes_max`. The bytes must have the SHA-256 the
+   API declares, and the ZIP is read with the archive collector's bounds (`transport.read_zip`):
+   members, ratio, decompressed bytes, no link, special, encrypted, absolute or traversing
+   member.
+5. **Bind.** It requires the result to be `tl_<run>_<attempt>`, its trigger the run's event's,
+   and a scheduled or released run's candidate the run's own commit.
+6. **Authority.** It requires the authority commit to be reachable from a trusted ref. It
+   writes that commit's authority files from the mirror's Git objects
+   (`telemetrylab.materialize_authority`).
+7. **Keep.** It imports the result verified under exactly that authority, then writes
+   `history.json`, `history.html` and `collection.json` (`af.perf-telemetry-collection/1`):
+   every run seen, with what was collected, already collected, missing, expired or refused and
+   why, what was pruned, and the root's results and bytes.
+
+A cycle exits 4 when it refused an artifact or ended early. The token is read only by
+`telemetry-collect`, from the configured environment variable, and sent only to the API
+origin. Signed storage receives no credential, and nothing collected is ever executed.
+
+[`scripts/performance/service/`](../scripts/performance/service/) holds a systemd service and
+hourly timer for a future always-on Linux collection host: the mirror is fetched first, then one
+cycle runs as an unprivileged user from a pinned trusted checkout. Nothing installs or enables
+them. No Mac launchd or cron job, Claw deployment, external sink or public server is part of
+this.
+
+### The frozen cohort's lane is left as it is
+
+`fixtures/performance/cohort-quick-20261023-hosted-v6.json` remains byte-identical and disabled
+as historical evidence (a test pins its SHA-256). The current workflow incorporates the
+published-main and calibration repairs; it is not that old cohort's producer. The deployed archive collector runs from a control
+pinned to the cohort's report and profile generations. This change moves the diagnostic
+contracts to `af.perf-profiles/5` and `af.perf-report/3`, and ADR-0145 refuses earlier versions
+in current readers. So the cohort's original artifacts are collected and read only by that
+pinned collector, never by a reader of this checkout. The telemetry lane neither replaces nor
+reads it, and the archive's existing reports and evidence are not touched.
+
+## Not provided
+
+- **No hosted run or deployment yet.** No telemetry experiment has run on a hosted runner, and
+  no collection host runs the lane. The local evidence is functional only, and none of its
+  figures is a product speed claim.
+- **No product exports.** `af telemetry export`, `bottlenecks` and `critical-path` do not exist
+  in this release. The Perfetto file and the phase rows are the laboratory's own derivation
+  from `af telemetry show`.
+- **No telemetry for the uncovered cases.** The native probe installs no telemetry subscriber,
+  and discovery, startup and state-read commands record none; their phases are the `perf-trace`
+  recipe's (see the matrix).
+- **No observed cgroup limits.** A contained execution's limits are the ones its container was
+  started with; unlike a verdict sample's, they are not read back from its cgroup.
+
+The `authority_runtime_new` investigation that used these paths is
+[`performance-runtime-new-investigation.md`](performance-runtime-new-investigation.md).

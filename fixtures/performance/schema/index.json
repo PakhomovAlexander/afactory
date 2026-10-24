@@ -2,6 +2,11 @@
   "schema": "af.perf-schema-fixtures/1",
   "fixtures": [
     {
+      "path": "../../../scripts/performance/service/telemetry-collector.example.toml",
+      "contract": "telemetry-collector",
+      "valid": true
+    },
+    {
       "path": "../adapters.toml",
       "contract": "adapters",
       "valid": true
@@ -29,6 +34,11 @@
     {
       "path": "../synthetic/suite.toml",
       "contract": "suite",
+      "valid": true
+    },
+    {
+      "path": "../telemetry.toml",
+      "contract": "telemetry-lab",
       "valid": true
     },
     {
@@ -1138,7 +1148,7 @@
       "path": "profiles/invalid-previous-version.json",
       "contract": "profiles",
       "valid": false,
-      "error": "expected af.perf-profiles/4",
+      "error": "expected af.perf-profiles/5",
       "shape": true
     },
     {
@@ -1856,6 +1866,222 @@
     {
       "path": "supervisor-result/valid-unobserved.json",
       "contract": "supervisor-result",
+      "valid": true
+    },
+    {
+      "path": "telemetry-build/invalid-side.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "expected one of baseline, candidate",
+      "shape": true
+    },
+    {
+      "path": "telemetry-build/invalid-unpinned-image.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "telemetry-build/valid-candidate.json",
+      "contract": "telemetry-build",
+      "valid": true
+    },
+    {
+      "path": "telemetry-collection/invalid-collected-without-its-result.json",
+      "contract": "telemetry-collection",
+      "valid": false,
+      "error": "exactly a collected result names its result",
+      "shape": false
+    },
+    {
+      "path": "telemetry-collection/invalid-ok-with-a-refusal.json",
+      "contract": "telemetry-collection",
+      "valid": false,
+      "error": "failed exactly when the cycle ended early or refused an artifact",
+      "shape": false
+    },
+    {
+      "path": "telemetry-collection/invalid-unknown-field.json",
+      "contract": "telemetry-collection",
+      "valid": false,
+      "error": "unknown field token",
+      "shape": true
+    },
+    {
+      "path": "telemetry-collection/valid-one-cycle.json",
+      "contract": "telemetry-collection",
+      "valid": true
+    },
+    {
+      "path": "telemetry-collector/invalid-archive-workflow.toml",
+      "contract": "telemetry-collector",
+      "valid": false,
+      "error": "expected 'performance-telemetry.yml'",
+      "shape": true
+    },
+    {
+      "path": "telemetry-collector/invalid-float-bound.toml",
+      "contract": "telemetry-collector",
+      "valid": false,
+      "error": "float",
+      "shape": true
+    },
+    {
+      "path": "telemetry-collector/invalid-root-inside-the-trusted-repository.toml",
+      "contract": "telemetry-collector",
+      "valid": false,
+      "error": "the trusted repository lies apart from the durable root",
+      "shape": false
+    },
+    {
+      "path": "telemetry-history/invalid-group-id.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "identified by its configuration, authority, execution mode, image and host",
+      "shape": false
+    },
+    {
+      "path": "telemetry-history/invalid-mode-of-another-group.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "each result in a group of its execution mode",
+      "shape": false
+    },
+    {
+      "path": "telemetry-history/invalid-point-of-another-group.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "holds only its group's results",
+      "shape": false
+    },
+    {
+      "path": "telemetry-history/invalid-results-bound.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "must be within 1..4096",
+      "shape": true
+    },
+    {
+      "path": "telemetry-history/invalid-unknown-field.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "unknown field trend",
+      "shape": true
+    },
+    {
+      "path": "telemetry-history/valid-one-group.json",
+      "contract": "telemetry-history",
+      "valid": true
+    },
+    {
+      "path": "telemetry-lab/invalid-content-in-a-cost-comparison.toml",
+      "contract": "telemetry-lab",
+      "valid": false,
+      "error": ".levels: exactly off, spans",
+      "shape": false
+    },
+    {
+      "path": "telemetry-lab/invalid-rounds-over-cap.toml",
+      "contract": "telemetry-lab",
+      "valid": false,
+      "error": "must be within 1..8",
+      "shape": true
+    },
+    {
+      "path": "telemetry-lab/invalid-script-elsewhere.toml",
+      "contract": "telemetry-lab",
+      "valid": false,
+      "error": "names scripts/telemetry-overhead.py",
+      "shape": false
+    },
+    {
+      "path": "telemetry-lab/invalid-unknown-profile-field.toml",
+      "contract": "telemetry-lab",
+      "valid": false,
+      "error": "unknown field note",
+      "shape": true
+    },
+    {
+      "path": "telemetry-result/invalid-a-planned-run-dropped.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "every planned run, a run that never ran included",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-build-of-another-binary.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "the build of this side's source and binary",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-compared-change.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "each change is (candidate - baseline) / baseline",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-complete-with-a-changed-binary.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "nothing protected changed",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-complete-with-a-failed-run.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "complete only when every planned run succeeded",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-complete-with-an-uncertain-cleanup.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "every cleanup was confirmed",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-configuration-digest.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "the digest of the configuration",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-position.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "baseline first in even rounds",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-same-host-claimed-otherwise.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "exactly when the host was observed the same",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-trusted-local-pull-request.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "a pull request's candidate is measured only contained",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-verdict-effect.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "expected 'none'",
+      "shape": true
+    },
+    {
+      "path": "telemetry-result/valid-one-round.json",
+      "contract": "telemetry-result",
       "valid": true
     },
     {

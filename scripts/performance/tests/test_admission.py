@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import stat
+from contextlib import contextmanager
 from unittest import mock
 
 from perflab import admission, budget, limits, reference, seeds
@@ -16,6 +17,16 @@ from perflab.values import ContractError, canonical_bytes
 from tests.support import TempDir, read
 
 GIB = 1 << 30
+
+
+@contextmanager
+def fixture_umask(mask):
+    """Create owned fixtures under a known umask, restoring it even if setup fails."""
+    previous = os.umask(mask)
+    try:
+        yield
+    finally:
+        os.umask(previous)
 
 
 def legacy_identity(root):
@@ -52,17 +63,21 @@ class Clock(object):
 
 
 class Seeds(TempDir):
-    def seed(self, name="seed", files=3):
+    def seed(self, name="seed", files=3, normalize_modes=True):
         root = self.path(name)
         os.makedirs(os.path.join(root, "probe-work", "nested"))
-        for directory in (root, os.path.join(root, "probe-work"),
-                          os.path.join(root, "probe-work", "nested")):
-            os.chmod(directory, 0o755)
+        # Normal seeds have deterministic modes under either writer umask. Refusal fixtures
+        # deliberately retain their original writer modes to prove no pre-admission chmod.
+        if normalize_modes:
+            for directory in (root, os.path.join(root, "probe-work"),
+                              os.path.join(root, "probe-work", "nested")):
+                os.chmod(directory, 0o755)
         for index in range(files):
             file = os.path.join(root, "probe-work", "nested", "f%d" % index)
             with open(file, "wb") as out:
                 out.write(b"entry %d\n" % index)
-            os.chmod(file, 0o644)
+            if normalize_modes:
+                os.chmod(file, 0o644)
         tool = os.path.join(root, "probe-work", "tool")
         with open(tool, "wb") as out:
             out.write(b"#!/bin/sh\n")
@@ -83,11 +98,22 @@ class Seeds(TempDir):
         return marker, directory, inner
 
     def modes(self, root):
-        found = {}
+        found = {".": stat.S_IMODE(os.lstat(root).st_mode)}
         for current, dirs, files in os.walk(root):
             for name in dirs + files:
                 path = os.path.join(current, name)
-                found[os.path.relpath(path, root)] = os.lstat(path).st_mode & 0o777
+                found[os.path.relpath(path, root)] = stat.S_IMODE(os.lstat(path).st_mode)
+        return found
+
+    def file_bytes(self, root, exclude=()):
+        """Owned regular bytes only; never follow hostile links or read sparse fixtures."""
+        found = {}
+        for current, _, files in os.walk(root):
+            for name in files:
+                path = os.path.join(current, name)
+                relative = os.path.relpath(path, root)
+                if relative not in exclude and stat.S_ISREG(os.lstat(path).st_mode):
+                    found[relative] = read(path)
         return found
 
     def test_a_sealed_seed_keeps_its_deterministic_identity_and_read_only_modes(self):
@@ -138,53 +164,90 @@ class Seeds(TempDir):
                  ("relative file", lambda here: os.path.relpath(marker, here), "escape"),
                  ("symlinked directory", lambda here: directory, "escape-dir"),
                  ("dangling", lambda here: self.path("missing"), "escape")]
-        for index, (what, target, name) in enumerate(cases):
-            with self.subTest(case=what):
-                root = self.seed("s%d" % index)
-                here = os.path.join(root, "probe-work")
-                os.symlink(target(here), os.path.join(here, name))
-                before = self.modes(root)
-                with self.assertRaises(ContractError) as caught:
-                    seeds.seal(root, bounds)
-                self.assertIn("probe-work/%s, which is a symlink" % name, str(caught.exception))
-                # Nothing was sealed: every mode inside is as the writer left it.
-                self.assertEqual(self.modes(root), before)
-                self.assertEqual(os.stat(root).st_mode & 0o777, 0o755)
-                with self.assertRaises(ContractError):
-                    seeds.tree(root, bounds)
-                # Nothing outside was read, changed or removed.
-                self.assertEqual(read(marker), b"owned bytes outside the seed\n")
-                self.assertEqual(os.stat(marker).st_mode & 0o777, 0o600)
-                self.assertEqual(os.stat(directory).st_mode & 0o777, 0o700)
-                self.assertEqual(os.stat(inner).st_mode & 0o777, 0o600)
-                self.assertEqual(seeds.remove(root), [])
-                self.assertFalse(os.path.lexists(root))
-                self.assertEqual(read(inner), b"owned bytes in an outside directory\n")
-                self.assertTrue(os.path.exists(marker) and os.path.isdir(directory))
+        for mask in (0o022, 0o077):
+            for index, (what, target, name) in enumerate(cases):
+                with self.subTest(umask=oct(mask), case=what):
+                    self.refuse_symlink(mask, index, target, name, bounds,
+                                        marker, directory, inner)
+
+    def refuse_symlink(self, mask, index, target, name, bounds, marker, directory, inner):
+        with fixture_umask(mask):
+            root = self.seed("s%03o-%d" % (mask, index), normalize_modes=False)
+        self.assertEqual(os.stat(root).st_mode & 0o777, 0o777 & ~mask)
+        here = os.path.join(root, "probe-work")
+        os.symlink(target(here), os.path.join(here, name))
+        before = self.modes(root)
+        before_bytes = self.file_bytes(root)
+        with mock.patch.object(admission, "read_bounded",
+                               side_effect=AssertionError("nothing may be read")):
+            with self.assertRaises(ContractError) as caught:
+                seeds.seal(root, bounds)
+            self.assertIn("probe-work/%s, which is a symlink" % name, str(caught.exception))
+            # Nothing was sealed, including the root, under either writer umask.
+            self.assertEqual(self.modes(root), before)
+            with self.assertRaises(ContractError):
+                seeds.tree(root, bounds)
+        self.assertEqual(self.modes(root), before)
+        self.assertEqual(self.file_bytes(root), before_bytes)
+        # Nothing outside was read, changed or removed.
+        self.assertEqual(read(marker), b"owned bytes outside the seed\n")
+        self.assertEqual(read(inner), b"owned bytes in an outside directory\n")
+        self.assertEqual(os.stat(marker).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(directory).st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(inner).st_mode & 0o777, 0o600)
+        self.assertEqual(seeds.remove(root), [])
+        self.assertFalse(os.path.lexists(root))
+        self.assertEqual(read(inner), b"owned bytes in an outside directory\n")
+        self.assertTrue(os.path.exists(marker) and os.path.isdir(directory))
 
     def test_a_symlinked_seed_root_and_other_entry_kinds_are_refused(self):
-        marker, directory, _ = self.outside()
+        marker, directory, inner = self.outside()
         bounds = seeds.bounds(2 * GIB)
         link = self.path("seed-link")
         os.symlink(directory, link)
-        with self.assertRaises(ContractError) as caught:
-            seeds.seal(link, bounds)
+        before_link = os.lstat(link)
+        before_outside = (os.lstat(marker), os.lstat(directory), os.lstat(inner))
+        with mock.patch.object(admission, "read_bounded",
+                               side_effect=AssertionError("nothing may be read")):
+            with self.assertRaises(ContractError) as caught:
+                seeds.seal(link, bounds)
         self.assertIn("is not a directory", str(caught.exception))
+        self.assertEqual(os.lstat(link), before_link)
+        self.assertEqual((os.lstat(marker), os.lstat(directory), os.lstat(inner)), before_outside)
         self.assertEqual(os.stat(directory).st_mode & 0o777, 0o700)
+        self.assertEqual(read(marker), b"owned bytes outside the seed\n")
+        self.assertEqual(read(inner), b"owned bytes in an outside directory\n")
         root = self.seed("fifo")
         os.mkfifo(os.path.join(root, "probe-work", "pipe"))
-        with self.assertRaises(ContractError) as caught:
-            seeds.seal(root, bounds)
+        before = self.modes(root)
+        before_bytes = self.file_bytes(root)
+        with mock.patch.object(admission, "read_bounded",
+                               side_effect=AssertionError("nothing may be read")):
+            with self.assertRaises(ContractError) as caught:
+                seeds.seal(root, bounds)
         self.assertIn("probe-work/pipe, which is a FIFO", str(caught.exception))
+        self.assertEqual(self.modes(root), before)
+        self.assertEqual(self.file_bytes(root), before_bytes)
         self.assertEqual(seeds.remove(root), [])
 
     def test_sparse_logical_bytes_are_refused_before_anything_is_read(self):
-        root = self.seed("sparse")
-        sparse = os.path.join(root, "probe-work", "sparse")
-        with open(sparse, "wb") as out:
-            out.truncate(2 * GIB + 1)
+        for mask in (0o022, 0o077):
+            with self.subTest(umask=oct(mask)):
+                self.refuse_sparse(mask)
+
+    def refuse_sparse(self, mask):
+        with fixture_umask(mask):
+            root = self.seed("sparse%03o" % mask, normalize_modes=False)
+            sparse = os.path.join(root, "probe-work", "sparse")
+            with open(sparse, "wb") as out:
+                out.truncate(2 * GIB + 1)
+        self.assertEqual(os.stat(root).st_mode & 0o777, 0o777 & ~mask)
         # A sparse file allocates almost nothing; its logical size is what is bounded.
         self.assertLess(os.lstat(sparse).st_blocks * 512, 1 << 20)
+        before = self.modes(root)
+        before_sparse = os.lstat(sparse)
+        excluded = (os.path.join("probe-work", "sparse"),)
+        before_bytes = self.file_bytes(root, exclude=excluded)
         bounds = seeds.bounds(2 * GIB)
         with mock.patch.object(admission, "read_bounded",
                                side_effect=AssertionError("nothing may be read")):
@@ -194,17 +257,28 @@ class Seeds(TempDir):
                           "2147483648", str(caught.exception))
             with self.assertRaises(ContractError):
                 seeds.tree(root, bounds)
-        self.assertEqual(os.stat(root).st_mode & 0o777, 0o755)
+        self.assertEqual(self.modes(root), before)
+        self.assertEqual(os.lstat(sparse), before_sparse)
+        self.assertEqual(self.file_bytes(root, exclude=excluded), before_bytes)
         # The aggregate is bounded too: two files that each fit, but not together.
         os.unlink(sparse)
-        for name in ("a", "b"):
-            with open(os.path.join(root, "probe-work", name), "wb") as out:
-                out.truncate(GIB + 1)
+        with fixture_umask(mask):
+            for name in ("a", "b"):
+                with open(os.path.join(root, "probe-work", name), "wb") as out:
+                    out.truncate(GIB + 1)
+        before = self.modes(root)
+        sparse_files = [os.path.join(root, "probe-work", name) for name in ("a", "b")]
+        before_sparse = [os.lstat(path) for path in sparse_files]
         with mock.patch.object(admission, "read_bounded",
                                side_effect=AssertionError("nothing may be read")):
-            with self.assertRaises(ContractError) as caught:
-                seeds.tree(root, bounds)
-        self.assertIn("holds more than 2147483648 logical bytes", str(caught.exception))
+            for operation in (seeds.seal, seeds.tree):
+                with self.assertRaises(ContractError) as caught:
+                    operation(root, bounds)
+                self.assertIn("holds more than 2147483648 logical bytes", str(caught.exception))
+        self.assertEqual(self.modes(root), before)
+        self.assertEqual([os.lstat(path) for path in sparse_files], before_sparse)
+        self.assertEqual(self.file_bytes(root, exclude=tuple(
+            os.path.relpath(path, root) for path in sparse_files)), before_bytes)
         self.assertEqual(seeds.remove(root), [])
 
     def test_entry_count_and_depth_are_bounded_while_enumerating(self):

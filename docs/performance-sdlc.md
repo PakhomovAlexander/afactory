@@ -23,6 +23,12 @@ alternatives. Use a separate diagnostic child run for CPU profiles and phase tra
 instrumentation overhead must not enter the timing verdict. Promote a successful experiment
 through a normal PR and the full comparison.
 
+Telemetry's own cost is measured beside the comparison by the advisory `Performance telemetry`
+workflow on pull requests, nightly, on publication and on dispatch, and a diagnostic child can
+record its CLI cases' telemetry with `--telemetry spans`; neither touches the verdict
+([`performance-telemetry.md`](performance-telemetry.md)). That workflow measures only in
+containers of the image `AF_PERF_GNU_BUILD_IMAGE` pins and plans nothing without it.
+
 ## The no-perf label
 
 A pull request to `main` labeled exactly `no-perf` is not measured: no plan, build or shard runs,
@@ -94,6 +100,14 @@ has its own 30-minute network deadline. It scans 13 days by default, refuses cap
 listings, retries failed imports, pins calibration runs, applies retention, and updates
 `history/history.html` and `history/archive-status.json`. For a longer catch-up, explicitly
 increase `--lookback-days` up to 89; expired transport cannot be recovered by retrying.
+
+Telemetry experiment results have their own lane, never this archive: `cli.py
+telemetry-collect --config FILE` keeps each `perf-telemetry-*` result verified under its exact
+measurement authority in a separate, locked and bounded history root. Its example configuration
+and systemd units are in `scripts/performance/service/`, for a future always-on Linux host; none
+is installed ([`performance-telemetry.md`](performance-telemetry.md)). This collector behaves as
+before (its bounded ZIP reading is now shared with that lane), and the deployed one stays pinned
+to the frozen cohort's control.
 
 A local Mac service collects while awake. Its exit status and logs, plus archive health, must
 be monitored; after a long outage inspect the scan before transport expiry. For unattended

@@ -1141,6 +1141,10 @@ labelled away. `content` has no bound (`af telemetry status` calls it *perturbin
 read-latency corpus `af telemetry status` answers in under 2 s on a fresh index and under 200 ms
 when nothing is new, and `show` of one run in under 200 ms, warm.
 
+The performance laboratory runs these three scripts as advisory telemetry experiments on a
+baseline and a candidate binary, and records CLI cases' telemetry in its diagnostic child runs
+([`performance-telemetry.md`](performance-telemetry.md)).
+
 **The overhead protocol.** `scripts/telemetry-overhead.py` runs the three credential-free bench
 fixtures of [`fixtures/telemetry-bench/`](../fixtures/telemetry-bench/README.md) through the Task
 runtime with scripted harnesses: `telemetry-bench-concurrent` (four concurrent Attempts),

@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-telemetry-collection:1",
+  "title": "af.perf-telemetry-collection/1",
+  "description": "One telemetry collection cycle (ADR-0200): every completed run it saw, by Actions run and attempt, with its artifact, its SHA-256, the result it kept or why it kept none, what it pruned for the root's bounds, and the root's results and bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-telemetry-collection/1"
+    },
+    "repository": {
+      "type": "string",
+      "maxLength": 201,
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    },
+    "workflow_id": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740992
+        }
+      ]
+    },
+    "started_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "ended_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "failed"
+      ]
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740992
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "event": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "maxLength": 64
+              }
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "collected",
+              "already_collected",
+              "no_result",
+              "expired",
+              "refused"
+            ]
+          },
+          "artifact": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740992
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "size": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  },
+                  "sha256": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/$defs/digest"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "size",
+                  "sha256"
+                ]
+              }
+            ]
+          },
+          "result_id": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/id"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "run_id",
+          "attempt",
+          "event",
+          "conclusion",
+          "outcome",
+          "artifact",
+          "result_id",
+          "reason"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    },
+    "pruned": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "result_id": {
+            "$ref": "#/$defs/id"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "result_id",
+          "reason"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    },
+    "results": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "used_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    }
+  },
+  "required": [
+    "schema",
+    "repository",
+    "workflow_id",
+    "started_unix_ms",
+    "ended_unix_ms",
+    "status",
+    "detail",
+    "runs",
+    "pruned",
+    "results",
+    "used_bytes"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

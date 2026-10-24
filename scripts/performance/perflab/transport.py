@@ -404,6 +404,22 @@ def read_transport(data, remaining=None):
     anything but the declared format refuses."""
     require(data[:4] == b"PK\x03\x04", "the artifact is not a ZIP container, so it is not the "
             "af.perf-transport/1 format; nothing was imported")
+
+    def admit(name):
+        require(name == TRANSPORT_FILE or name.startswith(BUNDLE_PREFIX)
+                or name.startswith(VIEWS_PREFIX),
+                "the artifact member %s is not part of the transport format" % name)
+    return _from_members(read_zip(data, remaining, admit))
+
+
+def read_zip(data, remaining=None, admit=None, bytes_max=ARTIFACT_BYTES_MAX):
+    """{member path: bytes} of one artifact's ZIP container, decompressed within every bound
+    (members, each member's and all members' bytes, the compression ratio) and, when given,
+    the collection's time (`remaining`), refusing encrypted, linked, special, duplicate,
+    absolute or traversing members; `admit(name)` refuses a member its format does not
+    hold. Shared by the archive's transport format and the telemetry collector (ADR-0200)."""
+    require(data[:4] == b"PK\x03\x04", "the artifact is not a ZIP container; nothing was "
+            "imported")
     try:
         container = zipfile.ZipFile(io.BytesIO(data))
         infos = container.infolist()
@@ -412,8 +428,8 @@ def read_transport(data, remaining=None):
     require(len(infos) <= ZIP_MEMBERS_MAX, "the artifact holds more than %d members"
             % ZIP_MEMBERS_MAX)
     declared = sum(info.file_size for info in infos)
-    require(declared <= ARTIFACT_BYTES_MAX, "the artifact declares %d decompressed bytes, more "
-            "than %d" % (declared, ARTIFACT_BYTES_MAX))
+    require(declared <= bytes_max, "the artifact declares %d decompressed bytes, more "
+            "than %d" % (declared, bytes_max))
     names = set()
     members = {}
     total = 0
@@ -433,9 +449,8 @@ def read_transport(data, remaining=None):
         require(info.file_size <= max(RATIO_FLOOR_BYTES, RATIO_MAX * info.compress_size),
                 "the artifact member %s decompresses beyond the %d:1 ratio bound"
                 % (name, RATIO_MAX))
-        require(name == TRANSPORT_FILE or name.startswith(BUNDLE_PREFIX)
-                or name.startswith(VIEWS_PREFIX),
-                "the artifact member %s is not part of the transport format" % name)
+        if admit is not None:
+            admit(name)
         chunks = []
         read = 0
         try:
@@ -448,7 +463,7 @@ def read_transport(data, remaining=None):
                         break
                     read += len(chunk)
                     total += len(chunk)
-                    require(read <= info.file_size and total <= ARTIFACT_BYTES_MAX,
+                    require(read <= info.file_size and total <= bytes_max,
                             "the artifact member %s decompresses beyond its declared size"
                             % name)
                     chunks.append(chunk)
@@ -457,7 +472,7 @@ def read_transport(data, remaining=None):
         require(read == info.file_size, "the artifact member %s is shorter than declared"
                 % name)
         members[name] = b"".join(chunks)
-    return _from_members(members)
+    return members
 
 
 def _from_members(members):

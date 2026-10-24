@@ -16,7 +16,8 @@ from tests.support import ROOT, read
 
 FIXTURES = os.path.join(ROOT, "fixtures/performance/schema")
 SCHEMAS = os.path.join(ROOT, "schemas")
-TOML_CONTRACTS = ("suite", "activation", "adapters", "cli", "diagnostics")
+TOML_CONTRACTS = ("suite", "activation", "adapters", "cli", "diagnostics", "telemetry-lab",
+                  "telemetry-collector")
 
 
 class SchemaSubset:
@@ -127,6 +128,10 @@ def read_with_contract(entry):
         return clicases.load_bytes(data, path)
     if contract == "diagnostics":
         return diagnostics.load_bytes(data, path)
+    if contract == "telemetry-lab":
+        return contracts.validate_telemetry_lab(tomlfile.loads(data, path), path)
+    if contract == "telemetry-collector":
+        return contracts.validate_telemetry_collector(tomlfile.loads(data, path), path)
     doc = contracts.read_json(data, contract, path)
     if "companion" in entry:
         cohort = contracts.read_file(os.path.join(FIXTURES, entry["companion"]), "cohort")
@@ -249,6 +254,10 @@ class Parity(unittest.TestCase):
         self.assertEqual([contracts.schema_version(name) for name in changed],
                          [6, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3])
         self.assertEqual(contracts.schema_version("activation"), 3)
+        # profiles/5 adds the explicitly selected telemetry level and its captures, and report/3
+        # each case's telemetry state (ADR-0199); nothing reads profiles/4 or report/2.
+        self.assertEqual((contracts.schema_version("profiles"), contracts.schema_version("report")),
+                         (5, 3))
         self.assertEqual((contracts.schema_version("cli"), contracts.schema_version("suite")),
                          (5, 3))
         valid = dict((entry["contract"], entry) for entry in self.index if entry["valid"]
@@ -266,6 +275,7 @@ class Parity(unittest.TestCase):
         self.assertFalse(any(name.startswith("performance-")
                              and name.endswith(("run-v1.json", "run-v2.json", "run-v3.json",
                                                 "run-v4.json", "run-v5.json", "readiness-v4.json",
+                                                "profiles-v4.json", "report-v2.json",
                                                 "activation-v2.json",
                                                 "activation-verification-v1.json", "cost-v1.json",
                                                 "shipping-v1.json", "cohort-v1.json",

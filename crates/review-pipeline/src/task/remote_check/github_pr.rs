@@ -848,6 +848,7 @@ pub fn run(
         number: pull.number,
         url: pull.url.clone(),
     };
+
     // A stale exemption that cannot be removed fails every check: no workflow of this gate may
     // skip its measurement for a candidate that does not qualify. A label that cannot be added
     // only leaves the pull request measured as usual.

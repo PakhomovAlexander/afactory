@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-telemetry-build:1",
+  "title": "af.perf-telemetry-build/1",
+  "description": "How one side's AF binary of a telemetry experiment was built (ADR-0200): its side, source commit, the binary's SHA-256, the pinned image, the toolchain identities and the command.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-telemetry-build/1"
+    },
+    "side": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "candidate"
+      ]
+    },
+    "source_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "binary_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "image": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+    },
+    "rustc": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "cargo": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "command": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    }
+  },
+  "required": [
+    "schema",
+    "side",
+    "source_sha",
+    "binary_sha256",
+    "image",
+    "rustc",
+    "cargo",
+    "command"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    }
+  }
+}

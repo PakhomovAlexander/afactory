@@ -291,7 +291,7 @@ class Events(test_planning.History):
         # original.
         doc, _ = self.schedule(ci.Event("workflow_dispatch", {"inputs": {
             "base": self.root, "head": self.root, "control": control, "authority": self.root,
-            "scope": "calibration", "cohort": "fixtures/performance/cohorts/first.json",
+            "scope": "calibration", "dispatch_head": control, "cohort": "fixtures/performance/cohorts/first.json",
             "member": "aa_03", "cohort_digest": "sha256:" + "0" * 64}}, control,
             "refs/heads/main", REPOSITORY, 12, 1))
         self.assertEqual((doc["comparisons"][0]["status"], doc["comparisons"][0]["reason"]),
@@ -300,7 +300,7 @@ class Events(test_planning.History):
                       doc["comparisons"][0]["detail"])
         doc, plans = self.schedule(ci.Event("workflow_dispatch", {"inputs": {
             "base": self.root, "head": self.root, "control": control, "authority": self.root,
-            "scope": "calibration", "cohort": "fixtures/performance/cohorts/first.json",
+            "scope": "calibration", "dispatch_head": control, "cohort": "fixtures/performance/cohorts/first.json",
             "member": "aa_03", "cohort_digest": digest}}, control, "refs/heads/main",
             REPOSITORY, 13, 1))
         item = doc["comparisons"][0]
@@ -316,19 +316,31 @@ class Events(test_planning.History):
         # dispatch is refused, and with a path outside it too.
         doc, _ = self.schedule(ci.Event("workflow_dispatch", {"inputs": {
             "base": self.root, "head": self.root, "control": control, "authority": self.root,
-            "scope": "calibration", "cohort": "fixtures/performance/cohorts/first.json",
+            "scope": "calibration", "dispatch_head": control, "cohort": "fixtures/performance/cohorts/first.json",
             "member": "power_03", "cohort_digest": digest}}, control, "refs/heads/main",
             REPOSITORY, 14, 1))
         self.assertEqual(doc["comparisons"][0]["status"], "refused")
         self.assertIn("sealed calibration parameters", doc["comparisons"][0]["detail"])
         doc, _ = self.schedule(ci.Event("workflow_dispatch", {"inputs": {
             "base": self.root, "head": self.root, "control": control, "authority": self.root,
-            "scope": "calibration", "cohort": "fixtures/performance/cohorts/first.json",
+            "scope": "calibration", "dispatch_head": control, "cohort": "fixtures/performance/cohorts/first.json",
             "member": "power_03", "calibration": "fixtures/performance/absent.json",
             "cohort_digest": digest}},
             control, "refs/heads/main", REPOSITORY, 15, 1))
         self.assertEqual(doc["comparisons"][0]["status"], "refused")
         self.assertIn("is not in the control revision", doc["comparisons"][0]["detail"])
+
+    def test_calibration_source_mismatch_never_plans_or_resolves_sources(self):
+        from unittest import mock
+        for dispatch_head in (None, "", self.c3[:12], "g" * 40, self.c2, self.c3 + "\n"):
+            with self.subTest(dispatch_head=dispatch_head), \
+                    mock.patch.object(self.git, "resolve", side_effect=AssertionError("source read")):
+                doc, plans = self.schedule(ci.Event("workflow_dispatch", {"inputs": {
+                    "scope": "calibration", "dispatch_head": dispatch_head}}, self.c3,
+                    "refs/heads/main", REPOSITORY, 17, 1))
+                self.assertEqual(doc["comparisons"][0]["reason"], "source_mismatch")
+                self.assertIn("non-member", doc["comparisons"][0]["detail"])
+                self.assertEqual((plans, doc["matrix"], ci.outputs(doc)["any"]), ({}, [], "false"))
 
     def test_a_calibration_member_never_runs_on_a_dedicated_executor(self):
         # A cohort calibrates fresh hosted runners (ADR-0183): dedicated capacity is refused
@@ -339,7 +351,7 @@ class Events(test_planning.History):
         control = self.repo.commit("cohort", {
             "fixtures/performance/cohorts/first.json": json.dumps(cohort)})
         inputs = {"base": self.root, "head": self.root, "control": control,
-                  "authority": self.root, "scope": "calibration",
+                  "authority": self.root, "scope": "calibration", "dispatch_head": control,
                   "cohort": "fixtures/performance/cohorts/first.json", "member": "aa_03",
                   "cohort_digest": digest}
         for number, settings in enumerate((

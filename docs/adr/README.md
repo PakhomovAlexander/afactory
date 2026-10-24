@@ -368,3 +368,13 @@ future readers need.
   label](0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)
 - [0197 — Validate on one latest stable Python](0197-validate-on-one-latest-stable-python.md)
 - [0198 — Opt this repository into distinct-model Worker independence](0198-opt-this-repository-into-distinct-model-worker-independence.md)
+- [0199 — Integrate Telemetry into the performance laboratory as diagnostics and advisory
+  experiments](0199-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
+- [0200 — Contain telemetry experiments and collect only results verified under their
+  authority](0200-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)
+- [0201 — Construct reference fixture bytes without per-byte Python
+  loops](0201-construct-reference-fixture-bytes-without-per-byte-python-loops.md)
+- [0202 — Bind calibration dispatch to the checked main source and separate group
+  arguments](0202-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md)
+- [0203 — Reapply an accounting append once after only this writer's heartbeat
+  renewals](0203-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)

@@ -1177,7 +1177,7 @@ def validate_verdict(doc, where="verdict.json"):
     return doc
 
 
-# af.perf-profiles/4 (ADR-0176), af.perf-trace/1 and af.perf-diagnostics/1 (ADR-0174) -----
+# af.perf-profiles/5 (ADR-0199), af.perf-trace/1 and af.perf-diagnostics/1 (ADR-0174) -----
 
 PROFILES_SCHEMA = diagcontracts.PROFILES_SCHEMA
 PROFILES = diagcontracts.PROFILES
@@ -2998,11 +2998,12 @@ def validate_capabilities(doc, where="capabilities"):
     return doc
 
 
-# af.perf-report/2 ---------------------------------------------------------------------------
+# af.perf-report/3 ---------------------------------------------------------------------------
 # Version 2 (ADR-0177) links validated diagnostic child runs and states each reproduction's
-# limitations; version 1 is refused.
+# limitations; version 3 (ADR-0199) adds each case's telemetry captures from the linked children
+# that selected a telemetry level. Earlier versions are refused.
 
-REPORT_SCHEMA = "af.perf-report/2"
+REPORT_SCHEMA = "af.perf-report/3"
 TRIGGER_KINDS = ("pr", "main_push", "nightly", "release", "manual")
 # Why a run does not satisfy the required check: only a passing, measured, full-scope run of an
 # activated policy can.
@@ -3024,7 +3025,7 @@ REPORT_POINT = Obj(
 # the report and every omission as the child recorded it.
 DIAGNOSTIC_STATES = ("unavailable", "available", "partial", "omitted")
 DIAGNOSTIC_ITEM_KINDS = ("baseline", "candidate", "difference_forward", "difference_reverse",
-                         "trace", "perfetto", "timeline")
+                         "trace", "perfetto", "timeline", "telemetry", "telemetry_perfetto")
 DIAGNOSTIC_STATE = Obj(
     Field("state", Str(enum=DIAGNOSTIC_STATES)), Field("reason", TEXT),
     Field("items", Arr(Obj(Field("child_run_id", ID), Field("side", Nullable(Str(enum=SIDES))),
@@ -3042,6 +3043,8 @@ REPORT_CHILD = Obj(
     Field("bundle_sha256", DIGEST), Field("profiles_sha256", DIGEST),
     Field("cases", Arr(ID, 0, limits.DIAGNOSTIC_CASES_MAX, unique=True)),
     Field("retained_scratch", COUNT),
+    # The telemetry level the child selected explicitly, or null (ADR-0199).
+    Field("telemetry_level", Nullable(Str(enum=diagcontracts.TELEMETRY_LEVELS))),
     # The verified copy of the child's own page and bundle below the report.
     Field("page", REL_PATH), Field("directory", REL_PATH))
 BINARY_IDENTITY = Obj(Field("af", Nullable(DIGEST)), Field("probe", Nullable(DIGEST)),
@@ -3101,7 +3104,8 @@ REPORT = Obj(
                                  Field("missing_records", COUNT),
                                  Field("measured_pairs", Int(limits.PAIRS_MIN, limits.PAIRS_MAX)),
                                  Field("warmup_pairs", Int(0, limits.WARMUP_PAIRS_MAX)))),
-        Field("profile", DIAGNOSTIC_STATE), Field("trace", DIAGNOSTIC_STATE)),
+        Field("profile", DIAGNOSTIC_STATE), Field("trace", DIAGNOSTIC_STATE),
+        Field("telemetry", DIAGNOSTIC_STATE)),
                        1, limits.INSTANCES_MAX)),
     Field("diagnostics", Arr(REPORT_CHILD, 0, 16)),
     Field("sequences", Arr(Obj(Field("shard", Int(0, limits.SHARDS_MAX - 1)),
@@ -3169,10 +3173,15 @@ def validate_report(doc, where="report.json"):
     for child in doc["diagnostics"]:
         require(child["run_id"] != doc["run_id"], where + ".diagnostics: a child is a separate "
                 "run")
+        require(child["telemetry_level"] is None or child["kind"] in ("cpu_profile", "trace"),
+                where + ".diagnostics: telemetry is captured beside CPU profiles or traces")
         for case in child["cases"]:
             covering.setdefault((case, child["kind"]), set()).add(child["run_id"])
+            if child["telemetry_level"] is not None:
+                covering.setdefault((case, "telemetry"), set()).add(child["run_id"])
     for item in doc["cases"]:
-        for field, kinds in (("profile", ("cpu_profile",)), ("trace", ("trace",))):
+        for field, kinds in (("profile", ("cpu_profile",)), ("trace", ("trace",)),
+                             ("telemetry", ("telemetry",))):
             state = item[field]
             at = "%s.cases[%s].%s" % (where, item["instance_id"], field)
             linked = set()
@@ -4184,6 +4193,435 @@ def validate_enforcement(doc, where="enforcement.toml"):
     return doc
 
 
+# Telemetry experiments (ADR-0199) ----------------------------------------------------------
+# af.perf-telemetry-lab/1 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/1 one
+# experiment run of a baseline and a candidate binary on one host with this checkout's scripts
+# and fixtures; af.perf-telemetry-history/1 the compatible series across results. Advisory: no
+# verdict, sample or required check reads any of them.
+
+TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/1"
+TELEMETRY_RESULT_SCHEMA = "af.perf-telemetry-result/1"
+TELEMETRY_HISTORY_SCHEMA = "af.perf-telemetry-history/1"
+TELEMETRY_EXPERIMENTS = ("overhead", "invocation_cost", "read_latency")
+TELEMETRY_PROFILES = ("pr", "nightly", "release", "manual")
+TELEMETRY_DOCUMENTS = {"overhead": ("af/telemetry-overhead@1", "telemetry-overhead-v1.json",
+                                    "scripts/telemetry-overhead.py", ("off", "spans")),
+                       "invocation_cost": ("af/telemetry-invocation-cost@1",
+                                           "telemetry-invocation-cost-v1.json",
+                                           "scripts/telemetry-invocation-cost.py",
+                                           ("off", "spans")),
+                       "read_latency": ("af/telemetry-read-latency@1",
+                                        "telemetry-read-latency-v1.json",
+                                        "scripts/telemetry-corpus.py", ("content",))}
+TELEMETRY_LEVEL_NAMES = ("off", "spans", "content")
+TELEMETRY_ROUNDS_MAX = 8
+TELEMETRY_PAIRS_MAX = 40
+TELEMETRY_RUNS_MAX = len(TELEMETRY_EXPERIMENTS) * TELEMETRY_ROUNDS_MAX * 2
+TELEMETRY_INPUT = Str(pattern=r"^(?:scripts|fixtures)/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$",
+                      max_len=256)
+TELEMETRY_PAIRED = Obj(Field("pairs", Int(1, TELEMETRY_PAIRS_MAX)),
+                       Field("scale", Str(enum=("full", "smoke"))))
+TELEMETRY_CORPUS = Obj(Field("runs", Int(10, 10000)), Field("repeat", Int(1, 9)))
+TELEMETRY_EXPERIMENT = Obj(
+    Field("description", TEXT), Field("script", TELEMETRY_INPUT),
+    Field("document", Str(enum=tuple(sorted(item[0] for item in TELEMETRY_DOCUMENTS.values())))),
+    Field("schema_file", Str(pattern=r"^telemetry-[a-z-]{1,48}-v[1-9][0-9]{0,2}\.json$",
+                             max_len=64)),
+    Field("inputs", Arr(TELEMETRY_INPUT, 1, 8, unique=True)),
+    Field("levels", Arr(Str(enum=TELEMETRY_LEVEL_NAMES), 1, 3, unique=True)))
+TELEMETRY_PROFILE = Obj(
+    Field("description", TEXT), Field("rounds", Int(1, TELEMETRY_ROUNDS_MAX)),
+    Field("timeout_minutes", Int(1, 355)),
+    Field("work_bytes", Int(1 << 20, 64 << 30)),
+    Field("retention_days", Int(1, 90)),
+    Field("experiments", Arr(Str(enum=TELEMETRY_EXPERIMENTS), 1, 3, unique=True)),
+    Field("overhead", TELEMETRY_PAIRED), Field("invocation_cost", TELEMETRY_PAIRED),
+    Field("read_latency", TELEMETRY_CORPUS))
+# The container every contained execution runs in (ADR-0200); its scratch filesystem's bound is
+# the profile's work bytes.
+TELEMETRY_CONTAINMENT = Obj(Field("logical_cpus", Int(1, 64)),
+                            Field("memory_limit_bytes", Int(256 << 20, 64 << 30)),
+                            Field("pid_limit", Int(64, 4096)))
+TELEMETRY_LAB = Obj(
+    Field("schema", Const(TELEMETRY_LAB_SCHEMA)), Field("description", TEXT),
+    Field("seed", Int(0, 2 ** 31 - 1)), Field("containment", TELEMETRY_CONTAINMENT),
+    Field("experiments", Obj(*[Field(name, TELEMETRY_EXPERIMENT)
+                               for name in TELEMETRY_EXPERIMENTS])),
+    Field("profiles", Obj(*[Field(name, TELEMETRY_PROFILE) for name in TELEMETRY_PROFILES])))
+
+
+def validate_telemetry_lab(doc, where="telemetry.toml"):
+    """The registry's shape, and every experiment exactly the bench script, document, schema
+    and levels design section 12 names: a registry cannot point a measurement elsewhere."""
+    TELEMETRY_LAB.validate(doc, where)
+    for name, (document, schema_file, script, levels) in TELEMETRY_DOCUMENTS.items():
+        entry = doc["experiments"][name]
+        at = "%s.experiments.%s" % (where, name)
+        require((entry["document"], entry["schema_file"], entry["script"])
+                == (document, schema_file, script),
+                at + ": names %s, %s and %s" % (script, document, schema_file))
+        require(tuple(entry["levels"]) == levels, at + ".levels: exactly " + ", ".join(levels))
+        require(script in entry["inputs"], at + ".inputs: hold its own script")
+    return doc
+
+
+TELEMETRY_RUN_STATUSES = ("ok", "failed", "timeout", "refused_document", "not_run")
+TELEMETRY_VERDICTS = ("pass", "fail", "not_judged")
+TELEMETRY_METRICS = ("wall_ms", "peak_rss_bytes", "drain_ms", "latency_ms")
+TELEMETRY_FIGURES = ("overhead_median_pct", "overhead_upper_pct", "drain_median_ms",
+                     "wall_median_pct", "wall_upper_pct", "rss_median_bytes", "latency_ms",
+                     "index_bytes")
+TELEMETRY_LOG = Obj(Field("path", REL_PATH), Field("sha256", DIGEST), Field("size", COUNT),
+                    Field("truncated", Bool()))
+TELEMETRY_RUN = Obj(
+    Field("experiment", Str(enum=TELEMETRY_EXPERIMENTS)),
+    Field("round", Int(0, TELEMETRY_ROUNDS_MAX - 1)), Field("side", Str(enum=SIDES)),
+    # The side's position in its round: the sides alternate by round, baseline first in even
+    # rounds, so neither side always runs first.
+    Field("position", Int(0, 1)), Field("seed", Int(0, 2 ** 31 - 1 + TELEMETRY_ROUNDS_MAX)),
+    Field("argv", Arr(Str(min_len=1, max_len=512), 1, 64)),
+    Field("status", Str(enum=TELEMETRY_RUN_STATUSES)),
+    Field("exit_code", Nullable(Int(-255, 255))), Field("wall_ms", Nullable(DECIMAL)),
+    Field("document", Nullable(ARTIFACT)), Field("log", Nullable(TELEMETRY_LOG)),
+    Field("judgment", Nullable(Obj(Field("verdict", Str(enum=TELEMETRY_VERDICTS)),
+                                   Field("reasons", Arr(Str(max_len=512), 0, 64))))),
+    Field("detail", TEXT))
+TELEMETRY_WITHIN = Obj(
+    Field("experiment", Str(enum=TELEMETRY_EXPERIMENTS)),
+    Field("round", Int(0, TELEMETRY_ROUNDS_MAX - 1)), Field("side", Str(enum=SIDES)),
+    Field("subject", SHORT_TEXT), Field("level", Nullable(Str(enum=TELEMETRY_LEVEL_NAMES))),
+    Field("figure", Str(enum=TELEMETRY_FIGURES)), Field("value", RATIONAL))
+TELEMETRY_COMPARISON = Obj(
+    Field("experiment", Str(enum=TELEMETRY_EXPERIMENTS)), Field("subject", SHORT_TEXT),
+    Field("level", Str(enum=TELEMETRY_LEVEL_NAMES)), Field("metric", Str(enum=TELEMETRY_METRICS)),
+    Field("shape", Nullable(Str(enum=("json", "stream-json")))),
+    Field("state", Str(enum=("compared", "incompatible", "missing"))), Field("reason", TEXT),
+    Field("rounds", Arr(Obj(Field("round", Int(0, TELEMETRY_ROUNDS_MAX - 1)),
+                            Field("baseline", DECIMAL), Field("candidate", DECIMAL),
+                            Field("change", RATIONAL)), 0, TELEMETRY_ROUNDS_MAX)),
+    Field("median_change", Nullable(RATIONAL)))
+# How one side's binary was built (ADR-0200): written by the build job beside the binary, bound
+# to the side's source and the binary's hash, and kept in the result.
+TELEMETRY_BUILD_SCHEMA = "af.perf-telemetry-build/1"
+TELEMETRY_BUILD = Obj(
+    Field("schema", Const(TELEMETRY_BUILD_SCHEMA)), Field("side", Str(enum=SIDES)),
+    Field("source_sha", GIT_SHA), Field("binary_sha256", DIGEST),
+    Field("image", Str(pattern=r"^[^\s@]+@sha256:[0-9a-f]{64}$", max_len=512)),
+    Field("rustc", Str(min_len=1, max_len=512)), Field("cargo", Str(min_len=1, max_len=512)),
+    Field("command", Str(min_len=1, max_len=512)))
+
+
+def validate_telemetry_build(doc, where="af.build.json"):
+    TELEMETRY_BUILD.validate(doc, where)
+    return doc
+
+
+TELEMETRY_SIDE_BINARY = Obj(Field("source_sha", GIT_SHA), Field("sha256", DIGEST),
+                            Field("version", Nullable(Str(min_len=1, max_len=256))),
+                            Field("build", Nullable(TELEMETRY_BUILD)))
+TELEMETRY_MODES = ("trusted_local", "linux_container")
+TELEMETRY_EXECUTION = Obj(
+    Field("mode", Str(enum=TELEMETRY_MODES)),
+    Field("containment", Str(enum=("process_group", "pid_namespace"))),
+    Field("container", Nullable(Obj(
+        Field("image", Obj(Field("reference", Str(min_len=1, max_len=512)),
+                           Field("id", Str(min_len=1, max_len=512)),
+                           Field("platform", Str(min_len=1, max_len=64)))),
+        Field("runtime", Str(max_len=256)), Field("cpus", Arr(Int(0, 4095), 1, 64)),
+        Field("memory_limit_bytes", COUNT), Field("pid_limit", COUNT),
+        Field("scratch_limit_bytes", COUNT)))),
+    Field("work_bytes", COUNT), Field("file_bytes", COUNT),
+    # `uncertain` when an execution's end or its writable state was not confirmed; its work is
+    # then kept (`retained`) and nothing more ran.
+    Field("cleanup", Str(enum=("confirmed", "uncertain"))),
+    Field("retained", Nullable(Str(min_len=1, max_len=4096))),
+    # What an execution changed that none may: a binary, the authority, the result directory
+    # or the master corpus. Nothing more ran after the first.
+    Field("problems", Arr(Str(max_len=512), 0, 64)),
+    Field("limitations", TEXT))
+TELEMETRY_CORPUS_FACTS = Obj(Field("segments", COUNT), Field("segment_bytes", COUNT),
+                             Field("segment_stored_bytes", COUNT), Field("blob_files", COUNT),
+                             Field("blob_stored_bytes", COUNT))
+TELEMETRY_CONFIGURATION = Obj(
+    Field("digest", DIGEST), Field("seed", Int(0, 2 ** 31 - 1)),
+    Field("rounds", Int(1, TELEMETRY_ROUNDS_MAX)),
+    Field("experiments", Arr(Str(enum=TELEMETRY_EXPERIMENTS), 1, 3, unique=True)),
+    Field("overhead", TELEMETRY_PAIRED), Field("invocation_cost", TELEMETRY_PAIRED),
+    Field("read_latency", TELEMETRY_CORPUS), Field("timeout_minutes", Int(1, 355)),
+    Field("work_bytes", Int(1 << 20, 64 << 30)))
+TELEMETRY_RESULT = Obj(
+    Field("schema", Const(TELEMETRY_RESULT_SCHEMA)), Field("result_id", ID),
+    Field("trigger", Str(enum=("pr", "main_push", "nightly", "release", "manual"))),
+    Field("profile", Str(enum=TELEMETRY_PROFILES)),
+    Field("started_unix_ms", Int(0, 2 ** 53)), Field("ended_unix_ms", Int(0, 2 ** 53)),
+    Field("sources", Obj(Field("baseline_sha", GIT_SHA), Field("candidate_sha", GIT_SHA),
+                         Field("authority_sha", GIT_SHA))),
+    # The measurement authority both sides ran under: this checkout's registry, scripts,
+    # fixtures and the product schemas the documents were read through, by content.
+    Field("authority", Obj(Field("digest", DIGEST), Field("registry_sha256", DIGEST),
+                           Field("files", COUNT))),
+    Field("binaries", Obj(Field("baseline", TELEMETRY_SIDE_BINARY),
+                          Field("candidate", TELEMETRY_SIDE_BINARY))),
+    Field("configuration", TELEMETRY_CONFIGURATION),
+    Field("execution", TELEMETRY_EXECUTION),
+    Field("host", Obj(Field("host_id", DIGEST), Field("host", HOST),
+                      Field("end_host_id", DIGEST), Field("same_host", Bool()))),
+    Field("corpus", Nullable(Obj(Field("status", Str(enum=("ok", "failed", "timeout",
+                                                           "not_run"))),
+                                 Field("runs", Int(10, 10000)), Field("seed", Int(0, 2 ** 31 - 1)),
+                                 Field("wall_ms", Nullable(DECIMAL)),
+                                 Field("log", Nullable(TELEMETRY_LOG)),
+                                 # The generated corpus's files, read by the controller.
+                                 Field("facts", Nullable(TELEMETRY_CORPUS_FACTS)),
+                                 Field("detail", TEXT)))),
+    Field("runs", Arr(TELEMETRY_RUN, 0, TELEMETRY_RUNS_MAX)),
+    Field("within", Arr(TELEMETRY_WITHIN, 0, 4096)),
+    Field("comparisons", Arr(TELEMETRY_COMPARISON, 0, 1024)),
+    Field("status", Str(enum=("complete", "partial", "failed"))),
+    Field("verdict_effect", Const("none")), Field("enforcement", Const("advisory")))
+
+
+def telemetry_configuration_digest(configuration):
+    return canonical_digest(dict((key, value) for key, value in configuration.items()
+                                 if key != "digest"))
+
+
+def validate_telemetry_result(doc, where="result.json"):
+    """A telemetry result's identities and accounting: its configuration digest, its host
+    observed the same at both ends to call itself one host, every planned run present once in
+    its alternating position, its status following from them, and every comparison's figures
+    following from its rounds. The raw documents are checked again by `telemetrylab.verify`."""
+    TELEMETRY_RESULT.validate(doc, where)
+    configuration = doc["configuration"]
+    require(configuration["digest"] == telemetry_configuration_digest(configuration),
+            where + ".configuration.digest: the digest of the configuration")
+    host = doc["host"]
+    require(host["host_id"] == host_id(host["host"]), where + ".host.host_id: the host's digest")
+    require(host["same_host"] == (host["host_id"] == host["end_host_id"]),
+            where + ".host.same_host: exactly when the host was observed the same at both ends")
+    require(doc["started_unix_ms"] <= doc["ended_unix_ms"], where + ": ordered instants")
+    planned = set((experiment, index, side) for experiment in configuration["experiments"]
+                  for index in range(configuration["rounds"]) for side in SIDES)
+    seen = set()
+    for index, run in enumerate(doc["runs"]):
+        at = "%s.runs[%d]" % (where, index)
+        key = (run["experiment"], run["round"], run["side"])
+        require(key in planned and key not in seen, at + ": a planned run, once")
+        seen.add(key)
+        require(run["position"] == (SIDES.index(run["side"]) + run["round"]) % 2,
+                at + ".position: baseline first in even rounds, candidate first in odd ones")
+        require(run["seed"] == configuration["seed"] + run["round"],
+                at + ".seed: the configuration's seed plus the round, the same for both sides")
+        ok = run["status"] == "ok"
+        require(ok == (run["document"] is not None) and (ok <= (run["judgment"] is not None)),
+                at + ": exactly a run that succeeded holds its document and its judgment")
+        require(run["status"] != "not_run" or (run["exit_code"] is None
+                                               and run["wall_ms"] is None),
+                at + ": a run that did not run has no exit or wall time")
+    require(seen == planned, where + ".runs: every planned run, a run that never ran included")
+    require(("read_latency" in configuration["experiments"]) == (doc["corpus"] is not None),
+            where + ".corpus: exactly a result that measures read latency names its corpus")
+    if doc["corpus"] is not None:
+        require((doc["corpus"]["runs"], doc["corpus"]["seed"])
+                == (configuration["read_latency"]["runs"], configuration["seed"]),
+                where + ".corpus: generated at the configuration's scale and seed")
+        require((doc["corpus"]["status"] == "ok") == (doc["corpus"]["facts"] is not None),
+                where + ".corpus.facts: exactly a generated corpus has its facts")
+    execution = doc["execution"]
+    require(execution["containment"] == ("pid_namespace" if execution["mode"]
+                                         == "linux_container" else "process_group")
+            and (execution["container"] is None) == (execution["mode"] == "trusted_local"),
+            where + ".execution: a contained result names its container, a trusted local one "
+            "none")
+    require(doc["trigger"] != "pr" or execution["mode"] == "linux_container",
+            where + ".execution: a pull request's candidate is measured only contained")
+    require((execution["cleanup"] == "uncertain") == (execution["retained"] is not None),
+            where + ".execution: exactly an uncertain cleanup keeps its work")
+    for side in SIDES:
+        build = doc["binaries"][side]["build"]
+        require(build is None or (build["side"], build["source_sha"], build["binary_sha256"])
+                == (side, doc["sources"][side + "_sha"], doc["binaries"][side]["sha256"]),
+                where + ".binaries.%s.build: the build of this side's source and binary" % side)
+    complete = (host["same_host"] and all(run["status"] == "ok" for run in doc["runs"])
+                and (doc["corpus"] is None or doc["corpus"]["status"] == "ok")
+                and execution["cleanup"] == "confirmed" and not execution["problems"])
+    failed = not any(run["status"] == "ok" for run in doc["runs"])
+    require(doc["status"] == ("complete" if complete else "failed" if failed else "partial"),
+            where + ".status: complete only when every planned run succeeded on one host, "
+            "every cleanup was confirmed and nothing protected changed")
+    keys = set()
+    for index, item in enumerate(doc["comparisons"]):
+        at = "%s.comparisons[%d]" % (where, index)
+        key = (item["experiment"], item["subject"], item["level"], item["metric"], item["shape"])
+        require(key not in keys, at + ": each comparison once")
+        keys.add(key)
+        if item["state"] == "compared":
+            require(item["rounds"] and host["same_host"],
+                    at + ": compared only from rounds on one host")
+            changes = []
+            for entry in item["rounds"]:
+                base = parse_decimal(entry["baseline"], at)
+                require(base > 0, at + ": a baseline of zero has no relative change")
+                change = (parse_decimal(entry["candidate"], at) - base) / base
+                require(parse_rational(entry["change"], at) == change,
+                        at + ": each change is (candidate - baseline) / baseline")
+                changes.append(change)
+            changes.sort()
+            middle = len(changes) // 2
+            median = (changes[middle] if len(changes) % 2
+                      else (changes[middle - 1] + changes[middle]) / 2)
+            require(item["median_change"] is not None
+                    and parse_rational(item["median_change"], at) == median,
+                    at + ".median_change: the median of the rounds' changes")
+        else:
+            require(not item["rounds"] and item["median_change"] is None and item["reason"],
+                    at + ": what is not compared says why and claims no figure")
+    return doc
+
+
+TELEMETRY_HISTORY_POINT = Obj(
+    Field("result_id", ID), Field("candidate_sha", GIT_SHA), Field("baseline_sha", GIT_SHA),
+    Field("started_unix_ms", Int(0, 2 ** 53)),
+    Field("state", Str(enum=("compared", "incompatible", "missing"))),
+    Field("median_change", Nullable(RATIONAL)))
+TELEMETRY_HISTORY = Obj(
+    Field("schema", Const(TELEMETRY_HISTORY_SCHEMA)),
+    # The durable root's bounds (ADR-0200): bytes and results it may hold, and how long a
+    # result is kept, when bounded.
+    Field("limits", Obj(Field("bytes_max", Int(1 << 20, 1 << 40)),
+                        Field("results_max", Int(1, 4096)),
+                        Field("retention_days", Nullable(Int(1, 3650))))),
+    Field("used_bytes", COUNT),
+    Field("results", Arr(Obj(Field("result_id", ID), Field("bundle_sha256", DIGEST),
+                             Field("page", REL_PATH),
+                             Field("trigger", Str(enum=("pr", "main_push", "nightly", "release",
+                                                        "manual"))),
+                             Field("profile", Str(enum=TELEMETRY_PROFILES)),
+                             Field("mode", Str(enum=TELEMETRY_MODES)),
+                             Field("started_unix_ms", Int(0, 2 ** 53)),
+                             Field("baseline_sha", GIT_SHA), Field("candidate_sha", GIT_SHA),
+                             Field("authority_sha", GIT_SHA),
+                             Field("status", Str(enum=("complete", "partial", "failed"))),
+                             Field("group_id", DIGEST)), 0, 4096)),
+    # A group is one configuration under one measurement authority, in one execution mode and
+    # image, on one host: only its results are ever placed in one series.
+    Field("groups", Arr(Obj(
+        Field("group_id", DIGEST), Field("configuration_digest", DIGEST),
+        Field("authority_digest", DIGEST), Field("host_id", DIGEST),
+        Field("mode", Str(enum=TELEMETRY_MODES)), Field("image_id", Nullable(SHORT_TEXT)),
+        Field("results", Arr(ID, 1, 4096, unique=True)),
+        Field("series", Arr(Obj(Field("experiment", Str(enum=TELEMETRY_EXPERIMENTS)),
+                                Field("subject", SHORT_TEXT),
+                                Field("level", Str(enum=TELEMETRY_LEVEL_NAMES)),
+                                Field("metric", Str(enum=TELEMETRY_METRICS)),
+                                Field("shape", Nullable(Str(enum=("json", "stream-json")))),
+                                Field("points", Arr(TELEMETRY_HISTORY_POINT, 1, 4096))),
+                            0, 1024))), 0, 4096)),
+    # What this write removed for the root's bounds, and every input it refused.
+    Field("pruned", Arr(Obj(Field("result_id", ID), Field("reason", TEXT)), 0, 4096)),
+    Field("refused", Arr(Obj(Field("input", Str(max_len=1024)), Field("reason", TEXT)),
+                         0, 4096)))
+
+
+def telemetry_group_id(configuration_digest, authority_digest, host_id, mode, image_id):
+    return canonical_digest({"configuration_digest": configuration_digest,
+                             "authority_digest": authority_digest, "host_id": host_id,
+                             "mode": mode, "image_id": image_id})
+
+
+def validate_telemetry_history(doc, where="history.json"):
+    TELEMETRY_HISTORY.validate(doc, where)
+    groups = dict((group["group_id"], group) for group in doc["groups"])
+    require(len(groups) == len(doc["groups"]), where + ".groups: each group once")
+    ids = [item["result_id"] for item in doc["results"]]
+    require(len(ids) == len(set(ids)), where + ".results: each result once")
+    require(len(ids) <= doc["limits"]["results_max"]
+            and doc["used_bytes"] <= doc["limits"]["bytes_max"],
+            where + ": within the root's bounds")
+    for item in doc["results"]:
+        require(item["group_id"] in groups and item["result_id"]
+                in groups[item["group_id"]]["results"],
+                where + ".results: each result in its group")
+        require(item["mode"] == groups[item["group_id"]]["mode"],
+                where + ".results: each result in a group of its execution mode")
+    for group in doc["groups"]:
+        require(group["group_id"] == telemetry_group_id(
+            group["configuration_digest"], group["authority_digest"], group["host_id"],
+            group["mode"], group["image_id"]),
+            where + ".groups: a group is identified by its configuration, authority, execution "
+            "mode, image and host")
+        for series in group["series"]:
+            require(all(point["result_id"] in group["results"] for point in series["points"]),
+                    where + ".groups: a series holds only its group's results")
+    return doc
+
+
+# The telemetry collector (ADR-0200): an operator's configuration of the trusted collection
+# lane, separate from the archive collector, and what one cycle did.
+TELEMETRY_COLLECTOR_SCHEMA = "af.perf-telemetry-collector/1"
+TELEMETRY_COLLECTION_SCHEMA = "af.perf-telemetry-collection/1"
+TELEMETRY_WORKFLOW = "performance-telemetry.yml"
+ABSOLUTE_PATH = Str(pattern=r"^/[^\x00]*$", min_len=2, max_len=4096)
+TELEMETRY_COLLECTOR = Obj(
+    Field("schema", Const(TELEMETRY_COLLECTOR_SCHEMA)),
+    Field("repository", REPOSITORY), Field("workflow", Const(TELEMETRY_WORKFLOW)),
+    Field("api_url", Str(pattern=r"^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/api/v3)?$",
+                         max_len=256)),
+    Field("token_env", Str(pattern=r"^[A-Z_][A-Z0-9_]{0,63}$")),
+    Field("root", ABSOLUTE_PATH), Field("authority_repository", ABSOLUTE_PATH),
+    Field("trusted_refs", Arr(Str(pattern=r"^refs/(?:remotes/[A-Za-z0-9._-]+|heads|tags)/"
+                                  r"[A-Za-z0-9._/-]{1,200}$", max_len=256), 1, 16,
+                              unique=True)),
+    Field("lookback_days", Int(1, 89)), Field("collection_seconds", Int(60, 3600)),
+    Field("runs_max", Int(1, 1000)), Field("artifact_bytes_max", Int(1 << 20, 2 << 30)),
+    Field("bytes_max", Int(1 << 20, 1 << 40)), Field("results_max", Int(1, 4096)),
+    Field("retention_days", Int(1, 3650)))
+
+
+def validate_telemetry_collector(doc, where="telemetry-collector.toml"):
+    TELEMETRY_COLLECTOR.validate(doc, where)
+    require(doc["artifact_bytes_max"] <= doc["bytes_max"],
+            where + ".artifact_bytes_max: within the root's bytes")
+    require(not (doc["authority_repository"] + "/").startswith(doc["root"] + "/")
+            and not (doc["root"] + "/").startswith(doc["authority_repository"] + "/"),
+            where + ": the trusted repository lies apart from the durable root")
+    return doc
+
+
+TELEMETRY_COLLECTION_OUTCOMES = ("collected", "already_collected", "no_result", "expired",
+                                 "refused")
+TELEMETRY_COLLECTION = Obj(
+    Field("schema", Const(TELEMETRY_COLLECTION_SCHEMA)),
+    Field("repository", REPOSITORY), Field("workflow_id", Nullable(ACTIONS_ID)),
+    Field("started_unix_ms", Int(0, 2 ** 53)), Field("ended_unix_ms", Int(0, 2 ** 53)),
+    Field("status", Str(enum=("ok", "failed"))), Field("detail", TEXT),
+    Field("runs", Arr(Obj(
+        Field("run_id", ACTIONS_ID), Field("attempt", Int(1, 1000)),
+        Field("event", Str(max_len=64)), Field("conclusion", Nullable(Str(max_len=64))),
+        Field("outcome", Str(enum=TELEMETRY_COLLECTION_OUTCOMES)),
+        Field("artifact", Nullable(Obj(Field("id", ACTIONS_ID), Field("name", SHORT_TEXT),
+                                       Field("size", COUNT),
+                                       Field("sha256", Nullable(DIGEST))))),
+        Field("result_id", Nullable(ID)), Field("reason", TEXT)), 0, 4096)),
+    Field("pruned", Arr(Obj(Field("result_id", ID), Field("reason", TEXT)), 0, 4096)),
+    Field("results", COUNT), Field("used_bytes", COUNT))
+
+
+def validate_telemetry_collection(doc, where="collection.json"):
+    TELEMETRY_COLLECTION.validate(doc, where)
+    require(doc["started_unix_ms"] <= doc["ended_unix_ms"], where + ": ordered instants")
+    for index, item in enumerate(doc["runs"]):
+        at = "%s.runs[%d]" % (where, index)
+        require((item["outcome"] in ("collected", "already_collected"))
+                == (item["result_id"] is not None),
+                at + ": exactly a collected result names its result")
+        require(item["outcome"] != "refused" or item["reason"], at + ": a refusal says why")
+    require(doc["status"] == ("failed" if doc["detail"] or any(
+        item["outcome"] == "refused" for item in doc["runs"]) else "ok"),
+        where + ".status: failed exactly when the cycle ended early or refused an artifact")
+    return doc
+
+
 CONTRACTS = {
     "enforcement": (ENFORCEMENT_SCHEMA, ENFORCEMENT, validate_enforcement,
                     "Reviewed SDLC enforcement policy. Required mode accepts only an eligible "
@@ -4375,7 +4813,8 @@ CONTRACTS = {
                "not it satisfies the required check, exact identity and provenance, every "
                "planned slot as a raw point, shard health and seeds, verified evidence "
                "downloads, the validated diagnostic child runs linked to it with each case's "
-               "profile and trace items or omissions (ADR-0177), and reproduction commands "
+               "profile, trace and telemetry items or omissions (ADR-0177, ADR-0199), and "
+               "reproduction commands "
                "that keep the frozen configuration and state their limitations."),
     "archive": (ARCHIVE_SCHEMA, ARCHIVE, validate_archive,
                 "An archive root's archive.json (ADR-0172): its capacity, at most 1 TiB, and "
@@ -4403,6 +4842,50 @@ CONTRACTS = {
                 "recipe, environment and provenance identity with each run's point and seed "
                 "provenance, how incompatible groups of a case differ, and what could not be "
                 "shown."),
+    "telemetry-lab": (TELEMETRY_LAB_SCHEMA, TELEMETRY_LAB, validate_telemetry_lab,
+                      "fixtures/performance/telemetry.toml as parsed TOML (ADR-0199): the "
+                      "telemetry experiments, each exactly a bench script of design section 12 "
+                      "with its document, the product schema it is read through and its levels, "
+                      "the inputs its measurement authority is identified by, and each "
+                      "trigger's bounded profile of rounds, pairs, scale, corpus size, timeout, "
+                      "work bytes and retention."),
+    "telemetry-result": (TELEMETRY_RESULT_SCHEMA, TELEMETRY_RESULT, validate_telemetry_result,
+                         "One telemetry experiment run (ADR-0199, ADR-0200): the baseline and "
+                         "candidate sources, binaries and builds, the measurement authority "
+                         "both ran under, the effective configuration and its digest, the "
+                         "execution mode, container, bounds, cleanup and any protected state "
+                         "that changed, the generated corpus's facts, the host observed at both "
+                         "ends, every planned run with its alternating position, seed, status, "
+                         "raw document, capped log and the script's own judgment, each side's "
+                         "within-binary figures by level, and each same-host cross-revision "
+                         "comparison by level, metric and shape, or why it is incompatible or "
+                         "missing. Advisory; never a verdict."),
+    "telemetry-build": (TELEMETRY_BUILD_SCHEMA, TELEMETRY_BUILD, validate_telemetry_build,
+                        "How one side's AF binary of a telemetry experiment was built "
+                        "(ADR-0200): its side, source commit, the binary's SHA-256, the "
+                        "pinned image, the toolchain identities and the command."),
+    "telemetry-collector": (TELEMETRY_COLLECTOR_SCHEMA, TELEMETRY_COLLECTOR,
+                            validate_telemetry_collector,
+                            "The trusted telemetry collector's configuration as parsed TOML "
+                            "(ADR-0200): the repository and its Performance telemetry "
+                            "workflow, the credential's environment name, the durable root, "
+                            "the trusted repository and refs its measurement authorities are "
+                            "read from, and the cycle's time, run, artifact, byte, result and "
+                            "retention bounds."),
+    "telemetry-collection": (TELEMETRY_COLLECTION_SCHEMA, TELEMETRY_COLLECTION,
+                             validate_telemetry_collection,
+                             "One telemetry collection cycle (ADR-0200): every completed run "
+                             "it saw, by Actions run and attempt, with its artifact, its "
+                             "SHA-256, the result it kept or why it kept none, what it pruned "
+                             "for the root's bounds, and the root's results and bytes."),
+    "telemetry-history": (TELEMETRY_HISTORY_SCHEMA, TELEMETRY_HISTORY,
+                          validate_telemetry_history,
+                          "Compatible history of telemetry results (ADR-0199, ADR-0200): the "
+                          "durable root's bounds and use, every result verified under its exact "
+                          "measurement authority once, groups of one configuration under one "
+                          "authority, execution mode and image on one host, each group's "
+                          "series by experiment, subject, level, metric and shape, what was "
+                          "pruned and every refused input with its reason."),
     "plan-refusal": (REFUSAL_SCHEMA, REFUSAL, validate_refusal,
                      "Why `plan` froze nothing: invalid input (exit 2) or an unavailable "
                      "baseline, authority or reference (exit 4)."),

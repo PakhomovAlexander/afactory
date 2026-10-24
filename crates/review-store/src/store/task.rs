@@ -1699,6 +1699,30 @@ impl EventStore {
         owned_prefix: Option<(u64, Option<(String, u64)>)>,
         state: Option<TaskProjection>,
     ) -> Result<RunEvent, StoreError> {
+        self.append_task_transition_once(cas, task_id, transition, owned_prefix, state, true)
+    }
+
+    fn append_task_transition_once(
+        &mut self,
+        cas: &Cas,
+        task_id: &str,
+        transition: TaskTransitionV1,
+        owned_prefix: Option<(u64, Option<(String, u64)>)>,
+        state: Option<TaskProjection>,
+        retry_renewal: bool,
+    ) -> Result<RunEvent, StoreError> {
+        // Retain only the identity/prefix needed to prove a renewal-only race. Domain
+        // callbacks are never repeated and owned cross-log transactions keep their fence.
+        let retry_from = state
+            .as_ref()
+            .filter(|_| {
+                retry_renewal
+                    && matches!(transition.change, TaskChangeV1::ExecutionRecorded { .. })
+                    && owned_prefix
+                        .as_ref()
+                        .is_none_or(|(_, review)| review.is_none())
+            })
+            .map(|s| (s.writer.clone(), s.epoch, s.next_sequence));
         let mut transition = transition;
         if let Some(state) = &state {
             // Stamped before it is persisted, so the log stays monotonic and replays unchanged.
@@ -1793,19 +1817,66 @@ impl EventStore {
             event_type,
             valid_until,
             review_round,
-            review_prefix: owned_prefix.and_then(|(_, prefix)| prefix),
+            review_prefix: owned_prefix.clone().and_then(|(_, prefix)| prefix),
             bound_tasks,
         };
-        self.append_batch_observed(
+        let appended = self.append_batch_observed(
             &run_id,
             cas,
             &[event],
             Some(&permit),
             None,
             applied.as_ref(),
-        )?
-        .pop()
-        .ok_or_else(|| conflict("Task transition appended no event"))
+        );
+        if matches!(&appended, Err(StoreError::Conflict(message))
+            if message == "Task write lost its sequence/lease comparison")
+            && !owned_record
+            && let Some((writer, epoch, first)) = retry_from
+        {
+            let fresh = self
+                .task_projection(cas, task_id)?
+                .ok_or_else(|| conflict("Unknown Task"))?;
+            // A bounded suffix of renewals by exactly this live owner changes no execution
+            // fact. Anything else (including takeover, release, usage or settlement) refuses.
+            if fresh.writer == writer
+                && fresh.epoch == epoch
+                && fresh.next_sequence > first
+                && fresh.next_sequence - first <= 64
+                && self
+                    .replay_bounded(
+                        &run_id,
+                        first,
+                        Some(&mut super::ReplayBudget::new(64, 65_536, 1_048_576)),
+                        &mut 0,
+                    )
+                    .ok()
+                    .is_some_and(|events| {
+                        events.len() as u64 == fresh.next_sequence - first
+                            && events.iter().all(|event| {
+                                read_task_transition(event).is_ok_and(|t| {
+                                    t.writer == writer
+                                        && t.epoch == epoch
+                                        && matches!(t.change, TaskChangeV1::LeaseRenewed { .. })
+                                })
+                            })
+                    })
+            {
+                transition.now_unix_ms = now()?;
+                fresh.check_lease(&transition)?;
+                let prefix = owned_prefix.map(|(_, review)| (fresh.next_sequence, review));
+                return self.append_task_transition_once(
+                    cas,
+                    task_id,
+                    transition,
+                    prefix,
+                    Some(fresh),
+                    false,
+                );
+            }
+        }
+        appended?
+            .pop()
+            .ok_or_else(|| conflict("Task transition appended no event"))
     }
 
     pub fn open_task(

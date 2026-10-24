@@ -6,6 +6,7 @@ mod lease;
 mod owned;
 mod planning;
 mod recording;
+mod renewal_race;
 mod report;
 mod reservation;
 mod retry;
