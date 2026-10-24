@@ -6,6 +6,8 @@
 mod common;
 #[path = "support/fake_models.rs"]
 mod fake_models;
+#[path = "support/planning_models.rs"]
+mod planning_models;
 #[path = "support/provider_cli.rs"]
 mod provider_cli;
 #[path = "support/review_memo.rs"]

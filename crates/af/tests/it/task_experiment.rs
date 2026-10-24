@@ -1237,36 +1237,29 @@ fn kernel_repository(root: &Path) -> PathBuf {
     repo
 }
 
-/// A local command Worker replacing `package` with its exact committed contract and schemas:
-/// only the runner and the model-token reservation differ, so no Provider is needed to plan.
-fn local_replacement(repo: &Path, directory: &Path, package: &str, local: &str) -> toml::Value {
-    let target = directory.join(local);
-    task_cli::copy_tree(&repo.join(".af/task-packages").join(package), &target);
-    let manifest = target.join("worker.toml");
-    let mut worker: toml::Value =
-        toml::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
-    worker["name"] = toml::Value::String(local.into());
-    worker["runner"] = toml::from_str(
-        "kind = \"command\"\n[command]\nprogram = \"/usr/bin/python3\"\n\
-         [[command.args]]\nvalue = \"@package/worker.py\"\nprovenance = \"literal\"\n",
-    )
-    .unwrap();
-    // A command Worker reserves no model tokens.
-    worker["signature"]["attempt"]["tokens"] = toml::Value::Integer(0);
-    std::fs::write(&manifest, toml::to_string(&worker).unwrap()).unwrap();
-    std::fs::write(target.join("worker.py"), "raise SystemExit(1)\n").unwrap();
-    let mut pin = toml::map::Map::new();
-    pin.insert("version".into(), worker["version"].clone());
-    pin.insert(
-        "digest".into(),
-        toml::Value::String(review_config::lock::package_digest(local, &target).unwrap()),
-    );
-    pin.insert("path".into(), toml::Value::String(local.into()));
-    toml::Value::Table(pin)
+#[test]
+fn this_repositorys_experiment_pipeline_passes_its_catalog_test_and_plans_the_release_build() {
+    repository_experiment_plan(PlanningWorkers::Models);
 }
 
 #[test]
-fn this_repositorys_experiment_pipeline_passes_its_catalog_test_and_plans_the_release_build() {
+fn this_repositorys_policy_refuses_same_model_replacements_without_dispatch() {
+    repository_experiment_plan(PlanningWorkers::SameModel);
+}
+
+#[test]
+fn this_repositorys_policy_refuses_command_replacements_without_dispatch() {
+    repository_experiment_plan(PlanningWorkers::Commands);
+}
+
+#[derive(Clone, Copy)]
+enum PlanningWorkers {
+    Models,
+    SameModel,
+    Commands,
+}
+
+fn repository_experiment_plan(workers: PlanningWorkers) {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
     let repo = kernel_repository(&root);
@@ -1297,8 +1290,10 @@ fn this_repositorys_experiment_pipeline_passes_its_catalog_test_and_plans_the_re
         json!(["kernel/experiment", "kernel/experiment-trial"])
     );
 
-    // Planning compiles the committed release_build measure and objective with zero Attempts;
-    // local command stand-ins with the exact committed contracts replace the two model Workers.
+    // Planning compiles the committed release_build measure and objective with zero Attempts.
+    // Keep model identities and exact contracts; only isolated fake Providers answer probes.
+    crate::planning_models::assert_repository_policy(&repo);
+    let providers = crate::planning_models::Providers::new(&root);
     let local = root.join("local");
     std::fs::create_dir_all(&local).unwrap();
     let mut packages = toml::map::Map::new();
@@ -1306,12 +1301,53 @@ fn this_repositorys_experiment_pipeline_passes_its_catalog_test_and_plans_the_re
         ("kernel/implementer", "local/implementer"),
         ("kernel/experiment-evaluator", "local/evaluator"),
     ] {
-        packages.insert(name.into(), local_replacement(&repo, &local, package, name));
+        packages.insert(
+            name.into(),
+            crate::planning_models::local_replacement(&repo, &local, package, name),
+        );
+    }
+    let dispatch_marker = root.join("command-dispatched");
+    let implementer: toml::Value = toml::from_str(
+        &std::fs::read_to_string(local.join("local/implementer/worker.toml")).unwrap(),
+    )
+    .unwrap();
+    for name in ["local/implementer", "local/evaluator"] {
+        let target = local.join(name);
+        let manifest = target.join("worker.toml");
+        let mut worker: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+        match workers {
+            PlanningWorkers::Models => continue,
+            PlanningWorkers::SameModel => worker["runner"] = implementer["runner"].clone(),
+            PlanningWorkers::Commands => {
+                worker["runner"] = toml::from_str(
+                    "kind = \"command\"\n[command]\nprogram = \"/usr/bin/python3\"\n\
+                     [[command.args]]\nvalue = \"@package/worker.py\"\nprovenance = \"literal\"\n",
+                )
+                .unwrap();
+                // A valid command-only replacement, so the refusal must be independence.
+                worker["signature"]["attempt"]["tokens"] = toml::Value::Integer(0);
+                std::fs::write(
+                    target.join("worker.py"),
+                    format!(
+                        "open({:?}, 'w').write('dispatched')\nraise SystemExit(1)\n",
+                        dispatch_marker.to_str().unwrap()
+                    ),
+                )
+                .unwrap();
+            }
+        }
+        std::fs::write(&manifest, toml::to_string(&worker).unwrap()).unwrap();
+        packages.insert(name.into(), crate::planning_models::pin(&local, name));
     }
     let mut bindings = toml::map::Map::new();
     bindings.insert(
         "schema".into(),
         toml::Value::String("af.task-bindings/1".into()),
+    );
+    bindings.insert(
+        "providers".into(),
+        crate::planning_models::provider_bindings(&local, &packages),
     );
     bindings.insert("packages".into(), toml::Value::Table(packages));
     bindings.insert(
@@ -1347,9 +1383,9 @@ fn this_repositorys_experiment_pipeline_passes_its_catalog_test_and_plans_the_re
         .unwrap(),
     )
     .unwrap();
-    let (code, stdout, stderr) = af(
-        &fixture,
-        &[
+    let output = providers
+        .command(&repo)
+        .args([
             "task",
             "plan",
             "--file",
@@ -1359,12 +1395,46 @@ fn this_repositorys_experiment_pipeline_passes_its_catalog_test_and_plans_the_re
             "--state",
             fixture.state.to_str().unwrap(),
             "--json",
-        ],
+        ])
+        .output()
+        .unwrap();
+    providers.assert_no_dispatch();
+    assert!(
+        !dispatch_marker.exists(),
+        "planning dispatched a command Worker"
     );
-    assert_eq!(code, 0, "{stderr}\n{stdout}");
-    let planned: Value = serde_json::from_str(stdout.trim()).unwrap();
+    if let Some(reason) = match workers {
+        PlanningWorkers::Models => None,
+        PlanningWorkers::SameModel => Some("Trusted policy requires distinct models"),
+        PlanningWorkers::Commands => {
+            Some("Trusted policy does not permit Command package independence for these slots")
+        }
+    } {
+        assert!(
+            !output.status.success(),
+            "{}",
+            crate::task_report::text(&output)
+        );
+        assert!(
+            crate::task_report::text(&output).contains(reason),
+            "{}",
+            crate::task_report::text(&output)
+        );
+        let refused: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(refused["attempts"], 0, "{refused}");
+        assert!(refused.get("plan_id").is_none(), "{refused}");
+        crate::planning_models::assert_repository_policy(&repo);
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "{}",
+        crate::task_report::text(&output)
+    );
+    let planned: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(planned["plan_id"].as_str().is_some(), "{planned}");
     assert_eq!(planned["attempts"], 0);
+    crate::planning_models::assert_model_bindings(&planned["plan"], &local, &bindings);
     let (code, tree, stderr) = af(
         &fixture,
         &[

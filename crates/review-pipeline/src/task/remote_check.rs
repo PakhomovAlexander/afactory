@@ -13,6 +13,7 @@
 mod gate;
 pub mod github_pr;
 pub mod mapping;
+pub mod no_perf;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use review_core::task::remote_check::{
 
 pub use github_pr::{GithubPrSettings, RemotePhase};
 pub use mapping::{GithubPrTarget, MAPPING_KNOB, RemoteCheckMapping};
+pub use no_perf::{NO_PERF_LABEL, NoPerf, NoPerfPaths};
 
 /// Resolves a Task ID to the Task's durable identity in its Store, the owner every gate commit
 /// names. The coordinator supplies it; the identity must survive resume and differ between

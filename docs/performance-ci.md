@@ -6,6 +6,10 @@ pushes to `main`, a nightly schedule and explicit dispatch
 [design §12](design/continuous-performance.md#12-ci-authority-releases-and-exceptions)).
 `.github/workflows/performance-release.yml` hands each published release to it
 ([ADR-0180](adr/0180-hand-off-published-releases-read-only-and-measure-each-claimed-identity-once.md)).
+A pull request labeled exactly `no-perf` is not measured; its `Performance check` reports the
+exemption
+([ADR-0196](adr/0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md),
+[when to apply it](performance-sdlc.md#the-no-perf-label)).
 The initial rollout is advisory, as reviewed in `fixtures/performance/enforcement.toml`.
 The stable `Performance check` can enforce a qualified full primary only after activation;
 the workflows never edit a ruleset or branch protection. See [SDLC integration](performance-sdlc.md)
@@ -96,8 +100,15 @@ declared profile; the floor is never lowered.
 
 ## Jobs
 
-1. **plan.** Checks out the event with `persist-credentials: false`, resolves the trusted control
-   revision (the PR's base SHA, the pushed commit's first parent, the scheduled tip, or the
+Pull requests run on `opened`, `synchronize`, `reopened`, `labeled` and `unlabeled`, in one
+concurrency group per pull request, so every label change replaces the running run.
+
+1. **scope.** Checks nothing out. Outputs `exempt=true` only for a `pull_request` event on run
+   attempt 1 whose pull request carries a label named exactly `no-perf`; every other trigger, a
+   release claim and every rerun measure. Unreadable labels fail it. An exempt run plans, builds
+   and samples nothing.
+2. **plan.** Runs only when `scope` succeeded and is not exempt. Checks out the event with
+   `persist-credentials: false`, resolves the trusted control revision (the PR's base SHA, the pushed commit's first parent, the scheduled tip, or the
    dispatch's control or base), and runs `ci-schedule` from that control's worktree. A
    dispatch's `refs/heads/NAME` is read as the checkout fetched it, `refs/remotes/origin/NAME`,
    and refused as ambiguous when a local branch of that name names another commit; a full SHA
@@ -107,20 +118,21 @@ declared profile; the floor is never lowered.
    schedule (`af.perf-schedule/2`) and the frozen plans are uploaded as
    `perf-plan-<actions run>-<attempt>`. The job summary lists every comparison and why any is
    unavailable.
-2. **build** (one per planned run). Pulls the frozen build image, refuses any credential in
+3. **build** (one per planned run). Pulls the frozen build image, refuses any credential in
    `.git/config` or the environment, builds once with `cli.py build`, packs the build with
    `ci-pack`, scans the pack for credentials and uploads it as `perf-build-<run>`. A failed
    build's `builds.json` and logs go to `perf-build-failure-<run>`.
-3. **shard** (one per planned shard, at most the plan's concurrent jobs at once). Refuses a job
+4. **shard** (one per planned shard, at most the plan's concurrent jobs at once). Refuses a job
    rerun of an earlier attempt's plan, verifies and unpacks the build with `ci-unpack`, prepares
    the scratch, checks credentials, runs exactly its shard, and stages its evidence, failed or
    not, as `af-perf-<run>-shard-<i>`.
-4. **aggregate** (always, one per planned run). Downloads shard artifacts into named directories
+5. **aggregate** (always, one per planned run). Downloads shard artifacts into named directories
    (one match is flat in download-artifact v8), imports them with `ci-aggregate`, recomputes the verdict, writes the report and the
    job summary from the validated report, and uploads the run bundle as `af-perf-<run>-run`
    with the report and summary as views, and the report directory as `perf-report-<run>`.
-5. **Performance check** (always). Reads the trusted control's enforcement policy and checks the
-   exact scheduled primary's report and all upstream job results. A missing build or report,
+6. **Performance check** (always). For an exempt run it only reports `exempt (label no-perf),
+   not measured` and succeeds; that is no measurement and no qualification. Otherwise it reads
+   the trusted control's enforcement policy and checks the exact scheduled primary's report and all upstream job results. A missing build or report,
    failed or cancelled job, partial scope, synthetic result or inconclusive verdict does not
    qualify. Advisory mode shows that outcome without blocking. Required mode fails it on PRs
    and main pushes; dispatches, calibration, nightly and post-publication release runs remain
@@ -132,7 +144,8 @@ other names, so `cli.py archive --fetch` never mistakes them for evidence.
 
 ## Reruns
 
-A shard runs once. Rerunning failed jobs reuses the earlier attempt's plan, so its shard jobs
+A rerun never inherits a `no-perf` exemption: it reads the event as it was when the run began,
+so `scope` measures on every attempt after the first. A shard runs once. Rerunning failed jobs reuses the earlier attempt's plan, so its shard jobs
 refuse to run and the original evidence stays. Rerun the whole workflow instead: its plan job
 freezes new runs whose IDs carry the new attempt. Both attempts' artifacts remain.
 

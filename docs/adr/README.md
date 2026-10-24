@@ -364,6 +364,7 @@ future readers need.
   group](0194-bind-calibration-to-each-cases-observed-shard-cpu-group.md)
 - [0195 — State the lines a pull request adds per directory, and check
   them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)
+<<<<<<< HEAD
 - [0196 — Disable Providers until a machine-local expiry](0196-disable-providers-until-a-machine-local-expiry.md)
 - [0197 — Preserve the Provider ID domain and clear orphaned
   disables](0197-preserve-provider-id-domain-and-clear-orphaned-disables.md)
@@ -373,3 +374,9 @@ future readers need.
   failures](0199-wait-for-complete-fixture-evidence-and-diagnose-guarded-failures.md)
 - [0200 — Isolate targeted starter repair and retain native exit
   status](0200-isolate-targeted-starter-repair-and-retain-native-exit-status.md)
+=======
+- [0196 — Skip pull request measurements only for an explicit `no-perf`
+  label](0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)
+- [0197 — Validate on one latest stable Python](0197-validate-on-one-latest-stable-python.md)
+- [0198 — Opt this repository into distinct-model Worker independence](0198-opt-this-repository-into-distinct-model-worker-independence.md)
+>>>>>>> origin/main

@@ -10,6 +10,8 @@ use std::path::Path;
 use review_core::task::remote_check::is_github_name;
 use serde::Deserialize;
 
+use super::no_perf::NoPerfPaths;
+
 const MAX_MAPPING_BYTES: u64 = 64 * 1024;
 const MAX_PUSH_URL_BYTES: usize = 1024;
 
@@ -31,15 +33,21 @@ struct MappingEntry {
     push_url: String,
     #[serde(default)]
     checks: Option<toml::Value>,
+    /// The operator's prose-only paths: a candidate whose whole change from its source lies in
+    /// them gets the `no-perf` label on its gate pull request (ADR-0196).
+    #[serde(default)]
+    no_perf_paths: Vec<String>,
 }
 
 /// One `[[github_pr]]` target: the repository it maps, the GitHub `owner/name` that `gh`
-/// addresses, and the Git URL the gate branches are pushed to.
+/// addresses, the Git URL the gate branches are pushed to, and the prose-only paths whose
+/// change alone earns the gate pull request the `no-perf` label (empty: never).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GithubPrTarget {
     pub repository_id: String,
     pub github: String,
     pub push_url: String,
+    pub no_perf: NoPerfPaths,
 }
 
 /// A validated mapping file.
@@ -144,10 +152,13 @@ impl RemoteCheckMapping {
                     entry.github
                 ));
             }
+            let no_perf = NoPerfPaths::parse(&entry.no_perf_paths)
+                .map_err(|why| format!("{MAPPING_KNOB} entry for repository {name}: {why}"))?;
             entries.push(GithubPrTarget {
                 repository_id: entry.repository_id,
                 github: entry.github,
                 push_url: entry.push_url,
+                no_perf,
             });
         }
         Ok(Self { entries })
@@ -268,6 +279,7 @@ mod tests {
                 repository_id: ROOT.into(),
                 github: "o/r".into(),
                 push_url: "git@github.com:o/r.git".into(),
+                no_perf: NoPerfPaths::default(),
             })
         );
         assert_eq!(parsed.target(&"6".repeat(40)), None);
@@ -293,6 +305,29 @@ mod tests {
             "/srv/git/first.git"
         );
         assert_eq!(parsed.target(&"7".repeat(40)), None);
+    }
+
+    #[test]
+    fn no_perf_paths_are_validated_and_name_their_repository() {
+        let text = format!(
+            "{}no_perf_paths = [\"docs/adr/*.md\", \"changelog.d/*.md\"]\n",
+            mapping("git@github.com:o/r.git")
+        );
+        let parsed = RemoteCheckMapping::parse(&text).unwrap();
+        assert!(!parsed.target(ROOT).unwrap().no_perf.is_empty());
+        for list in ["[\"*.md\"]", "[\".af/prompts/*.md\"]", "[\"docs/**/*.md\"]"] {
+            let text = format!(
+                "{}no_perf_paths = {list}\n",
+                mapping("git@github.com:o/r.git")
+            );
+            let error = RemoteCheckMapping::parse(&text).unwrap_err();
+            assert!(error.contains(ROOT), "{list}: {error}");
+        }
+        let text = format!(
+            "{}no_perf_paths = \"docs\"\n",
+            mapping("git@github.com:o/r.git")
+        );
+        assert!(RemoteCheckMapping::parse(&text).is_err());
     }
 
     #[test]
