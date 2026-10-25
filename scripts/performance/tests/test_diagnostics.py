@@ -1056,6 +1056,14 @@ class Counters(TempDir):
                                                              "/System/af-protected-fixture", env, 10,
                                                              codesign=self.path("none"))
         self.assertEqual((available, reason), (False, "protected_executable"))
+        resolve = os.path.realpath
+        for real in ("/usr/lib/cargo/bin/coreutils", "/usr/lib/cargo/bin/coreutils/ls"):
+            # Only the target resolves to the multicall binary; every other path is itself.
+            with mock.patch.object(counters.os.path, "realpath", side_effect=lambda path, real=real:
+                                   real if path == target else resolve(path)):
+                available, reason, _, _ = counters.samply_capability(
+                    boss, full, target, env, 10, codesign=self.path("none"))
+            self.assertEqual((available, reason), (False, "protected_executable"), real)
         hardened = self.path("codesign")
         with open(hardened, "w") as stream:
             stream.write("#!/bin/sh\necho 'CodeDirectory v=20500 size=1 flags=0x10000(runtime) "

@@ -293,6 +293,49 @@ class Staged(support.TempDir):
         self.assertEqual(len(problems), len(kernelguard.STAGED_MEASURES), problems)
         self.assertIn("a reviewed human re-pin installs it again", problems[0])
 
+    def test_a_pin_made_in_a_worker_sandbox_ignores_its_home_and_cargo_state(self):
+        """A Worker sandbox's HOME may lie inside the tree, or be the tree, and Cargo writes its
+        package-cache lock and registry tag there. The pin generator ignores both, so the digest
+        equals the one a developer machine computes, while the tree's own Cargo configuration
+        stays protected."""
+        clean = guarded_tree(self.path("developer"))
+        expected = kernelguard.checkout_digest(clean, environ={"HOME": self.path("elsewhere")})
+        nested = guarded_tree(self.path("nested"))
+        for path in ("worker-home/.cargo/.package-cache",
+                     "worker-home/.cargo/registry/CACHEDIR.TAG",
+                     "worker-home/.cargo/registry/src/index/dep-1.0.0/Cargo.toml",
+                     "worker-home/notes/Cargo.toml"):
+            write(nested, path, b"author state\n")
+        os.symlink("/", os.path.join(nested, "worker-home", "link"))
+        # A build in the sandbox leaves what its checkout's .gitignore names, outside Git too.
+        write(nested, ".gitignore", b"/target\n__pycache__/\n*.key\n")
+        write(clean, ".gitignore", b"/target\n__pycache__/\n*.key\n")
+        for path in ("target/debug/build/dep/out/Cargo.toml", "target/copy/Cargo.lock",
+                     "scripts/performance/perflab/__pycache__/cli.cpython-313.pyc",
+                     "scripts/performance/signing.key"):
+            write(nested, path, b"build output\n")
+        self.assertEqual(kernelguard.checkout_digest(
+            nested, environ={"HOME": os.path.join(nested, "worker-home")}), expected)
+        # The same files count when no HOME claims them, and a nested Cargo.toml is protected.
+        os.unlink(os.path.join(nested, "worker-home", "link"))
+        self.assertNotEqual(kernelguard.checkout_digest(
+            nested, environ={"HOME": self.path("elsewhere")})[0], expected[0])
+        at_root = guarded_tree(self.path("at-root"))
+        for path in (".cargo/.package-cache", ".cargo/registry/CACHEDIR.TAG"):
+            write(at_root, path, b"author state\n")
+        self.assertEqual(kernelguard.checkout_digest(at_root, environ={"HOME": at_root}),
+                         expected)
+        write(at_root, ".cargo/config.toml", b"[build]\njobs = 1\n")
+        found, entries = kernelguard.checkout_digest(at_root, environ={"HOME": at_root})
+        self.assertNotEqual(found, expected[0])
+        self.assertIn(".cargo/config.toml", [entry[0] for entry in entries])
+        cargo_home = guarded_tree(self.path("cargo-home"))
+        write(cargo_home, "tools/cargo/.package-cache", b"author state\n")
+        self.assertEqual(kernelguard.checkout_digest(
+            cargo_home, environ={"HOME": self.path("elsewhere"),
+                                 "CARGO_HOME": os.path.join(cargo_home, "tools/cargo")}),
+            expected)
+
     def test_the_cli_checks_and_re_pins(self):
         root = guarded_tree(self.path("tree"))
         cli = support.CLI

@@ -1,5 +1,5 @@
 {
-  "schema": "af/task-report@1",
+  "schema": "af/task-report@2",
   "pipelines": [
     {
       "name": "fixture/implementation",
@@ -46,7 +46,12 @@
       "task_id": "pagination-cli",
       "kind": "implement",
       "pipeline": "fixture/implementation@1.0.0",
-      "outcome": "verified",
+      "state": {
+        "phase": "finished",
+        "outcome": "verified",
+        "cause": null,
+        "next_action": "af task deliver pagination-cli --branch af/pagination-cli --worktree ../pagination-cli --confirm pagination-cli"
+      },
       "collected": false,
       "review_rounds": 0,
       "runs": 2,
@@ -64,8 +69,8 @@
         "unknown_usage": 0
       },
       "chargeable_tokens": "0",
-      "wall_ms": 3595,
-      "active_ms": 1808,
+      "wall_ms": 3668,
+      "active_ms": 1945,
       "nodes": [
         {
           "node": "root.nodes.implement",
@@ -77,7 +82,7 @@
           "failed_attempts": 1,
           "tokens": "0",
           "unknown_usage": 0,
-          "elapsed_ms": 258,
+          "elapsed_ms": 362,
           "checks": []
         },
         {
@@ -87,12 +92,12 @@
           "failed_attempts": 0,
           "tokens": "0",
           "unknown_usage": 0,
-          "elapsed_ms": 62,
+          "elapsed_ms": 100,
           "checks": [
             {
               "name": "pagination",
               "status": "passed",
-              "elapsed_ms": 52
+              "elapsed_ms": 51
             }
           ]
         },
@@ -106,7 +111,7 @@
           "failed_attempts": 0,
           "tokens": "0",
           "unknown_usage": 0,
-          "elapsed_ms": 96,
+          "elapsed_ms": 127,
           "checks": []
         }
       ]
@@ -119,6 +124,6 @@
     "failed_attempts": 1,
     "chargeable_tokens": "0",
     "unknown_usage": 0,
-    "active_ms": 1808
+    "active_ms": 1945
   }
 }

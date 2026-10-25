@@ -14,6 +14,8 @@ fn status() -> Value {
         "exit_code": 0,
         "usage_requested": false,
         "registry": {"path": "/home/o/.config/af/providers.toml", "warning": null},
+        "found_unregistered": [],
+        "next_action": null,
         "providers": [{
             "id": "codex-main",
             "kind": "codex",
@@ -56,6 +58,7 @@ fn status_states_are_stable_and_independent() {
         "window_minutes": 300,
         "used_percent": 42,
         "resets_at_unix": 1_800_000_000_u64,
+        "reset_reported": true,
     });
     let mut probed = status();
     probed["usage_requested"] = json!(true);
@@ -113,6 +116,11 @@ fn status_states_are_stable_and_independent() {
             json!("af/provider-status@1"),
             "the earlier version fails closed (ADR-0145)",
         ),
+        (
+            "/schema",
+            json!("af/provider-status@2"),
+            "the earlier version fails closed (ADR-0145)",
+        ),
     ] {
         let mut invalid = status();
         *invalid.pointer_mut(path).unwrap() = replacement;
@@ -130,8 +138,8 @@ fn status_states_are_stable_and_independent() {
 
     // Windows exist only where a probe answered, so a skipped probe cannot smuggle numbers in.
     let mut smuggled = status();
-    smuggled["providers"][0]["usage"]["windows"] =
-        json!([{"window_minutes": 300, "used_percent": 42, "resets_at_unix": null}]);
+    smuggled["providers"][0]["usage"]["windows"] = json!([{"window_minutes": 300, "used_percent": 42, "resets_at_unix": null,
+            "reset_reported": false}]);
     assert_invalid(
         "provider-status-v3.json",
         &smuggled,
@@ -146,6 +154,51 @@ fn status_states_are_stable_and_independent() {
         &demoted,
         "authenticated but unusable",
     );
+}
+
+/// Version 3: the directories the table names as found but not registered, with their next
+/// action, and whether a window's reset time was reported at all.
+#[test]
+fn status_names_what_it_found_unregistered_and_unreported_resets() {
+    let mut found = status();
+    found["found_unregistered"] = json!(["/home/o/.config/claude-work", "/home/o/.codex-acme"]);
+    found["next_action"] = json!("af provider detect");
+    assert_valid("provider-status-v3.json", &found);
+    let mut silent = found.clone();
+    silent["next_action"] = json!(null);
+    assert_invalid(
+        "provider-status-v3.json",
+        &silent,
+        "found without a next action",
+    );
+    let mut idle = status();
+    idle["next_action"] = json!("af provider detect");
+    assert_invalid(
+        "provider-status-v3.json",
+        &idle,
+        "a next action with nothing found",
+    );
+
+    let mut unreported = status();
+    unreported["usage_requested"] = json!(true);
+    unreported["providers"][0]["usage"] = json!({"state": "available", "windows": [{
+        "window_minutes": 10080, "used_percent": 88, "resets_at_unix": null,
+        "reset_reported": false,
+    }]});
+    assert_valid("provider-status-v3.json", &unreported);
+    for (resets_at, reported, why) in [
+        (json!(null), true, "a reported reset without its time"),
+        (
+            json!(1_800_000_000_u64),
+            false,
+            "an unreported reset with a time",
+        ),
+    ] {
+        let mut invalid = unreported.clone();
+        invalid["providers"][0]["usage"]["windows"][0]["resets_at_unix"] = resets_at;
+        invalid["providers"][0]["usage"]["windows"][0]["reset_reported"] = json!(reported);
+        assert_invalid("provider-status-v3.json", &invalid, why);
+    }
 }
 
 /// A Provider whose official CLI cannot start is its own documented failure kind: unusable, and
@@ -284,6 +337,7 @@ fn status_never_carries_personal_credential_or_provider_text() {
             "window_minutes": 300,
             "used_percent": 42,
             "resets_at_unix": null,
+            "reset_reported": false,
             "name": "Codex weekly (gpt-5-codex)",
         }],
     });

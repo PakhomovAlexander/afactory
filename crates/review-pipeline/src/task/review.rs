@@ -33,7 +33,8 @@ mod repair;
 pub struct ReviewTaskPolicy {
     pub schema: String,
     pub check_policy_id: String,
-    /// Every named reviewer is required for the atomic gather. Values govern Demands.
+    /// Every `required` reviewer must be bound by a review Pipeline; an `advisory` one may stay
+    /// unbound (`OperatorSignature::unbound_allowed`). Values also govern Demands.
     pub reviewers: BTreeMap<String, DemandRequirement>,
     pub gate: Severity,
     pub clean_rounds: u32,
@@ -95,6 +96,7 @@ pub fn review_signatures(
         return Err("Invalid Review policy identity".into());
     }
     let signature = |inputs, outputs, evidence, retains, outcome_port| OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 { inputs, outputs },
         effects: BTreeSet::new(),
         evidence,
@@ -153,7 +155,7 @@ pub fn review_signatures(
         .filter(|name| *name != "source")
         .cloned()
         .collect();
-    let reduce = signature(
+    let mut reduce = signature(
         inputs,
         BTreeMap::from([
             ("result".into(), port(TASK_REVIEW_ROUND_V1, same(), false)),
@@ -174,6 +176,16 @@ pub fn review_signatures(
         BTreeMap::from([("result".into(), retained)]),
         Some("result".into()),
     );
+    // An advisory reviewer may stay unbound: a Pipeline that binds only the required ones (the
+    // stock review-code) and one that adds the advisory reviewer (review-light) plan under the
+    // same policy. The reduce skips a reviewer no node binds; a bound one with no result is still
+    // missing evidence.
+    reduce.unbound_allowed = policy
+        .reviewers
+        .iter()
+        .filter(|(_, requirement)| **requirement == DemandRequirement::Advisory)
+        .map(|(name, _)| name.clone())
+        .collect();
     let mut installed = BTreeMap::from([
         ("operator/review-bind".into(), bind),
         ("operator/review-reduce".into(), reduce),
@@ -238,11 +250,14 @@ impl ReviewTaskDomain {
                     ..
                 }
             ) {
-                for name in policy.reviewers.keys() {
-                    let address = node
-                        .inputs
-                        .get(name)
-                        .ok_or("Review reducer omitted a required reviewer binding")?;
+                for (name, requirement) in &policy.reviewers {
+                    let Some(address) = node.inputs.get(name) else {
+                        if *requirement == DemandRequirement::Advisory {
+                            // An advisory reviewer this Pipeline never bound (`unbound_allowed`).
+                            continue;
+                        }
+                        return Err("Review reducer omitted a required reviewer binding".into());
+                    };
                     let reviewer = graph
                         .nodes
                         .get(&address.node)
@@ -341,6 +356,15 @@ impl ReviewTaskDomain {
     /// Machine-local selection supplied explicitly by the coordinator before check dispatch.
     pub fn with_rust_toolchain_mapping(mut self, mapping: Option<std::path::PathBuf>) -> Self {
         self.code = self.code.with_rust_toolchain_mapping(mapping);
+        self
+    }
+
+    /// Keep the warm build directories of the checks this domain runs below `root`, when the
+    /// machine moved them from `$XDG_CACHE_HOME/af/task-build-cache`.
+    pub fn with_task_build_cache_root(mut self, root: Option<std::path::PathBuf>) -> Self {
+        if let Some(root) = root {
+            self.code = self.code.with_task_build_cache_root(root);
+        }
         self
     }
 
@@ -695,10 +719,18 @@ impl ReviewTaskDomain {
         let mut results = Vec::new();
         let mut selected = BTreeMap::new();
         let mut missing = BTreeSet::new();
-        for name in self.policy.reviewers.keys() {
-            if !input.inputs.contains_key(name) {
-                missing.insert(name.clone());
-                continue;
+        for (name, requirement) in &self.policy.reviewers {
+            match reviewer_presence(
+                *requirement,
+                self.graph.nodes[&input.node].inputs.contains_key(name),
+                input.inputs.contains_key(name),
+            ) {
+                ReviewerPresence::NotInThisReview => continue,
+                ReviewerPresence::Missing => {
+                    missing.insert(name.clone());
+                    continue;
+                }
+                ReviewerPresence::Answered => {}
             }
             let (id, stage): (_, serde_json::Value) = self.value(cas, input, name, RESULT_TYPE)?;
             let stage = crate::reviewer_stage_output(stage)?;
@@ -1180,6 +1212,7 @@ impl TaskOperatorHost for ReviewTaskDomain {
             }
         };
         TaskWorkOutput {
+            notes: Default::default(),
             usage_observation: None,
             usage: None,
             outputs,
@@ -1193,6 +1226,13 @@ impl TaskOperatorHost for ReviewTaskDomain {
     }
 }
 impl TaskDomain for ReviewTaskDomain {
+    fn admit_checks(
+        &self,
+        cas: &Cas,
+        task: &review_core::task::TaskRevisionV1,
+    ) -> Result<(), String> {
+        self.code.admit_toolchains(cas, task)
+    }
     fn assemble_result(
         &self,
         cas: &Cas,
@@ -1291,5 +1331,134 @@ impl TaskDomain for ReviewTaskDomain {
             return Err("Review conclusion contradicts its completeness evidence".into());
         }
         Ok(())
+    }
+}
+
+/// Where a policy reviewer stands in one reduce invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewerPresence {
+    /// Its result arrived.
+    Answered,
+    /// The Round lacks it: its result never arrived, or it is required and the Pipeline never
+    /// bound it.
+    Missing,
+    /// An advisory reviewer the Pipeline never bound (`unbound_allowed`): not part of this
+    /// review, so never missing.
+    NotInThisReview,
+}
+
+/// Where reviewer `requirement` stands when the reducer `declared` its input and its result
+/// `arrived`: only an advisory reviewer may be absent without being missing, and only when the
+/// Pipeline never bound it; a bound one whose result never arrived is missing.
+fn reviewer_presence(
+    requirement: DemandRequirement,
+    declared: bool,
+    arrived: bool,
+) -> ReviewerPresence {
+    if arrived {
+        ReviewerPresence::Answered
+    } else if !declared && requirement == DemandRequirement::Advisory {
+        ReviewerPresence::NotInThisReview
+    } else {
+        ReviewerPresence::Missing
+    }
+}
+
+#[cfg(test)]
+mod advisory_reviewer_tests {
+    use super::*;
+
+    /// The reduce's runtime reduction: an unbound advisory `uix` is left out of `missing`, a
+    /// bound advisory `uix` whose result never arrived stays in it, and so does every required
+    /// reviewer without a result, bound or not.
+    #[test]
+    fn the_reduce_leaves_only_an_unbound_advisory_reviewer_out_of_missing() {
+        use DemandRequirement::{Advisory, Required};
+        fn missing(
+            reviewers: &[(&'static str, DemandRequirement, bool, bool)],
+        ) -> Vec<&'static str> {
+            reviewers
+                .iter()
+                .filter(|(_, requirement, declared, arrived)| {
+                    reviewer_presence(*requirement, *declared, *arrived)
+                        == ReviewerPresence::Missing
+                })
+                .map(|(name, ..)| *name)
+                .collect()
+        }
+        assert_eq!(
+            missing(&[
+                ("bugs", Required, true, true),
+                ("correctness", Required, true, true),
+                ("uix", Advisory, false, false),
+            ]),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            missing(&[
+                ("bugs", Required, true, true),
+                ("correctness", Required, true, true),
+                ("uix", Advisory, true, false),
+            ]),
+            ["uix"]
+        );
+        assert_eq!(
+            missing(&[
+                ("bugs", Required, false, false),
+                ("correctness", Required, true, false),
+                ("uix", Advisory, true, true),
+            ]),
+            ["bugs", "correctness"]
+        );
+        assert_eq!(
+            reviewer_presence(Advisory, false, false),
+            ReviewerPresence::NotInThisReview
+        );
+    }
+
+    fn policy_with(reviewers: &[(&str, DemandRequirement)]) -> ReviewTaskPolicy {
+        ReviewTaskPolicy {
+            schema: REVIEW_TASK_POLICY_SCHEMA.into(),
+            check_policy_id: format!("sha256:{}", "a".repeat(64)),
+            reviewers: reviewers
+                .iter()
+                .map(|(name, requirement)| ((*name).to_string(), *requirement))
+                .collect(),
+            gate: Severity::Major,
+            clean_rounds: 1,
+            max_rounds: 3,
+            allow_targeted_repairs: false,
+        }
+    }
+
+    #[test]
+    fn the_reduce_lets_only_advisory_reviewers_stay_unbound() {
+        let policy = policy_with(&[
+            ("bugs", DemandRequirement::Required),
+            ("correctness", DemandRequirement::Required),
+            ("uix", DemandRequirement::Advisory),
+        ]);
+        let installed = review_signatures(&format!("sha256:{}", "b".repeat(64)), &policy).unwrap();
+        let reduce = &installed["operator/review-reduce"];
+        assert_eq!(reduce.unbound_allowed, BTreeSet::from(["uix".to_string()]));
+        for name in ["bugs", "correctness", "uix"] {
+            assert!(
+                reduce.contract.inputs[name].optional,
+                "{name} stays optional at runtime"
+            );
+        }
+        let bind = &installed["operator/review-bind"];
+        assert!(
+            bind.unbound_allowed.is_empty(),
+            "the bind still assigns every reviewer"
+        );
+        let required_only = policy_with(&[("bugs", DemandRequirement::Required)]);
+        let installed =
+            review_signatures(&format!("sha256:{}", "b".repeat(64)), &required_only).unwrap();
+        assert!(
+            installed["operator/review-reduce"]
+                .unbound_allowed
+                .is_empty()
+        );
     }
 }

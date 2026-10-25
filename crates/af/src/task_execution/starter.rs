@@ -93,6 +93,7 @@ fn worker(
         name: name.into(),
         version: "1.0.0".into(),
         signature: OperatorSignature {
+            unbound_allowed: Default::default(),
             retains: BTreeMap::from([(output_name.into(), inputs.keys().cloned().collect())]),
             contract: PipelineContractV1 {
                 inputs,
@@ -222,6 +223,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         } else {
             BTreeSet::new()
         },
+        recovery_attempts: None,
     };
     let node = |id: &str, operator, inputs, when| TaskNodeV1 {
         id: id.into(),
@@ -425,10 +427,13 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
             name: pipeline.name,
             fallback: PipelineFallbackV1::Refuse,
         }),
-        strategy: "fast".into(),
+        strategy: Some("fast".into()),
         verification: None,
         facts: BTreeMap::new(),
-        limits: FileLimits {
+        continue_from: None,
+        context: Vec::new(),
+        base: None,
+        limits: Some(FileLimits {
             tokens: 0,
             max_attempts: 3,
             wall_ms: 90000,
@@ -437,7 +442,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
                 attempts: 2,
                 wall_ms: 10000,
             },
-        },
+        }),
     };
     let sources = DocumentSourcesV1 {
         schema: "af.document-sources/1".into(),

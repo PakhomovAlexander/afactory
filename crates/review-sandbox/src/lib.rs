@@ -36,6 +36,7 @@ pub mod container;
 #[cfg(unix)]
 pub mod removal;
 pub mod seal;
+pub mod seal_ignore;
 pub mod stale;
 pub mod storage;
 pub mod task_build_cache;
@@ -62,15 +63,17 @@ pub use removal::{
     remove_tree_measured_at,
 };
 pub use seal::{MutationSet, SealedSandbox};
+pub use seal_ignore::{DEFAULT_SEAL_IGNORE, IgnoreRules, SEAL_IGNORE_FILE};
 pub use stale::{
-    SweepReport, attempt_directory, is_af_directory_name, remove_tree_nofollow,
-    sweep_stale_sandboxes, sweep_stale_sandboxes_in, sweep_stale_tree_digests,
+    SweepReport, attempt_directory, is_af_directory_name, remove_tree_nofollow, sandbox_root,
+    set_sandbox_root, sweep_stale_sandboxes, sweep_stale_sandboxes_in, sweep_stale_tree_digests,
     sweep_stale_tree_digests_in,
 };
 pub use task_build_cache::{
     Ensured, KEY_LOCK, TaskBuildCacheKeyLock, TaskBuildCacheLock, Uninspectable, WARM_KINDS,
-    WarmDirectory, default_task_build_cache_root, directory_bytes, is_size_record,
-    lock_task_build_cache, lock_task_build_cache_key, recorded_key_size,
+    WarmDirectory, clone_warm_kind, default_task_build_cache_root, directory_bytes, is_size_record,
+    lock_task_build_cache, lock_task_build_cache_key, lock_task_build_cache_key_waiting,
+    read_key_eviction, read_key_holder, record_key_eviction, recorded_key_size,
 };
 pub use workspace::{
     RecordedPreparation, WORKSPACE_LOCK, WorkspaceError, WorkspaceInUse, WorkspacePreparation,
@@ -78,6 +81,7 @@ pub use workspace::{
     workspace_id, workspace_in_use,
 };
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -177,6 +181,23 @@ pub struct Sandbox {
     /// [`Sandbox::into_parts`] and [`Sandbox::preserve`] can move it out while the `Drop` below
     /// still runs.
     _dir: Option<tempfile::TempDir>,
+    /// The base attached beside the tree, as attached: what sealing verifies the Worker left
+    /// unchanged (ADR-0212).
+    attached: std::sync::Mutex<Option<AttachedBase>>,
+}
+
+/// The base tree and the files beside it as [`Sandbox::attach_base`] wrote them. Their
+/// read-only modes stop an accidental write, not an owner who restores write permission:
+/// sealing compares both with this record and refuses a sandbox whose base changed.
+pub(crate) struct AttachedBase {
+    /// Every entry under `base/` as attached, by its path below it: its inode, size, mode and
+    /// modification and change times. A write, a `chmod`, a rename or a removal changes one of
+    /// them, and comparing them costs one `stat` per entry instead of hashing the tree again.
+    pub(crate) stats: BTreeMap<PathBuf, EntryStat>,
+    pub(crate) beside: Vec<(String, Vec<u8>)>,
+    /// The template the base was cloned from, kept alive while this sandbox lives so another
+    /// judge of the same change can clone it too.
+    _template: Option<Arc<SandboxTemplate>>,
 }
 
 impl Drop for Sandbox {
@@ -184,8 +205,11 @@ impl Drop for Sandbox {
         // A read-only sandbox left its directories at 0o555, and unlinking an entry needs
         // write on its parent — so `TempDir`'s own cleanup would fail silently and strand a
         // whole materialized tree in TMPDIR. Restore writability first, then let the TempDir
-        // (dropped after this body) remove the tree.
-        restore_writable_dirs(&self.root);
+        // (dropped after this body) remove the tree, and the read-only `base/` beside it.
+        match &self._dir {
+            Some(dir) => restore_writable_dirs(dir.path()),
+            None => restore_writable_dirs(&self.root),
+        }
     }
 }
 
@@ -391,6 +415,16 @@ impl SandboxTemplate {
         })
     }
 
+    /// Where the template's tree is, read-only to every clone of it.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The tree the template holds.
+    pub fn manifest(&self) -> &Manifest {
+        self.manifest.as_ref()
+    }
+
     /// A template at a stable root this handle does not own. Only the workspace module builds
     /// one, after it verified that `root` holds exactly `manifest`.
     pub(crate) fn at_stable_root(manifest: Manifest, root: PathBuf) -> SandboxTemplate {
@@ -422,6 +456,7 @@ impl Sandbox {
             isolation: Isolation::None,
             baseline: Arc::new(manifest.clone()),
             _dir: Some(dir),
+            attached: std::sync::Mutex::new(None),
         };
         if mode == Mode::ReadOnly {
             sandbox.apply_read_only()?;
@@ -454,6 +489,7 @@ impl Sandbox {
             isolation,
             baseline: Arc::clone(&template.manifest),
             _dir: Some(dir),
+            attached: std::sync::Mutex::new(None),
         };
         if mode == Mode::ReadOnly {
             apply_directories_read_only(cloned_directories)?;
@@ -488,10 +524,151 @@ impl Sandbox {
         refresh_source_mtimes(&self.root, &self.baseline, after, cancellation, budget)
     }
 
+    /// [`Self::refresh_source_mtimes`], except that a file for which `kept` names a time gets
+    /// exactly that time back (ADR-0207): the stamp a warm layer's sources record holds for a
+    /// group whose content it built. Every other regular file gets one current stamp, newer
+    /// than `after`, which the result returns for the record.
+    pub fn refresh_source_mtimes_keyed(
+        &self,
+        after: Option<std::time::SystemTime>,
+        kept: &dyn Fn(&str) -> Option<std::time::SystemTime>,
+        cancellation: Option<&AtomicBool>,
+        budget: Duration,
+    ) -> std::io::Result<Refreshed> {
+        refresh_source_mtimes_observed(
+            &self.root,
+            &self.baseline,
+            after,
+            kept,
+            cancellation,
+            budget,
+            &mut |_| {},
+        )
+    }
+
     fn apply_read_only(&self) -> std::io::Result<()> {
+        apply_tree_read_only(&self.root)
+    }
+
+    /// Materialize `manifest` read-only as `base/`, the sibling of this sandbox's `tree/`, and
+    /// write each of `beside` read-only next to both (ADR-0212). A Worker that judges a change
+    /// reads the tree before it at `../base` and the change's paths in `../diff-subject.json`;
+    /// neither is under the root, so neither is sealed back or counted as an edit. Only a
+    /// sandbox that owns its temporary directory has a sibling to write.
+    pub fn attach_base(
+        &self,
+        manifest: &Manifest,
+        cas: &Cas,
+        beside: &[(&str, &[u8])],
+    ) -> std::io::Result<PathBuf> {
+        self.attach(manifest, beside, None, |base| {
+            materialize(manifest, cas, base).map_err(std::io::Error::other)
+        })
+    }
+
+    /// [`Self::attach_base`] from a materialized `template` of the base: a copy-on-write clone
+    /// of it, so a second judge of the same change does not build the base tree again. The
+    /// sandbox keeps the template alive until it is sealed or dropped.
+    pub fn attach_base_template(
+        &self,
+        template: &Arc<SandboxTemplate>,
+        beside: &[(&str, &[u8])],
+    ) -> std::io::Result<PathBuf> {
+        self.attach(
+            template.manifest.as_ref(),
+            beside,
+            Some(Arc::clone(template)),
+            |base| clone_tree(&template.root, base, Mode::ReadOnly).map(|_| ()),
+        )
+    }
+
+    fn attach(
+        &self,
+        manifest: &Manifest,
+        beside: &[(&str, &[u8])],
+        template: Option<Arc<SandboxTemplate>>,
+        place: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<PathBuf> {
+        let dir = self
+            ._dir
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("a sandbox at a stable root has no sibling"))?;
+        if beside.iter().any(|(name, _)| {
+            name.is_empty() || name.contains('/') || [".", "..", "base", "tree"].contains(name)
+        }) {
+            return Err(std::io::Error::other(
+                "a file beside the tree is one plain name",
+            ));
+        }
+        let mut attached = self
+            .attached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if attached.is_some() {
+            return Err(std::io::Error::other("the sandbox already has its base"));
+        }
+        let base = dir.path().join("base");
+        place(&base)?;
+        apply_tree_read_only(&base)?;
+        for (name, bytes) in beside {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes)?;
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o444))?;
+        }
+        let _ = manifest;
+        *attached = Some(AttachedBase {
+            stats: entry_stats(&base)?,
+            beside: beside
+                .iter()
+                .map(|(name, bytes)| ((*name).to_owned(), bytes.to_vec()))
+                .collect(),
+            _template: template,
+        });
+        Ok(base)
+    }
+}
+
+/// What [`AttachedBase`] keeps of one entry: inode, device, size, mode, and the modification
+/// and change times in nanoseconds.
+pub(crate) type EntryStat = (u64, u64, u64, u32, i128, i128);
+
+/// [`EntryStat`] of every entry under `root`, `root` itself as the empty path, links not
+/// followed.
+pub(crate) fn entry_stats(root: &Path) -> std::io::Result<BTreeMap<PathBuf, EntryStat>> {
+    use std::os::unix::fs::MetadataExt;
+    let stat = |metadata: &std::fs::Metadata| -> EntryStat {
+        (
+            metadata.ino(),
+            metadata.dev(),
+            metadata.size(),
+            metadata.mode(),
+            i128::from(metadata.mtime()) * 1_000_000_000 + i128::from(metadata.mtime_nsec()),
+            i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec()),
+        )
+    };
+    let mut stats = BTreeMap::new();
+    stats.insert(PathBuf::new(), stat(&std::fs::symlink_metadata(root)?));
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        for entry in std::fs::read_dir(root.join(&relative))? {
+            let entry = entry?;
+            let path = relative.join(entry.file_name());
+            let metadata = std::fs::symlink_metadata(entry.path())?;
+            if metadata.is_dir() {
+                pending.push(path.clone());
+            }
+            stats.insert(path, stat(&metadata));
+        }
+    }
+    Ok(stats)
+}
+
+/// Make every file under `root` read-only, then every directory, `root` included.
+fn apply_tree_read_only(root: &Path) -> std::io::Result<()> {
+    {
         // Files first, then directories: a read-only directory cannot have its contents chmod'd.
-        let mut level = vec![self.root.clone()];
-        let mut seen_dirs = vec![self.root.clone()];
+        let mut level = vec![root.to_path_buf()];
+        let mut seen_dirs = vec![root.to_path_buf()];
         let mut pending_files = Vec::new();
         while !level.is_empty() {
             let (scanned, ()) = review_parallel::try_join(
@@ -511,7 +688,9 @@ impl Sandbox {
         apply_file_permissions(pending_files)?;
         apply_directories_read_only(seen_dirs)
     }
+}
 
+impl Sandbox {
     /// Seal the sandbox and capture what changed.
     ///
     /// Consumes the handle on purpose. The design requires a sandbox to be terminated and frozen
@@ -538,6 +717,14 @@ impl Sandbox {
         root
     }
 
+    /// The base attached beside the tree, taken out of the handle for sealing.
+    pub(crate) fn take_attached(&self) -> Option<AttachedBase> {
+        self.attached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
     pub(crate) fn into_parts(mut self) -> (PathBuf, Arc<Manifest>, tempfile::TempDir) {
         // Seal restores traversal permissions as it scans. The residual `self` (emptied below)
         // then drops as a no-op.
@@ -548,6 +735,15 @@ impl Sandbox {
     }
 }
 
+/// What [`Sandbox::refresh_source_mtimes_keyed`] did: how many regular files it stamped now,
+/// how many it gave back a kept time, and the one current stamp it used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Refreshed {
+    pub stamped: usize,
+    pub kept: usize,
+    pub stamp: std::time::SystemTime,
+}
+
 fn refresh_source_mtimes(
     root: &Path,
     manifest: &Manifest,
@@ -555,17 +751,27 @@ fn refresh_source_mtimes(
     cancellation: Option<&AtomicBool>,
     budget: Duration,
 ) -> std::io::Result<usize> {
-    refresh_source_mtimes_observed(root, manifest, after, cancellation, budget, &mut |_| {})
+    refresh_source_mtimes_observed(
+        root,
+        manifest,
+        after,
+        &|_| None,
+        cancellation,
+        budget,
+        &mut |_| {},
+    )
+    .map(|refreshed| refreshed.stamped)
 }
 
 fn refresh_source_mtimes_observed(
     root: &Path,
     manifest: &Manifest,
     after: Option<std::time::SystemTime>,
+    kept: &dyn Fn(&str) -> Option<std::time::SystemTime>,
     cancellation: Option<&AtomicBool>,
     budget: Duration,
     stamped: &mut dyn FnMut(&Path),
-) -> std::io::Result<usize> {
+) -> std::io::Result<Refreshed> {
     use nix::fcntl::{OFlag, open, openat};
     use nix::sys::stat::Mode as FileMode;
     use std::fs::{File, FileTimes};
@@ -583,6 +789,7 @@ fn refresh_source_mtimes_observed(
         let times = FileTimes::new().set_modified(modified);
         let mut latest = modified;
         let mut touched = 0;
+        let mut restored = 0;
         for entry in &manifest.entries {
             check_refresh_budget(cancellation, started, budget)?;
             if !matches!(entry.kind, EntryKind::File | EntryKind::Executable) {
@@ -605,6 +812,13 @@ fn refresh_source_mtimes_observed(
                 ));
             }
             check_refresh_budget(cancellation, started, budget)?;
+            if let Some(time) = kept(&entry.path) {
+                // A group whose content the layer built gets that build's stamp back: older
+                // than the artifacts built from it, so Cargo keeps them, and never newer than now.
+                file.set_times(FileTimes::new().set_modified(time))?;
+                restored += 1;
+                continue;
+            }
             file.set_times(times)?;
             let stored = file.metadata()?.modified()?;
             if after.is_some_and(|after| stored <= after) {
@@ -622,7 +836,11 @@ fn refresh_source_mtimes_observed(
             pause_refresh(cancellation, started, budget)?;
         }
         check_refresh_budget(cancellation, started, budget)?;
-        return Ok(touched);
+        return Ok(Refreshed {
+            stamped: touched,
+            kept: restored,
+            stamp: modified,
+        });
     }
 }
 
@@ -768,6 +986,7 @@ mod source_mtime_tests {
                 temporary.path(),
                 &manifest,
                 None,
+                &|_| None,
                 Some(&cancelled),
                 Duration::from_secs(60),
                 &mut |_| {

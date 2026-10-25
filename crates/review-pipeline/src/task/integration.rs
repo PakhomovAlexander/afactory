@@ -118,11 +118,11 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
                     .collect(),
             );
         let inputs = artifact_map(&phase.inputs().map_err(|e| e.to_string())?);
-        let outcome = lease::with_heartbeat_controlled(
+        let outcome = lease::with_heartbeat_supervised(
             &self.store,
             self.cas,
             &self.lease,
-            self.cancellation,
+            self.heartbeat_control(),
             || {
                 self.record_invocation(&node, &inputs)?;
                 let outputs = self.run(&node, &inputs)?;

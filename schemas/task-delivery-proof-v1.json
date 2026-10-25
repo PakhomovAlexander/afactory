@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-delivery-proof:1",
+  "title": "TaskDeliveryProof@1 payload",
+  "$comment": "Why a verification Task's delivery places another Task's candidate (ADR-0211): a verified Task of kind `verification` verified, read-only, the Snapshot it bound from the candidate Task's recorded output, and delivery places that candidate on the candidate Task's committed source. Every TaskDeliveryRecord@1 of such a delivery references this proof, so the record names both Tasks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verification_task_id",
+    "verification_result_id",
+    "candidate_task_id",
+    "candidate_result_id",
+    "candidate_snapshot_id",
+    "candidate_source_snapshot_id"
+  ],
+  "properties": {
+    "verification_task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "verification_result_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "candidate_task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "candidate_result_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "candidate_snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "candidate_source_snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    }
+  }
+}

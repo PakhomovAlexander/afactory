@@ -468,5 +468,7 @@ fn a_cli_that_cannot_start_exits_4() {
     assert_eq!(json["providers"][0]["state"], "listed");
     let unknown = machine.af(&["nobody"]);
     assert_eq!(unknown.status.code(), Some(1));
-    assert!(err(&unknown).contains("provider `nobody` is not listed"));
+    assert!(
+        err(&unknown).contains("Provider nobody not found in this machine's Provider registry")
+    );
 }

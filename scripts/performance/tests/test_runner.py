@@ -15,7 +15,8 @@ import sys
 import time
 from unittest import mock
 
-from perflab import builds, bundle, clicases, compare, contracts, oracle, planning, runner
+from perflab import builds, bundle, clicases, compare, contracts, hostlock, oracle, planning
+from perflab import runner
 from perflab import schedule, supervise
 from perflab import suite as suite_module
 from perflab.values import ContractError, sha256_bytes
@@ -691,9 +692,11 @@ class Shards(ShardHarness):
         container = subprocess.run(base + ["--container", "--image", "sha256:" + "1" * 64,
                                            "--scratch-fs", self.path("scratch")], cwd=ROOT,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.assertEqual(container.returncode, 4)
+        self.assertEqual(container.returncode, 4, container.stderr.decode())
         refusal = json.loads(container.stdout)
         self.assertIn(refusal["reason"], ("mode_mismatch", "host_mismatch"))
+        # The lock it took is the private one.
+        self.assertTrue(os.path.exists(os.path.join(locks, hostlock.MACHINE_LOCK_NAME)))
 
 
 class SeedHarness(ShardHarness):

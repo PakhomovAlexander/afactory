@@ -193,12 +193,15 @@ fn source_refresh_is_atomic_invalidates_approval_and_retains_paid_and_late_usage
         }
     );
     assert!(!state.admitted);
+    // The clock started at the first admission: the deadline moved by the wait before it.
+    let deadline = state.deadline_unix_ms();
+    assert!(deadline >= f.revision.limits.deadline_unix_ms);
     let execution = state.execution.unwrap();
     assert_eq!(execution.budget.committed_tokens(), 7);
     assert_eq!(execution.budget.begun_attempts(), 1);
     assert_eq!(
         execution.budget.remaining_limits().deadline_unix_ms,
-        f.revision.limits.deadline_unix_ms
+        deadline
     );
     assert!(execution.invocations.is_empty() && execution.outputs.is_empty());
     assert!(

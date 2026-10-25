@@ -102,10 +102,12 @@ fn dormant_sequence_has_original_allowance_but_no_store_dispatch_authority() {
             .is_ok()
     );
     assert_eq!(execution.budget.begun_attempts(), 0);
+    // The clock started at the admission: the deadline moved by the wait before it.
     assert_eq!(
         execution.budget.remaining_limits().deadline_unix_ms,
-        f.revision.limits.deadline_unix_ms
+        before.deadline_unix_ms()
     );
+    assert!(before.deadline_unix_ms() >= f.revision.limits.deadline_unix_ms);
     let invocation = f
         .cas
         .put_artifact(

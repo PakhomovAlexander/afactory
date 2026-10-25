@@ -35,7 +35,7 @@ struct JiraBinding {
 }
 
 fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, String> {
-    super::input_file::read(path, max)
+    super::input_file::read(path, max, "issue input file")
 }
 
 pub(super) struct CapturedIssue {

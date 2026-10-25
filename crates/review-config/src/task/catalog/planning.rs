@@ -36,6 +36,7 @@ fn port(artifact_type: &str, cardinality: review_core::PortCardinality) -> Pipel
 
 pub fn planning_context_signature() -> OperatorSignature {
     OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 {
             inputs: BTreeMap::new(),
             outputs: BTreeMap::from([(
@@ -94,9 +95,10 @@ impl TaskPlanCompiler {
             .map(|(name, worker)| (name, serde_json::json!({"version":worker.version, "digest":self.packages[name].bytes.digest, "signature":worker.signature})))
             .collect();
         let pipelines: BTreeMap<_, _> = self.pipelines.iter()
-            // `af.planning-request/1` lists `af.pipeline/1` contracts, so a pipeline with a
-            // Project Brief port (`af.pipeline/2`) is not offered for composition (ADR-0160).
-            .filter(|(name, pipeline)| !self.preparation_roots.contains(*name) && !self.generated.contains_key(*name) && !pipeline.declares_brief())
+            // `af.planning-request/1` lists `af.pipeline/1` contracts and slots, so a pipeline
+            // with a Project Brief port (`af.pipeline/2`, ADR-0160) or a slot recovery allowance
+            // (`af.pipeline/3`, ADR-0209) is not offered for composition.
+            .filter(|(name, pipeline)| !self.preparation_roots.contains(*name) && !self.generated.contains_key(*name) && pipeline.schema == PipelineSchema::V1)
             .map(|(name, pipeline)| (name, serde_json::json!({"version":pipeline.version, "digest":self.packages[name].bytes.digest, "contract":pipeline.contract, "accepts":pipeline.accepts, "slots":pipeline.slots, "max_attempts":pipeline.max_attempts, "max_parallel":pipeline.max_parallel})))
             .collect();
         let request = serde_json::json!({
@@ -361,6 +363,7 @@ impl TaskPlanCompiler {
                     max_attempts: settings.max_attempts,
                     allow_local_replacement: false,
                     independent_from: BTreeSet::new(),
+                    recovery_attempts: None,
                 },
             )]),
             nodes: vec![

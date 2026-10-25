@@ -16,6 +16,10 @@ pub enum EventType {
     TaskTransitionV5,
     #[serde(rename = "TaskExecutionStarted@1")]
     TaskExecutionStartedV1,
+    #[serde(rename = "TaskGateRetried@1")]
+    TaskGateRetriedV1,
+    #[serde(rename = "TaskProviderEvent@1")]
+    TaskProviderEventV1,
     #[serde(rename = "TaskReviewResultSelected@1")]
     TaskReviewResultSelectedV1,
     #[serde(rename = "CheckCompleted@1")]
@@ -104,6 +108,8 @@ pub enum EventType {
     WorkspaceRegisteredV1,
     #[serde(rename = "WorkspaceRemoved@1")]
     WorkspaceRemovedV1,
+    #[serde(rename = "WorkspaceDelivered@1")]
+    WorkspaceDeliveredV1,
     #[serde(rename = "SurveyRecorded@1")]
     SurveyRecordedV1,
     #[serde(rename = "SurveyFailed@1")]
@@ -113,9 +119,11 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 49] = [
+    pub const ALL: [Self; 52] = [
         Self::TaskTransitionV5,
         Self::TaskExecutionStartedV1,
+        Self::TaskGateRetriedV1,
+        Self::TaskProviderEventV1,
         Self::TaskReviewResultSelectedV1,
         Self::CheckCompletedV1,
         Self::CampaignOpenedV1,
@@ -160,6 +168,7 @@ impl EventType {
         Self::ProjectRegisteredV1,
         Self::WorkspaceRegisteredV1,
         Self::WorkspaceRemovedV1,
+        Self::WorkspaceDeliveredV1,
         Self::SurveyRecordedV1,
         Self::SurveyFailedV1,
         Self::SurveyCollectedV1,
@@ -169,6 +178,8 @@ impl EventType {
         match self {
             Self::TaskTransitionV5 => "TaskTransition@5",
             Self::TaskExecutionStartedV1 => "TaskExecutionStarted@1",
+            Self::TaskGateRetriedV1 => "TaskGateRetried@1",
+            Self::TaskProviderEventV1 => "TaskProviderEvent@1",
             Self::TaskReviewResultSelectedV1 => "TaskReviewResultSelected@1",
             Self::CheckCompletedV1 => "CheckCompleted@1",
             Self::CampaignOpenedV1 => "CampaignOpened@1",
@@ -213,6 +224,7 @@ impl EventType {
             Self::ProjectRegisteredV1 => "ProjectRegistered@1",
             Self::WorkspaceRegisteredV1 => "WorkspaceRegistered@1",
             Self::WorkspaceRemovedV1 => "WorkspaceRemoved@1",
+            Self::WorkspaceDeliveredV1 => "WorkspaceDelivered@1",
             Self::SurveyRecordedV1 => "SurveyRecorded@1",
             Self::SurveyFailedV1 => "SurveyFailed@1",
             Self::SurveyCollectedV1 => "SurveyCollected@1",
@@ -228,6 +240,8 @@ impl EventType {
         match self {
             Self::TaskTransitionV5 => ("TaskTransition", 5),
             Self::TaskExecutionStartedV1 => ("TaskExecutionStarted", 1),
+            Self::TaskGateRetriedV1 => ("TaskGateRetried", 1),
+            Self::TaskProviderEventV1 => ("TaskProviderEvent", 1),
             Self::TaskReviewResultSelectedV1 => ("TaskReviewResultSelected", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
             Self::CampaignOpenedV1 => ("CampaignOpened", 1),
@@ -272,6 +286,7 @@ impl EventType {
             Self::ProjectRegisteredV1 => ("ProjectRegistered", 1),
             Self::WorkspaceRegisteredV1 => ("WorkspaceRegistered", 1),
             Self::WorkspaceRemovedV1 => ("WorkspaceRemoved", 1),
+            Self::WorkspaceDeliveredV1 => ("WorkspaceDelivered", 1),
             Self::SurveyRecordedV1 => ("SurveyRecorded", 1),
             Self::SurveyFailedV1 => ("SurveyFailed", 1),
             Self::SurveyCollectedV1 => ("SurveyCollected", 1),
@@ -323,6 +338,8 @@ impl std::str::FromStr for EventType {
         match value {
             "TaskTransition@5" => Ok(Self::TaskTransitionV5),
             "TaskExecutionStarted@1" => Ok(Self::TaskExecutionStartedV1),
+            "TaskGateRetried@1" => Ok(Self::TaskGateRetriedV1),
+            "TaskProviderEvent@1" => Ok(Self::TaskProviderEventV1),
             "TaskReviewResultSelected@1" => Ok(Self::TaskReviewResultSelectedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
             "CampaignOpened@1" => Ok(Self::CampaignOpenedV1),
@@ -367,6 +384,7 @@ impl std::str::FromStr for EventType {
             "ProjectRegistered@1" => Ok(Self::ProjectRegisteredV1),
             "WorkspaceRegistered@1" => Ok(Self::WorkspaceRegisteredV1),
             "WorkspaceRemoved@1" => Ok(Self::WorkspaceRemovedV1),
+            "WorkspaceDelivered@1" => Ok(Self::WorkspaceDeliveredV1),
             "SurveyRecorded@1" => Ok(Self::SurveyRecordedV1),
             "SurveyFailed@1" => Ok(Self::SurveyFailedV1),
             "SurveyCollected@1" => Ok(Self::SurveyCollectedV1),
@@ -683,6 +701,18 @@ pub fn validate_event_payload(
         .map_err(|error| format!("TaskExecutionStarted@1: {error}"))?
         .validate()
         .map_err(|error| format!("TaskExecutionStarted@1: {error}")),
+        EventType::TaskGateRetriedV1 => {
+            serde_json::from_value::<crate::task::gate_retry::TaskGateRetriedV1>(payload.clone())
+                .map_err(|error| format!("TaskGateRetried@1: {error}"))?
+                .validate()
+                .map_err(|error| format!("TaskGateRetried@1: {error}"))
+        }
+        EventType::TaskProviderEventV1 => serde_json::from_value::<
+            crate::task::provider_event::TaskProviderEventV1,
+        >(payload.clone())
+        .map_err(|error| format!("TaskProviderEvent@1: {error}"))?
+        .validate()
+        .map_err(|error| format!("TaskProviderEvent@1: {error}")),
         EventType::CheckCompletedV1 => {
             let value: CheckCompletedPayloadV1 = serde_json::from_value(payload.clone())
                 .map_err(|error| format!("CheckCompleted@1: {error}"))?;
@@ -921,6 +951,11 @@ pub fn validate_event_payload(
         EventType::WorkspaceRemovedV1 => {
             serde_json::from_value::<crate::WorkspaceRemovedPayloadV1>(payload.clone())
                 .map_err(|error| format!("WorkspaceRemoved@1: {error}"))?
+                .validate()
+        }
+        EventType::WorkspaceDeliveredV1 => {
+            serde_json::from_value::<crate::WorkspaceDeliveredPayloadV1>(payload.clone())
+                .map_err(|error| format!("WorkspaceDelivered@1: {error}"))?
                 .validate()
         }
         EventType::SurveyRecordedV1 => {

@@ -1,19 +1,26 @@
-//! The left bar: a folding tree whose depth-1 folders are the four fixed tabs, with vim folds,
+//! The left bar: a folding tree whose depth-1 folders are the five fixed tabs, with vim folds,
 //! motion and search over it.
 
 use super::paint::Tone;
 
-/// The four fixed folders under the scope root, in bar order.
+/// The five fixed folders under the scope root, in bar order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Tab {
     Providers,
     Workers,
     Pipelines,
     Tasks,
+    Campaigns,
 }
 
 impl Tab {
-    pub(crate) const ALL: [Tab; 4] = [Tab::Providers, Tab::Workers, Tab::Pipelines, Tab::Tasks];
+    pub(crate) const ALL: [Tab; 5] = [
+        Tab::Providers,
+        Tab::Workers,
+        Tab::Pipelines,
+        Tab::Tasks,
+        Tab::Campaigns,
+    ];
 
     pub(crate) fn name(self) -> &'static str {
         match self {
@@ -21,6 +28,7 @@ impl Tab {
             Tab::Workers => "workers",
             Tab::Pipelines => "pipelines",
             Tab::Tasks => "tasks",
+            Tab::Campaigns => "campaigns",
         }
     }
 }
@@ -221,7 +229,7 @@ impl Tree {
     }
 
     /// `zR` and `zM`: every folder and group open or closed. The scope root stays open, so
-    /// the four folders are always visible.
+    /// the five folders are always visible.
     pub(crate) fn fold_all(&mut self, folded: bool) {
         let selected = self.selected();
         fold_every(&mut self.root.children, folded);
@@ -275,7 +283,7 @@ impl Tree {
         false
     }
 
-    /// `]]`: the next of the four folders.
+    /// `]]`: the next of the five folders.
     pub(crate) fn next_folder(&mut self) {
         let rows = self.rows();
         let start = (self.cursor + 1).min(rows.len());
@@ -284,7 +292,7 @@ impl Tree {
         }
     }
 
-    /// `[[`: the previous of the four folders.
+    /// `[[`: the previous of the five folders.
     pub(crate) fn previous_folder(&mut self) {
         let rows = self.rows();
         let end = self.cursor.min(rows.len());
@@ -463,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_lists_the_four_folders_under_the_scope_root() {
+    fn the_bar_lists_the_five_folders_under_the_scope_root() {
         let expected = [
             "v hub  (project)",
             "  v providers/",
@@ -474,6 +482,7 @@ mod tests {
             "      review",
             "      fixture/implementation",
             "  v tasks/",
+            "  v campaigns/",
         ];
         assert_eq!(texts(&tree()), expected);
     }
@@ -486,23 +495,30 @@ mod tests {
         tree.move_by(-5);
         assert_eq!(selected(&tree), "hub  (project)");
         tree.move_by(100);
-        assert_eq!(selected(&tree), "tasks/");
+        assert_eq!(selected(&tree), "campaigns/");
         tree.top();
         let mut folders = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             tree.next_folder();
             folders.push(selected(&tree));
         }
-        let expected = ["providers/", "workers/", "pipelines/", "tasks/"];
+        let expected = [
+            "providers/",
+            "workers/",
+            "pipelines/",
+            "tasks/",
+            "campaigns/",
+        ];
         assert_eq!(folders, expected);
         tree.next_folder();
-        assert_eq!(selected(&tree), "tasks/");
+        assert_eq!(selected(&tree), "campaigns/");
+        tree.previous_folder();
         tree.previous_folder();
         tree.previous_folder();
         assert_eq!(selected(&tree), "workers/");
         tree.bottom();
         tree.previous_folder();
-        assert_eq!(selected(&tree), "pipelines/");
+        assert_eq!(selected(&tree), "tasks/");
     }
 
     #[test]
@@ -514,26 +530,26 @@ mod tests {
         tree.fold_close();
         assert_eq!(selected(&tree), "providers/");
         assert_eq!(texts(&tree)[1], "  > providers/");
-        assert_eq!(tree.rows().len(), 7);
+        assert_eq!(tree.rows().len(), 8);
         tree.fold_toggle();
-        assert_eq!(tree.rows().len(), 9);
+        assert_eq!(tree.rows().len(), 10);
         tree.fold_toggle();
-        assert_eq!(tree.rows().len(), 7);
+        assert_eq!(tree.rows().len(), 8);
         tree.fold_open();
-        assert_eq!(tree.rows().len(), 9);
+        assert_eq!(tree.rows().len(), 10);
         // `zM` keeps the root open and the cursor on the nearest visible ancestor.
         tree.move_by(6);
         assert_eq!(selected(&tree), "fixture/implementation");
         tree.fold_all(true);
-        assert_eq!(tree.rows().len(), 5);
+        assert_eq!(tree.rows().len(), 6);
         assert_eq!(selected(&tree), "pipelines/");
         tree.fold_all(false);
-        assert_eq!(tree.rows().len(), 9);
+        assert_eq!(tree.rows().len(), 10);
         assert_eq!(selected(&tree), "pipelines/");
         // The scope root never folds.
         tree.top();
         tree.fold_close();
-        assert_eq!(tree.rows().len(), 9);
+        assert_eq!(tree.rows().len(), 10);
     }
 
     #[test]
@@ -600,9 +616,10 @@ mod tests {
             "    v done/ (2)",
             "        a",
             "        c",
+            "  v campaigns/",
         ];
         assert_eq!(texts(&tree)[4..], expected);
-        // `]]` stops at the four folders only.
+        // `]]` stops at the five folders only.
         tree.bottom();
         tree.previous_folder();
         assert_eq!(selected(&tree), "tasks/");
@@ -610,7 +627,7 @@ mod tests {
         assert_eq!(selected(&tree), "done/ (2)");
         assert_eq!(tree.selected().kind, NodeKind::Group(Tab::Tasks));
         tree.fold_close();
-        assert_eq!(texts(&tree).len(), 8);
+        assert_eq!(texts(&tree).len(), 9);
         // A re-read keeps the group folded and the cursor on it.
         tree.set_items(Tab::Tasks, tasks());
         assert_eq!(texts(&tree)[7], "    > done/ (2)");

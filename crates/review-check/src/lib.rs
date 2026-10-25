@@ -11,6 +11,7 @@
 
 pub mod fingerprint;
 pub mod gate;
+pub mod offline;
 pub mod runner;
 
 // The exec vocabulary is kernel-wide, so it lives in review-core; re-exported here
@@ -20,5 +21,5 @@ pub use gate::{GateDecision, GateOutcome};
 pub use review_core::exec::{Arg, Command};
 pub use runner::{
     CheckDefinition, CheckEnding, CheckExecution, CheckResult, CheckRunner, CheckStatus,
-    check_event,
+    NpmPackagePin, check_event,
 };

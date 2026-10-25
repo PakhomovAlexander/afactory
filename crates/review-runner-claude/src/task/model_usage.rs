@@ -166,6 +166,58 @@ fn foreign_activity(key: &str, model: &Value, selected: &str) -> Option<OtherMod
     })
 }
 
+/// The bound on the reset time a usage-limit reply's words may name, in bytes.
+const MAX_RESET_BYTES: usize = 48;
+
+/// What a Claude reply that is the account's usage-limit refusal says, in af's words: the limit
+/// is reached, and when it resets as the reply states it (an epoch after `|`, or the time after
+/// `resets`, kept only from a closed alphabet), or that the reply does not say. `None` for any
+/// other reply. Such a reply answers with an empty `modelUsage`, which is no malformed map: the
+/// model never ran. The words name a rate limit, so the Attempt's cause is `provider_capacity`.
+fn usage_limit(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    if value.get("is_error").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let text = value.get("result").and_then(Value::as_str)?;
+    let lower = text.to_ascii_lowercase();
+    if !["usage limit", "hit your limit", "limit reached"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        return None;
+    }
+    let epoch = text
+        .rsplit_once('|')
+        .map(|(_, epoch)| epoch.trim())
+        .and_then(|epoch| epoch.parse::<u64>().ok())
+        .filter(|epoch| *epoch > 0 && *epoch < 1 << 40);
+    let said = lower.find("resets ").map(|at| {
+        text[at + "resets ".len()..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || " :()/_+-".contains(*c))
+            .collect::<String>()
+            .trim()
+            .to_string()
+    });
+    let reset = match (epoch, said) {
+        (Some(epoch), _) => Some(review_core::task::collection::collected_time(
+            epoch.saturating_mul(1_000),
+        )),
+        (None, Some(said)) if !said.is_empty() && said.len() <= MAX_RESET_BYTES => Some(said),
+        _ => None,
+    };
+    Some(match reset {
+        Some(reset) => {
+            format!(
+                "the Claude account's usage limit is reached; it resets at {reset} (rate limit)"
+            )
+        }
+        None => "the Claude account's usage limit is reached; reset time not reported (rate limit)"
+            .to_string(),
+    })
+}
+
 /// Account for one result, `selected` being the bound `--model` and `effort` its `--effort`.
 pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str>) -> Accounting {
     let (top_usage, top_observation) = super::parse_usage(value);
@@ -178,6 +230,22 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
             switched: false,
         };
     };
+    // The account's usage limit: no model ran, so the empty map is the reply's, not a malformed
+    // one, and the refusal says what happened rather than the map's bound. Its charge stays
+    // incomplete, so the Store keeps the reservation.
+    if map.as_object().is_some_and(serde_json::Map::is_empty)
+        && let Some(limit) = usage_limit(value)
+    {
+        return Accounting {
+            observation: Some(TaskUsageObservationV1 {
+                reported_usage: top_usage.clone(),
+                charge_complete: false,
+            }),
+            usage: top_usage,
+            error: Some(limit),
+            switched: false,
+        };
+    }
     let mut reasons = Vec::new();
     // The switch decision reads every entry of the map, however many: the charge below reads at
     // most 32 (ADR-0102), but a foreign activity anywhere is a switch, and the switch refusal

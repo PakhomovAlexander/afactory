@@ -66,7 +66,8 @@ fn passing_review_cannot_mask_failed_or_missing_requirements_acceptance() {
         )
         .unwrap();
         commit(&repo);
-        let exit = if missing { 4 } else { 3 };
+        // A missing evaluator reply is a failed Worker (6); a rejection asked for changes (3).
+        let exit = if missing { 6 } else { 3 };
         let result = run(
             &repo,
             &state,

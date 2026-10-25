@@ -633,6 +633,7 @@ impl Fixture {
             name: "builtin/document-author".into(),
             version: "1.0.0".into(),
             signature: OperatorSignature {
+                unbound_allowed: Default::default(),
                 contract: PipelineContractV1 {
                     inputs: BTreeMap::from([(
                         "input".into(),
@@ -1584,4 +1585,26 @@ fn worker_manifest_refuses_the_removed_legacy_task_command_runner() {
     let error = TaskPlanCompiler::parse_package(&package(manifest)).unwrap_err();
     assert!(error.contains("legacy_task_command"), "{error}");
     assert!(serde_json::from_value::<TaskWorkerRunner>(legacy).is_err());
+}
+
+/// The deadline refusal lists each node on the longest path with its Attempt's wall, the
+/// verification reserve, their total and the Task's wall; the numbers add up.
+#[test]
+fn the_deadline_refusal_lists_the_path_and_its_numbers_add_up() {
+    let path = vec![
+        ("root.nodes.implement".to_owned(), 10_800_000),
+        ("root.nodes.check".to_owned(), 3_600_000),
+    ];
+    let refusal = super::deadline_refusal(&path, 600_000, 15_000_000, 7_200_000);
+    assert_eq!(
+        refusal,
+        "Remaining Task deadline cannot protect verification and declared Attempts: it needs \
+         wall_ms >= 15000000 = the longest path of mandatory Attempts (root.nodes.implement 1 × \
+         10800000 + root.nodes.check 1 × 3600000) + the verification reserve 600000, and the \
+         Task has 7200000"
+    );
+    assert_eq!(
+        path.iter().map(|(_, wall)| wall).sum::<u64>() + 600_000,
+        15_000_000
+    );
 }

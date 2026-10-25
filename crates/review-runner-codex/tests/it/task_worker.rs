@@ -457,3 +457,141 @@ fn a_codex_attempt_home_is_private_and_not_the_candidate_tree() {
     assert!(!std::path::Path::new(home).starts_with(&candidate));
     assert!(stderr.contains("codex_home=[redacted]\n"), "{stderr}");
 }
+
+/// ADR-0208, issue #33: a typed request's reply contract reaches Codex as `--output-schema`: a
+/// file in the Attempt's staging directory whose bytes are exactly the strict schema
+/// `reply_schema::strict` derives from the request's own output schemas, so Codex itself refuses
+/// a structurally wrong final message. What the strict schema made the model write beyond the
+/// contract — `null` for an optional field, an empty unused port — is removed before the kernel
+/// judges the reply; a legacy prompt runs without a schema.
+#[test]
+fn a_typed_request_passes_its_reply_contract_as_the_output_schema_file() {
+    use review_runner::task::{WorkerRequest, reply_schema};
+    use std::collections::BTreeMap;
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let copy = temp.path().join("schema-copy.json");
+    let reply = r#"{"schema":"af.worker-reply/1","outputs":{"notes":[],"result":[{"outcome":"passed","note":null}]}}"#;
+    let program = temp.path().join("fake-codex");
+    std::fs::write(
+        &program,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$@\" >&2\nschema=; prev=; for arg in \"$@\"; do [ \"$prev\" = --output-schema ] && schema=$arg; prev=$arg; done\n[ -n \"$schema\" ] && cp \"$schema\" '{}'\n{}printf '%s\\n' '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}'\n",
+            copy.display(),
+            write_reply(reply)
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = CodexTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
+    let request = WorkerRequest::new(
+        "Judge it.",
+        BTreeMap::new(),
+        Vec::new(),
+        BTreeMap::from([
+            (
+                "result".to_string(),
+                serde_json::json!({"type":"object","additionalProperties":false,"required":["outcome"],
+                    "properties":{"outcome":{"enum":["passed","failed"]},"note":{"type":"string"}}}),
+            ),
+            (
+                "notes".to_string(),
+                serde_json::json!({"type":"object","additionalProperties":false,"properties":{}}),
+            ),
+        ]),
+    )
+    .rendered()
+    .unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        request.clone(),
+        LOAD_SAFE_WALL,
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    let message = returned.message.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&message).unwrap(),
+        serde_json::json!({"schema":"af.worker-reply/1","outputs":{"result":[{"outcome":"passed"}]}})
+    );
+    let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+    let flags: Vec<_> = flags.lines().collect();
+    let at = flags
+        .iter()
+        .position(|flag| *flag == "--output-schema")
+        .expect("the schema argument is passed");
+    assert!(flags[at + 1].ends_with("/reply-schema.json"), "{flags:?}");
+    let expected = reply_schema::strict(&request).unwrap().unwrap().to_string();
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), expected);
+    // The `-o` file is kept as it was written, nulls and all.
+    assert!(
+        returned
+            .raw_artifact_ids
+            .iter()
+            .any(|id| cas.get(id).unwrap() == reply.as_bytes())
+    );
+
+    // A legacy prompt passes no schema.
+    std::fs::remove_file(&copy).unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"review".to_vec(),
+        LOAD_SAFE_WALL,
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+    assert!(
+        !flags.lines().any(|flag| flag == "--output-schema"),
+        "{flags}"
+    );
+    assert!(!copy.exists());
+}
+
+/// ADR-0208, issue #295: an exit 1 that wrote nothing is a transient ending, and so is an
+/// overloaded model; an authentication failure is not.
+#[test]
+fn a_silent_exit_and_an_overloaded_model_are_transient_and_an_auth_failure_is_not() {
+    use review_runner::native_failure::TransientClass;
+    for (body, expected) in [
+        (
+            "cat >/dev/null\nexit 1",
+            Some(TransientClass::ExitedWithoutOutput),
+        ),
+        (
+            "cat >/dev/null\necho 'stream error: 529 overloaded_error' >&2\nexit 1",
+            Some(TransientClass::Capacity),
+        ),
+        (
+            "cat >/dev/null\necho 'Not logged in. Please run /login' >&2\nexit 1",
+            None,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let program = temp.path().join("fake-codex");
+        std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter =
+            CodexTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"review".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        assert!(returned.message.is_err(), "{body}");
+        assert_eq!(
+            returned.notes.transient.map(|transient| transient.class),
+            expected,
+            "{body}"
+        );
+    }
+}

@@ -183,6 +183,18 @@ pub const LAYOUT: &[Entry] = &[
         "Task packages, kinds, selection, providers",
     ),
     file(
+        "rules.md",
+        Writer::Human,
+        Versioning::Versioned,
+        "standing rules every Task Worker reads first",
+    ),
+    file(
+        "seal-ignore",
+        Writer::Human,
+        Versioning::Versioned,
+        "what sealing leaves out of a candidate",
+    ),
+    file(
         "optimization-policy.json",
         Writer::Human,
         Versioning::Versioned,
@@ -441,20 +453,39 @@ fn widths() -> [usize; 5] {
     widths
 }
 
+/// The widest line of the plain table: a help page is held to 100 columns.
+const PLAIN_WIDTH: usize = 100;
+
+/// One row: the first four cells aligned, and the last, `holds`, wrapped at spaces onto lines
+/// of their own under its column when the row would be wider than [`PLAIN_WIDTH`].
 fn plain_row(row: &[String; 5], widths: &[usize; 5]) -> String {
     let mut text = String::from("  ");
-    for (index, cell) in row.iter().enumerate() {
+    for (index, cell) in row.iter().enumerate().take(row.len() - 1) {
         text.push_str(cell);
-        if index + 1 < row.len() {
-            let pad = widths[index] - cell.chars().count() + 2;
-            text.push_str(&" ".repeat(pad));
-        }
+        let pad = widths[index] - cell.chars().count() + 2;
+        text.push_str(&" ".repeat(pad));
     }
-    text.push('\n');
-    text
+    let column = text.chars().count();
+    let mut line = text;
+    let mut first = true;
+    for word in row[row.len() - 1].split(' ') {
+        if !first && line.chars().count() + 1 + word.chars().count() > PLAIN_WIDTH {
+            line.push('\n');
+            line.push_str(&" ".repeat(column));
+            first = true;
+        }
+        if !first {
+            line.push(' ');
+        }
+        line.push_str(word);
+        first = false;
+    }
+    line.push('\n');
+    line
 }
 
-/// The layout table as aligned plain text, indented two spaces for `af help config`.
+/// The layout table as aligned plain text, indented two spaces for `af help config`, no line
+/// wider than 100 columns.
 pub fn render_table() -> String {
     let widths = widths();
     let header = HEADERS.map(str::to_string);
@@ -562,18 +593,32 @@ mod tests {
     fn both_renderings_carry_exactly_the_declared_entries() {
         let plain = render_table();
         let markdown = render_markdown_table();
-        assert_eq!(plain.lines().count(), LAYOUT.len() + 1);
+        // A row's first line starts at the margin's two spaces; a wrapped `holds` continues
+        // under its column.
+        let rows: Vec<&str> = plain
+            .lines()
+            .filter(|line| !line.starts_with("   "))
+            .collect();
+        assert_eq!(rows.len(), LAYOUT.len() + 1);
         assert_eq!(markdown.lines().count(), LAYOUT.len() + 2);
+        let collapsed = plain.split_whitespace().collect::<Vec<_>>().join(" ");
         for entry in LAYOUT {
             let name = entry.name();
             let row = format!("| `{name}` |");
             assert!(plain.contains(&name), "{name}");
             assert!(markdown.contains(&row), "{name}");
-            assert!(plain.contains(entry.purpose), "{name}");
+            assert!(collapsed.contains(entry.purpose), "{name}");
             assert!(markdown.contains(entry.purpose), "{name}");
         }
-        // Columns, not a ragged join: two spaces separate them, every row carries five.
+        // Columns, not a ragged join: two spaces separate them, every row carries five, and no
+        // line is wider than a help page.
+        let holds = rows[0].find("holds").unwrap();
         for line in plain.lines() {
+            assert!(line.chars().count() <= PLAIN_WIDTH, "{line}");
+            if line.starts_with("   ") {
+                assert_eq!(line.len() - line.trim_start().len(), holds, "{line}");
+                continue;
+            }
             let columns = line.split("  ").filter(|cell| !cell.is_empty());
             assert_eq!(columns.count(), HEADERS.len(), "{line}");
         }

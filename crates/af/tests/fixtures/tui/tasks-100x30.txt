@@ -12,7 +12,7 @@ v hub  (project)            |
         pagination-c~  100% |
     v failed/ (1)           |
         pagination-u~  100% |
-                            |
+  v campaigns/              |
                             |
                             |
                             |

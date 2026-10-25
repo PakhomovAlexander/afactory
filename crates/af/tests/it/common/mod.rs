@@ -30,19 +30,43 @@ pub const TARGET: &str = env!("AF_TARGET");
 /// it starts `RUSTUP_HOME` and `CARGO_HOME`. A test that sets any of these names itself
 /// afterwards wins, since the last `env` of a name counts.
 ///
-/// It also raises the provider probes' timeouts to [`LOAD_SAFE_PROBE_TIMEOUT_MS`], and sets
-/// `AF_SELF_OFFLINE`: an eligible command spawns the detached update check whether or not it
-/// has a terminal, and that check would ask the real release source over the network. Tests of
-/// the check use [`Sandbox::command`], whose release source is a directory.
+/// It also raises the provider probes' timeouts to [`LOAD_SAFE_PROBE_TIMEOUT_MS`], shortens the
+/// in-Attempt retry's first wait to [`TEST_RETRY_BASE_MS`], and sets `AF_SELF_OFFLINE`: an
+/// eligible command spawns the detached update check whether or not it has a terminal, and that
+/// check would ask the real release source over the network. Tests of the check use
+/// [`Sandbox::command`], whose release source is a directory. And it empties
+/// [`DETECT_SYSTEM_DIRS_SETTING`], so `af provider detect` never finds the developer's own
+/// `/opt/homebrew/bin/claude` or `/usr/local/bin/codex`; a test of those directories names
+/// private ones.
 pub fn af() -> Command {
     let mut command = Command::new(af_binary());
     for (name, value) in private_home_env() {
         command.env(name, value);
     }
     command.env(PROBE_TIMEOUT_SETTING, LOAD_SAFE_PROBE_TIMEOUT_MS);
+    command.env(DETECT_SYSTEM_DIRS_SETTING, "");
+    command.env(RETRY_BASE_SETTING, TEST_RETRY_BASE_MS);
     command.env("AF_SELF_OFFLINE", "1");
+    // Human text is held to `COLUMNS` without a terminal, as clap holds `--help`: the
+    // developer's own terminal width never changes what a test reads. A test of a width sets
+    // its own.
+    command.env_remove("COLUMNS");
     command
 }
+
+/// The debug-only setting that replaces the system install directories `af provider detect`
+/// searches (`/opt/homebrew/bin`, `/usr/local/bin`) with a `:`-separated list; a release binary
+/// never reads it (ADR-0206).
+pub const DETECT_SYSTEM_DIRS_SETTING: &str = "AF_TEST_DETECT_SYSTEM_DIRS";
+
+/// The debug-only setting of the first wait before an Attempt calls its Provider again after a
+/// transient failure (ADR-0208); a release binary always waits its production 60 s.
+pub const RETRY_BASE_SETTING: &str = "AF_TEST_PROVIDER_RETRY_BASE_MS";
+
+/// Ten milliseconds in place of the production minute: a fake Provider's transient failure is
+/// retried as in production, without a test waiting minutes for it. A test whose subject is the
+/// wait sets its own.
+pub const TEST_RETRY_BASE_MS: &str = "10";
 
 /// The debug-only setting that raises the provider status, subscription, version and usage
 /// probes' timeouts (ADR-0114); a release binary never reads it.
@@ -79,6 +103,13 @@ pub fn private_home_env() -> Vec<(&'static str, PathBuf)> {
         ("XDG_DATA_HOME", home.join(".local/share")),
         ("XDG_BIN_HOME", home.join(".local/bin")),
     ]
+}
+
+/// This test process's own `TMPDIR`, for a child a helper spawns after `env_clear()`: without
+/// it the child falls back to the system's temporary directory (`/var/folders/…` on macOS),
+/// which a sandbox whose `TMPDIR` is private forbids. `None` when this process has none.
+pub fn inherited_tmpdir() -> Option<(&'static str, std::ffi::OsString)> {
+    std::env::var_os("TMPDIR").map(|tmpdir| ("TMPDIR", tmpdir))
 }
 
 pub fn write(path: &Path, text: &str) {
@@ -298,7 +329,7 @@ impl Sandbox {
     pub fn adopt_real_binary_with(&self, digest: &str) -> PathBuf {
         let dir = self.versions().join(VERSION);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::copy(af_binary(), dir.join("af")).unwrap();
+        install_private_af(&dir.join("af"));
         write(
             &dir.join("receipt.toml"),
             &format!(
@@ -370,11 +401,88 @@ pub fn tool_dir(root: &Path, tools: &[&str]) -> PathBuf {
     dir
 }
 
-/// Write `script` at `path` and make it executable.
+/// Write `script` at `path` and make it executable. A single-threaded writer process writes it
+/// (see [`written_by_a_child`]), so a test that starts the script at once never meets `Text
+/// file busy`.
 pub fn executable(path: &Path, script: &str) {
     use std::os::unix::fs::PermissionsExt;
-    write(path, script);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    written_by_a_child(path, script.as_bytes());
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Write `bytes` to `path` through a single-threaded child process, which this process reaps
+/// before it returns. Linux refuses to start a file that any process holds open for writing
+/// (`ETXTBSY`, `Text file busy`, issue #121), and a child another test thread forks while this
+/// multi-threaded process holds such a descriptor inherits it until its own `exec`. Under
+/// `cargo test`, which runs a binary's tests as threads of one process, a script a test wrote
+/// and started at once failed that way; under nextest, one process per test, it never did. The
+/// descriptor here lives only in the writer, so no sibling can inherit it.
+pub fn written_by_a_child(path: &Path, bytes: &[u8]) {
+    use std::io::Write;
+    let mut writer = Command::new("/bin/sh")
+        .args(["-c", "exec cat > \"$1\"", "fixture-writer"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer.stdin.take().unwrap().write_all(bytes).unwrap();
+    let output = writer.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "writing {}: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// This process's one private copy of the binary under test, made once, by a child process
+/// (see [`written_by_a_child`]): a test that installs `af` somewhere links this copy instead
+/// of copying the binary again, so no later install leaves a written file behind for a sibling
+/// thread's child to hold open. It is a copy, not a link to [`af_binary`], so nothing a test
+/// does to an installed `af` can reach the file cargo built.
+pub fn private_af() -> &'static Path {
+    static COPY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    COPY.get_or_init(|| {
+        let home = private_home_env()
+            .into_iter()
+            .find(|(name, _)| *name == "HOME")
+            .map(|(_, home)| home)
+            .unwrap();
+        let directory = home.with_extension("binaries");
+        std::fs::create_dir_all(&directory).unwrap();
+        let copy = directory.join("af");
+        copy_by_a_child(af_binary(), &copy);
+        copy
+    })
+}
+
+/// Install the binary under test at `path`: a hard link to [`private_af`], or where the
+/// filesystem refuses one, a copy a child process makes.
+pub fn install_private_af(path: &Path) {
+    if std::fs::hard_link(private_af(), path).is_err() {
+        copy_by_a_child(private_af(), path);
+    }
+}
+
+/// `cp -p source destination` in a child process: its mode and bytes, and no writable
+/// descriptor in this one.
+fn copy_by_a_child(source: &Path, destination: &Path) {
+    let output = Command::new("/bin/sh")
+        .args(["-c", "exec cp -p \"$1\" \"$2\"", "fixture-copier"])
+        .arg(source)
+        .arg(destination)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "copying {} to {}: {}",
+        source.display(),
+        destination.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// A `curl` that answers as GitHub would from the release directory `$FAKE_RELEASES` for the
@@ -448,6 +556,22 @@ pub fn err(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// Whether a printed `line` keeps to `width` columns, or is one unbreakable unit on a line of
+/// its own: a path or a word, or a `--flag value` pair, indented and continued with ` \`. A
+/// path wider than the terminal (a long `TMPDIR`) cannot be broken without breaking the copied
+/// command, so af gives it a line to itself instead.
+pub fn fits_or_unbreakable(line: &str, width: usize) -> bool {
+    if line.chars().count() <= width {
+        return true;
+    }
+    let unit = line.trim().trim_end_matches('\\').trim_end();
+    match shell_words::split(unit).as_deref() {
+        Ok([_]) => true,
+        Ok([flag, _]) => flag.starts_with("--"),
+        _ => false,
+    }
+}
+
 /// An empty directory in `parent` (created when absent) named as a removal of process `pid`
 /// claims it, `.af-removing-<pid>-<device>-<inode>`, binding its own device and inode: a claim
 /// af can prove it made (ADR-0144), unlike a name that is only claim-shaped.
@@ -462,4 +586,81 @@ pub fn af_claim(parent: &Path, pid: u32) -> PathBuf {
     let claim = parent.join(review_sandbox::claim_name(pid, identity));
     std::fs::rename(&made, &claim).unwrap();
     claim
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #121: under `cargo test` every test of this binary is a thread of one process, and
+    /// a script one thread wrote and started at once failed with `Text file busy` whenever
+    /// another thread had just forked. Eight threads each write a fresh script and start it
+    /// at once, 40 times, while four more spawn processes the whole time; every start succeeds.
+    #[test]
+    fn scripts_written_while_other_threads_spawn_start_without_text_file_busy() {
+        let directory = tempfile::tempdir().unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spawners: Vec<_> = (0..4)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        Command::new("/bin/sh").args(["-c", ":"]).status().unwrap();
+                    }
+                })
+            })
+            .collect();
+        let writers: Vec<_> = (0..8)
+            .map(|thread| {
+                let root = directory.path().to_path_buf();
+                std::thread::spawn(move || {
+                    for round in 0..40 {
+                        let script = root.join(format!("script-{thread}-{round}"));
+                        executable(&script, &format!("#!/bin/sh\necho {thread}-{round}\n"));
+                        let output = Command::new(&script).output().unwrap_or_else(|error| {
+                            panic!("starting {}: {error}", script.display())
+                        });
+                        assert_eq!(out(&output), format!("{thread}-{round}\n"));
+                    }
+                })
+            })
+            .collect();
+        let results: Vec<_> = writers.into_iter().map(|writer| writer.join()).collect();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for spawner in spawners {
+            spawner.join().unwrap();
+        }
+        for result in results {
+            result.unwrap();
+        }
+    }
+
+    /// The binary under test is copied once per process: every install links that one copy,
+    /// which holds exactly the built bytes, keeps its mode and starts.
+    #[test]
+    fn the_binary_under_test_is_copied_once_per_process() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let directory = tempfile::tempdir().unwrap();
+        let (first, second) = (directory.path().join("one"), directory.path().join("two"));
+        install_private_af(&first);
+        install_private_af(&second);
+        assert_eq!(private_af(), private_af());
+        let copy = std::fs::metadata(private_af()).unwrap();
+        for installed in [&first, &second] {
+            let metadata = std::fs::metadata(installed).unwrap();
+            assert_eq!((metadata.dev(), metadata.ino()), (copy.dev(), copy.ino()));
+            assert_eq!(metadata.permissions().mode() & 0o111, 0o111);
+        }
+        assert_ne!(
+            copy.ino(),
+            std::fs::metadata(af_binary()).unwrap().ino(),
+            "the private copy is not the file cargo built"
+        );
+        assert_eq!(
+            std::fs::read(&first).unwrap(),
+            std::fs::read(af_binary()).unwrap()
+        );
+        let output = Command::new(&first).arg("--version").output().unwrap();
+        assert!(output.status.success(), "{}", err(&output));
+    }
 }

@@ -54,11 +54,26 @@ fn zero_file_wall_refuses_before_state_and_does_not_consume_the_task_id() {
     write_file(&repo, &zero);
     for command in ["start", "plan"] {
         let out = invoke(&repo, &state, &["task", command, "--file", "ticket.json"]);
-        assert!(!out.status.success());
+        // The status and both streams, so a process ended by a signal (which prints nothing)
+        // reads as that rather than as a refusal that lost its message.
+        let printed = format!(
+            "af task {command}: {:?}\nstdout: {}\nstderr: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.status.code(), Some(1), "{printed}");
         assert!(
             String::from_utf8_lossy(&out.stderr).contains("must be positive"),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
+            "{printed}"
+        );
+        let document: Value = serde_json::from_slice(&out.stdout).expect(&printed);
+        assert_eq!(document["schema"], "af/error@1", "{printed}");
+        assert!(
+            document["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("must be positive")),
+            "{printed}"
         );
         assert!(
             !state.exists(),
@@ -73,14 +88,23 @@ fn zero_file_wall_refuses_before_state_and_does_not_consume_the_task_id() {
     let before = inventory(&state);
     zero["task_id"] = "another-id".into();
     write_file(&repo, &zero);
+    let out = invoke(
+        &repo,
+        &state,
+        &["task", "start", "--execute", "--file", "ticket.json"],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{:?}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(
-        !invoke(
-            &repo,
-            &state,
-            &["task", "start", "--execute", "--file", "ticket.json"]
-        )
-        .status
-        .success()
+        String::from_utf8_lossy(&out.stderr).contains("must be positive"),
+        "{:?}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
         inventory(&state),

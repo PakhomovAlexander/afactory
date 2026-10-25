@@ -34,6 +34,9 @@ fn fixture_with_id(home: &Path, id: &str) -> PathBuf {
     let auth = home.join("auth");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::create_dir_all(&auth).unwrap();
+    // A login's own file: af never asks a CLI about an empty auth directory, which the CLI would
+    // fill (ADR-0206), so a registered context without one is never probed.
+    std::fs::write(auth.join(".claude.json"), "{}").unwrap();
     let marker = home.join("spawned");
     // Mark *all* invocations, including help/version/account/model probes.
     let script = format!(
@@ -53,6 +56,8 @@ fn fixture_with_id(home: &Path, id: &str) -> PathBuf {
         &[
             "provider",
             "add",
+            // Registered token-free: plain `add` asks the CLI once (ADR-0206).
+            "--unverified",
             id,
             "--kind",
             "claude",
@@ -203,6 +208,8 @@ fn enable_cleans_removed_ids_and_recovers_full_capacity_without_probes() {
         &[
             "provider",
             "add",
+            // Registered token-free: plain `add` asks the CLI once (ADR-0206).
+            "--unverified",
             "replacement",
             "--kind",
             "claude",

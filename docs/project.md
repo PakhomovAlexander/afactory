@@ -52,12 +52,16 @@ through a temporary file and a rename, as it writes `stores.toml`.
 
 The Store registry (`$XDG_STATE_HOME/af/stores.toml`) records every Project Store with the kind
 `project`, so `af storage` counts it as a `project_store` entry
-([schema](../schemas/storage-v4.json)). A registry that can hold that kind is `version = 2`; a
-version-1 file an earlier release wrote is refused with the way out: delete
-`$XDG_STATE_HOME/af/stores.toml`. Stores register again as commands use them, and the Stores
-under af's default roots were never in it. A Project Store is never evicted: it indexes the
-Project's Workspaces. The Task Stores of its Workspaces are counted, and their finished Tasks
-collected, like every other Task Store.
+([schema](../schemas/storage-v5.json)). A registry that can hold that kind is `version = 2`; a
+version-1 file an earlier release wrote is replaced by an empty one the first time af records a
+Store, which it says once on stderr: nothing is lost, since Stores register again as commands use
+them and the Stores under af's default roots were never in it. Until then `af storage` reports it
+unreadable. A Project Store is never evicted: it indexes the Project's Workspaces. The Task Stores
+of its Workspaces are counted, and their finished Tasks collected, like every other Task Store,
+except a Task a registered delivered Workspace was made from: its `WorkspaceDelivered@1` records
+that Task's ID apart from the label, which carries a suffix when the Task ID was taken, and no
+sweep collects the Task while the Workspace stays registered. While a Project Store cannot be
+read, a sweep collects no finished Task at all, and says which Project Store stopped it.
 
 ## Workspaces
 
@@ -813,7 +817,7 @@ the trigger after a run. The tombstone a collected Survey leaves is described un
 
 Every Survey is an entry of kind `survey` of the machine budget: `af storage` lists it with its
 record's CAS bytes, its path the CAS object, and its cutoff as its last use, and `--json` prints
-`af/storage@4` ([schema](../schemas/storage-v4.json)). `af project refresh` collects nothing,
+`af/storage@5` ([schema](../schemas/storage-v5.json)). `af project refresh` collects nothing,
 however often it runs. Surveys go only in the Storage Budget's own passes
 ([ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md)):
 

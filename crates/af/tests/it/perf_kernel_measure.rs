@@ -256,7 +256,7 @@ impl Consumer {
             "{task_id}: {stderr}\n{}",
             self.explain(&outcome)
         );
-        schemas::valid(&schemas::validator("task-inspection-v11.json"), &outcome);
+        schemas::valid(&schemas::validator("task-inspection-v13.json"), &outcome);
         self.retain(task_id, code, &outcome);
         outcome
     }
@@ -265,6 +265,17 @@ impl Consumer {
     fn explain(&self, outcome: &Value) -> String {
         let cas = self.cas();
         let mut out = format!("{}\n", failure_diagnostics(&cas, outcome));
+        // The Task's own account, which names each failed node and its first error line.
+        if let Some(task) = outcome["task_id"].as_str() {
+            let (_, shown, _) = self.af(&[
+                "task",
+                "show",
+                task,
+                "--state",
+                self.state.to_str().unwrap(),
+            ]);
+            out.push_str(&format!("show: {shown}\n"));
+        }
         for port in ["baseline", "candidate", "comparison"] {
             let Some(id) = outcome["result"]["outputs"][port]["artifact_ids"][0].as_str() else {
                 out.push_str(&format!("{port}: absent\n"));
@@ -1114,8 +1125,14 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
             "crates/lockfile is a symbolic link",
         ),
         (
+            // Sealing leaves bytecode out of a candidate unless the tree stages it (ADR-0207);
+            // this candidate stages it, so the guard is what refuses it.
             "bytecode",
-            json!({CANONICAL: unslow, bytecode_path: {"base64": base64(&bytecode)}}),
+            json!({
+                CANONICAL: unslow,
+                bytecode_path: {"base64": base64(&bytecode)},
+                ".af/seal-ignore": "!__pycache__/\n!*.pyc\n",
+            }),
             "harness of",
         ),
     ];

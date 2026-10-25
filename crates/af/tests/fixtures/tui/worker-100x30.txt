@@ -14,7 +14,7 @@ v hub  (project)            |
         pagination-c~  100% |-----------------------------------------------------------------------
     v failed/ (1)           |STATE  Attempts in this scope's Task Stores
         pagination-u~  100% |attempts  reserved 0  settled ok 1  settled failed 0  released 0
-                            |tokens    charged 0
+  v campaigns/              |tokens    charged 0
                             |wall      -  (no Attempt recorded a wall)
                             |other     1 Attempts ran this name at an unpinned digest
                             |-----------------------------------------------------------------------

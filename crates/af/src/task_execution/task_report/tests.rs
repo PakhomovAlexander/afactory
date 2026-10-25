@@ -66,13 +66,14 @@ fn node(name: &str, worker: Option<TaskReportWorkerV1>) -> TaskReportNodeV1 {
     }
 }
 
-fn entry(task_id: &str, worker: &str) -> TaskReportEntryV1 {
-    TaskReportEntryV1 {
+fn entry(task_id: &str, worker: &str) -> TaskReportEntryV2 {
+    TaskReportEntryV2 {
         round: 0,
         task_id: task_id.into(),
         kind: "implement".into(),
         pipeline: Some("fixture/plain@1.0.0".into()),
-        outcome: "pass".into(),
+        state: verified(),
+        detail: None,
         collected: false,
         review_rounds: Some(0),
         findings: None,
@@ -97,9 +98,35 @@ fn entry(task_id: &str, worker: &str) -> TaskReportEntryV1 {
     }
 }
 
+fn verified() -> review_core::task::state::TaskStateV1 {
+    use review_core::task::state::*;
+    TaskStateV1::ended(TaskStatePhaseV1::Finished, TaskOutcomeV1::Verified, None)
+}
+
+/// The state a round of the five below ended in, by the outcome its row names.
+fn state_of(task_id: &str, outcome: &str) -> review_core::task::state::TaskStateV1 {
+    use review_core::task::state::*;
+    let ended = |outcome, cause, next: String| {
+        TaskStateV1::ended(TaskStatePhaseV1::Finished, outcome, Some(cause)).with_next(next)
+    };
+    match outcome {
+        "changes_requested" => ended(
+            TaskOutcomeV1::ChangesRequested,
+            TaskCauseV1::ReviewerFindings,
+            format!("af task findings {task_id}"),
+        ),
+        "gate_failed" => ended(
+            TaskOutcomeV1::GateFailed,
+            TaskCauseV1::CheckFailed,
+            format!("af task run {task_id} --retry-gate"),
+        ),
+        _ => verified(),
+    }
+}
+
 /// The report over `tasks`, which all run `fixture/plain@1.0.0` with `gpt-6-sol`.
-fn report(tasks: Vec<TaskReportEntryV1>) -> TaskReportV1 {
-    TaskReportV1::new(vec![plain("gpt-6-sol")], tasks).unwrap()
+fn report(tasks: Vec<TaskReportEntryV2>) -> TaskReportV2 {
+    TaskReportV2::new(vec![plain("gpt-6-sol")], tasks).unwrap()
 }
 
 #[test]
@@ -129,13 +156,14 @@ fn round(
     runs: u64,
     (total, failure): (u64, Option<(TaskReportFailureClassV1, u128)>),
     node: TaskReportNodeV1,
-) -> TaskReportEntryV1 {
-    TaskReportEntryV1 {
+) -> TaskReportEntryV2 {
+    TaskReportEntryV2 {
         round: 0,
         task_id: task_id.into(),
         kind: kind.into(),
         pipeline: Some(pipeline.into()),
-        outcome: outcome.into(),
+        state: state_of(task_id, outcome),
+        detail: (outcome == "gate_failed").then(|| "check clippy".to_owned()),
         collected: false,
         review_rounds: Some(u64::from(findings.is_some())),
         findings,
@@ -292,7 +320,7 @@ fn five_rounds_render_their_pipelines_first_then_one_row_each_and_the_total() {
             "task-report-layout-2",
             "implement",
             reviewed_label,
-            "changes_requested",
+            "gate_failed",
             Some(TaskReportFindingsV1 {
                 blocker: Some(0),
                 major: Some(0),
@@ -364,7 +392,7 @@ fn five_rounds_render_their_pipelines_first_then_one_row_each_and_the_total() {
             ),
         ),
     ];
-    let report = TaskReportV1::new(vec![reviewed, verification], tasks).unwrap();
+    let report = TaskReportV2::new(vec![reviewed, verification], tasks).unwrap();
     let expected = "\
 <!-- af-task-report:v1 -->
 ### af task report
@@ -375,11 +403,11 @@ fn five_rounds_render_their_pipelines_first_then_one_row_each_and_the_total() {
 
 | Round | Task | Outcome | Findings | Tokens | Active |
 | ---: | --- | --- | --- | ---: | ---: |
-| 1 | task-report-layout | changes_requested | 6 major, 1 minor | 412,907 | 23m 41s |
-| 2 | task-report-layout-2 | changes_requested | gate failed | 98,402 | 6m 05s |
-| 3 | task-report-layout-3 | changes_requested | 1 major; 1 reviewer failed | 233,018 | 15m 12s |
-| 4 | task-report-layout-4 | pass | none | 201,555 | 12m 30s |
-| 5 | verify-task-report-layout | verified | — | 41,230 | 4m 02s |
+| 1 | task-report-layout | finished/changes_requested/reviewer_findings | 6 major, 1 minor | 412,907 | 23m 41s |
+| 2 | task-report-layout-2 | finished/gate_failed/check_failed: check clippy | gate failed | 98,402 | 6m 05s |
+| 3 | task-report-layout-3 | finished/changes_requested/reviewer_findings | 1 major; 1 reviewer failed | 233,018 | 15m 12s |
+| 4 | task-report-layout-4 | finished/verified | none | 201,555 | 12m 30s |
+| 5 | verify-task-report-layout | finished/verified | — | 41,230 | 4m 02s |
 |  | Total: 22 Attempts (2 failed) |  |  | 987,112 | 1h 01m |
 
 <details>
@@ -582,7 +610,9 @@ fn an_incomplete_round_reports_unknown_findings_never_none() {
     );
     let text = markdown(&report);
     assert!(
-        text.contains("| 1 | incomplete | pass | unknown; 1 reviewer failed | 1,234 | 3.2s |"),
+        text.contains(
+            "| 1 | incomplete | finished/verified | unknown; 1 reviewer failed | 1,234 | 3.2s |"
+        ),
         "{text}"
     );
 }
@@ -651,21 +681,26 @@ fn table_cells(line: &str) -> Vec<String> {
 #[test]
 fn recorded_text_cannot_break_a_cell_or_open_markup() {
     let mut task = entry("a", "gpt-6-sol");
-    task.outcome = "m|<script>\u{1b}[31m\u{202e}".into();
+    task.state = state_of("a", "gate_failed");
+    task.detail = Some("m|<script>?[31m?".into());
     let text = markdown(&report(vec![task]));
     assert!(!text.contains("<script>"), "{text}");
     assert!(
         !text.contains('\u{1b}') && !text.contains('\u{202e}'),
         "{text}"
     );
-    assert!(text.contains("| m&#124;&lt;script&gt;?[31m? |"), "{text}");
+    assert!(
+        text.contains("| finished/gate_failed/check_failed: m&#124;&lt;script&gt;?[31m? |"),
+        "{text}"
+    );
 }
 
 /// A backslash before a pipe would escape the escape and end the cell; it is encoded first.
 #[test]
 fn a_backslash_before_a_pipe_stays_in_its_cell() {
     let mut task = entry("a", "gpt-6-sol");
-    task.outcome = "m\\|x".into();
+    task.state = state_of("a", "gate_failed");
+    task.detail = Some("m\\|x".into());
     task.nodes.as_mut().unwrap()[0].checks.clear();
     let text = markdown(&report(vec![task]));
     let row = text
@@ -673,7 +708,7 @@ fn a_backslash_before_a_pipe_stays_in_its_cell() {
         .find(|line| line.starts_with("| 1 | a |"))
         .unwrap();
     assert_eq!(table_cells(row).len(), TASK_REPORT_COLUMNS.len(), "{row}");
-    assert!(row.contains("| m&#92;&#124;x |"), "{row}");
+    assert!(row.contains(": m&#92;&#124;x |"), "{row}");
     assert_eq!(cell("m\\|x"), "m&#92;&#124;x");
     assert_eq!(cell("a\\\\|b|c"), "a&#92;&#92;&#124;b&#124;c");
 }
@@ -720,7 +755,7 @@ fn token_counts_read_with_thousands_separators_in_markdown_only() {
 #[test]
 fn only_a_model_identity_is_copied_into_the_report() {
     let with =
-        |model: &str| TaskReportV1::new(vec![plain(model)], vec![entry("a", model)]).unwrap();
+        |model: &str| TaskReportV2::new(vec![plain(model)], vec![entry("a", model)]).unwrap();
     let unknown = with(TASK_REPORT_UNKNOWN_MODEL);
     for (recorded, identity) in TASK_REPORT_MODEL_CASES {
         let shown = report_model(recorded);
@@ -795,6 +830,40 @@ fn a_refresh_that_recovers_a_pending_attempt_is_not_a_run() {
         })
     );
     assert_eq!(tally_runs(&[]), None);
+}
+
+/// `af task start --execute` (epoch 1) ends at a failed gate, `af task run --retry-gate` (epoch
+/// 2) runs that gate again on the same candidate and continues into review, and a Storage
+/// Budget sweep (epoch 3) records itself under its own lease. The retry is a run, even before
+/// its check Attempt started; the sweep is not.
+#[test]
+fn a_retried_gate_is_a_run_and_a_sweep_is_not() {
+    let events = [
+        (1, 1_000, Mark::Other),
+        (1, 1_010, Mark::Work),
+        (1, 1_400, Mark::Other),
+        (2, 9_000, Mark::Other),
+        (2, 9_010, Mark::Work),
+        (2, 9_020, Mark::Work),
+        (2, 9_800, Mark::Other),
+        (3, 9_900, Mark::Other),
+        (3, 9_950, Mark::Other),
+    ];
+    assert_eq!(
+        tally_runs(&events),
+        Some(EventTimes {
+            runs: 2,
+            wall_ms: 8_950,
+            active_ms: 400 + 800,
+        })
+    );
+    // A retry whose writer died before its check Attempt started still ran the command.
+    let retried_only = [
+        (1, 1_000, Mark::Work),
+        (2, 5_000, Mark::Other),
+        (2, 5_100, Mark::Work),
+    ];
+    assert_eq!(tally_runs(&retried_only).unwrap().runs, 2);
 }
 
 /// Issue #191: only a started Attempt makes a lease a run. `af task start --execute` (epoch 1)
@@ -1038,7 +1107,7 @@ fn unknown_usage_reads_as_unknown_beside_the_charged_total_never_as_spend() {
     task.nodes = Some(nodes);
     let text = markdown(&report(vec![task.clone()]));
     assert!(
-        text.contains("| 1 | a | pass | — | 205,295 (+3 unknown) | 3.2s |"),
+        text.contains("| 1 | a | finished/verified | — | 205,295 (+3 unknown) | 3.2s |"),
         "{text}"
     );
     assert!(
@@ -1138,6 +1207,7 @@ fn reviewer_attempts_say_whether_the_review_ran_and_how_many_reviewers_failed() 
 fn unknown_figures_are_written_as_unknown_never_as_zero() {
     let mut collected = entry("old", "gpt-6-sol");
     collected.collected = true;
+    collected.state = super::state::collected("pass");
     collected.attempts = None;
     collected.nodes = None;
     collected.review_rounds = None;
@@ -1147,7 +1217,7 @@ fn unknown_figures_are_written_as_unknown_never_as_zero() {
     untimed.nodes.as_mut().unwrap()[0].checks[0].elapsed_ms = None;
     let text = markdown(&report(vec![collected, untimed]));
     assert!(
-        text.contains("| 1 | old | pass (collected) | unknown | 1,234 | 3.2s |"),
+        text.contains("| 1 | old | finished/verified/collected | unknown | 1,234 | 3.2s |"),
         "{text}"
     );
     assert!(
@@ -1175,6 +1245,7 @@ fn a_task_without_a_retained_plan_gets_the_unknown_pipeline_line_once() {
     let collected = |id: &str| {
         let mut task = entry(id, "gpt-6-sol");
         task.collected = true;
+        task.state = super::state::collected("pass");
         task.attempts = None;
         task.nodes = None;
         task.review_rounds = None;
@@ -1182,7 +1253,7 @@ fn a_task_without_a_retained_plan_gets_the_unknown_pipeline_line_once() {
         task
     };
     let only = markdown(
-        &TaskReportV1::new(Vec::new(), vec![collected("old"), collected("older")]).unwrap(),
+        &TaskReportV2::new(Vec::new(), vec![collected("old"), collected("older")]).unwrap(),
     );
     assert_eq!(
         only.lines()
@@ -1223,7 +1294,7 @@ fn the_checked_in_fixture_is_what_the_renderer_prints_for_its_document() {
     let directory = workspace().join("fixtures/task-report");
     let document: serde_json::Value =
         serde_json::from_slice(&std::fs::read(directory.join("report.json")).unwrap()).unwrap();
-    let report: TaskReportV1 = serde_json::from_value(document.clone()).unwrap();
+    let report: TaskReportV2 = serde_json::from_value(document.clone()).unwrap();
     report.validate().unwrap();
     assert_eq!(serde_json::to_value(&report).unwrap(), document);
     assert_eq!(
@@ -1231,4 +1302,23 @@ fn the_checked_in_fixture_is_what_the_renderer_prints_for_its_document() {
         std::fs::read_to_string(directory.join("report.md")).unwrap(),
         "regenerate fixtures/task-report/report.md from report.json (see its README)"
     );
+}
+
+#[test]
+fn an_adr_file_is_named_by_its_four_digit_number() {
+    assert_eq!(
+        adr_number("docs/adr/0205-rerun.md").as_deref(),
+        Some("0205")
+    );
+    for other in [
+        "docs/adr/README.md",
+        "docs/adr/196-short.md",
+        "docs/adr/0205.md",
+        "docs/adr/0205-x/y.md",
+        "docs/adr/0205-rerun.txt",
+        "docs/design/0205-rerun.md",
+        "crates/docs/adr/0205-rerun.md",
+    ] {
+        assert_eq!(adr_number(other), None, "{other}");
+    }
 }

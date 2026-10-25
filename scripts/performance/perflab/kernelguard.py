@@ -27,8 +27,10 @@ expected digest is never read from the measured tree: a candidate cannot change 
 the digest the captured authority holds. A protected harness does not make arbitrary product
 code trustworthy; golden oracles and code review remain necessary.
 """
+import fnmatch
 import json
 import os
+import stat
 import subprocess
 
 from .values import ContractError, require
@@ -269,8 +271,123 @@ def digest(root, paths=None):
         raise ContractError("the protected harness of %s is refused: %s" % (root, error))
 
 
-def checkout_digest(root):
-    return digest(root, tracked_paths(root))
+# What Cargo keeps in its home besides configuration: package caches, locks, registries, Git
+# checkouts and installed binaries. None is a build input of the checkout.
+CARGO_HOME_STATE = (".package-cache", ".package-cache-mutate", ".global-cache", ".crates.toml",
+                    ".crates2.json", "registry", "git", "bin")
+
+
+def _inside(path, root):
+    """`path` relative to `root` when it lies strictly below it, else None."""
+    try:
+        relative = os.path.relpath(os.path.realpath(path), os.path.realpath(root))
+    except ValueError:
+        return None
+    if relative in (".", "") or relative == os.pardir or relative.startswith(os.pardir + os.sep):
+        return None
+    return relative.replace(os.sep, "/")
+
+
+def author_state(root, environ=None):
+    """(home, cargo homes): the author's own machine state below `root`, which no checkout
+    holds, so no pin may depend on it. A Worker sandbox may set `HOME` inside the tree it works
+    on (or to the tree itself), and Cargo then writes `$HOME/.cargo/.package-cache` and
+    `$HOME/.cargo/registry/CACHEDIR.TAG` there; a developer machine has neither. `home` is the
+    author's `HOME` when it lies strictly below `root`, else None: everything below it is
+    ignored. Each Cargo home below or at `root` (`CARGO_HOME`, `$HOME/.cargo`) loses only
+    Cargo's own state (`CARGO_HOME_STATE`); its configuration stays a protected build input."""
+    environ = os.environ if environ is None else environ
+    home = environ.get("HOME")
+    cargo_homes = set()
+    for candidate in (environ.get("CARGO_HOME"), home and os.path.join(home, ".cargo")):
+        if candidate:
+            relative = _inside(candidate, root)
+            if relative is not None:
+                cargo_homes.add(relative)
+    return (_inside(home, root) if home else None), sorted(cargo_homes)
+
+
+def _author_owned(path, home, cargo_homes):
+    if home is not None and (path == home or path.startswith(home + "/")):
+        return True
+    for cargo in cargo_homes:
+        if path.startswith(cargo + "/") and path[len(cargo) + 1:].split("/")[0] in \
+                CARGO_HOME_STATE:
+            return True
+    return False
+
+
+def _walk_outside(root, home, cargo_homes, rules=()):
+    """Every regular file below `root` but the author's state and what `rules` ignore,
+    refusing a link or special file anywhere else exactly as the bootstrap's walk does."""
+    out, pending = [], [""]
+    while pending:
+        relative = pending.pop()
+        with os.scandir(os.path.join(root, relative) if relative else root) as listing:
+            for entry in listing:
+                path = relative + "/" + entry.name if relative else entry.name
+                if _author_owned(path, home, cargo_homes) or _ignored(path, rules):
+                    continue
+                mode = entry.stat(follow_symlinks=False).st_mode
+                if stat.S_ISLNK(mode):
+                    raise ContractError("the protected harness of %s is refused: %s is a "
+                                        "symbolic link; a measured tree holds none" % (root, path))
+                if stat.S_ISDIR(mode):
+                    pending.append(path)
+                elif stat.S_ISREG(mode):
+                    out.append(path)
+                else:
+                    raise ContractError("the protected harness of %s is refused: %s is not a "
+                                        "regular file or directory" % (root, path))
+    return out
+
+
+def ignore_rules(root):
+    """The root `.gitignore`'s plain rules, for a tree outside a Git work tree (a Worker
+    sandbox holds the checkout's files and no `.git`): `/name` ignores that root entry,
+    `name` or `name/` any entry so named, and a pattern with `*`, `?` or `[` any basename it
+    matches. Negations and nested paths are not plain rules; a tree that needs them is pinned
+    from its checkout."""
+    try:
+        with open(os.path.join(root, ".gitignore"), encoding="utf-8") as stream:
+            lines = stream.read().splitlines()
+    except (FileNotFoundError, UnicodeDecodeError):
+        return []
+    rules = []
+    for line in lines:
+        rule = line.strip()
+        if not rule or rule.startswith(("#", "!")):
+            continue
+        anchored = rule.startswith("/")
+        name = rule.strip("/")
+        if not name or "/" in name:
+            continue
+        rules.append((anchored, name))
+    return rules
+
+
+def _ignored(path, rules):
+    parts = path.split("/")
+    for anchored, name in rules:
+        candidates = parts[:1] if anchored else parts
+        if any(fnmatch.fnmatchcase(part, name) for part in candidates):
+            return True
+    return False
+
+
+def checkout_digest(root, environ=None):
+    """The digest of what a Snapshot of `root` captures: its tracked and unignored files (the
+    whole tree but what its root `.gitignore` ignores, outside a Git work tree), without the
+    author's own `HOME` and Cargo state, so a pin made inside a Worker sandbox, after a build
+    there, equals one made on a developer machine."""
+    home, cargo_homes = author_state(root, environ)
+    paths = tracked_paths(root)
+    if paths is None:
+        rules = ignore_rules(root)
+        if home is None and not cargo_homes and not rules:
+            return digest(root)
+        paths = [path for path in _walk_outside(root, home, cargo_homes, rules)]
+    return digest(root, [path for path in paths if not _author_owned(path, home, cargo_homes)])
 
 
 def inventory_document(found, entries):

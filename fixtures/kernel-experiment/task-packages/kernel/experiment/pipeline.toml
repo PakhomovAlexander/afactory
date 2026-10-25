@@ -89,7 +89,8 @@ role = "evaluate"
 input_type = "af/EvaluationInput@1"
 output_type = "af/TaskEvaluation@1"
 min_attempts = 1
-max_attempts = 1
+# A reply that does not parse, or a refused one, gets one more Attempt (issue #283).
+max_attempts = 2
 allow_local_replacement = true
 independent_from = ["implementer"]
 

@@ -12,7 +12,7 @@ v hub  (project)            |PLAN  ########  configured  STATE done  started hh:
         pagination-c~  100% |
     v failed/ (1)           |TOKENS  chargeable 0  input -  output -  cache read -  reasoning -
         pagination-u~  100% |TIME  wall  <t>  checks  <t>  dependency prep -
-                            |
+  v campaigns/              |
                             |HISTORY  (af task show)
                             |     0  opened                              ########
                             |     1  plan_proposed                       ########

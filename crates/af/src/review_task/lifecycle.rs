@@ -126,9 +126,8 @@ pub(super) fn prepare_session(
             }.into());
         }
         let captured = restore(options, cas, store, &state, &prepared, &engine)?;
-        let lease = store
-            .take_task_lease(cas, &id, &writer(), 15_000)
-            .map_err(|e| e.to_string())?;
+        // A run that died holds its lease until it expires: wait it out (ADR-0209).
+        let lease = crate::task_execution::recovery::take_lease(cas, store, &id, &writer())?;
         let admitted = store
             .recover_task_attempts(cas, &lease)
             .map_err(|e| e.to_string())
@@ -284,7 +283,7 @@ fn admit_existing(
             .admit_task_plan(cas, lease, &authority)
             .map_err(|e| e.to_string())?;
     } else if matches!(state.phase, TaskPhaseV1::Waiting { .. }) {
-        if now_ms()? >= state.revision.limits.deadline_unix_ms {
+        if now_ms()? >= state.deadline_unix_ms() {
             store.resume_task_for_recording(cas, lease, &authority)
         } else {
             store.resume_task(cas, lease, &authority)

@@ -1,5 +1,5 @@
 //! `af task report` (ADR-0142): what recorded Tasks cost and how they ran, as one Markdown block
-//! for a pull request description or one `af/task-report@1` document.
+//! for a pull request description or one `af/task-report@2` document.
 //!
 //! Read-only. It reads what `af task show` and `af task list` read — the Task's projection,
 //! execution records, review rounds, attempt walls and the event times of its log — opens the
@@ -24,7 +24,7 @@ use review_store::store::task::execution::TaskAttemptAccounting;
 
 /// The report over `task_ids`, in the order given, from the Store under `state`. An ID the
 /// Store does not hold, or one named twice, is an error that names it.
-pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV1, String> {
+pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV2, String> {
     let mut seen = BTreeSet::new();
     for id in task_ids {
         if !seen.insert(id.as_str()) {
@@ -33,7 +33,7 @@ pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV1, St
     }
     let first = task_ids.first().ok_or("name at least one Task")?;
     if !store_present(state)? {
-        return Err(format!("Task `{first}` was not found"));
+        return Err(task_not_found(state, first));
     }
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
@@ -41,7 +41,7 @@ pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV1, St
     let mut pipelines: Vec<TaskReportPipelineV1> = Vec::new();
     let mut tasks = Vec::new();
     for id in task_ids {
-        let (task, pipeline) = entry(&cas, &store, id)?;
+        let (task, pipeline) = entry(&cas, &store, state, id)?;
         if let Some(pipeline) = pipeline
             && !pipelines.contains(&pipeline)
         {
@@ -49,27 +49,100 @@ pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV1, St
         }
         tasks.push(task);
     }
-    TaskReportV1::new(pipelines, tasks)
+    TaskReportV2::new(pipelines, tasks)
+}
+
+/// The warnings `af task report` prints on stderr before its report: two Tasks whose sealed
+/// candidates add the same `docs/adr/NNNN-*.md` number. Tasks planned in parallel from one base
+/// each take the next free number, and only one of them can keep it once both merge. Each
+/// warning names the number, the Tasks and the files: a first line starting `warning:`, to
+/// follow `af task report: `, and indented continuations, each within 100 columns. A Task
+/// without a candidate yet adds nothing.
+pub(crate) fn adr_collisions(repo: &Path, state: &Path, task_ids: &[String]) -> Vec<String> {
+    let mut by_number: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for id in task_ids {
+        let Ok(opened) = open_task(id, repo, Some(state)) else {
+            continue;
+        };
+        for (number, path) in added_adrs(&opened).unwrap_or_default() {
+            by_number
+                .entry(number)
+                .or_default()
+                .push((id.clone(), path));
+        }
+    }
+    let mut lines = Vec::new();
+    for (number, added) in by_number {
+        let tasks: BTreeSet<&str> = added.iter().map(|(task, _)| task.as_str()).collect();
+        if tasks.len() < 2 {
+            continue;
+        }
+        let named: Vec<String> = added
+            .iter()
+            .map(|(task, path)| format!("{} ({})", task, preview::text(path)))
+            .collect();
+        let warning = format!(
+            "warning: ADR {number} is added by {} Tasks: {}; give all but one the next free \
+             number before they merge, and link it from docs/adr/README.md",
+            tasks.len(),
+            named.join(", ")
+        );
+        let rows = crate::tui::panes::tasks::bounded(&warning, 100 - "af task report: ".len(), "");
+        for (index, row) in rows.into_iter().enumerate() {
+            lines.push(if index == 0 { row } else { format!("  {row}") });
+        }
+    }
+    lines
+}
+
+/// The `docs/adr/NNNN-*.md` files the Task's candidate adds to its source, by number.
+fn added_adrs(opened: &OpenedTask) -> Result<Vec<(String, String)>, String> {
+    let selected = candidate::select(opened, None)?;
+    let Some(source_id) = selected.source_id.as_deref() else {
+        return Ok(Vec::new());
+    };
+    let (_, source) = review_source_git::task::read_snapshot(&opened.cas, source_id)?;
+    let (_, head) = review_source_git::task::read_snapshot(&opened.cas, &selected.snapshot_id)?;
+    Ok(head
+        .entries
+        .iter()
+        .filter(|entry| source.get(&entry.path).is_none())
+        .filter_map(|entry| adr_number(&entry.path).map(|n| (n, entry.path.clone())))
+        .collect())
+}
+
+/// The number of an ADR file, `docs/adr/0205-a-title.md`: four digits, a dash and a name.
+fn adr_number(path: &str) -> Option<String> {
+    let name = path.strip_prefix("docs/adr/")?;
+    let (number, rest) = name.split_at_checked(4)?;
+    (number.bytes().all(|b| b.is_ascii_digit())
+        && rest.starts_with('-')
+        && rest.len() > "-.md".len()
+        && rest.ends_with(".md")
+        && !rest.contains('/'))
+    .then(|| number.to_owned())
 }
 
 /// One Task's entry, and the pipeline its current plan runs.
 fn entry(
     cas: &Cas,
     store: &EventStore,
+    state_dir: &Path,
     id: &str,
-) -> Result<(TaskReportEntryV1, Option<TaskReportPipelineV1>), String> {
-    let not_found = || format!("Task `{id}` was not found");
+) -> Result<(TaskReportEntryV2, Option<TaskReportPipelineV1>), String> {
+    let not_found = || task_not_found(state_dir, id);
     let run_id = review_store::store::task::task_run_id(id).map_err(|_| not_found())?;
     // A collected Task keeps its retained summary and its event times; its records are gone.
     if let Some(collected) = store.collected_task(id).map_err(|e| e.to_string())? {
         let times = event_times(None, store, &run_id)?.ok_or_else(not_found)?;
         let summary = &collected.collected;
-        let task = TaskReportEntryV1 {
+        let task = TaskReportEntryV2 {
             round: 0,
             task_id: summary.task_id.clone(),
             kind: summary.kind.clone(),
             pipeline: None,
-            outcome: summary.outcome.clone(),
+            state: state::collected(&summary.outcome),
+            detail: None,
             collected: true,
             review_rounds: None,
             findings: None,
@@ -97,6 +170,9 @@ fn entry(
         TaskPhaseV1::Finished { result_id } => Some(artifact(cas, result_id, TASK_RESULT_V1)?),
         _ => None,
     };
+    // The same state `af task show` prints, from the same derivation.
+    let cancelled = runs::cancelled_epoch(Some(state_dir), &state);
+    let view = state::view(cas, &state, result.as_ref(), clock()?, cancelled)?;
     let mut plans = Plans::default();
     let (pipeline, planned_review) = match &state.plan_id {
         Some(plan_id) => {
@@ -143,12 +219,13 @@ fn entry(
     } else {
         None
     };
-    let task = TaskReportEntryV1 {
+    let task = TaskReportEntryV2 {
         round: 0,
         task_id: state.task_id.clone(),
         kind: state.revision.kind.clone(),
         pipeline: pipeline.as_ref().map(TaskReportPipelineV1::label),
-        outcome: outcome_label(&state.phase, result.as_ref()).to_owned(),
+        state: view.state.clone(),
+        detail: report_detail(cas, &state, &view)?,
         collected: false,
         review_rounds: Some(rounds.len() as u64),
         findings,
@@ -168,21 +245,156 @@ fn entry(
     Ok((task, pipeline))
 }
 
+/// The detail a report row prints beside the state: the state's own summary, then, for a
+/// continued Task, the Task and round it continues (ADR-0212), so a chain of continuations reads
+/// as one in the report.
+fn report_detail(
+    cas: &Cas,
+    state: &TaskProjection,
+    view: &state::TaskView,
+) -> Result<Option<String>, String> {
+    let summary = state::report_summary(view).map(|detail| preview::text(&detail));
+    let lineage = super::continuation::recorded(cas, &state.revision)?.map(|(_, record)| {
+        format!(
+            "continues {} round {}",
+            preview::text(&record.continues.task_id),
+            record.continues.round
+        )
+    });
+    Ok(match (summary, lineage) {
+        (Some(summary), Some(lineage)) => Some(format!("{summary}; {lineage}")),
+        (summary, lineage) => summary.or(lineage),
+    })
+}
+
 /// Every review round the Task recorded, in the order it published them: each
 /// `af/TaskReviewRound@1` an execution record published, read from the Task log rather than from
 /// the current execution outputs, so a round published before `af task refresh` or a review
 /// handoff cleared those outputs still counts. A round published twice counts once.
-fn recorded_rounds(
+pub(super) fn recorded_rounds(
     cas: &Cas,
     store: &EventStore,
     run_id: &str,
 ) -> Result<Vec<TaskReviewRoundV1>, String> {
+    recorded_outputs(cas, store, run_id, TASK_REVIEW_ROUND_V1)?
+        .iter()
+        .map(|id| artifact(cas, id, TASK_REVIEW_ROUND_V1))
+        .collect()
+}
+
+/// The ID of every artifact of `artifact_type` an execution record of the Task published, in
+/// log order and each once: a continuation reads a round's findings and the evaluator's verdict
+/// this way (ADR-0212).
+pub(super) fn recorded_outputs(
+    cas: &Cas,
+    store: &EventStore,
+    run_id: &str,
+    artifact_type: &str,
+) -> Result<Vec<String>, String> {
+    let mut seen = BTreeSet::new();
+    let mut ids = Vec::new();
+    published(cas, store, run_id, |_, output| {
+        for id in output
+            .outputs
+            .values()
+            .filter(|port| port.artifact_type == artifact_type)
+            .flat_map(|port| port.artifact_ids.iter())
+        {
+            if seen.insert(id.clone()) {
+                ids.push(id.clone());
+            }
+        }
+        Ok(())
+    })?;
+    Ok(ids)
+}
+
+/// The evaluator's verdict each recorded review round was followed by, by the round's place in
+/// [`recorded_rounds`]: the node and the ID of the last `af/TaskEvaluation@1` an execution
+/// record published after that round and before the next one, `None` for a round no verdict
+/// followed. Read from the Task log in order, as the rounds are, so neither a later round on the
+/// same Snapshot nor the outputs `af task refresh` cleared lends a round another round's verdict:
+/// `af task findings --round N` and a continuation from round N both read it (ADR-0212).
+pub(super) fn round_evaluations(
+    cas: &Cas,
+    store: &EventStore,
+    run_id: &str,
+) -> Result<Vec<Option<(String, String)>>, String> {
+    use review_core::task::execution::{TASK_INVOCATION_V1, TaskInvocationV1};
+    use review_core::task::verification::TASK_EVALUATION_V1;
+    let (mut rounds, mut verdicts) = (BTreeSet::new(), BTreeSet::new());
+    let mut followed: Vec<Option<(String, String)>> = Vec::new();
+    published(cas, store, run_id, |_, output| {
+        for port in output.outputs.values() {
+            if port.artifact_type == TASK_REVIEW_ROUND_V1 {
+                for id in &port.artifact_ids {
+                    if rounds.insert(id.clone()) {
+                        followed.push(None);
+                    }
+                }
+            }
+        }
+        for port in output.outputs.values() {
+            if port.artifact_type != TASK_EVALUATION_V1 {
+                continue;
+            }
+            for id in &port.artifact_ids {
+                if !verdicts.insert(id.clone()) {
+                    continue;
+                }
+                // A verdict before the first round follows none.
+                if let Some(last) = followed.last_mut() {
+                    let invocation: TaskInvocationV1 =
+                        artifact(cas, &output.invocation_id, TASK_INVOCATION_V1)?;
+                    *last = Some((invocation.node, id.clone()));
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(followed)
+}
+
+/// The first `af/TaskOutput@1` an execution record of the Task published, in log order, with an
+/// `af/SourceTree@1` port that holds `snapshot_id`: the record's ID and the port's name, the
+/// durable output a continuation of a round on that Snapshot references (ADR-0212). `None` when
+/// no published output holds it.
+pub(super) fn output_holding(
+    cas: &Cas,
+    store: &EventStore,
+    run_id: &str,
+    snapshot_id: &str,
+) -> Result<Option<(String, String)>, String> {
+    let mut found = None;
+    published(cas, store, run_id, |output_id, output| {
+        if found.is_some() {
+            return Ok(());
+        }
+        found = output
+            .outputs
+            .iter()
+            .find(|(_, port)| {
+                port.artifact_type == SOURCE_TREE_V1
+                    && port.snapshot_id.as_deref() == Some(snapshot_id)
+            })
+            .map(|(name, _)| (output_id.to_owned(), name.clone()));
+        Ok(())
+    })?;
+    Ok(found)
+}
+
+/// Every `af/TaskOutput@1` an execution record of the Task published, handed to `visit` with its
+/// ID in log order.
+fn published(
+    cas: &Cas,
+    store: &EventStore,
+    run_id: &str,
+    mut visit: impl FnMut(&str, &TaskOutputV1) -> Result<(), String>,
+) -> Result<(), String> {
     use review_core::task::event::TaskChangeV1 as Change;
     use review_core::task::execution::TaskExecutionRecordV1 as Record;
-    let mut seen = BTreeSet::new();
-    let mut rounds = Vec::new();
     for event in store.replay(run_id).map_err(|e| e.to_string())? {
-        if review_store::store::task::is_execution_started(&event) {
+        if review_store::store::task::is_beside_transitions(&event) {
             continue;
         }
         let transition =
@@ -200,18 +412,9 @@ fn recorded_rounds(
             continue;
         };
         let output: TaskOutputV1 = artifact(cas, output_id, TASK_OUTPUT_V1)?;
-        for id in output
-            .outputs
-            .values()
-            .filter(|port| port.artifact_type == TASK_REVIEW_ROUND_V1)
-            .flat_map(|port| port.artifact_ids.iter())
-        {
-            if seen.insert(id.clone()) {
-                rounds.push(artifact(cas, id, TASK_REVIEW_ROUND_V1)?);
-            }
-        }
+        visit(output_id, &output)?;
     }
-    Ok(rounds)
+    Ok(())
 }
 
 /// What the Task's reviewer Attempts and checks say about its review.
@@ -475,7 +678,8 @@ struct EventTimes {
 /// What one Task event says about the run its writer lease belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mark {
-    /// The command executed new work: an Attempt started.
+    /// The command executed new work: an Attempt started, or `af task run --retry-gate`
+    /// reopened a failed gate to start one.
     Work,
     /// The command refreshed the Task's source (`af task refresh`): never a run.
     Refresh,
@@ -516,6 +720,20 @@ fn event_times(
             events.push((marker.epoch, marker.now_unix_ms, Mark::Other));
             continue;
         }
+        // A gate retry reopened the finished Task to start a check Attempt on the same
+        // candidate (ADR-0205): `af task run --retry-gate` is a run, as `af task run` is.
+        if review_store::store::task::gate_retry::is_gate_retried(&event) {
+            let retry = review_store::store::task::gate_retry::read_gate_retried(&event)
+                .map_err(|e| e.to_string())?;
+            events.push((retry.epoch, retry.now_unix_ms, Mark::Work));
+            continue;
+        }
+        if review_store::store::task::is_provider_event(&event) {
+            let value = review_store::store::task::read_provider_event(&event)
+                .map_err(|e| e.to_string())?;
+            events.push((value.epoch, value.now_unix_ms, Mark::Other));
+            continue;
+        }
         let transition =
             review_store::store::task::read_task_transition(&event).map_err(|e| e.to_string())?;
         let mark = match &transition.change {
@@ -537,10 +755,12 @@ fn event_times(
 }
 
 /// The runs among `(epoch, time, mark)` events in log order. A run is an epoch in which an
-/// Attempt started and that did not refresh the source, so an `af task run` (or `af task start
-/// --execute`) that began work counts, and an `af task refresh` that only recovered pending
-/// Attempts, or a resume that only published settled results, does not; its span runs from the
-/// epoch's first event to its last. Wall time runs from the first event to the last.
+/// Attempt started, or a failed gate was retried, and that did not refresh the source, so an
+/// `af task run` (or `af task start --execute`, or `af task run --retry-gate`) that began work
+/// counts, and an `af task refresh` that only recovered pending Attempts, a resume that only
+/// published settled results, or the lease a Storage Budget sweep took to record itself, does
+/// not; its span runs from the epoch's first event to its last. Wall time runs from the first
+/// event to the last.
 fn tally_runs(events: &[(u64, u64, Mark)]) -> Option<EventTimes> {
     let first = events.iter().map(|(_, time, _)| *time).min()?;
     let last = events.iter().map(|(_, time, _)| *time).max()?;
@@ -882,7 +1102,7 @@ fn report_model(model: &str) -> String {
 /// totals row, and each round's node breakdown in a collapsed `<details>` element. Every
 /// recorded value is sanitized display text, so recorded data can neither break the table nor
 /// carry markup.
-pub(crate) fn markdown(report: &TaskReportV1) -> String {
+pub(crate) fn markdown(report: &TaskReportV2) -> String {
     let mut out = String::new();
     let mut line = |text: &str| {
         out.push_str(text);
@@ -904,10 +1124,9 @@ pub(crate) fn markdown(report: &TaskReportV1) -> String {
     line(&raw_row(TASK_REPORT_COLUMNS.iter().map(|c| c.to_string())));
     line("| ---: | --- | --- | --- | ---: | ---: |");
     for task in &report.tasks {
-        let outcome = if task.collected {
-            format!("{} (collected)", task.outcome)
-        } else {
-            task.outcome.clone()
+        let outcome = match &task.detail {
+            Some(detail) => format!("{}: {detail}", task.state.label()),
+            None => task.state.label(),
         };
         line(&raw_row([
             task.round.to_string(),
@@ -1042,7 +1261,7 @@ fn pipeline_line(pipeline: &TaskReportPipelineV1) -> String {
 /// set, `gate failed` when a check failed and the review did not run, `not run` when it has not
 /// run, `—` for a Task without a review and `unknown` for a collected one; then
 /// `; N reviewer(s) failed` when a reviewer's Attempt failed.
-fn findings_cell(task: &TaskReportEntryV1) -> String {
+fn findings_cell(task: &TaskReportEntryV2) -> String {
     let Some(findings) = &task.findings else {
         return if task.collected { UNKNOWN } else { "—" }.into();
     };
@@ -1086,7 +1305,7 @@ fn findings_cell(task: &TaskReportEntryV1) -> String {
 }
 
 /// The round's `<summary>` after `Round N · `: its Task, runs, wall time and failed Attempts.
-fn details_summary(task: &TaskReportEntryV1) -> String {
+fn details_summary(task: &TaskReportEntryV2) -> String {
     let mut summary = format!(
         "{}: {} {}, {} wall",
         task.task_id,

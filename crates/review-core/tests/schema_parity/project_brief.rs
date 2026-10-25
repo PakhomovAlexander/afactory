@@ -511,6 +511,6 @@ fn the_brief_port_is_af_pipeline_2_and_a_version_1_pipeline_carrying_it_is_refus
     assert_invalid(
         PIPELINE_V1,
         &changed(&plain, "", "schema", Some(json!("af.pipeline/3"))),
-        "unknown version",
+        "af.pipeline/1 is its own label",
     );
 }

@@ -21,6 +21,7 @@ use crate::cas::{Cas, CasError};
 mod attempt_wall;
 pub mod observer;
 pub mod task;
+pub mod writers;
 
 /// Read a non-negative SQLite integer column as `u64`.
 ///
@@ -494,6 +495,8 @@ impl EventStore {
                  PRIMARY KEY (run_id, attempt_id)
              );",
         )?;
+        // The table only: this release's marker is written with its first appended event.
+        conn.execute_batch(writers::CREATE)?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -596,7 +599,10 @@ impl EventStore {
         if events.iter().any(|e| {
             matches!(
                 e.event_type,
-                EventType::TaskTransitionV5 | EventType::TaskExecutionStartedV1
+                EventType::TaskTransitionV5
+                    | EventType::TaskExecutionStartedV1
+                    | EventType::TaskGateRetriedV1
+                    | EventType::TaskProviderEventV1
             )
         }) && task_permit.is_none()
         {
@@ -5018,6 +5024,16 @@ fn insert_events(
             });
         }
     }
+    if events.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Every event lands with this release's writer marker, in the same transaction.
+    writers::mark(
+        tx,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX)),
+    )?;
     let mut appended = Vec::with_capacity(events.len());
     for (offset, event) in events.iter().enumerate() {
         let offset = i64::try_from(offset)

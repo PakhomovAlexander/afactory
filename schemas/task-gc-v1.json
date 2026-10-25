@@ -261,7 +261,7 @@
           ]
         },
         "sizes": {
-          "$ref": "urn:af:schema:task-list-entry:2#/$defs/footprint"
+          "$ref": "urn:af:schema:task-list-entry:3#/$defs/footprint"
         },
         "collected_bytes": {
           "$ref": "#/$defs/count"

@@ -29,6 +29,40 @@ pub fn read_execution_started(
 pub fn is_execution_started(event: &RunEvent) -> bool {
     event.event_type == EventType::TaskExecutionStartedV1
 }
+/// Whether `event` of a Task log is one of its event kinds beside its transitions: a lease's
+/// execution marker (`TaskExecutionStarted@1`), a gate retry (`TaskGateRetried@1`) or what an
+/// Attempt did about its Provider (`TaskProviderEvent@1`).
+pub fn is_beside_transitions(event: &RunEvent) -> bool {
+    is_execution_started(event)
+        || super::gate_retry::is_gate_retried(event)
+        || is_provider_event(event)
+}
+/// Whether `event` of a Task log is a transition, not one of the log's other event kinds (an
+/// execution marker, a gate retry or a Provider event).
+pub fn is_transition(event: &RunEvent) -> bool {
+    event.event_type == EventType::TaskTransitionV5
+}
+/// Whether `event` of a Task log is what an Attempt did about its Provider (ADR-0208).
+pub fn is_provider_event(event: &RunEvent) -> bool {
+    event.event_type == EventType::TaskProviderEventV1
+}
+pub fn read_provider_event(
+    event: &RunEvent,
+) -> Result<review_core::task::provider_event::TaskProviderEventV1, StoreError> {
+    if event.event_type != EventType::TaskProviderEventV1 {
+        return Err(conflict("Expected a Task Provider event"));
+    }
+    let value: review_core::task::provider_event::TaskProviderEventV1 =
+        serde_json::from_value(event.payload.clone())?;
+    value.validate().map_err(conflict)?;
+    Ok(value)
+}
+pub(super) fn encode_provider_event(
+    value: &review_core::task::provider_event::TaskProviderEventV1,
+) -> Result<(EventType, serde_json::Value), StoreError> {
+    value.validate().map_err(conflict)?;
+    Ok((EventType::TaskProviderEventV1, serde_json::to_value(value)?))
+}
 pub(super) fn encode_execution_started(
     value: &review_core::task::execution_started::TaskExecutionStartedV1,
 ) -> Result<(EventType, serde_json::Value), StoreError> {
@@ -507,6 +541,10 @@ impl TaskProjection {
                     plan.preparation.is_some(),
                 )
                 .map_err(conflict)?;
+            execution
+                .budget
+                .install_recovery_allowances(&graph.recovery_allowances())
+                .map_err(conflict)?;
             execution.graph = graph;
             execution.active_review_integration = None;
             execution.invocations.clear();
@@ -609,7 +647,7 @@ impl EventStore {
                 .replay(&task_run_id(lease.task_id())?)?
                 .into_iter()
                 .find(|event| {
-                    !is_execution_started(event)
+                    !is_beside_transitions(event)
                         && read_task_transition(event)
                             .is_ok_and(|value| value.change == transition.change)
                 })

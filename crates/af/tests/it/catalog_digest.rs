@@ -84,8 +84,8 @@ fn copy(from: &Path, to: &Path) {
 
 /// AF's own catalog publishes the pins the issue's workaround matched (ten when it was filed;
 /// the catalog has grown since). Every pin it holds now, and every pin of the runtime fixture
-/// catalogs, reproduces byte for byte. `bound-inputs` is excluded: its catalog carries
-/// placeholder digests its test replaces before planning.
+/// catalogs, reproduces byte for byte. `bound-inputs` and `continue` are excluded: their
+/// catalogs carry placeholder digests their tests replace before planning.
 #[test]
 fn every_published_package_pin_reproduces() {
     let root = workspace();
@@ -97,7 +97,7 @@ fn every_published_package_pin_reproduces() {
     for entry in std::fs::read_dir(&fixtures).unwrap() {
         let repo = entry.unwrap().path();
         let catalog = repo.join(".af/task-catalog.toml");
-        if repo.ends_with("bound-inputs") || !catalog.is_file() {
+        if repo.ends_with("bound-inputs") || repo.ends_with("continue") || !catalog.is_file() {
             continue;
         }
         checked += assert_reproduces(&repo, &catalog);
@@ -223,9 +223,20 @@ fn invalid_or_incomplete_packages_fail_closed() {
     copy(&source, &floating);
     let manifest = floating.join("worker.toml");
     let text = std::fs::read_to_string(&manifest).unwrap();
+    // Whatever release the package is at, its version cut to `major.minor`.
+    let version = text
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap();
+    let floating_version = version.rsplit_once('.').unwrap().0;
     std::fs::write(
         &manifest,
-        text.replace("version = \"1.4.0\"", "version = \"1.4\""),
+        text.replacen(
+            &format!("version = \"{version}\""),
+            &format!("version = \"{floating_version}\""),
+            1,
+        ),
     )
     .unwrap();
     refuses(&floating, "is not one exact major.minor.patch release");

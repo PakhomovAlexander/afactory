@@ -81,15 +81,13 @@ pub(crate) fn refresh(
     inspect: &crate::cli::TaskInspectArgs,
 ) -> Result<i32, String> {
     let (repo, state) = state_path(&inspect.repo, inspect.state.as_deref())?;
+    super::require_store(&state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
-    if !state.join("events.sqlite").is_file() {
-        return Err("No common Task Store exists".into());
-    }
     let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     let before = store
         .task_projection(&cas, id)
         .map_err(|e| e.to_string())?
-        .ok_or("Unknown Task")?;
+        .ok_or_else(|| task_not_found(&state, id))?;
     if before.lease_until_unix_ms() > clock()? {
         return Err("Task has an active writer; refresh later".into());
     }
@@ -131,7 +129,7 @@ pub(crate) fn refresh(
     }
     // Whitespace and unselected response fields alone do not invalidate an exact plan.
     if same_observation(&original.capture, &capture) {
-        return present(&cas, &store, id, inspect.json, true);
+        return present_noting(&cas, &store, id, inspect.json, true);
     }
     let mut refs: Vec<_> = original
         .requirements
@@ -163,7 +161,7 @@ pub(crate) fn refresh(
         .unwrap()
         .artifact_ids = vec![requirements_id];
     revision.provenance.adapter_id = cas
-        .put_json(&json!({"schema":"af.task-file-adapter/1",
+        .put_json(&json!({"schema":TASK_FILE_ADAPTER_V1,
         "source_file_id":original.file_id,"source_capture_id":fresh.capture_id}))
         .map_err(|e| e.to_string())?;
     // Only the requirements artifact is replaced. Every other record the provenance carried that
@@ -175,6 +173,7 @@ pub(crate) fn refresh(
     let lease = store
         .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)
         .map_err(|e| e.to_string())?;
+    let mut refused: Option<Refusal> = None;
     let outcome = {
         let locked = Mutex::new(&mut store);
         review_pipeline::task::lease::with_heartbeat(&locked, &cas, &lease, || {
@@ -200,8 +199,16 @@ pub(crate) fn refresh(
                 || state.revision.limits.clone(),
                 |e| e.budget.remaining_limits(),
             );
-            let assessment =
-                selection::assess(&cas, &authority, &compiler, revision, Some(&capacity))?;
+            let now = clock()?;
+            let wall_ms = capacity.deadline_unix_ms.saturating_sub(now);
+            let assessment = selection::assess(
+                &cas,
+                &authority,
+                &compiler,
+                revision,
+                Some(&capacity),
+                selection::PlanClock { now, wall_ms },
+            )?;
             let (compiler, revision_id, plan_id, waiting) = match assessment {
                 selection::SelectionAssessment::Prepared(
                     selection::PreparedSelection::Selected(selected),
@@ -259,9 +266,18 @@ pub(crate) fn refresh(
                     revision,
                     revision_id,
                     decision,
+                    view,
                     ..
                 } => {
                     debug_assert_eq!(revision.task_id, id);
+                    // Why the refreshed source has no plan, said once the refresh is recorded.
+                    refused = Some(Refusal {
+                        sentence: selection::refusal_summary(&decision, &view),
+                        decision: serde_json::to_value(&decision)
+                            .ok()
+                            .and_then(|value| value["kind"].as_str().map(str::to_owned))
+                            .unwrap_or_default(),
+                    });
                     let reason = match decision {
                         SelectionDecision::Infeasible {} => TaskWaitingReasonV1::NeedsResources,
                         SelectionDecision::NeedsFacts { .. } => TaskWaitingReasonV1::NeedsInput,
@@ -291,7 +307,52 @@ pub(crate) fn refresh(
         })
     };
     release(&cas, &mut store, &lease, outcome)?;
-    present(&cas, &store, id, inspect.json, true)
+    match refused {
+        Some(refusal) => present_refusal(&cas, &store, id, inspect.json, &refusal),
+        None => present_noting(&cas, &store, id, inspect.json, true),
+    }
+}
+
+/// A refreshed source no Pipeline can run now: the refusal's sentence and its selection
+/// decision's kind.
+struct Refusal {
+    sentence: String,
+    decision: String,
+}
+
+/// The refused refresh, recorded: its reason on stderr, then the Task as `present` shows it and
+/// the state line. Under `--json`, when the Task now waits for a person (exit 4), the one
+/// `af/error@1` document carrying that reason, its decision and the next command stands in for
+/// the inspection.
+fn present_refusal(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    json: bool,
+    refusal: &Refusal,
+) -> Result<i32, String> {
+    let sentence = preview::text(&format!(
+        "the refreshed source of Task {id} cannot be planned now: {}",
+        refusal.sentence
+    ));
+    if json {
+        let Inspection { state, view, .. } = inspection(cas, store, id, true, None)?;
+        let code = exit_code(&state, &view);
+        if code != 0 {
+            use crate::error_document::{Cause, Detail};
+            let mut detail =
+                Detail::new(Cause::RefreshRefused).with("decision", refusal.decision.clone());
+            detail.next_action = view.state.next_action.clone();
+            let document =
+                crate::error_document::document("af task", &sentence, code, Some(&detail));
+            println!("{document}");
+            eprintln!("af task refresh: {sentence}");
+            Presented::new(id, code, &view).note(code);
+            return Ok(code);
+        }
+    }
+    eprintln!("af task refresh: {sentence}");
+    present_noting(cas, store, id, json, true)
 }
 
 #[cfg(test)]

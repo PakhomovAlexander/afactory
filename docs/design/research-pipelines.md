@@ -190,7 +190,7 @@ Deliverables:
    observation is a cold check, and an ineligible observation names its reason in `kind`
    (`cargo_target:busy`, `cargo_target:toolchain_unresolved`, `cargo_target:bound_exceeded`).
    `af task show` prints one line per check with elapsed time, cache kind and `warm <bytes>` or
-   `cold <reason>`, and `af/task-inspection@11` carries the observations in its existing
+   `cold <reason>`, and `af/task-inspection@13` carries the observations in its existing
    `runtime_observations` field.
 5. This repository's `.af/code-policy.toml` declares
    `[warm] build_cache = ["cargo_target", "cargo_home"]`; `scripts/verify.sh` honours a

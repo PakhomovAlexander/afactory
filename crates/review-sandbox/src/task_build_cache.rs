@@ -40,10 +40,28 @@ pub const KEY_LOCK: &str = "warm.lock";
 /// below it, where every entry is the key's to count and remove.
 const SIZE_SUFFIX: &str = ".size";
 
+/// The suffix of a key's sources record, `<project>/<toolchain>.sources` (ADR-0207): what the
+/// key last built, by source group. Beside the key for the same reason as the size record.
+const SOURCES_SUFFIX: &str = ".sources";
+
+/// The suffix of a key's holder record, `<project>/<toolchain>.holder`: who holds the key's lock
+/// now, written once it is taken and removed before it is released.
+const HOLDER_SUFFIX: &str = ".holder";
+
+/// The suffix of a key's eviction record, `<project>/<toolchain>.evicted`: what the Storage
+/// Budget leaves when it evicts the key, so a check that finds it gone names the cause.
+const EVICTED_SUFFIX: &str = ".evicted";
+
+/// The most bytes a sources record may hold; a larger one is not read and the key's sources
+/// count as unknown.
+const MAX_SOURCES_RECORD_BYTES: u64 = 64 * 1024 * 1024;
+/// The most bytes a holder or eviction record may hold.
+const MAX_NOTE_BYTES: u64 = 4096;
+
 /// The closed set of warm kinds a key may hold. Only these names are ever locked as kinds, and
 /// only their lock files and the key's are the kernel's: anything else below a key — whatever a
 /// check put there, however it is named — is a kind entry to count and remove.
-pub const WARM_KINDS: &[&str] = &["cargo_target", "cargo_home"];
+pub const WARM_KINDS: &[&str] = &["cargo_target", "cargo_home", "npm_cache"];
 
 /// The lock files this process holds below one key, each by the name it was opened under and
 /// the inode it holds open. Only the top-level entry at that exact name holding that exact inode
@@ -153,7 +171,19 @@ pub struct TaskBuildCacheKeyLock {
     toolchain: String,
     path: PathBuf,
     held: Arc<HeldLocks>,
+    /// Whether this holder wrote the key's holder record, which it removes before releasing.
+    announced: std::sync::atomic::AtomicBool,
     lock: Flock<File>,
+}
+
+impl Drop for TaskBuildCacheKeyLock {
+    fn drop(&mut self) {
+        // Before the lock goes (fields drop after this body): the next holder writes its own.
+        if self.announced.load(std::sync::atomic::Ordering::Acquire) {
+            let name = format!("{}{HOLDER_SUFFIX}", self.toolchain);
+            let _ = nix::unistd::unlinkat(&self.project, name.as_str(), UnlinkatFlags::NoRemoveDir);
+        }
+    }
 }
 
 /// Lock the toolchain key `<root>/<project>/<toolchain>` for exclusive use, waiting at most
@@ -165,8 +195,21 @@ pub fn lock_task_build_cache_key(
     toolchain: &str,
     wait: Duration,
 ) -> Result<Option<TaskBuildCacheKeyLock>, String> {
+    lock_task_build_cache_key_waiting(root, project, toolchain, wait, &mut |_| true)
+}
+
+/// [`lock_task_build_cache_key`], calling `waiting` with the time waited so far each time a
+/// held lock is retried; `waiting` returning `false` ends the wait as if it had run out. A
+/// caller prints its progress and honours its cancellation there.
+pub fn lock_task_build_cache_key_waiting(
+    root: &Path,
+    project: &str,
+    toolchain: &str,
+    wait: Duration,
+    waiting: &mut dyn FnMut(Duration) -> bool,
+) -> Result<Option<TaskBuildCacheKeyLock>, String> {
     let (project_fd, key, path, private) = open_key(root, project, toolchain)?;
-    let Some(lock) = exclusive_lock_at(&key, KEY_LOCK, wait)? else {
+    let Some(lock) = exclusive_lock_waiting(&key, KEY_LOCK, wait, true, waiting)? else {
         return Ok(None);
     };
     // The lock's modification time is the key's last use, read by the Storage Budget's sweep.
@@ -182,6 +225,7 @@ pub fn lock_task_build_cache_key(
         toolchain: toolchain.to_string(),
         path,
         held,
+        announced: std::sync::atomic::AtomicBool::new(false),
         lock,
     };
     if !private {
@@ -509,6 +553,65 @@ impl TaskBuildCacheKeyLock {
         Ok(())
     }
 
+    /// The bytes of the key's sources record (ADR-0207), when there is one this holder can read
+    /// in full: a missing, oversized or unreadable record is `None`, and the key's sources then
+    /// count as unknown, which is always safe.
+    pub fn read_sources(&self) -> Option<Vec<u8>> {
+        read_beside(
+            &self.project,
+            &format!("{}{SOURCES_SUFFIX}", self.toolchain),
+            MAX_SOURCES_RECORD_BYTES,
+        )
+    }
+
+    /// Remove the key's sources record. Called before any source is stamped for a build: a
+    /// record that survived a build it does not describe would let a later check keep stale
+    /// artifacts, so a check that cannot remove it must not build into the key.
+    pub fn forget_sources(&self) -> Result<(), String> {
+        let name = format!("{}{SOURCES_SUFFIX}", self.toolchain);
+        match nix::unistd::unlinkat(&self.project, name.as_str(), UnlinkatFlags::NoRemoveDir) {
+            Ok(()) | Err(Errno::ENOENT) => Ok(()),
+            Err(errno) => Err(format!("removing the key's sources record: {errno}")),
+        }
+    }
+
+    /// Write the key's sources record, replacing it whole: a reader sees the old record or the
+    /// new one, never a part.
+    pub fn write_sources(&self, bytes: &[u8]) -> Result<(), String> {
+        write_beside(
+            &self.project,
+            &format!("{}{SOURCES_SUFFIX}", self.toolchain),
+            bytes,
+        )
+        .map_err(|error| format!("writing the key's sources record: {error}"))
+    }
+
+    /// Name this holder beside the key, so a check waiting for it can say whom it waits for.
+    /// The record is removed before the lock is released.
+    pub fn announce(&self, holder: &[u8]) -> Result<(), String> {
+        write_beside(
+            &self.project,
+            &format!("{}{HOLDER_SUFFIX}", self.toolchain),
+            holder,
+        )
+        .map_err(|error| format!("writing the key's holder record: {error}"))?;
+        self.announced
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    /// Whether the key directory this lock holds open is still the one at its name. A key the
+    /// name no longer reaches was removed, or moved away, while this holder held it.
+    pub fn at_its_name(&self) -> bool {
+        let at_name = nix::sys::stat::fstatat(
+            &self.project,
+            self.toolchain.as_str(),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        );
+        let held = nix::sys::stat::fstat(&*self.key);
+        matches!((at_name, held), (Ok(at_name), Ok(held)) if inode(&at_name) == inode(&held))
+    }
+
     /// Evict the whole key: everything below it, its lock files, its size record and the key
     /// directory itself, while this holder still holds the lock, so no check can be using any of
     /// it. Returns the bytes removed below the key. A waiter that held the old lock file open
@@ -539,13 +642,192 @@ impl TaskBuildCacheKeyLock {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(format!("removing the toolchain key: {error}")),
         }
-        let record = format!("{}{SIZE_SUFFIX}", self.toolchain);
-        match nix::unistd::unlinkat(&self.project, record.as_str(), UnlinkatFlags::NoRemoveDir) {
-            Ok(()) | Err(Errno::ENOENT) => {}
-            Err(errno) => return Err(format!("removing the key's size record: {errno}")),
+        for suffix in [SIZE_SUFFIX, SOURCES_SUFFIX] {
+            let record = format!("{}{suffix}", self.toolchain);
+            match nix::unistd::unlinkat(&self.project, record.as_str(), UnlinkatFlags::NoRemoveDir)
+            {
+                Ok(()) | Err(Errno::ENOENT) => {}
+                Err(errno) => return Err(format!("removing the key's {suffix} record: {errno}")),
+            }
         }
         Ok(removed)
     }
+}
+
+/// Copy the `kind` directory of `<root>/<project>/<toolchain>` into `destination`, which must
+/// not exist yet, for a check that found the key busy and may build in a private copy
+/// (`[warm] clone_when_busy`, ADR-0207): each regular file is cloned (`clonefile` on APFS, a
+/// reflink on btrfs and XFS) or else copied, with its modification time, and every directory
+/// is made private. Links and special files are left out; the key's own records never come
+/// along. Nothing below the key is written. The copy stops, and fails, when `keep_going`
+/// returns `false`. Returns the bytes copied.
+pub fn clone_warm_kind(
+    root: &Path,
+    project: &str,
+    toolchain: &str,
+    kind: &str,
+    destination: &Path,
+    keep_going: &dyn Fn() -> bool,
+) -> Result<u64, String> {
+    use std::os::unix::fs::PermissionsExt;
+    if !is_key(project) || !is_key(toolchain) || !WARM_KINDS.contains(&kind) {
+        return Err("Task build cache key is not an opaque identity".into());
+    }
+    let source = root.join(project).join(toolchain).join(kind);
+    let failed = |what: &Path, error: std::io::Error| {
+        format!("cloning the warm layer at {}: {error}", what.display())
+    };
+    match std::fs::symlink_metadata(&source) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => return Err(format!("{} is not a directory", source.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(destination).map_err(|error| failed(destination, error))?;
+            return Ok(0);
+        }
+        Err(error) => return Err(failed(&source, error)),
+    }
+    let mut bytes = 0_u64;
+    let mut pending = vec![(source, destination.to_path_buf())];
+    while let Some((from, to)) = pending.pop() {
+        if !keep_going() {
+            return Err("cloning the warm layer stopped at the check deadline".into());
+        }
+        std::fs::create_dir(&to).map_err(|error| failed(&to, error))?;
+        std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| failed(&to, error))?;
+        let entries = match std::fs::read_dir(&from) {
+            Ok(entries) => entries,
+            // The holder may remove a directory while the copy runs: what is gone is not copied.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(failed(&from, error)),
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(failed(&from, error)),
+            };
+            let (path, target) = (entry.path(), to.join(entry.file_name()));
+            let metadata = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(failed(&path, error)),
+            };
+            if metadata.file_type().is_dir() {
+                pending.push((path, target));
+            } else if metadata.file_type().is_file() {
+                match reflink_copy::reflink_or_copy(&path, &target) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(failed(&path, error)),
+                }
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&target)
+                    .map_err(|error| failed(&target, error))?;
+                if let Ok(modified) = metadata.modified() {
+                    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+                        .map_err(|error| failed(&target, error))?;
+                }
+                bytes = bytes.saturating_add(metadata.len());
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+/// The holder record of `<root>/<project>/<toolchain>`, as its holder wrote it; `None` when
+/// absent, oversized or unreadable.
+pub fn read_key_holder(root: &Path, project: &str, toolchain: &str) -> Option<Vec<u8>> {
+    read_note(root, project, &format!("{toolchain}{HOLDER_SUFFIX}"))
+}
+
+/// The eviction record the Storage Budget left beside `<root>/<project>/<toolchain>`.
+pub fn read_key_eviction(root: &Path, project: &str, toolchain: &str) -> Option<Vec<u8>> {
+    read_note(root, project, &format!("{toolchain}{EVICTED_SUFFIX}"))
+}
+
+/// Leave `record` beside `<root>/<project>/<toolchain>` as its eviction record. The project
+/// level is opened without following links; a project level that is gone records nothing.
+pub fn record_key_eviction(
+    root: &Path,
+    project: &str,
+    toolchain: &str,
+    record: &[u8],
+) -> Result<(), String> {
+    if !is_key(project) || !is_key(toolchain) {
+        return Err("Task build cache key is not an opaque identity".into());
+    }
+    let root_fd = nix::fcntl::openat(nix::fcntl::AT_FDCWD, root, directory_flags(), Mode::empty())
+        .map_err(|errno| format!("opening the Task build cache root: {errno}"))?;
+    let project_fd = match nix::fcntl::openat(&root_fd, project, directory_flags(), Mode::empty()) {
+        Ok(descriptor) => descriptor,
+        Err(Errno::ENOENT) => return Ok(()),
+        Err(errno) => return Err(format!("opening the Task build cache project: {errno}")),
+    };
+    write_beside(&project_fd, &format!("{toolchain}{EVICTED_SUFFIX}"), record)
+        .map_err(|error| format!("writing the key's eviction record: {error}"))
+}
+
+fn read_note(root: &Path, project: &str, name: &str) -> Option<Vec<u8>> {
+    if !is_key(project) {
+        return None;
+    }
+    let root_fd =
+        nix::fcntl::openat(nix::fcntl::AT_FDCWD, root, directory_flags(), Mode::empty()).ok()?;
+    let project_fd =
+        nix::fcntl::openat(&root_fd, project, directory_flags(), Mode::empty()).ok()?;
+    read_beside(&project_fd, name, MAX_NOTE_BYTES)
+}
+
+/// The whole regular file `name` below `directory`, opened without following links, when it
+/// holds at most `max` bytes.
+fn read_beside(directory: &OwnedFd, name: &str, max: u64) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let descriptor = nix::fcntl::openat(
+        directory,
+        name,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK,
+        Mode::empty(),
+    )
+    .ok()?;
+    let stat = nix::sys::stat::fstat(&descriptor).ok()?;
+    if file_kind(&stat) != SFlag::S_IFREG || u64::try_from(stat.st_size).ok()? > max {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    File::from(descriptor)
+        .take(max + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= max).then_some(bytes)
+}
+
+/// Replace `name` below `directory` with `bytes` whole: written to a private temporary name
+/// first, then renamed over it, never through a link.
+fn write_beside(directory: &OwnedFd, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let temporary = format!(".{name}.{}.tmp", std::process::id());
+    match nix::unistd::unlinkat(directory, temporary.as_str(), UnlinkatFlags::NoRemoveDir) {
+        Ok(()) | Err(Errno::ENOENT) => {}
+        Err(errno) => return Err(errno.into()),
+    }
+    let descriptor = nix::fcntl::openat(
+        directory,
+        temporary.as_str(),
+        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::S_IRUSR | Mode::S_IWUSR,
+    )?;
+    let mut file = File::from(descriptor);
+    let written = file.write_all(bytes).and_then(|()| file.sync_data());
+    drop(file);
+    if let Err(error) = written.and_then(|()| {
+        nix::fcntl::renameat(directory, temporary.as_str(), directory, name).map_err(Into::into)
+    }) {
+        let _ = nix::unistd::unlinkat(directory, temporary.as_str(), UnlinkatFlags::NoRemoveDir);
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// The size recorded for `<root>/<project>/<toolchain>` by [`TaskBuildCacheKeyLock::record_size`],
@@ -753,6 +1035,15 @@ impl WarmDirectory {
     pub fn remove(&self) -> Result<(), String> {
         remove_at(&self.key, &self.name, &self.path)
     }
+
+    /// Remove the entry `name` directly below the directory and everything below it, through
+    /// descriptors: the install tree npm leaves in its cache (`_npx`), say. Absence is success.
+    pub fn remove_child(&self, name: &str) -> Result<(), String> {
+        match open_child(&self.key, &self.name)? {
+            Some(directory) => remove_at(&directory, name, &self.path.join(name)),
+            None => Ok(()),
+        }
+    }
 }
 
 enum Judged {
@@ -897,18 +1188,19 @@ fn exclusive_lock_at(
     name: &str,
     wait: Duration,
 ) -> Result<Option<Flock<File>>, String> {
-    exclusive_lock_validated(directory, name, wait, true)
+    exclusive_lock_waiting(directory, name, wait, true, &mut |_| true)
 }
 
 /// [`exclusive_lock_at`], refusing to write through an inode that is not a plain, singly linked
 /// lock file of this user at that name: a hard link a check planted at the name would otherwise be
 /// truncated, and its other name may lie anywhere. Such an entry is unlinked at the name and the
 /// acquisition retried once on a fresh file.
-fn exclusive_lock_validated(
+fn exclusive_lock_waiting(
     directory: &OwnedFd,
     name: &str,
     wait: Duration,
     retry: bool,
+    waiting: &mut dyn FnMut(Duration) -> bool,
 ) -> Result<Option<Flock<File>>, String> {
     // Whatever sits at the lock's name that is not a plain file — a link an interrupted check
     // left, a directory — is removed by name before the name is opened, so recovery never stalls
@@ -962,7 +1254,7 @@ fn exclusive_lock_validated(
             Ok(()) | Err(Errno::ENOENT) => {}
             Err(errno) => return Err(format!("removing a suspect Task build cache lock: {errno}")),
         }
-        return exclusive_lock_validated(directory, name, wait, false);
+        return exclusive_lock_waiting(directory, name, wait, false, waiting);
     }
     let mut file = File::from(descriptor);
     let started = Instant::now();
@@ -997,7 +1289,7 @@ fn exclusive_lock_validated(
                             ));
                         }
                     }
-                    return exclusive_lock_validated(directory, name, wait, false);
+                    return exclusive_lock_waiting(directory, name, wait, false, waiting);
                 }
                 // The kernel's lock files carry no payload: whatever a check wrote into one
                 // while it could is dropped here, so it never counts toward the key's bound.
@@ -1006,7 +1298,7 @@ fn exclusive_lock_validated(
                 return Ok(Some(lock));
             }
             Err((returned, Errno::EWOULDBLOCK)) => {
-                if started.elapsed() >= wait {
+                if started.elapsed() >= wait || !waiting(started.elapsed()) {
                     return Ok(None);
                 }
                 file = returned;

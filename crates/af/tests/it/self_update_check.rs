@@ -37,7 +37,7 @@ fn cache_file(sandbox: &Sandbox) -> PathBuf {
 }
 
 /// The first line of every cache this release writes and reads.
-const CACHE_SCHEMA: &str = "schema = \"af/self-check@2\"\n";
+const CACHE_SCHEMA: &str = "schema = \"af/self-check@3\"\n";
 
 /// The release the cached "updated the default" notice names, when the cache holds one.
 fn auto_updated_to(cache: &str) -> Option<String> {
@@ -118,11 +118,20 @@ fn wait_for_latest(sandbox: &Sandbox, latest: &str) -> String {
     wait_for_cache(sandbox, latest, |text| text.contains(&expected))
 }
 
-/// When the cache says the last check ran, 0 for none.
+/// When the cache says the last check answered, 0 for none.
 fn checked_at(cache: &str) -> u64 {
+    epoch_field(cache, "checked_at_epoch")
+}
+
+/// When the cache says a check was last attempted, answered or not, 0 for none.
+fn attempted_at(cache: &str) -> u64 {
+    epoch_field(cache, "attempted_at_epoch")
+}
+
+fn epoch_field(cache: &str, field: &str) -> u64 {
     cache
         .lines()
-        .find_map(|line| line.strip_prefix("checked_at_epoch = "))
+        .find_map(|line| line.strip_prefix(&format!("{field} = ")))
         .and_then(|value| value.trim().parse().ok())
         .unwrap_or(0)
 }
@@ -152,7 +161,7 @@ fn storage_document(output: &Output) -> serde_json::Value {
     assert!(output.status.success(), "{}", err(output));
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {}", out(output)));
-    assert_eq!(document["schema"], "af/storage@4");
+    assert_eq!(document["schema"], "af/storage@5");
     document
 }
 
@@ -455,10 +464,12 @@ fn the_check_is_suppressed_offline_under_ci_disabled_never_and_for_exempt_comman
     write(&config_file(&sandbox), "[self]\nauto_update = \"never\"\n");
     storage(&[]);
     std::fs::remove_file(config_file(&sandbox)).unwrap();
+    // `af self status` is no longer among them: it schedules a due check itself (finding S2,
+    // `status_shows_a_failed_attempt_and_schedules_or_refreshes_the_check`).
     for args in [
         &["--version"][..],
         &["help", "self"],
-        &["self", "status", "--json"],
+        &["self", "update", "--help"],
         &["config", "paths"],
         &["completions", "bash"],
     ] {
@@ -493,7 +504,7 @@ fn a_cached_notice_reaches_a_terminal_but_never_a_json_run() {
     assert!(!stdout.contains("is available"), "{stdout}");
     let document: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {stdout}"));
-    assert_eq!(document["schema"], "af/storage@4");
+    assert_eq!(document["schema"], "af/storage@5");
 
     assert_eq!(scheduled(&sandbox), 0, "a fresh cache is not refreshed");
 }
@@ -638,9 +649,14 @@ fn an_unavailable_release_source_is_asked_once_per_check_every_and_keeps_the_las
     storage_document(&first);
     assert!(err(&first).is_empty(), "{}", err(&first));
     assert_eq!(scheduled(&sandbox), 1, "a stale cache is due a check");
-    let cache = wait_for_cache(&sandbox, "the failed attempt", |text| checked_at(text) > 1);
+    let cache = wait_for_cache(&sandbox, "the failed attempt", |text| {
+        attempted_at(text) > 1
+    });
     assert!(cache.contains(&format!("latest = \"{newer}\"")), "{cache}");
     assert!(cache.contains("channel = \"stable\""), "{cache}");
+    // The attempt and its reason are recorded; the last answer is still the one long ago.
+    assert_eq!(checked_at(&cache), 1, "{cache}");
+    assert!(cache.contains("last_error = "), "{cache}");
     assert!(
         !std::fs::read_to_string(sandbox.path("state/af/self.toml"))
             .unwrap_or_default()
@@ -809,7 +825,8 @@ fn a_delayed_check_leaves_when_an_earlier_one_has_answered() {
     std::fs::rename(&releases, &away).unwrap();
     let _ = refresh();
     let attempted = std::fs::read_to_string(cache_file(&sandbox)).unwrap();
-    assert!(checked_at(&attempted) > 1, "{attempted}");
+    assert!(attempted_at(&attempted) > 1, "{attempted}");
+    assert_eq!(checked_at(&attempted), 1, "{attempted}");
     assert!(
         attempted.contains(&format!("latest = \"{newer}\"")),
         "{attempted}"
@@ -1572,4 +1589,441 @@ fn under_ask_a_terminal_is_asked_before_a_pin_is_installed_and_declining_runs_th
         receipt.contains("verified_by = \"lock+signature\""),
         "{receipt}"
     );
+}
+
+// ------------------------------------------------------------------------------------------
+// A release check that cannot stall, records its failures and tells a pre-release user of the
+// next pre-release (findings S1, S2, E7, I1).
+
+/// The binary under test against GitHub as a fake `curl` answers for it, from the release
+/// directory, with `path` as the whole `PATH`: no `gh` unless a test puts one there.
+fn over_curl(sandbox: &Sandbox, path: &OsStr, args: &[&str]) -> std::process::Command {
+    let mut command = sandbox.command(af_binary());
+    command
+        .args(args)
+        .current_dir(sandbox.path("home"))
+        .env_remove("AF_RELEASE_SOURCE")
+        .env("PATH", path)
+        .env("FAKE_RELEASES", sandbox.path("releases"))
+        .env("FAKE_REPO", "owner/repo")
+        .env("FAKE_CURL_LOG", sandbox.path("curl.log"));
+    write(&config_file(sandbox), "[self]\nsource = \"owner/repo\"\n");
+    command
+}
+
+/// A tool directory holding `curl` as `script` and the tools a fake needs.
+fn curl_tools(sandbox: &Sandbox, script: &str) -> PathBuf {
+    let tools = common::tool_dir(
+        &sandbox.path("fakes"),
+        &["sh", "sleep", "cp", "basename", "cat", "tar", "gzip"],
+    );
+    common::executable(&tools.join("curl"), script);
+    tools
+}
+
+/// A `curl` that logs its arguments and then never answers.
+const STALLED_CURL: &str = "#!/bin/sh\necho \"$*\" >> \"$FAKE_CURL_LOG\"\nsleep 600\n";
+
+/// Finding S1: every `curl` of the check is bounded (5 s to connect, 30 s to list), and af ends
+/// one that outlives its limit: a fake endpoint that never answers costs the deadline, not the
+/// command, and the failure says so.
+#[test]
+fn a_release_endpoint_that_never_answers_is_bounded() {
+    let sandbox = Sandbox::new();
+    let tools = curl_tools(&sandbox, STALLED_CURL);
+    let started = Instant::now();
+    let output = over_curl(&sandbox, tools.as_os_str(), &["self", "update", "--check"])
+        .env("AF_TEST_SELF_NETWORK_DEADLINE_MS", "1500")
+        .output()
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(output.status.code(), Some(1), "{}", err(&output));
+    assert!(
+        err(&output).contains("curl did not answer within 2 s and was stopped")
+            && err(&output).contains("check the network and retry"),
+        "{}",
+        err(&output)
+    );
+    let calls = std::fs::read_to_string(sandbox.path("curl.log")).unwrap();
+    assert!(
+        calls.contains("--connect-timeout 5 --max-time 30 --retry 3 --retry-max-time 30"),
+        "{calls}"
+    );
+
+    // The detached check records the failed attempt and its reason, and a status shows it.
+    write(
+        &cache_file(&sandbox),
+        &format!("{CACHE_SCHEMA}checked_at_epoch = 1\n"),
+    );
+    let mut check = over_curl(&sandbox, tools.as_os_str(), &["self", "refresh-check"]);
+    let lock = cache_file(&sandbox).with_extension("lock");
+    write(&lock, "");
+    let checked = check
+        .env("AF_TEST_SELF_NETWORK_DEADLINE_MS", "1500")
+        .output()
+        .unwrap();
+    assert!(!checked.status.success(), "{}", out(&checked));
+    let cache = std::fs::read_to_string(cache_file(&sandbox)).unwrap();
+    assert!(attempted_at(&cache) > 1, "{cache}");
+    assert_eq!(checked_at(&cache), 1, "{cache}");
+    assert!(cache.contains("did not answer within 2 s"), "{cache}");
+}
+
+/// Finding S2: a check that holds `latest.lock` for over an hour is reported with the command
+/// that clears it, by status and by `af self update --check`, and it is no check: the cache does
+/// not move.
+#[test]
+fn a_release_check_stalled_for_over_an_hour_is_reported_and_is_no_check() {
+    let sandbox = Sandbox::new();
+    let newer = newer_release();
+    sandbox.publish(&newer, false);
+    write(
+        &cache_file(&sandbox),
+        &format!("{CACHE_SCHEMA}checked_at_epoch = 1\n"),
+    );
+    let lock_path = cache_file(&sandbox).with_extension("lock");
+    let since = epoch_now() - 2 * 3600;
+    write(
+        &lock_path,
+        &format!("started_at_epoch = {since}\npid = 1\n"),
+    );
+    let lock = std::fs::File::open(&lock_path).unwrap();
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    let home = sandbox.path("home");
+
+    let status = headless(&sandbox, af_binary(), &home, &["self", "status"]);
+    assert!(status.status.success(), "{}", err(&status));
+    // af resolves the roots it keeps state under once, so the fix names the canonical path
+    // (macOS `/var` is `/private/var`).
+    let expected = format!(
+        "check:      a release check has been running since {}; fix: rm {}",
+        iso(since),
+        std::fs::canonicalize(&lock_path).unwrap().display()
+    );
+    assert!(out(&status).contains(&expected), "{}", out(&status));
+    let json = headless(&sandbox, af_binary(), &home, &["self", "status", "--json"]);
+    let document: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("self-status-v2.json"), &document);
+    assert_eq!(document["check_stalled_since"], iso(since));
+    // The lock and the command that clears it are fields, the same as the text's fix.
+    let canonical = std::fs::canonicalize(&lock_path).unwrap();
+    assert_eq!(document["check_lock"], canonical.display().to_string());
+    assert_eq!(
+        document["next_action"],
+        format!("rm {}", canonical.display())
+    );
+
+    let check = headless(&sandbox, af_binary(), &home, &["self", "update", "--check"]);
+    assert_eq!(check.status.code(), Some(10), "{}", err(&check));
+    assert!(
+        err(&check).contains("a release check has been running since"),
+        "{}",
+        err(&check)
+    );
+    // Neither the status's scheduled check nor the inline one counted as a check.
+    std::thread::sleep(Duration::from_millis(300));
+    let cache = std::fs::read_to_string(cache_file(&sandbox)).unwrap();
+    assert_eq!(checked_at(&cache), 1, "{cache}");
+    assert_eq!(attempted_at(&cache), 0, "{cache}");
+    drop(lock);
+}
+
+/// The UTC time a status prints for `secs`.
+fn iso(secs: u64) -> String {
+    let days = secs / 86_400;
+    let rem = secs % 86_400;
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+/// Finding S2: a failing release source leaves its attempt and reason in the cache, status
+/// prints them beside the last good check, status schedules the detached check itself when one
+/// is due, and `--refresh` runs it inline.
+#[test]
+fn status_shows_a_failed_attempt_and_schedules_or_refreshes_the_check() {
+    let sandbox = Sandbox::new();
+    let home = sandbox.path("home");
+    // The source is down, and the last good check, long ago, found nothing newer.
+    std::fs::remove_dir(sandbox.path("releases")).unwrap();
+    write(
+        &cache_file(&sandbox),
+        &format!("{CACHE_SCHEMA}checked_at_epoch = 1\nchannel = \"stable\"\n"),
+    );
+    write(&cache_file(&sandbox).with_extension("lock"), "");
+
+    let refreshed = headless(
+        &sandbox,
+        af_binary(),
+        &home,
+        &["self", "status", "--refresh"],
+    );
+    assert!(refreshed.status.success(), "{}", err(&refreshed));
+    assert!(
+        err(&refreshed).contains("af self: the release check failed: reading "),
+        "{}",
+        err(&refreshed)
+    );
+    let line = out(&refreshed)
+        .lines()
+        .find(|line| line.starts_with("last check: "))
+        .unwrap()
+        .to_string();
+    assert!(
+        line.starts_with("last check: 1970-01-01T00:00:01Z · last attempt ")
+            && line.contains(" failed: reading "),
+        "{line}"
+    );
+    assert_eq!(scheduled(&sandbox), 0, "the refresh ran inline");
+    let cache = std::fs::read_to_string(cache_file(&sandbox)).unwrap();
+    assert!(
+        attempted_at(&cache) > 1 && cache.contains("last_error"),
+        "{cache}"
+    );
+
+    // Once `check_every` has passed, status schedules the detached check itself.
+    write(
+        &cache_file(&sandbox),
+        &format!("{CACHE_SCHEMA}checked_at_epoch = 1\nattempted_at_epoch = 2\n"),
+    );
+    let status = headless(&sandbox, af_binary(), &home, &["self", "status", "--json"]);
+    assert!(status.status.success(), "{}", err(&status));
+    let document: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("self-status-v2.json"), &document);
+    assert_eq!(document["schema"], "af/self-status@2");
+    assert_eq!(scheduled(&sandbox), 1, "a due check is scheduled by status");
+    // Offline, neither.
+    let offline = sandbox
+        .command(af_binary())
+        .args(["self", "status", "--refresh"])
+        .current_dir(&home)
+        .env("AF_SELF_OFFLINE", "1")
+        .env("AF_TEST_SELF_CHECK_LOG", check_log(&sandbox))
+        .output()
+        .unwrap();
+    assert!(offline.status.success(), "{}", err(&offline));
+    assert!(err(&offline).contains("offline"), "{}", err(&offline));
+    assert_eq!(scheduled(&sandbox), 1);
+}
+
+/// Finding E7: a pre-release user hears of the next pre-release whatever the channel, and the
+/// newest stable release, older than the one running, is never printed as simply `latest`.
+#[test]
+fn a_pre_release_user_hears_of_the_next_pre_release() {
+    let running = semver::Version::parse(VERSION).unwrap();
+    let sandbox = Sandbox::new();
+    let home = sandbox.path("home");
+    let stable = format!("{}.{}.0", running.major, running.minor.saturating_sub(1));
+    std::fs::create_dir_all(sandbox.release_dir(&stable)).unwrap();
+    if running.pre.is_empty() {
+        // A stable af below the newest stable one sees `latest stable` qualified when above it.
+        let status = sandbox.refresh_check(af_binary()).output().unwrap();
+        assert!(status.status.success(), "{}", err(&status));
+        let shown = headless(&sandbox, af_binary(), &home, &["self", "status"]);
+        assert!(
+            out(&shown).contains(&format!("latest stable {stable}")),
+            "{}",
+            out(&shown)
+        );
+        return;
+    }
+    let next = format!(
+        "{}.{}.{}-rc.999",
+        running.major, running.minor, running.patch
+    );
+    std::fs::create_dir_all(sandbox.release_dir(&next)).unwrap();
+    let checked = sandbox.refresh_check(af_binary()).output().unwrap();
+    assert!(checked.status.success(), "{}", err(&checked));
+    let cache = std::fs::read_to_string(cache_file(&sandbox)).unwrap();
+    assert!(cache.contains(&format!("latest = \"{stable}\"")), "{cache}");
+    assert!(
+        cache.contains(&format!("latest_prerelease = \"{next}\"")),
+        "{cache}"
+    );
+    let shown = headless(&sandbox, af_binary(), &home, &["self", "status"]);
+    assert!(
+        out(&shown).contains(&format!(
+            "latest stable {stable} · latest pre-release {next} (you run {VERSION}: af self \
+             update --rc)"
+        )),
+        "{}",
+        out(&shown)
+    );
+    assert!(
+        !out(&shown).contains(&format!("· latest {stable}")),
+        "{}",
+        out(&shown)
+    );
+    let check = headless(&sandbox, af_binary(), &home, &["self", "update", "--check"]);
+    assert_eq!(check.status.code(), Some(10), "{}", err(&check));
+    assert_eq!(
+        out(&check).trim(),
+        format!("af {next} is available (running {VERSION}) — af self update --rc")
+    );
+    // On a terminal, the notice names the same command.
+    let (code, stderr, _) = on_terminal(&sandbox, &["storage"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "af {next} is available (running {VERSION}) — af self update --rc"
+        )),
+        "{stderr}"
+    );
+}
+
+/// C3 item 5: an explicit `af self update --check` that fails is recorded as the last attempt
+/// with its cause, as a detached check's is, so status shows it.
+#[test]
+fn a_failed_explicit_check_is_recorded_as_the_last_attempt() {
+    let sandbox = Sandbox::new();
+    let home = sandbox.path("home");
+    std::fs::remove_dir(sandbox.path("releases")).unwrap();
+    let check = headless(&sandbox, af_binary(), &home, &["self", "update", "--check"]);
+    assert_eq!(check.status.code(), Some(1), "{}", err(&check));
+    let status = headless(&sandbox, af_binary(), &home, &["self", "status", "--json"]);
+    assert!(status.status.success(), "{}", err(&status));
+    let document: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("self-status-v2.json"), &document);
+    assert!(document["last_attempt"].is_string(), "{document}");
+    let cause = document["last_error"].as_str().unwrap_or_default();
+    assert!(cause.starts_with("reading "), "{document}");
+    assert!(document["last_check"].is_null(), "{document}");
+    let shown = headless(&sandbox, af_binary(), &home, &["self", "status"]);
+    let line = out(&shown)
+        .lines()
+        .find(|line| line.starts_with("last check: "))
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        line.starts_with("last check: never · last attempt ")
+            && line.contains(&format!(" failed: {cause}")),
+        "{line}"
+    );
+}
+
+/// C3 item 4: on the stable channel, an explicit `--check --rc` records the pre-release it found
+/// as `latest_prerelease` only: `latest` stays the stable channel's newest, the cache names the
+/// stable channel, and status still names the install command.
+#[test]
+fn an_explicit_rc_check_on_the_stable_channel_keeps_the_stable_latest() {
+    let running = semver::Version::parse(VERSION).unwrap();
+    let sandbox = Sandbox::new();
+    let home = sandbox.path("home");
+    write(&config_file(&sandbox), "[self]\nchannel = \"stable\"\n");
+    let stable = format!("{}.{}.0", running.major, running.minor.saturating_sub(1));
+    let next = format!("{}.{}.0-rc.999", running.major, running.minor + 1);
+    for version in [&stable, &next] {
+        std::fs::create_dir_all(sandbox.release_dir(version)).unwrap();
+    }
+    let check = headless(
+        &sandbox,
+        af_binary(),
+        &home,
+        &["self", "update", "--check", "--rc"],
+    );
+    assert_eq!(check.status.code(), Some(10), "{}", err(&check));
+    let cache = std::fs::read_to_string(cache_file(&sandbox)).unwrap();
+    assert!(cache.contains(&format!("latest = \"{stable}\"")), "{cache}");
+    assert!(
+        cache.contains(&format!("latest_prerelease = \"{next}\"")),
+        "{cache}"
+    );
+    assert!(cache.contains("channel = \"stable\""), "{cache}");
+    let shown = headless(&sandbox, af_binary(), &home, &["self", "status"]);
+    assert!(
+        out(&shown).contains(&format!(
+            "latest pre-release {next} (you run {VERSION}: af self update --rc)"
+        )),
+        "{}",
+        out(&shown)
+    );
+    assert!(
+        !out(&shown).contains(&format!("latest pre-release {next} ·")),
+        "{}",
+        out(&shown)
+    );
+    let status = headless(&sandbox, af_binary(), &home, &["self", "status", "--json"]);
+    let document: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(document["latest"], stable.as_str(), "{document}");
+    assert_eq!(document["next_action"], "af self update --rc", "{document}");
+}
+
+/// Finding S2: `af self update --check` honours AF_SELF_OFFLINE: it asks nothing, says so and
+/// succeeds.
+#[test]
+fn an_offline_update_check_asks_nothing_and_succeeds() {
+    let sandbox = Sandbox::new();
+    let tools = curl_tools(&sandbox, STALLED_CURL);
+    let output = over_curl(&sandbox, tools.as_os_str(), &["self", "update", "--check"])
+        .env("AF_SELF_OFFLINE", "1")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    assert!(
+        out(&output).starts_with("offline: check skipped"),
+        "{}",
+        out(&output)
+    );
+    assert!(!sandbox.path("curl.log").exists(), "curl was asked");
+}
+
+/// Finding I1: the anonymous route guards itself. With an empty HOME and no `gh` on PATH,
+/// `af self update --check` against a fake release index exits 0 or 10, never 1; when the
+/// anonymous route is refused, the real reason (the HTTP status) comes before any `gh auth
+/// login` hint.
+#[test]
+fn the_anonymous_route_needs_no_gh_and_says_its_real_reason() {
+    let sandbox = Sandbox::new();
+    std::fs::create_dir_all(sandbox.release_dir(&newer_release())).unwrap();
+    let tools = curl_tools(&sandbox, common::FAKE_CURL);
+    assert!(!tools.join("gh").exists(), "no gh on PATH");
+    assert!(
+        std::fs::read_dir(sandbox.path("home"))
+            .unwrap()
+            .next()
+            .is_none(),
+        "an empty HOME"
+    );
+    let check = over_curl(&sandbox, tools.as_os_str(), &["self", "update", "--check"])
+        .output()
+        .unwrap();
+    assert!(
+        matches!(check.status.code(), Some(0 | 10)),
+        "{:?}: {}",
+        check.status,
+        err(&check)
+    );
+    assert!(
+        std::fs::read_to_string(sandbox.path("curl.log"))
+            .unwrap()
+            .contains("https://api.github.com/repos/owner/repo/releases?per_page=100"),
+        "the anonymous route was asked"
+    );
+
+    let refused = over_curl(&sandbox, tools.as_os_str(), &["self", "update", "--check"])
+        .env("FAKE_CURL_STATUS", "404")
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(1), "{}", out(&refused));
+    let stderr = err(&refused);
+    let status = stderr.find("HTTP 404").expect(&stderr);
+    let hint = stderr.find("gh auth login").expect(&stderr);
+    assert!(status < hint, "{stderr}");
+    assert!(stderr.contains("GitHub CLI is not installed"), "{stderr}");
 }

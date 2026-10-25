@@ -15,14 +15,25 @@ af task run TASK_ID --confirm-plan PLAN_ID
 Use the same `--repo` and `--state` selectors for all commands. `af task plan --file ticket.json`
 remains the explicit plan-only entry point. A changed captured plan refuses confirmation before
 dispatch, including a change before acquiring the Task writer lease. Confirmation does not grant
-extra effects, budget, a fresh deadline or permission to deliver the result.
+extra effects, budget or permission to deliver the result.
+
+The Task's wall clock starts at its first `af task run`, not at `plan`: the preview's `TIME` row
+says `deadline starts when you run` and shows the wall the Task will have. The Store starts the
+clock when it first admits the plan: the deadline the plan recorded moves by the time the Task
+waited between being planned and that run, so the plan you confirmed is exactly the plan that
+runs. The run prints the deadline on stderr as local time with the time left: `deadline
+17:41:18 +03 (2 h 59 min from now)`, and `af task show --json` carries it as
+`clock.deadline_unix_ms` beside `clock.wall_ms` and `clock.started_unix_ms`. A Task that already
+ran keeps its deadline on every resume and refresh, and a starter Task file's `wall_ms` is the
+wall it gets; only what planning took before the Task was recorded comes out of it.
 
 ## Compact and tree views
 
 The default human output renders a compact ASCII flow from the captured graph, with the selected
 Pipeline package/version, complete plan ID, effective Worker model/effort/Provider alias, public
 input/output names, total token allowance, protected verification reserve, Attempt cap, remaining
-time and captured effects/data destinations. Command Workers are labelled as such. Private
+time (`deadline starts when you run` before the first run) and captured effects/data
+destinations. Command Workers are labelled as such. Private
 principal identities and credentials are not printed.
 
 The compact flow folds internal sealing, receipt assembly and selection nodes and reports the
@@ -69,4 +80,5 @@ an already captured plan; refresh/replanning produces the identity that must be 
 For no-fit Tasks, the first preview describes the fixed Planner preparation. Confirming it
 permits only that bounded planning work. The resulting generated execution plan still stops for
 its [signed developer decision](generated-plans.md). Neither `--confirm-plan` nor `--execute`
-can replace that signature. Approval waiting remains inside the original Task deadline.
+can replace that signature. A generated plan does not restart its clock: approval waiting remains
+inside the original Task deadline.
