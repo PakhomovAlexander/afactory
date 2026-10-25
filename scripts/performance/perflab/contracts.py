@@ -4319,6 +4319,31 @@ TELEMETRY_COMPARISON = Obj(
     Field("median_change", Nullable(RATIONAL)))
 # How one side's binary was built (ADR-0215): written by the build job beside the binary, bound
 # to the side's source and the binary's hash, and kept in the result.
+TELEMETRY_OWNER_SCHEMA = "af.perf-telemetry-owner/1"
+FILE_IDENTITY = Arr(Int(0, 2 ** 64 - 1), 2, 2)
+TELEMETRY_OWNER = Obj(
+    Field("schema", Const(TELEMETRY_OWNER_SCHEMA)), Field("owner_uid", Int(0, 2 ** 32 - 1)),
+    Field("control", FILE_IDENTITY), Field("lock", FILE_IDENTITY),
+    Field("image", Str(min_len=1, max_len=4096)),
+    Field("mount", Str(min_len=1, max_len=4096)),
+    Field("image_identity", FILE_IDENTITY), Field("image_bytes", Int(1, 64 * limits.GIB)),
+    Field("mount_identity", FILE_IDENTITY),
+    Field("phase", Str(enum=("ready", "active", "stopped", "uncertain", "removed"))),
+    Field("container", Nullable(Str(pattern=r"^af-perf-telemetry-[a-z0-9_-]{1,80}$",
+                                    max_len=98))),
+    Field("launches", Int(0, 1000000)),
+)
+
+
+def validate_telemetry_owner(doc, where="telemetry ownership"):
+    TELEMETRY_OWNER.validate(doc, where)
+    require((doc["phase"] in ("ready", "removed")) == (doc["container"] is None),
+            where + ": only pre-launch or retired ownership has no execution")
+    require((doc["phase"] == "ready") == (doc["launches"] == 0)
+            or doc["phase"] == "removed", where + ": launch accounting disagrees")
+    return doc
+
+
 TELEMETRY_BUILD_SCHEMA = "af.perf-telemetry-build/1"
 TELEMETRY_BUILD = Obj(
     Field("schema", Const(TELEMETRY_BUILD_SCHEMA)), Field("side", Str(enum=SIDES)),
@@ -4906,6 +4931,9 @@ CONTRACTS = {
                          "within-binary figures by level, and each same-host cross-revision "
                          "comparison by level, metric and shape, or why it is incompatible or "
                          "missing. Advisory; never a verdict."),
+    "telemetry-owner": (TELEMETRY_OWNER_SCHEMA, TELEMETRY_OWNER, validate_telemetry_owner,
+                        "Trusted bounded cleanup authority, outside candidate mounts; pending "
+                        "launches must be confirmed stopped before scratch removal."),
     "telemetry-build": (TELEMETRY_BUILD_SCHEMA, TELEMETRY_BUILD, validate_telemetry_build,
                         "How one side's AF binary of a telemetry experiment was built "
                         "(ADR-0215): its side, source commit, the binary's SHA-256, the "

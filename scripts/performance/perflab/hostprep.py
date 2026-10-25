@@ -15,9 +15,12 @@ could not. That this works on a given hosted image is operational evidence of a 
 deterministic tests drive these steps with a recorded stand-in runner.
 """
 import os
+import fcntl
+import secrets
+import stat
 import subprocess
 
-from . import limits
+from . import contracts, limits
 from .values import ContractError, require
 
 STEP_SECONDS = 120
@@ -117,3 +120,150 @@ def cleanup(image, mount, host=None, mounted=True):
                 if code != 0:
                     problems.append("%s exited %d: %s" % (" ".join(argv), code, err.strip()))
     return problems
+
+
+class TelemetryOwner:
+    """Trusted, bounded launch fence for one telemetry filesystem, outside all candidate
+    mounts. The workflow creates it after preparation, holds its nonblocking lock throughout
+    measurement, and reacquires it for cleanup. A pending launch survives loss of the controller
+    or result publication. Only the executor's confirmed removal can settle that launch.
+
+    This is cleanup authority, never a candidate result or a claim that unmount killed work.
+    """
+
+    def __init__(self, path, mount, create=False, image=None):
+        self.path = os.path.abspath(path)
+        self.mount = os.path.abspath(mount)
+        self.create = create
+        self.image = os.path.abspath(image) if image else None
+        self.directory = self.lock = None
+
+    @staticmethod
+    def identity(info):
+        return [info.st_dev, info.st_ino]
+
+    def __enter__(self):
+        require(os.path.realpath(self.path) == self.path,
+                "scratch ownership directory must contain no symlinks")
+        require(not self.path.startswith(self.mount + os.sep) and self.path != self.mount,
+                "scratch ownership must be outside candidate-writable scratch")
+        if self.create:
+            os.mkdir(self.path, 0o700)
+        try:
+            self.directory = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            info = os.fstat(self.directory)
+            require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
+                    "scratch ownership directory must be private and owned by this user")
+            self.lock = os.open("lock", os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK |
+                                (os.O_CREAT | os.O_EXCL if self.create else 0),
+                                0o600, dir_fd=self.directory)
+            self._private(os.fstat(self.lock))
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if self.create:
+                image = os.lstat(self.image)
+                mount = os.lstat(self.mount)
+                require(stat.S_ISREG(image.st_mode) and stat.S_ISDIR(mount.st_mode),
+                        "scratch ownership needs the actual image and mount")
+                self.doc = {"schema": contracts.TELEMETRY_OWNER_SCHEMA,
+                            "owner_uid": os.getuid(),
+                            "control": self.identity(info),
+                            "lock": self.identity(os.fstat(self.lock)),
+                            "image": self.image, "mount": self.mount,
+                            "image_identity": self.identity(image), "image_bytes": image.st_size,
+                            "mount_identity": self.identity(mount), "phase": "ready",
+                            "container": None, "launches": 0}
+                self._write()
+            self._read()
+            return self
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+
+    @staticmethod
+    def _private(info):
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1,
+                "scratch ownership file must be private, regular and singly linked")
+
+    def _read(self):
+        fd = os.open("state.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=self.directory)
+        with os.fdopen(fd, "rb") as stream:
+            self._private(os.fstat(stream.fileno()))
+            data = stream.read(8193)
+            require(len(data) <= 8192, "scratch ownership exceeds its byte bound")
+            self.doc = contracts.read_json(data, "telemetry-owner", self.path)
+        doc = self.doc
+        require(doc["control"] == self.identity(os.fstat(self.directory))
+                and doc["control"] == self.identity(os.lstat(self.path))
+                and doc["lock"] == self.identity(os.fstat(self.lock))
+                and doc["lock"] == self.identity(os.stat("lock", dir_fd=self.directory,
+                                                       follow_symlinks=False))
+                and doc["owner_uid"] == os.getuid() and doc["mount"] == self.mount,
+                "foreign scratch ownership evidence")
+        require(doc["phase"] != "removed", "scratch ownership is already retired")
+        image, mount = os.lstat(doc["image"]), os.lstat(doc["mount"])
+        require(os.path.realpath(doc["image"]) == doc["image"]
+                and os.path.realpath(doc["mount"]) == doc["mount"]
+                and stat.S_ISREG(image.st_mode) and stat.S_ISDIR(mount.st_mode)
+                and doc["image_identity"] == self.identity(image)
+                and doc["image_bytes"] == image.st_size
+                and doc["mount_identity"] == self.identity(mount),
+                "scratch image or filesystem identity changed; retain recovery paths")
+        return doc
+
+    def _write(self):
+        data = contracts.write_bytes(self.doc, "telemetry-owner")
+        require(len(data) <= 8192, "scratch ownership exceeds its byte bound")
+        name = ".state-" + secrets.token_hex(8)
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=self.directory)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, "state.json", src_dir_fd=self.directory,
+                       dst_dir_fd=self.directory)
+            os.fsync(self.directory)
+        finally:
+            try:
+                os.unlink(name, dir_fd=self.directory)
+            except FileNotFoundError:
+                pass
+
+    def begin(self, container):
+        doc = self.available()
+        doc.update(phase="active", container=container, launches=doc["launches"] + 1)
+        self._write()  # Durable before Popen can contact the daemon.
+
+    def available(self):
+        doc = self._read()
+        require(doc["phase"] in ("ready", "stopped"),
+                "scratch has an unsettled launch; retain it and run nothing more")
+        return doc
+
+    def finish(self, container, confirmed):
+        doc = self._read()
+        require(doc["phase"] == "active" and doc["container"] == container,
+                "scratch launch settlement names another execution")
+        doc["phase"] = "stopped" if confirmed else "uncertain"
+        self._write()
+
+    def cleanup(self, image, host=None):
+        doc = self._read()
+        require(os.path.abspath(image) == doc["image"]
+                and doc["phase"] in ("ready", "stopped"),
+                "scratch cleanup unconfirmed; retain image, mount and ownership evidence")
+        problems = cleanup(doc["image"], doc["mount"], host)
+        if not problems:
+            doc.update(phase="removed", container=None)
+            self._write()
+        return problems
+
+    def __exit__(self, *unused):
+        for name in ("lock", "directory"):
+            fd = getattr(self, name)
+            setattr(self, name, None)
+            if fd is not None:
+                os.close(fd)

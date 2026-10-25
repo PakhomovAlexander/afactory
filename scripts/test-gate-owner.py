@@ -48,10 +48,18 @@ def load_owner():
     return module
 
 
+def publish(path, message, before_publish=lambda: None):
+    """Fixture readiness appears only with its complete message (ADR-0155)."""
+    temporary = path.with_name(path.name + '.pending-' + str(os.getpid()))
+    temporary.write_text(message)
+    before_publish()
+    os.replace(temporary, path)
+
+
 def gate_fixture(root, mode):
     if mode == 'cleared':
         assert 'AF_PROCESS_TREE' not in os.environ
-        (root / 'live').write_text(str(os.getpid()))
+        publish(root / 'live', str(os.getpid()))
         time.sleep(60)
     elif mode == 'ordinary':
         parent = os.fork()
@@ -64,7 +72,7 @@ def gate_fixture(root, mode):
             os._exit(0)
         assert os.waitpid(parent, 0)[1] == 0
         until(lambda: (root / 'live').exists())
-        (root / 'leader').write_text(str(os.getpid()))
+        publish(root / 'leader', str(os.getpid()))
         time.sleep(60)
     elif mode == 'zombies':
         # Each intermediate parent owns/reaps its direct child. Its grandchild is
@@ -86,7 +94,7 @@ def gate_fixture(root, mode):
             pids.append(int(os.read(read, 32)))
             os.close(read)
             assert os.waitpid(parent, 0)[1] == 0  # Owner must not steal this status.
-        (root / 'pids').write_text(json.dumps(pids))
+        publish(root / 'pids', json.dumps(pids))
         until(lambda: (root / 'release').exists())
     elif mode in ('live', 'cancel', 'drain', 'thread'):
         parent = os.fork()
@@ -97,9 +105,9 @@ def gate_fixture(root, mode):
 
                 def worker():
                     until(lambda: state(os.getpid())[1] == 'Z')
-                    (root / 'live').write_text(str(os.getpid()))
+                    publish(root / 'live', str(os.getpid()))
                     until(lambda: (root / 'finish').exists(), seconds=60)
-                    (root / 'finished').write_text('natural exit')
+                    publish(root / 'finished', 'natural exit')
                     os._exit(0)
 
                 threading.Thread(target=worker).start()
@@ -110,15 +118,15 @@ def gate_fixture(root, mode):
                 nested = os.fork()
                 if nested == 0:
                     os.setsid()
-                    (root / 'nested').write_text(str(os.getpid()))
+                    publish(root / 'nested', str(os.getpid()))
                     time.sleep(60)
                     os._exit(0)
-            (root / 'live').write_text(str(os.getpid()))
+            publish(root / 'live', str(os.getpid()))
             until(lambda: (root / 'finish').exists(), seconds=60)
-            (root / 'finished').write_text('natural exit')
+            publish(root / 'finished', 'natural exit')
             os._exit(0)
         until(lambda: (root / 'live').exists())
-        (root / 'leader').write_text(str(os.getpid()))
+        publish(root / 'leader', str(os.getpid()))
         if mode == 'cancel':
             time.sleep(60)
         # Early leader exit: owner must drain live detached work without signalling it.
@@ -256,6 +264,37 @@ class Ownership(unittest.TestCase):
 
     def command(self, *args):
         return [sys.executable, str(OWNER), *args]
+
+    def test_readiness_publishes_a_complete_pid_after_controlled_delay(self):
+        import threading
+
+        path = self.root / 'publication'
+        # Reproduce the predecessor's exact create-before-write window deterministically.
+        with path.open('w') as stream:
+            self.assertTrue(path.exists())
+            self.assertEqual(path.read_text(), '')
+            with self.assertRaises(ValueError):
+                int(path.read_text())
+            stream.write(str(os.getpid()))
+        path.unlink()
+        staged, release = threading.Event(), threading.Event()
+
+        def delayed():
+            staged.set()
+            assert release.wait(2), 'test did not release staged publication'
+
+        writer = threading.Thread(target=publish, args=(path, str(os.getpid()), delayed))
+        writer.start()
+        try:
+            self.assertTrue(staged.wait(2))
+            self.assertFalse(path.exists(), 'existence must never expose an incomplete PID')
+            self.assertEqual(list(self.root.glob('publication.pending-*'))[0].read_text(),
+                             str(os.getpid()))
+        finally:
+            release.set()
+            writer.join(2)
+        self.assertFalse(writer.is_alive())
+        self.assertEqual(int(path.read_text()), os.getpid())
 
     def test_bounded_outer_subreaper_reproduction(self):
         for repaired in (False, True):

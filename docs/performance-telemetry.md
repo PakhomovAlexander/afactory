@@ -146,14 +146,17 @@ one bounded profile per trigger:
 ```sh
 # On a Linux host: contained, the only mode for source the operator does not trust.
 python3 scripts/performance/cli.py ci-scratch --image /srv/scratch.img --mount /srv/scratch-fs \
-  --bytes 8589934592
+  --bytes 8589934592 --telemetry-owner /srv/telemetry-owner
 python3 scripts/performance/cli.py telemetry-run --profile manual --trigger manual \
   --mode linux_container --image REGISTRY/IMAGE@sha256:... --scratch-fs /srv/scratch-fs \
+  --scratch-owner /srv/telemetry-owner \
   --baseline-af base/af --candidate-af head/af \
   [--baseline-build base/af.build.json --candidate-build head/af.build.json] \
   --baseline-sha BASE_SHA --candidate-sha HEAD_SHA --authority-sha "$(git rev-parse HEAD)" \
   [--experiment overhead]... [--rounds N] [--pairs N] [--scale full|smoke] [--corpus-runs N] \
   --output result/
+python3 scripts/performance/cli.py ci-scratch --cleanup --image /srv/scratch.img \
+  --mount /srv/scratch-fs --telemetry-owner /srv/telemetry-owner
 # On a trusted host, for source the operator trusts (never a pull request):
 python3 scripts/performance/cli.py telemetry-run --mode trusted_local ... --output result/
 python3 scripts/performance/cli.py telemetry-verify --result result/ [--summary] \
@@ -182,6 +185,10 @@ Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0215)
   image: network none, read-only root, every capability dropped, no new privileges,
   `docker-init` as PID 1, the registry's PIDs (`[containment] pid_limit`), memory with swap
   disabled and CPU set, a file size limit, as this user.
+  Daemon logging is disabled (`--log-driver none`), IPC is disabled (`--ipc none`, no
+  writable `/dev/shm`), and the build image's existing bounded volume inspection refuses
+  declared image volumes before even a version probe runs. Controller captures keep their
+  existing byte and allocation limits on the same bounded filesystem.
   - **Binds.** Read-only, at their own paths: only that experiment's declared inputs and that
     side's binary. Writable: only the execution's own new directory under the verified
     disk-bounded scratch filesystem's `telemetry/` entry.
@@ -190,6 +197,21 @@ Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0215)
   - **Teardown.** Every process of the execution lives in the container's PID namespace and
     ends with it. The container is removed once however the execution ended, and the scratch
     filesystem is checked against its inventory.
+
+  **Final filesystem cleanup.** `ci-scratch --telemetry-owner` creates a private control
+  directory outside scratch, with a bounded `af.perf-telemetry-owner/1` record binding its
+  directory/lock identities and owner UID to the backing image's path, device, inode and
+  size and the mounted filesystem's path, device and root inode. The CLI holds its
+  nonblocking lock through preflight, every execution and result publication. Before each
+  Docker launch the executor durably publishes the exact pending container name; only
+  confirmed removal and scratch inventory checks settle it. Uncertainty stops later launches.
+  The workflow's unconditional final cleanup uses this ownership record, independently of
+  any result JSON. Only pre-launch `ready` or confirmed `stopped` ownership permits unmount
+  and image removal. Pending launches, a live controller, missing/corrupt/foreign evidence
+  or changed filesystem identity refuse all destructive commands and print the retained
+  image, mount and control paths. A cancellation before result publication cannot turn into
+  cleanup permission. Do not delete these recovery paths to make a failed job look clean;
+  an operator must establish that the recorded container and controller have stopped first.
 
   A pull request's candidate is measured only this way: `telemetry-run --trigger pr` refuses
   any other mode, and the result contract refuses a pull request's result recorded otherwise.

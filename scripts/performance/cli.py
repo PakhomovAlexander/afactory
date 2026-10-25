@@ -123,6 +123,7 @@ staged policy, its inventory and any installed guarded measure to match it, and 
 re-pins the staged policy for a reviewed human installation.
 """
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -709,6 +710,23 @@ def _write_probe_trace(path, data):
 
 
 def cmd_telemetry_run(args):
+    # The lock spans preflight, every probe/reader, and final result publication. Workflow
+    # cancellation cannot make the final cleanup race a still-running controller.
+    try:
+        with contextlib.ExitStack() as stack:
+            owner = None
+            if args.mode == "linux_container":
+                if not args.scratch_owner:
+                    raise ContractError("--scratch-owner: trusted ci-scratch ownership is required")
+                owner = stack.enter_context(hostprep.TelemetryOwner(args.scratch_owner,
+                                                                    args.scratch_fs))
+                owner.available()
+            return _telemetry_run(args, owner)
+    except (ContractError, OSError) as error:
+        return _refuse("invalid", "invalid_telemetry_owner", str(error))
+
+
+def _telemetry_run(args, owner):
     try:
         root = telemetrylab.ROOT
         builds = {}
@@ -727,7 +745,7 @@ def cmd_telemetry_run(args):
             experiments=args.experiment, rounds=args.rounds, pairs=args.pairs, scale=args.scale,
             corpus_runs=args.corpus_runs, output=args.output, work=args.work,
             result_id=args.result_id, root=root, mode=args.mode, docker=args.docker,
-            image=args.image, scratch_fs=args.scratch_fs, builds=builds))
+            image=args.image, scratch_fs=args.scratch_fs, builds=builds, scratch_owner=owner))
     except telemetrylab.Unavailable as error:
         return _refuse("unavailable", error.reason, str(error))
     except (ContractError, OSError) as error:
@@ -1276,15 +1294,30 @@ def cmd_ci_credentials(args):
 def cmd_ci_scratch(args):
     try:
         if args.cleanup:
-            problems = hostprep.cleanup(args.image, args.mount)
+            if args.telemetry_owner:
+                with hostprep.TelemetryOwner(args.telemetry_owner, args.mount) as owner:
+                    problems = owner.cleanup(args.image)
+            else:
+                problems = hostprep.cleanup(args.image, args.mount)
             for problem in problems:
                 sys.stderr.write("cleanup: %s\n" % problem)
             return EXIT_UNAVAILABLE if problems else 0
         record = hostprep.prepare(args.image, args.mount, args.bytes)
+        if args.telemetry_owner:
+            try:
+                with hostprep.TelemetryOwner(args.telemetry_owner, args.mount, create=True,
+                                            image=args.image):
+                    pass
+            except BaseException:
+                # Preparation has returned but no measurement can have launched yet.
+                hostprep.cleanup(args.image, args.mount)
+                raise
     except hostprep.Refused as error:
         return _refuse("unavailable", error.reason, str(error))
     except (ContractError, OSError) as error:
-        return _refuse("invalid", "invalid_scratch", str(error))
+        return _refuse("invalid", "invalid_scratch", "%s; retained recovery paths: image=%s "
+                       "mount=%s ownership=%s" % (error, args.image, args.mount,
+                                                 args.telemetry_owner))
     sys.stderr.write("mounted %d bytes at %s (%d bytes were free)\n" % (
         record["size_bytes"], record["mount"], record["free_bytes"]))
     return 0
@@ -1561,6 +1594,8 @@ def parser():
                                "digest")
     telemetry_run.add_argument("--scratch-fs", help="linux_container: the dedicated "
                                "disk-bounded scratch filesystem's mount point")
+    telemetry_run.add_argument("--scratch-owner", help="linux_container: trusted ownership "
+                               "directory created by ci-scratch --telemetry-owner")
     telemetry_run.add_argument("--baseline-build", help="the baseline's build record "
                                "(af.perf-telemetry-build/1)")
     telemetry_run.add_argument("--candidate-build", help="the candidate's build record")
@@ -1797,6 +1832,8 @@ def parser():
     scratch.add_argument("--mount", required=True)
     scratch.add_argument("--bytes", type=int, default=2 * 1024 * 1024 * 1024)
     scratch.add_argument("--cleanup", action="store_true")
+    scratch.add_argument("--telemetry-owner", help="private control directory outside scratch; "
+                         "required for telemetry preparation and its guarded final cleanup")
     scratch.set_defaults(handler=cmd_ci_scratch)
 
     declaring = commands.add_parser("cohort-declare", help="declare a fixed calibration cohort "

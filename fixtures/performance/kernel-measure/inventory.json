@@ -2112,8 +2112,8 @@
   },
   {
    "path": "scripts/performance/cli.py",
-   "sha256": "sha256:11b435f7c2f888e7b725b681611cd8372415049d6121bfce64ff4fe7e4e0147f",
-   "size": 109275
+   "sha256": "sha256:135d9354ebfb8f56bc24152c815482bd95844ebd48dcb18b8c23999eeeb8c561",
+   "size": 111349
   },
   {
    "path": "scripts/performance/cohort-dispatch.py",
@@ -2247,8 +2247,8 @@
   },
   {
    "path": "scripts/performance/perflab/contracts.py",
-   "sha256": "sha256:556405713dfc0dc33d6819f643fbb3cd07950abfecd468c518335d5f8f8b1045",
-   "size": 305597
+   "sha256": "sha256:ab4a99e55e55dcd1f7f5a4be960bf124e5ae4e548658837de0703baaffc25584",
+   "size": 307085
   },
   {
    "path": "scripts/performance/perflab/costs.py",
@@ -2307,8 +2307,8 @@
   },
   {
    "path": "scripts/performance/perflab/hostprep.py",
-   "sha256": "sha256:257aff8d787dd97e47d0651b0677462853b960d7b42909a95893ece297b28b8b",
-   "size": 5669
+   "sha256": "sha256:ff8b1361aca673c3700756e2533fed4407cbe02d4c6c00d2b122a1c07f8f3545",
+   "size": 12824
   },
   {
    "path": "scripts/performance/perflab/images.py",
@@ -2447,13 +2447,13 @@
   },
   {
    "path": "scripts/performance/perflab/telemetryexec.py",
-   "sha256": "sha256:6cc1b999cc4f0ce1617da22a20398ad9a7e9eda69242e416caf6d02bd2c9a7da",
-   "size": 29537
+   "sha256": "sha256:ceb4fd5cc756db2be74dd6075913bafde0dd3cd0a7f6e167109bc4282b76d482",
+   "size": 30943
   },
   {
    "path": "scripts/performance/perflab/telemetrylab.py",
-   "sha256": "sha256:74a6208541c20143a4dfd4a0405576d0319eadf93ece75d83c1226212169ca8f",
-   "size": 119759
+   "sha256": "sha256:459f72fdca0989e608a7f5ad2f550f29a18e5076e99e31ba304b0c165ae6a08a",
+   "size": 119984
   },
   {
    "path": "scripts/performance/perflab/tomlfile.py",
@@ -2549,6 +2549,11 @@
    "path": "scripts/performance/tests/telemetry_fixtures.py",
    "sha256": "sha256:513a4e6ad10dee2e060e235cfe2b58b5114eb78ba2bf6a6e23922c9cd5b1995e",
    "size": 11357
+  },
+  {
+   "path": "scripts/performance/tests/telemetry_measurement_smoke.py",
+   "sha256": "sha256:c3a59fda51584d4e4874fa96e586e5d4c951bea7f1dae1e76f6cd09b1bfcb721",
+   "size": 9009
   },
   {
    "path": "scripts/performance/tests/telemetry_subreaper.py",
@@ -2647,8 +2652,8 @@
   },
   {
    "path": "scripts/performance/tests/test_performance_workflow.py",
-   "sha256": "sha256:a5330c59bd61490c111e2dfb0d615b1cdf06af68fcfa32bfcdaac687d69c7dad",
-   "size": 41929
+   "sha256": "sha256:9f4b409d4f191de181956e518df4bf2e5970a02b159e45e43415ce488d203573",
+   "size": 42388
   },
   {
    "path": "scripts/performance/tests/test_planning.py",
@@ -2721,6 +2726,11 @@
    "size": 9330
   },
   {
+   "path": "scripts/performance/tests/test_telemetry_cleanup.py",
+   "sha256": "sha256:44b1c75f416e4307d543bdc7c7e592c21ba252ff2be210ec2624a1543ac94516",
+   "size": 15947
+  },
+  {
    "path": "scripts/performance/tests/test_telemetry_collect.py",
    "sha256": "sha256:a2fc0ab14598f4e8d4bbf5da88c0c7cd33d49bcfe9f45d7a6be1bbe412ea9d4f",
    "size": 35517
@@ -2737,8 +2747,8 @@
   },
   {
    "path": "scripts/performance/tests/test_telemetry_exec.py",
-   "sha256": "sha256:a591660fa263a67925a5c35efee68a6ee907cc656cb563abee6b1d10d5d4f1c3",
-   "size": 31558
+   "sha256": "sha256:d8ba13f6cbbf858fc0850b1f7f77211bb3939767500fa788a5666dc7a5824dab",
+   "size": 33041
   },
   {
    "path": "scripts/performance/tests/test_telemetry_interruption.py",
@@ -2786,7 +2796,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:109537cfa7e31eb154b0326f3fddf1dc74076b030d2e7ffa2651f49e69fb47df",
+ "harness_digest": "sha256:2e36a81557d35ec7665812470565059ae534bab09751632c6a5b534a2849e274",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

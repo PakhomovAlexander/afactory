@@ -65,6 +65,9 @@ sys.exit(child.wait())
 class Image(object):
     reference = "registry.example/af-sample@sha256:" + "a" * 64
 
+    def refuse_implicit_volumes(self):
+        pass  # This stand-in image declares no volumes; live admission has its own smoke.
+
     def record(self):
         return {"reference": self.reference, "id": "sha256:" + "b" * 64,
                 "platform": "linux/amd64"}
@@ -480,6 +483,30 @@ class ContainedBase(TempDir):
 
 class Contained(ContainedBase):
 
+    def test_volume_admission_refuses_before_any_candidate_launch(self):
+        with mock.patch.object(self.executor.image, "refuse_implicit_volumes",
+                               side_effect=ContractError("implicit writable volumes")):
+            result = self.executor.run(execution(self, ["/bin/true"], cwd=self.run_dir))
+        self.assertIn("implicit writable volumes", result.error)
+        self.assertEqual((self.executor.current, self.executor.names), (None, 0))
+        self.assertEqual(result.cleanup, "confirmed")
+        self.assertFalse(os.path.exists(os.path.join(self.docker_dir, "docker-calls.jsonl")))
+
+    def test_volume_inspection_shares_the_deadline_and_cannot_launch_after_it(self):
+        doc = execution(self, ["/bin/true"], cwd=self.run_dir)
+        now = [doc.deadline - 1]
+        self.executor.clock = lambda: now[0]
+
+        def inspect():
+            self.assertEqual(self.executor.image.budget.deadline, doc.deadline)
+            self.assertEqual(self.executor.image.budget.left(), 1)
+            now[0] = doc.deadline
+
+        with mock.patch.object(self.executor.image, "refuse_implicit_volumes", inspect):
+            result = self.executor.run(doc)
+        self.assertIn("deadline ended during", result.error)
+        self.assertEqual((self.executor.current, self.executor.names), (None, 0))
+
     def test_only_the_execution_s_own_scratch_directory_is_writable(self):
         candidate = self.path("candidate", "af")
         os.makedirs(os.path.dirname(candidate))
@@ -493,7 +520,7 @@ class Contained(ContainedBase):
         for flag in ("--network none", "--read-only", "--cap-drop ALL",
                      "--security-opt no-new-privileges", "--pids-limit 1024",
                      "--memory 8589934592", "--memory-swap 8589934592", "--cpuset-cpus 0,1",
-                     "--cgroupns private", "--ipc private", "--init", "--pull never",
+                     "--cgroupns private", "--ipc none", "--log-driver none", "--init", "--pull never",
                      "--ulimit fsize=1073741824:1073741824"):
             self.assertIn(flag, joined)
         mounts = [argv[index + 1] for index, item in enumerate(argv) if item == "--mount"]

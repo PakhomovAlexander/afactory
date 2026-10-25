@@ -975,3 +975,20 @@ discovery, startup and state-read commands record none, so `perf-trace` keeps th
 candidate runs in its own container of the pinned sample image, a document is admitted only as
 its planned run with every figure recomputed, and a result is verified, uploaded and collected
 into its own durable history only under exactly its measurement authority (ADR-0215).
+
+Measurement cleanup closes two additional write/ownership gaps: Docker logging and IPC are
+disabled, and implicit image volumes are refused by the existing build admission check.
+The telemetry workflow prepares a private `af.perf-telemetry-owner/1` record outside candidate
+mounts and carries its lock through all probes, readers and publication. Each launch first
+publishes a pending container identity; only confirmed removal settles it. Final filesystem
+cleanup requires the exact image/mount/control identities and pre-launch or stopped state,
+independently of candidate output and result publication. Unknown ownership retains recovery
+paths. The command and recovery contract are in
+[`performance-telemetry.md`](../performance-telemetry.md#where-each-execution-runs).
+
+The disputed uppercase dispatch-SHA finding assumes case-sensitive workflow equality.
+[GitHub's Expressions operators documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#operators),
+checked 2026-10-25, states “GitHub ignores case when comparing strings.” The current workflow's
+`inputs.dispatch_head == github.sha` and Python's full-hex case normalization agree. The
+workflow and scheduler stay unchanged; their executable test models platform equality on the
+original uppercase input. This local model is not a hosted dispatch or a calibration original.

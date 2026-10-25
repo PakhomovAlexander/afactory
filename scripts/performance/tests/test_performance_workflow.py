@@ -20,6 +20,18 @@ WORKFLOW = os.path.join(ROOT, ".github/workflows/performance.yml")
 PIN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 
 
+class GitHubString(str):
+    """GitHub Expressions == ignores string case, including an unmodified SHA input.
+
+    https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#operators
+    This bounded model covers the workflow's string equality, not an Actions interpreter.
+    """
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self.casefold() == other.casefold()
+        return NotImplemented
+
+
 def step_named(job, prefix):
     for step in text.steps(job):
         if re.search(r"name: " + re.escape(prefix), step[0]) or any(
@@ -476,7 +488,7 @@ class Steps(TempDir):
             with self.subTest(head=head):
                 title = eval(expression, {"__builtins__": {}}, {
                     "github": SimpleNamespace(event_name="workflow_dispatch", sha=self.child),
-                    "inputs": SimpleNamespace(scope="calibration", dispatch_head=head.lower(),
+                    "inputs": SimpleNamespace(scope="calibration", dispatch_head=GitHubString(head),
                                               cohort_digest=digest, member="aa_01"),
                     "format": lambda pattern, *args: pattern.format(*args)})
                 self.assertEqual(title, "af-perf calibration " + digest + " aa_01" if valid

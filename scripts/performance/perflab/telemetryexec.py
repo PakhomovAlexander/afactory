@@ -7,7 +7,7 @@ bench script run) goes through one `Executor`, the same for both sides of a resu
 - **`Contained`** (`linux_container`, the only mode a pull request is measured in) runs it in
   its own Linux container of the pinned sample image: network none, a read-only root, every
   capability dropped, no new privileges, the declared PID, memory (swap disabled) and CPU set,
-  a file size limit, the container user, a private cgroup and IPC namespace, and
+  a file size limit, the container user, a private cgroup, IPC and daemon logging disabled, and
   `docker-init` as PID 1. Bound read-only at their own paths are only the measurement
   authority's inputs and this side's binary; the only writable bind is the run's own new
   directory on the verified disk-bounded scratch filesystem (`supervise.TELEMETRY_DIRECTORY`),
@@ -220,7 +220,10 @@ class Executor(object):
             return Outcome(error="the run's deadline leaves no time for it")
         refused = self.prepare(execution)
         if refused is not None:
-            return Outcome(error=refused)
+            return Outcome(error=refused, cleanup=(
+                "uncertain" if getattr(self, "pending", False) else "confirmed"))
+        if execution.deadline - self.clock() <= 0:
+            return Outcome(error="the run's deadline ended during execution preparation")
         started = self.clock()
         stdout = stderr = None
         try:
@@ -228,7 +231,8 @@ class Executor(object):
             stderr = open(stderr_path, "xb")
             process = self.launch(execution, stdout, stderr)
         except (OSError, ContractError) as error:
-            return Outcome(error=str(error)[:1024])
+            return Outcome(error=str(error)[:1024], cleanup=(
+                "uncertain" if getattr(self, "pending", False) else "confirmed"))
         finally:
             for stream in (stdout, stderr):
                 if stream is not None:
@@ -520,7 +524,7 @@ class Contained(Executor):
     limitations = CONTAINED_LIMITATIONS
 
     def __init__(self, docker, image, environment, scratch_root, uid, gid, cpus, label,
-                 runtime, clock=time.monotonic):
+                 runtime, clock=time.monotonic, owner=None):
         Executor.__init__(self, clock)
         require(builds.pinned_image(image.reference), "the sample image is pinned by digest")
         self.docker = docker
@@ -535,6 +539,9 @@ class Contained(Executor):
         self.names = 0
         self.inventory = None
         self.current = None
+        self.owner = owner
+        self.pending = False
+        self.image_checked = False
 
     @property
     def directory(self):
@@ -560,7 +567,7 @@ class Contained(Executor):
                 "--memory", str(memory), "--memory-swap", str(memory),
                 "--cpuset-cpus", ",".join(str(cpu) for cpu in self.cpus),
                 "--user", "%d:%d" % (self.uid, self.gid), "--cgroupns", "private",
-                "--ipc", "private",
+                "--ipc", "none", "--log-driver", "none",
                 "--ulimit", "fsize=%d:%d" % (execution.file_bytes, execution.file_bytes),
                 "--workdir", execution.cwd]
         own = self.directory + os.sep
@@ -583,7 +590,16 @@ class Contained(Executor):
         return argv + execution.argv
 
     def prepare(self, execution):
+        if self.pending:
+            return "the preceding container's cleanup is unconfirmed; nothing more runs"
         try:
+            if not self.image_checked:
+                # Reuse the build boundary's bounded declaration check, under this same
+                # execution deadline. No candidate byte (even --version) runs first.
+                from .budget import Budget
+                self.image.budget = Budget(execution.deadline, self.clock, 0)
+                self.image.refuse_implicit_volumes()
+                self.image_checked = True
             self.inventory = supervise.prepare_scratch(
                 self.scratch_root, self.uid, self.gid, extra=(supervise.TELEMETRY_DIRECTORY,))
         except (ContractError, OSError) as error:
@@ -596,6 +612,11 @@ class Contained(Executor):
                                                self.names, secrets.token_hex(4))
         argv = self.argv(name, execution)
         self.current = name
+        if self.owner is not None:
+            self.owner.begin(name)
+        # Popen can be interrupted after the daemon accepted the launch. Only confirmed
+        # removal may clear this latch; an exception cannot be called a pre-launch refusal.
+        self.pending = True
         return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
                                 env=builds.docker_client_environment(),
                                 preexec_fn=_limit_files(execution.file_bytes), close_fds=True)
@@ -634,6 +655,9 @@ class Contained(Executor):
             problems.append("the container client did not end")
         if self.inventory is not None:
             problems += supervise.scratch_problems(self.scratch_root, self.inventory)
+        if self.owner is not None:
+            self.owner.finish(self.current, not problems)
         if problems:
             return None, "uncertain", "; ".join(problems)[:4096]
+        self.pending = False
         return None, "confirmed", removal

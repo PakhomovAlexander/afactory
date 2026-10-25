@@ -269,7 +269,8 @@ jobs:
         run: |
           set -eu
           python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-scratch \
-            --image "$RUNNER_TEMP/scratch.img" --mount "$RUNNER_TEMP/scratch-fs" --bytes "$WORK_BYTES"
+            --image "$RUNNER_TEMP/scratch.img" --mount "$RUNNER_TEMP/scratch-fs" --bytes "$WORK_BYTES" \
+            --telemetry-owner "$RUNNER_TEMP/telemetry-owner"
           docker pull --quiet "$IMAGE"
       - name: Measure from the trusted control, each execution contained (advisory)
         env:
@@ -282,6 +283,7 @@ jobs:
           python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-run \
             --profile "$PROFILE" --trigger "$TRIGGER" --mode linux_container \
             --image "$IMAGE" --scratch-fs "$RUNNER_TEMP/scratch-fs" \
+            --scratch-owner "$RUNNER_TEMP/telemetry-owner" \
             --baseline-af "$RUNNER_TEMP/baseline/af" --candidate-af "$RUNNER_TEMP/candidate/af" \
             --baseline-build "$RUNNER_TEMP/baseline/af.build.json" \
             --candidate-build "$RUNNER_TEMP/candidate/af.build.json" \
@@ -304,6 +306,6 @@ jobs:
           path: ${{ runner.temp }}/telemetry-result/
           retention-days: ${{ fromJSON(needs.plan.outputs.retention_days) }}
           if-no-files-found: error
-      - name: Remove the scratch
+      - name: Remove scratch only with trusted stopped ownership (otherwise retain recovery paths)
         if: always()
-        run: python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-scratch --cleanup --image "$RUNNER_TEMP/scratch.img" --mount "$RUNNER_TEMP/scratch-fs"
+        run: python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-scratch --cleanup --image "$RUNNER_TEMP/scratch.img" --mount "$RUNNER_TEMP/scratch-fs" --telemetry-owner "$RUNNER_TEMP/telemetry-owner"

@@ -603,6 +603,7 @@ class Settings(object):
         self.docker = "docker"
         self.image = None
         self.scratch_fs = None
+        self.scratch_owner = None
         self.uid = os.getuid()
         self.gid = os.getgid()
         # Each side's build record (`af.perf-telemetry-build/1`, as parsed), or None.
@@ -706,7 +707,9 @@ def _executor(settings, registry, config, budget):
             "user (uid %d), so the run can verify and remove what they wrote" % os.geteuid())
     environment = contained_environment(registry, config)
     try:
-        image = (settings.image_identity or builds.BuildImage)(settings.docker, settings.image)
+        image = (settings.image_identity(settings.docker, settings.image)
+                 if settings.image_identity else builds.BuildImage(settings.docker, settings.image,
+                                                                   budget=budget))
         check = settings.contained_host or runner.contained_host
         scratch_root, cpus, runtime = check(settings.docker, settings.image, settings.scratch_fs,
                                             environment, budget, settings.clock)
@@ -717,7 +720,7 @@ def _executor(settings, registry, config, budget):
     executor = telemetryexec.Contained(settings.docker, image, environment, scratch_root,
                                        settings.uid, settings.gid, cpus,
                                        settings.result_id or "telemetry", runtime,
-                                       settings.clock)
+                                       settings.clock, owner=settings.scratch_owner)
     return executor, executor.directory
 
 
