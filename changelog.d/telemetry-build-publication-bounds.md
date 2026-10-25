@@ -13,3 +13,7 @@ locked cleanup, without evicting results. Preserve diagnostic reader uncertainty
 namespace release and profile shutdown; retain scratch and writable evidence and prevent later
 execution when any reader may remain live. Add actual-filesystem collection and every-reader
 interruption regressions without changing persisted formats, caps, verdicts or release metadata.
+
+Keep allocation fixtures in owned temporary scratch outside the source tree, including when
+source is read-only. Preserve the shared authority-materialization interruption boundary after
+the complete coexistence reservation, using the same bounded immutable Git-object admission.

@@ -1,8 +1,7 @@
-"""Full collection allocation admission on the checkout filesystem, never sparse stand-ins."""
+"""Full collection allocation admission in owned filesystem scratch, never sparse stand-ins."""
 import io
 import os
 import shutil
-import tempfile
 import zipfile
 from unittest import mock
 
@@ -19,10 +18,8 @@ class AllocationCycles(TempDir):
 
     def setUp(self):
         collecting.Collection.setUp(self)
-        owned = os.path.join(ROOT, "target", "performance-allocation-tests")
-        os.makedirs(owned, exist_ok=True)
-        self.disk = tempfile.mkdtemp(dir=owned)
-        self.addCleanup(shutil.rmtree, self.disk, True)
+        self.disk = self.path("allocation")
+        os.mkdir(self.disk)
         self.config["root"] = os.path.join(self.disk, "history")
         self.config["artifact_bytes_max"] = 4 << 20
 

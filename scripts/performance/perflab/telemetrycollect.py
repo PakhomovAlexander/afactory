@@ -491,7 +491,9 @@ class Cycle(object):
             # staging, expanded and retained authority, import copy and planning receipt.
             kept.reserve_trees(trees, files=binding_files, entries=(retained,
                                os.path.join(kept.results, result_id)))
-            telemetrylab._write_members(authority, authority_members, 0o700, 0o700)
+            # Keep materialization inside its shared interruption boundary. It re-admits
+            # the same immutable Git objects under the existing complete byte/path bounds.
+            telemetrylab.materialize_authority(self.git, sha, authority)
             self.api.remaining("verifying the result")
             self.interrupted_import = (run, attempt, artifact, result_id)
             kept.retain_binding(result_id, binding)
