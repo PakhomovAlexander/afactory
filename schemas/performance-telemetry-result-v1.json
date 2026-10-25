@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:performance-telemetry-result:1",
   "title": "af.perf-telemetry-result/1",
-  "description": "One telemetry experiment run (ADR-0199, ADR-0200): the baseline and candidate sources, binaries and builds, the measurement authority both ran under, the effective configuration and its digest, the execution mode, container, bounds, cleanup and any protected state that changed, the generated corpus's facts, the host observed at both ends, every planned run with its alternating position, seed, status, raw document, capped log and the script's own judgment, each side's within-binary figures by level, and each same-host cross-revision comparison by level, metric and shape, or why it is incompatible or missing. Advisory; never a verdict.",
+  "description": "One telemetry experiment run (ADR-0213, ADR-0214): the baseline and candidate sources, binaries and builds, the measurement authority both ran under, the effective configuration and its digest, the execution mode, container, bounds, cleanup and any protected state that changed, the generated corpus's facts, the host observed at both ends, every planned run with its alternating position, seed, status, raw document, capped log and the script's own judgment, each side's within-binary figures by level, and each same-host cross-revision comparison by level, metric and shape, or why it is incompatible or missing. Advisory; never a verdict.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

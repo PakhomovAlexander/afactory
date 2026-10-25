@@ -128,3 +128,30 @@ selected with `actions/setup-python` using `python-version: '3.x'` and `check-la
 Tomli/tomllib parity is mandatory. The required `lint` check fails when this job fails, is
 cancelled or is skipped. The other validation jobs use the same Python selection before
 executing Python or Make commands ([ADR-0197](adr/0197-validate-on-one-latest-stable-python.md)).
+
+## GA source integration checks
+
+The integrated producer retains GA's 60,000 ms production lease, exact current suite/goldens,
+Task continuation and gate retry/reporting alongside the lab's diagnostic and containment
+contracts ([ADR-0220](adr/0220-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)).
+The two reported Store dispatch failures use a separate 1,000 ms Attempt allowance. Their
+fixtures now control Store time locally; no production deadline or allowance is extended.
+Reproduce the repair and its neighboring expiry/accounting cases from the repository root:
+
+```sh
+cargo test --locked --workspace --lib store::task::
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/nextest-gate.py --repeat 20 \
+  --locked --workspace --lib --profile ci --test-threads 4 \
+  -E 'test(rejected_task_output_keeps_its_charge) or test(captured_retry_policy_checks_durable_failures) or test(short_attempt_fixture_paths) or test(real_store_dispatch_deadline_boundary) or test(renewal_race)'
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/performance/schemas.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/performance/cli.py harness-digest --check
+```
+
+Use synthetic HOME/XDG directories and the pinned Rust 1.88 toolchain for AF checks. Repeat
+mode stops on any failure and never substitutes an isolated retry for a successful repetition.
+The ordinary native gate retains its separate failed-test isolation policy and reports flakes.
+Regenerate protected inventory/staged policy with `harness-digest --write` after protected
+edits; `.af/` authority is unchanged by this integration. Full native verification and independent
+reviews run on sealed source. Follow the [dispatcher runbook](performance-cohort-dispatch.md)
+only after acceptance and exact commit; the retained old cohort is unchanged, and this source
+integration declares no replacement cohort or deployment.

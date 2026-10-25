@@ -1,4 +1,4 @@
-# Hourly telemetry collection (ADR-0200). An example for a future always-on Linux collection
+# Hourly telemetry collection (ADR-0214). An example for a future always-on Linux collection
 # host: nothing installs or enables it.
 [Unit]
 Description=Hourly AF performance telemetry collection

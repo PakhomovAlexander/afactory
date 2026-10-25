@@ -10,4 +10,4 @@
   latency on a baseline and a candidate binary, judged by each script's own rule and compared
   only per level on one host. `cli.py probe --trace-output` gives the `authority_runtime_new`
   investigation a phase breakdown
-  ([ADR-0205](docs/adr/0205-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)).
+  ([ADR-0213](docs/adr/0213-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)).

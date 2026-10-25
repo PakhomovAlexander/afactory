@@ -1,4 +1,4 @@
-"""Validate a document against a committed JSON Schema of the product (ADR-0199).
+"""Validate a document against a committed JSON Schema of the product (ADR-0213).
 
 The laboratory reads the documents `af telemetry ... --json` and the telemetry bench scripts
 print through the schemas the product commits beside its own parity tests

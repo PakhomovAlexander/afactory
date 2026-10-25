@@ -499,7 +499,7 @@ fn cached_plan_dependency_references_revalidate_dependency_and_inputs() {
     f.store
         .admit_task_plan(&f.cas, &lease, &f.authority)
         .unwrap();
-    let healthy = f.state();
+    let healthy = f.state(); // Prime the parsed prefix before changing any referenced bytes.
     let replacement = f.cas.get(&f.plan.pipeline_id).unwrap();
     for id in [
         f.plan.dependencies["fixture/extra"].artifact_id.clone(),

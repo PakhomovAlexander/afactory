@@ -807,6 +807,7 @@ mod tests {
             recovered.missing_fields,
             BTreeSet::from([unrelated.clone()])
         );
+
         let mut later_failure = capture(Some(second_id.clone()), vec![]);
         later_failure.receipts.clear();
         let fresh_gap = unavailable_source_gap("fixture", source, UnavailableSourceReason::Changed);

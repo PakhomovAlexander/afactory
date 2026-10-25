@@ -1,4 +1,4 @@
-"""Where a telemetry experiment's script runs and what bounds it (ADR-0206).
+"""Where a telemetry experiment's script runs and what bounds it (ADR-0214).
 
 The trusted local executor runs real short-lived processes here: a script that leaves a process
 behind in its group, one that outlives the run's deadline and one that writes past its room.

@@ -1051,7 +1051,6 @@ class Counters(TempDir):
                                                                   codesign=self.path("none"))
         self.assertEqual((available, reason), (False, "samply_flags_missing"))
         self.assertIn("--save-only", detail)
-<<<<<<< 2ede1a88d0fe157b62afffb15cad99965d68ea87
         # Model macOS canonical paths, independent of the verifier's system symlinks
         # (on Linux /bin/ls can resolve outside every macOS protected prefix).
         protected_paths = ("/System/Library/af-fixture", "/usr/bin/af-fixture",
@@ -1070,12 +1069,6 @@ class Counters(TempDir):
                 self.assertEqual((available, reason), (False, "protected_executable"))
                 self.assertIn(resolved, detail)
                 self.assertEqual(version, "samply 0.0.fake")
-=======
-        # The host's /bin/ls may resolve outside the protected path.
-        available, reason, _, _ = counters.samply_capability(boss, full,
-                                                             "/System/af-protected-fixture", env, 10,
-                                                             codesign=self.path("none"))
-        self.assertEqual((available, reason), (False, "protected_executable"))
         resolve = os.path.realpath
         for real in ("/usr/lib/cargo/bin/coreutils", "/usr/lib/cargo/bin/coreutils/ls"):
             # Only the target resolves to the multicall binary; every other path is itself.
@@ -1084,7 +1077,6 @@ class Counters(TempDir):
                 available, reason, _, _ = counters.samply_capability(
                     boss, full, target, env, 10, codesign=self.path("none"))
             self.assertEqual((available, reason), (False, "protected_executable"), real)
->>>>>>> ab5bc610183fcb4211ffe6051c158723674d3b0d
         hardened = self.path("codesign")
         with open(hardened, "w") as stream:
             stream.write("#!/bin/sh\necho 'CodeDirectory v=20500 size=1 flags=0x10000(runtime) "

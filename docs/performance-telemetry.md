@@ -1,7 +1,7 @@
 # Telemetry in the performance laboratory
 
 The laboratory uses [Telemetry](telemetry.md) in two ways, both apart from the timing verdict
-([ADR-0205](adr/0205-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)):
+([ADR-0213](adr/0213-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)):
 
 - **Diagnostics.** A diagnostic child run of a comparison can also record its CLI cases at an
   explicitly selected telemetry level and read the recording back through the side's own
@@ -11,7 +11,7 @@ The laboratory uses [Telemetry](telemetry.md) in two ways, both apart from the t
   candidate binary with the bench scripts of [design §12](design/telemetry.md), from the trusted
   control's checkout, on pull requests, nightly, on publication and on request. Every execution
   of a candidate is contained, and only verified results reach the durable history
-  ([ADR-0206](adr/0206-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).
+  ([ADR-0214](adr/0214-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).
 
 Neither ever contributes a verdict sample, changes a verdict, or satisfies a required check.
 The old hosted calibration cohort's bytes remain pinned by SHA-256. The consolidated
@@ -32,11 +32,11 @@ Provider or fixture decisions. Documentation links use the reconciled numbers.
 
 | Captured performance draft number | Reconciled decision |
 | --- | --- |
-| 0199 | [0205: Telemetry diagnostics and advisory experiments](adr/0205-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md) |
-| 0200 | [0206: Containment, verification and collection](adr/0206-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md) |
-| 0201 | [0207: Reference-generation throughput](adr/0207-construct-reference-fixture-bytes-without-per-byte-python-loops.md) |
-| 0202 | [0208: Calibration dispatch and group arguments](adr/0208-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md) |
-| 0203 | [0209: Accounting append and reservation settlement](adr/0209-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md) |
+| 0199 | [0205: Telemetry diagnostics and advisory experiments](adr/0213-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md) |
+| 0200 | [0206: Containment, verification and collection](adr/0214-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md) |
+| 0201 | [0207: Reference-generation throughput](adr/0215-construct-reference-fixture-bytes-without-per-byte-python-loops.md) |
+| 0202 | [0208: Calibration dispatch and group arguments](adr/0216-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md) |
+| 0203 | [0209: Accounting append and reservation settlement](adr/0217-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md) |
 
 ## Supported matrix
 
@@ -172,7 +172,7 @@ run and the teardown, with 90 seconds kept for the last teardown and the result.
 
 ### Where each execution runs
 
-Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0206): each side's
+Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0214): each side's
 `--version` query, the corpus generator and every script run.
 
 - **`--mode linux_container`** runs each execution in its own container of the pinned sample
@@ -357,7 +357,7 @@ falsify its own run's document, never the other side's, the controller's or anot
 
 `cli.py telemetry-collect --config FILE` is one bounded, idempotent collection cycle of the
 workflow's result artifacts into a durable telemetry history root (`perflab/telemetrycollect.py`,
-ADR-0206). It is a lane of its own. The archive collector (`scripts/performance/collect.py`) behaves as
+ADR-0214). It is a lane of its own. The archive collector (`scripts/performance/collect.py`) behaves as
 before, never reads these artifacts, and stays pinned to the frozen cohort's control (below);
 the only code the lanes share is the bounded ZIP reader, `transport.read_zip`.
 

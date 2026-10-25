@@ -1,4 +1,4 @@
-"""Stand-ins for telemetry experiments (ADR-0199, ADR-0200): bench documents and an executor.
+"""Stand-ins for telemetry experiments (ADR-0213, ADR-0214): bench documents and an executor.
 
 Every document is built from synthetic pairs or samples and completed by the real bench
 script's own `summarize` (or its read sample protocol), so it is exactly what the script would

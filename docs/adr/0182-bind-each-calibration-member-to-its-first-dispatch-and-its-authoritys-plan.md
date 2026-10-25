@@ -1,8 +1,6 @@
 # ADR-0182: Bind each calibration member to its first dispatch and its authority's plan, and give each probe setup write its own lease
 
-**Status:** accepted (2026-10-20); unconditional member naming amendment proposed in
-[ADR-0208](0208-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md).
-Closes the calibration part of package p6b of the
+**Status:** accepted (2026-10-20). Closes the calibration part of package p6b of the
 [continuous performance laboratory](../design/continuous-performance.md) (design §12, §15).
 It repairs three findings and three gate failures left on
 [ADR-0181](0181-declare-cohorts-before-they-run-inject-only-the-candidate-and-count-whole-power-trials.md)'s

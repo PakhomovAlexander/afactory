@@ -1,4 +1,4 @@
-"""Telemetry captures of diagnostic child runs (ADR-0199).
+"""Telemetry captures of diagnostic child runs (ADR-0213).
 
 `fixtures/performance/telemetry-diagnostic/` holds the four `af telemetry` documents a debug
 build of AF 0.12.0-rc.5 wrote for the CLI Task fixture of `cli_task_run_check` in a private HOME

@@ -1,4 +1,4 @@
-# Telemetry experiments of the AF performance laboratory (ADR-0199, docs/performance-telemetry.md).
+# Telemetry experiments of the AF performance laboratory (ADR-0213, docs/performance-telemetry.md).
 #
 # `python3 scripts/performance/cli.py telemetry-run --profile ID ...` measures Telemetry itself
 # with the credential-free bench scripts and fixtures of design §12 (docs/telemetry.md
@@ -16,7 +16,7 @@ schema = "af.perf-telemetry-lab/2"
 description = "Telemetry's own cost and read latency, measured beside the comparison, advisory."
 seed = 20261021
 
-# The container every contained execution runs in (ADR-0200): `--mode linux_container`, the only
+# The container every contained execution runs in (ADR-0214): `--mode linux_container`, the only
 # mode a pull request's candidate is measured in. Its disk-bounded scratch filesystem holds the
 # profile's `work_bytes`; network none, a read-only root and no capability are not settings.
 [containment]

@@ -441,7 +441,7 @@ class Profile(object):
                                "scratch_bound": "not_enforced_in_trusted_local_mode",
                                "container": None}, **(execution or {}))
         self.captures, self.renders, self.traces, self.counters = [], [], [], []
-        # The explicitly selected telemetry level and each telemetry capture (ADR-0199).
+        # The explicitly selected telemetry level and each telemetry capture (ADR-0213).
         self.telemetry_level = telemetry
         self.telemetry = []
         # Each trace entry's validated document, for the page's timeline; None when omitted.
@@ -1343,7 +1343,7 @@ class Profile(object):
         containment refuses, an unconfirmed cleanup, a timeout or outputs over their room fail
         it first. Returns (Result, the supervised child's wall time in ms as a decimal, the
         admitted trace bytes or None). With `telemetry`, the command records at that level
-        (ADR-0199), and `after(namespace, environment)` runs once its oracle passed, in the same
+        (ADR-0213), and `after(namespace, environment)` runs once its oracle passed, in the same
         namespace before it is removed."""
         entry = self.cli_entry(side, case)
         namespace = self.namespace()
@@ -1486,7 +1486,7 @@ class Profile(object):
                                          else "the untraced command")
         return None, wall, exported
 
-    # Telemetry captures (ADR-0199) --------------------------------------------------------
+    # Telemetry captures (ADR-0213) --------------------------------------------------------
 
     def telemetry_case(self, case):
         """One telemetry-recorded execution of an eligible CLI case per side, read back through
@@ -2178,7 +2178,7 @@ class Options(object):
         self.build_image = None
         self.host_os = None
         # The explicitly selected telemetry level of each eligible CLI case's telemetry capture
-        # (`spans` or `content`), or None for none (ADR-0199).
+        # (`spans` or `content`), or None for none (ADR-0213).
         self.telemetry = None
         for key, value in values.items():
             require(hasattr(self, key), "unknown profile option " + key)

@@ -1466,7 +1466,33 @@ fn slow_accounting_setup_renews_without_extending_the_lease_policy() {
     );
     assert_eq!(
         f.kernel().1,
-        10,
-        "recovery retains the original reservation floor"
+        7,
+        "recovery retains exactly the observed usage (ADR-0209)"
     );
+    let cold = EventStore::open_read_only(f.directory.path().join("events.sqlite")).unwrap();
+    let execution = cold
+        .task_projection(&f.cas, &f.task_id)
+        .unwrap()
+        .unwrap()
+        .execution
+        .unwrap();
+    let accounting = execution.attempt_accounting();
+    let recovered = accounting
+        .iter()
+        .find(|row| row.attempt_id == attempt)
+        .unwrap();
+    assert_eq!(recovered.charged_tokens, 7);
+    assert_eq!(recovered.reservation.tokens, 10);
+    assert_eq!(recovered.unknown_usage, None);
+    assert_eq!(
+        recovered.abandoned,
+        Some(review_store::store::task::execution::TaskAbandonCause::WriterLost)
+    );
+    assert_eq!(execution.budget.committed_tokens(), 7);
+    assert_eq!(execution.budget.reserved_tokens(), 0);
+    assert_eq!(execution.budget.begun_attempts(), 1);
+    let recoveries = execution.recoveries();
+    assert_eq!(recoveries.len(), 1);
+    assert_eq!(recoveries[0].chargeable, 0);
+    assert_eq!(recoveries[0].writer_lost, 1);
 }

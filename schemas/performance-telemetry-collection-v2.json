@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:performance-telemetry-collection:2",
   "title": "af.perf-telemetry-collection/2",
-  "description": "One telemetry collection cycle (ADR-0200): every completed run it attempted, by Actions run and attempt, with its artifact, its SHA-256, the result it kept or why it kept none, what it pruned for the root's bounds, and the root's results and bytes.",
+  "description": "One telemetry collection cycle (ADR-0214): every completed run it attempted, by Actions run and attempt, with its artifact, its SHA-256, the result it kept or why it kept none, what it pruned for the root's bounds, and the root's results and bytes.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

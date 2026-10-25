@@ -94,20 +94,9 @@ release-check:
 # schema parity (ADR-0162), and the guarded kernel experiments' protected-harness digest against
 # the staged policy and any installed guarded measure (ADR-0185); they never run a benchmark.
 preflight-check:
-<<<<<<< 2ede1a88d0fe157b62afffb15cad99965d68ea87
-	$(CI_STEP) task-preflight python3 scripts/test-task-preflight.py
-	$(CI_STEP) gate-owner python3 scripts/test-gate-owner.py
-	$(CI_STEP) nextest-gate python3 scripts/test-nextest-gate.py
-	$(CI_STEP) test-time-report python3 scripts/test-test-time-report.py
-	$(CI_STEP) provider-auth-host python3 scripts/test-provider-auth-host.py
-	$(CI_STEP) pr-report python3 scripts/test-check-pr-report.py
-	$(CI_STEP) pr-lines python3 scripts/test-pr-lines.py
-	$(CI_STEP) performance-lab python3 scripts/test-performance.py
-	$(CI_STEP) performance-schemas python3 scripts/performance/schemas.py
-	$(CI_STEP) performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
-=======
 	$(CI_STEP) --stage preflight task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) --stage preflight prereqs python3 scripts/test-prereqs.py
+	$(CI_STEP) --stage preflight gate-owner python3 scripts/test-gate-owner.py
 	$(CI_STEP) --stage preflight nextest-gate python3 scripts/test-nextest-gate.py
 	$(CI_STEP) --stage preflight test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) --stage preflight provider-auth-host python3 scripts/test-provider-auth-host.py
@@ -116,4 +105,3 @@ preflight-check:
 	$(CI_STEP) --stage preflight performance-lab python3 scripts/test-performance.py
 	$(CI_STEP) --stage preflight performance-schemas python3 scripts/performance/schemas.py
 	$(CI_STEP) --stage preflight --fix 'python3 -I scripts/performance/cli.py harness-digest --write' performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
->>>>>>> ab5bc610183fcb4211ffe6051c158723674d3b0d

@@ -1,4 +1,4 @@
-"""The Performance telemetry workflow's trust limits (ADR-0199), read as text, and the event
+"""The Performance telemetry workflow's trust limits (ADR-0213), read as text, and the event
 resolution it runs from its trusted control, against disposable Git repositories.
 
 Passing these is not a hosted run: no workflow here has executed on GitHub.

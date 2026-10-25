@@ -1,4 +1,4 @@
-"""Telemetry captures of a diagnostic child run's CLI cases (ADR-0199).
+"""Telemetry captures of a diagnostic child run's CLI cases (ADR-0213).
 
 `cli.py profile --telemetry spans` (or `content`) adds, beside the child's CPU profiles or phase
 traces, one telemetry-recorded execution of each eligible selected CLI case per side: the

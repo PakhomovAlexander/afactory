@@ -255,7 +255,7 @@ class Parity(unittest.TestCase):
                          [6, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3])
         self.assertEqual(contracts.schema_version("activation"), 3)
         # profiles/5 adds the explicitly selected telemetry level and its captures, and report/3
-        # each case's telemetry state (ADR-0199); nothing reads profiles/4 or report/2.
+        # each case's telemetry state (ADR-0213); nothing reads profiles/4 or report/2.
         self.assertEqual((contracts.schema_version("profiles"), contracts.schema_version("report")),
                          (5, 3))
         self.assertEqual((contracts.schema_version("cli"), contracts.schema_version("suite")),

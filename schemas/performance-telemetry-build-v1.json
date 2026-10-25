@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:performance-telemetry-build:1",
   "title": "af.perf-telemetry-build/1",
-  "description": "How one side's AF binary of a telemetry experiment was built (ADR-0200): its side, source commit, the binary's SHA-256, the pinned image, the toolchain identities and the command.",
+  "description": "How one side's AF binary of a telemetry experiment was built (ADR-0214): its side, source commit, the binary's SHA-256, the pinned image, the toolchain identities and the command.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

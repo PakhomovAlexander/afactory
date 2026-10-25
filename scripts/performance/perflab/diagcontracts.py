@@ -11,7 +11,7 @@
   rendered graph, trace with the coverage of its region, and counter with its artifacts, and
   every omission with its reason and reproduction. Version 5 adds the explicitly selected
   telemetry level and each telemetry capture of a CLI case, derived from the side's own
-  `af telemetry` documents (ADR-0199). Versions 1 to 4 are refused.
+  `af telemetry` documents (ADR-0213). Versions 1 to 4 are refused.
 - `af.perf-trace/1`: the metadata-only phase spans a `perf-trace` build exports
   (`review_core::perf_trace`).
 
@@ -354,7 +354,7 @@ COUNTER = Obj(
     Field("omission", Nullable(OMISSION)),
 )
 
-# A telemetry capture (ADR-0199): the run the side's telemetry-recorded execution of a CLI case
+# A telemetry capture (ADR-0213): the run the side's telemetry-recorded execution of a CLI case
 # recorded, read back through that binary's own `af telemetry` documents, bound to the case,
 # side, source and binary; its phases, a bounded timeline and an evidence state that is
 # complete only with nothing open, unsealed, dropped, recovered, unreadable or incomplete.
@@ -685,7 +685,7 @@ def validate_profiles(doc, where="profiles.json"):
 
 
 def _validate_telemetry(doc, selected, where):
-    """The telemetry rules of a child run (ADR-0199); the artifact paths its captures name."""
+    """The telemetry rules of a child run (ADR-0213); the artifact paths its captures name."""
     telemetry = doc["telemetry"]
     level = telemetry["level"]
     at = where + ".telemetry"

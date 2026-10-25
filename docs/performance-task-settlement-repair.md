@@ -3,7 +3,7 @@
 These are functional regressions, not performance measurements or acceptance. The implementation
 uses the pinned Rust 1.88.0 toolchain and a private offline dependency copy. The full gate and
 independent reviews run after sealing. The decision is
-[ADR-0209](adr/0209-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md).
+[ADR-0217](adr/0217-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md).
 
 ## Observed failures and what was reproduced
 
@@ -31,8 +31,9 @@ refuses the append. No Worker, callback or paid operation is retried.
 The accounting-fixture regression delays each setup boundary by 600 ms, spending over four
 seconds on setup under its unchanged three-second lease. Renewal at the actual boundaries
 keeps authority valid. It then observes seven tokens, waits for real expiry, takes a successor
-and recovers with the original ten-token reservation floor. The old writer cannot renew.
-No timeout, lease duration, telemetry assertion or golden is relaxed.
+and recovers with exactly those seven observed tokens under published main's ADR-0209.
+The old writer cannot renew. This updates the lab-only fixture's former ten-token reservation
+floor to the current recovery contract; no timeout, lease duration or golden is relaxed.
 
 ## Reproduce the focused checks
 

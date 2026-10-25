@@ -1,4 +1,4 @@
-# ADR-0209: Reapply an accounting append once after only this writer's heartbeat renewals
+# ADR-0217: Reapply an accounting append once after only this writer's heartbeat renewals
 
 **Status:** proposed (2026-10-24); renumbered from unmerged ADR-0203 after published main's
 ADR-0204. Narrows the residual live-owner sequence race of

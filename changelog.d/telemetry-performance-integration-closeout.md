@@ -8,4 +8,4 @@
   only what `telemetry-admit` verified and found credential-free. The new
   `cli.py telemetry-collect` lane keeps verified results in a locked, bounded history beside the
   unchanged archive collector
-  ([ADR-0206](docs/adr/0206-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).
+  ([ADR-0214](docs/adr/0214-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).

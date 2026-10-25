@@ -9,12 +9,9 @@ import hashlib
 import json
 import os
 import stat
-<<<<<<< 2ede1a88d0fe157b62afffb15cad99965d68ea87
 from contextlib import contextmanager
-=======
 import subprocess
 import sys
->>>>>>> ab5bc610183fcb4211ffe6051c158723674d3b0d
 from unittest import mock
 
 from perflab import admission, budget, limits, reference, seeds
@@ -68,13 +65,7 @@ class Clock(object):
 
 
 class Seeds(TempDir):
-<<<<<<< 2ede1a88d0fe157b62afffb15cad99965d68ea87
     def seed(self, name="seed", files=3, normalize_modes=True):
-=======
-    def seed(self, name="seed", files=3):
-        """A writer's seed, with the modes the tests assert set explicitly rather than taken
-        from the process umask: a host whose umask is 0077 creates 0700 directories."""
->>>>>>> ab5bc610183fcb4211ffe6051c158723674d3b0d
         root = self.path(name)
         os.makedirs(os.path.join(root, "probe-work", "nested"))
         # Normal seeds have deterministic modes under either writer umask. Refusal fixtures
@@ -457,7 +448,7 @@ class PortableSeeds(TempDir):
                  "'tests.test_admission.Seeds')\n"
                  "result = unittest.TextTestRunner(verbosity=1).run(suite)\n"
                  "sys.exit(0 if result.wasSuccessful() and result.testsRun else 1)\n" % lab)
-        completed = subprocess.run([sys.executable, "-I", "-c", child], cwd=lab,
+        completed = subprocess.run([sys.executable, "-I", "-B", "-c", child], cwd=lab,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
         output = completed.stdout.decode("utf-8", "replace")
         self.assertEqual(completed.returncode, 0, output)
