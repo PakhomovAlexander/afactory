@@ -158,7 +158,10 @@ impl Gate {
 #[derive(Debug, Clone)]
 struct Options {
     repo: PathBuf,
-    profile: RunnerProfile,
+    /// `--runner`; without it a new bundle's profile follows the registered Provider kinds.
+    runner: Option<RunnerProfile>,
+    /// `--probe`: run the token-free Provider status probe for the providers block.
+    probe: bool,
     gates: Vec<Gate>,
     apply: bool,
     refresh_lock: bool,
@@ -197,6 +200,14 @@ struct Report {
     /// The targets whose archive digests the lock's `af` pin records.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     lock_af_targets: Vec<String>,
+    /// Which runner profile a new bundle uses and why, for the `profile` line. Text only: the
+    /// JSON document keeps its shape.
+    #[serde(skip)]
+    runner_note: Option<String>,
+    /// One line per model Worker: the Provider kind it needs and what is registered, for the
+    /// `providers` block. Text only, like `runner_note`.
+    #[serde(skip)]
+    providers: Vec<String>,
 }
 
 /// The pin this binary writes into a lock: its own release with every target's archive digest
@@ -207,10 +218,13 @@ struct Report {
 fn running_af_pin() -> Result<(Option<AfPin>, Vec<String>), String> {
     let version = env!("CARGO_PKG_VERSION");
     let Some(receipt) = crate::selfmgmt::self_receipt() else {
+        let receipt = crate::selfmgmt::receipt_path()
+            .map(|path| format!(" at {}", path.display()))
+            .unwrap_or_default();
         return Ok((
             None,
             vec![format!(
-                "this af {version} has no install receipt (a source build or a launcher copy), so the lock pins no af release; install a release with `af self install {version}` and rerun to pin it"
+                "this af {version} has no install receipt{receipt} (a source build or a launcher copy), so the lock pins no af release; install a release with `af self install {version}` and rerun to pin it"
             )],
         ));
     };
@@ -247,8 +261,8 @@ fn running_af_pin() -> Result<(Option<AfPin>, Vec<String>), String> {
                 pin.digests.insert(receipt.target.clone(), own);
             }
             warnings.push(format!(
-                "the lock pins af {} with a digest for {} only ({error}); rerun `af onboard --refresh-lock` online to record every target",
-                receipt.version, receipt.target
+                "{error}; the lock records this target only ({}) — rerun `af onboard --refresh-lock` online to record every target",
+                receipt.target
             ));
         }
     }
@@ -281,11 +295,11 @@ pub(super) fn run_cli(args: crate::cli::OnboardArgs) -> Result<(), String> {
 }
 
 fn options_from_cli(args: crate::cli::OnboardArgs) -> Result<Options, String> {
-    let profile = match args.runner {
+    let runner = args.runner.map(|runner| match runner {
         crate::cli::RunnerArg::Mixed => RunnerProfile::Mixed,
         crate::cli::RunnerArg::Claude => RunnerProfile::Claude,
         crate::cli::RunnerArg::Codex => RunnerProfile::Codex,
-    };
+    });
     let mut gates = Vec::new();
     let mut gate_names = BTreeSet::new();
     for value in &args.gate {
@@ -297,7 +311,8 @@ fn options_from_cli(args: crate::cli::OnboardArgs) -> Result<Options, String> {
     }
     let options = Options {
         repo: args.repo,
-        profile,
+        runner,
+        probe: args.probe,
         gates,
         apply: args.apply,
         refresh_lock: args.refresh_lock,
@@ -322,7 +337,7 @@ fn options_from_cli(args: crate::cli::OnboardArgs) -> Result<Options, String> {
             "--gate cannot be combined with --refresh-lock; edit the pipeline first".into(),
         );
     }
-    if options.refresh_lock && options.profile != RunnerProfile::Mixed {
+    if options.refresh_lock && options.runner.is_some() {
         return Err(
             "--runner cannot be combined with --refresh-lock; edit Worker manifests first".into(),
         );
@@ -384,13 +399,17 @@ fn execute(options: &Options) -> Result<Report, String> {
             if options.refresh_lock {
                 return refresh_lock(&repo);
             }
-            if !options.gates.is_empty() || options.profile != RunnerProfile::Mixed {
+            if !options.gates.is_empty() || options.runner.is_some() {
                 return Err(
                     "--gate and --runner configure only a new bundle; existing authority is never silently changed"
                         .into(),
                 );
             }
-            inspect_existing(&repo, "onboarded")
+            let mut report = inspect_existing(&repo, "onboarded")?;
+            let registry = crate::providers::read_registry_entries();
+            report.providers = providers_block(&report.reviewers, &registry, options.probe);
+            report.next_steps = validated_next_steps(&report.reviewers, &registry);
+            Ok(report)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if options.refresh_lock {
@@ -407,8 +426,21 @@ fn execute(options: &Options) -> Result<Report, String> {
                         .to_string(),
                 );
             }
-            let mut bundle = build_bundle(&repo, options.profile, gates, options.af.as_deref())?;
+            let registry = crate::providers::read_registry_entries();
+            let (profile, runner_note) = pick_runner(options.runner, &registry);
+            let mut bundle = build_bundle(&repo, profile, gates, options.af.as_deref())?;
             validate_bundle(&bundle)?;
+            bundle.report.runner_note = Some(runner_note);
+            bundle.report.providers =
+                providers_block(&bundle.report.reviewers, &registry, options.probe);
+            if bundle
+                .report
+                .providers
+                .iter()
+                .any(|line| line.contains(NONE_REGISTERED))
+            {
+                bundle.report.next_steps.push(REGISTER_A_PROVIDER.into());
+            }
             if options.apply {
                 apply_bundle(&repo, &bundle)?;
                 bundle.report.status = "created".to_string();
@@ -423,7 +455,10 @@ fn execute(options: &Options) -> Result<Report, String> {
 fn print_human(report: &Report) {
     println!("af onboard: {}", report.status);
     println!("repository  {}", report.repository);
-    println!("profile     {}", report.profile);
+    match &report.runner_note {
+        Some(note) => println!("profile     {} · {note}", report.profile),
+        None => println!("profile     {}", report.profile),
+    }
     println!("pipeline    {}", report.pipeline);
     if let Some(version) = &report.lock_af_version {
         println!(
@@ -445,6 +480,12 @@ fn print_human(report: &Report) {
             "  {}: {} / {} ({})",
             reviewer.node, reviewer.package, reviewer.runner, reviewer.model
         );
+    }
+    if !report.providers.is_empty() {
+        println!("providers");
+        for line in &report.providers {
+            println!("  {line}");
+        }
     }
     println!("gates");
     for gate in &report.gates {
@@ -694,6 +735,8 @@ fn build_bundle(
         files: files.keys().cloned().collect(),
         lock_af_version: af_pin.as_ref().map(|pin| pin.version.clone()),
         lock_af_targets: pin_targets(af_pin.as_ref()),
+        runner_note: None,
+        providers: Vec::new(),
         next_steps: vec![
             format!("Review this plan, then run `{apply_command}`."),
             "Review and commit the generated `.af/` diff on the trusted base branch.".into(),
@@ -1148,11 +1191,9 @@ Required Gate commands (declared as literal trusted argv; onboarding does not ex
 ## Agent workflow for an existing pull request
 
 1. Run `af onboard` at the trusted base checkout. It validates the graph and every exact digest.
-2. Run `af provider status`; choose the machine-local Provider ID for each Worker without writing
-   a token into this repository. For missing or broken auth, an explicitly authorized private
-   host can use `af provider auth` (see docs/provider-auth-host.md) and send the requesting human
-   only the official browser handoff. Generic `af provider setup --login` remains terminal-only.
-   Login completion is unverified: do not claim paid admission or Task resumption from status.
+2. Run `af provider status`; if a Worker's kind has no Provider, `af provider detect` or
+   `af provider setup <id> --kind <kind> --login` at your terminal. Choose the machine-local
+   Provider ID for each Worker without writing a token into this repository.
 3. Fetch the pull request with the normal repository tooling, create a disposable worktree at its
    head, and identify the trusted base revision.
 4. From that worktree run:
@@ -1196,6 +1237,15 @@ lock diff. A source build without an install receipt cannot create a verified re
 leaves an existing one unchanged; package digests are still checked. A source build of the
 pinned version runs as built: with no receipt, it has no bytes to compare with the pinned
 digest.
+
+## Agents without a terminal
+
+An agent cannot complete a Provider login: `af provider setup --login` runs only at a human's
+interactive terminal, because the OAuth URL and code it prints are credentials in transit. For
+missing or broken auth, an explicitly authorized private host can use `af provider auth` (see
+docs/provider-auth-host.md in the af repository) and send the requesting human only the official
+browser handoff. Login completion is unverified: do not claim paid admission or Task resumption
+from status.
 "#
     )
 }
@@ -1306,8 +1356,190 @@ fn created_next_steps() -> Vec<String> {
     vec![
         "Review and commit the generated `.af/` authority on the trusted base branch.".into(),
         "Run `af onboard` again; it must validate every selected pipeline and Worker pin.".into(),
+        REGISTER_A_PROVIDER.into(),
         "Run `af provider status`, then follow `.af/README.md` to review a pull request.".into(),
     ]
+}
+
+/// What a providers line says when no Provider of the Worker's kind is registered.
+const NONE_REGISTERED: &str = "none registered";
+const REGISTER_A_PROVIDER: &str =
+    "Register a Provider if the providers block says none: af provider detect";
+
+/// The runner profile of a new bundle and the `profile` line's reason for it: `--runner` when
+/// given, else the only Provider kind registered on this machine, else `mixed`.
+fn pick_runner(
+    explicit: Option<RunnerProfile>,
+    registry: &crate::providers::RegistryRead,
+) -> (RunnerProfile, String) {
+    if let Some(profile) = explicit {
+        return (profile, format!("runner {} (--runner)", profile.name()));
+    }
+    let claude = !registry.ids_of("claude").is_empty();
+    let codex = !registry.ids_of("codex").is_empty();
+    let (profile, why) = match (claude, codex) {
+        (true, false) => (
+            RunnerProfile::Claude,
+            "the only Provider kind registered on this machine",
+        ),
+        (false, true) => (
+            RunnerProfile::Codex,
+            "the only Provider kind registered on this machine",
+        ),
+        (true, true) => (
+            RunnerProfile::Mixed,
+            "claude and codex Providers are both registered on this machine",
+        ),
+        (false, false) => (
+            RunnerProfile::Mixed,
+            "no Provider is registered on this machine yet; see providers below",
+        ),
+    };
+    (
+        profile,
+        format!("runner {} ({why}; pass --runner to change)", profile.name()),
+    )
+}
+
+/// The `--provider NODE=ID` bindings of a new bundle's first review, as the preview selects them:
+/// the runner profile `pick_runner` chooses without `--runner`, and for each reviewer the first
+/// registered Provider of its kind. `None` when the registry cannot be read or a reviewer's kind
+/// has no Provider registered, so no binding can be named. `af help start` prints these.
+pub(crate) fn first_review_bindings(
+    registry: &crate::providers::RegistryRead,
+) -> Option<Vec<(&'static str, String)>> {
+    if registry.warning.is_some() {
+        return None;
+    }
+    let (profile, _) = pick_runner(None, registry);
+    ["correctness", "architecture"]
+        .into_iter()
+        .map(|node| {
+            let kind = profile.runner(node).program();
+            registry
+                .ids_of(kind)
+                .first()
+                .map(|id| (node, (*id).to_string()))
+        })
+        .collect()
+}
+
+/// The Provider kind a model Worker's runner program needs; `None` for a command Worker.
+fn provider_kind(runner: &str) -> Option<&'static str> {
+    match runner {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        _ => None,
+    }
+}
+
+/// The `providers` block: for every model Worker, the Provider kind it needs, the registered
+/// Providers of that kind and the `--provider` binding to pass, or how to register one. It
+/// reads the registry only; `probe` adds each Provider's login state from the token-free status
+/// probe `af provider status` runs.
+fn providers_block(
+    reviewers: &[ReviewerSummary],
+    registry: &crate::providers::RegistryRead,
+    probe: bool,
+) -> Vec<String> {
+    let probed = if probe && !registry.registered.is_empty() {
+        crate::providers::probed_statuses()
+    } else {
+        Vec::new()
+    };
+    let state = |id: &str| -> String {
+        if !probe {
+            return "registered; --probe checks its login".to_string();
+        }
+        probed
+            .iter()
+            .find(|status| status.id == id)
+            .map_or_else(|| "not probed".to_string(), |status| status.status.clone())
+    };
+    let mut lines = Vec::new();
+    if let Some(warning) = &registry.warning {
+        lines.push(format!(
+            "the Provider registry cannot be read: {warning}   ← af provider status"
+        ));
+    }
+    // The same names-only scan `af provider status` and `af doctor` list (ADR-0206).
+    if !registry.unregistered.is_empty() {
+        let found: Vec<String> = registry
+            .unregistered
+            .iter()
+            .map(|dir| crate::providers::detect::display_path(dir))
+            .collect();
+        lines.push(format!(
+            "found but not registered: {} (not probed)   ← af provider detect",
+            found.join(", ")
+        ));
+    }
+    let taken: BTreeSet<String> = registry
+        .registered
+        .iter()
+        .map(|entry| entry.id.clone())
+        .collect();
+    for reviewer in reviewers {
+        let Some(kind) = provider_kind(&reviewer.runner) else {
+            continue;
+        };
+        let node = &reviewer.node;
+        let ids = registry.ids_of(kind);
+        match ids.first() {
+            None => {
+                let id = crate::providers::available_provider_id(kind, &taken);
+                lines.push(format!(
+                    "{node} needs a {kind} Provider: {NONE_REGISTERED}   ← af provider detect, or af provider setup {id} --kind {kind} --login"
+                ));
+            }
+            Some(first) => {
+                let listed = ids
+                    .iter()
+                    .map(|id| format!("{id} ({})", state(id)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.push(format!(
+                    "{node} needs a {kind} Provider: {listed}   ← bind with --provider {node}={first}"
+                ));
+            }
+        }
+    }
+    lines
+}
+
+/// What to do once existing authority validates: the token-free plan of an uncommitted change,
+/// its `--provider` bindings filled with the registered IDs where they exist.
+fn validated_next_steps(
+    reviewers: &[ReviewerSummary],
+    registry: &crate::providers::RegistryRead,
+) -> Vec<String> {
+    let mut plan = "af review plan --policy-rev HEAD --base HEAD --uncommitted".to_string();
+    let mut missing = false;
+    for reviewer in reviewers {
+        let Some(kind) = provider_kind(&reviewer.runner) else {
+            continue;
+        };
+        let id = match registry.ids_of(kind).first() {
+            Some(id) => (*id).to_string(),
+            None => {
+                missing = true;
+                format!("<{kind}-provider-id>")
+            }
+        };
+        plan.push_str(&format!(" --provider {}={id}", reviewer.node));
+    }
+    let mut steps =
+        vec!["Run `af provider status`; Provider credentials remain machine-local.".to_string()];
+    if missing {
+        steps.push(REGISTER_A_PROVIDER.into());
+    }
+    steps.extend([
+        format!("Make a change, then plan its review token-free: `{plan}`."),
+        "Follow `.af/README.md` to capture a pull request in a disposable worktree.".into(),
+        "Run `af review ledger` and `af review report`; publish nothing without human authorization."
+            .into(),
+    ]);
+    steps
 }
 
 struct ExistingAuthority {
@@ -1485,12 +1717,42 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         files,
         lock_af_version: authority.lock.af_version().map(str::to_string),
         lock_af_targets: pin_targets(authority.lock.af.as_ref()),
-        next_steps: vec![
-            "Run `af provider status`; Provider credentials remain machine-local.".into(),
-            "Follow `.af/README.md` to capture a pull request in a disposable worktree.".into(),
-            "Run `af review ledger` and `af review report`; publish nothing without human authorization."
-                .into(),
-        ],
+        runner_note: None,
+        providers: Vec::new(),
+        // `execute` fills in the steps that name this machine's Providers.
+        next_steps: Vec::new(),
+    })
+}
+
+/// A repository's committed review authority as `af doctor` reads it, validated exactly as
+/// plain `af onboard` validates it; reading it writes nothing.
+pub(crate) struct AuthorityFacts {
+    /// Each Gate check: its name, program and arguments.
+    pub(crate) gates: Vec<(String, String, Vec<String>)>,
+    /// The Gate runs in a container.
+    pub(crate) container: bool,
+    /// Each Worker node and the runner program it runs: `claude`, `codex` or a command.
+    pub(crate) workers: Vec<(String, String)>,
+}
+
+pub(crate) fn authority_facts(repo: &Path) -> Result<AuthorityFacts, String> {
+    let report = inspect_existing(repo, "onboarded")?;
+    let container = parse_existing(repo)?
+        .definition
+        .gate
+        .is_some_and(|gate| gate.provider == SandboxProviderSpec::Container);
+    Ok(AuthorityFacts {
+        gates: report
+            .gates
+            .into_iter()
+            .map(|gate| (gate.name, gate.program, gate.args))
+            .collect(),
+        container,
+        workers: report
+            .reviewers
+            .into_iter()
+            .map(|reviewer| (reviewer.node, reviewer.runner))
+            .collect(),
     })
 }
 
@@ -1591,6 +1853,10 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
     atomic_replace_authority(&repo.join(".af/af.lock"), refreshed.to_toml().as_bytes())?;
     let mut report = inspect_existing(repo, "lock_refreshed")?;
     report.warnings.extend(pin_warnings);
+    report.next_steps = validated_next_steps(
+        &report.reviewers,
+        &crate::providers::read_registry_entries(),
+    );
     Ok(report)
 }
 

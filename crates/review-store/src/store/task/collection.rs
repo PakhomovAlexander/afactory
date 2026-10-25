@@ -254,7 +254,7 @@ impl EventStore {
         };
         let mut result_id = None;
         for event in self.replay(&task_run_id(task_id)?)? {
-            if super::is_execution_started(&event) {
+            if super::is_beside_transitions(&event) {
                 continue;
             }
             if let TaskChangeV1::Finished { result_id: id } = read_task_transition(&event)?.change {
@@ -440,7 +440,7 @@ impl EventStore {
     ) -> Result<BTreeSet<String>, StoreError> {
         let mut revisions = BTreeSet::from([task.revision_id.clone()]);
         for event in self.replay(&task_run_id(&task.task_id)?)? {
-            if super::is_execution_started(&event) {
+            if super::is_beside_transitions(&event) {
                 continue;
             }
             match read_task_transition(&event)?.change {

@@ -126,7 +126,7 @@ fn plan_reports_every_undeclared_path_on_stderr_and_in_the_json_document() {
     // single advisory line could only summarize.
     let planned = document(&planned);
     assert_eq!(planned["attempts"], 0);
-    assert_eq!(planned["schema"], "af/task-inspection@11");
+    assert_eq!(planned["schema"], "af/task-inspection@13");
     let group = &planned["undeclared_af_paths"];
     let expected = [".af/tasks/x/candidate.patch", ".af/tasks/x/reviews.json"];
     assert_eq!(group["paths"], serde_json::json!(expected));

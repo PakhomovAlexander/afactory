@@ -32,6 +32,10 @@ const BAR: usize = 10;
 pub(crate) const REMOVE_NEEDS_A_PROVIDER: &str =
     "d removes a Provider: select one in the bar, or open it";
 
+/// The pane's first row on a machine whose registry names no Provider, in the browser's ASCII
+/// (`--` for a dash).
+pub(crate) const NONE_REGISTERED: &str = "no Provider registered yet -- :provider detect scans this machine (read-only); :provider detect --apply registers what it finds";
+
 /// One probed Provider's catalog, under its Provider id and with its kind.
 #[derive(Clone)]
 pub(crate) struct SharedCatalog {
@@ -114,6 +118,9 @@ pub(crate) struct ProvidersPane {
     /// Discover on load. A pane over an inventory already taken never runs a Provider CLI
     /// unless `R` asks.
     discover: bool,
+    /// Whether the registry named no Provider when the pane loaded, read without a probe, for
+    /// the time before discovery hands an inventory over.
+    unregistered: bool,
     selected: Option<String>,
     rows: Vec<Row>,
     spinner: usize,
@@ -122,6 +129,9 @@ pub(crate) struct ProvidersPane {
     /// `m` unfolds every Provider's `models` section in the list.
     models_open: bool,
     shared: SharedCatalogs,
+    /// The variables pointing a Provider CLI at its directory (`CLAUDE_CONFIG_DIR`,
+    /// `CODEX_HOME`) the browser's environment sets: an ambient row says it came through one.
+    selectors: BTreeSet<&'static str>,
 }
 
 impl ProvidersPane {
@@ -132,13 +142,27 @@ impl ProvidersPane {
             usage: UsageProbe::Skip,
             job: None,
             discover: true,
+            unregistered: false,
             selected: None,
             rows: Vec::new(),
             spinner: 0,
             catalogs: Vec::new(),
             models_open: false,
             shared: SharedCatalogs::default(),
+            selectors: ["claude", "codex"]
+                .into_iter()
+                .map(|kind| providers::ambient_selector(kind).0)
+                .filter(|name| std::env::var_os(name).is_some())
+                .collect(),
         }
+    }
+
+    /// The pane as if the browser's environment set exactly `selectors`.
+    #[cfg(test)]
+    pub(crate) fn with_selectors(mut self, selectors: &[&'static str]) -> ProvidersPane {
+        self.selectors = selectors.iter().copied().collect();
+        self.rebuild();
+        self
     }
 
     /// Share the catalogs this pane reads with the Workers pane.
@@ -161,6 +185,8 @@ impl ProvidersPane {
         pane.inventory = Some(inventory);
         pane.usage = usage;
         pane.discover = false;
+        // A render never depends on the environment of the process painting it.
+        pane.selectors.clear();
         pane.rebuild();
         pane
     }
@@ -175,9 +201,16 @@ impl ProvidersPane {
             providers.find(|provider| provider.id == id)
         });
         match listed {
-            Some(provider) if providers::is_ambient_candidate(provider) => Err(format!(
-                "{id} is discovered, not registered: there is no registry entry to remove"
-            )),
+            // Nothing to remove: the line says how it is registered instead, in the status
+            // line's width; its rows also say how it got there and how to make it go.
+            Some(provider) if providers::is_ambient_candidate(provider) => {
+                let kind = &provider.kind;
+                let add = providers::available_provider_id(kind, &self.ids());
+                Err(format!(
+                    "{id}: no registry entry to remove; af provider add {add} --kind {kind} \
+                     adds it"
+                ))
+            }
             Some(_) => Ok(format!("provider remove {}", shell_words::quote(id))),
             None => Err(format!("{id} is not a listed Provider")),
         }
@@ -220,18 +253,44 @@ impl ProvidersPane {
         self.rebuild();
     }
 
+    /// Whether this machine has no registered Provider: no inventory entry but an ambient
+    /// candidate, or, before discovery answers, a registry that names none.
+    pub(crate) fn none_registered(&self) -> bool {
+        match &self.inventory {
+            Some(inventory) => inventory
+                .providers
+                .iter()
+                .all(providers::is_ambient_candidate),
+            None => self.unregistered,
+        }
+    }
+
+    /// Every Provider id the inventory lists.
+    fn ids(&self) -> BTreeSet<String> {
+        let providers = self
+            .inventory
+            .iter()
+            .flat_map(|inventory| &inventory.providers);
+        providers.map(|provider| provider.id.clone()).collect()
+    }
+
     fn rebuild(&mut self) {
         let title = match &self.selected {
             Some(id) => format!("PROVIDERS  {id}"),
             None => "PROVIDERS  (af provider status)".to_owned(),
         };
-        let mut rows = vec![Row::painted(title, Paint::Title), Row::blank()];
+        let mut rows = vec![Row::painted(title, Paint::Title)];
+        if self.none_registered() {
+            rows.push(Row::plain(NONE_REGISTERED));
+        }
+        rows.push(Row::blank());
         match &self.inventory {
             Some(inventory) => {
                 let selected = self.selected.as_deref();
                 let models = Models {
                     catalogs: &self.catalogs,
                     open: self.models_open,
+                    selectors: &self.selectors,
                 };
                 inventory_rows(inventory, selected, self.usage, &models, &mut rows);
             }
@@ -257,6 +316,7 @@ impl ProvidersPane {
 impl Pane for ProvidersPane {
     fn load(&mut self, _scope: &Scope) -> Result<(), String> {
         if self.discover && self.inventory.is_none() && self.job.is_none() {
+            self.unregistered = providers::read_registry_entries().registered.is_empty();
             self.start(UsageProbe::Skip);
         }
         Ok(())
@@ -391,6 +451,8 @@ impl Pane for ProvidersPane {
 struct Models<'a> {
     catalogs: &'a [ProviderCatalog],
     open: bool,
+    /// The selector variables the environment sets, which an ambient row names.
+    selectors: &'a BTreeSet<&'static str>,
 }
 
 /// The `af provider status` table for the selected provider, or for all of them, then each
@@ -406,7 +468,8 @@ fn inventory_rows(
         rows.push(Row::error("warning", warning));
     }
     if inventory.providers.is_empty() {
-        let none = "No supported provider CLI is installed and no provider registry entries exist";
+        let none = "No supported provider CLI is installed and no provider registry entries exist; \
+                    af provider detect finds and registers the logins on this machine";
         rows.push(Row::plain(none));
         return;
     }
@@ -417,7 +480,7 @@ fn inventory_rows(
     rows.push(Row::painted(providers::status_table_header(), Paint::Title));
     for provider in &inventory.providers {
         if selected.is_none_or(|id| id == provider.id) {
-            provider_rows(provider, selected.is_some(), &ids, rows);
+            provider_rows(provider, selected.is_some(), &ids, models.selectors, rows);
             let catalog = models.catalogs.iter().find(|c| c.id == provider.id);
             if let Some(catalog) = catalog {
                 model_rows(catalog, selected.is_some() || models.open, rows);
@@ -435,6 +498,7 @@ fn provider_rows(
     provider: &ProviderStatus,
     alone: bool,
     ids: &BTreeSet<String>,
+    selectors: &BTreeSet<&'static str>,
     rows: &mut Vec<Row>,
 ) {
     let ambient = providers::is_ambient_candidate(provider);
@@ -452,6 +516,12 @@ fn provider_rows(
         rows.push(Row::painted(format!("note   {}", provider.detail), paint));
     }
     if ambient {
+        // How it got here and how to make it go, then how to log it in.
+        let (selector, _) = providers::ambient_selector(&provider.kind);
+        let set = selectors.contains(selector);
+        for line in providers::ambient_explanation(&provider.kind, set, ids) {
+            rows.push(Row::painted(line, Paint::Muted));
+        }
         let hint = providers::setup_hint(&provider.kind, ids);
         rows.push(Row::painted(hint, Paint::Muted));
     }

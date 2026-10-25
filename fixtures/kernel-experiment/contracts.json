@@ -261,6 +261,15 @@
     "kernel/implementer": {
       "contract": {
         "inputs": {
+          "findings": {
+            "artifact_type": "af/TaskReviewFindings@1",
+            "cardinality": "one",
+            "optional": true,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
           "requirements": {
             "artifact_type": "af/Requirements@1",
             "cardinality": "one",

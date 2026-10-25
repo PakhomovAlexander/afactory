@@ -8,6 +8,7 @@ use review_core::task::verification::{
 pub(super) fn signature(policy: &str, allow_targeted: bool) -> OperatorSignature {
     let retained = BTreeSet::from(["review".into(), "checks".into()]);
     OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 {
             inputs: BTreeMap::from([
                 (

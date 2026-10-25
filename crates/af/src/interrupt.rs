@@ -17,11 +17,13 @@ pub(crate) const INTERRUPTED: &str = "Task execution was interrupted";
 struct State {
     signal: Option<Signal>,
     task: Option<String>,
+    next: Option<String>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
     signal: None,
     task: None,
+    next: None,
 });
 static CHANGED: Condvar = Condvar::new();
 
@@ -57,6 +59,17 @@ pub(crate) fn install() -> Result<(), String> {
         })
         .map_err(|error| format!("starting the interrupt watcher: {error}"))?;
     Ok(())
+}
+
+/// Keep the terminal's hangup away from this process for the rest of its life: a run `af task
+/// run --detach` started in the background outlives the shell that started it (ADR-0211). Call
+/// from the main thread before it starts any other thread. A blocked SIGHUP stays pending and is
+/// never taken; children start with an empty mask, so Workers keep the default.
+pub(crate) fn ignore_hangup() -> Result<(), String> {
+    let mut set = SigSet::empty();
+    set.add(Signal::SIGHUP);
+    set.thread_block()
+        .map_err(|error| format!("blocking the hangup signal: {error}"))
 }
 
 fn receive(signal: Signal) {
@@ -120,6 +133,17 @@ pub(crate) fn note_task(id: &str) {
 /// The common Task noted by this command, if any.
 pub(crate) fn noted_task() -> Option<String> {
     state().task.clone()
+}
+
+/// Name the command that continues the noted Task after the interrupt, when it is not
+/// `af task run ID`: the next command its state names once it was interrupted.
+pub(crate) fn note_next(command: String) {
+    state().next = Some(command);
+}
+
+/// The command [`note_next`] named, if any.
+pub(crate) fn noted_next() -> Option<String> {
+    state().next.clone()
 }
 
 /// Run `work` with an interrupt forwarded to its execution's cancellation flag. The flag is

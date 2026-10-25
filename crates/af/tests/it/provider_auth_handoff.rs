@@ -58,7 +58,7 @@ def emit_diagnostic():
 if (root/'failure-before-prompt').exists():
     emit_diagnostic();sys.exit(1)
 if (root/'empty-output').exists(): sys.exit(0)
-if (root/'invalid-prompt').exists(): prompt=prompt.replace('0.159.2','0.159.3')
+if (root/'invalid-prompt').exists(): prompt=prompt.replace('Welcome to Codex','Welcome to Codex CLI')
 print(prompt,flush=True)
 while not (root/'complete').exists(): time.sleep(.01)
 if (root/'late-output').exists(): print('access_token=AF-FAKE-SECRET',flush=True)

@@ -28,6 +28,7 @@ pub mod collection;
 mod delivery;
 pub use delivery::validate_optimization_delivery;
 pub mod execution;
+pub mod gate_retry;
 mod lease;
 pub mod planning;
 mod recording;
@@ -37,7 +38,10 @@ pub mod review_handoff;
 pub mod review_integration;
 mod review_round;
 pub mod review_round_publication;
-pub use review_handoff::{is_execution_started, read_execution_started, read_task_transition};
+pub use review_handoff::{
+    is_beside_transitions, is_execution_started, is_provider_event, is_transition,
+    read_execution_started, read_provider_event, read_task_transition,
+};
 mod source;
 
 fn conflict(message: impl Into<String>) -> StoreError {
@@ -80,7 +84,9 @@ pub fn now() -> Result<u64, StoreError> {
 /// Every port's artifact identity, then the provenance records no port carries that a Task
 /// revision keeps across selection and source refresh: the `af/TaskInputBindings@1` record a
 /// Task file's `inputs` table produced (ADR-0117), and the `af/ProjectBriefCapture@1` and
-/// `af/ProjectBriefReceipt@1` records of its Project Briefs (ADR-0160). Nothing else is
+/// `af/ProjectBriefReceipt@1` records of its Project Briefs (ADR-0160), and a continuation's
+/// `af/TaskReviewFindings@1`, the `af/TaskReadFirst@1` record and a declared `af/TaskBase@1`
+/// (ADR-0212). Nothing else is
 /// preserved, so a revision whose adapter recorded some other observation keeps byte for byte
 /// the list it had.
 ///
@@ -103,6 +109,10 @@ pub fn revision_provenance_inputs(cas: &Cas, revision: &TaskRevisionV1) -> Vec<S
                 TASK_INPUT_BINDINGS_V1,
                 review_core::task::project_brief::PROJECT_BRIEF_CAPTURE_V1,
                 review_core::task::project_brief::PROJECT_BRIEF_RECEIPT_V1,
+                // A continuation's findings and a Task's read-first record (ADR-0212).
+                review_core::task::findings::TASK_REVIEW_FINDINGS_V1,
+                review_core::task::findings::TASK_READ_FIRST_V1,
+                review_core::task::findings::TASK_BASE_V1,
             ]
             .contains(&e.artifact_type.as_str())
         });
@@ -143,6 +153,85 @@ impl TaskLease {
 impl TaskProjection {
     pub fn lease_until_unix_ms(&self) -> u64 {
         self.lease_until
+    }
+
+    /// The writer of the Task's last lease, `cli-<pid>` for `af task run`: held while
+    /// [`Self::lease_until_unix_ms`] is ahead of now, released or expired otherwise.
+    pub fn lease_writer(&self) -> &str {
+        &self.writer
+    }
+
+    /// The epoch of the Task's last lease: one more for every lease a writer took.
+    pub fn lease_epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// The wall the Task has once it runs: its revision's deadline less the time it was opened.
+    /// The revision records an absolute deadline from planning; the clock starts at the first
+    /// plan admission, so a Task that waited between plan and run keeps its whole wall.
+    pub fn wall_ms(&self) -> u64 {
+        self.revision
+            .limits
+            .deadline_unix_ms
+            .saturating_sub(self.opened_unix_ms)
+    }
+
+    /// When the Task's wall clock started: its first plan admission. `None` before it ran.
+    pub fn clock_started_unix_ms(&self) -> Option<u64> {
+        self.clock_started_unix_ms
+    }
+
+    /// The Task's deadline: its revision's, moved by the time the Task waited between being
+    /// opened and its first plan admission. Before that admission, the deadline it would have
+    /// if its clock started at `now`; every rule that bounds execution by the deadline reads it
+    /// here, never from the revision alone.
+    pub fn deadline_at(&self, now: u64) -> u64 {
+        let started = self.clock_started_unix_ms.unwrap_or(now);
+        self.revision
+            .limits
+            .deadline_unix_ms
+            .saturating_add(started.saturating_sub(self.opened_unix_ms))
+    }
+
+    /// The deadline once the clock started; before it, the revision's own.
+    pub fn deadline_unix_ms(&self) -> u64 {
+        self.revision
+            .limits
+            .deadline_unix_ms
+            .saturating_add(self.clock_shift_ms())
+    }
+
+    /// How far the clock moved the Task's recorded deadlines: the time between its genesis and
+    /// its first admission; 0 before that admission. A plan's deadline is its revision's, so it
+    /// moves by the same amount.
+    pub fn clock_shift_ms(&self) -> u64 {
+        self.clock_started_unix_ms
+            .map_or(0, |started| started.saturating_sub(self.opened_unix_ms))
+    }
+
+    /// The revision's limits with the deadline [`Self::deadline_unix_ms`] states.
+    pub fn limits(&self) -> task::TaskLimitsV1 {
+        let mut limits = self.revision.limits.clone();
+        limits.deadline_unix_ms = self.deadline_unix_ms();
+        limits
+    }
+
+    /// Whether the lease is still held at `now_unix_ms`: not released, and not yet expired.
+    /// A held lease may belong to a run that is still working, or to one that died and has
+    /// not expired yet; only expiry tells them apart, so no successor may take it before.
+    pub fn lease_held_at(&self, now_unix_ms: u64) -> bool {
+        now_unix_ms.max(self.last_time) < self.lease_until
+    }
+
+    /// The last time anything was recorded on the Task.
+    pub fn last_recorded_unix_ms(&self) -> u64 {
+        self.last_time
+    }
+
+    /// When the writer before the current lease last recorded anything, and when its lease
+    /// expired or was released.
+    pub fn previous_writer_unix_ms(&self) -> (u64, u64) {
+        self.previous_writer
     }
 }
 
@@ -335,6 +424,9 @@ pub struct TaskProjection {
     epoch: u64,
     lease_until: u64,
     last_time: u64,
+    /// The last time the writer before the current lease recorded anything, when a lost writer
+    /// was last seen alive, and the expiry of its lease (ADR-0209).
+    previous_writer: (u64, u64),
     resume_phase: Option<TaskPhaseV1>,
     recording_recovery: Option<recording::RecordingRecovery>,
     recording_report: Option<recording::RecordingRecovery>,
@@ -360,6 +452,17 @@ pub struct TaskProjection {
     /// The epoch of every lease that began kernel execution of the Task: one execution marker
     /// (`TaskExecutionStarted@1`) each (ADR-0153).
     pub execution_epochs: BTreeSet<u64>,
+    /// Every `af task run --retry-gate` that reopened the Task at its failed gates, in log order.
+    pub gate_retries: Vec<task::gate_retry::TaskGateRetriedV1>,
+    /// Policy time of the Task's genesis (`Opened`).
+    opened_unix_ms: u64,
+    /// Policy time of the Task's first plan admission, when its wall clock started; never reset
+    /// by a refresh, a re-admission or a resume.
+    clock_started_unix_ms: Option<u64>,
+    /// What started Attempts did about their Provider without failing, in log order: retry
+    /// waits, re-asks, identity re-probes and refreshes, alternate admission probes
+    /// (`TaskProviderEvent@1`, ADR-0208).
+    pub provider_events: Vec<task::provider_event::TaskProviderEventV1>,
 }
 
 /// The light optimizer's final DAG node can only know trial accounting. After every Attempt has
@@ -939,6 +1042,54 @@ impl TaskProjection {
         Ok(())
     }
 
+    /// Apply what a started Attempt did about its Provider (`TaskProviderEvent@1`, ADR-0208):
+    /// the next event of the log, by the current lease, at a time not before the last recorded,
+    /// for an Attempt of that node that has started and not settled. It changes no charge,
+    /// reservation, deadline or result.
+    fn apply_provider_event(
+        &mut self,
+        event: &RunEvent,
+        value: &task::provider_event::TaskProviderEventV1,
+    ) -> Result<(), StoreError> {
+        if event.sequence != self.next_sequence {
+            return Err(conflict("Task event sequence has a gap or duplicate"));
+        }
+        if !event.artifact_refs.is_empty() {
+            return Err(conflict("A Provider event references no artifact"));
+        }
+        let time = self.lease_time(&value.writer, value.epoch, value.now_unix_ms);
+        if time < self.last_time || matches!(self.phase, TaskPhaseV1::Finished { .. }) {
+            return Err(conflict(
+                "Task is finished or its policy clock moved backwards",
+            ));
+        }
+        self.check_lease_of(&value.writer, value.epoch, value.now_unix_ms)?;
+        let running = self
+            .execution
+            .as_ref()
+            .and_then(|execution| {
+                execution
+                    .attempt_accounting()
+                    .into_iter()
+                    .find(|attempt| attempt.attempt_id == value.attempt_id)
+            })
+            .is_some_and(|attempt| {
+                attempt.started
+                    && attempt.settled_unix_ms.is_none()
+                    && !attempt.released
+                    && attempt.reservation.node == value.node
+            });
+        if !running {
+            return Err(conflict(
+                "A Provider event names a started, unsettled Attempt of its node",
+            ));
+        }
+        self.provider_events.push(value.clone());
+        self.last_time = time;
+        self.next_sequence = event.sequence + 1;
+        Ok(())
+    }
+
     fn apply(
         &mut self,
         cas: &Cas,
@@ -985,6 +1136,7 @@ impl TaskProjection {
                     "Task lease takeover is premature or has a stale epoch",
                 ));
             }
+            self.previous_writer = (self.last_time, self.lease_until);
             self.writer = transition.writer.clone();
             self.epoch = transition.epoch;
             self.lease_until = lease_until_unix_ms;
@@ -1188,6 +1340,8 @@ impl TaskProjection {
                     }
                     self.check_approval(cas, time)?;
                     self.admitted = true;
+                    // The wall clock starts at the first admission and never again.
+                    self.clock_started_unix_ms.get_or_insert(time);
                     self.phase = TaskPhaseV1::Running {};
                     self.resume_phase = None;
                 }
@@ -1366,8 +1520,8 @@ impl TaskProjection {
     }
 
     fn check_approval(&self, cas: &Cas, time: u64) -> Result<(), StoreError> {
-        let plan = self.check_plan_decision(cas, time)?;
-        if time >= plan.limits.deadline_unix_ms {
+        self.check_plan_decision(cas, time)?;
+        if time >= self.deadline_at(time) {
             return Err(conflict("Task plan deadline expired"));
         }
         Ok(())
@@ -1594,6 +1748,29 @@ impl EventStore {
                     .apply_execution_started(&event, &marker)?;
                 continue;
             }
+            // A gate retry reopens a finished Task at its failed gates (`TaskGateRetried@1`).
+            if gate_retry::is_gate_retried(&event) {
+                let retry = gate_retry::read_gate_retried(&event)?;
+                for id in retry.artifact_refs() {
+                    if verified.insert(id.clone()) {
+                        cas.verify(&id)
+                            .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                    }
+                }
+                state
+                    .as_mut()
+                    .ok_or_else(|| conflict("Task gate retry precedes genesis"))?
+                    .apply_gate_retried(cas, &event, &retry)?;
+                continue;
+            }
+            if event.event_type == EventType::TaskProviderEventV1 {
+                let value = read_provider_event(&event)?;
+                state
+                    .as_mut()
+                    .ok_or_else(|| conflict("Task Provider event precedes genesis"))?
+                    .apply_provider_event(&event, &value)?;
+                continue;
+            }
             if !matches!(event.event_type, EventType::TaskTransitionV5) {
                 return Err(conflict("Task log contains a foreign event"));
             }
@@ -1645,6 +1822,7 @@ impl EventStore {
                     epoch: 1,
                     lease_until: *lease_until_unix_ms,
                     last_time: transition.now_unix_ms,
+                    previous_writer: (transition.now_unix_ms, *lease_until_unix_ms),
                     resume_phase: None,
                     recording_recovery: None,
                     recording_report: None,
@@ -1659,6 +1837,10 @@ impl EventStore {
                     gate_cleanups: Vec::new(),
                     storage_sweeps: Vec::new(),
                     execution_epochs: BTreeSet::new(),
+                    gate_retries: Vec::new(),
+                    opened_unix_ms: transition.now_unix_ms,
+                    clock_started_unix_ms: None,
+                    provider_events: Vec::new(),
                 });
             } else {
                 return Err(conflict("Task transition precedes genesis"));
@@ -1992,6 +2174,65 @@ impl EventStore {
             .pop()
             .ok_or_else(|| conflict("Task execution marker appended no event"))
             .map(Some)
+    }
+
+    /// Record what the started Attempt `attempt_id` of `node` did about its Provider
+    /// (`TaskProviderEvent@1`, ADR-0208): its own event of the Task's log, by `lease`, stamped at
+    /// the lease's time. It grants nothing; it is refused for an Attempt that has not started, has
+    /// settled or belongs to another node, and on a finished Task.
+    pub fn record_task_provider_event(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        attempt_id: &str,
+        node: &str,
+        event: task::provider_event::ProviderEventV1,
+    ) -> Result<RunEvent, StoreError> {
+        let mut state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        // Stamped before it is persisted, so the log stays monotonic and replays unchanged.
+        let value = task::provider_event::TaskProviderEventV1::new(
+            &lease.writer,
+            lease.epoch,
+            state.lease_time(&lease.writer, lease.epoch, now()?),
+            attempt_id,
+            node,
+            event,
+        );
+        let (event_type, payload) = review_handoff::encode_provider_event(&value)?;
+        let run_id = task_run_id(&lease.task_id)?;
+        let first = state.next_sequence;
+        let event = NewEvent::new(event_type, payload.clone());
+        state.apply_provider_event(
+            &RunEvent {
+                run_id: run_id.clone(),
+                event_id: super::derive_event_id(&run_id, first as i64),
+                sequence: first,
+                event_type,
+                occurred_at: event.occurred_at.clone(),
+                node_id: None,
+                attempt_id: None,
+                causation_id: None,
+                correlation_id: None,
+                artifact_refs: Vec::new(),
+                payload: payload.clone(),
+            },
+            &value,
+        )?;
+        let permit = WritePermit {
+            run_id: run_id.clone(),
+            first,
+            payloads: vec![payload],
+            event_type,
+            valid_until: None,
+            review_round: None,
+            review_prefix: None,
+            bound_tasks: Vec::new(),
+        };
+        self.append_batch_observed(&run_id, cas, &[event], Some(&permit), None, Some(&state))?
+            .pop()
+            .ok_or_else(|| conflict("Task Provider event appended no event"))
     }
 
     pub fn take_task_lease(

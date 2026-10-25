@@ -21,17 +21,30 @@ where
     Ok(set)
 }
 
-/// The version a pipeline declares in `schema`. Each pipeline has exactly one: `af.pipeline/2`
-/// is the shape whose contract declares a Project Brief port (ADR-0160), and every other
-/// pipeline is `af.pipeline/1`, which declares none, so no pipeline has two spellings and a
-/// version-1 pipeline that carries the port is refused rather than read.
+/// The version a pipeline declares in `schema`. Each pipeline has exactly one: `af.pipeline/3`
+/// is the shape with a slot that declares `recovery_attempts` (ADR-0209), whether or not its
+/// contract also declares a Project Brief port; `af.pipeline/2` is the shape whose contract
+/// declares a Project Brief port and whose slots declare no recovery allowance (ADR-0160); and
+/// every other pipeline is `af.pipeline/1`, which declares neither. So no pipeline has two
+/// spellings, and a pipeline that carries what its version does not have is refused rather
+/// than read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PipelineSchema {
     #[serde(rename = "af.pipeline/1")]
     V1,
     #[serde(rename = "af.pipeline/2")]
     V2,
+    #[serde(rename = "af.pipeline/3")]
+    V3,
 }
+
+/// How many abandoned Attempts a node recovers from when its slot declares no
+/// `recovery_attempts`: an Attempt whose writer was lost or whose host cancelled it is settled
+/// as abandoned and the node is dispatched again once; a second loss stops the Task
+/// (ADR-0209).
+pub const DEFAULT_RECOVERY_ATTEMPTS: u32 = 1;
+/// The most abandoned Attempts a slot may declare it recovers from.
+pub const MAX_RECOVERY_ATTEMPTS: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -192,9 +205,23 @@ pub struct WorkerSlotV1 {
     pub allow_local_replacement: bool,
     #[serde(deserialize_with = "super::unique_set")]
     pub independent_from: BTreeSet<String>,
+    /// How many of this slot's Attempts may be abandoned, by a lost writer or a host
+    /// cancellation, and dispatched again; absent means [`DEFAULT_RECOVERY_ATTEMPTS`]. Only an
+    /// `af.pipeline/3` slot declares it (ADR-0209).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub recovery_attempts: Option<u32>,
 }
 
 impl WorkerSlotV1 {
+    /// The recovery allowance this slot gives each of its nodes.
+    pub fn recovery_allowance(&self) -> u32 {
+        self.recovery_attempts.unwrap_or(DEFAULT_RECOVERY_ATTEMPTS)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         require(
             is_package_name(&self.worker) && is_name(&self.role),
@@ -207,6 +234,11 @@ impl WorkerSlotV1 {
         require(
             self.max_attempts > 0 && self.min_attempts <= self.max_attempts,
             "Worker slot Attempt bounds are invalid",
+        )?;
+        require(
+            self.recovery_attempts
+                .is_none_or(|count| count <= MAX_RECOVERY_ATTEMPTS),
+            "A Worker slot's recovery_attempts is at most 8",
         )?;
         require(
             self.independent_from.iter().all(|s| is_name(s)),
@@ -359,8 +391,19 @@ impl PipelineDefinitionV1 {
             .any(PipelinePortV1::declares_brief)
     }
 
-    /// The version rule of ADR-0145 applied to the Brief port (ADR-0160): the port is
-    /// `af.pipeline/2`'s alone, and `af.pipeline/2` is the shape of a pipeline that declares it.
+    /// The first slot that declares `recovery_attempts`: what makes a pipeline
+    /// `af.pipeline/3`.
+    pub fn declares_recovery(&self) -> Option<&str> {
+        self.slots
+            .iter()
+            .find(|(_, slot)| slot.recovery_attempts.is_some())
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// The version rule of ADR-0145 applied to the Brief port (ADR-0160) and the recovery
+    /// allowance (ADR-0209): a slot's `recovery_attempts` is `af.pipeline/3`'s alone, the Brief
+    /// port is `af.pipeline/2`'s and `af.pipeline/3`'s, and each version is the shape of a
+    /// pipeline that declares what it adds.
     fn validate_version(&self) -> Result<(), String> {
         let briefed = self
             .contract
@@ -369,17 +412,36 @@ impl PipelineDefinitionV1 {
             .chain(&self.contract.outputs)
             .find(|(_, port)| port.declares_brief())
             .map(|(name, _)| name);
-        match (self.schema, briefed) {
-            (PipelineSchema::V1, Some(port)) => Err(format!(
+        let recovering = self.declares_recovery();
+        match (self.schema, briefed, recovering) {
+            (PipelineSchema::V1 | PipelineSchema::V2, _, Some(slot)) => Err(format!(
+                "Pipeline {} declares recovery_attempts on slot {slot} under {}, which has no \
+                 recovery allowance: a pipeline whose slot declares recovery_attempts declares \
+                 schema = \"af.pipeline/3\"",
+                self.name,
+                if self.schema == PipelineSchema::V1 {
+                    "af.pipeline/1"
+                } else {
+                    "af.pipeline/2"
+                }
+            )),
+            (PipelineSchema::V1, Some(port), None) => Err(format!(
                 "Pipeline {} declares the Project Brief port {port} under af.pipeline/1, which \
                  has no Brief port: a pipeline with a `project_brief` port declares schema = \
                  \"af.pipeline/2\"",
                 self.name
             )),
-            (PipelineSchema::V2, None) => Err(format!(
+            (PipelineSchema::V2, None, None) => Err(format!(
                 "Pipeline {} is af.pipeline/2 but declares no `project_brief` port: \
                  af.pipeline/2 is the shape of a pipeline with a Project Brief port, and every \
                  other pipeline declares schema = \"af.pipeline/1\"",
+                self.name
+            )),
+            (PipelineSchema::V3, _, None) => Err(format!(
+                "Pipeline {} is af.pipeline/3 but no slot declares recovery_attempts: \
+                 af.pipeline/3 is the shape of a pipeline with a slot recovery allowance; \
+                 declare schema = \"af.pipeline/2\" for a pipeline with only a Project Brief \
+                 port and \"af.pipeline/1\" for every other",
                 self.name
             )),
             _ => Ok(()),

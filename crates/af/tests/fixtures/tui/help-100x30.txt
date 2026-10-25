@@ -1,0 +1,30 @@
+~/hub                       |HELP  ? or :help shows this; q or Esc closes it
+v hub  (project)            |
+  v providers/              |PANES  select one in the bar (j/k, ]] [[); Enter opens it
+      claude-main           |  settings     the root row: af config show --origin
+      codex-ambient         |  providers/   af provider status; d removes a registered Provider
+  v workers/                |  workers/     the Worker packages HEAD commits, and their Attempts
+  v pipelines/              |  pipelines/   af task plan and af task explain --tree, token-free
+      review                |  tasks/       the Tasks of every Task Store: this scope's, every
+      fixture/implementation|               --state DIR the Store registry records, and :state DIR
+  v tasks/                  |  campaigns/   every review Campaign, as af review campaigns lists it
+  v campaigns/              |
+                            |: <af command>   runs any af command line here (:task list,
+                            |                 :review campaigns, :provider status), with the
+                            |                 terminal handed to it; Enter comes back.
+                            |
+                            |KEYS  (docs/design/tui.md section 4)
+                            |
+                            |j k                row down / up
+                            |h l                bar: close / open a folder, or go to parent / first
+                            |                   main pane: scroll sideways
+                            |gg G               first / last row
+                            |<C-d> <C-u>        half page down / up
+                            |<C-f> <C-b>        page down / up; <C-b> on the bar hides it, and shows
+                            |zo zc za           open / close / toggle the folder under the cursor
+                            |zR zM              open / close every folder
+                            |/ n N              search the focused region; next / previous match
+                            |?                  this help
+                            |Tab <C-w>l <C-w>h  move focus between the bar and the main pane
+                            |]] [[              next / previous folder
+HELP  hub                                                                   j/k scroll  q close help

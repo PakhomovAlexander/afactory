@@ -242,19 +242,56 @@
     "type": "af/ExecutionPlan@1"
   },
   "inspection": {
-    "schema": "af/task-inspection@11",
+    "schema": "af/task-inspection@13",
     "task_id": "cold-only",
     "revision_id": "<run:1>",
     "phase": {
       "kind": "finished",
       "result_id": "<run:6>"
     },
+    "state": {
+      "phase": "finished",
+      "outcome": "verified",
+      "cause": null,
+      "next_action": "af task deliver cold-only --branch af/cold-only --worktree ../cold-only --confirm cold-only"
+    },
     "plan_id": "<run:0>",
     "chargeable_tokens": "0",
     "attempts": 3,
+    "clock": {
+      "wall_ms": "<ms>",
+      "started_unix_ms": "<ms>",
+      "deadline_unix_ms": "<ms>"
+    },
+    "gate": {
+      "status": "passed",
+      "failed_tests": [],
+      "flaky": [],
+      "check_reports": [
+        {
+          "node": "root.nodes.check",
+          "artifact_id": "<run:7>",
+          "record": {
+            "receipt_id": "<run:8>",
+            "checks": {
+              "pagination": {
+                "host": {
+                  "cpus_start": "<host>",
+                  "cpus_end": "<host>",
+                  "load_1m_start": "<host>",
+                  "load_1m_end": "<host>"
+                },
+                "report": "absent",
+                "steps": []
+              }
+            }
+          }
+        }
+      ]
+    },
     "selection": {
-      "artifact_id": "<run:7>",
-      "request_revision_id": "<run:8>",
+      "artifact_id": "<run:9>",
+      "request_revision_id": "<run:10>",
       "assessment": {
         "schema": "af.pipeline-selection/1",
         "requested": {
@@ -282,7 +319,7 @@
       {
         "sequence": 0,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -295,7 +332,7 @@
       {
         "sequence": 1,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -307,7 +344,7 @@
       {
         "sequence": 2,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -319,31 +356,7 @@
       {
         "sequence": 4,
         "transition": {
-          "writer": "<run:9>",
-          "epoch": 1,
-          "now_unix_ms": "<ms>",
-          "change": {
-            "kind": "execution_recorded",
-            "record_id": "<run:10>"
-          }
-        }
-      },
-      {
-        "sequence": 5,
-        "transition": {
-          "writer": "<run:9>",
-          "epoch": 1,
-          "now_unix_ms": "<ms>",
-          "change": {
-            "kind": "execution_recorded",
-            "record_id": "<run:11>"
-          }
-        }
-      },
-      {
-        "sequence": 6,
-        "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -353,9 +366,9 @@
         }
       },
       {
-        "sequence": 7,
+        "sequence": 5,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -365,9 +378,9 @@
         }
       },
       {
-        "sequence": 8,
+        "sequence": 6,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -377,9 +390,33 @@
         }
       },
       {
+        "sequence": 7,
+        "transition": {
+          "writer": "<run:11>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:15>"
+          }
+        }
+      },
+      {
+        "sequence": 8,
+        "transition": {
+          "writer": "<run:11>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:16>"
+          }
+        }
+      },
+      {
         "sequence": 9,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -391,31 +428,7 @@
       {
         "sequence": 10,
         "transition": {
-          "writer": "<run:9>",
-          "epoch": 1,
-          "now_unix_ms": "<ms>",
-          "change": {
-            "kind": "execution_recorded",
-            "record_id": "<run:15>"
-          }
-        }
-      },
-      {
-        "sequence": 11,
-        "transition": {
-          "writer": "<run:9>",
-          "epoch": 1,
-          "now_unix_ms": "<ms>",
-          "change": {
-            "kind": "execution_recorded",
-            "record_id": "<run:16>"
-          }
-        }
-      },
-      {
-        "sequence": 12,
-        "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -425,9 +438,9 @@
         }
       },
       {
-        "sequence": 13,
+        "sequence": 11,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -437,9 +450,9 @@
         }
       },
       {
-        "sequence": 14,
+        "sequence": 12,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -449,9 +462,9 @@
         }
       },
       {
-        "sequence": 15,
+        "sequence": 13,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -461,9 +474,9 @@
         }
       },
       {
-        "sequence": 16,
+        "sequence": 14,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -473,9 +486,9 @@
         }
       },
       {
-        "sequence": 17,
+        "sequence": 15,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -485,9 +498,33 @@
         }
       },
       {
+        "sequence": 16,
+        "transition": {
+          "writer": "<run:11>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:23>"
+          }
+        }
+      },
+      {
+        "sequence": 17,
+        "transition": {
+          "writer": "<run:11>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:24>"
+          }
+        }
+      },
+      {
         "sequence": 18,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -499,31 +536,7 @@
       {
         "sequence": 19,
         "transition": {
-          "writer": "<run:9>",
-          "epoch": 1,
-          "now_unix_ms": "<ms>",
-          "change": {
-            "kind": "execution_recorded",
-            "record_id": "<run:23>"
-          }
-        }
-      },
-      {
-        "sequence": 20,
-        "transition": {
-          "writer": "<run:9>",
-          "epoch": 1,
-          "now_unix_ms": "<ms>",
-          "change": {
-            "kind": "execution_recorded",
-            "record_id": "<run:24>"
-          }
-        }
-      },
-      {
-        "sequence": 21,
-        "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -533,9 +546,9 @@
         }
       },
       {
-        "sequence": 22,
+        "sequence": 20,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -545,9 +558,9 @@
         }
       },
       {
-        "sequence": 23,
+        "sequence": 21,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -557,9 +570,9 @@
         }
       },
       {
-        "sequence": 24,
+        "sequence": 22,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -569,9 +582,33 @@
         }
       },
       {
+        "sequence": 23,
+        "transition": {
+          "writer": "<run:11>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:29>"
+          }
+        }
+      },
+      {
+        "sequence": 24,
+        "transition": {
+          "writer": "<run:11>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:30>"
+          }
+        }
+      },
+      {
         "sequence": 25,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -583,31 +620,7 @@
       {
         "sequence": 26,
         "transition": {
-          "writer": "<run:9>",
-          "epoch": 1,
-          "now_unix_ms": "<ms>",
-          "change": {
-            "kind": "execution_recorded",
-            "record_id": "<run:29>"
-          }
-        }
-      },
-      {
-        "sequence": 27,
-        "transition": {
-          "writer": "<run:9>",
-          "epoch": 1,
-          "now_unix_ms": "<ms>",
-          "change": {
-            "kind": "execution_recorded",
-            "record_id": "<run:30>"
-          }
-        }
-      },
-      {
-        "sequence": 28,
-        "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -617,9 +630,9 @@
         }
       },
       {
-        "sequence": 29,
+        "sequence": 27,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -629,9 +642,9 @@
         }
       },
       {
-        "sequence": 30,
+        "sequence": 28,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -641,21 +654,45 @@
         }
       },
       {
+        "sequence": 29,
+        "transition": {
+          "writer": "<run:11>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:34>"
+          }
+        }
+      },
+      {
+        "sequence": 30,
+        "transition": {
+          "writer": "<run:11>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:35>"
+          }
+        }
+      },
+      {
         "sequence": 31,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "run_reported",
-            "report_id": "<run:34>"
+            "report_id": "<run:36>"
           }
         }
       },
       {
         "sequence": 32,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -667,7 +704,7 @@
       {
         "sequence": 33,
         "transition": {
-          "writer": "<run:9>",
+          "writer": "<run:11>",
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
@@ -677,22 +714,6 @@
       }
     ],
     "execution_records": [
-      {
-        "artifact_id": "<run:10>",
-        "artifact_type": "af/TaskExecutionRecord@5",
-        "record": {
-          "invocation_id": "<run:35>",
-          "kind": "invocation"
-        }
-      },
-      {
-        "artifact_id": "<run:11>",
-        "artifact_type": "af/TaskExecutionRecord@5",
-        "record": {
-          "kind": "published",
-          "output_id": "<run:36>"
-        }
-      },
       {
         "artifact_id": "<run:12>",
         "artifact_type": "af/TaskExecutionRecord@5",
@@ -705,21 +726,37 @@
         "artifact_id": "<run:13>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
-          "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
-          "deadline_unix_ms": "<ms>",
-          "feedback_ids": [],
-          "invocation_id": "<run:37>",
-          "kind": "reserved",
-          "reservation_id": "reservation:1",
-          "reserved_tokens": 0
+          "kind": "published",
+          "output_id": "<run:38>"
         }
       },
       {
         "artifact_id": "<run:14>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
+          "invocation_id": "<run:39>",
+          "kind": "invocation"
+        }
+      },
+      {
+        "artifact_id": "<run:15>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
           "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
-          "context_id": "<run:38>",
+          "deadline_unix_ms": "<ms>",
+          "feedback_ids": [],
+          "invocation_id": "<run:39>",
+          "kind": "reserved",
+          "reservation_id": "reservation:1",
+          "reserved_tokens": 0
+        }
+      },
+      {
+        "artifact_id": "<run:16>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
+          "context_id": "<run:40>",
           "kind": "context_bound"
         }
       },
@@ -732,7 +769,7 @@
         }
       },
       {
-        "artifact_id": "<run:15>",
+        "artifact_id": "<run:17>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
           "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
@@ -741,11 +778,11 @@
           "raw_artifact_ids": [
             "sha256:bc3bbff97478a1bd072ec23d20df5913daa87b2e24e4fbb93d996cf7fe5fc97b"
           ],
-          "usage_id": "<run:39>"
+          "usage_id": "<run:41>"
         }
       },
       {
-        "artifact_id": "<run:16>",
+        "artifact_id": "<run:18>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
           "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
@@ -756,32 +793,16 @@
           ],
           "result": {
             "kind": "succeeded",
-            "output_id": "<run:40>"
+            "output_id": "<run:42>"
           },
-          "usage_id": "<run:39>"
-        }
-      },
-      {
-        "artifact_id": "<run:17>",
-        "artifact_type": "af/TaskExecutionRecord@5",
-        "record": {
-          "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
-          "kind": "published",
-          "output_id": "<run:40>"
-        }
-      },
-      {
-        "artifact_id": "<run:18>",
-        "artifact_type": "af/TaskExecutionRecord@5",
-        "record": {
-          "invocation_id": "<run:41>",
-          "kind": "invocation"
+          "usage_id": "<run:41>"
         }
       },
       {
         "artifact_id": "<run:19>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
+          "attempt_id": "b0207f3c7f11dc88ecf5de0f56",
           "kind": "published",
           "output_id": "<run:42>"
         }
@@ -798,21 +819,37 @@
         "artifact_id": "<run:21>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
-          "attempt_id": "4e27a434f2f8f3d579808052b1",
-          "deadline_unix_ms": "<ms>",
-          "feedback_ids": [],
-          "invocation_id": "<run:43>",
-          "kind": "reserved",
-          "reservation_id": "reservation:2",
-          "reserved_tokens": 0
+          "kind": "published",
+          "output_id": "<run:44>"
         }
       },
       {
         "artifact_id": "<run:22>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
+          "invocation_id": "<run:45>",
+          "kind": "invocation"
+        }
+      },
+      {
+        "artifact_id": "<run:23>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
           "attempt_id": "4e27a434f2f8f3d579808052b1",
-          "context_id": "<run:44>",
+          "deadline_unix_ms": "<ms>",
+          "feedback_ids": [],
+          "invocation_id": "<run:45>",
+          "kind": "reserved",
+          "reservation_id": "reservation:2",
+          "reserved_tokens": 0
+        }
+      },
+      {
+        "artifact_id": "<run:24>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "4e27a434f2f8f3d579808052b1",
+          "context_id": "<run:46>",
           "kind": "context_bound"
         }
       },
@@ -825,71 +862,73 @@
         }
       },
       {
-        "artifact_id": "<run:23>",
+        "artifact_id": "<run:25>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
           "attempt_id": "4e27a434f2f8f3d579808052b1",
           "charged_tokens": "0",
           "kind": "usage_observed",
           "raw_artifact_ids": [
-            "<run:45>"
+            "<run:7>",
+            "<run:47>"
           ],
-          "usage_id": "<run:46>"
-        }
-      },
-      {
-        "artifact_id": "<run:24>",
-        "artifact_type": "af/TaskExecutionRecord@5",
-        "record": {
-          "attempt_id": "4e27a434f2f8f3d579808052b1",
-          "charged_tokens": "0",
-          "kind": "settled",
-          "raw_artifact_ids": [
-            "<run:45>"
-          ],
-          "result": {
-            "kind": "succeeded",
-            "output_id": "<run:47>"
-          },
-          "usage_id": "<run:46>"
-        }
-      },
-      {
-        "artifact_id": "<run:25>",
-        "artifact_type": "af/TaskExecutionRecord@5",
-        "record": {
-          "attempt_id": "4e27a434f2f8f3d579808052b1",
-          "kind": "published",
-          "output_id": "<run:47>"
+          "usage_id": "<run:48>"
         }
       },
       {
         "artifact_id": "<run:26>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
-          "invocation_id": "<run:48>",
-          "kind": "invocation"
+          "attempt_id": "4e27a434f2f8f3d579808052b1",
+          "charged_tokens": "0",
+          "kind": "settled",
+          "raw_artifact_ids": [
+            "<run:7>",
+            "<run:47>"
+          ],
+          "result": {
+            "kind": "succeeded",
+            "output_id": "<run:49>"
+          },
+          "usage_id": "<run:48>"
         }
       },
       {
         "artifact_id": "<run:27>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
-          "attempt_id": "6793b5444595249e7390a03c27",
-          "deadline_unix_ms": "<ms>",
-          "feedback_ids": [],
-          "invocation_id": "<run:48>",
-          "kind": "reserved",
-          "reservation_id": "reservation:3",
-          "reserved_tokens": 0
+          "attempt_id": "4e27a434f2f8f3d579808052b1",
+          "kind": "published",
+          "output_id": "<run:49>"
         }
       },
       {
         "artifact_id": "<run:28>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
+          "invocation_id": "<run:50>",
+          "kind": "invocation"
+        }
+      },
+      {
+        "artifact_id": "<run:29>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
           "attempt_id": "6793b5444595249e7390a03c27",
-          "context_id": "<run:49>",
+          "deadline_unix_ms": "<ms>",
+          "feedback_ids": [],
+          "invocation_id": "<run:50>",
+          "kind": "reserved",
+          "reservation_id": "reservation:3",
+          "reserved_tokens": 0
+        }
+      },
+      {
+        "artifact_id": "<run:30>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "attempt_id": "6793b5444595249e7390a03c27",
+          "context_id": "<run:51>",
           "kind": "context_bound"
         }
       },
@@ -902,7 +941,7 @@
         }
       },
       {
-        "artifact_id": "<run:29>",
+        "artifact_id": "<run:31>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
           "attempt_id": "6793b5444595249e7390a03c27",
@@ -911,11 +950,11 @@
           "raw_artifact_ids": [
             "sha256:f23927897af4d475223fe9a8631bfc26c6552028eae36e32c4e6e54c8367730a"
           ],
-          "usage_id": "<run:50>"
+          "usage_id": "<run:52>"
         }
       },
       {
-        "artifact_id": "<run:30>",
+        "artifact_id": "<run:32>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
           "attempt_id": "6793b5444595249e7390a03c27",
@@ -926,34 +965,34 @@
           ],
           "result": {
             "kind": "succeeded",
-            "output_id": "<run:51>"
+            "output_id": "<run:53>"
           },
-          "usage_id": "<run:50>"
-        }
-      },
-      {
-        "artifact_id": "<run:31>",
-        "artifact_type": "af/TaskExecutionRecord@5",
-        "record": {
-          "attempt_id": "6793b5444595249e7390a03c27",
-          "kind": "published",
-          "output_id": "<run:51>"
-        }
-      },
-      {
-        "artifact_id": "<run:32>",
-        "artifact_type": "af/TaskExecutionRecord@5",
-        "record": {
-          "invocation_id": "<run:52>",
-          "kind": "invocation"
+          "usage_id": "<run:52>"
         }
       },
       {
         "artifact_id": "<run:33>",
         "artifact_type": "af/TaskExecutionRecord@5",
         "record": {
+          "attempt_id": "6793b5444595249e7390a03c27",
           "kind": "published",
           "output_id": "<run:53>"
+        }
+      },
+      {
+        "artifact_id": "<run:34>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "invocation_id": "<run:54>",
+          "kind": "invocation"
+        }
+      },
+      {
+        "artifact_id": "<run:35>",
+        "artifact_type": "af/TaskExecutionRecord@5",
+        "record": {
+          "kind": "published",
+          "output_id": "<run:55>"
         }
       }
     ],
@@ -973,16 +1012,16 @@
     ],
     "runtime_observations": [
       {
-        "artifact_id": "<run:45>",
+        "artifact_id": "<run:47>",
         "artifact_type": "af/TaskRuntimeEvidence@1",
         "record": {
           "task_id": "cold-only",
           "attempt_id": "4e27a434f2f8f3d579808052b1",
           "node": "root.nodes.check",
-          "context_id": "<run:44>",
+          "context_id": "<run:46>",
           "spans": [
             {
-              "span_id": "<run:54>",
+              "span_id": "<run:56>",
               "kind": "check",
               "label": "pagination",
               "started_unix_ms": "<ms>",
@@ -994,7 +1033,7 @@
     ],
     "run_reports": [
       {
-        "artifact_id": "<run:34>",
+        "artifact_id": "<run:36>",
         "report": {
           "task_revision_id": "<run:1>",
           "plan_id": "<run:0>",
@@ -1004,42 +1043,42 @@
               "node": "root.inputs",
               "outcome": {
                 "kind": "completed",
-                "output_id": "<run:36>"
+                "output_id": "<run:38>"
               }
             },
             {
               "node": "root.nodes.implement",
               "outcome": {
                 "kind": "completed",
-                "output_id": "<run:40>"
+                "output_id": "<run:42>"
               }
             },
             {
               "node": "root.nodes.seal",
               "outcome": {
                 "kind": "completed",
-                "output_id": "<run:42>"
+                "output_id": "<run:44>"
               }
             },
             {
               "node": "root.nodes.check",
               "outcome": {
                 "kind": "completed",
-                "output_id": "<run:47>"
+                "output_id": "<run:49>"
               }
             },
             {
               "node": "root.nodes.evaluate",
               "outcome": {
                 "kind": "completed",
-                "output_id": "<run:51>"
+                "output_id": "<run:53>"
               }
             },
             {
               "node": "root.nodes.accept",
               "outcome": {
                 "kind": "completed",
-                "output_id": "<run:53>"
+                "output_id": "<run:55>"
               }
             }
           ]
@@ -1055,7 +1094,7 @@
       "outputs": {
         "snapshot": {
           "artifact_ids": [
-            "<run:55>"
+            "<run:57>"
           ],
           "artifact_type": "af/SourceTree@1",
           "cardinality": "one",
@@ -1063,7 +1102,7 @@
         },
         "verification": {
           "artifact_ids": [
-            "<run:56>"
+            "<run:58>"
           ],
           "artifact_type": "af/VerificationResult@1",
           "cardinality": "one",
@@ -1071,23 +1110,23 @@
         }
       },
       "evidence": [
-        "<run:56>"
+        "<run:58>"
       ],
       "missing_obligations": []
     }
   },
   "delivery": {
     "schema": "af/task-delivery@1",
-    "delivery_id": "<run:57>",
+    "delivery_id": "<run:59>",
     "task_id": "cold-only",
     "result_id": "<run:6>",
     "source_snapshot_id": "sha256:12d88076fdfa220a5ad645afbccf32414153aeede7d31df69280dd963bdc361d",
     "derived_snapshot_id": "sha256:0343e3ba8f6a9f3eeb7a77a86c46b9ea7a44071562332b739f06a5a069429be3",
     "target": {
-      "repository": "<run:58>",
+      "repository": "<run:60>",
       "repository_id": "b85758986f7c6ec49167d1a4a90134639eb78cae",
       "branch": "af/cold-only",
-      "worktree": "<run:59>"
+      "worktree": "<run:61>"
     },
     "outcome": {
       "kind": "delivered"

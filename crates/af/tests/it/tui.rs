@@ -97,6 +97,9 @@ fn environment(home: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
     if let Some(path) = std::env::var_os("PATH") {
         environment.push(("PATH", path));
     }
+    // A child spawned after `env_clear()` keeps this process's TMPDIR, never the system default
+    // a sandbox with a private TMPDIR forbids.
+    environment.extend(crate::common::inherited_tmpdir());
     environment
 }
 
@@ -300,8 +303,27 @@ impl Browser {
         Browser::launch_with(cwd, home, rows, columns, &[])
     }
 
-    /// A browser whose environment also carries `extra`.
+    /// A browser whose environment also carries `extra`, on a machine that has registered a
+    /// Provider (see [`registered_machine`]).
     fn launch_with(
+        cwd: &Path,
+        home: &Path,
+        rows: usize,
+        columns: usize,
+        extra: &[(&str, &str)],
+    ) -> Browser {
+        let path = registered_machine(home);
+        let mut environment = vec![("PATH", path.as_str())];
+        environment.extend_from_slice(extra);
+        Browser::spawn(cwd, home, rows, columns, &environment)
+    }
+
+    /// The browser on a machine whose registry names no Provider: a first run.
+    fn launch_first_run(cwd: &Path, home: &Path) -> Browser {
+        Browser::spawn(cwd, home, ROWS, COLS, &[])
+    }
+
+    fn spawn(
         cwd: &Path,
         home: &Path,
         rows: usize,
@@ -392,7 +414,9 @@ impl Browser {
     }
 
     fn exit_code(mut self) -> u32 {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // A load-safe ceiling, as `wait_for`'s: a loaded host can take long to wind the browser
+        // down, and only a browser that never exits fails here.
+        let deadline = Instant::now() + Duration::from_secs(300);
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
                 return status.exit_code();
@@ -404,6 +428,39 @@ impl Browser {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
+}
+
+/// A machine that has registered a Provider, as every case here but the first run expects, so
+/// the browser opens on the settings (ADR-0210). The Provider is a `codex` context whose CLI is a
+/// fake that is not logged in, first on the returned `PATH`, so discovery is quick and the same
+/// on every machine. A test that wrote its own registry keeps it.
+fn registered_machine(home: &Path) -> String {
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    let registry = home.join("config/af/providers.toml");
+    if registry.exists() {
+        return inherited;
+    }
+    let auth = home.join("codex-fixture");
+    std::fs::create_dir_all(&auth).unwrap();
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &registry,
+        format!(
+            "version = 1\n[[providers]]\nid = \"codex-fixture\"\nkind = \"codex\"\nauth_dir = {:?}\n",
+            auth.canonicalize().unwrap().to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let bin = home.join("fixture-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script = "#!/bin/sh\n\
+        if [ \"$1\" = login ] && [ \"$2\" = status ]; then\n  \
+        printf '%s\\n' 'Not logged in' >&2\n  exit 1\nfi\nexit 64\n";
+    let codex = bin.join("codex");
+    std::fs::write(&codex, crate::provider_cli::with_help("codex", script)).unwrap();
+    let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&codex, executable).unwrap();
+    format!("{}:{inherited}", bin.display())
 }
 
 fn bar_rows(screen: &Screen) -> Vec<String> {
@@ -499,8 +556,9 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
         "  v pipelines/",
         "  v tasks/",
     ];
-    // PTY reads can end midway through a frame, after SETTINGS but before the statusbar.
-    // Wait for every part asserted below within the same existing wait bound.
+    // Each pane fills its folder when its own discovery answers, after the settings appear; a
+    // loaded host shows the settings first. PTY reads can also end midway through a frame:
+    // wait for the whole screen the test reads, statusbar included.
     let ready = |screen: &Screen| {
         let bar = bar_rows(screen);
         screen.text().contains("SETTINGS  project: hub")
@@ -509,7 +567,7 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
                 .all(|folder| bar.iter().any(|row| row.starts_with(folder)))
             && screen.lines()[ROWS - 1].starts_with("NORMAL  hub")
     };
-    let screen = browser.wait_for("project settings and statusbar", ready);
+    let screen = browser.wait_for("project settings with every folder", ready);
     let bar = bar_rows(&screen);
     for folder in folders {
         // A folder whose pane is still discovering carries a spinner after its name.
@@ -517,6 +575,29 @@ fn bare_af_in_a_repository_opens_the_project_scope() {
         assert!(listed, "{}", screen.text());
     }
     assert!(screen.lines()[ROWS - 1].starts_with("NORMAL  hub"));
+    // Quitting is waited for by what the browser writes, the main screen given back, never by
+    // a fixed time.
+    let from = browser.drained();
+    browser.keys(b":q\r");
+    browser.wait_written(from, "the main screen given back", |_, written| {
+        String::from_utf8_lossy(written).contains("\x1b[?1049l")
+    });
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// A first run: with no Provider registered the browser opens on the Providers pane, whose
+/// first row says how to register one (ADR-0210).
+#[test]
+fn bare_af_with_no_provider_registered_opens_on_the_providers_pane() {
+    let (_temp, root) = temp_root();
+    let repo = hub(&root);
+    let mut browser = Browser::launch_first_run(&repo, &root.join("home"));
+    // The row is cut at the pane's width; `l` scrolls the rest into view.
+    let hint = "no Provider registered yet -- :provider detect scans this machine";
+    let ready = |screen: &Screen| screen.text().contains(hint);
+    let screen = browser.wait_for("the first-run row", ready);
+    assert!(screen.text().contains("PROVIDERS"), "{}", screen.text());
+    assert!(!screen.text().contains("SETTINGS"), "{}", screen.text());
     browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }
@@ -559,7 +640,14 @@ fn the_pipelines_pane_prints_what_task_plan_and_explain_tree_print() {
     ];
     let explained = af(&repo, &home, &args);
     assert!(explained.status.success());
-    let expected = stable_lines(&String::from_utf8(explained.stdout).unwrap());
+    // The CLI's commands carry the `--state` it was given; the browser previews the package in
+    // a Store of its own and names none.
+    let selector = format!(" --state {state}");
+    let expected: Vec<String> = stable_lines(&String::from_utf8(explained.stdout).unwrap())
+        .into_iter()
+        .filter(|line| line.trim() != selector.trim())
+        .map(|line| line.replace(&selector, ""))
+        .collect();
 
     let mut browser = Browser::launch(&repo, &home);
     let listed = |screen: &Screen| shows(screen, "  v pipelines/");
@@ -775,8 +863,21 @@ fn the_user_scope_groups_tasks_by_repository() {
     std::fs::create_dir_all(&plain).unwrap();
     let mut browser = Browser::launch(&plain, &home);
     let grouped = format!("    v {repository}/ (1)");
-    let listed = |screen: &Screen| bar_rows(screen).contains(&grouped);
-    let screen = browser.wait_for("the repository group", listed);
+    // The group appears when the Store is enumerated; its Task's row and progress follow when
+    // that Task's own read answers, later on a loaded host. Wait for the rows the test reads.
+    let listed = |screen: &Screen| {
+        let bar = bar_rows(screen);
+        bar.iter()
+            .position(|row| *row == grouped)
+            .is_some_and(|at| {
+                bar.get(at + 1)
+                    .is_some_and(|row| row == "      v done/ (1)")
+                    && bar
+                        .get(at + 2)
+                        .is_some_and(|row| row == "          pagination~  100%")
+            })
+    };
+    let screen = browser.wait_for("the repository group and its Task", listed);
     let bar = bar_rows(&screen);
     let at = bar.iter().position(|row| *row == grouped).unwrap();
     assert_eq!(bar[at + 1], "      v done/ (1)", "{}", screen.text());
@@ -1014,7 +1115,9 @@ fn a_command_line_hands_the_terminal_to_af_task_show_and_enter_returns() {
     let expected = String::from_utf8(shown.stdout).unwrap();
     let expected: Vec<&str> = expected.lines().collect();
     assert!(!expected.is_empty());
-    let mut browser = Browser::launch(&repo, &home);
+    // Wide enough that no line of the command's own output wraps: its next command and its
+    // not-found error name whole commands and paths.
+    let mut browser = Browser::launch_sized(&repo, &home, ROWS, 200);
     let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
     browser.wait_for("project settings", ready);
     let line = "task show pagination-cli";
@@ -1044,7 +1147,9 @@ fn a_failing_command_line_shows_its_non_zero_exit() {
     let code = failed.status.code().unwrap();
     assert_ne!(code, 0);
     let error = String::from_utf8(failed.stderr).unwrap();
-    let mut browser = Browser::launch(&repo, &home);
+    // Wide enough that no line of the command's own output wraps: its next command and its
+    // not-found error name whole commands and paths.
+    let mut browser = Browser::launch_sized(&repo, &home, ROWS, 400);
     let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
     browser.wait_for("project settings", ready);
     let line = "task show nothing-here";
@@ -1217,6 +1322,7 @@ fn d_removes_a_registered_provider_through_af_provider_remove() {
     for id in ["codex-main", "codex-work"] {
         let auth = home.join(id);
         std::fs::create_dir(&auth).unwrap();
+        std::fs::write(auth.join("config.toml"), "").unwrap();
         registry.push_str(&format!(
             "\n[[providers]]\nid = \"{id}\"\nkind = \"codex\"\nauth_dir = {:?}\n",
             auth.to_str().unwrap()
@@ -1224,6 +1330,9 @@ fn d_removes_a_registered_provider_through_af_provider_remove() {
     }
     let registry_path = config.join("providers.toml");
     std::fs::write(&registry_path, &registry).unwrap();
+    // The CLI's default context, logged in, so the ambient candidate is probed and listed.
+    std::fs::create_dir(home.join(".codex")).unwrap();
+    std::fs::write(home.join(".codex/config.toml"), "").unwrap();
     let bin = root.join("bin");
     std::fs::create_dir(&bin).unwrap();
     let codex = bin.join("codex");
@@ -1240,11 +1349,12 @@ fn d_removes_a_registered_provider_through_af_provider_remove() {
     let discovered = |screen: &Screen| listed(screen, "codex-main") && listed(screen, "codex-work");
     browser.wait_for("the registered providers", discovered);
 
-    // The ambient candidate is listed, and has no registry entry behind it.
+    // The ambient candidate is listed, and has no registry entry behind it: `d` says how to
+    // register it instead, under the first free id.
     browser.keys(b"/codex-ambient\r");
     browser.keys(b"d");
-    let refusal =
-        "codex-ambient is discovered, not registered: there is no registry entry to remove";
+    let refusal = "codex-ambient: no registry entry to remove; af provider add codex-main-2 \
+                   --kind codex adds it";
     browser.wait_for("the refusal", |screen| {
         screen.lines()[ROWS - 1].ends_with(refusal)
     });
@@ -1355,4 +1465,205 @@ fn the_browser_runs_nothing_a_hostile_git_config_names() {
         "checkout-configured code ran: {}",
         std::fs::read_to_string(&marker).unwrap_or_default()
     );
+}
+
+/// A repository whose committed review pipeline has one command reviewer, token-free: it reports
+/// one major Finding on every Round.
+fn reviewed_repository(root: &Path) -> PathBuf {
+    let repo = root.join("reviewed");
+    std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
+    std::fs::write(repo.join("source.txt"), "fn main() { loop {} }\n").unwrap();
+    let finding = r#"{"findings":[{"severity":"major","file":"source.txt","line":1,"title":"Unbounded loop","body":"spins","fix":"bound it","confidence":0.9,"rule_id":"test.rules/loop-safety@1","occurrence_key":"main-loop"}],"benchmark_demands":[],"dispositions":[]}"#;
+    let pipeline = format!(
+        r#"version = 2
+[subject]
+kind = "whole-tree"
+[[checks]]
+name = "noop"
+program = "/bin/sh"
+args = [{{ value = "-c" }}, {{ value = "true" }}]
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+inputs = [{{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}, {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+gated_by = "gate"
+runner = {{ program = "/bin/sh", args = [{{ value = "-c" }}, {{ value = '''cat >/dev/null; printf '%s' '{finding}' ''' }}] }}
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = [{{ name = "reviewer", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+outputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
+outputs = [
+  {{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+  {{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}
+]
+[[edges]]
+from = {{ node = "gate", port = "decision" }}
+to = {{ node = "reviewer", port = "gate" }}
+[[edges]]
+from = {{ node = "generation", port = "findings" }}
+to = {{ node = "reviewer", port = "prior_findings" }}
+[[edges]]
+from = {{ node = "reviewer", port = "result" }}
+to = {{ node = "gather", port = "reviewer" }}
+[[edges]]
+from = {{ node = "gather", port = "reports" }}
+to = {{ node = "ledger", port = "reports" }}
+[convergence]
+clean_rounds = 1
+max_rounds = 1
+gate = "major"
+"#
+    );
+    std::fs::write(repo.join(".af/pipelines/review.toml"), &pipeline).unwrap();
+    std::fs::write(
+        repo.join(".af/af.toml"),
+        "version=1\n[project]\nname='reviewed'\nmin_af='0.6'\n[defaults]\npipeline='review'\n",
+    )
+    .unwrap();
+    let mut lock = review_config::lock::Lockfile::empty();
+    lock.pipelines.insert(
+        "review".into(),
+        review_config::lock::Pin {
+            version: "1.0.0".into(),
+            digest: review_store::canonical::blob_content_id(pipeline.as_bytes()),
+        },
+    );
+    std::fs::write(repo.join(".af/af.lock"), lock.to_toml()).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.name", "Fixture"]);
+    git(&repo, &["config", "user.email", "fixture@example.invalid"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "review authority"]);
+    repo
+}
+
+/// What a plain `af review run` recorded, on a real pseudo-terminal: campaigns/ lists the
+/// Campaign it keeps for the repository, with its Round, its reviewer's chip, its verdict and
+/// its spend, and the Campaign's pane shows its Ledger by reviewer and the commands that apply.
+#[test]
+fn the_campaigns_pane_shows_the_campaign_af_review_run_recorded() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = reviewed_repository(&root);
+    let ran = af(&repo, &home, &["review", "run", "--policy-rev", "HEAD"]);
+    let stderr = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(
+        ran.status.code(),
+        Some(3),
+        "a major Finding fails: {stderr}"
+    );
+    let mut browser = Browser::launch(&repo, &home);
+    browser.wait_for("the bar", |screen| shows(screen, "  v campaigns/"));
+    // ]] five times reaches campaigns/.
+    browser.keys(b"]]]]]]]]]]");
+    browser.keys(b"\r");
+    let main = |screen: &Screen| -> Vec<String> {
+        let lines = screen.lines();
+        let main = lines
+            .iter()
+            .map(|line| line.get(BAR_INNER + 1..).unwrap_or(""));
+        main.map(str::to_owned).collect()
+    };
+    let listed = |screen: &Screen| main(screen).iter().any(|row| row.starts_with("  local "));
+    let screen = browser.wait_for("the Campaign's row", listed);
+    let rows = main(&screen);
+    let at = rows
+        .iter()
+        .position(|row| row.starts_with("  local "))
+        .unwrap();
+    let text = screen.text();
+    assert!(
+        rows[at].ends_with("round 1.1  fail  fail (exhausted)"),
+        "{text}"
+    );
+    let spend: Vec<&str> = rows[at + 1].split_whitespace().collect();
+    assert_eq!(spend[0], "spend", "{text}");
+    assert!(spend[1].parse::<u128>().is_ok(), "{text}");
+    assert_eq!(rows[at + 2].trim(), "nodes  reviewer", "{text}");
+    let bar = bar_rows(&screen);
+    assert!(
+        bar.iter()
+            .any(|row| row.starts_with("      local") && row.ends_with("fail")),
+        "{text}"
+    );
+    // The Campaign: its reviewer's Attempt, its Ledger by reviewer, and the commands.
+    browser.keys(b"j");
+    browser.keys(b"\r");
+    let opened = |screen: &Screen| main(screen).iter().any(|row| row.starts_with("COMMANDS"));
+    let screen = browser.wait_for("the Campaign's pane", opened);
+    let rows = main(&screen);
+    let text = screen.text();
+    assert!(rows[0].starts_with("CAMPAIGN  local  c-"), "{text}");
+    assert_eq!(
+        rows[1], "STATE fail  round 1 epoch 1  verdict fail (exhausted)",
+        "{text}"
+    );
+    let node = rows
+        .iter()
+        .find(|row| row.starts_with("  selected  reviewer"));
+    assert!(node.is_some(), "{text}");
+    assert!(rows.contains(&"  reviewer  1 finding".to_owned()), "{text}");
+    let finding = rows.iter().find(|row| row.contains("major   open"));
+    assert!(
+        finding.is_some_and(|row| row.contains("source.txt:1  Unbounded loop")),
+        "{text}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.starts_with("  :review report --campaign local --state ")),
+        "{text}"
+    );
+    browser.keys(b"q");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// Every `af …` command docs/design/tui.md quotes parses: it runs with `--help` appended, so
+/// a flag the CLI does not have is refused as it would be when typed. Quoted status lines (`af
+/// LINE: exit N`), elided commands (`af task … --state DIR`) and the two words the browser
+/// replaced (`af review tui`, `af task tui`, refused as usage errors) are not commands to run.
+#[test]
+fn every_af_command_the_tui_design_quotes_parses() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let page = std::fs::read_to_string(workspace().join("docs/design/tui.md")).unwrap();
+    let mut checked = 0;
+    for span in page.split('`').skip(1).step_by(2) {
+        let words: Vec<&str> = span.split_whitespace().collect();
+        if words.first() != Some(&"af") || words.len() == 1 {
+            continue;
+        }
+        if span.contains(':') || span.contains('…') {
+            continue;
+        }
+        if words[1..] == ["review", "tui"] || words[1..] == ["task", "tui"] {
+            let output = af(&root, &home, &words[1..]);
+            assert_eq!(output.status.code(), Some(2), "`{span}` is no command");
+            continue;
+        }
+        let mut args: Vec<&str> = words[1..].to_vec();
+        args.push("--help");
+        let output = af(&root, &home, &args);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "docs/design/tui.md quotes `{span}`, which af does not parse:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        checked += 1;
+    }
+    assert!(checked >= 10, "only {checked} commands checked");
 }

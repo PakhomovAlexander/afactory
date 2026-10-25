@@ -399,7 +399,7 @@ impl EventStore {
         let valid_until = state
             .lease_until
             .min(approval_until)
-            .min(state.revision.limits.deadline_unix_ms);
+            .min(state.deadline_unix_ms());
         let prepared = self.prepare_event_artifacts(cas, events)?;
         let tx = self
             .conn

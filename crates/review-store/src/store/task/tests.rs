@@ -6,7 +6,11 @@ mod lease;
 mod owned;
 mod planning;
 mod recording;
+<<<<<<< 2ede1a88d0fe157b62afffb15cad99965d68ea87
 mod renewal_race;
+=======
+mod recovery;
+>>>>>>> ab5bc610183fcb4211ffe6051c158723674d3b0d
 mod report;
 mod reservation;
 mod retry;
@@ -352,6 +356,7 @@ impl Fixture {
         let mut output = pipeline.contract.outputs["document"].clone();
         output.covers.clear();
         let signature = OperatorSignature {
+            unbound_allowed: Default::default(),
             contract: PipelineContractV1 {
                 inputs: BTreeMap::from([(
                     "input".into(),
@@ -1263,8 +1268,10 @@ fn writer_recovery_settles_unreported_started_work_as_unknown_and_releases_unsta
         assert!(execution.pending_attempts().is_empty());
         assert_eq!(execution.budget.reserved_tokens(), 0);
         assert_eq!(execution.budget.committed_tokens(), 0);
-        // The Attempt still counts against the Attempt limits.
+        // The Attempt still counts as begun, but abandoned it counts against no Attempt limit
+        // (ADR-0209).
         assert_eq!(execution.budget.begun_attempts(), u64::from(started));
+        assert_eq!(execution.budget.chargeable_attempts(), 0);
         assert!(!execution.outputs.contains_key("root.nodes.write"));
         let accounting = execution.attempt_accounting();
         assert_eq!(accounting.len(), 1);

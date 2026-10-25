@@ -153,6 +153,10 @@ fn state(present: bool) -> &'static str {
     if present { "present" } else { "absent" }
 }
 
+/// The project layer's state in a repository without `.af/`: absent, and how it comes to be,
+/// with the arrow the browser's ASCII draws.
+pub(crate) const PROJECT_ABSENT: &str = "absent  <- af onboard";
+
 /// The layers in ladder order: every file `af config paths` lists, except that absent
 /// directory layers fold into the nearest one — the file `af config edit --layer directory`
 /// would create. The user scope adds the Provider registry, its other machine-owned file.
@@ -171,7 +175,17 @@ fn layer_files(scope: &Scope) -> Vec<LayerEntry> {
         let directory = file.layer == "directory";
         let folded = directory && !file.present && (present || Some(index) != nearest);
         if !folded {
-            layers.push((file.layer, Some(file.path.clone()), state(file.present)));
+            let unonboarded = file.layer == "project"
+                && !file.present
+                && scope
+                    .toplevel()
+                    .is_some_and(|toplevel| !toplevel.join(".af").exists());
+            let state = if unonboarded {
+                PROJECT_ABSENT
+            } else {
+                state(file.present)
+            };
+            layers.push((file.layer, Some(file.path.clone()), state));
         }
     }
     if scope.kind == ScopeKind::User {

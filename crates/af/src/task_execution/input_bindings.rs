@@ -104,13 +104,17 @@ impl RecordedTasks for EventStore {
 
 /// Root ports no binding may supply, whatever a Pipeline declares. Named so the refusal can say
 /// why.
-const NOT_BINDABLE: [&str; 3] = ["requirements", "base", "continuation"];
+const NOT_BINDABLE: [&str; 4] = ["requirements", "base", "continuation", "findings"];
 
 /// Why each of [`NOT_BINDABLE`] stays refused (ADR-0117).
 fn not_bindable_reason(port: &str) -> &'static str {
     match port {
         "requirements" => "the Task file's goal is the requirements the Task is judged against",
         "base" => "a bound base would make the Subject a diff outside the Review selector rules",
+        "findings" => {
+            "a continuation fills it from the continued Task's review round; write a `continue` \
+             table or run `af task run NEW --from TASK`"
+        }
         _ => "a Pipeline that needs it binds it inside its own graph",
     }
 }
@@ -163,6 +167,26 @@ impl DeclaredPorts {
             consulted: count,
             ports,
         }
+    }
+
+    /// Whether the selected Pipeline takes `port` as `artifact_type` one: `false` when no
+    /// consulted Pipeline declares it, and a refusal when only some do or one declares it
+    /// another way, so a continuation's findings never decide the Pipeline (ADR-0212).
+    pub(super) fn declares(&self, port: &str, artifact_type: &str) -> Result<bool, String> {
+        if !self.ports.contains_key(port) {
+            return Ok(false);
+        }
+        let (declared, cardinality) = self.port(port)?;
+        if declared != artifact_type || cardinality != PortCardinality::One {
+            return Err(format!(
+                "the selected Pipeline declares the root input {} as {} {}, and it takes {} one",
+                shown(port, NAME_SHOWN),
+                shown(&declared, NAME_SHOWN),
+                cardinality_name(cardinality),
+                shown(artifact_type, NAME_SHOWN)
+            ));
+        }
+        Ok(true)
     }
 
     /// The one type and cardinality `port` carries, or why it cannot be bound.
@@ -383,7 +407,7 @@ fn exact_artifact(cas: &Cas, exact: &ExactArtifactRefV1) -> Result<ArtifactInput
     })
 }
 
-type BoundSource = (ArtifactInputV1, TaskInputBindingV1, Manifest);
+pub(super) type BoundSource = (ArtifactInputV1, TaskInputBindingV1, Manifest);
 type AdmittedSource = (String, String, TaskSnapshot, Manifest);
 
 /// The referenced `af/SourceTree@1`, admitted before anything is decided about it.
@@ -429,14 +453,104 @@ fn admitted_source(cas: &Cas, recorded: &ArtifactInputV1) -> Result<AdmittedSour
     Ok((referenced.clone(), tree.snapshot_id, snapshot, manifest))
 }
 
+/// The Snapshot the output `task` references holds: its `port` of the Task's result
+/// (`af/TaskResult@1`) or, for a continuation of an earlier round, of the `af/TaskOutput@1`
+/// record that published the round's candidate (ADR-0212).
+///
+/// The port's metadata is a claim about its artifact, so the claim is checked against the
+/// artifact: the port names exactly one `af/SourceTree@1`, and that envelope's payload and
+/// subject name the Snapshot the port names. A port that says one Snapshot over an artifact
+/// that holds another is refused, never taken as the first one's provenance.
+fn referenced_snapshot(cas: &Cas, task: &ReferencedTaskV1) -> Result<String, String> {
+    use review_core::task::execution::{TASK_OUTPUT_V1, TaskOutputV1};
+    let found = cas.get_artifact(&task.result_id);
+    let envelope = found.map_err(|e| format!("the referenced Task output is unreadable: {e}"))?;
+    let outputs = match envelope.artifact_type.as_str() {
+        TASK_RESULT_V1 => {
+            let result: TaskResultV1 = artifact(cas, &task.result_id, TASK_RESULT_V1)?;
+            result.outputs
+        }
+        TASK_OUTPUT_V1 => {
+            let output: TaskOutputV1 = artifact(cas, &task.result_id, TASK_OUTPUT_V1)?;
+            output.outputs
+        }
+        other => {
+            return Err(format!(
+                "the referenced Task output is a {}, not a Task result or output",
+                shown(other, NAME_SHOWN)
+            ));
+        }
+    };
+    let port = outputs.get(&task.port).ok_or_else(|| {
+        format!(
+            "the referenced Task output has no port {}",
+            shown(&task.port, NAME_SHOWN)
+        )
+    })?;
+    let named = format!(
+        "the referenced output task {}/{}",
+        shown(&task.task_id, NAME_SHOWN),
+        shown(&task.port, NAME_SHOWN)
+    );
+    let [artifact_id] = port.artifact_ids.as_slice() else {
+        return Err(format!(
+            "{named} names {} artifacts, not exactly one af/SourceTree@1",
+            port.artifact_ids.len()
+        ));
+    };
+    let held = source_tree_snapshot(cas, artifact_id)
+        .map_err(|error| format!("{named} names artifact {artifact_id}: {error}"))?;
+    if port.snapshot_id.as_deref() != Some(held.as_str()) {
+        return Err(format!(
+            "{named} says Snapshot {} but its artifact {artifact_id} holds Snapshot {held}, \
+             so the recorded output disagrees with itself",
+            port.snapshot_id.as_deref().unwrap_or("none"),
+        ));
+    }
+    Ok(held)
+}
+
+/// The one Snapshot an `af/SourceTree@1` artifact holds: its payload's, which its envelope
+/// subject must name too.
+fn source_tree_snapshot(cas: &Cas, artifact_id: &str) -> Result<String, String> {
+    let found = cas.get_artifact(artifact_id);
+    let envelope = found.map_err(|e| format!("it is unreadable: {e}"))?;
+    validate_envelope(&envelope)?;
+    if envelope.artifact_id != artifact_id || envelope.artifact_type != SOURCE_TREE_V1 {
+        return Err("it is not an exact af/SourceTree@1 artifact".into());
+    }
+    let subject = envelope.subject_snapshot_id.clone();
+    let decoded = serde_json::from_value(envelope.payload);
+    let tree: SourceTree = decoded.map_err(|error| error.to_string())?;
+    if subject.as_deref() != Some(tree.snapshot_id.as_str()) {
+        return Err("its subject and payload name two Snapshots".into());
+    }
+    Ok(tree.snapshot_id)
+}
+
 /// A bound `source` is decided by one property of the admitted Snapshot and nothing else: a
 /// root capture is carried verbatim, a derived tree is re-rooted over the identical Manifest.
-fn bind_source(
+/// A referenced Task output must hold the bound Snapshot itself, so the binding never records
+/// one Snapshot's provenance under another.
+pub(super) fn bind_source(
     cas: &Cas,
     recorded: ArtifactInputV1,
     task: Option<&ReferencedTaskV1>,
 ) -> Result<BoundSource, String> {
     let (referenced, snapshot_id, snapshot, manifest) = admitted_source(cas, &recorded)?;
+    if let Some(task) = task {
+        let held = referenced_snapshot(cas, task)?;
+        if held != snapshot_id {
+            return Err(format!(
+                "the referenced output task {}/{} holds Snapshot {}, not the bound Snapshot {}, \
+                 so its provenance would name another tree",
+                shown(&task.task_id, NAME_SHOWN),
+                shown(&task.port, NAME_SHOWN),
+                held,
+                snapshot_id
+            ));
+        }
+    }
     if snapshot.parent_snapshot_id.is_none() {
         // A root capture — including a parentless Snapshot whose origin is already generation
         // two. Nothing is re-rooted twice, and a committed one delivers exactly as a Task

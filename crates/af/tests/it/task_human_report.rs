@@ -233,7 +233,7 @@ const ABOUT: &str = "About this file: a readable presentation of the report outp
                      starter-report, made from the draft and sources that render exactly to its \
                      recorded report.";
 const CANONICAL: &str = "the canonical report, which af task output starter-report --port report \
-                         --format markdown writes, not this layout.";
+                         --format canonical-markdown writes, not this layout.";
 
 #[test]
 fn a_report_exports_one_readable_file_and_keeps_its_canonical_outputs_and_state() {
@@ -257,7 +257,7 @@ fn a_report_exports_one_readable_file_and_keeps_its_canonical_outputs_and_state(
 
     // Canonical Markdown and JSON are written exactly as before.
     let markdown = root.join("canonical.md");
-    let written = output(&repo, &state, "report", "markdown", &markdown);
+    let written = output(&repo, &state, "report", "canonical-markdown", &markdown);
     assert!(written.status.success(), "{}", text(&written));
     assert_eq!(std::fs::read_to_string(&markdown).unwrap(), canonical);
     let json = root.join("report.json");
@@ -364,10 +364,12 @@ fn a_report_exports_one_readable_file_and_keeps_its_canonical_outputs_and_state(
         about(&parsed),
         format!("{ABOUT} The automated checks and the independent reviewer judged {CANONICAL}")
     );
-    // Ordinary punctuation reads as written in the file itself; the canonical report escapes it.
+    // Ordinary punctuation reads as written in the file itself, and in the canonical report too:
+    // it escapes only what is markup where it stands (`af.document/2`).
     let plain = "prints paths like crates/af/src/cli.rs:1163 - plainly.";
     assert!(presentation.contains(plain), "{presentation}");
-    assert!(!canonical.contains(plain), "{canonical}");
+    assert!(canonical.contains(plain), "{canonical}");
+    assert!(canonical.contains("\n\\- read the README"), "{canonical}");
     assert!(
         presentation.contains("Отчёт готов: путь README.md, «кавычки» и тире — без экранирования."),
         "{presentation}"
@@ -551,7 +553,7 @@ fn a_captured_query_link_reads_back_exactly_as_captured() {
     );
     // The canonical report is written exactly as recorded, its location unchanged.
     let markdown = root.join("canonical.md");
-    let written = output(&repo, &state, "report", "markdown", &markdown);
+    let written = output(&repo, &state, "report", "canonical-markdown", &markdown);
     assert!(written.status.success(), "{}", text(&written));
     assert_eq!(std::fs::read_to_string(&markdown).unwrap(), canonical);
     assert!(canonical.contains(&format!("(<{QUERY}>)")), "{canonical}");

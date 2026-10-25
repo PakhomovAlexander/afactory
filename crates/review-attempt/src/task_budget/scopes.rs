@@ -94,7 +94,7 @@ impl TaskBudget {
     ) -> Result<u64, String> {
         let mut required = 0;
         for (node, account) in self.nodes.iter().filter(|(node, _)| scope.contains(node)) {
-            let used = u64::from(account.begun)
+            let used = u64::from(account.chargeable())
                 + u64::from(account.prepared)
                 + u64::from(candidate == Some(node));
             let owed = u64::from(account.allowance.verification_attempts).saturating_sub(used);

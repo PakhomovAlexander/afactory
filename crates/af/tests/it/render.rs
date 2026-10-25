@@ -589,10 +589,15 @@ fn review_plan_text_output_shows_control_characters_in_node_ids_escaped() {
         format!("  node {architecture} [reviewer]"),
         format!("  node {gather} [gather]"),
         format!("  {architecture}.result -> {gather}.architecture"),
-        format!("provider {architecture} -> MISSING"),
     ] {
         assert!(text.lines().any(|row| row == line), "{line}:\n{text}");
     }
+    // A missing binding names its fix after it, the node as safely shown as everywhere else.
+    let missing = format!("provider {architecture} -> MISSING; fix: ");
+    assert!(
+        text.lines().any(|row| row.starts_with(&missing)),
+        "{missing}:\n{text}"
+    );
     for prefix in ["reserve  ", "input    "] {
         assert!(
             text.lines()

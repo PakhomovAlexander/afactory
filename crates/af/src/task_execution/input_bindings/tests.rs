@@ -606,6 +606,209 @@ fn a_root_capture_is_verbatim_and_a_derived_tree_is_re_rooted() {
     assert_eq!(source.port, "snapshot");
 }
 
+/// GA second fix item 2: a bound source records the provenance of its own Snapshot. A reference
+/// to an output that holds another Snapshot (a continuation's final result after a later round
+/// changed the candidate) is refused; the `af/TaskOutput@1` record that published the
+/// Snapshot binds it.
+#[test]
+fn a_referenced_output_must_hold_the_bound_snapshot() {
+    use review_core::task::execution::{TASK_OUTPUT_V1, TaskOutputV1};
+    let mut fixture = fixture();
+    let manifest = fixture.manifest();
+    let committed = fixture.origin(json!({"schema":"af.task-source-origin/1",
+        "repository_id":"example/hub","source_revision":"bba24cb",
+        "content_digest":manifest.content_digest()}));
+    let cas = &fixture.cas;
+    let root = capture_snapshot(cas, &manifest, &committed, None).unwrap();
+    let encoded = serde_json::to_value(&manifest).unwrap();
+    let manifest_id = cas.put_json(&encoded).unwrap();
+    // Candidate A, which round 1 reviewed, and the final result's B over another tree.
+    let a = derive_source_tree(cas, producer(), &manifest_id, &root, Vec::new()).unwrap();
+    let other = Manifest::new(vec![Entry {
+        path: "b.txt".into(),
+        kind: EntryKind::File,
+        content: cas.put(b"other\n").unwrap(),
+        size: 6,
+    }])
+    .unwrap();
+    let other_id = cas
+        .put_json(&serde_json::to_value(&other).unwrap())
+        .unwrap();
+    let b = derive_source_tree(cas, producer(), &other_id, &root, Vec::new()).unwrap();
+    assert_ne!(a.snapshot_id, b.snapshot_id);
+    fixture.finish("twice", ports("snapshot", b.clone()));
+    let TaskPhaseV1::Finished { result_id } = fixture.tasks.0["twice"].clone() else {
+        unreachable!()
+    };
+    let referenced = |result_id: &str, port: &str| ReferencedTaskV1 {
+        task_id: "twice".into(),
+        task_revision_id: digest_of('1'),
+        result_id: result_id.into(),
+        port: port.into(),
+        acceptance: TaskAcceptanceV1::Unsatisfied,
+        domain_conclusion: "changes_requested".into(),
+    };
+
+    // The final result's `snapshot` holds B: naming it for A is refused, both Snapshots named.
+    let wrong = referenced(&result_id, "snapshot");
+    let error = bind_source(&fixture.cas, a.clone(), Some(&wrong)).unwrap_err();
+    let (held, bound) = (
+        b.snapshot_id.clone().unwrap(),
+        a.snapshot_id.clone().unwrap(),
+    );
+    assert!(
+        error.contains(&format!(
+            "task twice/snapshot holds Snapshot {held}, not the bound Snapshot {bound}"
+        )),
+        "{error}"
+    );
+    // The same reference binds B, the Snapshot it holds.
+    let same = bind_source(&fixture.cas, b, Some(&wrong));
+    assert!(same.is_ok(), "{same:?}");
+
+    // The round's candidate output, an `af/TaskOutput@1` whose port holds A, binds A and is the
+    // reference its re-rooted origin records.
+    let output = TaskOutputV1 {
+        invocation_id: digest_of('9'),
+        outputs: ports("snapshot", a.clone()),
+    };
+    let output_id = fixture.put(TASK_OUTPUT_V1, serde_json::to_value(&output).unwrap());
+    let right = referenced(&output_id, "snapshot");
+    let (port, binding, _) = bind_source(&fixture.cas, a.clone(), Some(&right)).unwrap();
+    assert_eq!(binding.task.as_ref(), Some(&right));
+    let rerooted = port.snapshot_id.unwrap();
+    let (snapshot, _) = read_snapshot(&fixture.cas, &rerooted).unwrap();
+    let origin = read_origin(&fixture.cas, &snapshot.origin_id).unwrap();
+    let from = origin.bound_from().unwrap();
+    assert_eq!(from.snapshot_id, bound);
+    assert_eq!(from.task.as_ref().unwrap().result_id, output_id);
+
+    // A port the output does not carry, and an artifact that is no output, are refused.
+    let error =
+        bind_source(&fixture.cas, a.clone(), Some(&referenced(&output_id, "x"))).unwrap_err();
+    assert!(error.contains("has no port x"), "{error}");
+    let error = bind_source(
+        &fixture.cas,
+        a,
+        Some(&referenced(&a_requirement(&fixture), "snapshot")),
+    )
+    .unwrap_err();
+    assert!(error.contains("not a Task result or output"), "{error}");
+}
+
+/// GA third fix item 1: a recorded output's port is a claim about its artifact. A port that
+/// says Snapshot A over an `af/SourceTree@1` artifact that holds B is not A's provenance: the
+/// binding reads the artifact, refuses the disagreement and records nothing.
+#[test]
+fn a_port_that_names_one_snapshot_over_another_snapshots_artifact_is_refused() {
+    use review_core::task::execution::{TASK_OUTPUT_V1, TaskOutputV1};
+    let fixture = fixture();
+    let manifest = fixture.manifest();
+    let committed = fixture.origin(json!({"schema":"af.task-source-origin/1",
+        "repository_id":"example/hub","source_revision":"bba24cb",
+        "content_digest":manifest.content_digest()}));
+    let cas = &fixture.cas;
+    let root = capture_snapshot(cas, &manifest, &committed, None).unwrap();
+    let encoded = serde_json::to_value(&manifest).unwrap();
+    let manifest_id = cas.put_json(&encoded).unwrap();
+    let a = derive_source_tree(cas, producer(), &manifest_id, &root, Vec::new()).unwrap();
+    let other = Manifest::new(vec![Entry {
+        path: "b.txt".into(),
+        kind: EntryKind::File,
+        content: cas.put(b"other\n").unwrap(),
+        size: 6,
+    }])
+    .unwrap();
+    let other_id = cas
+        .put_json(&serde_json::to_value(&other).unwrap())
+        .unwrap();
+    let b = derive_source_tree(cas, producer(), &other_id, &root, Vec::new()).unwrap();
+    let (a_snapshot, b_snapshot) = (
+        a.snapshot_id.clone().unwrap(),
+        b.snapshot_id.clone().unwrap(),
+    );
+    assert_ne!(a_snapshot, b_snapshot);
+
+    // The forged port: A's Snapshot in its metadata, B's artifact in `artifact_ids`.
+    let forged = ArtifactInputV1 {
+        artifact_ids: b.artifact_ids.clone(),
+        ..a.clone()
+    };
+    let output = TaskOutputV1 {
+        invocation_id: digest_of('9'),
+        outputs: ports("snapshot", forged),
+    };
+    output.validate().unwrap();
+    let output_id = fixture.put(TASK_OUTPUT_V1, serde_json::to_value(&output).unwrap());
+    let reference = ReferencedTaskV1 {
+        task_id: "forged".into(),
+        task_revision_id: digest_of('1'),
+        result_id: output_id,
+        port: "snapshot".into(),
+        acceptance: TaskAcceptanceV1::Unsatisfied,
+        domain_conclusion: "changes_requested".into(),
+    };
+    let before = stored_files(fixture._directory.path());
+    let error = bind_source(&fixture.cas, a.clone(), Some(&reference)).unwrap_err();
+    let artifact = &b.artifact_ids[0];
+    assert!(
+        error.contains(&format!(
+            "task forged/snapshot says Snapshot {a_snapshot} but its artifact {artifact} holds \
+             Snapshot {b_snapshot}"
+        )),
+        "{error}"
+    );
+    assert_eq!(
+        stored_files(fixture._directory.path()),
+        before,
+        "a refused binding records nothing"
+    );
+    // Nor is it B's provenance: the port's own claim disagrees with its artifact either way.
+    let error = bind_source(&fixture.cas, b, Some(&reference)).unwrap_err();
+    assert!(error.contains("says Snapshot"), "{error}");
+
+    // A port whose artifact is no SourceTree at all is refused the same way.
+    let requirement = a_requirement(&fixture);
+    let mut wrong = a.clone();
+    wrong.artifact_ids = vec![requirement];
+    let output = TaskOutputV1 {
+        invocation_id: digest_of('8'),
+        outputs: ports("snapshot", wrong),
+    };
+    let output_id = fixture.put(TASK_OUTPUT_V1, serde_json::to_value(&output).unwrap());
+    let reference = ReferencedTaskV1 {
+        result_id: output_id,
+        ..reference
+    };
+    let error = bind_source(&fixture.cas, a, Some(&reference)).unwrap_err();
+    assert!(error.contains("not an exact af/SourceTree@1"), "{error}");
+}
+
+/// Every file below `root`, the whole Store a fixture writes.
+fn stored_files(root: &std::path::Path) -> BTreeSet<std::path::PathBuf> {
+    let mut found = BTreeSet::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                found.insert(path);
+            }
+        }
+    }
+    found
+}
+
+fn digest_of(byte: char) -> String {
+    format!("sha256:{}", byte.to_string().repeat(64))
+}
+
+fn a_requirement(fixture: &Fixture) -> String {
+    fixture.put("af/Requirements@1", json!({"text": "x"}))
+}
+
 #[test]
 fn a_parentless_generation_two_source_is_carried_verbatim() {
     let fixture = fixture();

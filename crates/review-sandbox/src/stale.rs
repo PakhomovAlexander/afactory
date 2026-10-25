@@ -20,12 +20,35 @@
 //! without following links, so a child that outlived its killed `af` parent cannot redirect the
 //! walk by swapping a directory for a symlink while it runs. The temporary root is the one
 //! `std::env::temp_dir()` names for this process, so a sweep under a redirected `TMPDIR` sees
-//! exactly the sandboxes created under that `TMPDIR`. A check that outlived its killed parent
+//! exactly the sandboxes created under that `TMPDIR`; a process whose operator moved its
+//! sandboxes ([`set_sandbox_root`], `[storage] sandbox_root`) makes them there, and its sweep
+//! looks there and in the temporary root. A check that outlived its killed parent
 //! loses its tree here; it was orphaned already, and `review-process` ends a supervised group
 //! with its leader on every path short of `SIGKILL`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// Where this process makes sandboxes and check runtime directories, once its operator chose a
+/// root other than the temporary directory.
+static SANDBOX_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Make every sandbox and check runtime directory of this process below `root`, an existing
+/// directory, instead of the temporary directory: the volume the free-disk floor measures is
+/// then the one they fill. The first root set holds for the rest of the process; a later one is
+/// returned as the error.
+pub fn set_sandbox_root(root: PathBuf) -> Result<(), PathBuf> {
+    SANDBOX_ROOT.set(root)
+}
+
+/// The directory this process makes sandboxes and check runtime directories in: the root
+/// [`set_sandbox_root`] chose, or the temporary directory.
+pub fn sandbox_root() -> PathBuf {
+    SANDBOX_ROOT
+        .get()
+        .cloned()
+        .unwrap_or_else(std::env::temp_dir)
+}
 
 const PREFIX: &str = "af-sandbox-";
 /// The name prefix of a check's runtime directory (see [`crate::CheckRuntime`]).
@@ -51,7 +74,7 @@ pub(crate) const MAX_DEPTH: u32 = 128;
 pub(crate) fn tempdir() -> std::io::Result<tempfile::TempDir> {
     tempfile::Builder::new()
         .prefix(&format!("{PREFIX}{}-", std::process::id()))
-        .tempdir()
+        .tempdir_in(sandbox_root())
 }
 
 /// A fresh, private directory for one Worker Attempt or admission probe that needs a working
@@ -65,7 +88,7 @@ pub fn attempt_directory() -> std::io::Result<tempfile::TempDir> {
 pub(crate) fn check_tempdir() -> std::io::Result<tempfile::TempDir> {
     tempfile::Builder::new()
         .prefix(&format!("{CHECK_PREFIX}{}-", std::process::id()))
-        .tempdir()
+        .tempdir_in(sandbox_root())
 }
 
 /// Whether `name` is the name af gives a sandbox or a check runtime directory: either prefix,
@@ -137,7 +160,19 @@ pub struct SweepReport {
 /// root or a failed removal is counted, never raised, because nothing a review does depends on
 /// this housekeeping.
 pub fn sweep_stale_sandboxes() -> SweepReport {
-    sweep_stale_sandboxes_in(&std::env::temp_dir())
+    let temporary = std::env::temp_dir();
+    let root = sandbox_root();
+    let mut report = sweep_stale_sandboxes_in(&root);
+    // What a dead process made before its operator moved the sandboxes is still in the
+    // temporary root.
+    if root != temporary {
+        let more = sweep_stale_sandboxes_in(&temporary);
+        report.removed += more.removed;
+        report.failed += more.failed;
+        report.live += more.live;
+        report.preserved += more.preserved;
+    }
+    report
 }
 
 /// [`sweep_stale_sandboxes`] against an explicit root, for tests and for operators pointing at

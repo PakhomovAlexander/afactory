@@ -33,12 +33,21 @@ Create a regular operator-controlled TOML file outside source (replace the illus
     max_entries = 100000
     max_copy_bytes = 1073741824
 
-Select it for the AF coordinator, not a check script:
+Select it for the AF coordinator, not a check script, in the configuration: the user's
+`~/.config/af/config.toml` for every project on the machine, or a project's `.af/af.toml`:
+
+    [task]
+    rust_toolchain_policy = "~/.config/af/rust-toolchain.toml"
+
+The path is absolute or starts with `~/`. `AF_TASK_RUST_TOOLCHAIN_POLICY_FILE` overrides every
+layer for one invocation:
 
     AF_TASK_RUST_TOOLCHAIN_POLICY_FILE=/absolute/operator/rust-toolchain.toml af task run TASK_ID
 
-No global configuration changes. The AF coordinator selects the mapping path once when constructing
-the domain and injects it explicitly; the library does not read the mapping environment variable.
+`af config show --origin` names where the value came from (`environment
+AF_TASK_RUST_TOOLCHAIN_POLICY_FILE`, `user …/config.toml:2`, `project …/.af/af.toml:2`). The AF
+coordinator selects the mapping path once when constructing the domain and injects it explicitly;
+the library does not read the mapping environment variable.
 The mapping and seed must have symlink-free absolute paths, including ancestors (on macOS,
 use `/private/tmp` rather than `/tmp`). Only kernel-owned candidate roots are canonicalized.
 The mapping is bounded and opened without following links.

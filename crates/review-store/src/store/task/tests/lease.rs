@@ -719,3 +719,62 @@ fn a_gate_cleanup_is_recorded_for_a_task_that_stopped_before_it_finished() {
     assert_eq!(state.gate_cleanups, [cleanup]);
     assert_eq!(state.phase, phase);
 }
+
+/// ADR-0208: a Provider event is its own event of the Task log, and only for an Attempt that has
+/// started and not settled, on the node it names: an event for a reserved but unstarted Attempt,
+/// for another node or for no Attempt at all is refused, and nothing is appended.
+#[test]
+fn a_provider_event_is_refused_for_an_attempt_that_is_not_running() {
+    use review_core::task::provider_event::{ProviderEventV1, TransientClassV1};
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f.open();
+    f.propose(&lease);
+    f.store.release_task_lease(&f.cas, &lease).unwrap();
+    let run = f
+        .store
+        .take_task_lease(&f.cas, "task-1", "writer-2", 60_000)
+        .unwrap();
+    f.store.admit_task_plan(&f.cas, &run, &f.authority).unwrap();
+    f.record_execution_inputs(&run);
+    let reserved = f
+        .store
+        .reserve_task_attempt(&f.cas, &run, "root.nodes.write", &f.authority)
+        .unwrap();
+    let before = f
+        .store
+        .replay(&task_run_id("task-1").unwrap())
+        .unwrap()
+        .len();
+    let wait = ProviderEventV1::RetryWait {
+        class: TransientClassV1::Capacity,
+        retry: 1,
+        max_retries: 3,
+        wait_ms: 60_000,
+        retry_after: false,
+    };
+    for (attempt, node) in [
+        (reserved.id(), "root.nodes.write"),
+        (reserved.id(), "root.nodes.other"),
+        ("01jd8m4qz9k7v3n2p6r8t0w299", "root.nodes.write"),
+    ] {
+        let error = f
+            .store
+            .record_task_provider_event(&f.cas, &run, attempt, node, wait.clone())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("A Provider event names a started, unsettled Attempt of its node"),
+            "{error}"
+        );
+    }
+    assert_eq!(
+        f.store
+            .replay(&task_run_id("task-1").unwrap())
+            .unwrap()
+            .len(),
+        before,
+        "nothing was appended"
+    );
+    assert!(f.state().provider_events.is_empty());
+}

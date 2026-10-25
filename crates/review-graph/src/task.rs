@@ -49,6 +49,12 @@ pub struct OperatorSignature {
         deserialize_with = "review_core::task::present_option"
     )]
     pub outcome_port: Option<String>,
+    /// Inputs a Pipeline may leave unbound: the advisory reviewers of the captured review
+    /// policy. A review reduce must still bind every other input, so a missing runtime result
+    /// stays typed incomplete evidence; an advisory reviewer no node binds is simply not part of
+    /// that Pipeline's review.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub unbound_allowed: BTreeSet<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -221,7 +227,65 @@ pub struct CompiledTask {
     pub token_scopes: BTreeMap<String, review_attempt::task_budget::TaskTokenScope>,
 }
 
+/// The wall a fitted plan keeps beyond what its mandatory Attempts and verification reserve
+/// need: the clock starts at admission, and the first reservation, which must still find the
+/// whole reserve ahead of it, comes a moment after.
+pub const FIT_WALL_START_MS: u64 = 5_000;
+/// The label of a compiled graph whose slots declare no recovery allowance.
+pub const COMPILED_TASK_SCHEMA_V1: &str = "af.compiled-task/1";
+/// The label of a compiled graph with a slot that declares `recovery_attempts`, the shape an
+/// `af.pipeline/3` slot compiles to (ADR-0209).
+pub const COMPILED_TASK_SCHEMA_V2: &str = "af.compiled-task/2";
+
 impl CompiledTask {
+    /// The one label this graph's shape has: version 2 when a slot declares
+    /// `recovery_attempts`, version 1 otherwise.
+    pub fn expected_schema(&self) -> &'static str {
+        if self
+            .slots
+            .values()
+            .any(|slot| slot.recovery_attempts.is_some())
+        {
+            COMPILED_TASK_SCHEMA_V2
+        } else {
+            COMPILED_TASK_SCHEMA_V1
+        }
+    }
+
+    /// Refuse a graph labelled with another version than its shape has, so neither label is
+    /// read as the other (ADR-0145).
+    pub fn validate_schema(&self) -> Result<(), String> {
+        if self.schema != self.expected_schema() {
+            return Err(format!(
+                "Compiled Task graph is labelled {:?} but its shape is {}",
+                self.schema,
+                self.expected_schema()
+            ));
+        }
+        Ok(())
+    }
+
+    /// The recovery allowance of every paid node whose slot declares one (ADR-0209); every
+    /// other node has the default of one.
+    pub fn recovery_allowances(&self) -> BTreeMap<String, u32> {
+        self.allowances
+            .keys()
+            .filter_map(|name| {
+                let CompiledOperator::Primitive { operator, .. } = &self.nodes.get(name)?.operator
+                else {
+                    return None;
+                };
+                let slot = match operator {
+                    TaskOperatorV1::Worker { slot }
+                    | TaskOperatorV1::Verify { slot }
+                    | TaskOperatorV1::FixVerify { slot } => slot,
+                    _ => return None,
+                };
+                Some((name.clone(), self.slots.get(slot)?.recovery_attempts?))
+            })
+            .collect()
+    }
+
     /// Every compiled check node that lists remote checks, with the checks it lists, child
     /// pipelines included. Empty for a graph whose checks all run on this machine.
     pub fn remote_checks(&self) -> BTreeMap<String, BTreeSet<String>> {
@@ -235,6 +299,31 @@ impl CompiledTask {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Every node that consumes `node`'s outputs, directly or through others, by an input or
+    /// a condition: what runs again after `node` does. `node` itself is not in it.
+    pub fn downstream_of(&self, node: &str) -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        let mut pending = vec![node.to_owned()];
+        while let Some(current) = pending.pop() {
+            for (id, candidate) in &self.nodes {
+                if found.contains(id) || id == node {
+                    continue;
+                }
+                let consumes = candidate
+                    .inputs
+                    .values()
+                    .map(|address| &address.node)
+                    .chain(candidate.conditions.iter().map(|c| &c.source.node))
+                    .any(|producer| *producer == current);
+                if consumes {
+                    found.insert(id.clone());
+                    pending.push(id.clone());
+                }
+            }
+        }
+        found
     }
 
     /// Review requires a complete predecessor barrier, including optional input producers.
@@ -454,19 +543,54 @@ impl CompiledTask {
         for (scope, minimum) in scope_minimum {
             if minimum > self.token_scopes[&scope].tokens {
                 return Err(format!(
-                    "Task token scope {scope} cannot retain verification and mandatory work"
+                    "Task token scope {scope} cannot retain verification and mandatory work: it \
+                     needs {minimum} tokens and the Pipeline gives it {}",
+                    self.token_scopes[&scope].tokens
                 ));
             }
         }
         if minimum_tokens > limits.tokens || minimum_attempts > u64::from(limits.max_attempts) {
-            return Err("Task cannot retain verification reserves and mandatory work within its token and Attempt allowance".into());
+            // Every term of the rule, so the refusal says what would pass (issue #250): the
+            // reserve each verification slot protects, the mandatory work beside it, what the
+            // Task supplied and the exact deficit. Declared allowances only; nothing is estimated.
+            let reserves = self
+                .verification_reserves()?
+                .iter()
+                .map(|slot| {
+                    format!(
+                        "{} {} x {} tokens",
+                        slot.node, slot.attempts, slot.tokens_per_attempt
+                    )
+                })
+                .collect::<Vec<_>>();
+            return Err(format!(
+                "Task cannot retain verification reserves and mandatory work within its token and \
+                 Attempt allowance: it needs tokens >= {minimum_tokens} (verification reserve {} \
+                 + {} for one Attempt of each mandatory Worker) and max_attempts >= \
+                 {minimum_attempts} ({} + {}); the Task supplies tokens {}, max_attempts {}, a \
+                 deficit of {} tokens and {} Attempts; reserves per verification slot: [{}]",
+                limits.verification.tokens,
+                minimum_tokens - limits.verification.tokens,
+                limits.verification.attempts,
+                minimum_attempts - u64::from(limits.verification.attempts),
+                limits.tokens,
+                limits.max_attempts,
+                minimum_tokens.saturating_sub(limits.tokens),
+                minimum_attempts.saturating_sub(u64::from(limits.max_attempts)),
+                reserves.join("; ")
+            ));
         }
-        if self
+        if let Some(call) = self
             .calls
             .get("root")
-            .is_some_and(|call| root_attempts > u64::from(call.max_attempts))
+            .filter(|call| root_attempts > u64::from(call.max_attempts))
         {
-            return Err("Root Pipeline cannot retain verification and mandatory Provider admission within its Attempt bound".into());
+            return Err(format!(
+                "Root Pipeline cannot retain verification and mandatory Provider admission within \
+                 its Attempt bound: it needs {root_attempts} Attempts and the Pipeline's \
+                 max_attempts is {}",
+                call.max_attempts
+            ));
         }
         TaskBudget::new(limits, self.execution_allowances()?)?
             .with_call_limits(
@@ -476,7 +600,217 @@ impl CompiledTask {
                     .collect(),
             )?
             .with_owned_templates(templates)?
-            .with_token_scopes(self.token_scopes.clone())
+            .with_token_scopes(self.token_scopes.clone())?
+            .with_recovery_allowances(&self.recovery_allowances())
+    }
+
+    /// The reserve each verification slot protects: its verifier Attempts and what each may
+    /// use, as `TaskBudget` sums them.
+    pub fn verification_reserves(
+        &self,
+    ) -> Result<Vec<review_core::task::limits_fit::TaskVerificationSlotReserveV1>, String> {
+        Ok(self
+            .execution_allowances()?
+            .into_iter()
+            .filter(|(_, allowance)| allowance.verification_attempts > 0)
+            .map(
+                |(node, allowance)| review_core::task::limits_fit::TaskVerificationSlotReserveV1 {
+                    node,
+                    attempts: allowance.verification_attempts,
+                    tokens_per_attempt: allowance.tokens_per_attempt,
+                    wall_ms_per_attempt: allowance.wall_ms_per_attempt,
+                },
+            )
+            .collect())
+    }
+
+    /// The longest dependency path of mandatory non-verifier wall time: independent Workers may
+    /// overlap, and verification keeps its separately protected aggregate allocation.
+    pub fn mandatory_path_wall_ms(&self) -> Result<u64, String> {
+        Ok(self
+            .mandatory_path()?
+            .iter()
+            .map(|(_, wall)| *wall)
+            .sum::<u64>())
+    }
+
+    /// The nodes of [`Self::mandatory_path_wall_ms`]'s longest path that hold mandatory
+    /// Attempts, in path order, each with the wall of its one Attempt on that path: what a
+    /// deadline refusal lists so its numbers add up.
+    pub fn mandatory_path(&self) -> Result<Vec<(String, u64)>, String> {
+        // Each node's longest path wall, its own Attempt's wall and the predecessor on it.
+        let mut path_wall: BTreeMap<String, (u64, u64, Option<String>)> = BTreeMap::new();
+        for name in &self.order {
+            let node = &self.nodes[name];
+            let prior = node
+                .inputs
+                .values()
+                .map(|address| &address.node)
+                .chain(
+                    node.conditions
+                        .iter()
+                        .map(|condition| &condition.source.node),
+                )
+                .filter_map(|source| path_wall.get(source).map(|(wall, ..)| (*wall, source)))
+                .max_by_key(|(wall, _)| *wall);
+            let own = self
+                .allowances
+                .get(name)
+                .filter(|a| a.verification_attempts == 0)
+                .filter(|_| {
+                    node.conditions.iter().all(|condition| {
+                        matches!(
+                            self.nodes[&condition.source.node].operator,
+                            CompiledOperator::ProviderAdmission { .. }
+                        )
+                    })
+                })
+                .map_or(0, |a| a.wall_ms_per_attempt);
+            let (before, previous) = prior.map_or((0, None), |(wall, source)| (wall, Some(source)));
+            path_wall.insert(
+                name.clone(),
+                (
+                    before.checked_add(own).ok_or("Task wall path overflow")?,
+                    own,
+                    previous.cloned(),
+                ),
+            );
+        }
+        // The first node in graph order among those with the longest wall, then back along it.
+        let mut last = None;
+        for name in &self.order {
+            let wall = path_wall[name].0;
+            if last.as_ref().is_none_or(|(longest, _)| wall > *longest) {
+                last = Some((wall, name.clone()));
+            }
+        }
+        let mut path = Vec::new();
+        let mut next = last.map(|(_, name)| name);
+        while let Some(name) = next {
+            let (_, own, previous) = &path_wall[&name];
+            if *own > 0 {
+                path.push((name.clone(), *own));
+            }
+            next = previous.clone();
+        }
+        path.reverse();
+        Ok(path)
+    }
+
+    /// The smallest limits at least `limits` (and `wall_ms`, the wall the Task has when it runs)
+    /// that this graph's budget and deadline rules accept: the same terms [`Self::budget`],
+    /// `TaskBudget::new` and the deadline check use, raised only as far as they need, and a
+    /// raised wall [`FIT_WALL_START_MS`] more, since the first reservation comes after the clock
+    /// started. A rule no Task limit can satisfy is named in `unfixable`.
+    pub fn limits_fit(
+        &self,
+        limits: &review_core::task::TaskLimitsV1,
+        wall_ms: u64,
+    ) -> Result<review_core::task::limits_fit::TaskLimitsFitV1, String> {
+        use review_core::task::VerificationReserveV1;
+        use review_core::task::limits_fit::*;
+        let add = |a: u64, b: u64| a.checked_add(b).ok_or("Task resource total overflow");
+        let reserves = self.verification_reserves()?;
+        let mut reserve = VerificationReserveV1 {
+            tokens: 0,
+            attempts: 0,
+            wall_ms: 0,
+        };
+        for slot in &reserves {
+            let count = u64::from(slot.attempts);
+            reserve.tokens = add(
+                reserve.tokens,
+                slot.tokens_per_attempt
+                    .checked_mul(count)
+                    .ok_or("Task verifier token reservation overflow")?,
+            )?;
+            reserve.wall_ms = add(
+                reserve.wall_ms,
+                slot.wall_ms_per_attempt
+                    .checked_mul(count)
+                    .ok_or("Task verifier wall reservation overflow")?,
+            )?;
+            reserve.attempts = reserve
+                .attempts
+                .checked_add(slot.attempts)
+                .ok_or("Task verifier Attempt reservation overflow")?;
+        }
+        let verification = VerificationReserveV1 {
+            tokens: reserve.tokens.max(limits.verification.tokens),
+            attempts: reserve.attempts.max(limits.verification.attempts),
+            wall_ms: reserve.wall_ms.max(limits.verification.wall_ms),
+        };
+        let mut mandatory = TaskMandatoryWorkV1 {
+            tokens: 0,
+            attempts: 0,
+            wall_ms: self.mandatory_path_wall_ms()?,
+        };
+        let mut largest = 0u64;
+        for (name, allowance) in self.allowances.iter().chain(
+            self.owned_children
+                .iter()
+                .map(|(name, template)| (name, &template.allowance)),
+        ) {
+            largest = largest.max(allowance.tokens_per_attempt);
+            let node = self
+                .nodes
+                .get(name)
+                .ok_or("Allowance has no compiled node")?;
+            if allowance.verification_attempts == 0
+                && node.conditions.iter().all(|condition| {
+                    self.nodes
+                        .get(&condition.source.node)
+                        .is_some_and(|source| {
+                            matches!(source.operator, CompiledOperator::ProviderAdmission { .. })
+                        })
+                })
+            {
+                mandatory.tokens = add(mandatory.tokens, allowance.tokens_per_attempt)?;
+                mandatory.attempts += 1;
+            }
+        }
+        let tokens = add(verification.tokens, mandatory.tokens)?
+            .max(largest)
+            .max(limits.tokens);
+        let attempts = u64::from(verification.attempts) + mandatory.attempts;
+        let max_attempts = u32::try_from(attempts)
+            .map_err(|_| "Task Attempt total overflow")?
+            .max(limits.max_attempts);
+        let needed = add(mandatory.wall_ms, verification.wall_ms)?;
+        let wall = if needed > wall_ms {
+            add(needed, FIT_WALL_START_MS)?
+        } else {
+            wall_ms
+        };
+        let mut unfixable = Vec::new();
+        let required_limits = review_core::task::TaskLimitsV1 {
+            tokens,
+            max_attempts,
+            deadline_unix_ms: limits.deadline_unix_ms.max(1),
+            verification: verification.clone(),
+        };
+        if let Err(reason) = self.budget(required_limits) {
+            unfixable.push(reason);
+        }
+        let fit = TaskLimitsFitV1 {
+            supplied: TaskFitLimitsV1 {
+                tokens: limits.tokens,
+                max_attempts: limits.max_attempts,
+                wall_ms,
+                verification: limits.verification.clone(),
+            },
+            required: TaskFitLimitsV1 {
+                tokens,
+                max_attempts,
+                wall_ms: wall,
+                verification,
+            },
+            reserves,
+            mandatory,
+            unfixable,
+        };
+        fit.validate()?;
+        Ok(fit)
     }
 
     pub fn validate_experimental_slots(&self) -> Result<(), String> {
@@ -523,8 +857,17 @@ impl CompiledTask {
             .iter()
             .map(|(scope, call)| (scope.clone(), call.max_parallel as usize))
             .collect();
+        // Every Provider admission is decided before any other node starts, so a gate or an
+        // implementer never runs for a Task whose reviewer or evaluator will be refused.
+        let admissions = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| matches!(node.operator, CompiledOperator::ProviderAdmission { .. }))
+            .map(|(id, _)| id.clone())
+            .collect();
         Ok(crate::Scheduler::new(&plan, self.max_parallel as usize)
             .with_scope_limits(limits)?
+            .with_first(admissions)?
             .run(dispatch))
     }
 
@@ -536,7 +879,7 @@ impl CompiledTask {
         inputs: &crate::ArtifactMap,
         read_outcome: impl Fn(&str) -> Result<ReceiptOutcomeV1, String>,
     ) -> Result<bool, String> {
-        let mut unavailable = false;
+        let mut unavailable = None;
         for (index, condition) in self
             .nodes
             .get(node)
@@ -552,14 +895,17 @@ impl CompiledTask {
             match ids {
                 [id] if read_outcome(id)? != condition.outcome => return Ok(false),
                 [_] => (),
-                [] => unavailable = true,
+                [] => unavailable = unavailable.or(Some(&condition.source.node)),
                 _ => return Err("Branch condition has more than one receipt".into()),
             }
         }
-        if unavailable {
-            Err("Required branch receipt was not produced".into())
-        } else {
-            Ok(true)
+        match unavailable {
+            // Named after the branch whose receipt is missing: that node's own failure is the
+            // cause, and a reader finds it first.
+            Some(source) => Err(format!(
+                "Required branch receipt was not produced: {source} did not publish one"
+            )),
+            None => Ok(true),
         }
     }
 
@@ -917,6 +1263,7 @@ fn compile_structure_mode(
     compiler.graph.outputs = outputs;
     compiler.graph.coverage = coverage;
     compiler.graph.order = compiler.graph.scheduler_plan()?.order;
+    compiler.graph.schema = compiler.graph.expected_schema().into();
     Ok((compiler.graph, compiler.resource_refusals))
 }
 
@@ -1286,6 +1633,7 @@ impl Compiler<'_> {
                     || parent.output_type != slot.output_type
                     || parent.min_attempts < slot.min_attempts
                     || parent.max_attempts > slot.max_attempts
+                    || parent.recovery_allowance() > slot.recovery_allowance()
                 {
                     return Err(format!(
                         "Child slot {local} has an incompatible parent binding"
@@ -1689,7 +2037,10 @@ impl Compiler<'_> {
                             );
                         }
                         if matches!(operator, TaskOperatorV1::ReviewReduce {})
-                            && !bound.keys().eq(signature.contract.inputs.keys())
+                            && signature.contract.inputs.keys().any(|input| {
+                                !bound.contains_key(input)
+                                    && !signature.unbound_allowed.contains(input)
+                            })
                         {
                             return Err(format!(
                                 "{qualified} must bind every configured reviewer and check; missing runtime results remain typed incomplete evidence"
@@ -2073,5 +2424,170 @@ impl CompiledTask {
             }
         }
         Ok(allowances)
+    }
+}
+
+#[cfg(test)]
+mod downstream_tests {
+    use super::*;
+
+    /// `root → check → evaluate → accept`, with `report` beside `check` and `audit` gated by
+    /// `check`'s outcome alone: everything that consumes `check`, through an input or a
+    /// condition, directly or not, runs after it; `report` does not.
+    #[test]
+    fn downstream_follows_inputs_and_conditions_transitively() {
+        let node = |inputs: &[(&str, &str)], conditions: &[&str]| CompiledNode {
+            operator: CompiledOperator::Select,
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+            },
+            inputs: inputs
+                .iter()
+                .map(|(port, from)| {
+                    (
+                        (*port).to_owned(),
+                        Address {
+                            node: (*from).to_owned(),
+                            port: "output".into(),
+                        },
+                    )
+                })
+                .collect(),
+            conditions: conditions
+                .iter()
+                .map(|from| CompiledCondition {
+                    source: Address {
+                        node: (*from).to_owned(),
+                        port: "result".into(),
+                    },
+                    outcome: ReceiptOutcomeV1::Passed,
+                })
+                .collect(),
+        };
+        let graph = CompiledTask {
+            schema: "af.compiled-task/1".into(),
+            nodes: BTreeMap::from([
+                ("root".into(), node(&[], &[])),
+                ("check".into(), node(&[("source", "root")], &[])),
+                ("report".into(), node(&[("source", "root")], &[])),
+                ("evaluate".into(), node(&[("checks", "check")], &[])),
+                ("accept".into(), node(&[("evaluation", "evaluate")], &[])),
+                ("audit".into(), node(&[("source", "report")], &["check"])),
+            ]),
+            order: Vec::new(),
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            coverage: BTreeMap::new(),
+            calls: BTreeMap::new(),
+            slots: BTreeMap::new(),
+            replaced_workers: BTreeMap::new(),
+            max_parallel: 1,
+            allowances: BTreeMap::new(),
+            owned_children: BTreeMap::new(),
+            experimental_slots: BTreeMap::new(),
+            review_integration: None,
+            token_scopes: BTreeMap::new(),
+        };
+        assert_eq!(
+            graph.downstream_of("check"),
+            ["accept", "audit", "evaluate"]
+                .map(str::to_owned)
+                .into_iter()
+                .collect()
+        );
+        assert!(graph.downstream_of("accept").is_empty());
+        assert_eq!(graph.downstream_of("root").len(), 5);
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    /// One Worker node on slot `root.slots.implementer`, which declares `recovery`.
+    fn graph(recovery: Option<u32>) -> CompiledTask {
+        let slot = WorkerSlotV1 {
+            worker: "fixture/implementer".into(),
+            role: "implement".into(),
+            input_type: "af/ImplementationInput@1".into(),
+            output_type: "af/ImplementationReport@1".into(),
+            min_attempts: 1,
+            max_attempts: 1,
+            allow_local_replacement: true,
+            independent_from: BTreeSet::new(),
+            recovery_attempts: recovery,
+        };
+        let node = CompiledNode {
+            operator: CompiledOperator::Primitive {
+                operator: TaskOperatorV1::Worker {
+                    slot: "root.slots.implementer".into(),
+                },
+                signature: "worker/fixture/implementer".into(),
+            },
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+            },
+            inputs: BTreeMap::new(),
+            conditions: Vec::new(),
+        };
+        let mut graph = CompiledTask {
+            schema: String::new(),
+            nodes: BTreeMap::from([("root.nodes.implement".into(), node)]),
+            order: Vec::new(),
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            coverage: BTreeMap::new(),
+            calls: BTreeMap::new(),
+            slots: BTreeMap::from([("root.slots.implementer".into(), slot)]),
+            replaced_workers: BTreeMap::new(),
+            max_parallel: 1,
+            allowances: BTreeMap::from([(
+                "root.nodes.implement".into(),
+                NodeAllowance {
+                    tokens_per_attempt: 10,
+                    wall_ms_per_attempt: 1_000,
+                    max_attempts: 1,
+                    verification_attempts: 0,
+                },
+            )]),
+            owned_children: BTreeMap::new(),
+            experimental_slots: BTreeMap::new(),
+            review_integration: None,
+            token_scopes: BTreeMap::new(),
+        };
+        graph.schema = graph.expected_schema().into();
+        graph
+    }
+
+    /// A graph with a slot recovery allowance is `af.compiled-task/2`, every other graph
+    /// `af.compiled-task/1`, and a graph labelled otherwise than its shape is refused
+    /// (ADR-0209).
+    #[test]
+    fn a_slot_recovery_allowance_labels_the_graph_version_2_and_reaches_its_node() {
+        let plain = graph(None);
+        assert_eq!(plain.schema, COMPILED_TASK_SCHEMA_V1);
+        assert!(plain.recovery_allowances().is_empty());
+        plain.validate_schema().unwrap();
+        let declared = graph(Some(3));
+        assert_eq!(declared.schema, COMPILED_TASK_SCHEMA_V2);
+        assert_eq!(
+            declared.recovery_allowances(),
+            BTreeMap::from([("root.nodes.implement".into(), 3)])
+        );
+        declared.validate_schema().unwrap();
+        for (mut graph, label) in [
+            (plain, COMPILED_TASK_SCHEMA_V2),
+            (declared, COMPILED_TASK_SCHEMA_V1),
+        ] {
+            graph.schema = label.into();
+            assert!(
+                graph
+                    .validate_schema()
+                    .unwrap_err()
+                    .contains("but its shape is")
+            );
+        }
     }
 }

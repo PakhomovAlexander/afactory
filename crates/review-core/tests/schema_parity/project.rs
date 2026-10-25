@@ -8,8 +8,8 @@
 use super::{assert_invalid, assert_valid};
 use review_core::event::validate_event_payload;
 use review_core::project::{
-    ProjectRegisteredPayloadV1, WorkspaceOriginV1, WorkspaceRegisteredPayloadV1,
-    WorkspaceRemovedPayloadV1,
+    ProjectRegisteredPayloadV1, WorkspaceDeliveredPayloadV1, WorkspaceOriginV1,
+    WorkspaceRegisteredPayloadV1, WorkspaceRemovedPayloadV1,
 };
 use review_core::{EventType, RunEvent};
 use serde_json::{Value, json};
@@ -228,6 +228,44 @@ fn workspace_events_name_a_workspace_by_id_and_label_only() {
         ),
     ] {
         refused(REMOVED, EventType::WorkspaceRemovedV1, &broken, why);
+    }
+}
+
+/// A delivered Workspace's source Task is data beside its label, so a suffixed label (`t1-2`
+/// when `t1` was taken) still names the Task the Storage Budget keeps.
+#[test]
+fn a_delivered_workspace_names_its_source_task_apart_from_its_label() {
+    const DELIVERED: &str = "project-workspace-delivered-v1.json";
+    let delivered = WorkspaceDeliveredPayloadV1 {
+        workspace_id: "w-0123456789abcdef".into(),
+        task_id: "t1".into(),
+    };
+    delivered.validate().unwrap();
+    let value = serde_json::to_value(&delivered).unwrap();
+    accepted(DELIVERED, EventType::WorkspaceDeliveredV1, &value);
+    assert_eq!(
+        serde_json::from_value::<WorkspaceDeliveredPayloadV1>(value.clone()).unwrap(),
+        delivered
+    );
+    for (broken, why) in [
+        (
+            with(&value, "workspace_id", json!("t1")),
+            "the Workspace is named by its ID",
+        ),
+        (
+            with(&value, "task_id", json!("-t1")),
+            "a Task ID follows the safe-name rule",
+        ),
+        (
+            with(&value, "task_id", json!("../t1")),
+            "a Task ID holds no path",
+        ),
+        (
+            with(&value, "path", json!("/src/afactory-wt-t1")),
+            "no path in a record",
+        ),
+    ] {
+        refused(DELIVERED, EventType::WorkspaceDeliveredV1, &broken, why);
     }
 }
 

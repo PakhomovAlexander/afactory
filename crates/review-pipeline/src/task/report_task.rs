@@ -155,6 +155,7 @@ pub fn report_signatures(
         return Err("Report policy has no exact identity".into());
     }
     let signature = |inputs, outputs, evidence, retains, attempt, outcome_port| OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 { inputs, outputs },
         effects: BTreeSet::new(),
         evidence,
@@ -555,7 +556,7 @@ impl ReportTaskDomain {
             (id, empty)
         };
         Ok(DocumentV1 {
-            schema: "af.document/1".into(),
+            schema: review_core::task::document::DOCUMENT_SCHEMA.into(),
             draft_id: draft_id.into(),
             sources_id,
             format: DocumentFormatV1::Markdown,
@@ -947,6 +948,127 @@ impl ReportTaskDomain {
         Ok(())
     }
 
+    /// The policy an author writes against, as its context and its draft validation state it.
+    fn draft_policy(&self) -> ReportDraftPolicyV1 {
+        ReportDraftPolicyV1 {
+            max_document_bytes: self.policy.max_document_bytes,
+            required_sections: self.policy.required_sections.clone(),
+            require_citations: self.policy.require_citations,
+            require_repository_citations: self.policy.require_repository_citations,
+        }
+    }
+
+    /// The author's draft judged for shape before it is sealed (ADR-0208): exactly one draft,
+    /// a draft its declared version admits (its citation sets sorted and unique), and every
+    /// required section present by its exact heading. The report's size and its citations are
+    /// judged by the report check after sealing, as they always were (ADR-0133); the author's
+    /// instructions state those rules too.
+    pub fn validate_draft_reply(
+        &self,
+        _cas: &Cas,
+        input: &TaskInvocationV1,
+        reply: &review_runner::task::WorkerReply,
+    ) -> Result<ReportDraftValidationV1, String> {
+        use ReceiptOutcomeV1::{Failed, Inconclusive, Passed};
+        let declared = self
+            .graph
+            .nodes
+            .get(&input.node)
+            .and_then(|node| node.contract.outputs.get("draft"))
+            .map(|port| port.artifact_type.clone())
+            .ok_or("Report author declares no draft")?;
+        let items = reply.outputs.get("draft").map(Vec::as_slice).unwrap_or(&[]);
+        let mut checks = BTreeMap::new();
+        let mut failures = Vec::new();
+        checks.insert("one_draft".to_string(), outcome(items.len() == 1));
+        if items.len() != 1 {
+            failures.push(format!(
+                "return exactly one draft on the `draft` port; the reply carried {}",
+                items.len()
+            ));
+        }
+        let parsed = items.first().map(|item| {
+            let draft = match declared.as_str() {
+                DOCUMENT_DRAFT_V1 => serde_json::from_value(item.clone()).map(ReportDraft::V1),
+                _ => serde_json::from_value(item.clone()).map(ReportDraft::V2),
+            }
+            .map_err(|error| error.to_string())?;
+            draft.validate()?;
+            Ok::<_, String>(draft)
+        });
+        let draft = match parsed {
+            Some(Ok(draft)) => {
+                checks.insert("sets".into(), Passed);
+                Some(draft)
+            }
+            Some(Err(error)) => {
+                checks.insert("sets".into(), Failed);
+                failures.push(format!(
+                    "the draft is not a valid {declared}: {error}; list every citation once"
+                ));
+                None
+            }
+            None => {
+                checks.insert("sets".into(), Inconclusive);
+                None
+            }
+        };
+        let Some(draft) = draft else {
+            checks.insert("required_sections".into(), Inconclusive);
+            return self.draft_validation(checks, failures);
+        };
+        let first = draft.first_version();
+        let headings: Vec<&str> = first.sections.iter().map(|s| s.heading.as_str()).collect();
+        let missing: Vec<&String> = self
+            .policy
+            .required_sections
+            .iter()
+            .filter(|required| !headings.contains(&required.as_str()))
+            .collect();
+        checks.insert("required_sections".into(), outcome(missing.is_empty()));
+        if !missing.is_empty() {
+            failures.push(format!(
+                "add a section headed exactly {}; the draft's headings are {}",
+                missing
+                    .iter()
+                    .map(|heading| format!("`{heading}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                headings
+                    .iter()
+                    .map(|heading| format!("`{heading}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        self.draft_validation(checks, failures)
+    }
+
+    fn draft_validation(
+        &self,
+        checks: BTreeMap<String, ReceiptOutcomeV1>,
+        mut failures: Vec<String>,
+    ) -> Result<ReportDraftValidationV1, String> {
+        for failure in &mut failures {
+            if failure.chars().count() > 1024 {
+                *failure = failure.chars().take(1021).collect::<String>() + "...";
+            }
+        }
+        failures.truncate(16);
+        let failed = checks
+            .values()
+            .any(|outcome| *outcome != ReceiptOutcomeV1::Passed);
+        let validation = ReportDraftValidationV1 {
+            schema: REPORT_DRAFT_VALIDATION_V1.into(),
+            policy: self.draft_policy(),
+            checks,
+            failures,
+            outcome: outcome(!failed),
+        };
+        validation.validate()?;
+        Ok(validation)
+    }
+
     /// The kernel operation's context bytes. The trait entry point and the admission recheck
     /// must render identically, so both go through here. Report kernel operations use the
     /// Document profile's context shape: an exact invocation and its admitted feedback.
@@ -1075,6 +1197,7 @@ impl TaskOperatorHost for ReportTaskDomain {
             _ => Err("Report Worker requires its captured host".into()),
         })();
         TaskWorkOutput {
+            notes: Default::default(),
             usage_observation: None,
             usage: None,
             outputs,
@@ -1088,6 +1211,93 @@ impl TaskOperatorHost for ReportTaskDomain {
     }
 }
 impl TaskDomain for ReportTaskDomain {
+    /// The report policy, verbatim, after the author's package instructions (ADR-0208): what
+    /// its draft is validated against before it is sealed.
+    fn worker_instructions(
+        &self,
+        _cas: &Cas,
+        input: &TaskInvocationV1,
+    ) -> Result<Option<String>, String> {
+        if !matches!(self.operator(input), Ok(TaskOperatorV1::Worker { .. })) {
+            return Ok(None);
+        }
+        let policy =
+            serde_json::to_string_pretty(&self.draft_policy()).map_err(|e| e.to_string())?;
+        Ok(Some(format!(
+            "\n\n## Report policy\n\nThe kernel validates your draft against this policy, \
+             verbatim, before it seals it ({REPORT_TASK_POLICY_SCHEMA}):\n\n```json\n{policy}\n```\n\n\
+             - Return exactly one draft on the `draft` port.\n\
+             - Give every heading in `required_sections` its own section whose heading is exactly \
+             that text.\n\
+             - The rendered report is at most `max_document_bytes` bytes; the report check after \
+             sealing judges it.\n\
+             - `citations` names captured sources and `repository_citations` names text files \
+             (and lines) of the source Snapshot; each is a set, so list every entry once.{}{}\n",
+            if self.policy.require_citations {
+                "\n- Cite at least one captured source."
+            } else {
+                ""
+            },
+            if self.policy.require_repository_citations {
+                "\n- Cite at least one repository location."
+            } else {
+                ""
+            }
+        )))
+    }
+
+    /// An author's draft that fails its shape validation is refused before it is sealed, with
+    /// the validation as the receipt its retry feedback carries (ADR-0208).
+    fn check_worker_reply(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        reply: &review_runner::task::WorkerReply,
+    ) -> Result<(), super::host::WorkerReplyRefusal> {
+        if !matches!(self.operator(input), Ok(TaskOperatorV1::Worker { .. })) {
+            return Ok(());
+        }
+        let refused = |message: String| super::host::WorkerReplyRefusal {
+            message,
+            receipt_id: None,
+        };
+        let validation = self
+            .validate_draft_reply(cas, input, reply)
+            .map_err(refused)?;
+        if validation.outcome == ReceiptOutcomeV1::Passed {
+            return Ok(());
+        }
+        let (snapshot, manifest_id, _) = self.source(cas, input).map_err(refused)?;
+        let refs: BTreeSet<String> = input
+            .inputs
+            .values()
+            .flat_map(|port| port.artifact_ids.iter().cloned())
+            .chain([manifest_id, self.policy_id.clone()])
+            .collect();
+        // A kernel computation over the reply and the captured policy alone; the Attempt's own
+        // retry feedback names it, which is what binds it to that Attempt.
+        let id = cas
+            .put_artifact(
+                REPORT_DRAFT_VALIDATION_V1,
+                Producer::KernelOperation {
+                    run_id: "report-draft-validation-v1".into(),
+                    node_id: Some(input.node.clone()),
+                    operation_id: "validate-draft@1".into(),
+                },
+                refs.into_iter().collect(),
+                Some(snapshot),
+                serde_json::to_value(&validation).map_err(|e| refused(e.to_string()))?,
+            )
+            .map_err(|e| refused(e.to_string()))?
+            .0;
+        Err(super::host::WorkerReplyRefusal {
+            message: format!(
+                "Report draft refused before sealing: {}; validation receipt: {id}",
+                validation.failures.join("; ")
+            ),
+            receipt_id: Some(id),
+        })
+    }
     fn assemble_result(
         &self,
         cas: &Cas,

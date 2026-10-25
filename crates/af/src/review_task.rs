@@ -53,13 +53,12 @@ fn local_workers(
     options: &Options,
     loaded: &review_config::Loaded,
 ) -> Result<LocalWorkers, String> {
-    for node in options.provider_bindings.keys() {
-        if !loaded.packages().contains_key(node) {
-            return Err(format!(
-                "--provider {node} must name a captured packaged Model Worker"
-            ));
-        }
-    }
+    // The refusals `af review plan` gives, in the same words.
+    super::authority::check_provider_bindings(
+        options,
+        loaded,
+        &options.pipeline.to_string_lossy(),
+    )?;
     // First pass, token-free: every captured reviewer's binding passes the static rules, in node
     // order, before any Provider CLI starts (ADR-0147, ADR-0148).
     let mut executions = BTreeMap::new();
@@ -371,6 +370,7 @@ impl review_pipeline::task::TaskOperatorHost for AdmissionOnly {
         _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> review_pipeline::task::TaskWorkOutput {
         review_pipeline::task::TaskWorkOutput {
+            notes: Default::default(),
             usage_observation: None,
             usage: None,
             outputs: Err("Installed Review plan admission cannot execute work".into()),
@@ -430,7 +430,7 @@ fn open_captured(
             cas,
             &captured.revision_id,
             &format!("cli-{}", std::process::id()),
-            15_000,
+            crate::task_execution::recovery::lease_ms(),
         )
         .map_err(|e| e.to_string())?;
     let admitted = (|| {
@@ -484,11 +484,15 @@ fn execute_current(
     let shared = review_store::SharedEventStore::new(store);
     let cancellation = std::sync::atomic::AtomicBool::new(false);
     super::interrupt::forwarding(&cancellation, || {
-        review_pipeline::task::lease::with_heartbeat_controlled(
+        review_pipeline::task::lease::with_heartbeat_supervised(
             &shared,
             cas,
             lease,
-            Some(&cancellation),
+            review_pipeline::task::lease::HeartbeatControl {
+                cancellation: Some(&cancellation),
+                writer_lost: None,
+                timing: crate::task_execution::recovery::timing(),
+            },
             || {
                 let host = CampaignReviewTaskHost::new(
                     cas,
@@ -520,7 +524,8 @@ fn execute_current(
                         &authority,
                         &host,
                     )?
-                    .with_cancellation(&cancellation);
+                    .with_cancellation(&cancellation)
+                    .with_lease_timing(crate::task_execution::recovery::timing());
                     runtime.execute()?;
                 }
                 // An interrupted Round publishes no conclusion; the Campaign resumes (ADR-0129).
@@ -537,7 +542,8 @@ fn execute_current(
                             &host,
                             &phase,
                         )?
-                        .with_cancellation(&cancellation);
+                        .with_cancellation(&cancellation)
+                        .with_lease_timing(crate::task_execution::recovery::timing());
                         let (report_id, _) = runtime.execute_review_integration(&phase)?;
                         super::interrupt::check()?;
                         phase = host.finish_recorded_integration(cas, &phase, &report_id)?;

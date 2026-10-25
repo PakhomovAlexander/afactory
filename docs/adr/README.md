@@ -379,6 +379,7 @@ future readers need.
   status](0203-isolate-targeted-starter-repair-and-retain-native-exit-status.md)
 - [0204 — Preserve model authority in repository planning
   fixtures](0204-preserve-model-authority-in-repository-planning-fixtures.md)
+<<<<<<< 2ede1a88d0fe157b62afffb15cad99965d68ea87
 - [0205 — Integrate Telemetry into the performance laboratory as diagnostics and advisory
   experiments](0205-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
 - [0206 — Contain telemetry experiments and collect only results verified under their
@@ -393,3 +394,21 @@ future readers need.
   group](0210-own-native-gate-children-without-leaving-the-enclosing-process-group.md)
 - [0211 — Control Store fixture time with a scoped thread
   clock](0211-control-store-fixture-time-with-a-scoped-thread-clock.md)
+=======
+- [0205 — Rerun a failed test alone, report the gate, and retry a failed gate on the same
+  candidate](0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)
+- [0206 — Detect Provider logins, and register them through
+  `add`](0206-detect-provider-logins-and-register-them-through-add.md)
+- [0207 — Key warm check layers by content, lock them, split the build deadline, and seal without
+  generated files](0207-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)
+- [0208 — Recover an Attempt from a transient Provider failure and a reply that does not
+  parse](0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)
+- [0209 — Recover a lost or interrupted Attempt without charging its
+  reservation](0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)
+- [0210 — Make the first run say what to do
+  next](0210-make-the-first-run-say-what-to-do-next.md)
+- [0211 — Give the agent loop its verbs, and deliver a verified
+  verification](0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)
+- [0212 — Continue a Task from its reviewed candidate, and give judging Workers the
+  base](0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)
+>>>>>>> ab5bc610183fcb4211ffe6051c158723674d3b0d

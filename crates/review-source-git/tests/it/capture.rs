@@ -267,11 +267,46 @@ struct StageBetweenPasses<'a> {
 impl CaptureObserver for StageBetweenPasses<'_> {
     fn between_passes(&self, attempt: u32) {
         if attempt == 1 {
-            self.fixture
-                .write("newly_staged.rs", b"// staged mid-capture\n");
-            self.fixture.git(&["add", "newly_staged.rs"]);
+            settled_change(&self.fixture.repo_path(), || {
+                self.fixture
+                    .write("newly_staged.rs", b"// staged mid-capture\n");
+                self.fixture.git(&["add", "newly_staged.rs"]);
+            });
         }
     }
+}
+
+/// Make `change` and return once the host's file-event service has delivered its events to a
+/// watcher of `root`: the index, the change's last write, reported, then a quiet 300 ms. A
+/// loaded macOS host journals FSEvents late, and an event journaled after the next pass began
+/// watching reads as a change during that pass: a third attempt, which the boundary rightly
+/// makes and this test, counting the attempts an index change alone causes, must not see. The
+/// wait is on that observable state, never a sleep.
+fn settled_change(root: &std::path::Path, change: impl FnOnce()) {
+    use notify::Watcher as _;
+    use std::time::{Duration, Instant};
+    let (send, events) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        let _ = send.send(event);
+    })
+    .unwrap();
+    watcher
+        .watch(root, notify::RecursiveMode::Recursive)
+        .unwrap();
+    change();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(!left.is_zero(), "the index change was never reported");
+        match events.recv_timeout(left) {
+            Ok(Ok(event)) if event.paths.iter().any(|path| path.ends_with(".git/index")) => {
+                break;
+            }
+            Ok(_) => continue,
+            Err(error) => panic!("the index change was never reported: {error}"),
+        }
+    }
+    while Instant::now() < deadline && events.recv_timeout(Duration::from_millis(300)).is_ok() {}
 }
 
 #[test]

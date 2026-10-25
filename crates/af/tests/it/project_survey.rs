@@ -2467,7 +2467,10 @@ fn section_is_text_only_and_json_prints_the_complete_record() {
         &["project", "survey", "--section", "tree", "--json"],
         2,
     );
-    assert!(stdout.is_empty(), "{stdout}");
+    // Under --json the usage error is the one `af/error@1` document, exit 2.
+    let refused: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(refused["schema"], "af/error@1", "{stdout}");
+    assert_eq!(refused["exit_code"], 2, "{stdout}");
     assert!(stderr.contains("cannot be used with"), "{stderr}");
     let (json, _) = machine.expect(&repo, &[], &["project", "survey", "--json"], 0);
     assert_eq!(json, record, "the complete record, unchanged");

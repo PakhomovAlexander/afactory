@@ -195,7 +195,12 @@ fn a_receipted_release_pins_itself_with_every_published_digest() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|warning| warning.as_str().unwrap().contains("digest for")),
+            .any(|warning| {
+                let warning = warning.as_str().unwrap();
+                warning.starts_with(&format!(
+                    "could not fetch SHA256SUMS of v{VERSION} (AF_SELF_OFFLINE is set)"
+                )) && warning.contains(&format!("the lock records this target only ({TARGET})"))
+            }),
         "{refreshed}"
     );
     let pin = read_lock(&repo).af.unwrap();

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 mod capture;
 mod control;
 mod drain;
+pub mod host;
 pub mod json_stream;
 mod live;
 mod observe;

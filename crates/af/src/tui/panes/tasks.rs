@@ -40,7 +40,7 @@ const EARLIER: &str = "!earlier";
 
 /// `text` in rows of at most `width` columns, each starting with `indent`: split at the last
 /// space that fits, or mid-word for a word (a path) longer than a row.
-fn bounded(text: &str, width: usize, indent: &str) -> Vec<String> {
+pub(crate) fn bounded(text: &str, width: usize, indent: &str) -> Vec<String> {
     let room = width.saturating_sub(indent.chars().count()).max(1);
     let mut rows = Vec::new();
     let mut rest: Vec<char> = text.chars().collect();
@@ -61,10 +61,10 @@ fn bounded(text: &str, width: usize, indent: &str) -> Vec<String> {
     rows
 }
 
-/// Whether this release refused the Store because an earlier af release wrote it:
-/// such Stores are listed together, once, rather than as one error each.
+/// Whether this release refused the Store because another af release wrote it: such Stores
+/// are listed together, once, by the releases that wrote them, rather than as one error each.
 fn earlier(store: &Store) -> bool {
-    store.older && store.tasks.is_err()
+    store.release.is_some() && store.tasks.is_err()
 }
 
 /// Where a Task is: its phase, and for a finished Task the acceptance its result records.
@@ -500,6 +500,16 @@ pub(crate) fn task_title(task_id: &str, kind: &str, goal: &str) -> String {
     format!("TASK  {task_id}  {kind}: \"{goal}\"")
 }
 
+/// A path in at most `width` columns, keeping its end, a cut start marked with `..`.
+fn clip_left(path: &str, width: usize) -> String {
+    let path = paint::ascii(path);
+    if path.len() <= width {
+        return path;
+    }
+    let keep = width.saturating_sub(2);
+    format!("..{}", &path[path.len() - keep..])
+}
+
 /// `text` in at most `width` columns, a cut marked with `~`.
 fn clip(text: &str, width: usize) -> String {
     let text = paint::ascii(text);
@@ -635,7 +645,7 @@ fn summary_of(document: &Value, stages: &[Stage]) -> Summary {
 /// One Task as `af task list` lists it.
 struct Listed {
     task_id: String,
-    /// The `af/task-list-entry@2` document.
+    /// The `af/task-list-entry@3` document.
     entry: Value,
     summary: Result<Summary, String>,
 }
@@ -653,8 +663,10 @@ impl Listed {
             // A Task without a result lists as `incomplete`, as `af task list` prints it.
             return summary.outcome.as_deref().unwrap_or("incomplete");
         }
-        // `af task list` prints a Task without a result the same way.
-        self.entry["outcome"].as_str().unwrap_or("incomplete")
+        // Without its inspection, the outcome the list entry's state names.
+        self.entry["state"]["outcome"]
+            .as_str()
+            .unwrap_or("incomplete")
     }
 
     fn percent(&self) -> String {
@@ -668,13 +680,19 @@ impl Listed {
 /// The `:` line `r` or `D` prefills for a Task, or why `D` refuses it; `None` for another key.
 /// `r` confirms the plan the pane shows. `D` stops after `--confirm`: delivery asks for the Task
 /// id again as its explicit confirmation (ADR-0031), so the user types it (ADR-0123).
+/// A Store a command reaches only by naming it adds `--state DIR` after the Task id.
 pub(crate) fn prefill(
     key: Key,
     task_id: &str,
     plan_id: Option<&str>,
     state: State,
+    store: Option<&Path>,
 ) -> Option<Result<String, String>> {
-    let id = shell_words::quote(task_id);
+    let mut id = shell_words::quote(task_id).into_owned();
+    if let Some(store) = store {
+        let store = store.display().to_string();
+        id = format!("{id} --state {}", shell_words::quote(&store));
+    }
     let line = match (key, state) {
         (Key::Char('r'), _) => match plan_id {
             Some(plan) => {
@@ -705,17 +723,19 @@ pub(crate) fn prefill(
     Some(line)
 }
 
-/// One Task state directory, the repository group the user scope lists it under, and what
-/// reading it found.
+/// One Task state directory, the group the bar lists it under, and what reading it found.
 struct Store {
     dir: PathBuf,
     /// The directory as the pane prints it, `~` for the home directory.
     shown: String,
+    /// The bar group: the user scope's opaque repository name, or an explicit Store's path.
     repo: Option<String>,
+    origin: Origin,
     tasks: Result<Vec<Listed>, String>,
-    /// The event log refused itself as another release's: set where the Store is read, from
-    /// that read's own error, never from text a path could carry.
-    older: bool,
+    /// Who wrote the Store, when its event log refused itself as another release's: set where
+    /// the Store is read, from that read's own error and the Store's writer markers, never from
+    /// text a path could carry.
+    release: Option<review_core::store_writer::StoreProvenance>,
 }
 
 /// An existing directory with entries but no `events.sqlite` holds something the running
@@ -749,16 +769,33 @@ pub(crate) fn not_a_store(dir: &Path) -> Option<String> {
         .then(|| format!("holds {held} entries but no events.sqlite"))
 }
 
+/// A scope's own Store (no `repo`) or a repository's default Store, read.
+#[cfg(test)]
 fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) -> Store {
-    let (tasks, older) = match not_a_store(dir) {
-        Some(refusal) => (Err(refusal), false),
+    let origin = match repo {
+        Some(_) => Origin::Repository,
+        None => Origin::Scope,
+    };
+    let target = Target {
+        dir: dir.to_path_buf(),
+        shown: shown.to_owned(),
+        repo,
+        origin,
+    };
+    read_target(&target, cache)
+}
+
+fn read_target(target: &Target, cache: &mut Cache) -> Store {
+    let (dir, shown, repo) = (&target.dir, &target.shown, target.repo.clone());
+    let (tasks, release) = match not_a_store(dir) {
+        Some(refusal) => (Err(refusal), None),
         None => {
             let listed = task_execution::list_common(dir);
-            let older = matches!(
-                &listed,
-                Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)
-            );
-            (listed, older)
+            let release = listed
+                .as_ref()
+                .err()
+                .and_then(|error| crate::store_release::foreign(dir, error));
+            (listed, release)
         }
     };
     let tasks = tasks.and_then(|entries| {
@@ -802,8 +839,9 @@ fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) 
         dir: dir.to_path_buf(),
         shown: shown.to_owned(),
         repo,
+        origin: target.origin,
         tasks,
-        older,
+        release,
     }
 }
 
@@ -1019,6 +1057,31 @@ fn stage_row(stage: &Stage) -> Row {
     }
 }
 
+/// `r` or `D` for a Task of `store`. A Store a command reaches only by naming it gets `--state
+/// DIR`. The user scope lists every repository's default Store, but a handed-off command runs
+/// from the home directory and names a Task only by its id, and the pane knows its repository
+/// only by the opaque state-directory name: no line it could prefill would reach that Task, so
+/// it says where to press the key instead.
+fn verb(
+    store: &Store,
+    key: Key,
+    task_id: &str,
+    plan: Option<&str>,
+    state: State,
+) -> Option<Result<String, String>> {
+    // Asked first: whatever the Task's plan or state, from here no line reaches it.
+    if store.origin == Origin::Repository
+        && let Key::Char(pressed @ ('r' | 'D')) = key
+    {
+        return Some(Err(format!(
+            "{task_id} is listed from the user scope, which cannot name its repository: \
+             :cd into that repository and press {pressed} there"
+        )));
+    }
+    let named = store.origin.explicit().then_some(store.dir.as_path());
+    prefill(key, task_id, plan, state, named)
+}
+
 /// What one read of the scope's Task state found.
 struct Reread {
     stores: Vec<Store>,
@@ -1031,8 +1094,7 @@ struct Reread {
 fn read(targets: &[Target], opened: Option<(PathBuf, String)>, mut cache: Cache) -> Reread {
     let mut stores = Vec::new();
     for target in targets {
-        let repo = target.repo.clone();
-        stores.push(read_store(&target.dir, &target.shown, repo, &mut cache));
+        stores.push(read_target(target, &mut cache));
     }
     let detail = opened.map(|(dir, task_id)| {
         let detail = Detail::read(&dir, &task_id, &mut cache);
@@ -1053,7 +1115,28 @@ fn read(targets: &[Target], opened: Option<(PathBuf, String)>, mut cache: Cache)
 fn refuse(stores: &mut [Store], dir: &Path, task_id: &str, error: &str) {
     for store in stores.iter_mut().filter(|store| store.dir == dir) {
         store.tasks = Err(format!("Task {task_id}: {error}"));
-        store.older = false;
+        store.release = None;
+    }
+}
+
+/// Where a Task Store the pane reads comes from, which decides how a command reaches it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Origin {
+    /// The project scope's own Store: a command run in the scope's root resolves it.
+    Scope,
+    /// A repository's default Store the user scope lists by its opaque name: no command run
+    /// from the home directory names it.
+    Repository,
+    /// A `--state DIR` Store the Store registry (`stores.toml`) records.
+    Registered,
+    /// A Store `:state DIR` listed for this session.
+    Session,
+}
+
+impl Origin {
+    /// Whether a command reaches the Store only with `--state DIR`.
+    fn explicit(self) -> bool {
+        matches!(self, Origin::Registered | Origin::Session)
     }
 }
 
@@ -1062,8 +1145,10 @@ fn refuse(stores: &mut [Store], dir: &Path, task_id: &str, error: &str) {
 pub(crate) struct Target {
     pub(crate) dir: PathBuf,
     pub(crate) shown: String,
-    /// The repository group the user scope lists it under: the directory's opaque name.
+    /// The group the bar lists it under: the user scope's opaque repository name, or an
+    /// explicit Store's path.
     repo: Option<String>,
+    origin: Origin,
 }
 
 /// The Task state directories a scope reads, or why the scope names none: the project scope
@@ -1082,6 +1167,7 @@ pub(crate) fn targets(scope: &Scope) -> Result<Vec<Target>, String> {
             dir,
             shown,
             repo: None,
+            origin: Origin::Scope,
         }]);
     }
     let mut targets = Vec::new();
@@ -1091,9 +1177,71 @@ pub(crate) fn targets(scope: &Scope) -> Result<Vec<Target>, String> {
             dir,
             shown,
             repo: Some(name),
+            origin: Origin::Repository,
         });
     }
     Ok(targets)
+}
+
+/// The Task Stores beyond the scope's own: every `--state DIR` Store the Store registry records
+/// (ADR-0144), then the ones `:state DIR` added, each once and never one `listed` already holds.
+/// The second value says why the registry added none, when it cannot be read.
+fn explicit_targets(
+    scope: &Scope,
+    session: &[PathBuf],
+    listed: &[Target],
+) -> (Vec<Target>, Option<String>) {
+    let mut warning = None;
+    let mut found: Vec<(PathBuf, Origin)> = Vec::new();
+    if let Some(state) = &scope.state {
+        let registry = crate::storage::registry::location(state);
+        match crate::storage::registry::read(&registry) {
+            Ok(entries) => {
+                for entry in entries {
+                    if entry.kind == crate::storage::registry::StoreKind::Task {
+                        found.push((entry.path, Origin::Registered));
+                    }
+                }
+            }
+            Err(error) => {
+                warning = Some(format!(
+                    "the Store registry cannot be read, so its Task Stores are not listed: {error}"
+                ));
+            }
+        }
+    }
+    found.extend(session.iter().map(|dir| (dir.clone(), Origin::Session)));
+    let mut targets: Vec<Target> = Vec::new();
+    for (dir, origin) in found {
+        let known = listed
+            .iter()
+            .chain(targets.iter())
+            .any(|t| same_store(&t.dir, &dir));
+        if known {
+            continue;
+        }
+        let shown = scope.abbreviate(&dir);
+        targets.push(Target {
+            repo: Some(shown.clone()),
+            dir,
+            shown,
+            origin,
+        });
+    }
+    (targets, warning)
+}
+
+/// Whether two Store paths name one Store: the same path, or two that both resolve to one
+/// directory. Two paths that cannot be resolved (each missing or unreadable) are two Stores,
+/// each listed with its own refusal.
+fn same_store(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// Every repository's Task state directory under the XDG state root, sorted, with its opaque
@@ -1142,6 +1290,10 @@ pub(crate) struct TasksPane {
     targets: Vec<Target>,
     /// Why the scope names no Task state.
     error: Option<String>,
+    /// Why the Store registry added no Store.
+    warning: Option<String>,
+    /// The Stores `:state DIR` added; they stay listed while the browser runs.
+    session: Vec<PathBuf>,
     stores: Vec<Store>,
     cache: Cache,
     /// The bar id of the opened Task.
@@ -1192,46 +1344,37 @@ impl TasksPane {
     /// `r` or `D` on the bar's Task `id`: the line to prefill, or why not; `None` when `id`
     /// is no Task or the key is neither.
     pub(crate) fn bar_verb(&self, id: &str, key: Key) -> Option<Result<String, String>> {
-        let (_, task) = self.task(id)?;
+        let (store, task) = self.task(id)?;
         let summary = task.summary.as_ref().ok();
         let plan = summary.and_then(|summary| summary.plan_id.as_deref());
-        self.verb(key, &task.task_id, plan, task.state())
+        verb(store, key, &task.task_id, plan, task.state())
     }
 
-    /// `r` or `D` for a Task this pane lists. The user scope lists every repository's Stores,
-    /// but a handed-off command runs from the home directory and names a Task only by its id,
-    /// and the pane knows its repository only by the opaque state-directory name: no line it
-    /// could prefill would reach that Task, so it says where to press the key instead.
-    fn verb(
-        &self,
-        key: Key,
-        task_id: &str,
-        plan: Option<&str>,
-        state: State,
-    ) -> Option<Result<String, String>> {
-        // Asked first: whatever the Task's plan or state, from here no line reaches it.
-        if self.user_scope()
-            && let Key::Char(pressed @ ('r' | 'D')) = key
+    /// The Store holding the Task opened from `dir`.
+    fn store_at(&self, dir: &Path) -> Option<&Store> {
+        self.stores.iter().find(|store| store.dir == dir)
+    }
+
+    /// `:state DIR`: list the Store `dir` for the rest of the session, and read every Store
+    /// again; `false` when the pane already lists it.
+    pub(crate) fn add_session_store(&mut self, dir: PathBuf, scope: &Scope) -> bool {
+        let same = |a: &Path| a == dir || std::fs::canonicalize(a).ok().as_deref() == Some(&dir);
+        if self.session.iter().any(|known| same(known))
+            || self.targets.iter().any(|target| same(&target.dir))
         {
-            return Some(Err(format!(
-                "{task_id} is listed from the user scope, which cannot name its repository: \
-                 :cd into that repository and press {pressed} there"
-            )));
+            return false;
         }
-        prefill(key, task_id, plan, state)
-    }
-
-    /// The user scope lists Stores by repository; a project scope has one, its own.
-    fn user_scope(&self) -> bool {
-        self.stores.iter().any(|store| store.repo.is_some())
+        self.session.push(dir);
+        let _ = self.load(scope);
+        true
     }
 
     /// Every Task id this scope lists that a handed-off command can resolve, once each and
     /// sorted: what the `:` line completes a Task ID argument from. That is the project
-    /// scope's own Store; a user-scope Task lives in a Store the command would not read.
+    /// scope's own Store; a Task of another Store needs `--state DIR` or another repository.
     pub(crate) fn task_ids(&self) -> Vec<String> {
         let mut ids = Vec::new();
-        for store in self.stores.iter().filter(|store| store.repo.is_none()) {
+        for store in self.stores.iter().filter(|s| s.origin == Origin::Scope) {
             for task in store.tasks.iter().flatten() {
                 ids.push(task.task_id.clone());
             }
@@ -1354,6 +1497,10 @@ impl TasksPane {
         } else if self.stores.is_empty() {
             rows.push(Row::plain("No Task state is recorded here yet."));
         }
+        if let Some(warning) = &self.warning {
+            rows.extend(Row::errors("warning", bounded(warning, MAIN - 10, "")));
+            rows.push(Row::blank());
+        }
         let earlier_stores: Vec<&Store> = self.stores.iter().filter(|s| earlier(s)).collect();
         if let Some(first) = earlier_stores.first() {
             let count = earlier_stores.len();
@@ -1361,27 +1508,41 @@ impl TasksPane {
                 .shown
                 .rsplit_once('/')
                 .map_or(first.shown.as_str(), |(parent, _)| parent);
-            let (stores, were) = if count == 1 {
-                ("Task Store", "was")
+            // One row for all of them, by the releases that wrote them, with the command that
+            // runs them; short lines, as the main pane is MAIN columns beside the bar.
+            let summary = crate::store_release::summary(
+                earlier_stores
+                    .iter()
+                    .filter_map(|store| store.release.as_ref()),
+                "af",
+            )
+            .unwrap_or_default();
+            for line in summary.lines() {
+                // A line of the summary keeps its indent on each row it wraps to.
+                let text = line.trim_start();
+                let indent = &line[..line.len() - text.len()];
+                for row in bounded(text, MAIN, indent) {
+                    rows.push(Row::painted(row, Paint::Muted));
+                }
+            }
+            let (stores, they) = if count == 1 {
+                ("Task Store", "It is")
             } else {
-                ("Task Stores", "were")
+                ("Task Stores", "They are")
             };
-            // Short lines: the main pane is MAIN columns beside the bar.
-            rows.push(Row::painted(
-                format!("{count} {stores} {were} written by an earlier af release, in"),
-                Paint::Muted,
-            ));
+            rows.push(Row::painted(format!("{they} {stores} in"), Paint::Muted));
             for line in bounded(parent, MAIN, "  ") {
                 rows.push(Row::painted(line, Paint::Muted));
             }
-            rows.push(Row::painted(
-                "af reads no other release's state (ADR-0145); move or remove them.",
-                Paint::Muted,
-            ));
             rows.push(Row::blank());
         }
         for store in self.stores.iter().filter(|s| !earlier(s)) {
-            let dir = &store.shown;
+            // Each Store under its path, and how an explicit one came to be listed.
+            let dir = &match store.origin {
+                Origin::Scope | Origin::Repository => store.shown.clone(),
+                Origin::Registered => format!("{}  (--state, in stores.toml)", store.shown),
+                Origin::Session => format!("{}  (:state, this session)", store.shown),
+            };
             match &store.tasks {
                 Err(error) => {
                     // The location, then the cause on rows of its own: a long state path must
@@ -1496,10 +1657,13 @@ fn store_items(store: &Store, depth: usize) -> Vec<Item> {
 
 impl Pane for TasksPane {
     fn load(&mut self, scope: &Scope) -> Result<(), String> {
-        let (targets, error) = match targets(scope) {
+        let (mut targets, error) = match targets(scope) {
             Ok(targets) => (targets, None),
             Err(error) => (Vec::new(), Some(error)),
         };
+        let (explicit, warning) = explicit_targets(scope, &self.session, &targets);
+        targets.extend(explicit);
+        self.warning = warning;
         if targets != self.targets {
             // Another scope: nothing read for the old one is listed, opened or yanked.
             self.stores.clear();
@@ -1524,9 +1688,14 @@ impl Pane for TasksPane {
                 Some(repo) => {
                     let children = store_items(store, 3);
                     let count = store.tasks.as_ref().map_or(0, Vec::len);
+                    let count = format!(" ({count})");
+                    // An explicit Store's path keeps its end: the indent, the fold glyph and
+                    // the count take the rest of the bar.
+                    let room = BAR_INNER.saturating_sub(2 * 2 + 2 + count.len() + 1);
+                    let name = clip_left(repo, room);
                     items.push(Item {
                         id: format!("{repo}/"),
-                        label: format!("{repo}/ ({count})"),
+                        label: format!("{name}/{count}"),
                         muted: store.tasks.is_err(),
                         tone: None,
                         children: Some(children),
@@ -1625,7 +1794,10 @@ impl Pane for TasksPane {
             },
             Key::Char('r' | 'D') => {
                 let plan = detail.document["plan_id"].as_str();
-                match self.verb(key, &detail.task_id, plan, detail.state()) {
+                let Some(store) = self.store_at(&detail.dir) else {
+                    return Ok(None);
+                };
+                match verb(store, key, &detail.task_id, plan, detail.state()) {
                     Some(line) => line.map(|line| Some(Effect::Prefill(line))),
                     None => Ok(None),
                 }

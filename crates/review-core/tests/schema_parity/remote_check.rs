@@ -204,7 +204,7 @@ fn evidence_shapes_either_side_refuses_the_other_refuses() {
 /// `remote_checks` (ADR-0140): an entry names its node, check, status and evidence artifact.
 #[test]
 fn inspection_remote_checks_carry_the_evidence_document() {
-    let inspection = schema("task-inspection-v11.json");
+    let inspection = schema("task-inspection-v13.json");
     let mut property = inspection["properties"]["remote_checks"].clone();
     property["$schema"] = json!("https://json-schema.org/draft/2020-12/schema");
     let registry = jsonschema::Registry::new()

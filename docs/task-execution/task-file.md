@@ -64,9 +64,12 @@ implement -> seal S1 -> check S1 --passed--> evaluate S1
                  new local worktree
 ```
 
-Failed checks return unsatisfied acceptance (exit 3); unavailable checks return inconclusive
-acceptance (exit 4). Both skip the evaluator. Positive acceptance requires the current check
-and evaluator receipts. No command changes the original checkout during execution.
+A failed check ends the Task `finished/gate_failed/check_failed` (exit 5), and a check that never
+started or stopped before its tests `finished/gate_failed/preflight_failed` (exit 5); both skip
+the evaluator, and `af task show pagination-cli --checks` names the failing tests. An evaluator
+that rejects the result ends it `finished/changes_requested/evaluator_rejected` (exit 3).
+Positive acceptance requires the current check and evaluator receipts
+([Task states](../tasks.md#task-states)). No command changes the original checkout during execution.
 
 Deliver a verified result only while the target repository is clean and exactly matches S0:
 
@@ -80,11 +83,18 @@ The branch and worktree must be absent. Delivery records its preparation before 
 verifies the materialized result, and supports retry/recovery with the same command. It makes
 no commit, push, PR or remote call. The common Store keeps delivery receipts alongside the Task.
 
-JSON inspection uses [`af/task-inspection@11`](../../schemas/task-inspection-v11.json) and list
-entries use [`af/task-list-entry@2`](../../schemas/task-list-entry-v2.json); their
+JSON inspection uses [`af/task-inspection@13`](../../schemas/task-inspection-v13.json) and list
+entries use [`af/task-list-entry@3`](../../schemas/task-list-entry-v3.json); their
 `chargeable_tokens` values are exact unsigned decimal strings. `explain` includes the captured
 [`af.compiled-task/1`](../../schemas/compiled-task-v1.json) graph and
 ExecutionPlan. Public schemas describe these shapes without replacing Store replay validation.
+
+A Task that ended `changes_requested` continues from its reviewed candidate with `af task run
+NEW --from TASK`: the candidate is the new source and the round's findings the implementer's
+`findings` input, and `af task show NEW` prints `continues TASK round N`. A Task file may also
+leave `limits` and `pipeline` to `[task.defaults]` of `.af/af.toml` and point its Worker at files
+to read first with `context` ([Continue a reviewed Task](../tasks.md#continue-a-reviewed-task),
+[ADR-0212](../adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
 
 Exact plan inspection accepts only a plan recorded in the selected Task's history. It emits
 `af/task-plan-inspection@1`, including the original revision, compiled graph, bindings and

@@ -682,7 +682,8 @@ fn the_bar_groups_a_task_by_the_phase_its_inspection_read() {
         .unwrap();
     // The list read still saw it running; the inspection read it finished and satisfied.
     listed.entry["phase"] = json!({"kind": "running"});
-    listed.entry["outcome"] = serde_json::Value::Null;
+    listed.entry["state"] =
+        json!({"phase": "running", "outcome": null, "cause": null, "next_action": null});
     listed.entry["chargeable_tokens"] = json!("999");
     assert_eq!(listed.state(), State::Done);
     // Its outcome and charge come from that same read, not the older list entry.
@@ -888,6 +889,7 @@ fn opening_a_task_rebuilds_its_bar_row_from_the_same_read() {
             dir: state.clone(),
             shown: "state".into(),
             repo: None,
+            origin: Origin::Scope,
         }],
         ..TasksPane::default()
     };
@@ -1099,18 +1101,24 @@ fn a_collected_task_leaves_the_store_readable_and_is_not_opened() {
 
 #[test]
 fn r_prefills_the_run_of_the_shown_plan_and_d_only_a_verified_tasks_delivery() {
-    let run = prefill(Key::Char('r'), "t-1", Some("sha256:ab"), State::Failed);
+    let run = prefill(
+        Key::Char('r'),
+        "t-1",
+        Some("sha256:ab"),
+        State::Failed,
+        None,
+    );
     assert_eq!(
         run,
         Some(Ok("task run t-1 --confirm-plan sha256:ab".to_owned()))
     );
-    let run = prefill(Key::Char('r'), "t-1", None, State::Done);
+    let run = prefill(Key::Char('r'), "t-1", None, State::Done, None);
     assert_eq!(
         run,
         Some(Err("Task t-1 records no plan to confirm".to_owned()))
     );
     // The confirmation is left to type: the line ends at `--confirm `.
-    let deliver = prefill(Key::Char('D'), "t-1", Some("sha256:ab"), State::Done);
+    let deliver = prefill(Key::Char('D'), "t-1", Some("sha256:ab"), State::Done, None);
     let expected = "task deliver t-1 --branch af/t-1 --worktree ../t-1 --confirm ";
     assert_eq!(deliver, Some(Ok(expected.to_owned())));
     for (state, why) in [
@@ -1118,18 +1126,38 @@ fn r_prefills_the_run_of_the_shown_plan_and_d_only_a_verified_tasks_delivery() {
         (State::Awaiting, "is awaiting approval"),
         (State::Failed, "finished without satisfying its acceptance"),
     ] {
-        let refused = prefill(Key::Char('D'), "t-1", Some("sha256:ab"), state);
+        let refused = prefill(Key::Char('D'), "t-1", Some("sha256:ab"), state, None);
         let expected = format!("only a verified Task can be delivered: t-1 {why}");
         assert_eq!(refused, Some(Err(expected)));
     }
     // A Task id the shell would split is quoted, so the line parses back to the same words.
-    let quoted = prefill(Key::Char('D'), "a b", None, State::Done)
+    let quoted = prefill(Key::Char('D'), "a b", None, State::Done, None)
         .unwrap()
         .unwrap();
     let words = shell_words::split(&quoted).unwrap();
     assert_eq!(words[2], "a b");
     assert_eq!(words[4], "af/a b");
-    assert_eq!(prefill(Key::Char('x'), "t-1", None, State::Done), None);
+    assert_eq!(
+        prefill(Key::Char('x'), "t-1", None, State::Done, None),
+        None
+    );
+    // A Store a command reaches only by naming it is named after the Task id.
+    let store = Path::new("/elsewhere/my state");
+    let run = prefill(
+        Key::Char('r'),
+        "t-1",
+        Some("sha256:ab"),
+        State::Failed,
+        Some(store),
+    );
+    let expected = "task run t-1 --state '/elsewhere/my state' --confirm-plan sha256:ab";
+    assert_eq!(run, Some(Ok(expected.to_owned())));
+    let deliver = prefill(Key::Char('D'), "t-1", None, State::Done, Some(store));
+    let words = shell_words::split(&deliver.unwrap().unwrap()).unwrap();
+    assert_eq!(
+        words[..5],
+        ["task", "deliver", "t-1", "--state", "/elsewhere/my state"]
+    );
 }
 
 #[test]
@@ -1143,7 +1171,12 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
         dir: PathBuf::from(format!("/home/me/.local/state/af/task/local/{name}")),
         shown: format!("~/.local/state/af/task/local/{name}"),
         repo: Some(name.to_owned()),
-        older: matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)),
+        origin: Origin::Repository,
+        release:
+            matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
+                .then(|| {
+                    review_core::store_writer::StoreProvenance::OtherReleases(vec!["0.11.0".into()])
+                }),
         tasks,
     };
     let mut pane = TasksPane {
@@ -1170,14 +1203,15 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
     pane.rebuild();
     let rows: Vec<String> = pane.rows.iter().map(Row::text).collect();
     assert_eq!(
-        rows[2..5],
+        rows[2..6],
         [
-            "2 Task Stores were written by an earlier af release, in",
+            "2 Stores written by other releases: af 0.11.0 (2); run them with",
+            "AF_VERSION=0.11.0 af",
+            "They are Task Stores in",
             "  ~/.local/state/af/task/local",
-            "af reads no other release's state (ADR-0145); move or remove them.",
         ]
     );
-    assert!(rows[2..5].iter().all(|row| row.len() <= MAIN), "{rows:#?}");
+    assert!(rows[2..6].iter().all(|row| row.len() <= MAIN), "{rows:#?}");
     let at = rows
         .iter()
         .position(|row| row == "~/.local/state/af/task/local/0000000000000002:")
@@ -1192,7 +1226,7 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
     );
     assert_eq!(
         rows.iter()
-            .filter(|row| row.contains("earlier af release"))
+            .filter(|row| row.contains("written by other releases"))
             .count(),
         1
     );
@@ -1208,7 +1242,12 @@ fn a_long_state_path_keeps_every_row_within_the_pane() {
         dir: PathBuf::from(format!("{root}/{name}")),
         shown: format!("{root}/{name}"),
         repo: Some(name.to_owned()),
-        older: matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)),
+        origin: Origin::Repository,
+        release:
+            matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
+                .then(|| {
+                    review_core::store_writer::StoreProvenance::OtherReleases(vec!["0.11.0".into()])
+                }),
         tasks,
     };
     let old = format!(
@@ -1265,4 +1304,125 @@ fn a_path_holding_the_marker_is_not_an_old_store() {
     };
     assert!(why.contains("link to nothing"), "{why}");
     assert!(!earlier(&store));
+}
+
+/// A Task Store this release cannot replay: its log holds an event type no release of today
+/// writes, and its writer marker names `release`, or none when `None` (written before markers).
+fn foreign_store(dir: &Path, release: Option<&str>) {
+    std::fs::create_dir_all(dir.join("cas/objects")).unwrap();
+    let path = dir.join("events.sqlite");
+    drop(review_store::EventStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "DELETE FROM store_writers;
+         INSERT INTO events (run_id, sequence, event_id, type, occurred_at, artifact_refs,
+                             payload)
+         VALUES ('task:t-1', 0, 'e', 'TaskTransition@9', '1970-01-01T00:00:00Z', '[]', '{}');",
+    )
+    .unwrap();
+    if let Some(release) = release {
+        conn.execute(
+            "INSERT INTO store_writers (af_version, record) VALUES (?1, '{}')",
+            [release],
+        )
+        .unwrap();
+    }
+}
+
+/// Stores another release wrote, read from disk as the browser reads them: each is named by
+/// the release its marker names, or as an older one without a marker, and the pane lists them
+/// in one row with the command that runs them.
+#[test]
+fn stores_other_releases_wrote_are_named_by_their_writer_marker() {
+    let temp = tempfile::tempdir().unwrap();
+    let newer = temp.path().join("1111111111111111");
+    let unmarked = temp.path().join("2222222222222222");
+    foreign_store(&newer, Some("99.1.0"));
+    foreign_store(&unmarked, None);
+    let mut cache = Cache::default();
+    let read = |dir: &Path, cache: &mut Cache| read_store(dir, "shown/x", None, cache);
+    let newer_store = read(&newer, &mut cache);
+    assert_eq!(
+        newer_store.release,
+        Some(review_core::store_writer::StoreProvenance::OtherReleases(
+            vec!["99.1.0".into()]
+        ))
+    );
+    let unmarked_store = read(&unmarked, &mut cache);
+    assert_eq!(
+        unmarked_store.release,
+        Some(review_core::store_writer::StoreProvenance::Unmarked)
+    );
+    let mut pane = TasksPane {
+        title: "TASKS  user".to_owned(),
+        stores: vec![newer_store, unmarked_store],
+        ..TasksPane::default()
+    };
+    pane.rebuild();
+    let rows: Vec<String> = pane.rows.iter().map(Row::text).collect();
+    let joined = rows
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        joined.contains(
+            "2 Stores written by other releases; run each under the release that wrote it: \
+             AF_VERSION=99.1.0 af (1 Store) 1 Store by an older af release with no version \
+             marker: finish it under its own release"
+        ),
+        "{rows:#?}"
+    );
+    assert!(!joined.contains("TaskTransition@9"), "{rows:#?}");
+    let labels: Vec<String> = pane.items().into_iter().map(|item| item.label).collect();
+    assert_eq!(labels, ["! 2 old Stores"]);
+}
+
+/// Two registered Task Stores that cannot be resolved (here below a directory this process may
+/// not enter) are two Stores, not one: each is listed, each with its own refusal, and so is the
+/// scope's own Store, absent.
+#[test]
+fn unavailable_registered_stores_are_each_their_own_row() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let repo = crate::tui::tests::hub_repo(&root);
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let locked = root.join("locked");
+    let unavailable = [locked.join("one"), locked.join("two")];
+    for path in &unavailable {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let registry = crate::storage::registry::location(&root.join("state"));
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    let mut text = String::from("version = 2\n");
+    for path in &unavailable {
+        text.push_str(&format!(
+            "\n[[store]]\npath = {:?}\nkind = \"task\"\nfirst_use_unix_ms = 1\nlast_use_unix_ms = 1\n",
+            path.display().to_string()
+        ));
+    }
+    std::fs::write(&registry, text).unwrap();
+    let own = targets(&scope).unwrap();
+    assert_eq!(own.len(), 1);
+    assert!(!own[0].dir.exists(), "the scope's own Store is absent");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (explicit, warning) = explicit_targets(&scope, &[], &own);
+    let mut cache = Cache::default();
+    let refusals: Vec<bool> = explicit
+        .iter()
+        .map(|target| read_target(target, &mut cache).tasks.is_err())
+        .collect();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(warning, None);
+    let dirs: Vec<&PathBuf> = explicit.iter().map(|target| &target.dir).collect();
+    assert_eq!(dirs, [&unavailable[0], &unavailable[1]]);
+    if !nix::unistd::geteuid().is_root() {
+        assert_eq!(refusals, [true, true], "each its own refusal");
+    }
+    // Missing paths are two Stores too, and two spellings of one directory are one.
+    assert!(!same_store(&root.join("gone/one"), &root.join("gone/two")));
+    assert!(!same_store(&root.join("gone/one"), &own[0].dir));
+    assert!(same_store(&root.join("gone/one"), &root.join("gone/one")));
+    assert!(same_store(&locked, &root.join("locked/../locked")));
 }

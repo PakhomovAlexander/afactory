@@ -45,7 +45,7 @@ git commit -m 'Configure the report Task starter'
 af catalog test --source . --json
 af task start --execute --file report.json --json
 af task show starter-report
-af task output starter-report --port report --format human-markdown --output report.md
+af task output starter-report --port report --format markdown --output report.md
 ```
 
 The starter runs three command Attempts — author, checks, verifier — with no credential. Its
@@ -145,15 +145,15 @@ report `incomplete`.
 Give a person the human presentation; keep the other two for audit:
 
 ```sh
-af task output starter-report --port report --format human-markdown --output report.md
-af task output starter-report --port report --format markdown --output report-canonical.md --json
+af task output starter-report --port report --format markdown --output report.md
+af task output starter-report --port report --format canonical-markdown --output report-canonical.md --json
 af task output starter-report --port verification --format json --output verification.json --json
 ```
 
 | Format | What it writes | For |
 |---|---|---|
-| `human-markdown` | a readable presentation: the sections with lists and examples, sources, repository citations, the result in words and the reviewer's summary | a person |
-| `markdown` | the canonical Document text the checks and the verifier judged, every punctuation character escaped | audit, exact bytes |
+| `markdown` | a readable presentation: the sections with lists and examples, sources, repository citations, the result in words and the reviewer's summary (`human-markdown` writes the same) | a person |
+| `canonical-markdown` | the canonical Document text the checks and the verifier judged, escaping only what is Markdown markup where it stands (`af.document/2`) | audit, exact bytes |
 | `json` | the recorded artifact envelope | machines and audit |
 
 The canonical report renders as the Document profile renders it, followed by a `Repository

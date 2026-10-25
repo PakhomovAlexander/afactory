@@ -700,12 +700,15 @@ fn refresh_check_caches_the_latest_and_applies_always() {
     assert!(cache.contains(&format!("latest = \"{newer}\"")), "{cache}");
     assert!(sandbox.default_target().is_none(), "notify never installs");
 
-    // The check above answered for `check_every`; a day later the next one is due.
+    // The check above answered for `check_every`; a day later the next one is due. The cache
+    // counts `check_every` from the last attempt, which that check was too.
     let aged: String = cache
         .lines()
         .map(|line| {
             if line.starts_with("checked_at_epoch = ") {
                 "checked_at_epoch = 1\n".to_string()
+            } else if line.starts_with("attempted_at_epoch = ") {
+                "attempted_at_epoch = 1\n".to_string()
             } else {
                 format!("{line}\n")
             }
@@ -948,7 +951,8 @@ fn an_install_from_a_lock_needs_the_signed_checksums_to_agree_with_the_lock() {
     let bare = run(&repo);
     assert!(bare.status.success(), "{}", err(&bare));
     assert!(
-        err(&bare).contains("has no SHA256SUMS") && err(&bare).contains("af self install 0.8.1"),
+        err(&bare).contains("could not fetch SHA256SUMS of v0.8.1")
+            && err(&bare).contains("af self install 0.8.1"),
         "{}",
         err(&bare)
     );
@@ -1275,4 +1279,119 @@ fn uninstall_leaves_a_default_path_that_is_not_afs_link() {
         out(&removed)
     );
     assert!(std::fs::symlink_metadata(&user_built).is_err());
+}
+
+/// `setup-shell --write` ends with what is left to do for that shell, `--remove` takes back
+/// exactly what it wrote, and without `$SHELL` it names every supported shell (ADR-0210).
+#[test]
+fn setup_shell_ends_with_the_truth_and_removes_what_it_wrote() {
+    let sandbox = Sandbox::new();
+    let real = sandbox.adopt_real_binary();
+    let shell = |shell: Option<&str>, args: &[&str]| {
+        let mut command = sandbox.command(&real);
+        command.args(["self", "setup-shell"]).args(args);
+        match shell {
+            Some(shell) => command.env("SHELL", shell),
+            None => command.env_remove("SHELL"),
+        };
+        command.output().unwrap()
+    };
+    let man = sandbox.path("data/man/man1");
+
+    let fish = shell(Some("/usr/bin/fish"), &["--write"]);
+    assert!(fish.status.success(), "{}", err(&fish));
+    assert_eq!(
+        out(&fish).lines().last(),
+        Some("done — fish picks this up in a new shell"),
+        "{}",
+        out(&fish)
+    );
+    let completion = sandbox.path("config/fish/completions/af.fish");
+    assert!(completion.is_file());
+    assert!(man.join("af.1").is_file() && man.join("af-start.7").is_file());
+
+    let zsh = shell(Some("/bin/zsh"), &["--write"]);
+    assert!(zsh.status.success(), "{}", err(&zsh));
+    assert!(out(&zsh).contains("rc line:     fpath=("), "{}", out(&zsh));
+    assert_eq!(
+        out(&zsh).lines().last(),
+        Some("done — add the rc line above, then open a new shell")
+    );
+
+    // --remove deletes the shell's completion file and af's man pages, and nothing else.
+    let unrelated = man.join("git.1");
+    write(&unrelated, "not af's\n");
+    let removed = shell(Some("/usr/bin/fish"), &["--remove"]);
+    assert!(removed.status.success(), "{}", err(&removed));
+    assert!(out(&removed).contains("(removed)"), "{}", out(&removed));
+    assert!(!completion.exists());
+    assert!(!man.join("af.1").exists() && !man.join("af-start.7").exists());
+    assert!(unrelated.is_file());
+    assert!(sandbox.path("data/zsh/site-functions/_af").is_file());
+    let again = shell(Some("/usr/bin/fish"), &["--remove"]);
+    assert!(again.status.success(), "{}", err(&again));
+    assert!(out(&again).contains("(absent)"), "{}", out(&again));
+
+    // No $SHELL: the message names all five shells.
+    let unknown = shell(None, &["--write"]);
+    assert!(!unknown.status.success());
+    assert!(
+        err(&unknown).contains("af self setup-shell --shell bash|zsh|fish|elvish|powershell"),
+        "{}",
+        err(&unknown)
+    );
+}
+
+/// `af self uninstall` names the completion files and man pages it leaves, with the command
+/// that removes them; `--purge` removes them too (ADR-0210).
+#[test]
+fn uninstall_names_the_shell_files_it_leaves_and_purge_removes_them() {
+    let sandbox = Sandbox::new();
+    // af names its XDG roots canonically (`/private/var/…` for a macOS temp directory).
+    let data = std::fs::canonicalize(sandbox.path("data")).unwrap();
+    let man = data.join("man/man1");
+    let zsh = data.join("zsh/site-functions/_af");
+    let setup = |real: &Path| {
+        let output = sandbox
+            .command(real)
+            .args(["self", "setup-shell", "--shell", "zsh", "--write"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", err(&output));
+    };
+
+    let real = sandbox.adopt_real_binary();
+    setup(&real);
+    let kept = sandbox
+        .command(&real)
+        .args(["self", "uninstall"])
+        .output()
+        .unwrap();
+    assert!(kept.status.success(), "{}", err(&kept));
+    let text = out(&kept);
+    assert!(
+        text.contains(&format!("kept the zsh completions at {}", zsh.display())),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("af man page(s) in {}", man.display())),
+        "{text}"
+    );
+    assert!(text.contains("remove them with: rm -f "), "{text}");
+    assert!(zsh.is_file() && man.join("af.1").is_file());
+
+    let real = sandbox.adopt_real_binary();
+    let purged = sandbox
+        .command(&real)
+        .args(["self", "uninstall", "--purge"])
+        .output()
+        .unwrap();
+    assert!(purged.status.success(), "{}", err(&purged));
+    let text = out(&purged);
+    assert!(
+        text.contains(&format!("removed {}", zsh.display())),
+        "{text}"
+    );
+    assert!(text.contains("af man page(s) from"), "{text}");
+    assert!(!zsh.exists() && !man.join("af.1").exists());
 }

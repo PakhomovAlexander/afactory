@@ -28,7 +28,7 @@ DOMAIN_CONTENT = b"review.kernel/content-id/v1\0"
 DOMAIN_ARTIFACT = b"review.kernel/artifact-id/v1\0"
 DOMAIN_MANIFEST = b"review.kernel/source-manifest/v1\0"
 
-TASK_LEASE_MS = 15000
+TASK_LEASE_MS = 60000
 ENVELOPE_CAP_BYTES = 8 * 1024 * 1024
 SAFE_INTEGER = 2 ** 53 - 1
 
@@ -650,7 +650,7 @@ def golden_document(doc):
             fixtures[fixture_id] = {
                 "kind": "event_log", "events": fixture["events"], "prefix_events": 3,
                 "relevant_events": "TaskTransition@5 opened, plan proposed, plan admitted, then "
-                                   "production 15000 ms lease renewals"}
+                                   "production 60000 ms lease renewals"}
         else:
             raise ContractError("fixtures.%s: no reference for kind %s"
                                 % (fixture_id, fixture["kind"]))

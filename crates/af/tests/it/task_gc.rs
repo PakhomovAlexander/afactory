@@ -165,7 +165,7 @@ fn keeping_one_collects_the_older_task_and_removes_exactly_the_previewed_bytes()
 
     // Sizes: each Task's own bytes and the bytes it shares — the source Snapshot, at least.
     let sized = json_of(&repo, &state, &["task", "list", "--sizes"], 0);
-    let entries = schemas::validator("task-list-entry-v2.json");
+    let entries = schemas::validator("task-list-entry-v3.json");
     for task in sized["tasks"].as_array().unwrap() {
         schemas::valid(&entries, task);
         assert!(
@@ -179,7 +179,7 @@ fn keeping_one_collects_the_older_task_and_removes_exactly_the_previewed_bytes()
     }
     assert!(sized["store"]["objects"].as_u64().unwrap() > 0);
     let listed = text(&repo, &state, &["task", "list", "--sizes"]);
-    assert!(listed.contains("bytes exclusive"), "{listed}");
+    assert!(listed.contains(" exclusive, "), "{listed}");
     assert!(listed.contains("Store: "), "{listed}");
     let plain = json_of(&repo, &state, &["task", "list"], 0);
     assert!(
@@ -276,7 +276,11 @@ fn keeping_one_collects_the_older_task_and_removes_exactly_the_previewed_bytes()
     assert_eq!(gone["collected"]["revision_id"], older_revision.as_str());
     assert_eq!(gone["collected"]["collected_bytes"], collected_bytes);
     assert_eq!(gone["phase"]["result_id"], older_result.as_str());
-    assert_eq!(gone["outcome"], older["result"]["domain_conclusion"]);
+    assert_eq!(older["result"]["domain_conclusion"], "verified");
+    assert_eq!(
+        gone["state"],
+        serde_json::json!({"phase": "finished", "outcome": "verified", "cause": "collected", "next_action": null})
+    );
     // Under --sizes a collected Task reaches nothing, and its row says so in numbers.
     let sized = json_of(&repo, &state, &["task", "list", "--sizes"], 0);
     let gone_sized = entry(&sized, "gc-older");
@@ -299,12 +303,15 @@ fn keeping_one_collects_the_older_task_and_removes_exactly_the_previewed_bytes()
     );
     let shown = json_of(&repo, &state, &["task", "show", "gc-older"], 0);
     schemas::valid(
-        &schemas::validator("task-collected-inspection-v1.json"),
+        &schemas::validator("task-collected-inspection-v2.json"),
         &shown,
     );
     assert_eq!(shown["collected"], gone["collected"]);
     let shown = text(&repo, &state, &["task", "show", "gc-older"]);
-    assert!(shown.starts_with("Task gc-older: collected 20"), "{shown}");
+    assert!(
+        shown.starts_with("Task gc-older: finished/verified/collected\n  collected: 20"),
+        "{shown}"
+    );
     assert!(shown.contains(&older_revision), "{shown}");
 
     // Its outputs and its delivery are refused with the same word.
@@ -426,7 +433,7 @@ fn a_bound_task_is_never_collected_and_the_preview_names_its_binder() {
     );
     assert_eq!(entry(&next, "chain-base")["disposition"]["kind"], "collect");
     let kept = json_of(&repo, &state, &["task", "show", "chain-base"], 0);
-    assert_eq!(kept["schema"], "af/task-inspection@11");
+    assert_eq!(kept["schema"], "af/task-inspection@13");
 }
 
 #[test]
@@ -469,7 +476,7 @@ fn a_sweep_stopped_after_the_tombstone_is_finished_by_the_next_run() {
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     assert!(cas.is_filed(older["revision_id"].as_str().unwrap()));
     let shown = json_of(&repo, &state, &["task", "show", "gc-older"], 0);
-    assert_eq!(shown["schema"], "af/task-collected-inspection@1");
+    assert_eq!(shown["schema"], "af/task-collected-inspection@2");
     let listed = json_of(&repo, &state, &["task", "list"], 0);
     assert!(entry(&listed, "gc-older")["collected"].is_object());
 
@@ -558,5 +565,5 @@ fn a_campaign_keeps_every_object_its_records_reach_when_its_task_is_collected() 
     let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     assert_eq!(store.replay("campaign-keeps").unwrap().len(), 1);
     let shown = json_of(&repo, &state, &["task", "show", "gc-older"], 0);
-    assert_eq!(shown["schema"], "af/task-collected-inspection@1");
+    assert_eq!(shown["schema"], "af/task-collected-inspection@2");
 }

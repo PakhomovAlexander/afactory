@@ -107,6 +107,7 @@ fn worker(
         name: format!("builtin/{name}"),
         version: "1.0.0".into(),
         signature: OperatorSignature {
+            unbound_allowed: Default::default(),
             retains: outgoing
                 .keys()
                 .map(|port| (port.clone(), incoming.keys().cloned().collect()))
@@ -362,10 +363,13 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
             name: pipeline.name,
             fallback: PipelineFallbackV1::Refuse,
         }),
-        strategy: "fast".into(),
+        strategy: Some("fast".into()),
         verification: None,
         facts: BTreeMap::new(),
-        limits: FileLimits {
+        continue_from: None,
+        context: Vec::new(),
+        base: None,
+        limits: Some(FileLimits {
             tokens: 0,
             max_attempts: 3,
             wall_ms: 180000,
@@ -374,7 +378,7 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
                 attempts: 2,
                 wall_ms: 30000,
             },
-        },
+        }),
     };
     let sources = ReportSourcesV1 {
         schema: "af.document-sources/1".into(),

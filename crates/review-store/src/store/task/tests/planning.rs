@@ -270,12 +270,15 @@ fn planning_barrier_preserves_paid_history_fences_forgery_and_charges_late_usage
         .unwrap();
     f.store = EventStore::open(&f.path).unwrap();
     let state = f.state();
+    // The clock started at the first admission: the deadline moved by the wait before it.
+    let deadline = state.deadline_unix_ms();
+    assert!(deadline >= f.revision.limits.deadline_unix_ms);
     let execution = state.execution.unwrap();
     assert_eq!(execution.budget.committed_tokens(), 20);
     assert_eq!(execution.budget.begun_attempts(), 2);
     assert_eq!(
         execution.budget.remaining_limits().deadline_unix_ms,
-        f.revision.limits.deadline_unix_ms
+        deadline
     );
     assert_eq!(execution.outputs["root.nodes.write"].0, output);
 }

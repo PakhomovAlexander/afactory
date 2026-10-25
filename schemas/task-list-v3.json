@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-list:3",
+  "title": "Task list af/task-list@3",
+  "$comment": "What `af task list --json` prints: one entry per Task of the Store, collected Tasks included, in Task ID order; with --sizes, each entry's footprint and the Store's totals.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "tasks"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-list@3"
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:task-list-entry:3"
+      }
+    },
+    "store": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objects",
+        "bytes",
+        "unreachable_objects",
+        "unreachable_bytes"
+      ],
+      "properties": {
+        "objects": {
+          "$ref": "urn:af:schema:task-list-entry:3#/$defs/count"
+        },
+        "bytes": {
+          "$ref": "urn:af:schema:task-list-entry:3#/$defs/count"
+        },
+        "unreachable_objects": {
+          "$ref": "urn:af:schema:task-list-entry:3#/$defs/count"
+        },
+        "unreachable_bytes": {
+          "$ref": "urn:af:schema:task-list-entry:3#/$defs/count"
+        }
+      }
+    }
+  }
+}

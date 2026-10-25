@@ -44,7 +44,7 @@ fn start_previews_then_exact_confirmation_runs_and_finished_replay_spends_nothin
     assert!(display.contains("PIPE  fixture/implementation@1.0.0"));
     assert!(display.contains("confirmation required"));
     assert!(display.contains("--confirm-plan sha256:"));
-    assert!(display.is_ascii() && display.lines().all(|line| line.len() <= 96));
+    assert!(display.is_ascii() && prose(&display).all(|line| line.len() <= 96));
     let before = value(cli(
         &repo,
         &state,
@@ -132,7 +132,7 @@ fn tree_preserves_embedded_calls_conditions_and_captured_authority() {
         tree.contains("OUT   evaluation, snapshot, verification"),
         "{tree}"
     );
-    assert!(tree.lines().all(|line| line.len() <= 96));
+    assert!(prose(&tree).all(|line| line.len() <= 96));
     std::fs::remove_file(repo.join(".af/task-catalog.toml")).unwrap();
     let after = cli(&repo, &state, &args);
     assert!(after.status.success());
@@ -163,6 +163,14 @@ fn tree_preserves_embedded_calls_conditions_and_captured_authority() {
 
 /// The shell tokens of the copied command that starts on the row holding `start`, joining `\`
 /// continuations the way a shell joins pasted lines.
+/// The rows of a preview that are not a suggested command: a command, and every row continuing
+/// one, is never wrapped, so only these are held to the layout's width.
+fn prose(display: &str) -> impl Iterator<Item = &str> {
+    display
+        .lines()
+        .filter(|row| !row.contains("af task ") && !row.trim_start().starts_with("--"))
+}
+
 fn copied(display: &str, start: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for row in display.lines().skip_while(|row| !row.contains(start)) {
@@ -200,24 +208,38 @@ fn preview_commands_stay_copyable_for_short_and_maximum_length_task_ids() {
         );
         let display = String::from_utf8(preview.stdout).unwrap();
         assert!(display.is_ascii(), "{display}");
-        assert!(display.contains("Use the same --repo and --state selectors as this preview."));
         // Only the command rows may exceed the layout width; prose still wraps.
-        let prose = display.lines().filter(|row| !row.contains("af task "));
-        assert!(prose.into_iter().all(|row| row.len() <= 96), "{display}");
-        let continued: Vec<_> = display.lines().filter(|r| r.ends_with('\\')).collect();
-        assert_eq!(continued, [format!("  af task run {id} \\")], "{display}");
-
+        assert!(prose(&display).all(|row| row.len() <= 96), "{display}");
         let planned = value(cli(&repo, &state, &["task", "explain", id, "--json"]));
         assert_eq!(planned["attempts"], 0, "Previewing dispatches nothing");
         let plan = planned["plan_id"].as_str().unwrap();
+        let continued: Vec<_> = display.lines().filter(|r| r.ends_with('\\')).collect();
+        assert_eq!(
+            continued,
+            [
+                format!("  af task run {id} \\"),
+                format!("    --confirm-plan {plan} \\")
+            ],
+            "{display}"
+        );
+        // Each command carries the `--state` the preview was given: copied, it reads this Store.
+        let selector = ["--state".to_owned(), state.display().to_string()];
         let run = copied(&display, "af task run");
-        assert_eq!(run, ["af", "task", "run", id, "--confirm-plan", plan]);
+        assert_eq!(run[..6], ["af", "task", "run", id, "--confirm-plan", plan]);
+        assert_eq!(run[6..], selector);
         let details = copied(&display, "Details: af task explain");
         assert_eq!(details[..5], ["af", "task", "explain", id, "--tree"]);
+        assert_eq!(details[5..7], selector);
 
-        // The copied Details command, with the same state selector, reads the same Task.
-        let args: Vec<&str> = details[1..5].iter().map(String::as_str).collect();
-        let explained = cli(&repo, &state, &args);
+        // The copied Details command reads the same Task.
+        let copy = |words: &[String]| {
+            crate::common::af()
+                .current_dir(&repo)
+                .args(words)
+                .output()
+                .unwrap()
+        };
+        let explained = copy(&details[1..7]);
         assert!(explained.status.success());
         let explained = String::from_utf8(explained.stdout).unwrap();
         assert!(explained.contains(&format!("PLAN  {plan}")), "{explained}");
@@ -225,9 +247,9 @@ fn preview_commands_stay_copyable_for_short_and_maximum_length_task_ids() {
 
         // The copied run action confirms the exact plan; the fixture's Workers are commands.
         if id == longest {
-            let mut args: Vec<&str> = run[1..].iter().map(String::as_str).collect();
-            args.push("--json");
-            let done = value(cli(&repo, &state, &args));
+            let mut args = run[1..].to_vec();
+            args.push("--json".into());
+            let done = value(copy(&args));
             assert_eq!(done["result"]["acceptance"], "satisfied");
             assert_eq!(done["plan_id"], plan);
         }

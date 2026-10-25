@@ -735,11 +735,18 @@ fn bounded_planner_failures_and_remaining_budget_refusals_never_dispatch_generat
         package(&repo, &mut cat, "fixture/planner");
         std::fs::write(cat_path, toml::to_string(&cat).unwrap()).unwrap();
         commit(&repo);
+        // A planner whose proposals the compiler refuses is a failed Worker (6); a plan without
+        // the Attempts its planning needs ran out of budget (4).
+        let code = if case == "no_remaining_attempts" {
+            4
+        } else {
+            6
+        };
         let done = run(
             &repo,
             &state,
             &["task", "start", "--execute", "--file", "ticket.json"],
-            4,
+            code,
         );
         assert_eq!(
             done["attempts"],
@@ -771,7 +778,7 @@ fn bounded_planner_failures_and_remaining_budget_refusals_never_dispatch_generat
             &repo,
             &state,
             &["task", "run", "--execute", "pagination-cli"],
-            4,
+            code,
         );
         assert_eq!(replay["attempts"], done["attempts"]);
         assert_eq!(replay["plan_id"], done["plan_id"]);

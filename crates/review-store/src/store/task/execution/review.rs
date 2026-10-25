@@ -53,7 +53,11 @@ impl WritePermit {
             review_sequence,
             valid_until: state
                 .lease_until
-                .min(plan.limits.deadline_unix_ms)
+                .min(
+                    plan.limits
+                        .deadline_unix_ms
+                        .saturating_add(state.clock_shift_ms()),
+                )
                 .min(approval_until),
             event,
         })

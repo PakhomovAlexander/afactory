@@ -320,6 +320,7 @@ pub fn compile_campaign_review(
                     max_attempts: worker.allowance.max_attempts,
                     allow_local_replacement: false,
                     independent_from: BTreeSet::new(),
+                    recovery_attempts: None,
                 };
                 spec.validate()?;
                 graph.slots.insert(slot.clone(), spec);

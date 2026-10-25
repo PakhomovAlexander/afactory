@@ -57,6 +57,54 @@ fn source_capture(
     Ok((requirements, env, capture))
 }
 
+/// Whether a Task never ran: its plan was never admitted, no execution, planning or delivery
+/// was recorded.
+fn unstarted(state: &TaskProjection) -> bool {
+    !state.admitted
+        && state.execution.is_none()
+        && state.planning.is_none()
+        && state.deliveries.is_empty()
+        && !matches!(state.phase, TaskPhaseV1::Finished { .. })
+}
+
+/// Whether `next` was captured from another Task file than `current`: the file a revision's
+/// Requirements artifact was made from (its inputs other than an issue capture), or, for a
+/// revision without Requirements, its adapter record.
+fn task_file_changed(
+    cas: &Cas,
+    current: &task::TaskRevisionV1,
+    next: &task::TaskRevisionV1,
+) -> Result<bool, StoreError> {
+    // The one raw blob beside an issue capture: an artifact envelope there is not a file.
+    let file = |revision: &task::TaskRevisionV1| -> Result<Option<String>, StoreError> {
+        let Some(input) = revision.inputs.get("requirements") else {
+            return Ok(None);
+        };
+        let [id] = input.artifact_ids.as_slice() else {
+            return Ok(None);
+        };
+        let requirements = envelope(cas, id, "af/Requirements@1")?;
+        let mut files = requirements.input_artifacts.into_iter().filter(|id| {
+            cas.get_json(id)
+                .ok()
+                .is_none_or(|value| value.get("type").is_none())
+        });
+        Ok(match (files.next(), files.next()) {
+            (Some(file), None) => Some(file),
+            _ => None,
+        })
+    };
+    Ok(match (file(current)?, file(next)?) {
+        (Some(current), Some(next)) => current != next,
+        (None, None) => {
+            !current.inputs.contains_key("requirements")
+                && !next.inputs.contains_key("requirements")
+                && current.provenance.adapter_id != next.provenance.adapter_id
+        }
+        _ => false,
+    })
+}
+
 fn validate_revision(
     cas: &Cas,
     state: &TaskProjection,
@@ -68,6 +116,22 @@ fn validate_revision(
         return Err(conflict(
             "Resolve the pending local delivery before refreshing its Task",
         ));
+    }
+    // A Task that never ran may be planned again in place from a changed Task file, as its
+    // next revision (`af task plan --replace`). Nothing was admitted, reserved, charged or
+    // delivered, so no execution authority, ledger or evidence is replaced; the barrier still
+    // revokes every approval and the plan is authorized like any proposal. A refresh from the
+    // same Task file is an issue refresh, held to every rule below.
+    if unstarted(state) && task_file_changed(cas, &state.revision, next)? {
+        if next.task_id != state.task_id
+            || state.revision.revision.checked_add(1) != Some(next.revision)
+            || next.previous_revision_id.as_deref() != Some(state.revision_id.as_str())
+        {
+            return Err(conflict(
+                "An unstarted Task is planned again only as its next revision",
+            ));
+        }
+        return Ok(());
     }
     let old_input = state
         .revision
@@ -235,6 +299,10 @@ impl TaskProjection {
                         plan.preparation.is_some(),
                     )
                     .map_err(conflict)?;
+                execution
+                    .budget
+                    .install_recovery_allowances(&graph.recovery_allowances())
+                    .map_err(conflict)?;
                 execution.graph = graph;
             }
             if plan.preparation.is_some() {
@@ -318,6 +386,7 @@ impl EventStore {
                         time,
                         plan.preparation.is_some(),
                     )?;
+                    budget.install_recovery_allowances(&graph.recovery_allowances())?;
                 }
                 Ok(())
             })();

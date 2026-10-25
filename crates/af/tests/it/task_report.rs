@@ -130,6 +130,23 @@ fn run(repo: &Path, state: &Path, args: &[&str], code: i32) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+/// `document` without what the Storage Budget sweep that ends a run records on the Task after
+/// the run printed it (ADR-0144): its `storage_sweeps` and the transitions of its own short
+/// lease. The sweep records only when it removed something, which depends on the machine, not on
+/// the Task; a replay's document includes it and the run's own could not.
+fn without_storage_sweeps(mut document: Value) -> Value {
+    let object = document.as_object_mut().unwrap();
+    object.remove("storage_sweeps");
+    if let Some(history) = object.get_mut("history").and_then(Value::as_array_mut) {
+        history.retain(|entry| {
+            !entry["transition"]["writer"]
+                .as_str()
+                .is_some_and(|writer| writer.starts_with("af-storage-sweep-"))
+        });
+    }
+    document
+}
+
 pub(crate) fn start(repo: &Path, state: &Path, code: i32) -> Value {
     let done = run(
         repo,
@@ -137,7 +154,7 @@ pub(crate) fn start(repo: &Path, state: &Path, code: i32) -> Value {
         &["task", "start", "--execute", "--file", "report.json"],
         code,
     );
-    schemas::valid(&schemas::validator("task-inspection-v11.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v13.json"), &done);
     done
 }
 
@@ -345,7 +362,7 @@ fn the_report_starter_runs_to_verified_with_three_command_attempts_and_writes_it
             "--port",
             "report",
             "--format",
-            "markdown",
+            "canonical-markdown",
             "--output",
             file.to_str().unwrap(),
         ],
@@ -414,8 +431,8 @@ fn the_report_starter_runs_to_verified_with_three_command_attempts_and_writes_it
     assert_eq!(String::from_utf8_lossy(&branches.stdout).trim(), "* main");
     // Replay spends nothing and reports the same result.
     assert_eq!(
-        run(&repo, &state, &["task", "run", "--execute", TASK], 0),
-        done
+        without_storage_sweeps(run(&repo, &state, &["task", "run", "--execute", TASK], 0)),
+        without_storage_sweeps(done)
     );
 }
 
@@ -465,8 +482,8 @@ fn a_citation_that_does_not_name_a_text_line_fails_report_check_before_the_verif
             "{case}"
         );
         assert_eq!(
-            run(&repo, &state, &["task", "run", "--execute", TASK], 3),
-            done,
+            without_storage_sweeps(run(&repo, &state, &["task", "run", "--execute", TASK], 3)),
+            without_storage_sweeps(done),
             "{case}"
         );
     }
@@ -557,8 +574,8 @@ fn a_negative_verdict_stays_unsatisfied() {
         review_core::task::pipeline::ReceiptOutcomeV1::Failed
     );
     assert_eq!(
-        run(&repo, &state, &["task", "run", "--execute", TASK], 3),
-        done
+        without_storage_sweeps(run(&repo, &state, &["task", "run", "--execute", TASK], 3)),
+        without_storage_sweeps(done)
     );
     let shown = af(
         &repo,
@@ -577,7 +594,7 @@ fn a_verifier_evaluation_that_names_another_snapshot_is_refused_at_output_admiss
         "'source_snapshot_id': snapshot,",
         "'source_snapshot_id': 'sha256:' + '0' * 64,",
     );
-    let done = start(&repo, &state, 4);
+    let done = start(&repo, &state, 6);
     assert_ne!(done["result"]["acceptance"], "satisfied");
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let message = diagnostic(&cas, &done, "root.nodes.verify").unwrap();
@@ -611,7 +628,7 @@ fn an_author_may_add_scratch_but_an_author_that_edits_its_source_fails_its_attem
         "import json, sys\n",
         "import json, sys\nopen('README.md', 'a').write('edited\\n')\n",
     );
-    let done = start(&repo, &state, 4);
+    let done = start(&repo, &state, 6);
     assert_eq!(done["attempts"], 1);
     assert_ne!(done["result"]["acceptance"], "satisfied");
     let cas = Cas::open_existing(state.join("cas")).unwrap();
@@ -911,6 +928,12 @@ fn this_repositorys_report_pipeline_installs_idempotently_passes_its_catalog_tes
         planned["plan"]["authority"]["allowed_effects"],
         json!(["execute-checks", "read-source"])
     );
+    // The verifier has two Attempts (ADR-0208, issue #283): a reply that fails twice in one
+    // Attempt still gets a second Attempt with typed feedback. The author keeps its two.
+    let allowances = &planned["graph"]["allowances"];
+    for node in ["root.nodes.verify", "root.nodes.author"] {
+        assert_eq!(allowances[node]["max_attempts"], 2, "{node}: {allowances}");
+    }
 }
 
 #[test]
